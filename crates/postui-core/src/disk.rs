@@ -77,7 +77,10 @@ pub enum DiskError {
 }
 
 impl DiskError {
-    fn io<'a>(op: &'static str, path: &'a RelPath) -> impl FnOnce(std::io::Error) -> DiskError + 'a {
+    fn io<'a>(
+        op: &'static str,
+        path: &'a RelPath,
+    ) -> impl FnOnce(std::io::Error) -> DiskError + 'a {
         move |source| DiskError::Io {
             op,
             path: path.to_string(),
@@ -260,9 +263,13 @@ impl Disk {
             let mode = if private { 0o600 } else { 0o666 };
             builder.permissions(std::fs::Permissions::from_mode(mode));
         }
-        let mut tmp = builder.tempfile_in(parent).map_err(DiskError::io("write", rel))?;
+        let mut tmp = builder
+            .tempfile_in(parent)
+            .map_err(DiskError::io("write", rel))?;
         std::io::Write::write_all(&mut tmp, contents).map_err(DiskError::io("write", rel))?;
-        tmp.as_file().sync_all().map_err(DiskError::io("write", rel))?;
+        tmp.as_file()
+            .sync_all()
+            .map_err(DiskError::io("write", rel))?;
         Ok(tmp)
     }
 
@@ -312,7 +319,8 @@ impl Disk {
             return Err(DiskError::AlreadyExists(to.to_string()));
         }
         if let Some(parent) = to_abs.parent() {
-            std::fs::create_dir_all(parent).map_err(DiskError::io("create the directory of", to))?;
+            std::fs::create_dir_all(parent)
+                .map_err(DiskError::io("create the directory of", to))?;
         }
         std::fs::rename(&from_abs, &to_abs).map_err(DiskError::io("move", from))?;
         self.record(from);
@@ -475,7 +483,11 @@ mod tests {
         assert_eq!(p.parent().unwrap().as_str(), "requests");
         assert!(RelPath::new("requests").unwrap().parent().is_none());
         assert!(f.starts_with(&p));
-        assert!(!RelPath::new("requests/main2/x.toml").unwrap().starts_with(&p));
+        assert!(
+            !RelPath::new("requests/main2/x.toml")
+                .unwrap()
+                .starts_with(&p)
+        );
         assert_eq!(f.file_name(), "ping.toml");
         assert!(p.join("../x").is_err());
     }
@@ -514,7 +526,10 @@ mod tests {
         std::fs::set_permissions(&abs, std::fs::Permissions::from_mode(0o664)).unwrap();
         disk.write(&p, "new").unwrap();
         assert_eq!(std::fs::read_to_string(&abs).unwrap(), "new");
-        assert_eq!(std::fs::metadata(&abs).unwrap().permissions().mode() & 0o777, 0o664);
+        assert_eq!(
+            std::fs::metadata(&abs).unwrap().permissions().mode() & 0o777,
+            0o664
+        );
     }
 
     #[cfg(unix)]
@@ -526,8 +541,14 @@ mod tests {
         std::fs::write(&real, "old").unwrap();
         let link = dir.path().join("config.toml");
         std::os::unix::fs::symlink(&real, &link).unwrap();
-        disk.write(&RelPath::new("config.toml").unwrap(), "new").unwrap();
-        assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        disk.write(&RelPath::new("config.toml").unwrap(), "new")
+            .unwrap();
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
         assert_eq!(std::fs::read_to_string(&real).unwrap(), "new");
     }
 
@@ -537,14 +558,25 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let (d, mut disk) = disk();
         std::fs::write(d.path().join("control"), b"").unwrap();
-        let control = std::fs::metadata(d.path().join("control")).unwrap().permissions().mode() & 0o777;
+        let control = std::fs::metadata(d.path().join("control"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
         let a = RelPath::new("project.toml").unwrap();
         let b = RelPath::new("environments/dev.toml").unwrap();
         disk.write(&a, "").unwrap();
         disk.write_new(&b, "").unwrap();
         for rel in [&a, &b] {
-            let mode = std::fs::metadata(disk.abs(rel)).unwrap().permissions().mode() & 0o777;
-            assert_eq!(mode, control, "{rel} should have the umask mode, not the temp file's");
+            let mode = std::fs::metadata(disk.abs(rel))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(
+                mode, control,
+                "{rel} should have the umask mode, not the temp file's"
+            );
         }
     }
 
@@ -557,15 +589,28 @@ mod tests {
         disk.mark_private(secrets.clone());
         disk.write(&secrets, "[dev]\n").unwrap();
         let abs = d.path().join(".local/secrets.toml");
-        assert_eq!(std::fs::metadata(&abs).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            std::fs::metadata(&abs).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
         // A file already leaked wider is tightened, not preserved.
         std::fs::set_permissions(&abs, std::fs::Permissions::from_mode(0o644)).unwrap();
         disk.write(&secrets, "[qa]\n").unwrap();
-        assert_eq!(std::fs::metadata(&abs).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            std::fs::metadata(&abs).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
         let fresh = RelPath::new(".local/other.toml").unwrap();
         disk.mark_private(fresh.clone());
         disk.write_new(&fresh, "").unwrap();
-        assert_eq!(std::fs::metadata(disk.abs(&fresh)).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            std::fs::metadata(disk.abs(&fresh))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
     }
 
     #[test]
@@ -573,7 +618,10 @@ mod tests {
         let (d, mut disk) = disk();
         let p = RelPath::new("environments/dev.toml").unwrap();
         disk.write_new(&p, "first").unwrap();
-        assert!(matches!(disk.write_new(&p, "second"), Err(DiskError::AlreadyExists(_))));
+        assert!(matches!(
+            disk.write_new(&p, "second"),
+            Err(DiskError::AlreadyExists(_))
+        ));
         let names: Vec<String> = std::fs::read_dir(d.path().join("environments"))
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
@@ -587,7 +635,10 @@ mod tests {
         let (_d, mut disk) = disk();
         let p = RelPath::new("environments/dev.toml").unwrap();
         disk.write_new(&p, "").unwrap();
-        assert!(matches!(disk.write_new(&p, ""), Err(DiskError::AlreadyExists(_))));
+        assert!(matches!(
+            disk.write_new(&p, ""),
+            Err(DiskError::AlreadyExists(_))
+        ));
         disk.remove(&p).unwrap();
         assert!(!disk.exists(&p));
         disk.remove(&p).unwrap();
@@ -616,7 +667,10 @@ mod tests {
         assert_eq!(disk.read(&b).unwrap().as_deref(), Some("x"));
         assert!(matches!(disk.rename(&a, &b), Err(DiskError::NotFound(_))));
         disk.write(&a, "y").unwrap();
-        assert!(matches!(disk.rename(&a, &b), Err(DiskError::AlreadyExists(_))));
+        assert!(matches!(
+            disk.rename(&a, &b),
+            Err(DiskError::AlreadyExists(_))
+        ));
         let d1 = RelPath::new("requests/auth").unwrap();
         let d2 = RelPath::new("requests/login").unwrap();
         disk.rename(&d1, &d2).unwrap();
@@ -626,9 +680,12 @@ mod tests {
     #[test]
     fn list_is_sorted_marks_dirs_and_treats_a_missing_dir_as_empty() {
         let (_d, mut disk) = disk();
-        disk.write(&RelPath::new("environments/qa.toml").unwrap(), "").unwrap();
-        disk.write(&RelPath::new("environments/dev.toml").unwrap(), "").unwrap();
-        disk.create_dir(&RelPath::new("environments/sub").unwrap()).unwrap();
+        disk.write(&RelPath::new("environments/qa.toml").unwrap(), "")
+            .unwrap();
+        disk.write(&RelPath::new("environments/dev.toml").unwrap(), "")
+            .unwrap();
+        disk.create_dir(&RelPath::new("environments/sub").unwrap())
+            .unwrap();
         let names: Vec<(String, bool)> = disk
             .list(&RelPath::new("environments").unwrap())
             .unwrap()
@@ -643,21 +700,33 @@ mod tests {
                 ("sub".to_string(), true)
             ]
         );
-        assert!(disk.list(&RelPath::new("nope").unwrap()).unwrap().is_empty());
+        assert!(
+            disk.list(&RelPath::new("nope").unwrap())
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
     fn walk_files_is_recursive_sorted_and_filtered_by_extension() {
         let (_d, mut disk) = disk();
-        disk.write(&RelPath::new("requests/main/b.toml").unwrap(), "").unwrap();
-        disk.write(&RelPath::new("requests/main/sub/a.toml").unwrap(), "").unwrap();
-        disk.write(&RelPath::new("requests/main/notes.md").unwrap(), "").unwrap();
-        disk.write(&RelPath::new("requests/auth/c.toml").unwrap(), "").unwrap();
+        disk.write(&RelPath::new("requests/main/b.toml").unwrap(), "")
+            .unwrap();
+        disk.write(&RelPath::new("requests/main/sub/a.toml").unwrap(), "")
+            .unwrap();
+        disk.write(&RelPath::new("requests/main/notes.md").unwrap(), "")
+            .unwrap();
+        disk.write(&RelPath::new("requests/auth/c.toml").unwrap(), "")
+            .unwrap();
         let (files, warning) = disk.walk_files(&RelPath::new("requests").unwrap(), "toml");
         let files: Vec<&str> = files.iter().map(|p| p.as_str()).collect();
         assert_eq!(
             files,
-            vec!["requests/auth/c.toml", "requests/main/b.toml", "requests/main/sub/a.toml"]
+            vec![
+                "requests/auth/c.toml",
+                "requests/main/b.toml",
+                "requests/main/sub/a.toml"
+            ]
         );
         assert!(warning.is_none());
     }
@@ -667,8 +736,10 @@ mod tests {
     fn walk_files_reports_an_unreadable_subdirectory_and_keeps_going() {
         use std::os::unix::fs::PermissionsExt;
         let (dir, mut disk) = disk();
-        disk.write(&RelPath::new("requests/main/a.toml").unwrap(), "").unwrap();
-        disk.write(&RelPath::new("requests/locked/b.toml").unwrap(), "").unwrap();
+        disk.write(&RelPath::new("requests/main/a.toml").unwrap(), "")
+            .unwrap();
+        disk.write(&RelPath::new("requests/locked/b.toml").unwrap(), "")
+            .unwrap();
         let locked = dir.path().join("requests/locked");
         std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
         let (files, warning) = disk.walk_files(&RelPath::new("requests").unwrap(), "toml");
@@ -734,7 +805,9 @@ mod tests {
         assert_eq!(t1.slot.as_str(), ".local/trash/1/requests/auth");
         assert_eq!(t2.slot.as_str(), ".local/trash/2/requests/auth");
         assert_eq!(
-            disk.read(&t1.slot.join("a.toml").unwrap()).unwrap().as_deref(),
+            disk.read(&t1.slot.join("a.toml").unwrap())
+                .unwrap()
+                .as_deref(),
             Some("1")
         );
     }

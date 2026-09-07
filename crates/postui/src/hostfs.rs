@@ -19,7 +19,10 @@ pub struct HostEntry {
 /// part-way (disk full) leaves the file that was there rather than a
 /// truncated one. A new file takes the umask, like a plain create.
 pub fn write_user_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
     std::fs::create_dir_all(parent)?;
     let mut builder = tempfile::Builder::new();
     #[cfg(unix)]

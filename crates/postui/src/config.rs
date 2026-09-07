@@ -675,7 +675,9 @@ impl Config {
             let entries = match disk.list(&dir) {
                 Ok(entries) => entries,
                 Err(e) => {
-                    warnings.push(format!("could not list {THEMES_DIR}/: {e}; custom themes unavailable"));
+                    warnings.push(format!(
+                        "could not list {THEMES_DIR}/: {e}; custom themes unavailable"
+                    ));
                     return (None, warnings);
                 }
             };
@@ -833,7 +835,10 @@ mod tests {
         let (themes, warnings) = cfg.reload_themes();
         assert!(warnings.is_empty());
         assert_eq!(
-            themes.expect("no config dir is not a listing failure").entries().len(),
+            themes
+                .expect("no config dir is not a listing failure")
+                .entries()
+                .len(),
             9,
             "the built-ins"
         );

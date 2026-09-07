@@ -106,7 +106,9 @@ pub struct Local {
 
 impl std::fmt::Debug for Project {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Project").field("root", &self.root()).finish_non_exhaustive()
+        f.debug_struct("Project")
+            .field("root", &self.root())
+            .finish_non_exhaustive()
     }
 }
 
@@ -514,7 +516,11 @@ impl Project {
 
     /// Reads the current text (for the op's `before`) and writes `after`
     /// (`None` removes). The only way a document's text changes.
-    pub(crate) fn fs_write_text(&mut self, path: &RelPath, after: Option<&str>) -> Result<(), Error> {
+    pub(crate) fn fs_write_text(
+        &mut self,
+        path: &RelPath,
+        after: Option<&str>,
+    ) -> Result<(), Error> {
         let before = self.disk.read(path)?;
         if before.as_deref() == after {
             return Ok(());
@@ -593,7 +599,8 @@ impl Project {
         let new_text = doc.to_string();
         // Validate before writing: a rejected edit must leave the file and
         // `self.meta` untouched, not a document `ProjectMeta` can't parse.
-        let parsed: ProjectMeta = toml::from_str(&new_text).map_err(|e| parse_err(PROJECT_TOML)(&e))?;
+        let parsed: ProjectMeta =
+            toml::from_str(&new_text).map_err(|e| parse_err(PROJECT_TOML)(&e))?;
         self.fs_write_text(&path, Some(&new_text))?;
         self.meta = parsed;
         Ok(())
@@ -658,7 +665,10 @@ impl Project {
     /// with a warning. Selections are pruned; stamps re-recorded.
     fn reload_documents(&mut self) -> Vec<Warning> {
         let mut warnings = Vec::new();
-        match self.disk.read(&RelPath::new(PROJECT_TOML).expect("constant")) {
+        match self
+            .disk
+            .read(&RelPath::new(PROJECT_TOML).expect("constant"))
+        {
             Ok(text) => match toml::from_str::<ProjectMeta>(&text.unwrap_or_default()) {
                 Ok(meta) => self.meta = meta,
                 Err(e) => warnings.push(format!("could not read project.toml: {e}")),
@@ -667,12 +677,19 @@ impl Project {
         }
         let (legacy_vars, pending, w) = migration::probe(&mut self.disk);
         warnings.extend(w);
-        self.pending_migration = if self.migration_declined { None } else { pending };
+        self.pending_migration = if self.migration_declined {
+            None
+        } else {
+            pending
+        };
         if legacy_vars {
             self.model = VarModel::default();
             self.env_data = EnvData::default();
         } else {
-            match self.disk.read(&RelPath::new(VARIABLES_TOML).expect("constant")) {
+            match self
+                .disk
+                .read(&RelPath::new(VARIABLES_TOML).expect("constant"))
+            {
                 Ok(text) => match varmodel::parse_variables(&text.unwrap_or_default()) {
                     Ok(model) => self.model = model,
                     Err(e) => warnings.push(format!("could not read variables.toml: {e}")),
@@ -684,7 +701,10 @@ impl Project {
         if let Some(w) = self.refresh_spaces() {
             warnings.push(w);
         }
-        match self.disk.read(&RelPath::new(SECRETS_TOML).expect("constant")) {
+        match self
+            .disk
+            .read(&RelPath::new(SECRETS_TOML).expect("constant"))
+        {
             Ok(text) => match toml::from_str(&text.unwrap_or_default()) {
                 Ok(secrets) => self.secrets = secrets,
                 Err(e) => warnings.push(format!("could not read secrets: {e}")),
@@ -764,7 +784,9 @@ impl Project {
                         warnings.push(format!("could not load environment {name:?}: {e}"));
                     }
                 }
-                Some(name) => warnings.push(format!("restored environment {name:?} no longer exists")),
+                Some(name) => {
+                    warnings.push(format!("restored environment {name:?} no longer exists"))
+                }
                 // `.local/state.toml` never distinguishes "explicitly no
                 // environment" from "this field was never written" (its
                 // default): a project that has never persisted local
@@ -891,8 +913,7 @@ impl Project {
         let spaces_warning = join_warnings(&space_warnings);
         warnings.extend(space_warnings);
 
-        let (legacy_vars, pending_migration, migration_warnings) =
-            migration::probe(&mut disk);
+        let (legacy_vars, pending_migration, migration_warnings) = migration::probe(&mut disk);
         warnings.extend(migration_warnings);
         let model = if legacy_vars {
             VarModel::default()
@@ -950,9 +971,13 @@ impl Project {
             Some(s) if spaces.contains(&s) => s,
             Some(s) => {
                 warnings.push(format!("saved space {s:?} no longer exists"));
-                open_request_space.clone().unwrap_or_else(|| first_space.clone())
+                open_request_space
+                    .clone()
+                    .unwrap_or_else(|| first_space.clone())
             }
-            None => open_request_space.clone().unwrap_or_else(|| first_space.clone()),
+            None => open_request_space
+                .clone()
+                .unwrap_or_else(|| first_space.clone()),
         };
         let open_request = match state.open_request.clone() {
             Some(r) if crate::storage::space_of(&r) == Some(active_space.as_str()) => Some(r),
@@ -1167,7 +1192,11 @@ impl Project {
             .shared_selections
             .iter()
             .filter(|(selector, option)| {
-                !(self.model.selectors.get(selector.as_str()).is_some_and(|d| d.shared)
+                !(self
+                    .model
+                    .selectors
+                    .get(selector.as_str())
+                    .is_some_and(|d| d.shared)
                     && self
                         .model
                         .options
@@ -1178,7 +1207,9 @@ impl Project {
             .collect();
         for name in stale {
             self.local.shared_selections.shift_remove(&name);
-            warnings.push(format!("selection for `{name}` no longer exists \u{2014} cleared"));
+            warnings.push(format!(
+                "selection for `{name}` no longer exists \u{2014} cleared"
+            ));
         }
         if !warnings.is_empty() {
             let _ = self.persist_local();
@@ -1206,7 +1237,11 @@ mod tests {
             "name = \"Demo\"\nspaces = [\"main\", \"auth\"]\n\n[space.auth]\nname = \"Auth\"\n\n[environment.dev]\nname = \"Dev\"\n",
         )
         .unwrap();
-        std::fs::write(root.join("variables.toml"), "[host]\ndefault = \"localhost\"\n").unwrap();
+        std::fs::write(
+            root.join("variables.toml"),
+            "[host]\ndefault = \"localhost\"\n",
+        )
+        .unwrap();
         std::fs::write(root.join("environments/dev.toml"), "host = \"dev.local\"\n").unwrap();
         std::fs::write(root.join("environments/qa.toml"), "").unwrap();
         std::fs::write(
@@ -1237,7 +1272,10 @@ mod tests {
         assert_eq!(p.environments(), ["dev", "qa"]);
         assert_eq!(p.active_env(), Some("dev"));
         assert_eq!(p.env_name("dev"), "Dev");
-        assert_eq!(p.resolved().values.get("host").map(String::as_str), Some("dev.local"));
+        assert_eq!(
+            p.resolved().values.get("host").map(String::as_str),
+            Some("dev.local")
+        );
         assert_eq!(p.local().active_space, "main");
     }
 
@@ -1299,7 +1337,12 @@ mod tests {
         let result = Project::open(dir.path().to_path_buf());
         std::fs::set_permissions(&requests, std::fs::Permissions::from_mode(0o755)).unwrap();
         let (_p, warnings) = result.unwrap();
-        assert!(warnings.iter().any(|w| w.contains("could not list requests/")), "{warnings:?}");
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("could not list requests/")),
+            "{warnings:?}"
+        );
     }
 
     #[cfg(unix)]
@@ -1307,10 +1350,19 @@ mod tests {
     fn the_secrets_file_is_written_owner_only() {
         use std::os::unix::fs::PermissionsExt;
         let (dir, mut p) = fixture();
-        p.set_secret_for("dev", "token", "s3cret".to_string()).unwrap();
-        let mode = std::fs::metadata(dir.path().join(".local/secrets.toml")).unwrap().permissions().mode() & 0o777;
+        p.set_secret_for("dev", "token", "s3cret".to_string())
+            .unwrap();
+        let mode = std::fs::metadata(dir.path().join(".local/secrets.toml"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
         assert_eq!(mode, 0o600);
-        let public = std::fs::metadata(dir.path().join("project.toml")).unwrap().permissions().mode() & 0o777;
+        let public = std::fs::metadata(dir.path().join("project.toml"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
         assert_ne!(public, 0o600, "project.toml keeps the umask mode");
     }
 
@@ -1322,7 +1374,11 @@ mod tests {
         let (p, warnings) = Project::open(dir.path().to_path_buf()).unwrap();
         assert_eq!(p.environments(), ["default"]);
         assert_eq!(p.active_env(), Some("default"));
-        assert!(warnings.iter().any(|w| w.contains("created environments/default.toml")));
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("created environments/default.toml"))
+        );
     }
 
     /// Ported from the app's `ProjectContext` tests
@@ -1357,9 +1413,18 @@ mod tests {
 
         let (p, warnings) = Project::open(dir.path().to_path_buf()).unwrap();
         assert!(warnings.is_empty(), "{warnings:?}");
-        assert_eq!(p.resolved().values.get("host").map(String::as_str), Some("east.local"));
-        assert_eq!(p.resolved().values.get("lang").map(String::as_str), Some("en"));
-        assert_eq!(p.resolved().values.get("token").map(String::as_str), Some("s3cret"));
+        assert_eq!(
+            p.resolved().values.get("host").map(String::as_str),
+            Some("east.local")
+        );
+        assert_eq!(
+            p.resolved().values.get("lang").map(String::as_str),
+            Some("en")
+        );
+        assert_eq!(
+            p.resolved().values.get("token").map(String::as_str),
+            Some("s3cret")
+        );
     }
 
     /// Ported from `open_warns_and_clears_a_stale_selection`,
@@ -1389,11 +1454,15 @@ mod tests {
 
         let (mut p, warnings) = Project::open(dir.path().to_path_buf()).unwrap();
         assert!(
-            warnings.iter().any(|w| w.contains("`region`") && w.contains("cleared")),
+            warnings
+                .iter()
+                .any(|w| w.contains("`region`") && w.contains("cleared")),
             "{warnings:?}"
         );
         assert!(
-            warnings.iter().any(|w| w.contains("`locale`") && w.contains("cleared")),
+            warnings
+                .iter()
+                .any(|w| w.contains("`locale`") && w.contains("cleared")),
             "{warnings:?}"
         );
         assert!(p.selections_for("dev").get("region").is_none());
@@ -1411,7 +1480,9 @@ mod tests {
         let (changed, warnings) = p.poll();
         assert!(changed);
         assert!(
-            warnings.iter().any(|w| w.contains("`region`") && w.contains("cleared")),
+            warnings
+                .iter()
+                .any(|w| w.contains("`region`") && w.contains("cleared")),
             "{warnings:?}"
         );
         assert!(p.selections_for("dev").get("region").is_none());
@@ -1428,7 +1499,11 @@ mod tests {
         .unwrap();
         let (p, warnings) = Project::open(dir.path().to_path_buf()).unwrap();
         assert_eq!(p.active_env(), Some("dev"));
-        assert_eq!(p.local().active_space, "auth", "the open request's space wins over the first");
+        assert_eq!(
+            p.local().active_space,
+            "auth",
+            "the open request's space wins over the first"
+        );
         assert_eq!(p.local().open_request.as_deref(), Some("auth/login"));
         assert!(warnings.iter().any(|w| w.contains("saved environment")));
         assert!(warnings.iter().any(|w| w.contains("saved space")));
@@ -1445,7 +1520,10 @@ mod tests {
         // `init`'s own seeding appends the `spaces` list to the stub.
         let project_toml = read(&dir, "project.toml").unwrap();
         assert!(project_toml.contains("name = \"New\""), "{project_toml}");
-        assert!(project_toml.contains("spaces = [\"main\"]"), "{project_toml}");
+        assert!(
+            project_toml.contains("spaces = [\"main\"]"),
+            "{project_toml}"
+        );
         assert_eq!(
             read(&dir, "variables.toml").as_deref(),
             Some("# Declare variables: [name] with optional description/default\n")
@@ -1476,8 +1554,15 @@ mod tests {
             project_toml.contains("# project.toml: optional `name`, optional [default_headers]"),
             "{project_toml}"
         );
-        assert!(!project_toml.contains("name = "), "no name was given: {project_toml}");
-        assert_eq!(p.environments(), ["dev"], "an existing environment is enough");
+        assert!(
+            !project_toml.contains("name = "),
+            "no name was given: {project_toml}"
+        );
+        assert_eq!(
+            p.environments(),
+            ["dev"],
+            "an existing environment is enough"
+        );
         assert!(!dir.path().join("environments/default.toml").exists());
         assert_eq!(read(&dir, ".gitignore").as_deref(), Some("mine\n"));
         assert!(dir.path().join("requests").is_dir());
@@ -1504,7 +1589,10 @@ mod tests {
         let (mut p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
         p.ensure_spaces().unwrap();
         assert!(dir.path().join("requests/main").is_dir());
-        assert!(!dir.path().join("project.toml").exists(), "a bare dir stays bare");
+        assert!(
+            !dir.path().join("project.toml").exists(),
+            "a bare dir stays bare"
+        );
         assert_eq!(p.spaces(), ["main"]);
 
         // 2. A bare directory that already has a space: left alone.
@@ -1524,7 +1612,11 @@ mod tests {
         p.ensure_spaces().unwrap();
         assert_eq!(p.meta().spaces, ["auth"]);
         assert!(!dir.path().join("requests/main").exists());
-        assert!(read(&dir, "project.toml").unwrap().contains("spaces = [\"auth\"]"));
+        assert!(
+            read(&dir, "project.toml")
+                .unwrap()
+                .contains("spaces = [\"auth\"]")
+        );
 
         // 4. A project with an empty `spaces` and none on disk: `main`,
         // both as a directory and in the list.
@@ -1536,7 +1628,10 @@ mod tests {
         assert_eq!(p.meta().spaces, ["main"]);
         assert_eq!(p.spaces(), ["main"]);
         let text = read(&dir, "project.toml").unwrap();
-        assert!(text.contains("spaces = [\"main\"]") && text.contains("# keep me"), "{text}");
+        assert!(
+            text.contains("spaces = [\"main\"]") && text.contains("# keep me"),
+            "{text}"
+        );
     }
 
     #[test]
@@ -1552,10 +1647,17 @@ mod tests {
     #[test]
     fn spaces_warning_names_an_invalid_entry_and_clears_when_it_is_removed() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("project.toml"), "spaces = [\"main\", \"Bad Name\"]\n").unwrap();
+        std::fs::write(
+            dir.path().join("project.toml"),
+            "spaces = [\"main\", \"Bad Name\"]\n",
+        )
+        .unwrap();
         std::fs::create_dir_all(dir.path().join("requests/main")).unwrap();
         let (mut p, warnings) = Project::open(dir.path().to_path_buf()).unwrap();
-        let w = p.spaces_warning().expect("an invalid entry warns").to_string();
+        let w = p
+            .spaces_warning()
+            .expect("an invalid entry warns")
+            .to_string();
         assert!(w.contains("Bad Name"), "{w}");
         assert!(warnings.contains(&w), "open reports it too: {warnings:?}");
         assert_eq!(p.spaces(), ["main"]);
@@ -1575,7 +1677,10 @@ mod tests {
             Err(Error::Conflict("boom".into()))
         });
         assert!(r.is_err());
-        assert_eq!(read(&dir, "variables.toml").as_deref(), Some("[host]\ndefault = \"localhost\"\n"));
+        assert_eq!(
+            read(&dir, "variables.toml").as_deref(),
+            Some("[host]\ndefault = \"localhost\"\n")
+        );
         assert_eq!(p.journal_len(), 0);
     }
 
@@ -1601,7 +1706,8 @@ mod tests {
 
     fn bump_mtime(path: &std::path::Path) {
         // Coarse-mtime filesystems need the clock to move.
-        let t = std::fs::metadata(path).unwrap().modified().unwrap() + std::time::Duration::from_secs(2);
+        let t = std::fs::metadata(path).unwrap().modified().unwrap()
+            + std::time::Duration::from_secs(2);
         std::fs::File::open(path).unwrap().set_modified(t).unwrap();
     }
 
@@ -1609,7 +1715,11 @@ mod tests {
     fn poll_is_quiet_until_a_watched_file_changes_then_re_reads() {
         let (dir, mut p) = fixture();
         assert_eq!(p.poll(), (false, Vec::new()));
-        std::fs::write(dir.path().join("variables.toml"), "[host]\ndefault = \"changed\"\n[extra]\n").unwrap();
+        std::fs::write(
+            dir.path().join("variables.toml"),
+            "[host]\ndefault = \"changed\"\n[extra]\n",
+        )
+        .unwrap();
         bump_mtime(&dir.path().join("variables.toml"));
         let (changed, warnings) = p.poll();
         assert!(changed && warnings.is_empty(), "{warnings:?}");
@@ -1646,7 +1756,10 @@ mod tests {
         p.invalidate_stamps();
         assert!(p.poll().0);
         assert_eq!(p.held_request("main/ping").unwrap().url, "outside");
-        assert!(p.held_request("auth/login").is_none(), "a vanished request is dropped");
+        assert!(
+            p.held_request("auth/login").is_none(),
+            "a vanished request is dropped"
+        );
     }
 
     #[test]
@@ -1687,7 +1800,11 @@ mod tests {
         let (dir, mut p) = fixture();
         p.open_request("main/ping").unwrap();
         p.open_request("auth/login").unwrap();
-        std::fs::write(dir.path().join("requests/main/ping.toml"), "method = \"GET\"\nurl = \"outside\"\n").unwrap();
+        std::fs::write(
+            dir.path().join("requests/main/ping.toml"),
+            "method = \"GET\"\nurl = \"outside\"\n",
+        )
+        .unwrap();
         std::fs::remove_file(dir.path().join("requests/auth/login.toml")).unwrap();
         p.reload_all();
         assert_eq!(p.held_request("main/ping").unwrap().url, "outside");
@@ -1706,9 +1823,20 @@ mod tests {
         let (mut p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
         let r = p.apply_migration();
         assert!(matches!(r, Err(Error::AlreadyExists(_))), "{r:?}");
-        assert_eq!(read(&dir, "variables.toml").unwrap(), legacy, "the original is untouched");
-        assert_eq!(read(&dir, "variables.toml.bak").unwrap(), "theirs", "so is their backup");
-        assert!(p.pending_migration().is_some(), "still offered once the .bak is moved aside");
+        assert_eq!(
+            read(&dir, "variables.toml").unwrap(),
+            legacy,
+            "the original is untouched"
+        );
+        assert_eq!(
+            read(&dir, "variables.toml.bak").unwrap(),
+            "theirs",
+            "so is their backup"
+        );
+        assert!(
+            p.pending_migration().is_some(),
+            "still offered once the .bak is moved aside"
+        );
     }
 
     #[test]
@@ -1717,7 +1845,11 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("environments")).unwrap();
         std::fs::write(dir.path().join("project.toml"), "").unwrap();
         // Stage-6 shape: a `[groups]` table `migrate::needs_migration` recognises.
-        std::fs::write(dir.path().join("variables.toml"), "[groups.region]\nmembers = [\"host\"]\n").unwrap();
+        std::fs::write(
+            dir.path().join("variables.toml"),
+            "[groups.region]\nmembers = [\"host\"]\n",
+        )
+        .unwrap();
         std::fs::write(dir.path().join("environments/dev.toml"), "").unwrap();
         let (mut p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
         assert!(p.pending_migration().is_some());
@@ -1748,7 +1880,10 @@ mod tests {
         assert!(p.pending_migration().is_some());
         p.apply_migration().unwrap();
         let migrated_vars = read(&dir, "variables.toml").unwrap();
-        assert_ne!(migrated_vars, legacy_vars, "the apply rewrote variables.toml");
+        assert_ne!(
+            migrated_vars, legacy_vars,
+            "the apply rewrote variables.toml"
+        );
         assert!(dir.path().join("variables.toml.bak").is_file());
         assert_eq!(p.journal_len(), 1, "the whole migration is one entry");
 
@@ -1823,7 +1958,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("environments")).unwrap();
         std::fs::write(dir.path().join("project.toml"), "").unwrap();
-        std::fs::write(dir.path().join("variables.toml"), "[groups.region]\nmembers = [\"host\"]\n").unwrap();
+        std::fs::write(
+            dir.path().join("variables.toml"),
+            "[groups.region]\nmembers = [\"host\"]\n",
+        )
+        .unwrap();
         let (mut p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
         p.decline_migration();
         assert!(p.pending_migration().is_none());
@@ -1852,7 +1991,10 @@ mod tests {
         let r: Result<(), Error> = p.transaction("t", EntryMeta::default(), |p| {
             p.spaces.push("bogus".to_string());
             p.active_env = None;
-            p.secrets.entry("dev".to_string()).or_default().insert("k".to_string(), "v".to_string());
+            p.secrets
+                .entry("dev".to_string())
+                .or_default()
+                .insert("k".to_string(), "v".to_string());
             p.fs_write_text(&path, Some("[changed]\n"))?;
             p.fs_rename(&from, &to)?;
             if let Some(req) = p.open_requests.shift_remove("main/ping") {
@@ -1864,9 +2006,15 @@ mod tests {
         assert_eq!(p.spaces(), ["main", "auth"]);
         assert_eq!(p.active_env(), Some("dev"));
         assert!(p.secrets().get("dev").is_none());
-        assert_eq!(read(&dir, "variables.toml").as_deref(), Some("[host]\ndefault = \"localhost\"\n"));
+        assert_eq!(
+            read(&dir, "variables.toml").as_deref(),
+            Some("[host]\ndefault = \"localhost\"\n")
+        );
         assert_eq!(p.journal_len(), 0);
-        assert!(p.held_request("main/ping").is_some(), "the rename was rolled back");
+        assert!(
+            p.held_request("main/ping").is_some(),
+            "the rename was rolled back"
+        );
         assert!(p.held_request("main/renamed").is_none());
     }
 
@@ -1883,7 +2031,10 @@ mod tests {
         let bare_root = bare.path().join("my-project");
         std::fs::create_dir(&bare_root).unwrap();
         assert_eq!(Project::peek_display_name(&bare_root), "my-project");
-        assert!(!bare_root.join("project.toml").exists(), "peek must not write");
+        assert!(
+            !bare_root.join("project.toml").exists(),
+            "peek must not write"
+        );
 
         // A project.toml that does not parse: same fallback, and the
         // broken file is left exactly as it was.

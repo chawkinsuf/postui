@@ -130,7 +130,13 @@ pub(crate) fn set_item_name(doc: &mut toml_edit::DocumentMut, kind: Kind, slug: 
 }
 
 /// `[<kind>.<slug>] <key> = <value>`, keeping the table's other keys.
-pub(crate) fn set_item_key(doc: &mut toml_edit::DocumentMut, kind: Kind, slug: &str, key: &str, value: &str) {
+pub(crate) fn set_item_key(
+    doc: &mut toml_edit::DocumentMut,
+    kind: Kind,
+    slug: &str,
+    key: &str,
+    value: &str,
+) {
     let table = doc
         .entry(kind.table())
         .or_insert(toml_edit::Item::Table(toml_edit::Table::new()));

@@ -672,7 +672,15 @@ fn draw_manage_without_a_project(
     const MSG: &str = "no project is open \u{2014} open or create one first";
     let x = body.x + body.width.saturating_sub(MSG.chars().count() as u16) / 2;
     let y = body.y + body.height / 3;
-    text(frame.buffer_mut(), x, y, MSG, theme.text_muted, theme.page, false);
+    text(
+        frame.buffer_mut(),
+        x,
+        y,
+        MSG,
+        theme.text_muted,
+        theme.page,
+        false,
+    );
 }
 
 #[cfg(test)]

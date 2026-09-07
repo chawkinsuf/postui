@@ -20,10 +20,10 @@ use crate::paint::{
     BUTTON_HEIGHT, Button, ButtonKind, ControlState, FIELD_HEIGHT, ListRow, RowHighlight,
     TextField, button_min_width, fill, text,
 };
-use postui_core::project::Project;
 use crate::theme::Theme;
 use indexmap::IndexMap;
 use postui_core::model::HttpRequest;
+use postui_core::project::Project;
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
@@ -299,12 +299,7 @@ fn field_seed_text(ctx: &Project, name: &str, field: VmField) -> String {
 /// declaration default instead — the same field a secret can't have, so
 /// that edit fails and toasts rather than silently landing somewhere
 /// unexpected (spec's general write-failure rule: the text stays put).
-pub fn var_edit_op_for(
-    ctx: &Project,
-    name: &str,
-    field: VmField,
-    value: String,
-) -> VarEditOp {
+pub fn var_edit_op_for(ctx: &Project, name: &str, field: VmField, value: String) -> VarEditOp {
     match field {
         VmField::Description => VarEditOp::SetDescription {
             owner: name.to_string(),
@@ -530,7 +525,10 @@ fn grid_columns(x0: u16, width: u16, ncols: usize) -> GridCols {
 /// Whether `selector` is shared — its options (and one global selection)
 /// live in variables.toml, so none of the per-environment gating applies.
 fn is_shared(ctx: &Project, selector: &str) -> bool {
-    ctx.variables().selectors.get(selector).is_some_and(|d| d.shared)
+    ctx.variables()
+        .selectors
+        .get(selector)
+        .is_some_and(|d| d.shared)
 }
 
 /// The `env` an option op on `selector` should carry: the active
@@ -832,14 +830,18 @@ impl VarManager {
                         "e",
                         "edit",
                         target.clone().and_then(|(_, option)| {
-                            postui_core::varmodel::options_of(ctx.variables(), ctx.env_data(), selector)
-                                .and_then(|options| options.get(&option))
-                                .map(|decl| Action::OpenEditOptionPrompt {
-                                    owner: selector.clone(),
-                                    key: option,
-                                    description: decl.description.clone(),
-                                    values: decl.values.clone(),
-                                })
+                            postui_core::varmodel::options_of(
+                                ctx.variables(),
+                                ctx.env_data(),
+                                selector,
+                            )
+                            .and_then(|options| options.get(&option))
+                            .map(|decl| Action::OpenEditOptionPrompt {
+                                owner: selector.clone(),
+                                key: option,
+                                description: decl.description.clone(),
+                                values: decl.values.clone(),
+                            })
                         }),
                     ),
                     (
@@ -1233,9 +1235,10 @@ impl VarManager {
             // inline name-cell edit, on `F2` and `Enter` on the name cell.
             KeyCode::Char('e') => {
                 let name = self.entry_at(ctx, self.grid.cursor.0)?;
-                let decl = postui_core::varmodel::options_of(ctx.variables(), ctx.env_data(), selector)
-                    .and_then(|options| options.get(&name))?
-                    .clone();
+                let decl =
+                    postui_core::varmodel::options_of(ctx.variables(), ctx.env_data(), selector)
+                        .and_then(|options| options.get(&name))?
+                        .clone();
                 Some(Action::OpenEditOptionPrompt {
                     owner: selector.to_string(),
                     key: name,
@@ -3008,7 +3011,8 @@ fields = ["user_id", "customer_id"]
 
         // A secret's stored value lives in the secrets store, not env_data.
         assert_eq!(field_seed_text(&ctx, "api_key", VmField::EnvValue), "");
-        ctx.set_secret_for("qa", "api_key", "s3cret".into()).unwrap();
+        ctx.set_secret_for("qa", "api_key", "s3cret".into())
+            .unwrap();
         assert_eq!(
             field_seed_text(&ctx, "api_key", VmField::EnvValue),
             "s3cret"

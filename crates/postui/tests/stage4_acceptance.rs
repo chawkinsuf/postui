@@ -5,7 +5,6 @@ use postui::components::editor::SubFocus;
 use postui::components::modal::{Modal, PromptKind};
 use postui::components::response::ViewMode;
 use postui::hit::Hit;
-use postui::keys::Keymap;
 use postui_core::model::Method;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -31,9 +30,9 @@ fn key(code: KeyCode) -> KeyEvent {
 fn enter() -> KeyEvent {
     KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
 }
-fn type_text(app: &mut App, keymap: &Keymap, text: &str) {
+fn type_text(app: &mut App, text: &str) {
     for c in text.chars() {
-        app.handle_key(keymap, plain(c));
+        app.handle_key(plain(c));
     }
 }
 
@@ -108,7 +107,6 @@ async fn stage4_mouse_only_acceptance_flow() {
     // clicks into modal content immediately after opening, so disable anims
     // for determinism.
     app.anims.enabled = false;
-    let keymap = Keymap::default_bindings();
 
     let out = dir.path().join("clipboard-out.txt");
     let cmd = format!("cat > {}", out.to_string_lossy());
@@ -126,8 +124,8 @@ async fn stage4_mouse_only_acceptance_flow() {
         ),
         "clicking the new-request button opens the naming prompt"
     );
-    type_text(&mut app, &keymap, "items/create");
-    app.handle_key(&keymap, enter());
+    type_text(&mut app, "items/create");
+    app.handle_key(enter());
     assert_eq!(
         app.editor.slug.as_deref(),
         Some("main/items/create"),
@@ -150,7 +148,7 @@ async fn stage4_mouse_only_acceptance_flow() {
     app.focus = postui::layout::PaneId::Editor;
     app.editor.sub_focus = SubFocus::Url;
     app.editor.url = postui::components::line_input::LineInput::new("");
-    type_text(&mut app, &keymap, &format!("{}/items", server.uri()));
+    type_text(&mut app, &format!("{}/items", server.uri()));
     assert_eq!(app.editor.url.text(), format!("{}/items", server.uri()));
 
     // --- step 5: tab switches by click; add a param via keys; toggle its
@@ -168,11 +166,11 @@ async fn stage4_mouse_only_acceptance_flow() {
 
     app.focus = postui::layout::PaneId::Editor;
     app.editor.sub_focus = SubFocus::Content;
-    app.handle_key(&keymap, plain('a')); // start a new row
-    type_text(&mut app, &keymap, "id");
-    app.handle_key(&keymap, key(KeyCode::Tab)); // move to the value cell
-    type_text(&mut app, &keymap, "42");
-    app.handle_key(&keymap, enter()); // commit the row
+    app.handle_key(plain('a')); // start a new row
+    type_text(&mut app, "id");
+    app.handle_key(key(KeyCode::Tab)); // move to the value cell
+    type_text(&mut app, "42");
+    app.handle_key(enter()); // commit the row
     assert!(app.editor.params.contains_key("id"));
     assert!(app.editor.params["id"].enabled);
 
@@ -236,7 +234,7 @@ async fn stage4_mouse_only_acceptance_flow() {
     // --- step 9: open the palette by click, search "quit", click it -----
     click(&mut app, Hit::FooterChip(Action::OpenPalette));
     assert!(matches!(app.modals.top(), Some(Modal::Palette(_))));
-    type_text(&mut app, &keymap, "quit");
+    type_text(&mut app, "quit");
     // The query is a subsequence match, so more than one command can survive
     // it ("quit" also matches "Request: duplicate"); click Quit's own row.
     let Some(Modal::Palette(p)) = app.modals.top() else {

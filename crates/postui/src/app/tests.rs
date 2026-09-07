@@ -156,7 +156,9 @@ fn resolve_startup_returns_none_when_nothing_available() {
 #[test]
 fn init_project_here_creates_project_toml_at_current_root() {
     let mut app = App::new_for_test();
-    assert!(!postui_core::project::Project::is_project(app.proj().root()));
+    assert!(!postui_core::project::Project::is_project(
+        app.proj().root()
+    ));
     app.update(Action::InitProjectHere);
     assert!(postui_core::project::Project::is_project(app.proj().root()));
     assert_eq!(
@@ -257,13 +259,10 @@ fn running_a_palette_command_via_enter_records_usage() {
     assert_eq!(app.usage.score("quit", crate::usage::now()), 0.0);
     app.update(Action::OpenPalette);
     for c in "quit".chars() {
-        app.handle_key(&Keymap::default_bindings(), plain(c));
+        app.handle_key(plain(c));
     }
     select_palette_command(&mut app, "quit");
-    app.handle_key(
-        &Keymap::default_bindings(),
-        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-    );
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.usage.score("quit", crate::usage::now()) > 0.0);
 }
 
@@ -308,7 +307,7 @@ fn alt_shift(c: char) -> KeyEvent {
 fn ctrl_c_quits_even_with_modal_open() {
     let mut app = App::new_for_test();
     app.update(Action::OpenPalette);
-    app.handle_key(&Keymap::default_bindings(), ctrl('c'));
+    app.handle_key(ctrl('c'));
     assert!(app.should_quit);
 }
 
@@ -327,7 +326,7 @@ fn ctrl_c_copies_the_url_selection_instead_of_quitting() {
     app.editor.sub_focus = SubFocus::Url;
     app.editor.url.select_all();
 
-    app.handle_key(&Keymap::default_bindings(), ctrl('c'));
+    app.handle_key(ctrl('c'));
 
     assert!(!app.should_quit, "copy pre-empts quit");
     assert_eq!(
@@ -341,7 +340,7 @@ fn ctrl_c_copies_the_url_selection_instead_of_quitting() {
     // With the selection gone, ctrl+c means quit again (here gated on the
     // unsaved URL edit, so it surfaces as the confirm modal).
     app.editor.url.clear_selection();
-    app.handle_key(&Keymap::default_bindings(), ctrl('c'));
+    app.handle_key(ctrl('c'));
     assert!(
         app.should_quit || !app.modals.is_empty(),
         "quit (or its unsaved-changes gate) fires once nothing is selected"
@@ -369,7 +368,7 @@ fn ctrl_c_copies_a_modal_prompt_selection_and_keeps_the_modal_open() {
         revealed: false,
     });
 
-    app.handle_key(&Keymap::default_bindings(), ctrl('c'));
+    app.handle_key(ctrl('c'));
 
     assert!(!app.should_quit);
     assert!(!app.modals.is_empty(), "the modal stays open");
@@ -380,7 +379,7 @@ fn ctrl_c_copies_a_modal_prompt_selection_and_keeps_the_modal_open() {
 fn plain_q_types_into_palette_instead_of_quitting() {
     let mut app = App::new_for_test();
     app.update(Action::OpenPalette);
-    app.handle_key(&Keymap::default_bindings(), plain('q'));
+    app.handle_key(plain('q'));
     assert!(!app.should_quit);
     assert!(!app.modals.is_empty());
 }
@@ -389,7 +388,7 @@ fn plain_q_types_into_palette_instead_of_quitting() {
 fn ctrl_char_does_not_type_into_palette() {
     let mut app = App::new_for_test();
     app.update(Action::OpenPalette);
-    app.handle_key(&Keymap::default_bindings(), ctrl('x')); // unbound ctrl combo
+    app.handle_key(ctrl('x')); // unbound ctrl combo
     // palette input must still be empty: filter list unchanged
     let crate::components::modal::Modal::Palette(p) = app.modals.top().unwrap() else {
         panic!()
@@ -400,7 +399,7 @@ fn ctrl_char_does_not_type_into_palette() {
 #[test]
 fn plain_q_quits_when_no_modal_and_component_ignores_it() {
     let mut app = App::new_for_test();
-    app.handle_key(&Keymap::default_bindings(), plain('q'));
+    app.handle_key(plain('q'));
     assert!(app.should_quit);
 }
 
@@ -549,9 +548,8 @@ fn deleting_a_table_row_by_key_is_immediate() {
     app.focus = PaneId::Editor;
     app.editor.sub_focus = SubFocus::Content;
     app.editor.table.selected = Some(0);
-    let keymap = Keymap::default_bindings();
 
-    app.handle_key(&keymap, plain('d'));
+    app.handle_key(plain('d'));
     assert!(app.modals.top().is_none(), "delete is undoable, no confirm");
     assert!(app.editor.params.is_empty(), "the row is gone at once");
 }
@@ -572,9 +570,8 @@ fn deleting_a_vars_row_by_key_is_immediate() {
     app.focus = PaneId::Editor;
     app.editor.sub_focus = SubFocus::Content;
     app.editor.table.selected = Some(0);
-    let keymap = Keymap::default_bindings();
 
-    app.handle_key(&keymap, plain('d'));
+    app.handle_key(plain('d'));
     assert!(app.modals.top().is_none(), "delete is undoable, no confirm");
     assert!(app.editor.variables.is_empty(), "the row is gone at once");
 }
@@ -643,9 +640,8 @@ fn table_row_context_menu_duplicate_delete_extract_end_to_end() {
         panic!("expected the extract-variable multi-prompt");
     };
     assert!(matches!(kind, PromptKind::ExtractVariable));
-    let keymap = Keymap::default_bindings();
-    type_into_field(&mut app, &keymap, "page_num");
-    app.handle_key(&keymap, enter_key());
+    type_into_field(&mut app, "page_num");
+    app.handle_key(enter_key());
     assert!(app.modals.is_empty());
     assert_eq!(app.editor.params["page"].value, "{{page_num}}");
 
@@ -833,8 +829,7 @@ fn undo_restores_a_deleted_table_row() {
     app.editor.sub_focus = SubFocus::Content;
     app.editor.table.selected = Some(0);
     app.capture_undo(); // seed the shadow before the delete
-    let keymap = Keymap::default_bindings();
-    app.handle_key(&keymap, plain('d'));
+    app.handle_key(plain('d'));
     assert!(app.editor.params.is_empty());
     app.capture_undo();
     app.update(Action::Undo);
@@ -879,7 +874,7 @@ fn app_with_clipboard_text(text: &str) -> App {
 fn ctrl_v_pastes_clipboard_text_into_the_url_bar() {
     let mut app = app_with_clipboard_text("https://example.com\n/x");
     app.update(Action::FocusUrl);
-    app.handle_key(&Keymap::default_bindings(), ctrl('v'));
+    app.handle_key(ctrl('v'));
     assert_eq!(app.editor.url.text(), "https://example.com /x");
     assert!(
         app.modals.is_empty(),
@@ -899,7 +894,7 @@ fn ctrl_v_pastes_into_an_open_modal_prompt_input() {
         kind: PromptKind::NewRequest,
         revealed: false,
     });
-    app.handle_key(&Keymap::default_bindings(), ctrl('v'));
+    app.handle_key(ctrl('v'));
     let Some(Modal::Prompt { input, .. }) = app.modals.top() else {
         panic!("the prompt stays open");
     };
@@ -914,7 +909,7 @@ fn ctrl_v_pastes_multiline_text_into_the_body_editor() {
     app.focus = PaneId::Editor;
     app.editor.sub_focus = crate::components::editor::SubFocus::Content;
     app.editor.active_tab = EditorTab::Body;
-    app.handle_key(&Keymap::default_bindings(), ctrl('v'));
+    app.handle_key(ctrl('v'));
     assert_eq!(app.editor.body_text(), "{\n  \"a\": 1\n}");
 }
 
@@ -923,10 +918,10 @@ fn ctrl_v_pastes_multiline_text_into_the_body_editor() {
 fn alt_shift_v_opens_the_variable_picker() {
     let mut app = App::new_for_test();
     app.update(Action::FocusUrl);
-    app.handle_key(
-        &Keymap::default_bindings(),
-        KeyEvent::new(KeyCode::Char('v'), KeyModifiers::ALT | KeyModifiers::SHIFT),
-    );
+    app.handle_key(KeyEvent::new(
+        KeyCode::Char('v'),
+        KeyModifiers::ALT | KeyModifiers::SHIFT,
+    ));
     assert!(
         matches!(app.modals.top(), Some(Modal::VarPicker(_))),
         "alt+shift+v opens the picker"
@@ -955,18 +950,14 @@ fn bracketed_paste_routes_to_the_focused_input() {
 #[test]
 fn super_c_copies_the_selection_and_never_quits() {
     let mut app = App::new_for_test();
-    let keymap = Keymap::default_bindings();
     let super_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::SUPER);
-    app.handle_key(&keymap, super_c);
+    app.handle_key(super_c);
     assert!(!app.should_quit, "selectionless cmd+c is a no-op, not quit");
 
     app.update(Action::FocusUrl);
     app.paste_text("http://host/x");
-    app.handle_key(
-        &keymap,
-        KeyEvent::new(KeyCode::Char('A'), KeyModifiers::CONTROL),
-    );
-    app.handle_key(&keymap, super_c);
+    app.handle_key(KeyEvent::new(KeyCode::Char('A'), KeyModifiers::CONTROL));
+    app.handle_key(super_c);
     assert!(!app.should_quit);
     assert_eq!(
         app.editor.url.selected_text().as_deref(),
@@ -981,13 +972,10 @@ fn super_c_copies_the_selection_and_never_quits() {
 #[test]
 fn super_a_selects_all_and_super_z_undoes() {
     let mut app = App::new_for_test();
-    let keymap = Keymap::default_bindings();
+    let keymap = crate::keys::Keymap::default_bindings();
     app.update(Action::FocusUrl);
     app.paste_text("http://host/x");
-    app.handle_key(
-        &keymap,
-        KeyEvent::new(KeyCode::Char('a'), KeyModifiers::SUPER),
-    );
+    app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::SUPER));
     assert_eq!(
         app.editor.url.selected_text().as_deref(),
         Some("http://host/x"),
@@ -1059,8 +1047,7 @@ fn paste_reaches_the_response_search_only_while_its_input_is_live() {
     );
     app.focus = PaneId::Response;
     assert!(!app.paste_text("early"), "no search open yet");
-    let keymap = Keymap::default_bindings();
-    app.handle_key(&keymap, plain('/'));
+    app.handle_key(plain('/'));
     assert!(app.paste_text("a"));
     let text = |app: &App| {
         app.session
@@ -1075,7 +1062,7 @@ fn paste_reaches_the_response_search_only_while_its_input_is_live() {
             .to_string()
     };
     assert_eq!(text(&app), "a");
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(!app.paste_text("late"), "committed query: no live caret");
     assert_eq!(text(&app), "a");
 }
@@ -1222,9 +1209,8 @@ fn selected_row_footer_chips_come_and_go_with_the_selection() {
 fn alt_a_starts_a_new_row_on_the_active_table_tab() {
     use crate::components::table_editor::Col;
     let mut app = App::new_for_test();
-    let keymap = Keymap::default_bindings();
     app.focus = PaneId::Sidebar; // works from anywhere
-    app.handle_key(&keymap, alt('a'));
+    app.handle_key(alt('a'));
     assert_eq!(app.focus, PaneId::Editor);
     assert_eq!(app.editor.sub_focus, SubFocus::Content);
     let edit = app
@@ -1235,13 +1221,13 @@ fn alt_a_starts_a_new_row_on_the_active_table_tab() {
         .expect("a new-row edit began on the Headers tab");
     assert_eq!((edit.row, edit.col), (0, Col::Key));
     type_chars(&mut app, "X-Trace");
-    app.handle_key(&keymap, enter_key());
+    app.handle_key(enter_key());
     assert!(app.editor.headers.contains_key("X-Trace"));
 
     // On the Body tab there is no table to add to: inert.
     app.update(Action::SetMethod(postui_core::model::Method::Post));
     app.update(Action::EditorTabSelect(3));
-    app.handle_key(&keymap, alt('a'));
+    app.handle_key(alt('a'));
     assert!(app.editor.table.editing.is_none());
     assert_eq!(app.editor.active_tab, EditorTab::Body);
 }
@@ -1299,9 +1285,8 @@ fn click_hit(app: &mut App, hit: Hit) {
 }
 
 fn type_chars(app: &mut App, s: &str) {
-    let keymap = Keymap::default_bindings();
     for c in s.chars() {
-        app.handle_key(&keymap, plain(c));
+        app.handle_key(plain(c));
     }
 }
 
@@ -1445,10 +1430,7 @@ fn esc_mid_edit_puts_the_original_cell_text_back() {
     let mut app = app_with_one_param();
     click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
     type_chars(&mut app, "999");
-    app.handle_key(
-        &Keymap::default_bindings(),
-        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
-    );
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(app.editor.table.editing.is_none());
     assert_eq!(app.editor.params["page"].value, "1", "the edit reverted");
     assert_eq!(app.editor.params.len(), 1, "the row survives");
@@ -1510,12 +1492,8 @@ fn app_with_three_params() -> App {
 /// Puts row 0's key cell under edit with "c" typed into it — committing it
 /// collapses row "a" into row "c" and shifts every later row down one.
 fn stage_a_collapsing_rename(app: &mut App) {
-    let keymap = Keymap::default_bindings();
     click_hit(app, Hit::TableCell { row: 0, col: 0 });
-    app.handle_key(
-        &keymap,
-        KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
-    );
+    app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
     type_chars(app, "c");
 }
 
@@ -1564,7 +1542,7 @@ fn ctrl_s_commits_the_cell_under_edit_into_the_saved_file() {
 
     click_hit(&mut app, Hit::TableCell { row: 0, col: 0 }); // the ghost row
     type_chars(&mut app, "page");
-    app.handle_key(&Keymap::default_bindings(), ctrl('s'));
+    app.handle_key(ctrl('s'));
 
     let saved = postui_core::fixtures::load_request(app.proj().root(), "main/ping").unwrap();
     assert!(
@@ -1733,8 +1711,7 @@ fn up_from_a_cell_under_edit_commits_and_never_desyncs_the_focus() {
     let mut app = app_with_one_param();
     click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
     type_chars(&mut app, "2");
-    let keymap = Keymap::default_bindings();
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
     assert!(app.editor.table.editing.is_none(), "the edit committed");
     assert_eq!(app.editor.params["page"].value, "12");
     assert_eq!(
@@ -1743,7 +1720,7 @@ fn up_from_a_cell_under_edit_commits_and_never_desyncs_the_focus() {
         "the first Up stays in the table"
     );
     // Only then does Up climb out — with no edit left open behind it.
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
     assert_eq!(app.editor.sub_focus, SubFocus::Tabs);
     assert!(app.editor.table.editing.is_none());
 }
@@ -2112,7 +2089,9 @@ fn duplicating_a_variable_copies_its_description_and_default() {
     app.update(Action::DuplicateVar {
         name: "base_url".into(),
     });
-    let copy = app.proj().variables()
+    let copy = app
+        .proj()
+        .variables()
         .vars
         .get("base_url-copy")
         .expect("copy declared");
@@ -2320,7 +2299,7 @@ fn dirty_app() -> App {
     app.update(Action::ForceOpenRequest("main/r".into()));
     app.focus = PaneId::Editor;
     app.editor.sub_focus = SubFocus::Url;
-    app.handle_key(&Keymap::default_bindings(), plain('/'));
+    app.handle_key(plain('/'));
     assert!(app.editor.is_dirty());
     app
 }
@@ -2331,7 +2310,7 @@ fn quitting_with_unsaved_changes_gates_on_the_confirm() {
     app.update(Action::Quit);
     assert!(!app.should_quit, "quit must wait for the gate");
     assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
-    app.handle_key(&Keymap::default_bindings(), plain('d'));
+    app.handle_key(plain('d'));
     assert!(app.should_quit, "Discard changes quits");
 }
 
@@ -2339,7 +2318,7 @@ fn quitting_with_unsaved_changes_gates_on_the_confirm() {
 fn quitting_with_unsaved_changes_can_save_first() {
     let mut app = dirty_app();
     app.update(Action::Quit);
-    app.handle_key(&Keymap::default_bindings(), plain('s'));
+    app.handle_key(plain('s'));
     assert!(app.should_quit, "Save & quit quits");
     assert!(!app.editor.is_dirty(), "…after actually saving");
 }
@@ -2432,24 +2411,23 @@ fn quitting_a_never_saved_scratch_gates_too() {
     app.update(Action::Quit);
     assert!(!app.should_quit, "typed content must not vanish silently");
     assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
-    app.handle_key(&Keymap::default_bindings(), plain('d'));
+    app.handle_key(plain('d'));
     assert!(app.should_quit, "Discard quits");
 }
 
 #[test]
 fn saving_a_scratch_through_the_gate_chains_the_quit() {
     let mut app = scratch_app();
-    let keymap = Keymap::default_bindings();
     app.update(Action::Quit);
-    app.handle_key(&keymap, plain('s')); // Save as… & quit
+    app.handle_key(plain('s')); // Save as… & quit
     assert!(
         matches!(app.modals.top(), Some(Modal::Prompt { .. })),
         "the scratch save path is the name prompt"
     );
     for c in "fresh".chars() {
-        app.handle_key(&keymap, plain(c));
+        app.handle_key(plain(c));
     }
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     let saved = postui_core::fixtures::load_request(app.proj().root(), "main/fresh").unwrap();
     assert_eq!(saved.url, "https://x/scratch");
     assert!(app.should_quit, "the deferred quit ran after the save");
@@ -2458,25 +2436,23 @@ fn saving_a_scratch_through_the_gate_chains_the_quit() {
 #[test]
 fn a_failing_gate_save_does_not_run_the_deferred_action() {
     let mut app = scratch_app();
-    let keymap = Keymap::default_bindings();
     app.update(Action::Quit);
-    app.handle_key(&keymap, plain('s'));
+    app.handle_key(plain('s'));
     // A blank name: the save fails with a toast, so quitting now would
     // still lose the content.
     for c in "   ".chars() {
-        app.handle_key(&keymap, plain(c));
+        app.handle_key(plain(c));
     }
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(!app.should_quit, "no save, no quit");
 }
 
 #[test]
 fn escaping_the_gates_save_prompt_cancels_everything() {
     let mut app = scratch_app();
-    let keymap = Keymap::default_bindings();
     app.update(Action::Quit);
-    app.handle_key(&keymap, plain('s'));
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.handle_key(plain('s'));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(app.modals.is_empty());
     assert!(!app.should_quit, "Esc means stay, with everything intact");
     assert_eq!(app.editor.url.text(), "https://x/scratch");
@@ -2493,7 +2469,7 @@ fn opening_a_request_over_a_scratch_gates_first() {
         matches!(app.modals.top(), Some(Modal::Confirm { .. })),
         "the scratch content gates the open"
     );
-    app.handle_key(&Keymap::default_bindings(), plain('d'));
+    app.handle_key(plain('d'));
     assert_eq!(app.editor.slug.as_deref(), Some("main/other"));
 }
 
@@ -2683,7 +2659,7 @@ fn tab_into_body_content_starts_the_focus_fade() {
     app.editor.sub_focus = SubFocus::Tabs;
     app.anims.snap(AnimKey::FocusFade, 1.0);
     let down = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
-    app.handle_key(&Keymap::default_bindings(), down);
+    app.handle_key(down);
     assert_eq!(app.editor.sub_focus, SubFocus::Content);
     let now = std::time::Instant::now();
     assert!(
@@ -2717,7 +2693,7 @@ fn dragging_in_the_body_selects_and_ctrl_c_copies_it() {
     assert_eq!(app.editor.body_selected_text().as_deref(), Some("hel"));
     assert!(app.text_drag.is_none(), "release ends the sweep");
 
-    app.handle_key(&Keymap::default_bindings(), ctrl('c'));
+    app.handle_key(ctrl('c'));
     assert!(!app.should_quit, "copy pre-empts quit");
     assert_eq!(std::fs::read_to_string(&out).unwrap(), "hel");
 }
@@ -2834,12 +2810,11 @@ fn sidebar_lists_requests_grouped_and_enter_opens() {
     // 0), the second reaches the "auth" folder (index 1); Enter expands
     // it, then "main/auth/login" (index 2) becomes visible and Enter
     // opens it.
-    let keymap = Keymap::default_bindings();
-    app.handle_key(&keymap, plain('j'));
-    app.handle_key(&keymap, plain('j'));
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    app.handle_key(&keymap, plain('j'));
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(plain('j'));
+    app.handle_key(plain('j'));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(plain('j'));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert_eq!(app.editor.slug.as_deref(), Some("main/auth/login"));
 }
 
@@ -2878,7 +2853,8 @@ fn startup_restores_open_request_inside_a_collapsed_folder() {
     // `auth` is a folder *inside* the active space, not a space: the point
     // of this test is the ancestor-folder expansion, which only happens for
     // a slug nested under the space root.
-    postui_core::fixtures::save_request(dir.path(), "main/auth/login", &req("https://x/l")).unwrap();
+    postui_core::fixtures::save_request(dir.path(), "main/auth/login", &req("https://x/l"))
+        .unwrap();
     postui_core::fixtures::save_local_state(
         dir.path(),
         &postui_core::project::LocalState {
@@ -2923,7 +2899,8 @@ fn force_open_request_selects_its_sidebar_row() {
     postui_core::fixtures::ensure_project(dir.path()).unwrap();
     // `auth` is a folder inside the active space, so opening `login`
     // really does have an ancestor folder to expand.
-    postui_core::fixtures::save_request(dir.path(), "main/auth/login", &req("https://x/l")).unwrap();
+    postui_core::fixtures::save_request(dir.path(), "main/auth/login", &req("https://x/l"))
+        .unwrap();
     postui_core::fixtures::save_request(dir.path(), "main/ping", &req("https://x/ping")).unwrap();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
 
@@ -2973,13 +2950,12 @@ fn opening_over_dirty_editor_prompts_save_discard_cancel() {
     postui_core::fixtures::save_request(dir.path(), "main/a", &req("https://x/a")).unwrap();
     postui_core::fixtures::save_request(dir.path(), "main/b", &req("https://x/b")).unwrap();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    let keymap = Keymap::default_bindings();
 
     // Open "a", then edit its URL so the editor becomes dirty.
     app.update(Action::ForceOpenRequest("main/a".into()));
     app.focus = PaneId::Editor;
     app.editor.sub_focus = SubFocus::Url;
-    app.handle_key(&keymap, plain('/'));
+    app.handle_key(plain('/'));
     assert!(app.editor.is_dirty());
 
     // Requesting to open "b" while dirty must prompt instead of opening.
@@ -2992,7 +2968,7 @@ fn opening_over_dirty_editor_prompts_save_discard_cancel() {
     );
 
     // 'd' discards the edit and opens "b".
-    app.handle_key(&keymap, plain('d'));
+    app.handle_key(plain('d'));
     assert_eq!(app.editor.slug.as_deref(), Some("main/b"));
     assert!(!app.editor.is_dirty());
 
@@ -3001,11 +2977,11 @@ fn opening_over_dirty_editor_prompts_save_discard_cancel() {
     app.update(Action::ForceOpenRequest("main/a".into()));
     app.focus = PaneId::Editor;
     app.editor.sub_focus = SubFocus::Url;
-    app.handle_key(&keymap, plain('/'));
+    app.handle_key(plain('/'));
     assert!(app.editor.is_dirty());
     app.update(Action::OpenRequest("main/b".into()));
     assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
-    app.handle_key(&keymap, plain('s'));
+    app.handle_key(plain('s'));
     assert_eq!(app.editor.slug.as_deref(), Some("main/b"));
     let saved = postui_core::fixtures::load_request(dir.path(), "main/a").unwrap();
     assert_eq!(
@@ -3103,7 +3079,7 @@ fn switching_to_an_empty_space_clears_the_editor() {
 fn dirty_the_editor(app: &mut App) {
     app.focus = PaneId::Editor;
     app.editor.sub_focus = SubFocus::Url;
-    app.handle_key(&Keymap::default_bindings(), plain('/'));
+    app.handle_key(plain('/'));
     assert!(app.editor.is_dirty());
 }
 
@@ -3119,7 +3095,11 @@ fn switching_spaces_goes_through_the_dirty_gate() {
     );
     assert_eq!(app.proj().local().active_space, "main", "not switched yet");
     app.update(Action::Close);
-    assert_eq!(app.proj().local().active_space, "main", "cancel keeps the space");
+    assert_eq!(
+        app.proj().local().active_space,
+        "main",
+        "cancel keeps the space"
+    );
 }
 
 #[test]
@@ -3128,7 +3108,11 @@ fn jump_and_cycle_resolve_by_position_and_wrap() {
     app.update(Action::JumpSpace(2));
     assert_eq!(app.proj().local().active_space, "auth");
     app.update(Action::JumpSpace(9));
-    assert_eq!(app.proj().local().active_space, "auth", "out of range is a no-op");
+    assert_eq!(
+        app.proj().local().active_space,
+        "auth",
+        "out of range is a no-op"
+    );
     app.update(Action::CycleSpace(1));
     assert_eq!(app.proj().local().active_space, "main", "wraps");
     app.update(Action::CycleSpace(-1));
@@ -3339,7 +3323,7 @@ fn m_in_the_sidebar_opens_the_move_to_space_chooser_for_the_selection() {
     let (mut app, _dir) = spaced_app();
     app.focus = PaneId::Sidebar;
     app.sidebar.select_slug("main/alpha");
-    app.handle_key(&Keymap::default_bindings(), plain('m'));
+    app.handle_key(plain('m'));
     let Some(Modal::Chooser(c)) = app.modals.top() else {
         panic!("expected the Move to space chooser");
     };
@@ -3351,12 +3335,11 @@ fn m_in_the_sidebar_opens_the_move_to_space_chooser_for_the_selection() {
 #[test]
 fn new_space_prompt_creates_and_switches() {
     let (mut app, dir) = spaced_app();
-    let keymap = Keymap::default_bindings();
     app.update(Action::OpenNewSpacePrompt);
     for c in "billing".chars() {
-        app.handle_key(&keymap, plain(c));
+        app.handle_key(plain(c));
     }
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.modals.is_empty());
     assert!(dir.path().join("requests/billing").is_dir());
     assert_eq!(app.proj().spaces(), ["main", "auth", "billing"]);
@@ -3568,13 +3551,13 @@ fn delete_space_confirms_with_the_count_then_trashes_and_undoes() {
     assert_eq!(body, "Its 2 requests will be deleted.");
     assert_eq!(choices[0].1, "Delete 2 requests");
     let confirm = choices[0].0;
-    let keymap = Keymap::default_bindings();
-    app.handle_key(&keymap, plain(confirm));
+    app.handle_key(plain(confirm));
     assert!(app.modals.is_empty());
     assert!(!dir.path().join("requests/main").exists());
     assert_eq!(app.proj().spaces(), ["auth"]);
     assert_eq!(
-        app.proj().local().active_space, "auth",
+        app.proj().local().active_space,
+        "auth",
         "switched away before deleting"
     );
     assert_eq!(app.editor.slug.as_deref(), Some("auth/login"));
@@ -3650,7 +3633,8 @@ fn move_space_reorders_and_persists() {
     );
     app.update(Action::JumpSpace(1));
     assert_eq!(
-        app.proj().local().active_space, "auth",
+        app.proj().local().active_space,
+        "auth",
         "alt+1 follows the new order"
     );
 }
@@ -4048,7 +4032,10 @@ fn a_keyboard_reorder_that_returns_to_the_start_leaves_no_step_and_undo_reaches_
         delta: -1,
     });
     assert_eq!(
-        app.proj().last_entry().map(|(_, l)| l.to_string()).as_deref(),
+        app.proj()
+            .last_entry()
+            .map(|(_, l)| l.to_string())
+            .as_deref(),
         Some("create request"),
         "the burst netted to nothing: no order entry remains"
     );
@@ -4095,7 +4082,10 @@ fn a_dissolved_burst_with_an_edit_between_its_halves_records_no_second_marker() 
         delta: -1,
     });
     assert_eq!(
-        app.proj().last_entry().map(|(_, l)| l.to_string()).as_deref(),
+        app.proj()
+            .last_entry()
+            .map(|(_, l)| l.to_string())
+            .as_deref(),
         Some("create request"),
         "the burst netted to nothing: no order entry remains"
     );
@@ -4112,7 +4102,10 @@ fn a_dissolved_burst_with_an_edit_between_its_halves_records_no_second_marker() 
         "undo applied the editor delta, not the create beneath it"
     );
     assert_eq!(
-        app.proj().last_entry().map(|(_, l)| l.to_string()).as_deref(),
+        app.proj()
+            .last_entry()
+            .map(|(_, l)| l.to_string())
+            .as_deref(),
         Some("create request"),
         "the journal did not move: no project entry was replayed"
     );
@@ -4375,7 +4368,7 @@ fn move_all_requests_holding_a_dirty_open_request_gates_first() {
     // `ForceOpenRequest`, which re-seeds the shadow — the discarded edit
     // must not come back as a phantom undo step.
     let steps_before = app.history.undo_len();
-    app.handle_key(&Keymap::default_bindings(), plain('d'));
+    app.handle_key(plain('d'));
     assert!(dir.path().join("requests/auth/alpha.toml").is_file());
     assert_eq!(app.editor.slug.as_deref(), Some("auth/alpha"));
     assert!(!app.editor.is_dirty(), "reloaded clean from disk");
@@ -4390,8 +4383,13 @@ fn move_all_requests_holding_a_dirty_open_request_gates_first() {
 fn ordered_app() -> (App, tempfile::TempDir) {
     // main: alpha, beta (listed as beta, alpha); auth: login
     let (mut app, dir) = spaced_app();
-    postui_core::fixtures::set_level_order(dir.path(), "main", "", &["beta".into(), "alpha".into()])
-        .unwrap();
+    postui_core::fixtures::set_level_order(
+        dir.path(),
+        "main",
+        "",
+        &["beta".into(), "alpha".into()],
+    )
+    .unwrap();
     app.reload_project_documents();
     app.update(Action::RefreshSidebar);
     (app, dir)
@@ -4753,10 +4751,7 @@ fn click_after_keyboard_nav_snaps_the_travel_band_to_the_clicked_row() {
 
     // Keyboard-select row 0 ("alpha"): lands the cursor and its travel anim
     // there.
-    app.handle_key(
-        &Keymap::default_bindings(),
-        KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
-    );
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     assert_eq!(app.sidebar.selected, Some(0));
 
     // Click row 2 ("gamma") — a different row from the keyboard cursor.
@@ -4813,10 +4808,7 @@ fn folder_arrow_click_moves_only_the_cursor_not_the_travel_band() {
     render_once(&mut app);
 
     // Keyboard-select row 0 ("top").
-    app.handle_key(
-        &Keymap::default_bindings(),
-        KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
-    );
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     assert_eq!(app.sidebar.selected, Some(0));
 
     // Click the folder arrow on row 1 ("api").
@@ -4894,8 +4886,7 @@ fn dismissed_sidebar_context_menu_restores_the_previous_selection() {
     let r = app.hits.rect_of(&crate::hit::Hit::SidebarRow(2)).unwrap();
     app.handle_mouse(right_down(r.x, r.y));
     assert_eq!(app.sidebar.selected, Some(2));
-    let keymap = Keymap::default_bindings();
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert_eq!(app.sidebar.selected, Some(0), "Esc dismissal restores too");
 }
 
@@ -5103,9 +5094,8 @@ fn clicking_a_prompts_own_body_does_not_close_it_or_touch_the_input() {
     app.handle_mouse(left_down(r.x, r.y));
     assert!(matches!(app.modals.top(), Some(Modal::Prompt { .. })));
 
-    let keymap = Keymap::default_bindings();
     for c in "ping".chars() {
-        app.handle_key(&keymap, plain(c));
+        app.handle_key(plain(c));
     }
     render_once(&mut app);
 
@@ -5136,11 +5126,10 @@ fn clicking_another_row_over_dirty_editor_is_gated_by_confirm() {
     expanded.insert("main/api".into());
     app.proj_mut().set_expanded(expanded);
     app.refresh_sidebar();
-    let keymap = Keymap::default_bindings();
     app.update(Action::ForceOpenRequest("main/top".into()));
     app.focus = PaneId::Editor;
     app.editor.sub_focus = SubFocus::Url;
-    app.handle_key(&keymap, plain('/'));
+    app.handle_key(plain('/'));
     assert!(app.editor.is_dirty());
 
     render_once(&mut app);
@@ -5186,11 +5175,8 @@ fn broken_file_shows_marker_and_error_modal() {
     assert!(broken.is_some());
 
     // Nothing starts selected; the first Down puts the cursor on row 0.
-    app.handle_key(&Keymap::default_bindings(), plain('j'));
-    app.handle_key(
-        &Keymap::default_bindings(),
-        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-    );
+    app.handle_key(plain('j'));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     match app.modals.top() {
         Some(Modal::Message { body, .. }) => {
             assert!(body.contains('2') || body.to_lowercase().contains("duplicate"));
@@ -5212,7 +5198,7 @@ fn dirty_dot_renders_in_sidebar() {
     app.update(Action::ForceOpenRequest("main/a".into()));
     app.focus = PaneId::Editor;
     app.editor.sub_focus = SubFocus::Url;
-    app.handle_key(&Keymap::default_bindings(), plain('/'));
+    app.handle_key(plain('/'));
     assert!(app.editor.is_dirty());
 
     let backend = TestBackend::new(60, 20);
@@ -5228,9 +5214,8 @@ fn dirty_dot_renders_in_sidebar() {
 #[test]
 fn new_request_prompt_flow_creates_file_and_opens_it() {
     let mut app = App::new_for_test();
-    let keymap = Keymap::default_bindings();
     app.focus = PaneId::Sidebar;
-    app.handle_key(&keymap, plain('n'));
+    app.handle_key(plain('n'));
     assert!(matches!(
         app.modals.top(),
         Some(Modal::Prompt {
@@ -5239,9 +5224,9 @@ fn new_request_prompt_flow_creates_file_and_opens_it() {
         })
     ));
     for c in "api/ping".chars() {
-        app.handle_key(&keymap, plain(c));
+        app.handle_key(plain(c));
     }
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.modals.is_empty());
     assert_eq!(app.editor.slug.as_deref(), Some("main/api/ping"));
     assert!(postui_core::fixtures::load_request(app.proj().root(), "main/api/ping").is_ok());
@@ -5258,12 +5243,11 @@ fn new_request_prompt_flow_creates_file_and_opens_it() {
 #[test]
 fn new_request_accepts_free_form_names_and_derives_the_slug() {
     let mut app = App::new_for_test();
-    let keymap = Keymap::default_bindings();
     app.update(Action::PromptNewRequest);
     for c in "My Request!".chars() {
-        app.handle_key(&keymap, plain(c));
+        app.handle_key(plain(c));
     }
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert_eq!(app.editor.slug.as_deref(), Some("main/my-request"));
     assert_eq!(app.editor.name.as_deref(), Some("My Request!"));
     let loaded = postui_core::fixtures::load_request(app.proj().root(), "main/my-request").unwrap();
@@ -5277,12 +5261,11 @@ fn new_request_accepts_free_form_names_and_derives_the_slug() {
 #[test]
 fn new_request_blank_name_toasts_and_creates_nothing() {
     let mut app = App::new_for_test();
-    let keymap = Keymap::default_bindings();
     app.update(Action::PromptNewRequest);
     for c in "folder/   ".chars() {
-        app.handle_key(&keymap, plain(c));
+        app.handle_key(plain(c));
     }
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(!app.toasts.is_empty(), "a blank name must toast");
     assert!(
         postui_core::fixtures::list_requests(app.proj().root())
@@ -5340,7 +5323,8 @@ fn rename_flow_speaks_display_names_and_regenerates_the_slug() {
     assert_eq!(app.editor.slug.as_deref(), Some("main/get-user-v2"));
     assert_eq!(app.editor.name.as_deref(), Some("Get User v2"));
     assert_eq!(app.sidebar.open_slug.as_deref(), Some("main/get-user-v2"));
-    let loaded = postui_core::fixtures::load_request(app.proj().root(), "main/get-user-v2").unwrap();
+    let loaded =
+        postui_core::fixtures::load_request(app.proj().root(), "main/get-user-v2").unwrap();
     assert_eq!(loaded.name.as_deref(), Some("Get User v2"));
 }
 
@@ -5396,7 +5380,7 @@ fn saving_a_legacy_request_does_not_invent_a_name() {
     app.update(Action::ForceOpenRequest("main/legacy".into()));
     app.focus = PaneId::Editor;
     app.editor.sub_focus = SubFocus::Url;
-    app.handle_key(&Keymap::default_bindings(), plain('/'));
+    app.handle_key(plain('/'));
     app.update(Action::SaveRequest);
     let loaded = postui_core::fixtures::load_request(dir.path(), "main/legacy").unwrap();
     assert_eq!(loaded.name, None, "no name field appears uninvited");
@@ -5412,12 +5396,11 @@ fn new_request_duplicate_name_toasts_and_leaves_existing_file_alone() {
     )
     .unwrap();
     app.update(Action::RefreshSidebar);
-    let keymap = Keymap::default_bindings();
     app.update(Action::PromptNewRequest);
     for c in "api/ping".chars() {
-        app.handle_key(&keymap, plain(c));
+        app.handle_key(plain(c));
     }
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     // The rejected name keeps the prompt open (typed text intact) so it
     // can be corrected instead of retyped.
     let Some(Modal::Prompt { input, .. }) = app.modals.top() else {
@@ -5439,9 +5422,8 @@ fn rename_request_updates_disk_and_open_slug() {
         .unwrap();
     app.update(Action::RefreshSidebar);
     app.update(Action::ForceOpenRequest("main/old".into()));
-    let keymap = Keymap::default_bindings();
     app.focus = PaneId::Sidebar;
-    app.handle_key(&keymap, plain('r'));
+    app.handle_key(plain('r'));
     match app.modals.top() {
         Some(Modal::Prompt {
             kind: PromptKind::RenameRequest { from },
@@ -5452,15 +5434,12 @@ fn rename_request_updates_disk_and_open_slug() {
         _ => panic!("expected a RenameRequest prompt"),
     }
     for _ in 0.."old".len() {
-        app.handle_key(
-            &keymap,
-            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
-        );
+        app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
     }
     for c in "new".chars() {
-        app.handle_key(&keymap, plain(c));
+        app.handle_key(plain(c));
     }
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.modals.is_empty());
     assert!(postui_core::fixtures::load_request(app.proj().root(), "main/old").is_err());
     assert!(postui_core::fixtures::load_request(app.proj().root(), "main/new").is_ok());
@@ -5475,9 +5454,8 @@ fn delete_open_request_clears_editor_and_removes_file() {
         .unwrap();
     app.update(Action::RefreshSidebar);
     app.update(Action::ForceOpenRequest("main/gone".into()));
-    let keymap = Keymap::default_bindings();
     app.focus = PaneId::Sidebar;
-    app.handle_key(&keymap, plain('d'));
+    app.handle_key(plain('d'));
     assert!(app.modals.is_empty(), "delete needs no confirm");
     assert!(
         app.editor.slug.is_none(),
@@ -5490,7 +5468,6 @@ fn delete_open_request_clears_editor_and_removes_file() {
 fn save_with_no_slug_opens_save_as_prompt() {
     let mut app = App::new_for_test();
     app.editor.url = crate::components::line_input::LineInput::new("https://x/new");
-    let keymap = Keymap::default_bindings();
     app.update(Action::SaveRequest);
     assert!(matches!(
         app.modals.top(),
@@ -5500,9 +5477,9 @@ fn save_with_no_slug_opens_save_as_prompt() {
         })
     ));
     for c in "fresh".chars() {
-        app.handle_key(&keymap, plain(c));
+        app.handle_key(plain(c));
     }
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.modals.is_empty());
     assert_eq!(app.editor.slug.as_deref(), Some("main/fresh"));
     let saved = postui_core::fixtures::load_request(app.proj().root(), "main/fresh").unwrap();
@@ -5512,11 +5489,10 @@ fn save_with_no_slug_opens_save_as_prompt() {
 #[test]
 fn rename_and_delete_on_empty_sidebar_do_nothing() {
     let mut app = App::new_for_test();
-    let keymap = Keymap::default_bindings();
     app.focus = PaneId::Sidebar;
-    app.handle_key(&keymap, plain('r'));
+    app.handle_key(plain('r'));
     assert!(app.modals.is_empty());
-    app.handle_key(&keymap, plain('d'));
+    app.handle_key(plain('d'));
     assert!(app.modals.is_empty());
 }
 
@@ -5586,10 +5562,9 @@ fn modal_prompt_field_supports_click_to_place_drag_select_and_double_click() {
     // Animations off so the modal's settle-in doesn't hide its fields on
     // the single test frame.
     app.anims.enabled = false;
-    let keymap = Keymap::default_bindings();
     app.update(Action::PromptNewRequest);
     for c in "hello".chars() {
-        app.handle_key(&keymap, KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
     }
     render_once(&mut app);
     let r = app
@@ -5634,9 +5609,8 @@ async fn shift_enter_sends_even_while_the_body_editor_has_focus() {
     app.editor.sub_focus = crate::components::editor::SubFocus::Content;
     app.editor.set_body_text("{}");
 
-    let keymap = Keymap::default_bindings();
     let ev = KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT);
-    app.handle_key(&keymap, ev);
+    app.handle_key(ev);
     assert!(!app.session.in_flight.is_empty(), "shift+enter sent");
     assert_eq!(
         app.editor.body_text(),
@@ -5706,8 +5680,7 @@ async fn esc_nothing_else_consumed_cancels_the_open_requests_send() {
     app.update(Action::ForceSend);
     assert!(!app.session.in_flight.is_empty());
 
-    let keymap = Keymap::default_bindings();
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(
         app.session.in_flight.is_empty(),
         "a bare esc cancels the open request's send from any pane"
@@ -5834,16 +5807,15 @@ fn plain_keys_reach_the_focused_response_pane() {
         0,
     );
     app.focus = PaneId::Response;
-    let keymap = Keymap::default_bindings();
-    app.handle_key(&keymap, plain('j'));
+    app.handle_key(plain('j'));
     assert_eq!(
         app.session.response.view().unwrap().cursor,
         1,
         "j moved the response cursor"
     );
     // 'q' quits globally, but the pane's search input takes it first.
-    app.handle_key(&keymap, plain('/'));
-    app.handle_key(&keymap, plain('q'));
+    app.handle_key(plain('/'));
+    app.handle_key(plain('q'));
     assert!(
         !app.should_quit,
         "a key the pane consumed must not fall through"
@@ -5935,7 +5907,7 @@ fn cycle_with_dirty_editor_shows_no_switch_toast_until_discard() {
     app.update(Action::ForceOpenRequest("main/r".into()));
     app.focus = PaneId::Editor;
     app.editor.sub_focus = SubFocus::Url;
-    app.handle_key(&Keymap::default_bindings(), plain('/'));
+    app.handle_key(plain('/'));
     assert!(app.editor.is_dirty());
 
     app.update(Action::CycleProject(1));
@@ -5946,7 +5918,7 @@ fn cycle_with_dirty_editor_shows_no_switch_toast_until_discard() {
         "no switch toast before the dirty gate is resolved"
     );
 
-    app.handle_key(&Keymap::default_bindings(), plain('d'));
+    app.handle_key(plain('d'));
     assert_eq!(app.proj().root(), b.path());
     assert!(
         rendered_text(&mut app).contains("Switched to beta"),
@@ -5962,12 +5934,12 @@ fn switch_with_dirty_editor_prompts_and_discard_proceeds() {
     app.update(Action::ForceOpenRequest("main/r".into()));
     app.focus = PaneId::Editor;
     app.editor.sub_focus = SubFocus::Url;
-    app.handle_key(&Keymap::default_bindings(), plain('/'));
+    app.handle_key(plain('/'));
     assert!(app.editor.is_dirty());
     app.update(Action::SwitchProject(b.path().to_path_buf()));
     assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
     assert_ne!(app.proj().root(), b.path(), "not switched yet");
-    app.handle_key(&Keymap::default_bindings(), plain('d'));
+    app.handle_key(plain('d'));
     assert_eq!(app.proj().root(), b.path());
 }
 
@@ -6009,10 +5981,7 @@ fn project_chooser_offers_a_new_project_row() {
     assert_eq!(c.items[n - 1].actions, vec![Action::PromptNewProject]);
 
     type_chars(&mut app, "new project");
-    app.handle_key(
-        &Keymap::default_bindings(),
-        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-    );
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(matches!(app.modals.top(), Some(Modal::NewProject { .. })));
 }
 
@@ -6037,7 +6006,7 @@ fn project_chooser_lists_known_and_open_by_path_creates() {
         matches!(app.modals.top(), Some(Modal::Confirm { .. })),
         "non-project path asks to create"
     );
-    app.handle_key(&Keymap::default_bindings(), plain('y'));
+    app.handle_key(plain('y'));
     assert!(postui_core::project::Project::is_project(&target));
     assert_eq!(app.proj().root(), target);
 }
@@ -6047,12 +6016,11 @@ fn new_project_modal_prefills_path_from_name_and_creates() {
     let mut app = App::new_for_test();
     let root = tempfile::tempdir().unwrap();
     app.registry.root = Some(root.path().to_path_buf());
-    let keymap = Keymap::default_bindings();
     app.update(Action::PromptNewProject);
     for c in "My Svc".chars() {
-        app.handle_key(&keymap, plain(c));
+        app.handle_key(plain(c));
     }
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
     let Some(Modal::NewProject { path, .. }) = app.modals.top() else {
         panic!()
     };
@@ -6061,7 +6029,7 @@ fn new_project_modal_prefills_path_from_name_and_creates() {
         "slugified prefill: {}",
         path.text()
     );
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     let expected = root.path().join("my-svc");
     assert!(postui_core::project::Project::is_project(&expected));
     assert_eq!(app.proj().root(), expected);
@@ -6127,10 +6095,7 @@ fn new_project_browse_button_fills_the_path_from_the_picked_folder() {
     // Browse somewhere else and confirm the folder shown (alt+enter).
     let elsewhere = tempfile::tempdir().unwrap();
     app.paste_text(&elsewhere.path().to_string_lossy());
-    app.handle_key(
-        &Keymap::default_bindings(),
-        KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT),
-    );
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT));
     let Some(Modal::NewProject { path, on_path, .. }) = app.modals.top() else {
         panic!("the picker pops back to the new-project modal");
     };
@@ -6156,9 +6121,8 @@ fn picker_keys_paste_scroll_and_footer_route_through_the_modal_stack() {
         root.path(),
         "",
     )));
-    let keymap = Keymap::default_bindings();
 
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     let Some(Modal::FilePicker(p)) = app.modals.top() else {
         panic!()
     };
@@ -6184,7 +6148,7 @@ fn picker_keys_paste_scroll_and_footer_route_through_the_modal_stack() {
     assert!(matches!(app.modals.top(), Some(Modal::FilePicker(_))));
 
     // Esc closes it.
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(app.modals.is_empty());
 }
 
@@ -6278,7 +6242,7 @@ fn create_project_with_dirty_editor_defers_last_until_dirty_gate_resolves() {
     app.update(Action::ForceOpenRequest("main/r".into()));
     app.focus = PaneId::Editor;
     app.editor.sub_focus = SubFocus::Url;
-    app.handle_key(&Keymap::default_bindings(), plain('/'));
+    app.handle_key(plain('/'));
     assert!(app.editor.is_dirty());
 
     let old_last = app.registry.last.clone();
@@ -6299,7 +6263,7 @@ fn create_project_with_dirty_editor_defers_last_until_dirty_gate_resolves() {
     );
     assert_eq!(app.proj().root(), dir.path(), "not switched yet");
 
-    app.handle_key(&Keymap::default_bindings(), plain('d'));
+    app.handle_key(plain('d'));
     assert_eq!(app.proj().root(), new_path);
     assert_eq!(app.registry.last, Some(new_path));
 }
@@ -6358,11 +6322,10 @@ fn switch_env_failure_shows_warning_without_stale_success_toast() {
 #[test]
 fn new_project_empty_name_swallows_enter_and_esc_cancels() {
     let mut app = App::new_for_test();
-    let keymap = Keymap::default_bindings();
     app.update(Action::PromptNewProject);
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(!app.modals.is_empty(), "empty name: modal stays");
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(app.modals.is_empty());
 }
 
@@ -6371,10 +6334,9 @@ fn new_project_tab_prefill_noop_when_slugify_is_empty() {
     let mut app = App::new_for_test();
     let root = tempfile::tempdir().unwrap();
     app.registry.root = Some(root.path().to_path_buf());
-    let keymap = Keymap::default_bindings();
     app.update(Action::PromptNewProject);
     for c in "日本語".chars() {
-        app.handle_key(&keymap, plain(c));
+        app.handle_key(plain(c));
     }
     let before = {
         let Some(Modal::NewProject { path, .. }) = app.modals.top() else {
@@ -6382,7 +6344,7 @@ fn new_project_tab_prefill_noop_when_slugify_is_empty() {
         };
         path.text().to_string()
     };
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
     let Some(Modal::NewProject { path, .. }) = app.modals.top() else {
         panic!()
     };
@@ -6580,18 +6542,17 @@ fn manage_environments_pane_has_a_tls_control_that_writes_the_force() {
     );
 
     // `t` cycles per request → verify → insecure → per request.
-    let keymap = Keymap::default_bindings();
-    app.handle_key(&keymap, plain('t'));
+    app.handle_key(plain('t'));
     assert_eq!(
         postui_core::project::env_tls(app.proj().meta(), "prod"),
         Some(TlsPolicy::Verify)
     );
-    app.handle_key(&keymap, plain('t'));
+    app.handle_key(plain('t'));
     assert_eq!(
         postui_core::project::env_tls(app.proj().meta(), "prod"),
         Some(TlsPolicy::Insecure)
     );
-    app.handle_key(&keymap, plain('t'));
+    app.handle_key(plain('t'));
     assert_eq!(
         postui_core::project::env_tls(app.proj().meta(), "prod"),
         None
@@ -6643,11 +6604,7 @@ fn padlock_shows_the_effective_tls_state_under_an_environment_force() {
 #[test]
 fn cycle_env_wraps_and_skips_no_env() {
     let (mut app, dir) = app_with_envs();
-    assert_eq!(
-        app.env_label(),
-        "prod",
-        "an open lands in the first env"
-    );
+    assert_eq!(app.env_label(), "prod", "an open lands in the first env");
     app.update(Action::CycleEnv(1));
     assert_eq!(app.env_label(), "qa");
     app.update(Action::CycleEnv(1));
@@ -6714,7 +6671,8 @@ fn rename_env_moves_the_file_rekeys_secrets_and_follows_the_active_env() {
     assert!(dir.path().join("environments/qa.toml").is_file());
     assert_eq!(app.env_label(), "qa");
     assert_eq!(
-        app.proj().secrets()["qa"]["tok"], "s3cret",
+        app.proj().secrets()["qa"]["tok"],
+        "s3cret",
         "secrets re-keyed back"
     );
     assert_eq!(
@@ -6765,8 +6723,7 @@ fn delete_env_confirms_trashes_clears_the_active_env_and_undoes() {
     assert_eq!(body, "Its values and secrets are removed.");
     assert_eq!(choices[0].1, "Delete environment");
     let confirm = choices[0].0;
-    let keymap = Keymap::default_bindings();
-    app.handle_key(&keymap, plain(confirm));
+    app.handle_key(plain(confirm));
     assert!(!dir.path().join("environments/qa.toml").exists());
     assert_eq!(
         app.env_label(),
@@ -6795,7 +6752,8 @@ fn delete_env_confirms_trashes_clears_the_active_env_and_undoes() {
         "s3cret"
     );
     assert_eq!(
-        app.proj().secrets()["qa"]["tok"], "s3cret",
+        app.proj().secrets()["qa"]["tok"],
+        "s3cret",
         "the restored secrets file is re-read into memory, not just to disk"
     );
     assert_eq!(
@@ -6883,7 +6841,6 @@ fn env_chooser_opens_on_the_active_environment() {
 #[test]
 fn env_chooser_new_environment_row_opens_prompt() {
     let (mut app, _dir) = app_with_envs();
-    let keymap = Keymap::default_bindings();
     app.update(Action::OpenEnvChooser);
     let rows = match app.modals.top() {
         Some(Modal::Dropdown(state)) => state.items.len(),
@@ -6894,10 +6851,10 @@ fn env_chooser_new_environment_row_opens_prompt() {
     // over-stepping then stepping back once lands on it regardless of
     // where the cursor opened.
     for _ in 0..rows {
-        app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     }
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(
         matches!(
             app.modals.top(),
@@ -6913,12 +6870,11 @@ fn env_chooser_new_environment_row_opens_prompt() {
 #[test]
 fn create_env_prompt_flow_creates_empty_file_and_switches() {
     let (mut app, dir) = app_with_envs();
-    let keymap = Keymap::default_bindings();
     app.update(Action::OpenNewEnvPrompt);
     for c in "dev".chars() {
-        app.handle_key(&keymap, plain(c));
+        app.handle_key(plain(c));
     }
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.modals.is_empty());
     let path = dir.path().join("environments/dev.toml");
     assert!(path.is_file());
@@ -7046,17 +7002,16 @@ fn app_with_vars() -> App {
 #[test]
 fn typing_double_brace_in_url_opens_completing_picker_and_insert_lands_in_url() {
     let mut app = app_with_vars();
-    let keymap = Keymap::default_bindings();
     app.focus = PaneId::Editor;
     app.editor.sub_focus = SubFocus::Url;
-    app.handle_key(&keymap, plain('{'));
+    app.handle_key(plain('{'));
     assert!(app.modals.is_empty(), "one brace: no picker");
-    app.handle_key(&keymap, plain('{'));
+    app.handle_key(plain('{'));
     let Some(Modal::VarPicker(p)) = app.modals.top() else {
         panic!("expected picker")
     };
     assert!(p.completing);
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert_eq!(app.editor.url.text(), "{{base}}");
 }
 
@@ -7067,8 +7022,7 @@ fn body_insert_autoenables_substitution() {
     app.editor.active_tab = EditorTab::Body;
     app.editor.sub_focus = SubFocus::Content;
     app.update(Action::OpenVarPicker { completing: false });
-    let keymap = Keymap::default_bindings();
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert_eq!(app.editor.body_text(), "{{base}}");
     assert!(app.editor.substitute_body, "auto-enabled");
     assert!(!app.toasts.is_empty());
@@ -7221,9 +7175,8 @@ fn insert_picker_new_variable_row_opens_prompt_prefilled_with_typed_filter() {
     app.focus = PaneId::Editor;
     app.editor.sub_focus = SubFocus::Url;
     app.update(Action::OpenVarPicker { completing: false });
-    let keymap = Keymap::default_bindings();
     for c in "brand_new".chars() {
-        app.handle_key(&keymap, plain(c));
+        app.handle_key(plain(c));
     }
     // With nothing named "brand_new" declared, the filtered list is empty —
     // the ghost row is still there and still selectable.
@@ -7231,7 +7184,7 @@ fn insert_picker_new_variable_row_opens_prompt_prefilled_with_typed_filter() {
         panic!("expected the picker to still be open")
     };
     assert_eq!(p.selected(), 0, "the only row left is the ghost row");
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
     let Some(Modal::Prompt { input, kind, .. }) = app.modals.top() else {
         panic!("expected the new-variable prompt to open")
@@ -7251,15 +7204,14 @@ fn insert_picker_new_variable_confirm_creates_the_var_and_inserts_at_the_origina
     app.editor.url = crate::components::line_input::LineInput::new("https://x/?a=1");
     app.editor.url.set_cursor(10);
     app.update(Action::OpenVarPicker { completing: false });
-    let keymap = Keymap::default_bindings();
     for c in "token".chars() {
-        app.handle_key(&keymap, plain(c));
+        app.handle_key(plain(c));
     }
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     // Confirming the ghost row swaps the picker for the prompt — same
     // focus, no separate stacked modal to dismiss.
     assert!(matches!(app.modals.top(), Some(Modal::Prompt { .. })));
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
     assert!(app.modals.is_empty(), "both modals closed");
     assert_eq!(
@@ -7288,13 +7240,12 @@ fn insert_picker_new_variable_confirm_with_a_reserved_name_toasts_and_inserts_no
     app.editor.url = crate::components::line_input::LineInput::new("https://x/?a=1");
     app.editor.url.set_cursor(10);
     app.update(Action::OpenVarPicker { completing: false });
-    let keymap = Keymap::default_bindings();
     for c in "options".chars() {
-        app.handle_key(&keymap, plain(c));
+        app.handle_key(plain(c));
     }
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(matches!(app.modals.top(), Some(Modal::Prompt { .. })));
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
     // The refused name keeps the prompt open (typed text intact) so it
     // can be fixed rather than retyped.
@@ -7376,7 +7327,7 @@ fn ctrl_c_copies_a_table_cell_selection_and_keeps_the_edit_live() {
         original: "page".into(),
     });
 
-    app.handle_key(&Keymap::default_bindings(), ctrl('c'));
+    app.handle_key(ctrl('c'));
 
     assert!(!app.should_quit);
     assert_eq!(std::fs::read_to_string(&out).unwrap(), "page");
@@ -7403,7 +7354,7 @@ fn ctrl_c_copies_a_var_form_selection_on_the_varmanager_screen() {
     input.select_all();
     app.varmanager.form.editing = Some((VmField::Default, input));
 
-    app.handle_key(&Keymap::default_bindings(), ctrl('c'));
+    app.handle_key(ctrl('c'));
 
     assert!(!app.should_quit);
     assert_eq!(std::fs::read_to_string(&out).unwrap(), "token value");
@@ -7474,7 +7425,7 @@ fn dragging_in_the_response_selects_and_ctrl_c_copies_it() {
         Some("plain")
     );
 
-    app.handle_key(&Keymap::default_bindings(), ctrl('c'));
+    app.handle_key(ctrl('c'));
     assert!(!app.should_quit, "copy pre-empts quit");
     assert_eq!(std::fs::read_to_string(&out).unwrap(), "plain");
 }
@@ -7601,11 +7552,10 @@ fn the_search_step_buttons_cycle_the_matches() {
     let mut app = App::new_for_test();
     ready_response(&mut app, r#"{"a": 1, "b": 1, "c": 1}"#);
     app.focus = PaneId::Response;
-    let keymap = Keymap::default_bindings();
     for k in ['/', '1'] {
-        app.handle_key(&keymap, plain(k));
+        app.handle_key(plain(k));
     }
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     render_once(&mut app);
     let matches = app
         .session
@@ -7730,7 +7680,7 @@ fn collapse_toggle_click_and_key() {
         "clicking the response-full chip collapses the editor"
     );
 
-    app.handle_key(&Keymap::default_bindings(), alt('p'));
+    app.handle_key(alt('p'));
     assert!(!app.table_collapsed, "alt+p toggles it back off");
 }
 
@@ -7896,11 +7846,10 @@ fn open_method_dropdown_has_all_seven_methods_selected_at_current() {
 #[test]
 fn dropdown_down_down_enter_changes_method_and_closes() {
     let mut app = App::new_for_test();
-    let keymap = Keymap::default_bindings();
     app.update(Action::OpenMethodDropdown);
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert_eq!(app.editor.method, postui_core::model::Method::Put); // 3rd entry
     assert!(app.modals.is_empty());
 }
@@ -7908,19 +7857,15 @@ fn dropdown_down_down_enter_changes_method_and_closes() {
 #[test]
 fn dropdown_esc_closes_without_change_and_keys_dont_leak() {
     let mut app = App::new_for_test();
-    let keymap = Keymap::default_bindings();
     let original = app.editor.method;
     app.update(Action::OpenMethodDropdown);
     // A key with no dropdown binding (and no global binding either)
     // must not leak through to the app — proven here by 'q', which
     // would otherwise quit.
-    app.handle_key(
-        &keymap,
-        KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE),
-    );
+    app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
     assert!(!app.should_quit, "'q' must not leak through the dropdown");
     assert!(!app.modals.is_empty(), "dropdown must still be open");
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(app.modals.is_empty());
     assert_eq!(app.editor.method, original, "Esc makes no change");
 }
@@ -8086,7 +8031,7 @@ fn click_palette_row_runs_immediately() {
     app.anims.enabled = false;
     app.update(Action::OpenPalette);
     for c in "quit".chars() {
-        app.handle_key(&Keymap::default_bindings(), plain(c));
+        app.handle_key(plain(c));
     }
     let i = palette_row_of(&app, "quit");
     render_once(&mut app);
@@ -8181,10 +8126,9 @@ fn click_message_ok_button_closes_it_same_as_enter() {
 fn click_prompt_cancel_button_closes_without_creating_a_request() {
     let mut app = App::new_for_test();
     app.anims.enabled = false;
-    let keymap = Keymap::default_bindings();
     app.update(Action::PromptNewRequest);
     for c in "api/ping".chars() {
-        app.handle_key(&keymap, plain(c));
+        app.handle_key(plain(c));
     }
     render_once(&mut app);
     let cancel = app.hits.rect_of(&Hit::ModalCancel).unwrap();
@@ -8205,10 +8149,9 @@ fn click_prompt_cancel_button_closes_without_creating_a_request() {
 fn click_prompt_confirm_button_creates_the_request_like_enter() {
     let mut app = App::new_for_test();
     app.anims.enabled = false;
-    let keymap = Keymap::default_bindings();
     app.update(Action::PromptNewRequest);
     for c in "api/ping".chars() {
-        app.handle_key(&keymap, plain(c));
+        app.handle_key(plain(c));
     }
     render_once(&mut app);
     let confirm = app.hits.rect_of(&Hit::ModalConfirm).unwrap();
@@ -8226,10 +8169,9 @@ fn click_new_project_cancel_button_closes_without_creating() {
     app.anims.enabled = false;
     let root = tempfile::tempdir().unwrap();
     app.registry.root = Some(root.path().to_path_buf());
-    let keymap = Keymap::default_bindings();
     app.update(Action::PromptNewProject);
     for c in "My Svc".chars() {
-        app.handle_key(&keymap, plain(c));
+        app.handle_key(plain(c));
     }
     render_once(&mut app);
     let cancel = app.hits.rect_of(&Hit::ModalCancel).unwrap();
@@ -8250,12 +8192,11 @@ fn click_new_project_confirm_button_creates_the_project_like_enter() {
     app.anims.enabled = false;
     let root = tempfile::tempdir().unwrap();
     app.registry.root = Some(root.path().to_path_buf());
-    let keymap = Keymap::default_bindings();
     app.update(Action::PromptNewProject);
     for c in "My Svc".chars() {
-        app.handle_key(&keymap, plain(c));
+        app.handle_key(plain(c));
     }
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
     render_once(&mut app);
     let confirm = app.hits.rect_of(&Hit::ModalConfirm).unwrap();
     assert!(app.handle_mouse(left_down(confirm.x, confirm.y)));
@@ -8291,9 +8232,8 @@ fn chooser_keys_and_wheel_keep_a_long_list_scrolling_correctly() {
         terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
     }
 
-    let keymap = Keymap::default_bindings();
     for _ in 0..20 {
-        app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     }
     render_once(&mut app);
     let Some(Modal::Chooser(c)) = app.modals.top() else {
@@ -8480,10 +8420,9 @@ fn picker_confirm_over_an_existing_file_asks_before_overwriting() {
         dir.path(),
         "body.json",
     )));
-    let keymap = Keymap::default_bindings();
 
     // Enter with the prefill = save body.json here → it exists → ask.
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert_eq!(std::fs::read_to_string(&out).unwrap(), "old", "not yet");
     let Some(Modal::Confirm { body, .. }) = app.modals.top() else {
         panic!("expected an overwrite confirm");
@@ -8491,7 +8430,7 @@ fn picker_confirm_over_an_existing_file_asks_before_overwriting() {
     assert!(body.contains("body.json"), "{body}");
 
     // Declining lands back on the picker, folder and name intact.
-    app.handle_key(&keymap, plain('n'));
+    app.handle_key(plain('n'));
     let Some(Modal::FilePicker(p)) = app.modals.top() else {
         panic!("cancelling the overwrite keeps the picker open");
     };
@@ -8500,8 +8439,8 @@ fn picker_confirm_over_an_existing_file_asks_before_overwriting() {
     assert_eq!(std::fs::read_to_string(&out).unwrap(), "old");
 
     // Accepting writes and closes everything.
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    app.handle_key(&keymap, plain('y'));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(plain('y'));
     assert_eq!(std::fs::read_to_string(&out).unwrap(), r#"{"a": 1}"#);
     assert!(app.modals.is_empty());
 }
@@ -8519,10 +8458,7 @@ fn picker_save_of_a_new_file_closes_the_picker_and_writes() {
         dir.path(),
         "fresh.json",
     )));
-    app.handle_key(
-        &Keymap::default_bindings(),
-        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-    );
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.modals.is_empty());
     assert_eq!(
         std::fs::read_to_string(dir.path().join("fresh.json")).unwrap(),
@@ -8684,8 +8620,7 @@ fn address_bar_copy_chip_is_clickable_and_copies_url() {
 #[test]
 fn alt_v_opens_the_manager_and_renders_its_title() {
     let mut app = App::new_for_test();
-    let keymap = Keymap::default_bindings();
-    app.handle_key(&keymap, alt('v'));
+    app.handle_key(alt('v'));
     assert_eq!(app.screen, crate::app::Screen::Manage);
     let content = rendered_text(&mut app);
     assert!(content.contains("VARIABLES"), "the left list's own heading");
@@ -8698,12 +8633,11 @@ fn alt_v_opens_the_manager_and_renders_its_title() {
 #[test]
 fn palette_manage_command_opens_the_manage_screen() {
     let mut app = App::new_for_test();
-    let keymap = Keymap::default_bindings();
     app.update(Action::OpenPalette);
     for c in "Manage: variables".chars() {
-        app.handle_key(&keymap, plain(c));
+        app.handle_key(plain(c));
     }
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert_eq!(app.screen, crate::app::Screen::Manage);
     assert_eq!(
         app.manage.tab,
@@ -8719,11 +8653,10 @@ fn palette_manage_command_opens_the_manage_screen() {
 fn esc_returns_to_main_with_prior_focus_restored() {
     let mut app = App::new_for_test();
     app.focus = PaneId::Response;
-    let keymap = Keymap::default_bindings();
-    app.handle_key(&keymap, alt('v'));
+    app.handle_key(alt('v'));
     assert_eq!(app.screen, crate::app::Screen::Manage);
 
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert_eq!(app.screen, crate::app::Screen::Main);
     assert_eq!(app.focus, PaneId::Response, "prior focus is restored");
 }
@@ -8731,12 +8664,11 @@ fn esc_returns_to_main_with_prior_focus_restored() {
 #[test]
 fn modals_still_open_and_close_on_top_of_the_manager_screen() {
     let mut app = App::new_for_test();
-    let keymap = Keymap::default_bindings();
-    app.handle_key(&keymap, alt('v'));
+    app.handle_key(alt('v'));
     assert_eq!(app.screen, crate::app::Screen::Manage);
 
     // ctrl+p still opens the palette on top of the Manager screen.
-    app.handle_key(&keymap, ctrl('p'));
+    app.handle_key(ctrl('p'));
     assert!(!app.modals.is_empty());
     assert_eq!(
         app.screen,
@@ -8745,7 +8677,7 @@ fn modals_still_open_and_close_on_top_of_the_manager_screen() {
     );
 
     // Esc closes the modal first, without leaving the Manager screen.
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(app.modals.is_empty());
     assert_eq!(
         app.screen,
@@ -8760,11 +8692,10 @@ fn plain_q_types_into_a_live_grid_edit_instead_of_quitting() {
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    let keymap = Keymap::default_bindings();
     goto_group(&mut app, "user");
     app.vm_start_cell_edit(0, 1);
 
-    app.handle_key(&keymap, plain('q'));
+    app.handle_key(plain('q'));
     assert!(!app.should_quit, "a live edit owns the keyboard");
     let edit = app.varmanager.grid.editing.as_ref().unwrap();
     assert!(edit.input.text().ends_with('q'), "{:?}", edit.input.text());
@@ -8799,12 +8730,11 @@ fn manager_screen_replaces_the_three_panes_but_keeps_header_and_footer() {
 #[test]
 fn ctrl_r_and_ctrl_enter_do_not_send_from_the_manager_screen() {
     let mut app = App::new_for_test();
-    let keymap = Keymap::default_bindings();
-    app.handle_key(&keymap, alt('v'));
+    app.handle_key(alt('v'));
     assert_eq!(app.screen, crate::app::Screen::Manage);
     assert!(app.toasts.is_empty());
 
-    app.handle_key(&keymap, ctrl('r'));
+    app.handle_key(ctrl('r'));
     assert!(
         app.toasts.is_empty(),
         "ctrl+r must not reach Action::Send (an empty-URL send would toast)"
@@ -8812,10 +8742,7 @@ fn ctrl_r_and_ctrl_enter_do_not_send_from_the_manager_screen() {
     assert!(app.session.in_flight.is_empty());
     assert_eq!(app.screen, crate::app::Screen::Manage);
 
-    app.handle_key(
-        &keymap,
-        KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL),
-    );
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL));
     assert!(
         app.toasts.is_empty(),
         "ctrl+enter must not reach Action::Send either"
@@ -8831,18 +8758,17 @@ fn ctrl_r_and_ctrl_enter_do_not_send_from_the_manager_screen() {
 fn alt_u_does_not_move_focus_from_the_manager_screen() {
     let mut app = App::new_for_test();
     app.focus = PaneId::Response;
-    let keymap = Keymap::default_bindings();
-    app.handle_key(&keymap, alt('v'));
+    app.handle_key(alt('v'));
     assert_eq!(app.screen, crate::app::Screen::Manage);
 
-    app.handle_key(&keymap, alt('u'));
+    app.handle_key(alt('u'));
     assert_eq!(
         app.focus,
         PaneId::Response,
         "alt+u must not reach Action::FocusUrl while the screen is open"
     );
 
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert_eq!(app.screen, crate::app::Screen::Main);
     assert_eq!(
         app.focus,
@@ -8859,12 +8785,11 @@ fn alt_u_does_not_move_focus_from_the_manager_screen() {
 #[test]
 fn other_unwhitelisted_global_shortcuts_are_swallowed_by_the_manager_screen() {
     let mut app = App::new_for_test();
-    let keymap = Keymap::default_bindings();
-    app.handle_key(&keymap, alt('v'));
+    app.handle_key(alt('v'));
     assert_eq!(app.screen, crate::app::Screen::Manage);
     assert!(app.toasts.is_empty());
 
-    app.handle_key(&keymap, alt('z')); // CycleProject: would toast "only one project registered"
+    app.handle_key(alt('z')); // CycleProject: would toast "only one project registered"
     assert!(
         app.toasts.is_empty(),
         "alt+z must not reach Action::CycleProject(1)"
@@ -8879,12 +8804,11 @@ fn other_unwhitelisted_global_shortcuts_are_swallowed_by_the_manager_screen() {
 #[test]
 fn alt_x_cycles_env_from_the_manager_screen() {
     let (mut app, _dir) = app_with_envs();
-    let keymap = Keymap::default_bindings();
-    app.handle_key(&keymap, alt('v'));
+    app.handle_key(alt('v'));
     assert_eq!(app.screen, crate::app::Screen::Manage);
     assert_eq!(app.env_label(), "prod");
 
-    app.handle_key(&keymap, alt('x'));
+    app.handle_key(alt('x'));
     assert_eq!(
         app.env_label(),
         "qa",
@@ -8902,11 +8826,10 @@ fn alt_x_cycles_env_from_the_manager_screen() {
 #[test]
 fn ctrl_p_still_opens_the_palette_on_top_of_the_manager_screen() {
     let mut app = App::new_for_test();
-    let keymap = Keymap::default_bindings();
-    app.handle_key(&keymap, alt('v'));
+    app.handle_key(alt('v'));
     assert_eq!(app.screen, crate::app::Screen::Manage);
 
-    app.handle_key(&keymap, ctrl('p'));
+    app.handle_key(ctrl('p'));
     assert!(matches!(app.modals.top(), Some(Modal::Palette(_))));
     assert_eq!(
         app.screen,
@@ -8921,17 +8844,16 @@ fn ctrl_p_still_opens_the_palette_on_top_of_the_manager_screen() {
 #[test]
 fn alt_t_opens_the_theme_chooser_on_main_and_the_manager_screen() {
     let mut app = App::new_for_test();
-    let keymap = Keymap::default_bindings();
-    app.handle_key(&keymap, alt('t'));
+    app.handle_key(alt('t'));
     assert!(
         matches!(app.modals.top(), Some(Modal::Chooser(_))),
         "alt+t opens the theme chooser"
     );
     app.update(Action::Close);
 
-    app.handle_key(&keymap, alt('v'));
+    app.handle_key(alt('v'));
     assert_eq!(app.screen, crate::app::Screen::Manage);
-    app.handle_key(&keymap, alt('t'));
+    app.handle_key(alt('t'));
     assert!(
         matches!(app.modals.top(), Some(Modal::Chooser(_))),
         "alt+t escapes the manager screen's input capture"
@@ -8945,10 +8867,9 @@ fn alt_t_opens_the_theme_chooser_on_main_and_the_manager_screen() {
 #[test]
 fn alt_t_closes_the_open_theme_chooser() {
     let mut app = App::new_for_test();
-    let keymap = Keymap::default_bindings();
-    app.handle_key(&keymap, alt('t'));
+    app.handle_key(alt('t'));
     assert!(matches!(app.modals.top(), Some(Modal::Chooser(_))));
-    app.handle_key(&keymap, alt('t'));
+    app.handle_key(alt('t'));
     assert!(
         app.modals.is_empty(),
         "a second alt+t closes the theme chooser"
@@ -8956,7 +8877,7 @@ fn alt_t_closes_the_open_theme_chooser() {
 
     app.update(Action::OpenProjectChooser);
     assert!(matches!(app.modals.top(), Some(Modal::Chooser(_))));
-    app.handle_key(&keymap, alt('t'));
+    app.handle_key(alt('t'));
     assert!(
         matches!(app.modals.top(), Some(Modal::Chooser(_))),
         "alt+t must not close a non-theme chooser"
@@ -8967,11 +8888,10 @@ fn alt_t_closes_the_open_theme_chooser() {
 #[test]
 fn alt_i_toggles_insecure() {
     let mut app = App::new_for_test();
-    let keymap = Keymap::default_bindings();
     assert!(!app.editor.insecure);
-    app.handle_key(&keymap, alt('i'));
+    app.handle_key(alt('i'));
     assert!(app.editor.insecure, "alt+i toggles TLS verification off");
-    app.handle_key(&keymap, alt('i'));
+    app.handle_key(alt('i'));
     assert!(!app.editor.insecure);
 }
 
@@ -9052,7 +8972,8 @@ fn var_edit_set_env_value_on_a_non_active_env_does_not_disturb_the_active_resolu
     let on_disk = std::fs::read_to_string(dir.path().join("environments/dev.toml")).unwrap();
     assert!(on_disk.contains("http://dev.local"), "{on_disk}");
     assert_eq!(
-        app.proj().resolved().values["base_url"], "https://qa.example.com",
+        app.proj().resolved().values["base_url"],
+        "https://qa.example.com",
         "qa is still active; its own resolution must be untouched"
     );
 }
@@ -9525,7 +9446,10 @@ fn add_and_remove_selector_field_reshape_a_shared_selectors_options() {
         field: "fmt".into(),
     });
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
-    assert_eq!(app.proj().variables().options["locale"]["en"].values["fmt"], "");
+    assert_eq!(
+        app.proj().variables().options["locale"]["en"].values["fmt"],
+        ""
+    );
 
     app.update(Action::RemoveSelectorField {
         selector: "locale".into(),
@@ -9603,18 +9527,17 @@ fn new_selector_prompt_arrows_focus_the_toggle_and_space_flips_shared() {
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    let keymap = Keymap::default_bindings();
 
     app.update(Action::PromptNewSelector);
     for c in "locale".chars() {
-        app.handle_key(&keymap, plain(c));
+        app.handle_key(plain(c));
     }
     // Space while the name field still has focus types a space, it does
     // not reach the toggle.
-    app.handle_key(&keymap, plain(' '));
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-    app.handle_key(&keymap, plain(' '));
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(plain(' '));
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.handle_key(plain(' '));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
     assert!(
         app.proj().variables().selectors["locale"].shared,
@@ -9633,15 +9556,14 @@ fn chaining_from_the_picker_into_the_option_prompt_does_not_replay_the_open_sett
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    let keymap = Keymap::default_bindings();
 
     focus_url_with_cursor_on(&mut app, "https://x/{{user}}", "{{user}}");
     app.update(Action::OpenVarPicker { completing: false });
     // "user" has two entries (alice, bob); the ghost "add new option…" row
     // sits one past them.
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-    app.handle_key(&keymap, enter_key());
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.handle_key(enter_key());
 
     assert!(
         matches!(app.modals.top(), Some(Modal::MultiPrompt { .. })),
@@ -9661,18 +9583,17 @@ fn new_selector_prompt_tab_cycles_between_the_name_field_and_the_toggle() {
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    let keymap = Keymap::default_bindings();
     let tab = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
 
     app.update(Action::PromptNewSelector);
     for c in "locale".chars() {
-        app.handle_key(&keymap, plain(c));
+        app.handle_key(plain(c));
     }
-    app.handle_key(&keymap, tab); // onto the toggle
-    app.handle_key(&keymap, plain(' ')); // shared on
-    app.handle_key(&keymap, tab); // back to the field
-    app.handle_key(&keymap, plain(' ')); // a typed space, not a second flip
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(tab); // onto the toggle
+    app.handle_key(plain(' ')); // shared on
+    app.handle_key(tab); // back to the field
+    app.handle_key(plain(' ')); // a typed space, not a second flip
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
     assert!(
         app.proj().variables().selectors["locale"].shared,
@@ -9687,17 +9608,16 @@ fn new_selector_prompt_up_returns_focus_to_the_name_field() {
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    let keymap = Keymap::default_bindings();
 
     app.update(Action::PromptNewSelector);
     for c in "locale".chars() {
-        app.handle_key(&keymap, plain(c));
+        app.handle_key(plain(c));
     }
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-    app.handle_key(&keymap, plain(' ')); // shared on
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
-    app.handle_key(&keymap, plain(' ')); // back in the field: a typed space
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.handle_key(plain(' ')); // shared on
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    app.handle_key(plain(' ')); // back in the field: a typed space
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
     assert!(
         app.proj().variables().selectors["locale"].shared,
@@ -9720,7 +9640,9 @@ fn var_struct_new_group_creates_group_with_members() {
     }));
 
     assert!(app.toasts.is_empty());
-    let g = app.proj().variables()
+    let g = app
+        .proj()
+        .variables()
         .selectors
         .get("creds")
         .expect("group created");
@@ -10415,11 +10337,10 @@ fn keyboard_n_and_g_open_the_new_var_and_new_group_prompts() {
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    let keymap = Keymap::default_bindings();
-    app.handle_key(&keymap, alt('v'));
+    app.handle_key(alt('v'));
     rendered_text(&mut app);
 
-    app.handle_key(&keymap, plain('n'));
+    app.handle_key(plain('n'));
     assert!(matches!(
         app.modals.top(),
         Some(Modal::Prompt {
@@ -10427,9 +10348,9 @@ fn keyboard_n_and_g_open_the_new_var_and_new_group_prompts() {
             ..
         })
     ));
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
-    app.handle_key(&keymap, plain('g'));
+    app.handle_key(plain('g'));
     assert!(matches!(
         app.modals.top(),
         Some(Modal::Prompt {
@@ -10448,12 +10369,11 @@ fn keyboard_f2_d_s_open_the_matching_var_row_actions() {
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    let keymap = Keymap::default_bindings();
     goto_row(&mut app, |r| {
         r == &crate::components::varmanager::VmRow::Var("base_url".into())
     });
 
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE));
     assert!(matches!(
         app.modals.top(),
         Some(Modal::Prompt {
@@ -10461,9 +10381,9 @@ fn keyboard_f2_d_s_open_the_matching_var_row_actions() {
             ..
         })
     ));
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
-    app.handle_key(&keymap, plain('d'));
+    app.handle_key(plain('d'));
     assert!(app.modals.is_empty(), "delete is undoable, no confirm");
     assert!(
         !app.proj().variables().vars.contains_key("base_url"),
@@ -10478,9 +10398,9 @@ fn keyboard_f2_d_s_open_the_matching_var_row_actions() {
         r == &crate::components::varmanager::VmRow::Var("base_url".into())
     });
 
-    app.handle_key(&keymap, plain('s'));
+    app.handle_key(plain('s'));
     assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 }
 
 /// Mouse/keyboard parity (spec §5: "every mutation ... has a keyboard
@@ -10562,20 +10482,21 @@ fn prompt_new_selector_takes_a_name_and_defaults_its_field() {
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    let keymap = Keymap::default_bindings();
     app.update(Action::PromptNewSelector);
 
     // Name only — the common case is a one-field selection set, so the
     // field defaults to the selector's own name.
     for c in "creds".chars() {
-        app.handle_key(&keymap, plain(c));
+        app.handle_key(plain(c));
     }
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
     // Creating the selector is the whole gesture: no follow-up prompt
     // opens, the new declaration is simply selected in the manager.
     assert!(app.modals.is_empty());
-    let g = app.proj().variables()
+    let g = app
+        .proj()
+        .variables()
         .selectors
         .get("creds")
         .expect("selector created");
@@ -10590,7 +10511,6 @@ fn add_and_remove_group_members_one_at_a_time() {
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    let keymap = Keymap::default_bindings();
     app.update(Action::VarStruct(VarStructOp::NewSelector {
         name: "creds".into(),
         fields: vec![],
@@ -10603,12 +10523,17 @@ fn add_and_remove_group_members_one_at_a_time() {
             selector: "creds".into(),
         });
         for c in member.chars() {
-            app.handle_key(&keymap, plain(c));
+            app.handle_key(plain(c));
         }
-        app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     }
     assert_eq!(
-        app.proj().variables().selectors.get("creds").unwrap().fields,
+        app.proj()
+            .variables()
+            .selectors
+            .get("creds")
+            .unwrap()
+            .fields,
         vec!["user_id".to_string(), "customer_id".to_string()]
     );
 
@@ -10618,12 +10543,13 @@ fn add_and_remove_group_members_one_at_a_time() {
         selector: "creds".into(),
     });
     for c in "user_id".chars() {
-        app.handle_key(&keymap, plain(c));
+        app.handle_key(plain(c));
     }
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.toasts.messages().len() > toasts_before);
     assert_eq!(
-        app.proj().variables()
+        app.proj()
+            .variables()
             .selectors
             .get("creds")
             .unwrap()
@@ -10633,7 +10559,7 @@ fn add_and_remove_group_members_one_at_a_time() {
     );
 
     // the failed duplicate keeps its prompt open for a retry; drop it
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
     // `d` flow: removal is immediate (undoable)
     app.update(Action::RemoveSelectorField {
@@ -10642,7 +10568,12 @@ fn add_and_remove_group_members_one_at_a_time() {
     });
     assert!(app.modals.is_empty(), "removal is undoable, no confirm");
     assert_eq!(
-        app.proj().variables().selectors.get("creds").unwrap().fields,
+        app.proj()
+            .variables()
+            .selectors
+            .get("creds")
+            .unwrap()
+            .fields,
         vec!["customer_id".to_string()]
     );
 }
@@ -10853,17 +10784,13 @@ fn confirming_the_value_popup_writes_the_env_scope_and_re_resolves() {
     let (mut app, dir) = token_popup_app();
     app.update(Action::OpenVarTokenPopup("base_url".into()));
     // Type a replacement value and confirm with the preselected env scope.
-    let keymap = Keymap::default_bindings();
     for _ in 0.."https://qa.example.com".len() {
-        app.handle_key(
-            &keymap,
-            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
-        );
+        app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
     }
     for c in "https://qa2.example.com".chars() {
-        app.handle_key(&keymap, plain(c));
+        app.handle_key(plain(c));
     }
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
     assert!(app.modals.is_empty(), "confirm closes the popup");
     let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
@@ -10872,7 +10799,8 @@ fn confirming_the_value_popup_writes_the_env_scope_and_re_resolves() {
         "{on_disk}"
     );
     assert_eq!(
-        app.proj().resolved().values["base_url"], "https://qa2.example.com",
+        app.proj().resolved().values["base_url"],
+        "https://qa2.example.com",
         "linked tokens re-resolve immediately"
     );
 }
@@ -10939,12 +10867,11 @@ fn clicking_the_write_to_field_cycles_the_scope() {
 #[test]
 fn a_taken_name_keeps_the_new_variable_prompt_open_with_the_typed_text() {
     let (mut app, _dir) = token_popup_app();
-    let keymap = Keymap::default_bindings();
     app.update(Action::PromptNewVar);
     for c in "base_url".chars() {
-        app.handle_key(&keymap, plain(c));
+        app.handle_key(plain(c));
     }
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
     assert!(!app.toasts.is_empty(), "the refusal is surfaced");
     let Some(Modal::Prompt { input, kind, .. }) = app.modals.top() else {
@@ -10957,13 +10884,12 @@ fn a_taken_name_keeps_the_new_variable_prompt_open_with_the_typed_text() {
 #[test]
 fn a_taken_name_keeps_the_new_selector_prompt_open() {
     let (mut app, _dir) = token_popup_app();
-    let keymap = Keymap::default_bindings();
     app.update(Action::PromptNewSelector);
     for c in "user".chars() {
         // "user" is already a selector in the fixture.
-        app.handle_key(&keymap, plain(c));
+        app.handle_key(plain(c));
     }
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
     assert!(!app.toasts.is_empty());
     let Some(Modal::Prompt { input, kind, .. }) = app.modals.top() else {
@@ -10976,18 +10902,14 @@ fn a_taken_name_keeps_the_new_selector_prompt_open() {
 #[test]
 fn a_refused_apply_keeps_the_fields_editor_open() {
     let (mut app, _dir) = fields_editor_app();
-    let keymap = Keymap::default_bindings();
     // Retype row 0 (user_id) as customer_id — a duplicate within the list.
     for _ in 0.."user_id".len() {
-        app.handle_key(
-            &keymap,
-            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
-        );
+        app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
     }
     for c in "customer_id".chars() {
-        app.handle_key(&keymap, plain(c));
+        app.handle_key(plain(c));
     }
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
     assert!(!app.toasts.is_empty(), "the refusal is surfaced");
     let Some(Modal::FieldsEditor(fe)) = app.modals.top() else {
@@ -11005,10 +10927,9 @@ fn a_refused_apply_keeps_the_fields_editor_open() {
 fn cycling_the_write_to_scope_shows_that_scopes_current_value() {
     let (mut app, _dir) = token_popup_app();
     app.update(Action::OpenVarTokenPopup("base_url".into()));
-    let keymap = Keymap::default_bindings();
     // Focus the destination field and cycle: the value field follows,
     // showing what is currently stored at each scope.
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
     let field_texts = |app: &App| {
         let Some(Modal::MultiPrompt { fields, .. }) = app.modals.top() else {
             panic!("popup open")
@@ -11022,13 +10943,13 @@ fn cycling_the_write_to_scope_shows_that_scopes_current_value() {
         field_texts(&app),
         ("https://qa.example.com".into(), "Active env value".into())
     );
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
     assert_eq!(
         field_texts(&app),
         (String::new(), "This request".into()),
         "no request override yet, so the value box is empty"
     );
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
     assert_eq!(
         field_texts(&app),
         (String::new(), "This request".into()),
@@ -11083,9 +11004,8 @@ fn the_value_popup_offers_remove_only_where_a_value_is_stored() {
     assert_eq!(r.height, 1, "inline control, not a boxed button");
 
     // Cycle to "This request", which stores nothing — nothing to remove.
-    let keymap = Keymap::default_bindings();
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
     let content = rendered_text(&mut app);
     assert!(
         app.hits.rect_of(&crate::hit::Hit::ModalRemove).is_none(),
@@ -11105,8 +11025,7 @@ fn the_value_popup_offers_remove_only_where_a_value_is_stored() {
 fn the_value_popup_alt_d_removes_the_chosen_scopes_value() {
     let (mut app, _dir) = token_popup_app();
     app.update(Action::OpenVarTokenPopup("base_url".into()));
-    let keymap = Keymap::default_bindings();
-    app.handle_key(&keymap, alt('d'));
+    app.handle_key(alt('d'));
 
     let Some(Modal::MultiPrompt { fields, .. }) = app.modals.top() else {
         panic!("the popup rebuilds on the next supplier after a removal")
@@ -11121,10 +11040,10 @@ fn the_value_popup_alt_d_removes_the_chosen_scopes_value() {
     assert_eq!(value.input.text(), "http://localhost:8080");
 
     // Cycle to "This request" (stores nothing): alt+d must be inert.
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
-    app.handle_key(&keymap, alt('d'));
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    app.handle_key(alt('d'));
     let Some(Modal::MultiPrompt { fields, .. }) = app.modals.top() else {
         panic!("an inert alt+d must not close the popup")
     };
@@ -11147,9 +11066,8 @@ fn the_value_popup_advertises_its_chords_in_the_footer() {
     );
 
     // Cycle to "This request", which stores nothing — no remove chip.
-    let keymap = Keymap::default_bindings();
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
     let content = rendered_text(&mut app);
     assert!(!content.contains("remove env value"), "{content}");
     assert!(!content.contains("remove request value"), "{content}");
@@ -11282,7 +11200,8 @@ fn remove_is_pending_until_confirm_and_cancel_puts_nothing_on_disk() {
     let vars_on_disk = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
     assert!(vars_on_disk.contains("default"), "{vars_on_disk}");
     assert_eq!(
-        app.proj().resolved().values["base_url"], "https://qa.example.com",
+        app.proj().resolved().values["base_url"],
+        "https://qa.example.com",
         "the env value still supplies"
     );
     // Reopening starts clean: the env value is back on offer to remove.
@@ -11306,7 +11225,8 @@ fn confirming_applies_the_pending_removal_and_the_default_shows_through() {
     let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     assert!(!on_disk.contains("base_url"), "{on_disk}");
     assert_eq!(
-        app.proj().resolved().values["base_url"], "http://localhost:8080",
+        app.proj().resolved().values["base_url"],
+        "http://localhost:8080",
         "the default shows through once the env value is gone"
     );
 }
@@ -11343,20 +11263,16 @@ fn typing_a_value_on_a_marked_scope_writes_it_instead_of_removing() {
     app.handle_mouse(left_down(r.x, r.y));
 
     // Cycle Write-to back onto the (marked) env scope and type a value.
-    let keymap = Keymap::default_bindings();
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
     let Some(Modal::MultiPrompt { fields, .. }) = app.modals.top() else {
         panic!("popup open")
     };
     let scope = fields.iter().find(|f| f.key == "destination").unwrap();
     assert_eq!(scope.input.text(), "Active env value");
-    app.handle_key(
-        &keymap,
-        KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT),
-    );
+    app.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
     for c in "http://new.qa".chars() {
-        app.handle_key(&keymap, plain(c));
+        app.handle_key(plain(c));
     }
 
     click_modal_confirm(&mut app);
@@ -11507,12 +11423,11 @@ fn select_option_enter_writes_selection_to_state_toml_and_leaves_url_unchanged()
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    let keymap = Keymap::default_bindings();
 
     let url = "https://x/{{user}}";
     focus_url_with_cursor_on(&mut app, url, "{{user}}");
     app.update(Action::OpenVarPicker { completing: false });
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
     assert!(app.modals.is_empty());
     assert_eq!(app.editor.url.text(), url, "token text must be untouched");
@@ -11533,16 +11448,15 @@ fn select_option_arrows_move_the_selection_and_typing_is_inert() {
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    let keymap = Keymap::default_bindings();
 
     focus_url_with_cursor_on(&mut app, "https://x/{{user}}", "{{user}}");
     app.update(Action::OpenVarPicker { completing: false });
     // The picker has no filter: typed letters do nothing, arrows select.
     for c in "alice".chars() {
-        app.handle_key(&keymap, plain(c));
+        app.handle_key(plain(c));
     }
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
     assert_eq!(app.proj().selections_for("qa")["user"], "bob");
 }
@@ -11609,11 +11523,11 @@ async fn drain_until_settled(app: &mut App, rx: &mut tokio::sync::mpsc::Unbounde
     }
 }
 
-fn type_and_confirm(app: &mut App, keymap: &Keymap, text: &str) {
+fn type_and_confirm(app: &mut App, text: &str) {
     for c in text.chars() {
-        app.handle_key(keymap, plain(c));
+        app.handle_key(plain(c));
     }
-    app.handle_key(keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 }
 
 #[tokio::test]
@@ -11633,7 +11547,6 @@ async fn missing_secrets_prompt_sequentially_then_the_request_sends() {
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     app.update(Action::SwitchEnv(Some("qa".into())));
     app.editor.url = LineInput::new(&format!("{}/x", server.uri()));
-    let keymap = Keymap::default_bindings();
 
     // First send attempt: blocked, prompting for the alphabetically first
     // missing secret — never api_secret first.
@@ -11652,7 +11565,7 @@ async fn missing_secrets_prompt_sequentially_then_the_request_sends() {
         matches!(kind, PromptKind::SecretValue { name, env } if name == "api_key" && env == "qa")
     );
 
-    type_and_confirm(&mut app, &keymap, "key-val");
+    type_and_confirm(&mut app, "key-val");
 
     // Still not sent — the second secret is missing too.
     assert!(app.session.in_flight.is_empty());
@@ -11662,7 +11575,7 @@ async fn missing_secrets_prompt_sequentially_then_the_request_sends() {
     assert!(title.contains("api_secret"), "title: {title}");
     assert!(matches!(kind, PromptKind::SecretValue { name, .. } if name == "api_secret"));
 
-    type_and_confirm(&mut app, &keymap, "secret-val");
+    type_and_confirm(&mut app, "secret-val");
 
     // Both secrets resolved: the send actually goes out this time.
     assert!(app.modals.is_empty());
@@ -11687,10 +11600,9 @@ async fn esc_mid_chain_cancels_the_send_and_keeps_only_confirmed_secrets() {
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     app.update(Action::SwitchEnv(Some("qa".into())));
     app.editor.url = LineInput::new("http://example.invalid/x");
-    let keymap = Keymap::default_bindings();
 
     app.update(Action::ForceSend);
-    type_and_confirm(&mut app, &keymap, "key-val");
+    type_and_confirm(&mut app, "key-val");
 
     // Second prompt (api_secret) is open now; cancel it.
     assert!(matches!(
@@ -11700,7 +11612,7 @@ async fn esc_mid_chain_cancels_the_send_and_keeps_only_confirmed_secrets() {
             ..
         }) if name == "api_secret"
     ));
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
     assert!(app.modals.is_empty(), "esc closes the prompt");
     assert!(app.session.in_flight.is_empty(), "nothing was sent");
@@ -11725,12 +11637,11 @@ fn secret_prompt_input_renders_masked_dots_not_the_typed_text() {
     app.anims.enabled = false;
     app.update(Action::SwitchEnv(Some("qa".into())));
     app.editor.url = LineInput::new("http://example.invalid/x");
-    let keymap = Keymap::default_bindings();
 
     app.update(Action::ForceSend);
     let typed = "zqxvw9";
     for c in typed.chars() {
-        app.handle_key(&keymap, plain(c));
+        app.handle_key(plain(c));
     }
 
     let Some(Modal::Prompt { input, .. }) = app.modals.top() else {
@@ -11765,9 +11676,9 @@ fn enter_key() -> KeyEvent {
 
 /// Types `text` into whichever `Modal::MultiPrompt` field currently has
 /// focus, without confirming.
-fn type_into_field(app: &mut App, keymap: &Keymap, text: &str) {
+fn type_into_field(app: &mut App, text: &str) {
     for c in text.chars() {
-        app.handle_key(keymap, plain(c));
+        app.handle_key(plain(c));
     }
 }
 
@@ -11777,7 +11688,6 @@ fn add_new_entry_writes_to_the_active_envs_entries_table_selects_it_and_restores
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    let keymap = Keymap::default_bindings();
 
     let url = "https://x/{{user}}";
     focus_url_with_cursor_on(&mut app, url, "{{user}}");
@@ -11785,9 +11695,9 @@ fn add_new_entry_writes_to_the_active_envs_entries_table_selects_it_and_restores
 
     // "user" has two entries (alice, bob); the ghost "add new option…" row
     // sits one past them.
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-    app.handle_key(&keymap, enter_key());
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.handle_key(enter_key());
 
     let Some(Modal::MultiPrompt { kind, .. }) = app.modals.top() else {
         panic!("expected the new-option-inline multi-prompt");
@@ -11796,10 +11706,10 @@ fn add_new_entry_writes_to_the_active_envs_entries_table_selects_it_and_restores
 
     // The quick-create prompt is name + value only (no description field —
     // that lives in the option's edit prompt).
-    type_into_field(&mut app, &keymap, "carol");
-    app.handle_key(&keymap, tab_key());
-    type_into_field(&mut app, &keymap, "3003");
-    app.handle_key(&keymap, enter_key());
+    type_into_field(&mut app, "carol");
+    app.handle_key(tab_key());
+    type_into_field(&mut app, "3003");
+    app.handle_key(enter_key());
 
     assert!(app.modals.is_empty(), "closes back to the field");
     assert_eq!(app.focus, PaneId::Editor, "focus restored to where it was");
@@ -11830,18 +11740,17 @@ fn inline_create_accepts_a_free_form_entry_name_with_a_space() {
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    let keymap = Keymap::default_bindings();
 
     focus_url_with_cursor_on(&mut app, "https://x/{{user}}", "{{user}}");
     app.update(Action::OpenVarPicker { completing: false });
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-    app.handle_key(&keymap, enter_key());
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.handle_key(enter_key());
 
-    type_into_field(&mut app, &keymap, "user 1");
-    app.handle_key(&keymap, tab_key());
-    type_into_field(&mut app, &keymap, "9009");
-    app.handle_key(&keymap, enter_key());
+    type_into_field(&mut app, "user 1");
+    app.handle_key(tab_key());
+    type_into_field(&mut app, "9009");
+    app.handle_key(enter_key());
 
     assert!(
         app.modals.is_empty(),
@@ -11862,7 +11771,6 @@ fn inline_create_on_a_multi_field_group_takes_one_input_per_field() {
     group_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    let keymap = Keymap::default_bindings();
 
     // Start from the second field's token: the prompt is about the whole
     // option, not the field clicked.
@@ -11870,9 +11778,9 @@ fn inline_create_on_a_multi_field_group_takes_one_input_per_field() {
     app.update(Action::OpenVarPicker { completing: false });
     // "identity" has two entries (alice, bob); the ghost row sits one past
     // them.
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-    app.handle_key(&keymap, enter_key());
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.handle_key(enter_key());
 
     let Some(Modal::MultiPrompt { title, fields, .. }) = app.modals.top() else {
         panic!("expected the new-option prompt")
@@ -11881,12 +11789,12 @@ fn inline_create_on_a_multi_field_group_takes_one_input_per_field() {
     let labels: Vec<&str> = fields.iter().map(|f| f.label.as_str()).collect();
     assert_eq!(labels, ["Name", "user_id", "customer_id"]);
 
-    type_into_field(&mut app, &keymap, "carol");
-    app.handle_key(&keymap, tab_key());
-    type_into_field(&mut app, &keymap, "u-3");
-    app.handle_key(&keymap, tab_key());
-    type_into_field(&mut app, &keymap, "c-3");
-    app.handle_key(&keymap, enter_key());
+    type_into_field(&mut app, "carol");
+    app.handle_key(tab_key());
+    type_into_field(&mut app, "u-3");
+    app.handle_key(tab_key());
+    type_into_field(&mut app, "c-3");
+    app.handle_key(enter_key());
 
     assert!(app.modals.is_empty(), "{:?}", app.toasts.messages());
     let carol = &app.proj().env_data().options["identity"]["carol"].values;
@@ -11908,14 +11816,10 @@ fn typing_e_in_the_select_picker_is_inert() {
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    let keymap = Keymap::default_bindings();
 
     focus_url_with_cursor_on(&mut app, "https://x/{{user}}", "{{user}}");
     app.update(Action::OpenVarPicker { completing: false });
-    app.handle_key(
-        &keymap,
-        KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE),
-    );
+    app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
 
     let Some(Modal::VarPicker(p)) = app.modals.top() else {
         panic!("the picker stays open");
@@ -11930,7 +11834,6 @@ fn the_option_menus_edit_opens_the_prompt_in_the_environment_that_holds_it() {
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    let keymap = Keymap::default_bindings();
     goto_group(&mut app, "user");
 
     // Row 0 is "alice" (first option, file order); its context menu's
@@ -11961,13 +11864,10 @@ fn the_option_menus_edit_opens_the_prompt_in_the_environment_that_holds_it() {
     );
 
     for _ in 0..4 {
-        app.handle_key(
-            &keymap,
-            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
-        );
+        app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
     }
-    type_into_field(&mut app, &keymap, "9999");
-    app.handle_key(&keymap, enter_key());
+    type_into_field(&mut app, "9999");
+    app.handle_key(enter_key());
 
     assert!(app.modals.is_empty());
     let env_doc = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
@@ -12005,7 +11905,6 @@ fn extract_to_variable_prompts_writes_and_replaces_field_text_dirty_saved() {
         },
     );
     app.editor.mark_saved();
-    let keymap = Keymap::default_bindings();
     focus_header_value_cell(&mut app);
     assert_eq!(
         app.editor.table.editing.as_ref().unwrap().input.text(),
@@ -12018,8 +11917,8 @@ fn extract_to_variable_prompts_writes_and_replaces_field_text_dirty_saved() {
     };
     assert!(matches!(kind, PromptKind::ExtractVariable));
 
-    type_into_field(&mut app, &keymap, "api_key");
-    app.handle_key(&keymap, enter_key());
+    type_into_field(&mut app, "api_key");
+    app.handle_key(enter_key());
 
     assert!(app.modals.is_empty());
     let content = rendered_text(&mut app);
@@ -12058,7 +11957,6 @@ fn palette_extract_to_variable_with_a_table_cell_genuinely_in_edit_opens_the_pro
         },
     );
     app.editor.mark_saved();
-    let keymap = Keymap::default_bindings();
     focus_header_value_cell(&mut app);
     assert!(
         app.editor.table.editing.is_some(),
@@ -12068,9 +11966,9 @@ fn palette_extract_to_variable_with_a_table_cell_genuinely_in_edit_opens_the_pro
     app.update(Action::OpenPalette);
     assert!(matches!(app.modals.top(), Some(Modal::Palette(_))));
     for c in "Extract to variable".chars() {
-        app.handle_key(&keymap, plain(c));
+        app.handle_key(plain(c));
     }
-    app.handle_key(&keymap, enter_key());
+    app.handle_key(enter_key());
 
     let Some(Modal::MultiPrompt { kind, .. }) = app.modals.top() else {
         panic!("expected the extract-variable multi-prompt to open");
@@ -12121,7 +12019,7 @@ fn right_key() -> KeyEvent {
 /// literal to extract), opens the prompt, types `name`, cycles the
 /// destination choice field right `rights` times (0 = Project default, 1 =
 /// Active env value, 2 = This request), and confirms.
-fn extract_url(app: &mut App, keymap: &Keymap, url: &str, name: &str, rights: u8) {
+fn extract_url(app: &mut App, url: &str, name: &str, rights: u8) {
     app.editor.url = LineInput::new(url);
     app.focus = PaneId::Editor;
     app.editor.sub_focus = SubFocus::Url;
@@ -12131,12 +12029,12 @@ fn extract_url(app: &mut App, keymap: &Keymap, url: &str, name: &str, rights: u8
         matches!(app.modals.top(), Some(Modal::MultiPrompt { .. })),
         "expected the extract-variable multi-prompt to open"
     );
-    type_into_field(app, keymap, name);
-    app.handle_key(keymap, tab_key());
+    type_into_field(app, name);
+    app.handle_key(tab_key());
     for _ in 0..rights {
-        app.handle_key(keymap, right_key());
+        app.handle_key(right_key());
     }
-    app.handle_key(keymap, enter_key());
+    app.handle_key(enter_key());
 }
 
 #[test]
@@ -12145,11 +12043,9 @@ fn extract_to_active_env_writes_the_flat_pair_and_a_bare_declaration_and_replace
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    let keymap = Keymap::default_bindings();
 
     extract_url(
         &mut app,
-        &keymap,
         "https://x/token-abc123",
         "session_token",
         1, // Active env value
@@ -12184,11 +12080,9 @@ fn extract_to_active_env_writes_the_flat_pair_and_a_bare_declaration_and_replace
 fn extract_to_request_writes_editor_variables_and_dirty_saves() {
     let mut app = App::new_for_test();
     app.editor.mark_saved();
-    let keymap = Keymap::default_bindings();
 
     extract_url(
         &mut app,
-        &keymap,
         "https://x/inline-value",
         "inline_var",
         2, // This request
@@ -12210,14 +12104,12 @@ fn extract_to_active_env_refuses_a_name_colliding_with_an_existing_group() {
     group_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    let keymap = Keymap::default_bindings();
 
     let shared_before = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
     let env_before = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
 
     extract_url(
         &mut app,
-        &keymap,
         "https://x/whatever",
         "identity", // collides with the declared group
         1,          // Active env value
@@ -12231,7 +12123,7 @@ fn extract_to_active_env_refuses_a_name_colliding_with_an_existing_group() {
     assert_eq!(fields[0].input.text(), "identity");
     let content = rendered_text(&mut app);
     assert!(content.contains("already exists"), "{content}");
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert_eq!(
         app.editor.url.text(),
         "https://x/whatever",
@@ -12250,14 +12142,12 @@ fn extract_to_active_env_refuses_a_name_colliding_with_an_existing_secret() {
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    let keymap = Keymap::default_bindings();
 
     let shared_before = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
     let env_before = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
 
     extract_url(
         &mut app,
-        &keymap,
         "https://x/whatever",
         "api_key", // declared secret in var_project
         1,         // Active env value
@@ -12269,7 +12159,7 @@ fn extract_to_active_env_refuses_a_name_colliding_with_an_existing_secret() {
     assert_eq!(fields[0].input.text(), "api_key");
     let content = rendered_text(&mut app);
     assert!(content.contains("secret"), "{content}");
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert_eq!(
         app.editor.url.text(),
         "https://x/whatever",
@@ -12366,12 +12256,11 @@ fn clicking_off_the_quick_add_option_prompt_still_cancels() {
 fn alt_v_toggles_the_variable_manager_closed_and_restores_focus() {
     let mut app = App::new_for_test();
     app.update(Action::FocusPane(PaneId::Response));
-    let keymap = Keymap::default_bindings();
     let alt_v = KeyEvent::new(KeyCode::Char('v'), KeyModifiers::ALT);
 
-    app.handle_key(&keymap, alt_v);
+    app.handle_key(alt_v);
     assert_eq!(app.screen, Screen::Manage);
-    app.handle_key(&keymap, alt_v);
+    app.handle_key(alt_v);
     assert_eq!(app.screen, Screen::Main, "alt+v closes the open manager");
     assert_eq!(app.focus, PaneId::Response, "prior focus restored");
 }
@@ -12380,7 +12269,7 @@ fn alt_v_toggles_the_variable_manager_closed_and_restores_focus() {
 fn plain_q_quits_from_the_variable_manager() {
     let mut app = App::new_for_test();
     app.update(Action::OpenManage { tab: None });
-    app.handle_key(&Keymap::default_bindings(), plain('q'));
+    app.handle_key(plain('q'));
     assert!(app.should_quit);
 }
 
@@ -12581,11 +12470,10 @@ fn confirming_the_migration_rewrites_the_files_leaves_baks_and_reloads() {
     legacy_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    let keymap = Keymap::default_bindings();
     let vars_before = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
     let qa_before = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
 
-    app.handle_key(&keymap, plain('y'));
+    app.handle_key(plain('y'));
 
     assert!(app.modals.is_empty(), "answering closes the prompt");
     assert!(
@@ -12654,10 +12542,9 @@ fn declining_the_migration_leaves_the_files_alone_and_the_project_open() {
     legacy_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    let keymap = Keymap::default_bindings();
     let vars_before = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
 
-    app.handle_key(&keymap, plain('n'));
+    app.handle_key(plain('n'));
 
     assert!(app.modals.is_empty());
     assert_eq!(
@@ -12666,7 +12553,10 @@ fn declining_the_migration_leaves_the_files_alone_and_the_project_open() {
         "declining must not touch a single file"
     );
     assert!(!dir.path().join("variables.toml.bak").exists());
-    assert!(app.proj().variables().vars.is_empty(), "variables stay inert");
+    assert!(
+        app.proj().variables().vars.is_empty(),
+        "variables stay inert"
+    );
     assert!(app.proj().resolved().values.is_empty());
 
     // The project itself is still perfectly usable, and the prompt does
@@ -12704,8 +12594,7 @@ fn migrating_a_project_with_no_environments_creates_default_toml_for_the_entries
         "the new environment is announced up front: {body}"
     );
 
-    let keymap = Keymap::default_bindings();
-    app.handle_key(&keymap, plain('y'));
+    app.handle_key(plain('y'));
 
     let default_toml =
         std::fs::read_to_string(dir.path().join("environments/default.toml")).unwrap();
@@ -12762,12 +12651,12 @@ fn a_legacy_projects_saved_selections_survive_the_prompt_and_resolve_after_apply
     assert_eq!(on_disk.selections["qa"]["user"], "alice");
 
     // ...and once migrated, they select the migrated entries.
-    let keymap = Keymap::default_bindings();
-    app.handle_key(&keymap, plain('y'));
+    app.handle_key(plain('y'));
 
     assert_eq!(app.proj().selections_for("qa")["tier"], "gold");
     assert_eq!(
-        app.proj().resolved().values["tier"], "g-qa",
+        app.proj().resolved().values["tier"],
+        "g-qa",
         "the carried-over selection resolves: {:?}",
         app.proj().resolved().values
     );
@@ -12797,8 +12686,7 @@ fn declining_the_migration_leaves_saved_selections_on_disk() {
 
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    let keymap = Keymap::default_bindings();
-    app.handle_key(&keymap, plain('n'));
+    app.handle_key(plain('n'));
 
     let on_disk = postui_core::fixtures::load_local_state(dir.path()).unwrap();
     assert_eq!(
@@ -13093,9 +12981,8 @@ fn clicking_the_env_value_field_typing_and_clicking_away_writes_the_env_file() {
     app.handle_mouse(left_down(r.x + r.width - 2, r.y + 1));
     assert!(app.varmanager.form.editing.is_some(), "the field is live");
 
-    let keymap = Keymap::default_bindings();
     for c in "9".chars() {
-        app.handle_key(&keymap, plain(c));
+        app.handle_key(plain(c));
     }
 
     // Click away — the left list row for the same variable is "elsewhere".
@@ -13125,18 +13012,19 @@ fn enter_commits_a_field_edit_and_esc_reverts_it() {
     goto_row(&mut app, |r| {
         r == &crate::components::varmanager::VmRow::Var("base_url".into())
     });
-    let keymap = Keymap::default_bindings();
 
     // Esc reverts: the typed digit never reaches disk. (Right-edge clicks
     // throughout: a click places the caret at the pointer, and the
     // assertions want the typed char at the end of the text.)
     let r = field_rect(&mut app, VmField::Description);
     app.handle_mouse(left_down(r.x + r.width - 2, r.y + 1));
-    app.handle_key(&keymap, plain('!'));
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.handle_key(plain('!'));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(app.varmanager.form.editing.is_none());
     assert_eq!(
-        app.proj().variables().vars["base_url"].description.as_deref(),
+        app.proj().variables().vars["base_url"]
+            .description
+            .as_deref(),
         Some("API root"),
         "Esc must not write anything"
     );
@@ -13144,11 +13032,13 @@ fn enter_commits_a_field_edit_and_esc_reverts_it() {
     // Enter commits.
     let r = field_rect(&mut app, VmField::Description);
     app.handle_mouse(left_down(r.x + r.width - 2, r.y + 1));
-    app.handle_key(&keymap, plain('!'));
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(plain('!'));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.varmanager.form.editing.is_none());
     assert_eq!(
-        app.proj().variables().vars["base_url"].description.as_deref(),
+        app.proj().variables().vars["base_url"]
+            .description
+            .as_deref(),
         Some("API root!")
     );
 }
@@ -13171,9 +13061,8 @@ fn clicking_directly_from_one_field_into_another_commits_the_first() {
     // land at the end of the text.
     let r = field_rect(&mut app, VmField::Description);
     app.handle_mouse(left_down(r.x + r.width - 2, r.y + 1));
-    let keymap = Keymap::default_bindings();
     for c in "!".chars() {
-        app.handle_key(&keymap, plain(c));
+        app.handle_key(plain(c));
     }
 
     // Straight into the env-value field — no click-away in between.
@@ -13181,7 +13070,9 @@ fn clicking_directly_from_one_field_into_another_commits_the_first() {
     app.handle_mouse(left_down(r.x + 1, r.y + 1));
 
     assert_eq!(
-        app.proj().variables().vars["base_url"].description.as_deref(),
+        app.proj().variables().vars["base_url"]
+            .description
+            .as_deref(),
         Some("API root!"),
         "the description field must have committed, not been discarded"
     );
@@ -13208,9 +13099,8 @@ fn clicking_into_another_field_after_a_failed_commit_keeps_the_original_edit_liv
 
     let r = field_rect(&mut app, VmField::EnvValue);
     app.handle_mouse(left_down(r.x + 1, r.y + 1));
-    let keymap = Keymap::default_bindings();
     for c in "sk-typed-secret".chars() {
-        app.handle_key(&keymap, plain(c));
+        app.handle_key(plain(c));
     }
 
     // Click straight into Description — the env-value commit must fail
@@ -13256,9 +13146,8 @@ fn clicking_a_different_left_row_after_a_failed_commit_keeps_the_original_edit_l
 
     let r = field_rect(&mut app, VmField::EnvValue);
     app.handle_mouse(left_down(r.x + 1, r.y + 1));
-    let keymap = Keymap::default_bindings();
     for c in "sk-typed-secret".chars() {
-        app.handle_key(&keymap, plain(c));
+        app.handle_key(plain(c));
     }
 
     let other = app
@@ -13307,11 +13196,10 @@ fn a_write_failure_keeps_the_typed_text_and_toasts_without_the_secret_value() {
 
     let r = field_rect(&mut app, VmField::EnvValue);
     app.handle_mouse(left_down(r.x + 1, r.y + 1));
-    let keymap = Keymap::default_bindings();
     for c in "sk-typed-secret".chars() {
-        app.handle_key(&keymap, plain(c));
+        app.handle_key(plain(c));
     }
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
     assert!(
         app.varmanager.form.editing.is_some(),
@@ -13443,7 +13331,7 @@ fn the_promote_button_promotes_the_requests_override_up_into_the_project() {
     app.handle_mouse(left_down(r.x + 1, r.y + 1));
     assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
     // Confirm "Default value".
-    app.handle_key(&Keymap::default_bindings(), plain('d'));
+    app.handle_key(plain('d'));
     assert_eq!(
         app.proj().variables().vars["base_url"].default.as_deref(),
         Some("http://from-request")
@@ -13462,9 +13350,8 @@ fn keyboard_e_and_s_still_work_with_the_form_on_screen() {
     goto_row(&mut app, |r| {
         r == &crate::components::varmanager::VmRow::Var("base_url".into())
     });
-    let keymap = Keymap::default_bindings();
 
-    app.handle_key(&keymap, plain('e'));
+    app.handle_key(plain('e'));
     assert!(matches!(
         app.modals.top(),
         Some(Modal::Prompt {
@@ -13472,9 +13359,9 @@ fn keyboard_e_and_s_still_work_with_the_form_on_screen() {
             ..
         })
     ));
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
-    app.handle_key(&keymap, plain('s'));
+    app.handle_key(plain('s'));
     assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
 }
 
@@ -13571,27 +13458,25 @@ fn fields_editor_remove_button_marks_the_row_and_confirm_deletes_the_field() {
         .rect_of(&crate::hit::Hit::ModalRowToggle(1))
         .unwrap();
     app.handle_mouse(left_down(r.x, r.y));
-    let keymap = Keymap::default_bindings();
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.modals.is_empty(), "removal is undoable, no confirm");
-    assert_eq!(app.proj().variables().selectors["creds"].fields, vec!["user_id"]);
+    assert_eq!(
+        app.proj().variables().selectors["creds"].fields,
+        vec!["user_id"]
+    );
 }
 
 #[test]
 fn fields_editor_rename_types_into_the_row() {
     let (mut app, _dir) = fields_editor_app();
-    let keymap = Keymap::default_bindings();
     // Row 0 focused; retype it.
     for _ in 0.."user_id".len() {
-        app.handle_key(
-            &keymap,
-            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
-        );
+        app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
     }
     for c in "uid".chars() {
-        app.handle_key(&keymap, plain(c));
+        app.handle_key(plain(c));
     }
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.modals.is_empty(), "apply closes the editor");
     assert_eq!(
         app.proj().variables().selectors["creds"].fields,
@@ -13611,11 +13496,10 @@ fn fields_editor_add_button_appends_a_focused_row() {
     assert_eq!(fe.rows.len(), 3);
     assert_eq!(fe.focus, 2, "the new row takes focus");
 
-    let keymap = Keymap::default_bindings();
     for c in "region".chars() {
-        app.handle_key(&keymap, plain(c));
+        app.handle_key(plain(c));
     }
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.modals.is_empty());
     assert_eq!(
         app.proj().variables().selectors["creds"].fields,
@@ -13628,8 +13512,7 @@ fn fields_editor_add_button_appends_a_focused_row() {
 #[test]
 fn fields_editor_alt_a_appends_a_focused_row() {
     let (mut app, _dir) = fields_editor_app();
-    let keymap = Keymap::default_bindings();
-    app.handle_key(&keymap, alt('a'));
+    app.handle_key(alt('a'));
     let Some(Modal::FieldsEditor(fe)) = app.modals.top() else {
         panic!("still open")
     };
@@ -13637,9 +13520,9 @@ fn fields_editor_alt_a_appends_a_focused_row() {
     assert_eq!(fe.focus, 2, "the new row takes focus");
 
     for c in "region".chars() {
-        app.handle_key(&keymap, plain(c));
+        app.handle_key(plain(c));
     }
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.modals.is_empty());
     assert_eq!(
         app.proj().variables().selectors["creds"].fields,
@@ -13653,8 +13536,7 @@ fn fields_editor_alt_a_appends_a_focused_row() {
 #[test]
 fn fields_editor_alt_d_toggles_removal_of_the_focused_row() {
     let (mut app, _dir) = fields_editor_app();
-    let keymap = Keymap::default_bindings();
-    app.handle_key(&keymap, alt('d'));
+    app.handle_key(alt('d'));
     let Some(Modal::FieldsEditor(fe)) = app.modals.top() else {
         panic!("still open")
     };
@@ -13666,12 +13548,12 @@ fn fields_editor_alt_d_toggles_removal_of_the_focused_row() {
 
     // Step back onto the removed row — it must be landable, or the
     // keyboard could never restore it — and flip it back.
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
     let Some(Modal::FieldsEditor(fe)) = app.modals.top() else {
         panic!("still open")
     };
     assert_eq!(fe.focus, 0, "focus can land on a removed row");
-    app.handle_key(&keymap, alt('d'));
+    app.handle_key(alt('d'));
     let Some(Modal::FieldsEditor(fe)) = app.modals.top() else {
         panic!("still open")
     };
@@ -13679,11 +13561,14 @@ fn fields_editor_alt_d_toggles_removal_of_the_focused_row() {
 
     // Remove the second field and apply: the removal lands at once
     // (undoable).
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-    app.handle_key(&keymap, alt('d'));
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.handle_key(alt('d'));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.modals.is_empty(), "removal is undoable, no confirm");
-    assert_eq!(app.proj().variables().selectors["creds"].fields, vec!["user_id"]);
+    assert_eq!(
+        app.proj().variables().selectors["creds"].fields,
+        vec!["user_id"]
+    );
 }
 
 /// While the fields editor is open, the footer swaps to *its* context
@@ -13702,9 +13587,8 @@ fn fields_editor_advertises_its_chords_in_the_footer() {
     );
 
     // On a removed row the same chord restores — the chip says so.
-    let keymap = Keymap::default_bindings();
-    app.handle_key(&keymap, alt('d'));
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    app.handle_key(alt('d'));
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
     let content = rendered_text(&mut app);
     assert!(content.contains("restore field"), "{content}");
 }
@@ -13747,10 +13631,7 @@ fn the_quit_chip_shows_ctrl_c_wherever_plain_q_would_type() {
     app.update(Action::PromptNewRequest);
     let content = rendered_text(&mut app);
     assert!(content.contains("^C  quit"), "{content}");
-    app.handle_key(
-        &Keymap::default_bindings(),
-        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
-    );
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
     // The manager binds plain q to quit in every focus stop, so the chip
     // advertises it there.
@@ -13831,7 +13712,8 @@ fn clicking_an_entrys_radio_records_the_selection_and_re_resolves_every_field() 
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
     assert_eq!(app.proj().selections_for("qa")["user"], "bob");
     assert_eq!(
-        app.proj().resolved().values["user"], "2002",
+        app.proj().resolved().values["user"],
+        "2002",
         "{{user}} now resolves through the selected entry"
     );
     let state = postui_core::fixtures::load_local_state(dir.path()).unwrap();
@@ -13858,7 +13740,7 @@ fn clicking_bare_background_commits_the_cell_under_edit() {
     let r = cell_rect(&mut app, 0, 1);
     app.handle_mouse(left_down(r.x + 10, r.y)); // caret past the text, at its end
     assert!(app.varmanager.grid.editing.is_some(), "the cell is live");
-    app.handle_key(&Keymap::default_bindings(), plain('9'));
+    app.handle_key(plain('9'));
 
     // The lowest row of the detail pane that no control claims.
     let (x, y) = (0..46)
@@ -13888,8 +13770,7 @@ fn editing_a_field_cell_and_clicking_away_rewrites_the_env_file() {
     app.handle_mouse(left_down(r.x + 10, r.y));
     assert!(app.varmanager.grid.editing.is_some(), "the cell is live");
 
-    let keymap = Keymap::default_bindings();
-    app.handle_key(&keymap, plain('9'));
+    app.handle_key(plain('9'));
 
     // Clicking a *different* cell commits the first one (Task 8's
     // commit-first rule) and starts editing the one clicked.
@@ -13904,8 +13785,8 @@ fn editing_a_field_cell_and_clicking_away_rewrites_the_env_file() {
     assert_eq!(edit.input.text(), "2002");
 
     // Esc puts the second cell back with nothing written.
-    app.handle_key(&keymap, plain('x'));
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.handle_key(plain('x'));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(app.varmanager.grid.editing.is_none());
     let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     assert!(!on_disk.contains("2002x"), "esc reverted: {on_disk}");
@@ -14008,8 +13889,7 @@ fn vm_footer_advertises_the_option_verbs_while_the_grid_has_focus() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     goto_group(&mut app, "user");
-    let keymap = Keymap::default_bindings();
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
     assert_eq!(app.varmanager.focus, VmFocus::Grid);
 
     let delete = Action::DeleteEntry {
@@ -14054,27 +13934,26 @@ fn keyboard_enters_the_variable_form_and_edits_its_fields() {
         r == &crate::components::varmanager::VmRow::Var("base_url".into())
     });
 
-    let keymap = Keymap::default_bindings();
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
     assert_eq!(app.varmanager.focus, VmFocus::Form, "Right enters the form");
 
     // Description first; Down to the default; Enter starts the in-place
     // edit clicking the field would.
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     let (field, input) = app.varmanager.form.editing.as_ref().expect("editing");
     assert_eq!(*field, crate::components::varmanager::VmField::Default);
     assert_eq!(input.text(), "http://localhost:8080");
 
-    app.handle_key(&keymap, plain('9'));
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(plain('9'));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.varmanager.form.editing.is_none(), "Enter commits");
     let on_disk = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
     assert!(on_disk.contains("http://localhost:80809"), "{on_disk}");
 
     // Esc leaves the form for the list; one more Esc would close the
     // screen, same leave-the-inner-thing-first rhythm as the grid.
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert_eq!(app.varmanager.focus, VmFocus::List);
     assert_eq!(app.screen, Screen::Manage, "the screen stays open");
 }
@@ -14095,8 +13974,7 @@ fn form_focus_advertises_and_handles_the_field_verbs() {
     goto_row(&mut app, |r| {
         r == &crate::components::varmanager::VmRow::Var("base_url".into())
     });
-    let keymap = Keymap::default_bindings();
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
     assert_eq!(app.varmanager.focus, VmFocus::Form);
 
     let secret = Action::ToggleSecretVar {
@@ -14115,8 +13993,8 @@ fn form_focus_advertises_and_handles_the_field_verbs() {
     );
 
     // Down to the env-value field: qa stores one, so `x` clears it.
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     let clear = Action::RemoveVarValue {
         name: "base_url".into(),
         destination: crate::action::ExtractDestination::ActiveEnv,
@@ -14133,7 +14011,7 @@ fn form_focus_advertises_and_handles_the_field_verbs() {
             .any(|(k, l, a)| *k == "x" && *l == "clear env value" && a.as_ref() == Some(&clear)),
         "{chips:?}"
     );
-    app.handle_key(&keymap, plain('x'));
+    app.handle_key(plain('x'));
     let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     assert!(!on_disk.contains("base_url"), "{on_disk}");
     let chips = app.varmanager.footer_chips(app.proj(), None);
@@ -14148,24 +14026,22 @@ fn form_focus_advertises_and_handles_the_field_verbs() {
         name: "base_url".into(),
     };
     let open_request = app.editor.current_request();
-    let chips = app
-        .varmanager
-        .footer_chips(app.proj(), Some(&open_request));
+    let chips = app.varmanager.footer_chips(app.proj(), Some(&open_request));
     assert!(
         chips
             .iter()
             .any(|(k, l, a)| *k == "p" && *l == "promote" && a.as_ref() == Some(&promote)),
         "{chips:?}"
     );
-    app.handle_key(&keymap, plain('p'));
+    app.handle_key(plain('p'));
     assert!(!app.modals.is_empty(), "p opens the promote prompt");
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
     // `s` works from the form area, not just the list — through the same
     // make-secret confirm the list's `s` opens.
-    app.handle_key(&keymap, plain('s'));
+    app.handle_key(plain('s'));
     assert!(!app.modals.is_empty(), "s opens the secret confirm");
-    app.handle_key(&keymap, plain('y'));
+    app.handle_key(plain('y'));
     assert!(
         app.proj().variables().vars["base_url"].secret,
         "s flips the secret flag from the form area"
@@ -14183,22 +14059,21 @@ fn form_focus_r_toggles_reveal_on_a_secret_variable() {
     goto_row(&mut app, |r| {
         r == &crate::components::varmanager::VmRow::Var("api_key".into())
     });
-    let keymap = Keymap::default_bindings();
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
 
     let chips = app.varmanager.footer_chips(app.proj(), None);
     assert!(
         chips.iter().any(|(k, l, _)| *k == "r" && *l == "reveal"),
         "{chips:?}"
     );
-    app.handle_key(&keymap, plain('r'));
+    app.handle_key(plain('r'));
     assert!(app.varmanager.form.revealed, "r reveals the secret");
     let chips = app.varmanager.footer_chips(app.proj(), None);
     assert!(
         chips.iter().any(|(k, l, _)| *k == "r" && *l == "hide"),
         "{chips:?}"
     );
-    app.handle_key(&keymap, plain('r'));
+    app.handle_key(plain('r'));
     assert!(!app.varmanager.form.revealed);
 }
 
@@ -14310,7 +14185,6 @@ fn option_rename_is_the_inline_name_cell_edit() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     goto_group(&mut app, "user");
-    let keymap = Keymap::default_bindings();
 
     // The context menu's "Rename" seeds the name cell in place.
     app.update(Action::StartOptionNameEdit { row: 1 });
@@ -14321,7 +14195,7 @@ fn option_rename_is_the_inline_name_cell_edit() {
 
     // Committing a changed name IS the rename.
     type_chars(&mut app, "by");
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     let qa = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     assert!(qa.contains("[options.user.bobby]"), "{qa}");
     assert!(!qa.contains("[options.user.bob]\n"), "{qa}");
@@ -14330,7 +14204,7 @@ fn option_rename_is_the_inline_name_cell_edit() {
     // the full Edit prompt now).
     app.varmanager.focus = VmFocus::Grid;
     app.varmanager.grid.cursor = (0, 1);
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE));
     assert!(app.modals.is_empty(), "no rename modal");
     let edit = app.varmanager.grid.editing.as_ref().expect("inline edit");
     assert_eq!((edit.row, edit.col), (0, 0), "F2 targets the name cell");
@@ -14357,15 +14231,14 @@ fn the_ghost_row_creates_an_entry_and_keeps_going_into_its_first_field() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     goto_group(&mut app, "user");
-    let keymap = Keymap::default_bindings();
 
     // Row 2 is the ghost row (alice, bob, then the ghost).
     let r = cell_rect(&mut app, 2, 0);
     app.handle_mouse(left_down(r.x, r.y));
     for c in "carol".chars() {
-        app.handle_key(&keymap, plain(c));
+        app.handle_key(plain(c));
     }
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
     let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
@@ -14381,9 +14254,9 @@ fn the_ghost_row_creates_an_entry_and_keeps_going_into_its_first_field() {
     assert_eq!((edit.row, edit.col), (2, 1));
 
     for c in "3003".chars() {
-        app.handle_key(&keymap, plain(c));
+        app.handle_key(plain(c));
     }
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     let env = postui_core::fixtures::load_environment(dir.path(), "qa").unwrap();
     assert_eq!(env.options["user"]["carol"].values["user"], "3003");
 }
@@ -14395,16 +14268,15 @@ fn a_refused_entry_name_toasts_and_keeps_the_typed_text() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     goto_group(&mut app, "user");
-    let keymap = Keymap::default_bindings();
 
     let r = cell_rect(&mut app, 2, 0);
     app.handle_mouse(left_down(r.x, r.y));
     // `description` inside an entries table is an entry's own description,
     // so core refuses it as an entry name.
     for c in "description".chars() {
-        app.handle_key(&keymap, plain(c));
+        app.handle_key(plain(c));
     }
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
     assert!(!app.toasts.is_empty(), "the refusal is surfaced");
     let edit = app
@@ -14437,7 +14309,10 @@ fn the_field_editor_renames_adds_and_removes_across_variables_and_every_env() {
         slots: vec!["user_id".into()],
     });
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
-    assert_eq!(app.proj().variables().selectors["user"].fields, vec!["user_id"]);
+    assert_eq!(
+        app.proj().variables().selectors["user"].fields,
+        vec!["user_id"]
+    );
     let qa = postui_core::fixtures::load_environment(dir.path(), "qa").unwrap();
     assert_eq!(qa.options["user"]["alice"].values["user_id"], "1001");
     let dev = postui_core::fixtures::load_environment(dir.path(), "dev").unwrap();
@@ -14468,7 +14343,10 @@ fn the_field_editor_renames_adds_and_removes_across_variables_and_every_env() {
         slots: vec!["user_id".into(), String::new()],
     });
     assert!(app.modals.is_empty(), "removal is undoable, no confirm");
-    assert_eq!(app.proj().variables().selectors["user"].fields, vec!["user_id"]);
+    assert_eq!(
+        app.proj().variables().selectors["user"].fields,
+        vec!["user_id"]
+    );
     let qa = postui_core::fixtures::load_environment(dir.path(), "qa").unwrap();
     assert!(
         !qa.options["user"]["alice"]
@@ -14600,7 +14478,7 @@ fn right_clicking_another_row_commits_the_live_cell_to_the_entry_it_belongs_to()
     // follows the pointer, and the '9' must land at the end)
     let r = cell_rect(&mut app, 1, 1);
     app.handle_mouse(left_down(r.x + 10, r.y));
-    app.handle_key(&Keymap::default_bindings(), plain('9'));
+    app.handle_key(plain('9'));
     assert!(app.varmanager.grid.editing.is_some());
 
     // …then right-click alice's row (row 0).
@@ -14650,7 +14528,7 @@ fn right_clicking_commits_a_live_form_field() {
     // land at the end of the text.
     let r = field_rect(&mut app, VmField::EnvValue);
     app.handle_mouse(left_down(r.x + r.width - 2, r.y + 1));
-    app.handle_key(&Keymap::default_bindings(), plain('9'));
+    app.handle_key(plain('9'));
 
     let row = app.varmanager.left_cursor;
     let left_rect = app.hits.rect_of(&crate::hit::Hit::VmLeftRow(row)).unwrap();
@@ -14671,15 +14549,14 @@ fn the_keyboard_reaches_the_grid_selects_a_row_and_edits_the_focused_cell() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     goto_group(&mut app, "user");
-    let keymap = Keymap::default_bindings();
     let arrow = |c| KeyEvent::new(c, KeyModifiers::NONE);
     assert_eq!(app.varmanager.focus, VmFocus::List);
 
     // Right steps into the grid; Down then moves the *grid's* cursor
     // rather than the left list's selection.
-    app.handle_key(&keymap, arrow(KeyCode::Right));
+    app.handle_key(arrow(KeyCode::Right));
     assert_eq!(app.varmanager.focus, VmFocus::Grid);
-    app.handle_key(&keymap, arrow(KeyCode::Down));
+    app.handle_key(arrow(KeyCode::Down));
     assert_eq!(app.varmanager.grid.cursor.0, 1);
     assert_eq!(
         app.varmanager.detail,
@@ -14688,13 +14565,13 @@ fn the_keyboard_reaches_the_grid_selects_a_row_and_edits_the_focused_cell() {
     );
 
     // space selects the entry the cursor is on — row 1, not row 0.
-    app.handle_key(&keymap, plain(' '));
+    app.handle_key(plain(' '));
     assert_eq!(app.proj().selections_for("qa")["user"], "bob");
     assert_eq!(app.proj().resolved().values["user"], "2002");
 
     // Enter edits the focused cell; Right first moves onto the value column.
-    app.handle_key(&keymap, arrow(KeyCode::Right));
-    app.handle_key(&keymap, arrow(KeyCode::Enter));
+    app.handle_key(arrow(KeyCode::Right));
+    app.handle_key(arrow(KeyCode::Enter));
     let edit = app
         .varmanager
         .grid
@@ -14706,13 +14583,13 @@ fn the_keyboard_reaches_the_grid_selects_a_row_and_edits_the_focused_cell() {
 
     // Esc leaves the edit; a second Esc hands the keyboard back to the
     // list; only a third closes the screen.
-    app.handle_key(&keymap, arrow(KeyCode::Esc));
+    app.handle_key(arrow(KeyCode::Esc));
     assert!(app.varmanager.grid.editing.is_none());
     assert_eq!(app.varmanager.focus, VmFocus::Grid);
-    app.handle_key(&keymap, arrow(KeyCode::Esc));
+    app.handle_key(arrow(KeyCode::Esc));
     assert_eq!(app.varmanager.focus, VmFocus::List);
     assert_eq!(app.screen, Screen::Manage);
-    app.handle_key(&keymap, arrow(KeyCode::Esc));
+    app.handle_key(arrow(KeyCode::Esc));
     assert_eq!(app.screen, Screen::Main);
 }
 
@@ -14725,7 +14602,6 @@ fn tab_and_backtab_walk_the_grid_in_reading_order() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     goto_group(&mut app, "user");
-    let keymap = Keymap::default_bindings();
     let at = |app: &App| app.varmanager.grid.editing.as_ref().map(|e| (e.row, e.col));
 
     // Start on alice's value cell (the last column of row 0).
@@ -14734,15 +14610,15 @@ fn tab_and_backtab_walk_the_grid_in_reading_order() {
     assert_eq!(at(&app), Some((0, 1)));
 
     // Off the end of the row wraps to the next row's name cell…
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
     assert_eq!(at(&app), Some((1, 0)));
     // …and BackTab runs back the same way.
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE));
     assert_eq!(at(&app), Some((0, 1)));
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE));
     assert_eq!(at(&app), Some((0, 0)));
     // Nothing is before the first cell: the edit stays put.
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE));
     assert_eq!(at(&app), Some((0, 0)));
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
 }
@@ -15023,16 +14899,14 @@ fn testbed_renders_a_bevel_and_an_underline() {
 #[test]
 fn q_quits_the_app_from_the_testbed_screen() {
     let mut app = App::new_for_test_with_testbed(true);
-    let keymap = Keymap::default_bindings();
-    app.handle_key(&keymap, plain('q'));
+    app.handle_key(plain('q'));
     assert!(app.should_quit, "q must quit from the testbed screen");
 }
 
 #[test]
 fn esc_quits_the_app_from_the_testbed_screen() {
     let mut app = App::new_for_test_with_testbed(true);
-    let keymap = Keymap::default_bindings();
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(app.should_quit, "Esc must quit from the testbed screen");
 }
 
@@ -15454,14 +15328,13 @@ fn manage_opens_on_the_requested_tab_and_alt_arrows_cycle_tabs() {
     });
     assert_eq!(app.screen, Screen::Manage);
     assert_eq!(app.manage.tab, crate::components::manage::ManageTab::Spaces);
-    let keymap = Keymap::default_bindings();
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
     assert_eq!(
         app.manage.tab,
         crate::components::manage::ManageTab::Variables,
         "wraps"
     );
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Left, KeyModifiers::ALT));
+    app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::ALT));
     assert_eq!(app.manage.tab, crate::components::manage::ManageTab::Spaces);
     app.update(Action::OpenManage { tab: None });
     assert_eq!(app.screen, Screen::Main, "alt+v toggles closed");
@@ -15699,16 +15572,15 @@ fn list_keys_move_delete_and_rename_through_the_prompt() {
     app.update(Action::OpenManage {
         tab: Some(ManageTab::Spaces),
     });
-    let keymap = Keymap::default_bindings();
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     assert_eq!(app.manage.list.cursor, 1);
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
     assert_eq!(app.proj().spaces(), ["auth", "main"]);
     assert_eq!(app.manage.list.cursor, 0, "cursor follows the moved space");
 
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.modals.is_empty(), "Enter is not rename");
-    app.handle_key(&keymap, plain('r'));
+    app.handle_key(plain('r'));
     assert!(
         matches!(
             app.modals.top(),
@@ -15721,14 +15593,14 @@ fn list_keys_move_delete_and_rename_through_the_prompt() {
     );
     app.update(Action::Close);
 
-    app.handle_key(&keymap, plain('m'));
+    app.handle_key(plain('m'));
     assert!(
         matches!(app.modals.top(), Some(Modal::Chooser(c)) if c.title() == "Move all requests to"),
         "`m` opens the move-all chooser (the button drops on a narrow pane)"
     );
     app.update(Action::Close);
 
-    app.handle_key(&keymap, plain('d'));
+    app.handle_key(plain('d'));
     assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
 }
 
@@ -16584,8 +16456,7 @@ mod undo_tests {
         // must land at the end of the text.
         let r = field_rect(&mut app, VmField::EnvValue);
         app.handle_mouse(left_down(r.x + r.width - 2, r.y + 1));
-        let keymap = Keymap::default_bindings();
-        app.handle_key(&keymap, plain('9'));
+        app.handle_key(plain('9'));
         // Click away commits (Task 8's commit-first rule).
         let row = app.varmanager.left_cursor;
         let left_rect = app.hits.rect_of(&crate::hit::Hit::VmLeftRow(row)).unwrap();
@@ -16627,7 +16498,8 @@ mod undo_tests {
         let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
         assert!(!on_disk.contains("base_url"), "pair removed: {on_disk}");
         assert_eq!(
-            app.proj().resolved().values["base_url"], "http://localhost:8080",
+            app.proj().resolved().values["base_url"],
+            "http://localhost:8080",
             "resolution falls back to the declaration default"
         );
 
@@ -16702,7 +16574,10 @@ mod undo_tests {
         app.handle_mouse(left_down(r.x, r.y));
 
         assert_eq!(
-            app.proj().secrets().get("qa").and_then(|m| m.get("api_key")),
+            app.proj()
+                .secrets()
+                .get("qa")
+                .and_then(|m| m.get("api_key")),
             None,
             "the stored secret is gone"
         );
@@ -16733,7 +16608,10 @@ mod undo_tests {
         });
         app.capture_undo();
         assert_eq!(
-            app.proj().secrets().get("qa").and_then(|m| m.get("api_key")),
+            app.proj()
+                .secrets()
+                .get("qa")
+                .and_then(|m| m.get("api_key")),
             None,
             "the stored secret is gone"
         );
@@ -16750,7 +16628,10 @@ mod undo_tests {
         );
         app.update(Action::Redo);
         assert_eq!(
-            app.proj().secrets().get("qa").and_then(|m| m.get("api_key")),
+            app.proj()
+                .secrets()
+                .get("qa")
+                .and_then(|m| m.get("api_key")),
             None,
             "redo removes it again"
         );
@@ -16776,8 +16657,7 @@ mod undo_tests {
         // the short value text still lands the caret at its end.
         let r = cell_rect(&mut app, 0, 1);
         app.handle_mouse(left_down(r.x + 10, r.y));
-        let keymap = Keymap::default_bindings();
-        app.handle_key(&keymap, plain('9'));
+        app.handle_key(plain('9'));
         // Clicking a different cell commits the first one.
         let other = cell_rect(&mut app, 1, 1);
         app.handle_mouse(left_down(other.x + 10, other.y));
@@ -16795,7 +16675,6 @@ mod undo_tests {
 
     #[test]
     fn alt_arrows_word_jump_in_the_body_instead_of_cycling_tabs() {
-        let keymap = Keymap::default_bindings();
         let mut app = App::new_for_test();
         app.update(Action::CreateRequest("w".into()));
         app.update(Action::CycleMethod); // POST, so Body is enabled
@@ -16804,7 +16683,7 @@ mod undo_tests {
         app.editor.sub_focus = SubFocus::Content;
         app.focus = PaneId::Editor;
         app.editor.body.cursor = edtui::Index2::new(0, 0);
-        app.handle_key(&keymap, KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
         assert_eq!(
             app.editor.active_tab,
             EditorTab::Body,
@@ -16817,7 +16696,7 @@ mod undo_tests {
         );
         // Anywhere else, alt+Right still cycles tabs.
         app.editor.sub_focus = SubFocus::Url;
-        app.handle_key(&keymap, KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
         assert_ne!(
             app.editor.active_tab,
             EditorTab::Body,
@@ -17008,7 +16887,6 @@ mod undo_tests {
     fn theme_picker_polarity_toggle_flips_sets_and_esc_still_reverts() {
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let mut app = App::new_for_test();
-        let keymap = crate::keys::Keymap::default_bindings();
         let original = app.theme.page;
         let original_name = app.theme_name.clone();
         app.update(Action::OpenThemeChooser);
@@ -17021,10 +16899,7 @@ mod undo_tests {
             assert_eq!(c.selected_id(), Some("terminal"));
         }
         for ch in "light".chars() {
-            app.handle_key(
-                &keymap,
-                KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
-            );
+            app.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
         }
         {
             let Some(crate::components::modal::Modal::Chooser(c)) = app.modals.top() else {
@@ -17033,26 +16908,23 @@ mod undo_tests {
             assert_eq!(c.selected_id(), None, "no light themes in the dark set");
         }
         for _ in 0..5 {
-            app.handle_key(
-                &keymap,
-                KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
-            );
+            app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
         }
         // Terminal has no light/dark counterpart: the switch is inert
         // while it's highlighted.
-        app.handle_key(&keymap, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
         assert_eq!(app.theme_name, "terminal", "unpaired: flip does nothing");
         // Move to the paired "dark" builtin; Right now lands on its
         // counterpart in the light set, and the preview follows.
-        app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         assert_eq!(app.theme_name, "dark");
-        app.handle_key(&keymap, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
         assert_eq!(app.theme_name, "light", "flip follows the counterpart");
         assert_ne!(app.theme.page, original);
         // Flip back: counterpart again — the same family, dark side.
-        app.handle_key(&keymap, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
         assert_eq!(app.theme_name, "dark");
-        app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert_eq!(app.theme_name, original_name, "esc restores after toggling");
         assert_eq!(app.theme.page, original);
     }
@@ -17064,18 +16936,17 @@ mod undo_tests {
     fn theme_picker_flip_stays_on_the_selected_family() {
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let mut app = App::new_for_test();
-        let keymap = crate::keys::Keymap::default_bindings();
         app.update(Action::ApplyTheme("gruvbox-dark".into()));
         app.update(Action::OpenThemeChooser);
-        app.handle_key(&keymap, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
         assert_eq!(app.theme_name, "gruvbox-light");
-        app.handle_key(&keymap, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
         assert_eq!(app.theme_name, "gruvbox-dark");
         // Catppuccin pairs across its own names, not the stem convention.
-        app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         app.update(Action::ApplyTheme("catppuccin-mocha".into()));
         app.update(Action::OpenThemeChooser);
-        app.handle_key(&keymap, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
         assert_eq!(app.theme_name, "catppuccin-latte");
     }
 
@@ -17122,7 +16993,6 @@ mod undo_tests {
     fn theme_picker_previews_on_highlight_and_esc_reverts() {
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let mut app = App::new_for_test();
-        let keymap = crate::keys::Keymap::default_bindings();
         let original = app.theme.text;
         let original_name = app.theme_name.clone();
         app.update(Action::OpenThemeChooser);
@@ -17131,11 +17001,11 @@ mod undo_tests {
         // "gruvbox-dark". The live-apply proof compares the text token
         // (the terminal fallback shares Dark's seeds, so page alone
         // wouldn't necessarily distinguish neighbors).
-        app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         assert_eq!(app.theme_name, "gruvbox-dark", "highlight applies live");
         assert_ne!(app.theme.text, original);
-        app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert_eq!(
             app.theme_name, original_name,
             "esc restores the prior theme"
@@ -17148,11 +17018,10 @@ mod undo_tests {
     fn theme_picker_close_action_reverts_the_live_preview() {
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let mut app = App::new_for_test();
-        let keymap = crate::keys::Keymap::default_bindings();
         let original = app.theme.page;
         let original_name = app.theme_name.clone();
         app.update(Action::OpenThemeChooser);
-        app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)); // "dark"
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)); // "dark"
         assert_eq!(app.theme_name, "dark", "highlight applies live");
         // A bare `Close` (the global esc binding) skips apply_modal_result.
         app.update(Action::Close);
@@ -17171,9 +17040,8 @@ mod undo_tests {
     fn theme_picker_click_off_keeps_the_previewed_theme() {
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let mut app = App::new_for_test();
-        let keymap = crate::keys::Keymap::default_bindings();
         app.update(Action::OpenThemeChooser);
-        app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)); // "dark"
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)); // "dark"
         // A click off the picker is an accept, not a cancel: the theme
         // the user is looking at is the one they get.
         click_hit(&mut app, Hit::ModalOutside);
@@ -17187,10 +17055,9 @@ mod undo_tests {
     fn theme_picker_enter_keeps_the_previewed_theme() {
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let mut app = App::new_for_test();
-        let keymap = crate::keys::Keymap::default_bindings();
         app.update(Action::OpenThemeChooser);
-        app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)); // "dark"
-        app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)); // "dark"
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(app.theme_name, "dark");
         assert_eq!(app.ui_settings.theme, "dark");
         assert!(app.modals.top().is_none());
@@ -17204,13 +17071,9 @@ mod undo_tests {
     fn filter_typing_moves_the_live_preview_with_the_highlight() {
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let mut app = App::new_for_test();
-        let keymap = crate::keys::Keymap::default_bindings();
         app.update(Action::OpenThemeChooser);
         for ch in "mocha".chars() {
-            app.handle_key(
-                &keymap,
-                KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
-            );
+            app.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
         }
         assert_eq!(
             app.theme_name, "catppuccin-mocha",
@@ -17945,7 +17808,8 @@ fn extract_selector_from_a_url_selection_creates_the_selector_its_option_and_sel
     assert!(env.contains("[options.region.us-east]"), "{env}");
     assert!(env.contains("region = \"east\""), "{env}");
     assert_eq!(
-        app.proj().selections_for("qa")
+        app.proj()
+            .selections_for("qa")
             .get("region")
             .map(String::as_str),
         Some("us-east"),
@@ -17968,7 +17832,6 @@ fn extract_selector_shared_puts_the_option_in_variables_toml() {
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    let keymap = Keymap::default_bindings();
     app.editor.url = LineInput::new("v2");
     app.focus = PaneId::Editor;
     app.editor.sub_focus = SubFocus::Url;
@@ -17981,11 +17844,11 @@ fn extract_selector_shared_puts_the_option_in_variables_toml() {
             ..
         })
     ));
-    type_into_field(&mut app, &keymap, "api_version");
-    app.handle_key(&keymap, tab_key()); // option, seeded "v2"
-    app.handle_key(&keymap, tab_key()); // scope
-    app.handle_key(&keymap, right_key()); // Shared
-    app.handle_key(&keymap, enter_key());
+    type_into_field(&mut app, "api_version");
+    app.handle_key(tab_key()); // option, seeded "v2"
+    app.handle_key(tab_key()); // scope
+    app.handle_key(right_key()); // Shared
+    app.handle_key(enter_key());
 
     assert!(app.modals.is_empty(), "{:?}", app.toasts.messages());
     assert_eq!(app.editor.url.text(), "{{api_version}}");
@@ -17997,7 +17860,9 @@ fn extract_selector_shared_puts_the_option_in_variables_toml() {
     let env = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     assert!(!env.contains("api_version"), "{env}");
     assert_eq!(
-        app.proj().local().shared_selections
+        app.proj()
+            .local()
+            .shared_selections
             .get("api_version")
             .map(String::as_str),
         Some("v2")
@@ -18115,7 +17980,7 @@ const JQ_BODY: &str =
 
 fn type_str(app: &mut App, s: &str) {
     for c in s.chars() {
-        app.handle_key(&Keymap::default_bindings(), plain(c));
+        app.handle_key(plain(c));
     }
 }
 
@@ -18126,7 +17991,7 @@ fn alt_q_focuses_the_jq_bar_and_typing_filters_the_tree_live() {
     app.update(Action::RefreshSidebar);
     app.update(Action::ForceOpenRequest("main/r".into()));
     ready_response(&mut app, JQ_BODY);
-    assert!(app.handle_key(&Keymap::default_bindings(), alt('q')));
+    assert!(app.handle_key(alt('q')));
     assert_eq!(app.focus, PaneId::Response);
     assert!(app.session.response.jq_focused());
     type_str(&mut app, ".data.total");
@@ -18136,7 +18001,7 @@ fn alt_q_focuses_the_jq_bar_and_typing_filters_the_tree_live() {
         "the bar mirrors into the request"
     );
     assert!(app.editor.is_dirty());
-    app.handle_key(&Keymap::default_bindings(), alt('q'));
+    app.handle_key(alt('q'));
     assert!(
         app.session.response.jq_focused(),
         "alt+q again keeps the caret: it always means type a filter"
@@ -18151,13 +18016,10 @@ fn alt_q_focuses_an_on_filter_without_switching_it_and_esc_keeps_it() {
     ready_response(&mut app, JQ_BODY);
     app.update(Action::JqApply(".data.total".into()));
     assert!(app.session.response.jq_open() && !app.session.response.jq_focused());
-    app.handle_key(&Keymap::default_bindings(), alt('q'));
+    app.handle_key(alt('q'));
     assert!(app.session.response.jq_focused());
     assert!(app.editor.jq_enabled, "alt+q never switches a filter off");
-    app.handle_key(
-        &Keymap::default_bindings(),
-        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
-    );
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(app.editor.jq_enabled, "it was on when editing started");
     assert!(app.session.response.jq_open());
     assert_eq!(app.editor.jq, ".data.total");
@@ -18170,16 +18032,16 @@ fn alt_shift_q_is_the_switch() {
     ready_response(&mut app, JQ_BODY);
     let full = app.session.response.view().unwrap().view_text();
     app.update(Action::JqApply(".data.total".into()));
-    app.handle_key(&Keymap::default_bindings(), alt_shift('q'));
+    app.handle_key(alt_shift('q'));
     assert!(!app.editor.jq_enabled, "off, text kept");
     assert_eq!(app.editor.jq, ".data.total");
     assert!(!app.session.response.jq_open());
     assert_eq!(app.session.response.view().unwrap().view_text(), full);
-    app.handle_key(&Keymap::default_bindings(), alt_shift('q'));
+    app.handle_key(alt_shift('q'));
     assert!(app.editor.jq_enabled, "on again + focused");
     assert!(app.session.response.jq_focused());
     assert_eq!(app.session.response.view().unwrap().view_text(), "2");
-    app.handle_key(&Keymap::default_bindings(), alt_shift('q'));
+    app.handle_key(alt_shift('q'));
     assert!(!app.session.response.jq_open(), "focused bar closes too");
 }
 
@@ -18187,12 +18049,9 @@ fn alt_shift_q_is_the_switch() {
 fn enter_commits_the_filter_and_leaves_it_on() {
     let mut app = App::new_for_test();
     ready_response(&mut app, JQ_BODY);
-    app.handle_key(&Keymap::default_bindings(), alt('q'));
+    app.handle_key(alt('q'));
     type_str(&mut app, ".data.total");
-    app.handle_key(
-        &Keymap::default_bindings(),
-        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-    );
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(!app.session.response.jq_focused());
     assert!(app.editor.jq_enabled);
     assert!(
@@ -18207,15 +18066,12 @@ fn esc_cancels_the_edit_and_a_bar_opened_onto_no_filter_closes() {
     let mut app = App::new_for_test();
     ready_response(&mut app, JQ_BODY);
     let full = app.session.response.view().unwrap().view_text();
-    app.handle_key(&Keymap::default_bindings(), alt('q'));
+    app.handle_key(alt('q'));
     type_str(&mut app, ".data.total");
     app.capture_undo();
     app.no_coalesce = true;
     assert_eq!(app.session.response.view().unwrap().view_text(), "2");
-    app.handle_key(
-        &Keymap::default_bindings(),
-        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
-    );
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert_eq!(app.editor.jq, "", "esc drops what was typed");
     assert!(app.editor.jq_enabled, "…and leaves the switch on");
     assert!(
@@ -18236,15 +18092,12 @@ fn esc_puts_a_saved_filter_back_and_leaves_it_on() {
     let mut app = App::new_for_test();
     ready_response(&mut app, JQ_BODY);
     app.update(Action::JqApply(".data.total".into()));
-    app.handle_key(&Keymap::default_bindings(), alt_shift('q')); // closes (off)
-    app.handle_key(&Keymap::default_bindings(), alt('q')); // on + focused
+    app.handle_key(alt_shift('q')); // closes (off)
+    app.handle_key(alt('q')); // on + focused
     assert!(app.session.response.jq_focused());
     type_str(&mut app, "s");
     assert_eq!(app.editor.jq, ".data.totals");
-    app.handle_key(
-        &Keymap::default_bindings(),
-        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
-    );
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert_eq!(app.editor.jq, ".data.total", "the edit is reverted");
     assert!(!app.session.response.jq_focused());
     assert!(
@@ -18265,10 +18118,7 @@ fn esc_on_an_open_filter_reverts_the_edit_and_keeps_it_on() {
     app.update(Action::JqApply(".data.total".into()));
     app.update(Action::OpenJqBar);
     type_str(&mut app, "s");
-    app.handle_key(
-        &Keymap::default_bindings(),
-        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
-    );
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert_eq!(app.editor.jq, ".data.total");
     assert!(app.editor.jq_enabled, "it was on when editing started");
     assert!(
@@ -18287,18 +18137,12 @@ fn esc_in_the_tree_dismisses_selection_and_search_but_never_the_filter() {
     app.focus = PaneId::Response;
     app.update(Action::OpenResponseSearch);
     // First Esc: the search line goes; the bar (and filter) stay.
-    app.handle_key(
-        &Keymap::default_bindings(),
-        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
-    );
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(app.session.response.view().unwrap().search.is_none());
     assert!(app.session.response.jq_open());
     assert_eq!(app.session.response.view().unwrap().view_text(), "2");
     // Another Esc from the tree leaves the saved filter alone.
-    app.handle_key(
-        &Keymap::default_bindings(),
-        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
-    );
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(app.session.response.jq_open());
     assert_eq!(app.editor.jq, ".data.total");
     assert_eq!(app.session.response.view().unwrap().view_text(), "2");
@@ -18315,10 +18159,7 @@ fn esc_after_a_tee_up_cancels_back_to_the_filter_before_it() {
     });
     assert!(app.session.response.jq_focused());
     assert_eq!(app.editor.jq, "map(select(.x == ))");
-    app.handle_key(
-        &Keymap::default_bindings(),
-        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
-    );
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert_eq!(app.editor.jq, ".data.total");
     assert_eq!(app.session.response.view().unwrap().view_text(), "2");
 }
@@ -18350,11 +18191,8 @@ fn the_toggle_closes_an_open_bar_whether_or_not_it_is_focused() {
 fn esc_on_an_empty_bar_just_hides_it() {
     let mut app = App::new_for_test();
     ready_response(&mut app, JQ_BODY);
-    app.handle_key(&Keymap::default_bindings(), alt('q'));
-    app.handle_key(
-        &Keymap::default_bindings(),
-        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
-    );
+    app.handle_key(alt('q'));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(!app.session.response.jq_open());
     assert!(app.editor.jq_enabled, "nothing to switch off");
     assert!(!app.editor.is_dirty());
@@ -18381,7 +18219,7 @@ fn a_null_or_empty_result_keeps_the_full_body_with_a_note() {
     app.session.response.set_jq_tab(crate::config::JqTab::Cycle);
     ready_response(&mut app, JQ_BODY);
     let full = app.session.response.view().unwrap().view_text();
-    app.handle_key(&Keymap::default_bindings(), alt('q'));
+    app.handle_key(alt('q'));
     // Mid-typing: `.dat` is valid jq that yields null.
     type_str(&mut app, ".dat");
     assert_eq!(app.session.response.view().unwrap().view_text(), full);
@@ -18420,10 +18258,7 @@ fn a_null_or_empty_result_keeps_the_full_body_with_a_note() {
     assert_eq!(app.session.response.view().unwrap().view_text(), full);
     assert_eq!(app.session.response.jq_bar().note, Some("no output"));
     // Enter does not change that: it is the committed state too.
-    app.handle_key(
-        &Keymap::default_bindings(),
-        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-    );
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert_eq!(app.session.response.view().unwrap().view_text(), full);
     assert_eq!(app.session.response.jq_bar().note, Some("no output"));
     // A real result clears the note.
@@ -18487,7 +18322,7 @@ fn a_saved_filter_is_applied_when_the_request_opens_and_when_a_response_lands() 
 fn undo_restores_the_previous_filter_text_in_the_bar() {
     let mut app = App::new_for_test();
     ready_response(&mut app, JQ_BODY);
-    app.handle_key(&Keymap::default_bindings(), alt('q'));
+    app.handle_key(alt('q'));
     type_str(&mut app, ".data");
     app.capture_undo();
     app.no_coalesce = true;
@@ -18533,7 +18368,7 @@ fn jq_apply_and_tee_up_drive_the_bar() {
 fn paste_goes_to_the_focused_jq_bar() {
     let mut app = App::new_for_test();
     ready_response(&mut app, JQ_BODY);
-    app.handle_key(&Keymap::default_bindings(), alt('q'));
+    app.handle_key(alt('q'));
     assert!(app.paste_text(".data.total"));
     assert_eq!(app.session.response.jq_text(), ".data.total");
 }
@@ -18619,16 +18454,15 @@ fn typing_in_the_jq_bar_ghosts_a_key_and_right_accepts_it() {
     ));
     app.update(Action::OpenJqBar);
     assert!(app.session.response.jq_focused());
-    let km = Keymap::default_bindings();
-    app.handle_key(&km, KeyEvent::new(KeyCode::Char('.'), KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Char('.'), KeyModifiers::NONE));
     assert_eq!(app.session.response.jq_ghost(), Some("data"));
-    app.handle_key(&km, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
     assert_eq!(app.session.response.jq_text(), ".data");
     assert_eq!(
         app.editor.jq, ".data",
         "an accepted completion is a request edit"
     );
-    app.handle_key(&km, KeyEvent::new(KeyCode::Char('.'), KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Char('.'), KeyModifiers::NONE));
     assert_eq!(app.session.response.jq_ghost(), Some("items"));
 }
 
@@ -18650,11 +18484,10 @@ fn a_big_body_fetches_completion_keys_in_the_background_and_lands_via_an_action(
         crate::components::response::ViewMode::Pretty,
     ));
     app.update(Action::OpenJqBar);
-    let km = Keymap::default_bindings();
     // Outside a tokio runtime the pool work runs inline: the filter run
     // (which parses the document) and then the key fetch both land within
     // the keystroke's reconcile.
-    app.handle_key(&km, KeyEvent::new(KeyCode::Char('.'), KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Char('.'), KeyModifiers::NONE));
     assert!(app.session.response.jq_bar().completion.pending().is_none());
     assert_eq!(app.session.response.jq_ghost(), Some("pad"));
 
@@ -18795,10 +18628,7 @@ fn the_footer_and_palette_reach_the_jq_bar() {
     app.update(Action::OpenPalette);
     type_str(&mut app, "jq filter");
     select_palette_command(&mut app, "response-jq");
-    app.handle_key(
-        &Keymap::default_bindings(),
-        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-    );
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.session.response.jq_focused());
 }
 
@@ -18806,7 +18636,7 @@ fn the_footer_and_palette_reach_the_jq_bar() {
 fn jq_is_a_no_op_on_a_non_json_response() {
     let mut app = App::new_for_test();
     ready_response(&mut app, "plain");
-    assert!(app.handle_key(&Keymap::default_bindings(), alt('q')));
+    assert!(app.handle_key(alt('q')));
     assert!(!app.session.response.jq_focused());
     assert_eq!(
         app.toasts.messages().len(),
@@ -19268,10 +19098,7 @@ async fn describe_a_filter_sends_the_shape_and_lands_the_reply_in_the_bar() {
         panic!("prompt")
     };
     type_str(&mut app, "just the total");
-    app.handle_key(
-        &Keymap::default_bindings(),
-        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-    );
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.session.response.jq_bar().ai_pending);
     let action = drain_ai(&mut app).await;
     app.update(action);
@@ -19380,10 +19207,7 @@ async fn esc_while_asking_cancels_and_a_late_reply_is_dropped() {
     app.update(Action::RunJqDescribe("x".into()));
     app.focus = PaneId::Response;
     app.session.response.set_jq_focus(true);
-    app.handle_key(
-        &Keymap::default_bindings(),
-        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
-    );
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(!app.session.response.jq_bar().ai_pending);
     assert!(app.ai_task.is_none());
     // A reply for the cancelled request is ignored.
@@ -19599,10 +19423,7 @@ fn release_outside_the_sidebar_and_escape_both_cancel() {
             ["main/beta", "main/gamma", "main/alpha"]
         );
         if cancel_with_esc {
-            app.handle_key(
-                &Keymap::default_bindings(),
-                KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
-            );
+            app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         } else {
             app.handle_mouse(left_up(110, 30)); // over the response pane
         }
@@ -19886,10 +19707,7 @@ fn losing_terminal_focus_cancels_a_live_drag() {
     // The keyboard is the user's again.
     app.focus = PaneId::Sidebar;
     app.sidebar.selected = Some(0);
-    app.handle_key(
-        &Keymap::default_bindings(),
-        KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
-    );
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     assert_eq!(app.sidebar.selected, Some(1));
 }
 
@@ -19979,10 +19797,7 @@ fn a_right_click_on_an_armed_press_disarms_it() {
     // disarmed press); close it before the left-button motion, or the
     // modal would swallow the mouse event before it ever reaches the
     // drag logic.
-    app.handle_key(
-        &Keymap::default_bindings(),
-        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
-    );
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
     app.handle_mouse(moved(r0.x + 2, r2.y));
     assert!(
@@ -20058,10 +19873,7 @@ fn escape_disarms_the_press_so_motion_cannot_restart_the_drag() {
     app.handle_mouse(left_down(r0.x + 2, r0.y));
     app.handle_mouse(moved(r0.x + 2, r2.y));
     assert!(app.sidebar.drag.is_some());
-    app.handle_key(
-        &Keymap::default_bindings(),
-        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
-    );
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.handle_mouse(moved(r0.x + 2, r1.y));
     assert!(app.sidebar.drag.is_none(), "the cancel stays cancelled");
     app.handle_mouse(left_up(r0.x + 2, r1.y));
@@ -20080,8 +19892,12 @@ fn escape_disarms_the_press_so_motion_cannot_restart_the_drag() {
 fn dragging_at_the_list_edge_scrolls_on_tick() {
     let (mut app, dir) = spaced_app();
     for i in 0..60 {
-        postui_core::fixtures::save_request(dir.path(), &format!("main/r{i:02}"), &req("https://x"))
-            .unwrap();
+        postui_core::fixtures::save_request(
+            dir.path(),
+            &format!("main/r{i:02}"),
+            &req("https://x"),
+        )
+        .unwrap();
     }
     app.update(Action::RefreshSidebar);
     let r0 = row_rect(&mut app, 0);
@@ -20297,10 +20113,7 @@ fn a_space_drag_snaps_back_on_a_release_outside_escape_or_a_right_click() {
 
         match cancel {
             "outside" => app.handle_mouse(left_up(110, 30)), // the detail pane
-            "escape" => app.handle_key(
-                &Keymap::default_bindings(),
-                KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
-            ),
+            "escape" => app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
             _ => app.handle_mouse(right_down(r2.x + 2, r2.y)),
         };
 
@@ -20499,7 +20312,7 @@ fn every_other_key_is_swallowed_during_a_sidebar_drag() {
         app.handle_mouse(moved(r0.x + 2, r2.y));
         let selected = app.sidebar.selected_slug();
 
-        app.handle_key(&Keymap::default_bindings(), ev);
+        app.handle_key(ev);
 
         assert!(app.sidebar.drag.is_some(), "{ev:?}: the drag survives");
         assert_eq!(
@@ -20530,7 +20343,7 @@ fn every_other_key_is_swallowed_during_a_space_drag() {
         app.handle_mouse(left_down(r0.x + 2, r0.y));
         app.handle_mouse(moved(r0.x + 2, r2.y));
 
-        app.handle_key(&Keymap::default_bindings(), ev);
+        app.handle_key(ev);
 
         assert!(app.manage.list.drag.is_some(), "{ev:?}: the drag survives");
         assert_eq!(
@@ -20550,10 +20363,7 @@ fn the_modified_quit_combo_still_quits_during_a_drag() {
     let r2 = row_rect(&mut app, 2);
     app.handle_mouse(left_down(r0.x + 2, r0.y));
     app.handle_mouse(moved(r0.x + 2, r2.y));
-    app.handle_key(
-        &Keymap::default_bindings(),
-        KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
-    );
+    app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
     assert!(app.should_quit, "ctrl+c is the escape hatch");
 }
 
@@ -21168,7 +20978,7 @@ fn save_and_quit_stays_open_when_the_save_fails() {
     std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o555);
     std::fs::set_permissions(&space_dir, perms.clone()).unwrap();
     app.update(Action::Quit);
-    app.handle_key(&Keymap::default_bindings(), plain('s'));
+    app.handle_key(plain('s'));
     std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
     std::fs::set_permissions(&space_dir, perms).unwrap();
     assert!(!app.should_quit, "a failed save must not quit");
@@ -21291,7 +21101,8 @@ fn undo_of_a_space_delete_restores_the_space_its_request_and_its_memory() {
     app.update(Action::Undo);
     assert_eq!(app.proj().spaces(), ["main", "auth"]);
     assert_eq!(
-        app.proj().local().active_space, "main",
+        app.proj().local().active_space,
+        "main",
         "undo returns to the deleted space"
     );
     // Exactly one space switch: restoring `.local/state.toml` must not
@@ -21425,23 +21236,37 @@ fn reload_from_disk_keeps_the_current_settings_when_config_toml_will_not_parse()
 }
 
 #[test]
-fn reload_from_disk_applies_a_new_keys_toml_and_flags_the_swap() {
+fn reload_from_disk_applies_a_new_keys_toml_end_to_end() {
     let mut app = App::new_for_test();
     let dir = config_at_tempdir(&mut app);
     std::fs::write(dir.path().join("keys.toml"), "save = \"alt+shift+s\"\n").unwrap();
-    assert!(!app.keymap_changed);
+    // The rebound combo does nothing yet, and the default one still saves.
+    let alt_shift_s = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::ALT | KeyModifiers::SHIFT);
+    assert_eq!(
+        app.keymap
+            .lookup(&crate::keys::KeyCombo::from_event(&alt_shift_s)),
+        None
+    );
 
     app.update(Action::ReloadFromDisk);
 
-    let combo = crate::keys::KeyCombo::parse("alt+shift+s").unwrap();
-    assert_eq!(app.keymap.lookup(&combo), Some(Action::SaveRequest));
-    assert!(app.keymap_changed, "main.rs is told to swap its copy");
+    // End to end through the router, not just the map: `handle_key` reads
+    // `self.keymap`, so the new binding is live for the very next key.
+    postui_core::fixtures::save_request(app.proj().root(), "main/ping", &req("https://x/ping"))
+        .unwrap();
+    app.update(Action::RefreshSidebar);
+    app.update(Action::OpenRequest("main/ping".into()));
+    app.focus = PaneId::Editor;
+    app.editor.sub_focus = SubFocus::Url;
+    type_chars(&mut app, "/edited");
+    assert!(app.editor.is_dirty());
 
-    // A second, identical reload still flags it: the check is cheap and
-    // honest, and a missed swap would strand the event loop on stale keys.
-    app.keymap_changed = false;
-    app.update(Action::ReloadFromDisk);
-    assert!(app.keymap_changed);
+    app.handle_key(alt_shift_s);
+
+    assert!(
+        !app.editor.is_dirty(),
+        "the rebound combo saved the request"
+    );
 }
 
 #[test]

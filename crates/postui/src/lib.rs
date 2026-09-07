@@ -27,6 +27,10 @@ mod fs_lint_test {
     fn std_fs_appears_only_in_hostfs_and_test_code() {
         let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let hits = postui_core::fs_lint::check(&src, &["hostfs.rs"]);
-        assert!(hits.is_empty(), "std::fs outside hostfs:\n{}", hits.join("\n"));
+        assert!(
+            hits.is_empty(),
+            "std::fs outside hostfs:\n{}",
+            hits.join("\n")
+        );
     }
 }

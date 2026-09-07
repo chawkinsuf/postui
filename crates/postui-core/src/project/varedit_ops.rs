@@ -10,25 +10,90 @@ use crate::vars::is_valid_var_name;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VarEdit {
-    SetEnvValue { env: String, name: String, value: String },
-    SetDefault { name: String, value: String },
-    SetDescription { owner: String, value: String },
-    SetSecretValue { env: String, name: String, value: String },
-    SetOptionValue { env: String, selector: String, option: String, field: String, value: String },
-    SetOptionDescription { env: String, selector: String, option: String, description: Option<String> },
-    NewVar { name: String, description: Option<String> },
-    NewSelector { name: String, fields: Vec<String>, shared: bool },
-    Rename { from: String, to: String },
-    Delete { name: String },
-    ToggleSecret { name: String },
-    SetFields { selector: String, fields: Vec<String> },
+    SetEnvValue {
+        env: String,
+        name: String,
+        value: String,
+    },
+    SetDefault {
+        name: String,
+        value: String,
+    },
+    SetDescription {
+        owner: String,
+        value: String,
+    },
+    SetSecretValue {
+        env: String,
+        name: String,
+        value: String,
+    },
+    SetOptionValue {
+        env: String,
+        selector: String,
+        option: String,
+        field: String,
+        value: String,
+    },
+    SetOptionDescription {
+        env: String,
+        selector: String,
+        option: String,
+        description: Option<String>,
+    },
+    NewVar {
+        name: String,
+        description: Option<String>,
+    },
+    NewSelector {
+        name: String,
+        fields: Vec<String>,
+        shared: bool,
+    },
+    Rename {
+        from: String,
+        to: String,
+    },
+    Delete {
+        name: String,
+    },
+    ToggleSecret {
+        name: String,
+    },
+    SetFields {
+        selector: String,
+        fields: Vec<String>,
+    },
     /// `request_value` is the request-scope value being promoted; the app
     /// removes it from the editor and saves the request afterwards.
-    Promote { name: String, request_value: String, target: PromoteTarget },
-    NewOption { env: String, selector: String, name: String, description: Option<String>, values: IndexMap<String, String> },
-    RenameOption { env: String, selector: String, from: String, to: String },
-    DeleteOption { env: String, selector: String, name: String },
-    DuplicateOption { env: String, selector: String, name: String },
+    Promote {
+        name: String,
+        request_value: String,
+        target: PromoteTarget,
+    },
+    NewOption {
+        env: String,
+        selector: String,
+        name: String,
+        description: Option<String>,
+        values: IndexMap<String, String>,
+    },
+    RenameOption {
+        env: String,
+        selector: String,
+        from: String,
+        to: String,
+    },
+    DeleteOption {
+        env: String,
+        selector: String,
+        name: String,
+    },
+    DuplicateOption {
+        env: String,
+        selector: String,
+        name: String,
+    },
 }
 
 impl VarEdit {
@@ -80,7 +145,11 @@ impl Project {
 
     /// `selector`'s options as they currently stand, from wherever they
     /// live: the model's own for a shared selector, `env`'s otherwise.
-    fn options_of_for(&mut self, env: &str, selector: &str) -> Option<IndexMap<String, varmodel::OptionDecl>> {
+    fn options_of_for(
+        &mut self,
+        env: &str,
+        selector: &str,
+    ) -> Option<IndexMap<String, varmodel::OptionDecl>> {
         if self.selector_is_shared(selector) {
             self.model.options.get(selector).cloned()
         } else {
@@ -122,42 +191,65 @@ impl Project {
     pub fn apply_var_edit(&mut self, e: &VarEdit) -> Result<(), Error> {
         let label = e.label();
         match e {
-            VarEdit::SetEnvValue { env, name, value } => {
-                self.cascade(label, |p| p.edit_env(env, |doc| varedit::set_env_value(doc, name, Some(value))))
-            }
-            VarEdit::SetDefault { name, value } => {
-                self.cascade(label, |p| p.edit_variables(|doc| varedit::upsert_var(doc, name, None, Some(value))))
-            }
+            VarEdit::SetEnvValue { env, name, value } => self.cascade(label, |p| {
+                p.edit_env(env, |doc| varedit::set_env_value(doc, name, Some(value)))
+            }),
+            VarEdit::SetDefault { name, value } => self.cascade(label, |p| {
+                p.edit_variables(|doc| varedit::upsert_var(doc, name, None, Some(value)))
+            }),
             VarEdit::SetDescription { owner, value } => {
                 if self.model.vars.contains_key(owner) {
-                    self.cascade(label, |p| p.edit_variables(|doc| varedit::upsert_var(doc, owner, Some(value), None)))
-                } else if let Some(fields) = self.model.selectors.get(owner).map(|g| g.fields.clone()) {
                     self.cascade(label, |p| {
-                        p.edit_variables(|doc| varedit::upsert_selector(doc, owner, Some(value), &fields))
+                        p.edit_variables(|doc| varedit::upsert_var(doc, owner, Some(value), None))
+                    })
+                } else if let Some(fields) =
+                    self.model.selectors.get(owner).map(|g| g.fields.clone())
+                {
+                    self.cascade(label, |p| {
+                        p.edit_variables(|doc| {
+                            varedit::upsert_selector(doc, owner, Some(value), &fields)
+                        })
                     })
                 } else {
-                    Err(edit(format!("\"{owner}\" is not a declared variable or selector")))
+                    Err(edit(format!(
+                        "\"{owner}\" is not a declared variable or selector"
+                    )))
                 }
             }
-            VarEdit::SetSecretValue { env, name, value } => self.set_secret_for(env, name, value.clone()),
-            VarEdit::SetOptionValue { env, selector, option, field, value } => {
+            VarEdit::SetSecretValue { env, name, value } => {
+                self.set_secret_for(env, name, value.clone())
+            }
+            VarEdit::SetOptionValue {
+                env,
+                selector,
+                option,
+                field,
+                value,
+            } => {
                 // An option's values live in one file — its selector's env
                 // file, or variables.toml for a shared selector; the cell
                 // being edited is one field of that option.
                 let mut values = IndexMap::new();
                 values.insert(field.clone(), value.clone());
                 self.cascade(label, |p| {
-                    p.edit_options_home(selector, env, |doc| varedit::upsert_option(doc, selector, option, None, &values))
-                })
-            }
-            VarEdit::SetOptionDescription { env, selector, option, description } => {
-                self.cascade(label, |p| {
-                    p.edit_options_home(selector, env, |doc| match description {
-                        Some(d) => varedit::upsert_option(doc, selector, option, Some(d), &IndexMap::new()),
-                        None => varedit::remove_option_description(doc, selector, option),
+                    p.edit_options_home(selector, env, |doc| {
+                        varedit::upsert_option(doc, selector, option, None, &values)
                     })
                 })
             }
+            VarEdit::SetOptionDescription {
+                env,
+                selector,
+                option,
+                description,
+            } => self.cascade(label, |p| {
+                p.edit_options_home(selector, env, |doc| match description {
+                    Some(d) => {
+                        varedit::upsert_option(doc, selector, option, Some(d), &IndexMap::new())
+                    }
+                    None => varedit::remove_option_description(doc, selector, option),
+                })
+            }),
             VarEdit::NewVar { name, description } => {
                 if !is_valid_var_name(name) {
                     return Err(edit(format!("\"{name}\" is not a valid variable name")));
@@ -166,10 +258,16 @@ impl Project {
                     return Err(edit(format!("\"{name}\" already exists")));
                 }
                 self.cascade(label, |p| {
-                    p.edit_variables(|doc| varedit::upsert_var(doc, name, description.as_deref(), None))
+                    p.edit_variables(|doc| {
+                        varedit::upsert_var(doc, name, description.as_deref(), None)
+                    })
                 })
             }
-            VarEdit::NewSelector { name, fields, shared } => {
+            VarEdit::NewSelector {
+                name,
+                fields,
+                shared,
+            } => {
                 if !is_valid_var_name(name) {
                     return Err(edit(format!("\"{name}\" is not a valid selector name")));
                 }
@@ -228,8 +326,12 @@ impl Project {
                 // A shared selector's options sit in the same file and must
                 // supply exactly the declared fields, so the list change
                 // carries them along in the one write.
-                let current: Vec<String> =
-                    self.model.selectors.get(selector).map(|g| g.fields.clone()).unwrap_or_default();
+                let current: Vec<String> = self
+                    .model
+                    .selectors
+                    .get(selector)
+                    .map(|g| g.fields.clone())
+                    .unwrap_or_default();
                 let shared = self.selector_is_shared(selector);
                 self.cascade(label, |p| {
                     p.edit_variables(|doc| {
@@ -246,16 +348,25 @@ impl Project {
                     })
                 })
             }
-            VarEdit::Promote { name, request_value, target } => {
+            VarEdit::Promote {
+                name,
+                request_value,
+                target,
+            } => {
                 let vars_text = self.variables_text()?;
                 let env_name = self.active_env.clone();
                 let env_text = match &env_name {
                     Some(env) => Some(self.env_text(env)?),
                     None => None,
                 };
-                let (new_vars, new_env) =
-                    varedit::promote_var(&vars_text, env_text.as_deref(), name, request_value, *target)
-                        .map_err(|e| edit(e.to_string()))?;
+                let (new_vars, new_env) = varedit::promote_var(
+                    &vars_text,
+                    env_text.as_deref(),
+                    name,
+                    request_value,
+                    *target,
+                )
+                .map_err(|e| edit(e.to_string()))?;
                 self.cascade(label, |p| {
                     p.edit_variables(|_| Ok(new_vars))?;
                     if let (Some(new_env), Some(env)) = (new_env, env_name) {
@@ -264,15 +375,28 @@ impl Project {
                     Ok(())
                 })
             }
-            VarEdit::NewOption { env, selector, name, description, values } => self.cascade(label, |p| {
+            VarEdit::NewOption {
+                env,
+                selector,
+                name,
+                description,
+                values,
+            } => self.cascade(label, |p| {
                 p.edit_options_home(selector, env, |doc| {
                     varedit::upsert_option(doc, selector, name, description.as_deref(), values)
                 })
             }),
-            VarEdit::RenameOption { env, selector, from, to } => {
+            VarEdit::RenameOption {
+                env,
+                selector,
+                from,
+                to,
+            } => {
                 let shared = self.selector_is_shared(selector);
                 self.cascade(label, |p| {
-                    p.edit_options_home(selector, env, |doc| varedit::rename_option(doc, selector, from, to))?;
+                    p.edit_options_home(selector, env, |doc| {
+                        varedit::rename_option(doc, selector, from, to)
+                    })?;
                     // A selection names an option by key: carry it across
                     // the rename rather than leaving a dangling one behind.
                     // (A shared selector's selection is the global one;
@@ -288,39 +412,55 @@ impl Project {
                     Ok(())
                 })
             }
-            VarEdit::DeleteOption { env, selector, name } => {
+            VarEdit::DeleteOption {
+                env,
+                selector,
+                name,
+            } => {
                 // An option that is already gone is a quiet no-op success
                 // (a stale row — nothing left to do). Any per-env selection
                 // naming it is cleared everywhere so local state doesn't
                 // accumulate dead selections.
-                let present = self.options_of_for(env, selector).is_some_and(|o| o.contains_key(name));
+                let present = self
+                    .options_of_for(env, selector)
+                    .is_some_and(|o| o.contains_key(name));
                 let shared = self.selector_is_shared(selector);
                 let envs = self.environments.clone();
                 self.cascade(label, |p| {
                     if present {
-                        p.edit_options_home(selector, env, |doc| varedit::delete_option(doc, selector, name))?;
+                        p.edit_options_home(selector, env, |doc| {
+                            varedit::delete_option(doc, selector, name)
+                        })?;
                     }
                     if shared {
-                        if p.local.shared_selections.get(selector).map(String::as_str) == Some(name.as_str()) {
+                        if p.local.shared_selections.get(selector).map(String::as_str)
+                            == Some(name.as_str())
+                        {
                             p.clear_selection_for(env, selector);
                         }
                         return Ok(());
                     }
                     for other in &envs {
-                        if p.selections_for(other).get(selector).map(String::as_str) == Some(name.as_str()) {
+                        if p.selections_for(other).get(selector).map(String::as_str)
+                            == Some(name.as_str())
+                        {
                             p.clear_selection_for(other, selector);
                         }
                     }
                     Ok(())
                 })
             }
-            VarEdit::DuplicateOption { env, selector, name } => {
+            VarEdit::DuplicateOption {
+                env,
+                selector,
+                name,
+            } => {
                 // Copies one option's description and values to a fresh
                 // name in the same environment — `"<name> copy"`, then
                 // `"<name> copy-2"`, … while that is taken.
-                let options = self
-                    .options_of_for(env, selector)
-                    .ok_or_else(|| edit(format!("selector \"{selector}\" has no options in {env}")))?;
+                let options = self.options_of_for(env, selector).ok_or_else(|| {
+                    edit(format!("selector \"{selector}\" has no options in {env}"))
+                })?;
                 let source = options
                     .get(name)
                     .ok_or_else(|| edit(format!("no option \"{name}\" in {selector}")))?
@@ -333,7 +473,13 @@ impl Project {
                 }
                 self.cascade(label, |p| {
                     p.edit_options_home(selector, env, |doc| {
-                        varedit::upsert_option(doc, selector, &copy, source.description.as_deref(), &source.values)
+                        varedit::upsert_option(
+                            doc,
+                            selector,
+                            &copy,
+                            source.description.as_deref(),
+                            &source.values,
+                        )
                     })
                 })
             }
@@ -391,11 +537,10 @@ impl Project {
         // front, using the already-loaded model — before any environment
         // file is touched, so a refusal here leaves everything unchanged.
         if !is_group
-            && let Some(gname) = self
-                .model
-                .selectors
-                .iter()
-                .find_map(|(gname, g)| g.fields.iter().any(|f| f == name).then(|| gname.clone()))
+            && let Some(gname) =
+                self.model.selectors.iter().find_map(|(gname, g)| {
+                    g.fields.iter().any(|f| f == name).then(|| gname.clone())
+                })
         {
             return Err(edit(format!(
                 "variable \"{name}\" is a field of selector \"{gname}\"; remove it from the selector first"
@@ -508,14 +653,22 @@ mod tests {
             value: "http://x".into(),
         })
         .unwrap();
-        assert!(read(&dir, "variables.toml").unwrap().contains("default = \"http://x\""));
+        assert!(
+            read(&dir, "variables.toml")
+                .unwrap()
+                .contains("default = \"http://x\"")
+        );
         assert_eq!(p.journal_len(), 1);
         p.apply_var_edit(&VarEdit::SetDescription {
             owner: "creds".into(),
             value: "paired".into(),
         })
         .unwrap();
-        assert!(read(&dir, "variables.toml").unwrap().contains("description = \"paired\""));
+        assert!(
+            read(&dir, "variables.toml")
+                .unwrap()
+                .contains("description = \"paired\"")
+        );
         assert_eq!(p.journal_len(), 2);
         assert_eq!(
             p.apply_var_edit(&VarEdit::SetDescription {
@@ -531,7 +684,11 @@ mod tests {
     #[test]
     fn rename_var_cascades_into_every_env_file_under_one_entry_and_undoes_whole() {
         let (dir, mut p) = vars_fixture();
-        std::fs::write(dir.path().join("environments/dev.toml"), "base_url = \"d\"\n").unwrap();
+        std::fs::write(
+            dir.path().join("environments/dev.toml"),
+            "base_url = \"d\"\n",
+        )
+        .unwrap();
         p.invalidate_stamps();
         p.poll();
         p.apply_var_edit(&VarEdit::Rename {
@@ -539,11 +696,19 @@ mod tests {
             to: "root_url".into(),
         })
         .unwrap();
-        assert!(read(&dir, "environments/dev.toml").unwrap().contains("root_url"));
+        assert!(
+            read(&dir, "environments/dev.toml")
+                .unwrap()
+                .contains("root_url")
+        );
         assert!(read(&dir, "variables.toml").unwrap().contains("[root_url]"));
         assert_eq!(p.journal_len(), 1);
         p.undo().unwrap();
-        assert!(read(&dir, "environments/dev.toml").unwrap().contains("base_url = \"d\""));
+        assert!(
+            read(&dir, "environments/dev.toml")
+                .unwrap()
+                .contains("base_url = \"d\"")
+        );
         assert!(read(&dir, "variables.toml").unwrap().contains("[base_url]"));
     }
 
@@ -551,7 +716,10 @@ mod tests {
     fn delete_selector_clears_its_selection_in_every_env() {
         let (_dir, mut p) = vars_fixture();
         p.set_selection_for("qa", "creds", "alice");
-        p.apply_var_edit(&VarEdit::Delete { name: "creds".into() }).unwrap();
+        p.apply_var_edit(&VarEdit::Delete {
+            name: "creds".into(),
+        })
+        .unwrap();
         assert!(p.selections_for("qa").get("creds").is_none());
         assert!(!p.variables().selectors.contains_key("creds"));
         // a field of a still-declared selector is refused with today's wording
@@ -562,9 +730,11 @@ mod tests {
         })
         .unwrap();
         assert_eq!(
-            p.apply_var_edit(&VarEdit::Delete { name: "left".into() })
-                .unwrap_err()
-                .to_string(),
+            p.apply_var_edit(&VarEdit::Delete {
+                name: "left".into()
+            })
+            .unwrap_err()
+            .to_string(),
             "variable \"left\" is a field of selector \"pair\"; remove it from the selector first"
         );
     }
@@ -572,22 +742,42 @@ mod tests {
     #[test]
     fn toggle_secret_moves_env_values_into_secrets_and_back_on_undo() {
         let (dir, mut p) = vars_fixture();
-        std::fs::write(dir.path().join("environments/dev.toml"), "base_url = \"d\"\n").unwrap();
+        std::fs::write(
+            dir.path().join("environments/dev.toml"),
+            "base_url = \"d\"\n",
+        )
+        .unwrap();
         p.invalidate_stamps();
         p.poll();
         p.apply_var_edit(&VarEdit::ToggleSecret {
             name: "base_url".into(),
         })
         .unwrap();
-        assert!(!read(&dir, "environments/dev.toml").unwrap().contains("base_url"));
+        assert!(
+            !read(&dir, "environments/dev.toml")
+                .unwrap()
+                .contains("base_url")
+        );
         assert_eq!(
-            p.secrets().get("dev").and_then(|m| m.get("base_url")).map(String::as_str),
+            p.secrets()
+                .get("dev")
+                .and_then(|m| m.get("base_url"))
+                .map(String::as_str),
             Some("d")
         );
         assert!(p.variables().vars["base_url"].secret);
         p.undo().unwrap();
-        assert!(read(&dir, "environments/dev.toml").unwrap().contains("base_url = \"d\""));
-        assert!(p.secrets().get("dev").and_then(|m| m.get("base_url")).is_none());
+        assert!(
+            read(&dir, "environments/dev.toml")
+                .unwrap()
+                .contains("base_url = \"d\"")
+        );
+        assert!(
+            p.secrets()
+                .get("dev")
+                .and_then(|m| m.get("base_url"))
+                .is_none()
+        );
     }
 
     #[test]
@@ -604,7 +794,11 @@ mod tests {
             values,
         })
         .unwrap();
-        assert!(read(&dir, "environments/qa.toml").unwrap().contains("[options.creds.carol]"));
+        assert!(
+            read(&dir, "environments/qa.toml")
+                .unwrap()
+                .contains("[options.creds.carol]")
+        );
         p.apply_var_edit(&VarEdit::RenameOption {
             env: "qa".into(),
             selector: "creds".into(),
@@ -612,7 +806,11 @@ mod tests {
             to: "dave".into(),
         })
         .unwrap();
-        assert!(read(&dir, "environments/qa.toml").unwrap().contains("[options.creds.dave]"));
+        assert!(
+            read(&dir, "environments/qa.toml")
+                .unwrap()
+                .contains("[options.creds.dave]")
+        );
         p.apply_var_edit(&VarEdit::DeleteOption {
             env: "qa".into(),
             selector: "creds".into(),

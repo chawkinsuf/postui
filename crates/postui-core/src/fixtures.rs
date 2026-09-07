@@ -8,9 +8,9 @@
 use crate::model::HttpRequest;
 use crate::order::{OrderEdit, level_of, merge_level, space_order, write_order};
 use crate::project::{
-    DEFAULT_ENVIRONMENT, DEFAULT_SPACE, Kind, ListChange, LocalState, Project, ProjectError, ProjectMeta,
-    display_name_of, display_taken, env_display, environment_path, set_item_name, space_dir,
-    space_display, spaces_array, unique_slug_among, valid_space_name,
+    DEFAULT_ENVIRONMENT, DEFAULT_SPACE, Kind, ListChange, LocalState, Project, ProjectError,
+    ProjectMeta, display_name_of, display_taken, env_display, environment_path, set_item_name,
+    space_dir, space_display, spaces_array, unique_slug_among, valid_space_name,
 };
 use crate::storage::{
     RequestListing, StorageError, request_path, requests_dir, space_of, validate_slug,
@@ -446,10 +446,7 @@ pub fn ensure_project(root: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(requests_dir(root))?;
     let Ok(meta) = load_meta(root) else {
         if list_spaces(root, &crate::project::ProjectMeta::default()).is_empty() {
-            std::fs::create_dir_all(crate::project::space_dir(
-                root,
-                DEFAULT_SPACE,
-            ))?;
+            std::fs::create_dir_all(crate::project::space_dir(root, DEFAULT_SPACE))?;
         }
         return Ok(());
     };
@@ -464,10 +461,7 @@ pub fn ensure_project(root: &Path) -> std::io::Result<()> {
             }
         }
     } else if list_spaces(root, &meta).is_empty() {
-        std::fs::create_dir_all(crate::project::space_dir(
-            root,
-            DEFAULT_SPACE,
-        ))?;
+        std::fs::create_dir_all(crate::project::space_dir(root, DEFAULT_SPACE))?;
     }
     Ok(())
 }

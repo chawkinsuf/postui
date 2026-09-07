@@ -24,12 +24,12 @@ pub fn config_dir() -> Option<std::path::PathBuf> {
     }
 }
 
-pub mod jq;
 pub mod disk;
 pub mod fixtures;
 #[cfg(any(test, feature = "test-util"))]
 pub mod fs_lint;
 pub mod journal;
+pub mod jq;
 pub mod json;
 pub mod migrate;
 pub mod model;
@@ -69,6 +69,10 @@ mod fs_lint_test {
     fn std_fs_appears_only_in_disk_and_test_code() {
         let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let hits = crate::fs_lint::check(&src, &["disk.rs", "fs_lint.rs", "fixtures.rs"]);
-        assert!(hits.is_empty(), "std::fs outside Disk:\n{}", hits.join("\n"));
+        assert!(
+            hits.is_empty(),
+            "std::fs outside Disk:\n{}",
+            hits.join("\n")
+        );
     }
 }

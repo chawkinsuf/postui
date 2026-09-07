@@ -196,10 +196,6 @@ async fn run(
         Ok(true)
     );
     let mut events = EventStream::new();
-    // The event loop's own copy of the bindings `App::new` loaded.
-    // Re-cloned below whenever a reload parsed a new `keys.toml` — never
-    // from inside `handle_key`, which borrows this very map.
-    let mut keymap = app.keymap.clone();
 
     app.update(Action::ShowToast(
         "Welcome to postui".into(),
@@ -256,7 +252,7 @@ async fn run(
                     Some(Ok(event)) => {
                         match event {
                             Event::Key(ev) if ev.kind == KeyEventKind::Press => {
-                                redraw |= app.handle_key(&keymap, ev);
+                                redraw |= app.handle_key(ev);
                             }
                             Event::Mouse(m) => {
                                 redraw |= app.handle_mouse(m);
@@ -301,14 +297,6 @@ async fn run(
             }) => {
                 redraw |= app.update(Action::Tick);
             }
-        }
-
-        // A reload (or anything else) may have swapped `app.keymap` while
-        // this iteration's event was being dispatched — and `handle_key`
-        // borrows the loop's copy, so the swap can only land here, once
-        // every dispatch for this iteration is done.
-        if std::mem::take(&mut app.keymap_changed) {
-            keymap = app.keymap.clone();
         }
 
         // Actions that need the terminal suspended are parked by `App::update`

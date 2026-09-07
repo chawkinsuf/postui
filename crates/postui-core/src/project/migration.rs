@@ -32,7 +32,9 @@ pub(super) fn probe(disk: &mut Disk) -> (bool, Option<MigrationOutcome>, Vec<War
         Err(e) => (
             true,
             None,
-            vec![format!("variables use the old format and can't be converted automatically: {e}")],
+            vec![format!(
+                "variables use the old format and can't be converted automatically: {e}"
+            )],
         ),
     }
 }

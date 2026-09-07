@@ -250,8 +250,7 @@ async fn stage6_acceptance_flow() {
         matches!(app.modals.top(), Some(Modal::VarPicker(_))),
         "cursor on a group field's token opens the selection-context picker"
     );
-    let keymap = postui::keys::Keymap::default_bindings();
-    app.handle_key(&keymap, enter()); // qa declares one option: east
+    app.handle_key(enter()); // qa declares one option: east
     assert!(app.modals.is_empty(), "confirming closes the picker");
     assert_eq!(
         app.proj().selections_for("qa")["region"],
@@ -299,7 +298,8 @@ async fn stage6_acceptance_flow() {
 
     app.update(Action::SwitchEnv(Some("qa".into())));
     assert_eq!(
-        app.proj().resolved().values["region"], "east-1",
+        app.proj().resolved().values["region"],
+        "east-1",
         "switching back to qa restores qa's own resolved value"
     );
 
@@ -327,9 +327,9 @@ async fn stage6_acceptance_flow() {
     );
 
     for c in "sk-qa-999".chars() {
-        app.handle_key(&keymap, plain(c));
+        app.handle_key(plain(c));
     }
-    app.handle_key(&keymap, enter());
+    app.handle_key(enter());
 
     assert!(app.modals.is_empty(), "confirming the secret closes it");
     let secrets = postui_core::fixtures::load_secrets(dir.path()).unwrap();

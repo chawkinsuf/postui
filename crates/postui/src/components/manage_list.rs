@@ -12,8 +12,8 @@ use crate::paint::{
     BUTTON_HEIGHT, Button, ButtonKind, ControlState, ListRow, RowHighlight, button_min_width, fill,
     text,
 };
-use postui_core::project::Project;
 use crate::theme::Theme;
+use postui_core::project::Project;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
@@ -241,12 +241,7 @@ impl ManageList {
     }
 
     /// The list's own keys.
-    pub fn handle_key(
-        &mut self,
-        ev: KeyEvent,
-        tab: ManageTab,
-        ctx: &Project,
-    ) -> Option<Action> {
+    pub fn handle_key(&mut self, ev: KeyEvent, tab: ManageTab, ctx: &Project) -> Option<Action> {
         let len = Self::items(tab, ctx).len();
         let alt = ev.modifiers.contains(KeyModifiers::ALT);
         match ev.code {
