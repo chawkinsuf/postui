@@ -194,7 +194,7 @@ pub fn all_commands() -> Vec<Command> {
         Command {
             id: "reload-from-disk",
             name: "Reload from disk",
-            description: "Re-read the project files and config (theme, keys, projects) from disk",
+            description: "Re-read the project files, config.toml, keys.toml and themes/ from disk",
             action: Action::ReloadFromDisk,
         },
         Command {

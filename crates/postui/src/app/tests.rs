@@ -21149,9 +21149,9 @@ fn undo_of_a_space_delete_restores_the_space_its_request_and_its_memory() {
 // --- Action::ReloadFromDisk -------------------------------------------
 //
 // The user-triggered reload: re-reads the project's own files *and* the
-// XDG config files (theme, keys, projects) live. `Config::at` gives the
-// app a real disk rooted at a tempdir, so these tests never touch the
-// user's config.
+// user-editable XDG config files — config.toml, keys.toml and themes/ —
+// live. `Config::at` gives the app a real disk rooted at a tempdir, so
+// these tests never touch the user's config.
 
 /// Points `app.config` at a fresh tempdir and hands it back — the caller
 /// keeps the `TempDir` alive for the length of the test.

@@ -416,9 +416,11 @@ pub enum Action {
     ReloadProjectFiles,
     /// The user-triggered reload (`alt+r`, the palette's "Reload from
     /// disk", the Manage bar's Reload button): a forced re-read of the
-    /// open project's files *and* of every XDG config file (theme, keys,
-    /// projects), applied live. Unsaved editor edits are never touched —
-    /// this reloads what is on disk around them, it does not revert them.
+    /// open project's files *and* of the user-editable XDG config files —
+    /// `config.toml`, `keys.toml` and `themes/` — applied live. `ui.toml`
+    /// is app-owned state and is not re-read. Unsaved editor edits are
+    /// never touched: this reloads what is on disk around them, it does
+    /// not revert them.
     ReloadFromDisk,
     /// Flip `editor.substitute_body` — whether `{{var}}` tokens in the body
     /// are substituted at send time.
