@@ -251,6 +251,7 @@ pub(crate) fn named_actions() -> Vec<(&'static str, Action)> {
         ),
         ("open_body_editor", Action::OpenBodyInEditor),
         ("save", Action::SaveRequest),
+        ("reload", Action::ReloadFromDisk),
         ("discard", Action::DiscardChanges),
         ("send", Action::Send),
         ("project_choose", Action::OpenProjectChooser),
@@ -372,6 +373,7 @@ impl Keymap {
                 Action::CopyToClipboard(crate::action::CopyTarget::Url),
             ),
             ("ctrl+s", Action::SaveRequest),
+            ("alt+r", Action::ReloadFromDisk),
             ("alt+d", Action::DiscardChanges),
             ("ctrl+r", Action::Send),
             ("ctrl+enter", Action::Send),
@@ -808,6 +810,11 @@ mod tests {
             "ctrl+e is free again (edtui's emacs end-of-line gets it in the body)"
         );
         assert_eq!(get("ctrl+r"), Some(Action::Send));
+        assert_eq!(
+            get("alt+r"),
+            Some(Action::ReloadFromDisk),
+            "the user-triggered reload has a default binding"
+        );
         assert_eq!(get("ctrl+enter"), Some(Action::Send));
         assert_eq!(get("shift+enter"), Some(Action::Send));
         assert_eq!(get("ctrl+o"), Some(Action::OpenProjectChooser));

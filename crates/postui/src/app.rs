@@ -204,6 +204,12 @@ pub struct App {
     /// and cloned by `main.rs`'s event loop for `handle_key` — `App` has no
     /// way to reach a keymap from inside `Component::draw` otherwise.
     pub keymap: crate::keys::Keymap,
+    /// Set by [`Action::ReloadFromDisk`] whenever it parsed a `keys.toml`,
+    /// telling `main.rs`'s event loop to re-clone `keymap` once the
+    /// current event is fully dispatched. The loop takes (and clears) it;
+    /// swapping the bindings from inside `handle_key` would change the map
+    /// the caller is still borrowing.
+    pub keymap_changed: bool,
     /// Palette command frecency stats (recency + count per command id),
     /// loaded from `ui.toml` at startup and saved back on quit.
     pub usage: crate::usage::UsageStore,
@@ -1213,6 +1219,7 @@ impl App {
             anims: Anims::new(crate::config::UiSettings::default().animations),
             animating_last_tick: false,
             keymap: crate::keys::Keymap::default_bindings(),
+            keymap_changed: false,
             usage: crate::usage::UsageStore::default(),
             clients: crate::http::Clients::new(),
             tx,
@@ -3976,6 +3983,76 @@ impl App {
                 }
                 self.prompt_migration_if_pending();
                 changed
+            }
+            Action::ReloadFromDisk => {
+                // The project half: a forced re-read (mtime gates skipped)
+                // plus the sidebar rebuild, so a file another process
+                // wrote a second ago shows up. The editor's buffer is not
+                // part of this — unsaved edits are the user's, and a
+                // reload is not a discard.
+                self.resync_project();
+
+                // The config half. Every `None` field means "that file
+                // exists but will not parse": keep what we have, and let
+                // the warning say which file to fix.
+                let (reloaded, warnings) = self.config.reload(cfg!(target_os = "macos"));
+                self.themes = reloaded.themes;
+                if let Some(registry) = reloaded.registry {
+                    self.registry = registry;
+                }
+
+                // The theme name comes from the freshly-read settings when
+                // there are any, and otherwise stays what it is — but it
+                // is always re-resolved, because `themes` was rescanned
+                // and a custom file may have appeared or vanished.
+                let wanted = reloaded
+                    .ui
+                    .as_ref()
+                    .map(|u| u.theme.clone())
+                    .unwrap_or_else(|| self.theme_name.clone());
+                let (theme_name, theme) = match self.themes.resolve(&wanted, &self.terminal_colors)
+                {
+                    Some(t) => (wanted.clone(), t),
+                    None => (
+                        "terminal".to_string(),
+                        self.themes
+                            .resolve("terminal", &self.terminal_colors)
+                            .expect("terminal is always registered"),
+                    ),
+                };
+                let unknown_theme = (theme_name != wanted)
+                    .then(|| format!("unknown theme {wanted:?} in config.toml; using terminal"));
+                match reloaded.ui {
+                    // Same call `App::new` makes, so every
+                    // `UiSettings`-derived field (clipboard tier,
+                    // animations, the jq tab) follows the file too.
+                    Some(ui) => self.apply_ui_settings(ui, theme_name, theme),
+                    None => {
+                        self.theme = theme;
+                        self.theme_name = theme_name;
+                    }
+                }
+
+                if let Some(keymap) = reloaded.keymap {
+                    self.keymap = keymap;
+                    // Always flagged, even when the bindings are identical:
+                    // the clone is cheap, and a missed swap would strand
+                    // the event loop on a stale map.
+                    self.keymap_changed = true;
+                }
+
+                for w in warnings.into_iter().chain(unknown_theme) {
+                    self.toasts.push(w, ToastKind::Warning);
+                }
+                self.toasts
+                    .push("Reloaded project and config", ToastKind::Success);
+
+                // The Variable Manager caches the declarations it shows;
+                // like `after_undone`, a reload has to hand it the new ones.
+                if self.screen == Screen::Manage {
+                    self.sync_varmanager();
+                }
+                true
             }
             Action::OpenVarPicker { completing } => {
                 self.apply(Action::ReloadProjectFiles);

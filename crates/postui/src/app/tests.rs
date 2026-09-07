@@ -21334,3 +21334,207 @@ fn undo_of_a_space_delete_restores_the_space_its_request_and_its_memory() {
     assert_eq!(app.proj().local().active_space, "main");
     assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"));
 }
+
+// --- Action::ReloadFromDisk -------------------------------------------
+//
+// The user-triggered reload: re-reads the project's own files *and* the
+// XDG config files (theme, keys, projects) live. `Config::at` gives the
+// app a real disk rooted at a tempdir, so these tests never touch the
+// user's config.
+
+/// Points `app.config` at a fresh tempdir and hands it back — the caller
+/// keeps the `TempDir` alive for the length of the test.
+fn config_at_tempdir(app: &mut App) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+    dir
+}
+
+fn warning_toasts(app: &App) -> Vec<String> {
+    app.toasts
+        .entries()
+        .into_iter()
+        .filter(|(_, k)| *k == &crate::components::toast::ToastKind::Warning)
+        .map(|(m, _)| m.to_string())
+        .collect()
+}
+
+#[test]
+fn reload_from_disk_applies_a_theme_named_in_config_toml() {
+    let mut app = App::new_for_test();
+    let dir = config_at_tempdir(&mut app);
+    std::fs::write(dir.path().join("config.toml"), "theme = \"gruvbox-dark\"\n").unwrap();
+
+    app.update(Action::ReloadFromDisk);
+
+    assert_eq!(app.theme_name, "gruvbox-dark");
+    assert_eq!(app.ui_settings.theme, "gruvbox-dark");
+    assert!(
+        app.toasts
+            .messages()
+            .contains(&"Reloaded project and config"),
+        "{:?}",
+        app.toasts.messages()
+    );
+}
+
+#[test]
+fn reload_from_disk_warns_and_falls_back_on_an_unknown_theme_name() {
+    let mut app = App::new_for_test();
+    let dir = config_at_tempdir(&mut app);
+    std::fs::write(dir.path().join("config.toml"), "theme = \"nope\"\n").unwrap();
+
+    app.update(Action::ReloadFromDisk);
+
+    assert_eq!(app.theme_name, "terminal");
+    let warnings = warning_toasts(&app);
+    assert!(
+        warnings
+            .iter()
+            .any(|m| m.contains("unknown theme \"nope\"")),
+        "{warnings:?}"
+    );
+}
+
+#[test]
+fn reload_from_disk_keeps_the_current_settings_when_config_toml_will_not_parse() {
+    let mut app = App::new_for_test();
+    let dir = config_at_tempdir(&mut app);
+    std::fs::write(dir.path().join("config.toml"), "theme = \"gruvbox-dark\"\n").unwrap();
+    app.update(Action::ReloadFromDisk);
+    assert_eq!(app.theme_name, "gruvbox-dark");
+    app.registry.known = vec![PathBuf::from("/keep/me")];
+    app.toasts = Default::default();
+
+    std::fs::write(dir.path().join("config.toml"), "theme = \"oops\n").unwrap();
+    app.update(Action::ReloadFromDisk);
+
+    assert_eq!(app.theme_name, "gruvbox-dark", "the theme survives");
+    assert_eq!(app.ui_settings.theme, "gruvbox-dark");
+    assert_eq!(
+        app.registry.known,
+        vec![PathBuf::from("/keep/me")],
+        "an unparsable config.toml never empties the registry"
+    );
+    let warnings = warning_toasts(&app);
+    let named: Vec<_> = warnings
+        .iter()
+        .filter(|m| m.contains("config.toml"))
+        .collect();
+    assert_eq!(named.len(), 1, "{warnings:?}");
+}
+
+#[test]
+fn reload_from_disk_applies_a_new_keys_toml_and_flags_the_swap() {
+    let mut app = App::new_for_test();
+    let dir = config_at_tempdir(&mut app);
+    std::fs::write(dir.path().join("keys.toml"), "save = \"alt+shift+s\"\n").unwrap();
+    assert!(!app.keymap_changed);
+
+    app.update(Action::ReloadFromDisk);
+
+    let combo = crate::keys::KeyCombo::parse("alt+shift+s").unwrap();
+    assert_eq!(app.keymap.lookup(&combo), Some(Action::SaveRequest));
+    assert!(app.keymap_changed, "main.rs is told to swap its copy");
+
+    // A second, identical reload still flags it: the check is cheap and
+    // honest, and a missed swap would strand the event loop on stale keys.
+    app.keymap_changed = false;
+    app.update(Action::ReloadFromDisk);
+    assert!(app.keymap_changed);
+}
+
+#[test]
+fn reload_from_disk_never_touches_the_editor_buffer() {
+    let mut app = App::new_for_test();
+    let _dir = config_at_tempdir(&mut app);
+    postui_core::fixtures::save_request(app.proj().root(), "main/ping", &req("https://x/ping"))
+        .unwrap();
+    app.update(Action::RefreshSidebar);
+    app.update(Action::OpenRequest("main/ping".into()));
+    app.focus = PaneId::Editor;
+    app.editor.sub_focus = SubFocus::Url;
+    type_chars(&mut app, "/edited");
+    let url_before = app.editor.url.text().to_string();
+    assert!(app.editor.is_dirty());
+
+    app.update(Action::ReloadFromDisk);
+
+    assert_eq!(app.editor.url.text(), url_before, "unsaved edits survive");
+    assert!(app.editor.is_dirty(), "and are still unsaved");
+}
+
+#[test]
+fn reload_from_disk_picks_up_a_request_file_written_after_startup() {
+    let mut app = App::new_for_test();
+    let _dir = config_at_tempdir(&mut app);
+    postui_core::fixtures::save_request(app.proj().root(), "main/later", &req("https://x/later"))
+        .unwrap();
+    assert!(
+        !app.sidebar.rows.iter().any(|r| matches!(
+            r,
+            Row::Request { slug, .. } if slug == "main/later"
+        )),
+        "the app has not seen it yet"
+    );
+
+    app.update(Action::ReloadFromDisk);
+
+    assert!(
+        app.sidebar.rows.iter().any(|r| matches!(
+            r,
+            Row::Request { slug, .. } if slug == "main/later"
+        )),
+        "{:?}",
+        app.sidebar.rows
+    );
+}
+
+#[test]
+fn reload_from_disk_resyncs_the_variable_manager_while_manage_is_open() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    let _cfg = config_at_tempdir(&mut app);
+    app.update(Action::OpenManage { tab: None });
+
+    let mut text = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
+    text.push_str("\n[added_later]\ndescription = \"new\"\n");
+    std::fs::write(dir.path().join("variables.toml"), text).unwrap();
+
+    app.update(Action::ReloadFromDisk);
+
+    assert_eq!(app.screen, Screen::Manage);
+    assert!(
+        app.varmanager
+            .left_rows
+            .contains(&crate::components::varmanager::VmRow::Var(
+                "added_later".into()
+            )),
+        "{:?}",
+        app.varmanager.left_rows
+    );
+}
+
+#[test]
+fn the_manage_bar_reload_button_runs_the_reload() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    let _cfg = config_at_tempdir(&mut app);
+    app.update(Action::OpenManage { tab: None });
+    render_once(&mut app);
+    app.toasts = Default::default();
+
+    click_hit(&mut app, Hit::FooterChip(Action::ReloadFromDisk));
+
+    assert!(
+        app.toasts
+            .messages()
+            .contains(&"Reloaded project and config"),
+        "{:?}",
+        app.toasts.messages()
+    );
+}

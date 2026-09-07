@@ -88,6 +88,24 @@ methods; the theme reload action re-reads through `Config`. A config file
 that will not parse is reported at startup and never written over, as
 today.
 
+### Reload from disk
+
+`Action::ReloadFromDisk` — `alt+r`, the palette's "Reload from disk", and
+the Manage bar's Reload button — is the user's way to pick up edits made
+outside the app without restarting it. It does both halves at once: a
+forced (mtime-gated checks skipped) re-read of the open project's files
+with the sidebar rebuild `ReloadProjectFiles` performs, and a
+`Config::reload` of every XDG config file — `config.toml` (the projects
+registry and the UI settings, theme included), `keys.toml`, and a full
+rescan of `themes/*.toml`. Unlike startup, a config file that exists but
+will not parse yields `None` rather than its defaults: the app keeps
+whatever it already had for that file and warns, so a syntax error in one
+file never silently resets settings the user is relying on. A new keymap
+is swapped into the event loop's own copy of the bindings after the
+current event finishes dispatching, never from inside `handle_key`. The
+editor's buffer is never touched — a reload re-reads what is on disk
+around the user's unsaved edits, it is not a discard.
+
 ## Host filesystem and the lint
 
 A `hostfs` module in the TUI crate owns the three sites that touch files

@@ -134,11 +134,21 @@ pub fn draw_manage_bar(
     // screen (the header's Manage chip toggles it too), labelled with the
     // key that does the same thing.
     let mut x = bar.x + bar.width;
-    let buttons: Vec<(&str, ButtonKind, Hit)> = vec![(
-        "Close (esc)",
-        ButtonKind::Secondary,
-        Hit::FooterChip(Action::CloseScreen),
-    )];
+    // Laid out right-to-left from the bar's right edge, so the first
+    // entry is the right-most button: Close stays on the corner and
+    // Reload sits to its left.
+    let buttons: Vec<(&str, ButtonKind, Hit)> = vec![
+        (
+            "Close (esc)",
+            ButtonKind::Secondary,
+            Hit::FooterChip(Action::CloseScreen),
+        ),
+        (
+            "Reload (alt+r)",
+            ButtonKind::Secondary,
+            Hit::FooterChip(Action::ReloadFromDisk),
+        ),
+    ];
     for (label, kind, hit) in buttons {
         let w = button_min_width(label);
         if x < buttons_limit + w + 1 {
@@ -325,6 +335,17 @@ mod tests {
                 assert!(hits.rect_of(&Hit::ManageTab(i)).is_some());
             }
             assert!(content.contains("Close (esc)"), "{content}");
+            assert!(content.contains("Reload (alt+r)"), "{content}");
+            let close = hits
+                .rect_of(&Hit::FooterChip(Action::CloseScreen))
+                .expect("close is registered");
+            let reload = hits
+                .rect_of(&Hit::FooterChip(Action::ReloadFromDisk))
+                .expect("the reload button is the mouse's way to re-read disk");
+            assert!(
+                reload.x + reload.width <= close.x,
+                "Close stays right-most: {close:?} vs {reload:?}"
+            );
             assert!(
                 hits.rect_of(&Hit::FooterChip(Action::CloseScreen))
                     .is_some(),

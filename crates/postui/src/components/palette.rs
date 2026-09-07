@@ -192,6 +192,12 @@ pub fn all_commands() -> Vec<Command> {
             action: Action::PromptOpenProjectPath,
         },
         Command {
+            id: "reload-from-disk",
+            name: "Reload from disk",
+            description: "Re-read the project files and config (theme, keys, projects) from disk",
+            action: Action::ReloadFromDisk,
+        },
+        Command {
             id: "project-new",
             name: "Project: new…",
             description: "Create a new project",
@@ -370,6 +376,7 @@ fn keymap_action_name(command_id: &str) -> Option<&'static str> {
         "project-choose" => Some("project_choose"),
         "project-next" => Some("project_cycle"),
         "project-new" => Some("project_new"),
+        "reload-from-disk" => Some("reload"),
         "env-choose" => Some("env_choose"),
         "env-next" => Some("env_cycle"),
         "table-add-row" => Some("table_add_row"),
@@ -700,6 +707,24 @@ mod tests {
             .position(|c| c.id == id)
             .unwrap_or_else(|| panic!("{id} was filtered out"));
         p.select(i);
+    }
+
+    /// The user-triggered reload is reachable from the palette, and its
+    /// row shows the same `alt+r` the key path uses — which only works if
+    /// the keys name table knows the "reload" action name.
+    #[test]
+    fn palette_carries_reload_from_disk_with_its_binding() {
+        let cmd = all_commands()
+            .into_iter()
+            .find(|c| c.id == "reload-from-disk")
+            .expect("reload-from-disk command");
+        assert_eq!(cmd.action, Action::ReloadFromDisk);
+        assert_eq!(cmd.name, "Reload from disk");
+        let keymap = crate::keys::Keymap::default_bindings();
+        assert_eq!(
+            keymap_action_name("reload-from-disk").and_then(|n| keymap.combo_for(n)),
+            Some("alt+r".to_string())
+        );
     }
 
     /// The response's open-in-$EDITOR action is reachable from the palette,
