@@ -96,7 +96,8 @@ outside the app without restarting it. It does both halves at once: a
 forced (mtime-gated checks skipped) re-read of the open project's files
 with the sidebar rebuild `ReloadProjectFiles` performs — or, when startup
 refused to open that project, a retry of the open through
-`ForceSwitchProject` — and a `Config::reload` of the user-editable XDG
+`SwitchProject` (the dirty-gated path; `ForceSwitchProject` only after the
+unsaved-request confirm) — and a `Config::reload` of the user-editable XDG
 config files: `config.toml` (the projects registry and the UI settings,
 theme included), `keys.toml` and a full rescan of `themes/` — `ui.toml`
 is app-owned state and is not re-read. Unlike startup, a config file that
