@@ -13,8 +13,8 @@ use crate::components::{Component, sidebar::Sidebar};
 use crate::hit::{Hit, HitMap, PointerShape, ScrollbarSpec};
 use crate::keys::{KeyCombo, Keymap};
 use crate::layout::PaneId;
-use crate::project_ctx::ProjectContext;
 use crate::theme::Theme;
+use postui_core::project::{OpenError, Project};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -24,6 +24,11 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 /// `prompt_migration_if_pending` recognizes its own modal already on the
 /// stack.
 const MIGRATION_TITLE: &str = "Migrate variables";
+
+/// What a write refuses with when no project is open. Every such arm is
+/// already gated by `refuse_without_project`, so this is the belt to that
+/// braces — it exists so no write can be attempted against an empty root.
+const NO_PROJECT: &str = "no project is open";
 
 /// Wall-clock dwell the caret must rest inside a `{{token}}` before its
 /// tooltip appears -- matching the original 2 ticks @ the tick's nominal
@@ -77,13 +82,13 @@ pub enum TextDrag {
 
 /// Whether `n` can't be a new declaration's name: one of the reserved
 /// table names, or a variable / selector that already exists.
-fn name_taken(ctx: &ProjectContext, n: &str) -> bool {
+fn name_taken(model: &postui_core::varmodel::VarModel, n: &str) -> bool {
     n == "options"
         || n == "groups"
         || n == "entries"
         || n == "selectors"
-        || ctx.model.vars.contains_key(n)
-        || ctx.model.selectors.contains_key(n)
+        || model.vars.contains_key(n)
+        || model.selectors.contains_key(n)
 }
 
 /// The option-name seed for "Extract to selector": the value itself when
@@ -144,19 +149,18 @@ pub struct App {
     pub session: crate::session::Session,
     pub toasts: Toasts,
     pub modals: ModalStack,
-    /// The open project: root directory, metadata, variables, environments,
-    /// and the active environment's resolved values.
-    pub project: ProjectContext,
+    /// The open project — the sole owner of every project file read and
+    /// write. `None` when no project is open (the startup fallback, or an
+    /// open that refused).
+    pub project: Option<Project>,
     /// The global registry of known projects (config.toml's `[projects]`
     /// table): cycle order, configured root, last-used project.
     pub registry: crate::config::ProjectsRegistry,
-    /// Where to save `registry` back to. `None` in tests, so test runs never
-    /// touch the real global config file.
-    registry_path: Option<PathBuf>,
-    /// The same `config.toml` path, for `Action::SetAiConfirmed` to persist
-    /// through `save_ui_flag`. `None` in tests, same posture as
-    /// `registry_path`.
-    config_path: Option<PathBuf>,
+    /// The XDG config files (`config.toml`, `keys.toml`, `ui.toml`,
+    /// `themes/*.toml`) — the sole owner of every config file read and
+    /// write. `Config::none()` in tests, so test runs never touch the
+    /// user's real config.
+    config: crate::config::Config,
     /// The tiered clipboard (external command / OS clipboard / OSC 52),
     /// configured from `ui_settings`.
     pub clipboard: crate::clipboard::Clipboard,
@@ -180,9 +184,6 @@ pub struct App {
     /// opens; flipped by `Action::ToggleThemePickerPolarity`. Meaningless
     /// while the picker is closed.
     theme_picker_dark: bool,
-    /// The custom-themes directory, `None` when no config dir resolved for
-    /// this platform.
-    pub themes_dir: Option<PathBuf>,
     /// Eased animated values (tab underline, hover fade, ...), constructed
     /// from `ui_settings.animations`. Time is always passed in by the
     /// caller — `Action::Tick`'s handler and `DrawCtx::now` both sample
@@ -199,17 +200,13 @@ pub struct App {
     /// that transition (active → finished) still force one more redraw.
     animating_last_tick: bool,
     /// The active key bindings (defaults + `keys.toml` overrides), used at
-    /// draw time for the palette's keybinding column (`keys::combo_for`).
-    /// `main.rs`'s event loop loads its own copy for `handle_key` — this one
-    /// exists purely for read-only lookups during drawing, since `App`
-    /// otherwise has no way to reach the keymap from inside `Component::draw`.
+    /// draw time for the palette's keybinding column (`keys::combo_for`)
+    /// and cloned by `main.rs`'s event loop for `handle_key` — `App` has no
+    /// way to reach a keymap from inside `Component::draw` otherwise.
     pub keymap: crate::keys::Keymap,
     /// Palette command frecency stats (recency + count per command id),
     /// loaded from `ui.toml` at startup and saved back on quit.
     pub usage: crate::usage::UsageStore,
-    /// Where to save `usage` back to. `None` in tests, so test runs never
-    /// touch the real `ui.toml`.
-    usage_path: Option<PathBuf>,
     /// The HTTP clients used for every send (verifying + insecure, picked
     /// per request). Built eagerly and cheaply
     /// (`reqwest::Client::builder().build()` needs no running Tokio
@@ -361,11 +358,11 @@ pub struct App {
     /// too are a chronic state that must not re-toast on every refresh.
     last_spaces_warning: Option<String>,
     /// Set when the project the app was asked to open refused (a file it
-    /// would write back is unreadable — see `ProjectContext::open`). The
+    /// would write back is unreadable — see `Project::open`). The
     /// app then runs on an empty root with nothing loaded; the message is
     /// shown where the request list would be, and only opening another
     /// project (or fixing the file and relaunching) leaves this state.
-    pub open_error: Option<crate::project_ctx::OpenError>,
+    pub open_error: Option<OpenError>,
     /// Keeps the test-only channel's receiver alive so `tx` doesn't become
     /// a dangling sender in `App::new_for_test()`. Always `None` outside
     /// of tests.
@@ -376,6 +373,12 @@ pub struct App {
     /// The undo/redo stacks. Populated by `capture_undo` and by later
     /// tasks' Undo/Redo apply arms.
     pub history: crate::undo::History,
+    /// The `Project` journal entry the last recorded `StepKind::Project`
+    /// marker points at. A `Project` call that merged into the entry
+    /// already on top leaves this unchanged, so
+    /// [`Self::record_project_step`] records nothing for it and a
+    /// keyboard burst stays one undo step.
+    marked_entry: Option<postui_core::journal::EntryId>,
     /// The open request as of the last `capture_undo` call (with its slug),
     /// diffed against the live editor each call to detect edits that never
     /// went through an `Action`. `None` before the first request is open.
@@ -444,7 +447,7 @@ fn resolve_startup(
     default_dir: Option<PathBuf>,
 ) -> Option<(PathBuf, StartupDisposition, Option<PathBuf>)> {
     if let Some(root) = cli_root {
-        let disposition = if postui_core::project::is_project(&root) {
+        let disposition = if Project::is_project(&root) {
             StartupDisposition::OpenAsIs { register: true }
         } else {
             StartupDisposition::PromptCreate
@@ -470,7 +473,7 @@ fn resolve_startup(
         ));
     }
     if let Some(root) = default_dir {
-        let disposition = if postui_core::project::is_project(&root) {
+        let disposition = if Project::is_project(&root) {
             StartupDisposition::OpenAsIs { register: false }
         } else {
             StartupDisposition::InitDefault
@@ -507,21 +510,14 @@ impl App {
     /// Resolves the project to open (see [`resolve_startup`]) and opens it,
     /// self-initializing or prompting to create as its disposition says.
     pub fn new(tx: UnboundedSender<Action>, cli_root: Option<PathBuf>) -> Self {
-        let registry_path = crate::config::config_file_path();
-        let (registry, registry_warnings) = registry_path
-            .as_deref()
-            .map(crate::config::ProjectsRegistry::load_from)
-            .unwrap_or_default();
-        let (ui_settings, mut ui_warnings) = registry_path
-            .as_deref()
-            .map(crate::config::load_ui_settings)
-            .unwrap_or_default();
-        // Both loaders parse the same file: one parse failure, one toast.
-        if !registry_warnings.is_empty() && ui_warnings.is_empty() {
-            ui_warnings.extend(registry_warnings);
-        }
-        let themes_dir = crate::config::themes_dir_path();
-        let (themes, theme_warnings) = crate::theme::ThemeRegistry::load(themes_dir.as_deref());
+        let (config, loaded, mut warnings) = crate::config::Config::load(cfg!(target_os = "macos"));
+        let crate::config::Loaded {
+            registry,
+            ui: ui_settings,
+            keymap,
+            themes,
+            usage,
+        } = loaded;
         let terminal_colors = {
             use crate::theme::TerminalPalette;
             crate::theme::OscQuery.query()
@@ -535,18 +531,12 @@ impl App {
                     .expect("terminal is always registered"),
             ),
         };
-        ui_warnings.extend(theme_warnings); // malformed custom theme files surface as startup toasts
         if theme_name != ui_settings.theme {
-            ui_warnings.push(format!(
+            warnings.push(format!(
                 "unknown theme {:?} in config.toml; using terminal",
                 ui_settings.theme
             ));
         }
-        let usage_path = crate::config::ui_file_path();
-        let usage = usage_path
-            .as_deref()
-            .map(crate::usage::UsageStore::load_from)
-            .unwrap_or_default();
 
         let testbed = std::env::var_os("POSTUI_TESTBED").is_some();
 
@@ -557,18 +547,13 @@ impl App {
         ) else {
             let mut app = Self::bare(tx, PathBuf::new());
             app.registry = registry;
-            app.registry_path = registry_path.clone();
-            app.config_path = registry_path;
+            app.config = config;
             app.themes = themes;
             app.terminal_colors = terminal_colors;
-            app.themes_dir = themes_dir;
             app.apply_ui_settings(ui_settings, theme_name, theme);
             app.usage = usage;
-            app.usage_path = usage_path;
-            let (keymap, key_warnings) =
-                crate::keys::Keymap::load_with_warnings(cfg!(target_os = "macos"));
             app.keymap = keymap;
-            for w in ui_warnings.into_iter().chain(key_warnings) {
+            for w in warnings {
                 app.toasts.push(w, ToastKind::Warning);
             }
             app.toasts.push(
@@ -581,20 +566,15 @@ impl App {
             return app;
         };
 
-        let mut app = Self::with_root(tx, root);
+        let mut app = Self::with_root(tx, root.clone());
         app.registry = registry;
-        app.registry_path = registry_path.clone();
-        app.config_path = registry_path;
+        app.config = config;
         app.themes = themes;
         app.terminal_colors = terminal_colors;
-        app.themes_dir = themes_dir;
         app.apply_ui_settings(ui_settings, theme_name, theme);
         app.usage = usage;
-        app.usage_path = usage_path;
-        let (keymap, key_warnings) =
-            crate::keys::Keymap::load_with_warnings(cfg!(target_os = "macos"));
         app.keymap = keymap;
-        for w in ui_warnings.into_iter().chain(key_warnings) {
+        for w in warnings {
             app.toasts.push(w, ToastKind::Warning);
         }
 
@@ -619,10 +599,10 @@ impl App {
 
         match disposition {
             StartupDisposition::InitDefault => {
-                app.init_default_project();
+                app.init_default_project(root);
             }
             StartupDisposition::PromptCreate => {
-                let path = app.project.root.display().to_string();
+                let path = root.display().to_string();
                 let fallback_actions = match postui_core::storage::default_project_dir() {
                     Some(fallback) => vec![Action::SwitchProject(fallback)],
                     None => vec![],
@@ -637,16 +617,16 @@ impl App {
                 });
             }
             StartupDisposition::OpenAsIs { register } => {
-                if !postui_core::project::is_project(&app.project.root) {
+                if !Project::is_project(&root) {
                     app.toasts.push(
                         format!(
                             "{} has no project.toml; opened as a bare directory",
-                            app.project.root.display()
+                            root.display()
                         ),
                         ToastKind::Warning,
                     );
                 } else if register {
-                    app.registry.register(app.project.root.clone());
+                    app.registry.register(root);
                     app.save_registry();
                 }
             }
@@ -662,9 +642,7 @@ impl App {
     /// Persists the registry to `config.toml`, telling the user when it
     /// couldn't be (a config that doesn't parse is refused, not replaced).
     fn save_registry(&mut self) {
-        if let Some(path) = &self.registry_path
-            && let Err(e) = self.registry.save_to(path)
-        {
+        if let Err(e) = self.config.save_registry(&self.registry) {
             self.toasts.push(
                 format!("could not save project list: {e}"),
                 ToastKind::Error,
@@ -675,20 +653,23 @@ impl App {
     /// The `StartupDisposition::InitDefault` tail: writes `project.toml`
     /// into the platform default directory and registers it.
     ///
-    /// `with_root` already ran `ensure_project`, but on a *bare* directory
-    /// — with no `project.toml` it can only make `requests/main`. The
-    /// second `ensure_project` here, after `init_project` has written the
-    /// file, is what seeds `spaces = ["main"]` (same order as
+    /// `with_root` opened a *bare* directory — with no `project.toml`
+    /// there was nothing to seed `spaces = ["main"]` from. `Project::init`
+    /// here writes the file and the space list together (same order as
     /// `Action::InitProjectHere`).
-    fn init_default_project(&mut self) {
-        let _ = postui_core::project::init_project(&self.project.root, Some("default"));
-        if let Err(e) = postui_core::storage::ensure_project(&self.project.root) {
-            self.toasts
-                .push(format!("could not open project: {e}"), ToastKind::Error);
+    fn init_default_project(&mut self, root: PathBuf) {
+        match Project::init(&root, Some("default")) {
+            Ok((project, warnings)) => {
+                self.project = Some(project);
+                for w in warnings {
+                    self.toasts.push(w, ToastKind::Warning);
+                }
+            }
+            Err(e) => self
+                .toasts
+                .push(format!("could not open project: {e}"), ToastKind::Error),
         }
-        self.project.reload_meta();
-        self.project.reload_spaces();
-        self.registry.register(self.project.root.clone());
+        self.registry.register(root);
         self.save_registry();
     }
 
@@ -705,11 +686,8 @@ impl App {
             app.show_open_error();
             return app;
         }
-        match postui_core::storage::ensure_project(&app.project.root) {
-            Ok(()) => {
-                // The context was opened before `ensure_project` seeded
-                // `main`, so the space list it read can be stale.
-                app.project.reload_spaces();
+        match app.project.as_mut().map(|p| p.ensure_spaces()) {
+            Some(Ok(())) => {
                 app.refresh_sidebar();
                 // Restore this project's saved layout split alongside its
                 // open request.
@@ -718,16 +696,18 @@ impl App {
                 // last used — the same restore a project *switch* already
                 // performs. Without it the sidebar draws a selection whose
                 // data never made it into the editor.
-                if let Some(slug) = app.project.local_open_request()
-                    && postui_core::storage::load_request(&app.project.root, &slug).is_ok()
+                let open = app.project().and_then(|p| p.local().open_request.clone());
+                if let Some(slug) = open
+                    && app.project().is_some_and(|p| p.request_exists(&slug))
                 {
                     app.update(Action::ForceOpenRequest(slug));
                 }
             }
-            Err(e) => {
+            Some(Err(e)) => {
                 app.toasts
                     .push(format!("could not open project: {e}"), ToastKind::Error);
             }
+            None => {}
         }
         app
     }
@@ -737,7 +717,7 @@ impl App {
     /// format. Idempotent: a confirm already on the stack isn't stacked
     /// on top of, so a reload while the modal is up doesn't duplicate it.
     fn prompt_migration_if_pending(&mut self) {
-        let Some(outcome) = self.project.pending_migration() else {
+        let Some(outcome) = self.project().and_then(|p| p.pending_migration()) else {
             return;
         };
         if self
@@ -873,19 +853,296 @@ impl App {
         }
     }
 
-    /// The context the app runs on when it has no project: an empty root
-    /// that reads nothing and can't persist.
-    fn empty_project() -> ProjectContext {
-        ProjectContext::empty()
+    /// The open project, or `None` when none is.
+    pub fn project(&self) -> Option<&Project> {
+        self.project.as_ref()
+    }
+
+    pub fn project_mut(&mut self) -> Option<&mut Project> {
+        self.project.as_mut()
+    }
+
+    /// The open project, for a test (and the integration harness) that
+    /// has already opened one.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn proj(&self) -> &Project {
+        self.project.as_ref().expect("test needs an open project")
+    }
+
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn proj_mut(&mut self) -> &mut Project {
+        self.project.as_mut().expect("test needs an open project")
+    }
+
+    // ----- read accessors -----
+    //
+    // Each answers what the app answered with no project open before
+    // project is open, so the no-project screen behaves exactly as before.
+
+    /// The project's display name — its `name`, else the root's basename.
+    pub(crate) fn display_name(&self) -> String {
+        self.project().map(|p| p.display_name()).unwrap_or_default()
+    }
+
+    /// The open project's root, or an empty path with no project open (as
+    /// the empty context's root was — never the process's cwd, which is
+    /// what [`Self::refuse_without_project`] guards).
+    pub(crate) fn root(&self) -> &std::path::Path {
+        self.project()
+            .map_or_else(|| std::path::Path::new(""), |p| p.root())
+    }
+
+    pub(crate) fn meta(&self) -> &postui_core::project::ProjectMeta {
+        static EMPTY: std::sync::OnceLock<postui_core::project::ProjectMeta> =
+            std::sync::OnceLock::new();
+        self.project()
+            .map_or_else(|| EMPTY.get_or_init(Default::default), |p| p.meta())
+    }
+
+    pub(crate) fn variables(&self) -> &postui_core::varmodel::VarModel {
+        static EMPTY: std::sync::OnceLock<postui_core::varmodel::VarModel> =
+            std::sync::OnceLock::new();
+        self.project()
+            .map_or_else(|| EMPTY.get_or_init(Default::default), |p| p.variables())
+    }
+
+    pub(crate) fn env_data(&self) -> &postui_core::varmodel::EnvData {
+        static EMPTY: std::sync::OnceLock<postui_core::varmodel::EnvData> =
+            std::sync::OnceLock::new();
+        self.project()
+            .map_or_else(|| EMPTY.get_or_init(Default::default), |p| p.env_data())
+    }
+
+    pub(crate) fn resolved(&self) -> &postui_core::varmodel::Resolved {
+        static EMPTY: std::sync::OnceLock<postui_core::varmodel::Resolved> =
+            std::sync::OnceLock::new();
+        self.project()
+            .map_or_else(|| EMPTY.get_or_init(Default::default), |p| p.resolved())
+    }
+
+    pub(crate) fn secrets(&self) -> &indexmap::IndexMap<String, indexmap::IndexMap<String, String>> {
+        static EMPTY: std::sync::OnceLock<
+            indexmap::IndexMap<String, indexmap::IndexMap<String, String>>,
+        > = std::sync::OnceLock::new();
+        self.project()
+            .map_or_else(|| EMPTY.get_or_init(Default::default), |p| p.secrets())
+    }
+
+    pub(crate) fn environments(&self) -> &[String] {
+        self.project().map_or(&[], |p| p.environments())
+    }
+
+    pub(crate) fn spaces(&self) -> &[String] {
+        self.project().map_or(&[], |p| p.spaces())
+    }
+
+    pub(crate) fn active_env(&self) -> Option<&str> {
+        self.project().and_then(|p| p.active_env())
+    }
+
+    /// The space the sidebar is rooted at.
+    pub(crate) fn active_space(&self) -> String {
+        self.project().map_or_else(
+            || postui_core::project::DEFAULT_SPACE.to_string(),
+            |p| p.local().active_space.clone(),
+        )
+    }
+
+    pub(crate) fn expanded(&self) -> std::collections::BTreeSet<String> {
+        self.project()
+            .map(|p| p.local().expanded.clone())
+            .unwrap_or_default()
+    }
+
+    /// The active environment's slug, or `"no env"`. A key, not a label:
+    /// see [`Self::env_label_display`] for what the user reads.
+    pub(crate) fn env_label(&self) -> String {
+        self.active_env().unwrap_or("no env").to_string()
+    }
+
+    /// The active environment's display name, or `"no env"`.
+    pub(crate) fn env_label_display(&self) -> String {
+        match self.active_env() {
+            Some(e) => self.env_name(e),
+            None => "no env".into(),
+        }
+    }
+
+    /// The name environment `slug` shows as (`[environment.<slug>] name`
+    /// in project.toml, else the slug).
+    pub(crate) fn env_name(&self, slug: &str) -> String {
+        self.project()
+            .map_or_else(|| slug.to_string(), |p| p.env_name(slug))
+    }
+
+    /// The name space `slug` shows as (`[space.<slug>] name`, else the slug).
+    pub(crate) fn space_name(&self, slug: &str) -> String {
+        self.project()
+            .map_or_else(|| slug.to_string(), |p| p.space_name(slug))
+    }
+
+    pub(crate) fn env_tls(&self) -> Option<postui_core::project::TlsPolicy> {
+        self.project().and_then(|p| p.env_tls())
+    }
+
+    pub(crate) fn prepare_context(&self) -> postui_core::prepare::PrepareContext {
+        match self.project() {
+            Some(p) => p.prepare_context(),
+            None => postui_core::prepare::PrepareContext::default(),
+        }
+    }
+
+    pub(crate) fn selections_for(&self, env: &str) -> &indexmap::IndexMap<String, String> {
+        static EMPTY: std::sync::OnceLock<indexmap::IndexMap<String, String>> =
+            std::sync::OnceLock::new();
+        self.project().map_or_else(
+            || EMPTY.get_or_init(Default::default),
+            |p| p.selections_for(env),
+        )
+    }
+
+    pub(crate) fn shared_selections(&self) -> &indexmap::IndexMap<String, String> {
+        static EMPTY: std::sync::OnceLock<indexmap::IndexMap<String, String>> =
+            std::sync::OnceLock::new();
+        self.project().map_or_else(
+            || EMPTY.get_or_init(Default::default),
+            |p| &p.local().shared_selections,
+        )
+    }
+
+    // ----- local-state and variable writes -----
+
+    fn set_selection_for(&mut self, env: &str, name: &str, key: &str) {
+        if let Some(p) = self.project_mut() {
+            p.set_selection_for(env, name, key);
+        }
+    }
+
+    fn remove_secret_for(&mut self, env: &str, name: &str) -> Result<(), String> {
+        match self.project_mut() {
+            Some(p) => p.remove_secret_for(env, name).map_err(|e| e.to_string()),
+            None => Err(NO_PROJECT.to_string()),
+        }
+    }
+
+    fn edit_variables(
+        &mut self,
+        f: impl FnOnce(&str) -> Result<String, postui_core::varedit::EditError>,
+    ) -> Result<(), String> {
+        match self.project_mut() {
+            Some(p) => p.edit_variables(f).map_err(|e| e.to_string()),
+            None => Err(NO_PROJECT.to_string()),
+        }
+    }
+
+    fn edit_env(
+        &mut self,
+        env: &str,
+        f: impl FnOnce(&str) -> Result<String, postui_core::varedit::EditError>,
+    ) -> Result<(), String> {
+        match self.project_mut() {
+            Some(p) => p.edit_env(env, f).map_err(|e| e.to_string()),
+            None => Err(NO_PROJECT.to_string()),
+        }
+    }
+
+    fn edit_variables_and_envs(
+        &mut self,
+        vf: impl FnOnce(&str) -> Result<String, postui_core::varedit::EditError>,
+        ef: impl Fn(&str) -> Result<String, postui_core::varedit::EditError>,
+    ) -> Result<(), String> {
+        match self.project_mut() {
+            Some(p) => p.edit_variables_and_envs(vf, ef).map_err(|e| e.to_string()),
+            None => Err(NO_PROJECT.to_string()),
+        }
+    }
+
+    /// Switches the active environment (persisting the choice), returning
+    /// the warnings a refused switch produced.
+    fn set_active_env(&mut self, env: Option<String>) -> Vec<String> {
+        match self.project_mut() {
+            Some(p) => p.set_active_env(env),
+            None => Vec::new(),
+        }
+    }
+
+    /// The Manage screen's items for `tab` — empty with no project open.
+    pub(crate) fn manage_items(&self, tab: crate::components::manage::ManageTab) -> &[String] {
+        self.project()
+            .map_or(&[], |p| crate::components::manage_list::ManageList::items(tab, p))
+    }
+
+    /// The name the Manage screen's `tab` list has selected.
+    pub(crate) fn manage_selected(&self, tab: crate::components::manage::ManageTab) -> Option<String> {
+        self.project()
+            .and_then(|p| self.manage.list.selected(tab, p))
+            .map(str::to_string)
+    }
+
+    /// Re-reads the Variable Manager's caches from the project. A no-op
+    /// with no project open — there is nothing to show.
+    fn sync_varmanager(&mut self) {
+        let Self {
+            project,
+            varmanager,
+            ..
+        } = self;
+        if let Some(p) = project {
+            varmanager.sync(p);
+        }
+    }
+
+    fn vm_start_cell_edit(&mut self, row: usize, col: usize) {
+        let Self {
+            project,
+            varmanager,
+            ..
+        } = self;
+        if let Some(p) = project {
+            varmanager.start_cell_edit(p, row, col);
+        }
+    }
+
+    /// Moves the Manage screen's list cursor onto `name` in the open tab.
+    fn manage_select_name(&mut self, name: &str) {
+        let Self {
+            project, manage, ..
+        } = self;
+        if let Some(p) = project {
+            let tab = manage.tab;
+            manage.list.select_name(tab, p, name);
+        }
+    }
+
+    /// Re-reads the project's own documents, without the app-level
+    /// refreshes `ReloadProjectFiles` performs. Test-only: tests write
+    /// project files directly (with `std::fs` or the free functions) and
+    /// need the project to see them without a sidebar rebuild.
+    #[cfg(test)]
+    fn reload_project_documents(&mut self) {
+        if let Some(p) = self.project.as_mut() {
+            p.invalidate_stamps();
+            let _ = p.poll();
+        }
+    }
+
+    /// A forced (not mtime-gated) re-read plus the app-level refreshes:
+    /// the environment selectors reload the project before listing, so a
+    /// file another process just created shows up in the list.
+    pub fn resync_project(&mut self) {
+        if let Some(p) = self.project.as_mut() {
+            p.invalidate_stamps();
+        }
+        self.apply(Action::ReloadProjectFiles);
     }
 
     /// The gate every arm that would create a file passes first: with no
-    /// project open (the startup fallback, or a refused open) the root is
-    /// empty, and a write relative to it lands in the process's cwd —
-    /// for `postui .` the very project that just refused. Toasts and
-    /// answers `true` when the arm must bail.
+    /// project open (the startup fallback, or a refused open) a write
+    /// relative to the empty root lands in the process's cwd — for
+    /// `postui .` the very project that just refused. Toasts and answers
+    /// `true` when the arm must bail.
     fn refuse_without_project(&mut self) -> bool {
-        if self.project.can_persist() {
+        if self.project.is_some() {
             return false;
         }
         self.toasts.push(
@@ -910,19 +1167,24 @@ impl App {
 
     fn bare(tx: UnboundedSender<Action>, root: PathBuf) -> Self {
         let mut toasts = Toasts::default();
-        let (project, open_error) = match ProjectContext::open(root) {
-            Ok((project, warnings)) => {
-                for w in warnings {
-                    toasts.push(w, ToastKind::Warning);
+        let (project, open_error) = if root.as_os_str().is_empty() {
+            // An empty root is "no project", never the process's cwd.
+            (None, None)
+        } else {
+            match Project::open(root) {
+                Ok((project, warnings)) => {
+                    for w in warnings {
+                        toasts.push(w, ToastKind::Warning);
+                    }
+                    (Some(project), None)
                 }
-                (project, None)
-            }
-            Err(e) => {
-                toasts.push(
-                    format!("could not open {}: {e}", e.root.display()),
-                    ToastKind::Error,
-                );
-                (Self::empty_project(), Some(e))
+                Err(e) => {
+                    toasts.push(
+                        format!("could not open {}: {e}", e.root.display()),
+                        ToastKind::Error,
+                    );
+                    (None, Some(e))
+                }
             }
         };
         let mut app = Self {
@@ -940,8 +1202,7 @@ impl App {
             modals: ModalStack::default(),
             project,
             registry: crate::config::ProjectsRegistry::default(),
-            registry_path: None,
-            config_path: None,
+            config: crate::config::Config::none(),
             clipboard: crate::clipboard::Clipboard::new(&crate::config::UiSettings::default()),
             ui_settings: crate::config::UiSettings::default(),
             themes: crate::theme::ThemeRegistry::builtin(),
@@ -949,12 +1210,10 @@ impl App {
             theme_name: "terminal".into(),
             theme_preview: None,
             theme_picker_dark: true,
-            themes_dir: None,
             anims: Anims::new(crate::config::UiSettings::default().animations),
             animating_last_tick: false,
             keymap: crate::keys::Keymap::default_bindings(),
             usage: crate::usage::UsageStore::default(),
-            usage_path: None,
             clients: crate::http::Clients::new(),
             tx,
             ai_task: None,
@@ -991,6 +1250,7 @@ impl App {
             _test_rx: None,
             _test_dir: None,
             history: crate::undo::History::new(),
+            marked_entry: None,
             shadow: None,
             shadow_cursor: crate::undo::CursorPos::None,
             no_coalesce: false,
@@ -1275,15 +1535,18 @@ impl App {
             .iter()
             .filter_map(|f| f.slug.clone())
             .collect();
-        self.editor.inherited_headers = self.project.meta.default_headers.clone();
+        self.editor.inherited_headers = self.meta().default_headers.clone();
         self.editor.shadowed = self.compute_shadowed();
         // The token-highlighting/tooltip snapshot, kept in lockstep with the
         // project's resolved values and the open request's own `[variables]`
         // the same way `shadowed` is.
-        let vars = crate::components::var_tokens::VarView::from_context(
-            &self.project,
-            &self.editor.variables,
-        );
+        let vars = match self.project() {
+            Some(p) => crate::components::var_tokens::VarView::from_context(
+                p,
+                &self.editor.variables,
+            ),
+            None => crate::components::var_tokens::VarView::default(),
+        };
         self.editor.vars = vars;
         // The response pane always shows the open request's response;
         // whenever an action changed which request is open (any route),
@@ -1379,8 +1642,10 @@ impl App {
     /// preference (`.local/state.toml`'s `main_split`). Best-effort, like
     /// every local-state save.
     fn persist_split(&mut self) {
-        self.project.main_split = Some(self.split_state().to_token().to_string());
-        self.project.persist_local_state_keep_open_request();
+        let token = self.split_state().to_token().to_string();
+        if let Some(p) = self.project_mut() {
+            p.set_main_split(Some(token));
+        }
     }
 
     /// Seeds the split from the project's saved layout preference — the
@@ -1388,9 +1653,8 @@ impl App {
     /// token leaves the default split in place.
     fn seed_split_from_project(&mut self) {
         let Some(s) = self
-            .project
-            .main_split
-            .as_deref()
+            .project()
+            .and_then(|p| p.local().main_split.as_deref())
             .and_then(crate::split::SplitState::from_token)
         else {
             return;
@@ -1459,14 +1723,14 @@ impl App {
     /// project variable is a secret.
     fn compute_shadowed(&self) -> indexmap::IndexMap<String, String> {
         use postui_core::varmodel::VarMeta;
-        let env_label = self.project.env_label();
+        let env_label = self.env_label();
         self.editor
             .variables
             .keys()
             .filter_map(|name| {
-                let value = self.project.resolved.values.get(name)?;
+                let value = self.resolved().values.get(name)?;
                 let display = if matches!(
-                    self.project.resolved.meta.get(name),
+                    self.resolved().meta.get(name),
                     Some(VarMeta::Secret) | Some(VarMeta::MissingSecret)
                 ) {
                     "\u{25cf}\u{25cf}\u{25cf}\u{25cf}"
@@ -1486,8 +1750,8 @@ impl App {
     fn open_insert_var_picker(&mut self, completing: bool, seed: Option<&str>) -> bool {
         use crate::components::modal::Modal;
         use crate::components::var_picker::{VarPickerState, insert_entries};
-        let resolved = self.project.prepare_context().vars;
-        let options = insert_entries(&self.project.model, &resolved, &self.editor.variables);
+        let resolved = self.prepare_context().vars;
+        let options = insert_entries(self.variables(), &resolved, &self.editor.variables);
         let mut state = VarPickerState::new(options, completing);
         if let Some(seed) = seed {
             state.seed_filter(seed);
@@ -1648,11 +1912,11 @@ impl App {
                 true
             }
             Action::Quit | Action::ForceQuit => {
-                self.project
-                    .persist_local_state(self.editor.slug.as_deref());
-                if let Some(path) = &self.usage_path {
-                    let _ = self.usage.save_to(path);
+                let slug = self.editor.slug.clone();
+                if let Some(p) = self.project_mut() {
+                    p.set_open_request(slug.as_deref());
                 }
+                let _ = self.config.save_usage(&self.usage);
                 self.should_quit = true;
                 true
             }
@@ -1929,12 +2193,7 @@ impl App {
                     return true;
                 };
                 let expanded = crate::config::expand_tilde(&path);
-                let result = (|| -> std::io::Result<()> {
-                    if let Some(parent) = expanded.parent() {
-                        std::fs::create_dir_all(parent)?;
-                    }
-                    std::fs::write(&expanded, &data.body)
-                })();
+                let result = crate::hostfs::write_user_file(&expanded, data.body.as_bytes());
                 match result {
                     Ok(()) => self.toasts.push(
                         format!("Saved body to {}", expanded.display()),
@@ -1987,12 +2246,7 @@ impl App {
                 };
                 let text = view.view_text();
                 let expanded = crate::config::expand_tilde(&path);
-                let result = (|| -> std::io::Result<()> {
-                    if let Some(parent) = expanded.parent() {
-                        std::fs::create_dir_all(parent)?;
-                    }
-                    std::fs::write(&expanded, &text)
-                })();
+                let result = crate::hostfs::write_user_file(&expanded, text.as_bytes());
                 match result {
                     Ok(()) => self.toasts.push(
                         format!("Saved to {}", expanded.display()),
@@ -2144,9 +2398,9 @@ impl App {
                 // saves with the request (it comes back into effect under
                 // another environment), but the send won't follow it, and
                 // the toast says so rather than claiming a change.
-                let forced = self.project.env_tls();
+                let forced = self.env_tls();
                 if let Some(policy) = forced {
-                    let name = self.project.env_label_display();
+                    let name = self.env_label_display();
                     let what = match policy {
                         postui_core::project::TlsPolicy::Verify => "forces",
                         postui_core::project::TlsPolicy::Insecure => "skips",
@@ -2203,12 +2457,19 @@ impl App {
                 // one that actually contains it.
                 let outgoing = self.editor.slug.clone();
                 if let Some(space) = postui_core::storage::space_of(&slug).map(str::to_string)
-                    && space != self.project.active_space
+                    && space != self.active_space()
                     && !self.enter_space(&space, SpaceExit::Remember(outgoing.as_deref()))
                 {
                     return true;
                 }
-                match postui_core::storage::load_request(&self.project.root, &slug) {
+                let Some(p) = self.project.as_mut() else {
+                    return true;
+                };
+                // Only one request is held at a time, as only one is open.
+                if let Some(prev) = outgoing.as_deref().filter(|s| *s != slug) {
+                    p.close_request(prev);
+                }
+                match p.open_request(&slug).cloned() {
                     Ok(req) => {
                         self.editor.load(Some(slug.clone()), req);
                         self.sync_active_tab();
@@ -2222,7 +2483,7 @@ impl App {
                         self.refresh_sidebar();
                         self.sidebar.select_slug(&slug);
                         self.retarget_sidebar_travel(prev);
-                        self.apply(Action::PersistLocalState);
+                        self.persist_open_request();
                     }
                     Err(e) => {
                         self.toasts
@@ -2241,7 +2502,13 @@ impl App {
                 match self.editor.slug.clone() {
                     Some(slug) => {
                         let req = self.editor.current_request();
-                        match postui_core::storage::save_request(&self.project.root, &slug, &req) {
+                        // Not journaled: undoing past a save is the
+                        // editor's own memory-only step.
+                        let saved = match self.project_mut() {
+                            Some(p) => p.save_request(&slug, &req),
+                            None => return true,
+                        };
+                        match saved {
                             Ok(()) => {
                                 self.mark_saved_after_write();
                                 self.toasts
@@ -2313,7 +2580,7 @@ impl App {
                 // The prompt speaks folders *inside* the space, so the
                 // space segment never shows up in the prefill.
                 let folder = folder
-                    .strip_prefix(&format!("{}/", self.project.active_space))
+                    .strip_prefix(&format!("{}/", self.active_space()))
                     .unwrap_or("");
                 let prefill = if folder.is_empty() {
                     String::new()
@@ -2332,29 +2599,12 @@ impl App {
                 let Some(slug) = self.sidebar.selected_slug() else {
                     return true;
                 };
-                match postui_core::storage::duplicate_request(&self.project.root, &slug) {
+                let Some(p) = self.project.as_mut() else {
+                    return true;
+                };
+                match p.duplicate_request(&slug) {
                     Ok(new_slug) => {
-                        let new_path =
-                            postui_core::storage::request_path(&self.project.root, &new_slug);
-                        let orders = match (Self::split_rel(&slug), Self::split_rel(&new_slug)) {
-                            (Some((space, anchor_rel)), Some((_, rel))) => {
-                                let r = postui_core::order::order_insert_after(
-                                    &self.project.root,
-                                    space,
-                                    anchor_rel,
-                                    rel,
-                                );
-                                self.order_cascade("duplicate", r)
-                            }
-                            _ => Vec::new(),
-                        };
-                        self.record_file_step_with_orders(
-                            vec![(new_path.clone(), None)],
-                            &[new_path],
-                            None,
-                            orders,
-                            Vec::new(),
-                        );
+                        self.record_project_step();
                         self.refresh_sidebar();
                         let display = self.request_display(&new_slug);
                         self.toasts
@@ -2378,7 +2628,7 @@ impl App {
                     // is relative to the space they're in.
                     let folder = match slug.rsplit_once('/') {
                         Some((folder, _)) => folder
-                            .strip_prefix(&format!("{}/", self.project.active_space))
+                            .strip_prefix(&format!("{}/", self.active_space()))
                             .unwrap_or(""),
                         None => "",
                     };
@@ -2466,13 +2716,13 @@ impl App {
                 true
             }
             Action::MoveRequestToSpace { slug, space } => {
-                if space == self.project.active_space {
+                if space == self.active_space() {
                     self.toasts
                         .push(format!("already in {space}"), ToastKind::Warning);
                     self.last_action_failed = true;
                     return true;
                 }
-                if !self.project.spaces.contains(&space) {
+                if !self.spaces().contains(&space) {
                     self.toasts
                         .push(format!("no space named {space:?}"), ToastKind::Warning);
                     self.last_action_failed = true;
@@ -2487,26 +2737,12 @@ impl App {
                 true
             }
             Action::ForceMoveRequestToSpace { slug, space } => {
-                use postui_core::storage;
-                let from_path = storage::request_path(&self.project.root, &slug);
-                let old_content = std::fs::read_to_string(&from_path).ok();
-                match storage::move_request_to_space(&self.project.root, &slug, &space) {
+                let Some(p) = self.project.as_mut() else {
+                    return true;
+                };
+                match p.move_request(&slug, &space) {
                     Ok(new_slug) => {
-                        let to_path = storage::request_path(&self.project.root, &new_slug);
-                        let mut orders =
-                            self.cascade_slug("move", &slug, postui_core::order::order_remove);
-                        orders.extend(self.cascade_slug(
-                            "move",
-                            &new_slug,
-                            postui_core::order::order_arrive,
-                        ));
-                        self.record_file_step_with_orders(
-                            vec![(from_path.clone(), old_content), (to_path.clone(), None)],
-                            &[from_path, to_path],
-                            None,
-                            orders,
-                            vec![(slug.clone(), new_slug.clone())],
-                        );
+                        self.record_project_step();
                         // The move doesn't follow the request into its
                         // new space (user feedback: that made moving
                         // several in a row a chore). From this space's
@@ -2523,7 +2759,7 @@ impl App {
                             format!(
                                 "Moved {} to {}",
                                 self.request_display(&new_slug),
-                                self.project.space_name(&space)
+                                self.space_name(&space)
                             ),
                             ToastKind::Success,
                         );
@@ -2563,38 +2799,20 @@ impl App {
                 true
             }
             Action::RenameRequest { from, to } => {
-                use postui_core::storage::{self, StorageError};
+                use postui_core::project::Error;
                 // The typed name is relative to the active space, same as
                 // a create.
                 let to = format!(
                     "{}/{}",
-                    self.project.active_space,
+                    self.active_space(),
                     to.trim_start_matches('/')
                 );
-                let from_path = storage::request_path(&self.project.root, &from);
-                let old_content = std::fs::read_to_string(&from_path).ok();
-                match storage::rename_request_named(&self.project.root, &from, &to) {
+                let Some(p) = self.project.as_mut() else {
+                    return true;
+                };
+                match p.rename_request(&from, &to) {
                     Ok((slug, leaf)) => {
-                        let to_path = storage::request_path(&self.project.root, &slug);
-                        let orders = match (Self::split_rel(&from), Self::split_rel(&slug)) {
-                            (Some((space, from_rel)), Some((_, to_rel))) => {
-                                let r = postui_core::order::order_rename(
-                                    &self.project.root,
-                                    space,
-                                    from_rel,
-                                    to_rel,
-                                );
-                                self.order_cascade("rename", r)
-                            }
-                            _ => Vec::new(),
-                        };
-                        self.record_file_step_with_orders(
-                            vec![(from_path.clone(), old_content), (to_path.clone(), None)],
-                            &[from_path, to_path],
-                            None,
-                            orders,
-                            vec![(from.clone(), slug.clone())],
-                        );
+                        self.record_project_step();
                         self.session.rename(&from, &slug);
                         self.refresh_sidebar();
                         if self.editor.slug.as_deref() == Some(from.as_str()) {
@@ -2610,14 +2828,14 @@ impl App {
                             self.sidebar.open_slug = Some(slug);
                         }
                     }
-                    Err(StorageError::AlreadyExists(taken)) => {
+                    Err(Error::AlreadyExists(taken)) => {
                         self.toasts.push(
                             format!("a request named {taken:?} already exists here"),
                             ToastKind::Error,
                         );
                         self.last_action_failed = true;
                     }
-                    Err(StorageError::InvalidSlug(_)) => {
+                    Err(Error::BadName(_)) => {
                         self.toasts
                             .push("request name cannot be empty", ToastKind::Error);
                         self.last_action_failed = true;
@@ -2634,35 +2852,29 @@ impl App {
             }
             Action::DeleteRequest(slug) => {
                 let display = self.request_display(&slug);
-                // The step carries state.toml on both sides: the "before"
-                // side still names this request as open (when it was), so
-                // undo reopens it rather than leaving an empty editor.
-                let state_toml = self.local_state_path();
-                self.apply(Action::PersistLocalState);
-                let before = self.read_file_states(std::slice::from_ref(&state_toml));
-                let context_slug = self.editor.slug.clone();
-                match postui_core::storage::delete_request(&self.project.root, &slug) {
-                    Ok(trashed) => {
+                // The entry records the open request as its `reopen`, so
+                // undo puts the editor back rather than leaving it empty:
+                // persist first, so the project's own local state names it.
+                self.persist_open_request();
+                let Some(p) = self.project.as_mut() else {
+                    return true;
+                };
+                match p.delete_request(&slug) {
+                    Ok(()) => {
+                        self.record_project_step_as(
+                            crate::undo::ProjectNoun::Trash,
+                            Some(slug.clone()),
+                        );
                         self.toasts.push(
                             format!("Deleted {display}{}", self.undo_hint()),
                             ToastKind::Info,
                         );
-                        let orders =
-                            self.cascade_slug("delete", &slug, postui_core::order::order_remove);
                         self.refresh_sidebar();
                         if self.editor.slug.as_deref() == Some(slug.as_str()) {
                             self.editor = Editor::default();
                             self.shadow = None;
                         }
-                        self.apply(Action::PersistLocalState);
-                        self.record_trashed_step_with_orders(
-                            vec![trashed],
-                            before,
-                            &[state_toml],
-                            None,
-                            orders,
-                            context_slug,
-                        );
+                        self.persist_open_request();
                     }
                     Err(e) => {
                         self.toasts
@@ -2748,7 +2960,7 @@ impl App {
                 }
                 let (prepared, warnings) = match postui_core::prepare::prepare(
                     &self.editor.current_request(),
-                    &self.project.prepare_context(),
+                    &self.prepare_context(),
                 ) {
                     Ok(x) => x,
                     Err(postui_core::prepare::PrepareError::Unresolved(causes)) => {
@@ -2769,18 +2981,18 @@ impl App {
                             self.push_modal(Modal::Prompt {
                                 title: format!(
                                     "Value for `{name}` (secret, env `{}`)",
-                                    self.project.env_label()
+                                    self.env_label()
                                 ),
                                 input: LineInput::new(""),
                                 kind: PromptKind::SecretValue {
                                     name,
-                                    env: self.project.env_label(),
+                                    env: self.env_label(),
                                 },
                                 revealed: false,
                             });
                             return true;
                         }
-                        let label = self.project.env_label();
+                        let label = self.env_label();
                         let mut msg = format!(
                             "{} ({label})",
                             postui_core::prepare::PrepareError::Unresolved(causes.clone())
@@ -2832,10 +3044,13 @@ impl App {
             }
             Action::CancelSend => self.session.cancel(),
             Action::SetSecret { name, value } => {
-                let before = self.read_file_states(&self.project.var_file_paths());
-                match self.project.set_secret(&name, value) {
+                let result = match self.project.as_mut() {
+                    Some(p) => p.set_secret(&name, value).map_err(|e| e.to_string()),
+                    None => Err(NO_PROJECT.to_string()),
+                };
+                match result {
                     Ok(()) => {
-                        self.record_var_file_step(before);
+                        self.record_project_step();
                         self.apply(Action::ForceSend)
                     }
                     Err(e) => {
@@ -2886,22 +3101,31 @@ impl App {
             }
             Action::RequestFailed { generation, error } => self.session.failed(generation, error),
             Action::InitProjectHere => {
-                match postui_core::project::init_project(&self.project.root, None) {
-                    Ok(()) => {
-                        self.registry.register(self.project.root.clone());
+                match Project::init(self.root(), None) {
+                    Ok((project, warnings)) => {
+                        let root = project.root().to_path_buf();
+                        // A new `Project` carries a new journal: every
+                        // `Project` marker in the history points at an
+                        // entry id that no longer means anything, as
+                        // `ForceSwitchProject` does when it swaps one in.
+                        self.history.clear();
+                        self.marked_entry = None;
+                        self.project = Some(project);
+                        for w in warnings {
+                            self.toasts.push(w, ToastKind::Warning);
+                        }
+                        self.registry.register(root);
                         self.save_registry();
-                        if let Err(e) = postui_core::storage::ensure_project(&self.project.root) {
+                        if let Some(Err(e)) = self.project.as_mut().map(|p| p.ensure_spaces()) {
                             self.toasts
                                 .push(format!("could not open project: {e}"), ToastKind::Error);
                         }
                         self.refresh_sidebar();
-                        // The context was opened on a bare directory, before
+                        // The project was opened on a bare directory, before
                         // init wrote the stock `default` env: land in it now,
                         // as an open of the finished project would.
-                        self.project.environments =
-                            postui_core::project::list_environments(&self.project.root);
-                        if self.project.active_env.is_none()
-                            && let Some(first) = self.project.environments.first().cloned()
+                        if self.active_env().is_none()
+                            && let Some(first) = self.environments().first().cloned()
                         {
                             self.apply(Action::SwitchEnv(Some(first)));
                         }
@@ -2917,20 +3141,18 @@ impl App {
             }
             Action::ToggleSelectedFolder => {
                 if let Some((path, now_open)) = self.sidebar.toggle_selected_folder() {
+                    let mut expanded = self.expanded();
                     if now_open {
-                        self.project.expanded.insert(path);
+                        expanded.insert(path);
                     } else {
-                        self.project.expanded.remove(&path);
+                        expanded.remove(&path);
+                    }
+                    if let Some(p) = self.project_mut() {
+                        // The setter persists.
+                        p.set_expanded(expanded);
                     }
                     self.refresh_sidebar();
-                    self.apply(Action::PersistLocalState);
                 }
-                true
-            }
-            Action::PersistLocalState => {
-                self.project.record_space_open(self.editor.slug.as_deref());
-                self.project
-                    .persist_local_state(self.editor.slug.as_deref());
                 true
             }
             Action::OpenProjectChooser => {
@@ -2945,13 +3167,7 @@ impl App {
                         );
                         continue;
                     }
-                    let label = match postui_core::project::load_meta(path) {
-                        Ok(meta) => postui_core::project::display_name(path, &meta),
-                        Err(_) => postui_core::project::display_name(
-                            path,
-                            &postui_core::project::ProjectMeta::default(),
-                        ),
-                    };
+                    let label = Project::peek_display_name(path);
                     items.push(ChooserItem {
                         label,
                         detail: Some(path.display().to_string()),
@@ -2976,7 +3192,7 @@ impl App {
                 });
                 let mut state = ChooserState::new("Projects", items);
                 // Open on the current project, not row 0.
-                state.select_id(&self.project.root.display().to_string());
+                state.select_id(&self.root().display().to_string());
                 self.push_modal(Modal::Chooser(state));
                 true
             }
@@ -2984,8 +3200,7 @@ impl App {
                 use crate::components::chooser::ChooserState;
                 // Rescan the themes dir so a custom file edited or added since
                 // startup shows up without a restart (spec: rescan on picker open).
-                let (themes, warnings) =
-                    crate::theme::ThemeRegistry::load(self.themes_dir.as_deref());
+                let (themes, warnings) = self.config.reload_themes();
                 for w in warnings {
                     self.toasts.push(w, ToastKind::Warning);
                 }
@@ -3040,16 +3255,14 @@ impl App {
             Action::ApplyTheme(name) => {
                 self.set_theme_by_name(&name);
                 self.ui_settings.theme = self.theme_name.clone();
-                if let Some(path) = self.registry_path.clone()
-                    && let Err(e) = crate::config::save_ui_theme(&path, &self.theme_name)
-                {
+                if let Err(e) = self.config.save_ui_theme(&self.theme_name) {
                     self.toasts
                         .push(format!("could not save theme: {e}"), ToastKind::Error);
                 }
                 true
             }
             Action::CycleProject(delta) => {
-                match self.registry.neighbor(&self.project.root, delta) {
+                match self.registry.neighbor(self.root(), delta) {
                     None => {
                         self.toasts
                             .push("only one project registered", ToastKind::Warning);
@@ -3061,7 +3274,7 @@ impl App {
                 true
             }
             Action::SwitchProject(target) => {
-                if target == self.project.root {
+                if target == self.root() {
                     return false;
                 }
                 if self.editor_holds_unsaved() {
@@ -3076,7 +3289,7 @@ impl App {
                 // one: a project that refuses to open (a broken file it
                 // would write back) leaves the current project exactly as
                 // it was.
-                let (project, warnings) = match ProjectContext::open(target.clone()) {
+                let (project, warnings) = match Project::open(target.clone()) {
                     Ok(opened) => opened,
                     Err(e) => {
                         self.toasts.push(
@@ -3093,22 +3306,18 @@ impl App {
                 // into a drag of a same-named row in the next project.
                 self.cancel_stale_drags(None);
                 self.history.clear();
+                self.marked_entry = None;
                 self.shadow = None;
-                self.project
-                    .persist_local_state(self.editor.slug.as_deref());
+                let slug = self.editor.slug.clone();
+                if let Some(p) = self.project_mut() {
+                    p.set_open_request(slug.as_deref());
+                }
                 // Slugs are project-relative: a cached response carried
                 // across the switch could resurface under an unrelated
                 // request with the same slug.
                 self.session.reset();
-                let name = postui_core::project::load_meta(&target)
-                    .map(|meta| postui_core::project::display_name(&target, &meta))
-                    .unwrap_or_else(|_| {
-                        postui_core::project::display_name(
-                            &target,
-                            &postui_core::project::ProjectMeta::default(),
-                        )
-                    });
-                self.project = project;
+                let name = project.display_name();
+                self.project = Some(project);
                 self.open_error = None;
                 self.sidebar.notice = None;
                 // A different tree has a different set of loose files.
@@ -3118,22 +3327,21 @@ impl App {
                     self.toasts.push(w, ToastKind::Warning);
                 }
                 self.prompt_migration_if_pending();
-                match postui_core::storage::ensure_project(&self.project.root) {
-                    Ok(()) => self.refresh_sidebar(),
-                    Err(e) => {
+                match self.project.as_mut().map(|p| p.ensure_spaces()) {
+                    Some(Ok(())) => self.refresh_sidebar(),
+                    Some(Err(e)) => {
                         self.toasts
                             .push(format!("could not open project: {e}"), ToastKind::Error);
                     }
+                    None => {}
                 }
                 // The layout split is per-project local state too: restore
                 // the incoming project's saved split alongside its open
                 // request.
                 self.seed_split_from_project();
-                match self.project.local_open_request() {
-                    Some(slug)
-                        if postui_core::storage::load_request(&self.project.root, &slug)
-                            .is_ok() =>
-                    {
+                let open = self.project().and_then(|p| p.local().open_request.clone());
+                match open {
+                    Some(slug) if self.project().is_some_and(|p| p.request_exists(&slug)) => {
                         self.apply(Action::ForceOpenRequest(slug));
                     }
                     _ => {
@@ -3175,7 +3383,7 @@ impl App {
             }
             Action::OpenProjectByPath(text) => {
                 let path = crate::config::expand_tilde(&text);
-                if postui_core::project::is_project(&path) {
+                if postui_core::project::Project::is_project(&path) {
                     self.apply(Action::SwitchProject(path));
                 } else {
                     let display = path.display().to_string();
@@ -3191,12 +3399,22 @@ impl App {
                 true
             }
             Action::CreateProjectAt(path) => {
-                if let Err(e) = postui_core::project::init_project(&path, None) {
-                    self.toasts.push(
-                        format!("could not create project at {}: {e}", path.display()),
-                        ToastKind::Error,
-                    );
-                    return true;
+                // The handle is only the writer: `ForceSwitchProject`
+                // below opens the project this just wrote, so drop it
+                // rather than installing it as `self.project`.
+                match Project::init(&path, None) {
+                    Ok((_written, warnings)) => {
+                        for w in warnings {
+                            self.toasts.push(w, ToastKind::Warning);
+                        }
+                    }
+                    Err(e) => {
+                        self.toasts.push(
+                            format!("could not create project at {}: {e}", path.display()),
+                            ToastKind::Error,
+                        );
+                        return true;
+                    }
                 }
                 self.apply(Action::ForceSwitchProject(path))
             }
@@ -3217,12 +3435,20 @@ impl App {
                     return true;
                 }
                 let path = crate::config::expand_tilde(&path);
-                if let Err(e) = postui_core::project::init_project(&path, Some(&name)) {
-                    self.toasts.push(
-                        format!("could not create project at {}: {e}", path.display()),
-                        ToastKind::Error,
-                    );
-                    return true;
+                // As in `CreateProjectAt`: the switch below re-opens it.
+                match Project::init(&path, Some(&name)) {
+                    Ok((_written, warnings)) => {
+                        for w in warnings {
+                            self.toasts.push(w, ToastKind::Warning);
+                        }
+                    }
+                    Err(e) => {
+                        self.toasts.push(
+                            format!("could not create project at {}: {e}", path.display()),
+                            ToastKind::Error,
+                        );
+                        return true;
+                    }
                 }
                 self.registry.add_known(path.clone());
                 self.save_registry();
@@ -3234,17 +3460,16 @@ impl App {
                 true
             }
             Action::OpenEnvChooser => {
-                self.apply(Action::ReloadProjectFiles);
                 use crate::components::modal::{DropdownState, MenuItem};
-                self.project.environments =
-                    postui_core::project::list_environments(&self.project.root);
+                // Forced (not mtime-gated): an environment file created
+                // in the same tick must show up in the list.
+                self.resync_project();
                 let mut items: Vec<MenuItem> = self
-                    .project
-                    .environments
+                    .environments()
                     .iter()
                     .map(|slug| {
                         MenuItem::new(
-                            self.project.env_name(slug),
+                            self.env_name(slug),
                             Action::SwitchEnv(Some(slug.clone())),
                         )
                     })
@@ -3262,8 +3487,8 @@ impl App {
                 // so the no-env state is only ever reached by a file going
                 // missing — in which case the cursor opens on row 0.
                 let current =
-                    self.project.active_env.as_deref().and_then(|active| {
-                        self.project.environments.iter().position(|n| n == active)
+                    self.active_env().and_then(|active| {
+                        self.environments().iter().position(|n| n == active)
                     });
                 // Anchored under the header's env chip — the one env
                 // button, visible on every screen. A keyboard open with
@@ -3299,30 +3524,24 @@ impl App {
                 if self.refuse_without_project() {
                     return true;
                 }
-                let prev_active = self.project.active_env.clone();
-                // The name is free-form; the file is its slug, and
-                // project.toml records the name — so it is part of the
-                // step, or an undo would strand the `[environment.<slug>]`
-                // table.
-                let project_toml = self.project.root.join("project.toml");
-                let before_meta = self.read_file_states(std::slice::from_ref(&project_toml));
-                match postui_core::project::create_environment(&self.project.root, &name) {
-                    Ok(slug) => {
-                        self.project.reload_meta();
-                        self.project.environments =
-                            postui_core::project::list_environments(&self.project.root);
-                        let path =
-                            postui_core::project::environment_path(&self.project.root, &slug);
-                        let mut before = vec![(path.clone(), None)];
-                        before.extend(before_meta);
-                        self.record_file_step(
-                            before,
-                            &[path, project_toml],
-                            Some((prev_active, Some(slug.clone()))),
-                        );
-                        self.apply(Action::SwitchEnv(Some(slug)));
+                let Some(p) = self.project.as_mut() else {
+                    return true;
+                };
+                match p.create_environment(&name) {
+                    Ok(_slug) => {
+                        // Core activated the new environment inside the
+                        // transaction and recorded the transition, so
+                        // there is no switch to make here — only the
+                        // switch's own visible effects.
+                        self.record_project_step();
+                        if self.screen == Screen::Manage {
+                            self.sync_varmanager();
+                        }
+                        let label = self.env_label_display();
+                        self.toasts
+                            .push(format!("env: {label}"), ToastKind::Success);
                     }
-                    Err(postui_core::project::ProjectError::AlreadyExists(name)) => {
+                    Err(postui_core::project::Error::AlreadyExists(name)) => {
                         self.toasts.push(
                             format!("environment \"{name}\" already exists"),
                             ToastKind::Warning,
@@ -3340,10 +3559,8 @@ impl App {
                 true
             }
             Action::CycleEnv(delta) => {
-                self.apply(Action::ReloadProjectFiles);
-                self.project.environments =
-                    postui_core::project::list_environments(&self.project.root);
-                let envs = &self.project.environments;
+                self.resync_project();
+                let envs = self.environments().to_vec();
                 if envs.is_empty() {
                     self.toasts.push(
                         "no environments — create environments/<name>.toml in the project",
@@ -3353,9 +3570,7 @@ impl App {
                 }
                 let len = envs.len() as i32;
                 let next = match self
-                    .project
-                    .active_env
-                    .as_deref()
+                    .active_env()
                     .and_then(|current| envs.iter().position(|e| e == current))
                 {
                     Some(i) => envs[(i as i32 + delta).rem_euclid(len) as usize].clone(),
@@ -3367,30 +3582,34 @@ impl App {
                 self.apply(Action::SwitchEnv(Some(next)))
             }
             Action::SwitchEnv(env) => {
-                let warnings = self.project.set_env(env);
+                let warnings = self.set_active_env(env);
                 if !warnings.is_empty() {
                     for w in warnings {
                         self.toasts.push(w, ToastKind::Warning);
                     }
                     return true;
                 }
-                self.apply(Action::PersistLocalState);
                 // The Manager caches per-env rows; an env switched under it
                 // (alt+x is whitelisted through its input capture) must show
                 // the new env's values.
                 if self.screen == Screen::Manage {
-                    self.varmanager.sync(&self.project);
+                    self.sync_varmanager();
                 }
-                let label = self.project.env_label_display();
+                let label = self.env_label_display();
                 self.toasts
                     .push(format!("env: {label}"), ToastKind::Success);
                 true
             }
             Action::ApplyMigration => {
-                let before = self.read_file_states(&self.project.var_file_paths());
-                match self.project.apply_migration() {
+                match self
+                    .project_mut()
+                    .map_or_else(|| Err(NO_PROJECT.to_string()), |p| {
+                        p.apply_migration().map_err(|e| e.to_string())
+                    }) {
                     Ok(notes) => {
-                        self.record_var_file_step(before);
+                        // Core journals the whole conversion (the `.bak`
+                        // copies included) as one entry.
+                        self.record_project_step();
                         self.refresh_sidebar();
                         let summary = if notes.is_empty() {
                             "variables migrated \u{2014} a .bak of each rewritten file is beside it"
@@ -3410,7 +3629,9 @@ impl App {
                 true
             }
             Action::DeclineMigration => {
-                self.project.decline_migration();
+                if let Some(p) = self.project_mut() {
+                    p.decline_migration();
+                }
                 self.toasts.push(
                     "left the old variable files alone \u{2014} variables stay unavailable until they're migrated",
                     ToastKind::Warning,
@@ -3425,13 +3646,23 @@ impl App {
                 // so it becomes a step, then capture any pending delta.
                 self.commit_table_edit();
                 self.capture_undo();
-                match self.history.pop_undo() {
-                    None => {
-                        self.toasts.push("Nothing to undo", ToastKind::Info);
-                    }
-                    Some(step) => {
-                        if self.apply_undo_step(step, false) {
-                            self.history.break_coalescing();
+                loop {
+                    match self.history.pop_undo() {
+                        None => {
+                            self.toasts.push("Nothing to undo", ToastKind::Info);
+                            break;
+                        }
+                        Some(step) => {
+                            // A marker whose journal entry is gone (merged
+                            // away, netted to nothing) is not a step the
+                            // user made: skip it and undo the one beneath.
+                            if self.is_stale_marker(&step, false) {
+                                continue;
+                            }
+                            if self.apply_undo_step(step, false) {
+                                self.history.break_coalescing();
+                            }
+                            break;
                         }
                     }
                 }
@@ -3446,13 +3677,20 @@ impl App {
                 // after the last undo; capturing it clears the redo stack,
                 // which is exactly the linear-history contract.
                 self.capture_undo();
-                match self.history.pop_redo() {
-                    None => {
-                        self.toasts.push("Nothing to redo", ToastKind::Info);
-                    }
-                    Some(step) => {
-                        if self.apply_undo_step(step, true) {
-                            self.history.break_coalescing();
+                loop {
+                    match self.history.pop_redo() {
+                        None => {
+                            self.toasts.push("Nothing to redo", ToastKind::Info);
+                            break;
+                        }
+                        Some(step) => {
+                            if self.is_stale_marker(&step, true) {
+                                continue;
+                            }
+                            if self.apply_undo_step(step, true) {
+                                self.history.break_coalescing();
+                            }
+                            break;
                         }
                     }
                 }
@@ -3584,9 +3822,7 @@ impl App {
             }
             Action::SetAiConfirmed => {
                 self.ui_settings.ai_confirmed = true;
-                if let Some(path) = &self.config_path
-                    && let Err(e) = crate::config::save_ui_flag(path, "ai_confirmed", true)
-                {
+                if let Err(e) = self.config.save_ui_flag("ai_confirmed", true) {
                     self.toasts
                         .push(format!("could not save config: {e}"), ToastKind::Warning);
                 }
@@ -3722,7 +3958,10 @@ impl App {
                 true
             }
             Action::ReloadProjectFiles => {
-                let (changed, warnings) = self.project.reload_if_changed();
+                let (changed, warnings) = match self.project_mut() {
+                    Some(p) => p.poll(),
+                    None => (false, Vec::new()),
+                };
                 if changed {
                     // The rows a live drag is rearranging are about to be
                     // rebuilt from a tree that changed on disk under it:
@@ -3744,7 +3983,8 @@ impl App {
                     && let Some((text, cursor)) =
                         self.focused_field_text().map(|(t, c)| (t.to_string(), c))
                     && let Some((name, selector)) =
-                        Self::selection_picker_target(&self.project, &text, cursor)
+                        self.project()
+                            .and_then(|p| Self::selection_picker_target(p, &text, cursor))
                 {
                     return self.open_select_picker(name, selector);
                 }
@@ -3753,14 +3993,12 @@ impl App {
             Action::OpenVarTokenPopup(name) => {
                 self.apply(Action::ReloadProjectFiles);
                 use postui_core::varmodel::VarMeta;
-                match self.project.resolved.meta.get(&name).cloned() {
+                match self.resolved().meta.get(&name).cloned() {
                     Some(VarMeta::SelectorMember { selector, .. }) => {
                         return self.open_select_picker(name, selector);
                     }
                     Some(VarMeta::NeedsSelection) => {
-                        let Some(selector) = self
-                            .project
-                            .model
+                        let Some(selector) = self.variables()
                             .selectors
                             .iter()
                             .find(|(_, s)| s.fields.contains(&name))
@@ -3776,7 +4014,7 @@ impl App {
                             input: LineInput::new(""),
                             kind: PromptKind::SecretValue {
                                 name,
-                                env: self.project.active_env.clone().unwrap_or_default(),
+                                env: self.active_env().map(str::to_string).unwrap_or_default(),
                             },
                             revealed: false,
                         });
@@ -3789,7 +4027,7 @@ impl App {
                 // a value to edit; a name defined nowhere gets the insert
                 // picker, whose "new variable…" row is the create flow.
                 let has_value = self.editor.variables.contains_key(&name)
-                    || self.project.resolved.values.contains_key(&name);
+                    || self.resolved().values.contains_key(&name);
                 if has_value {
                     self.open_edit_value_popup(&name)
                 } else {
@@ -3805,7 +4043,7 @@ impl App {
                 let op = match destination {
                     ExtractDestination::Request => VarEditOp::SetRequestVar { name, value },
                     ExtractDestination::ActiveEnv => {
-                        let Some(env) = self.project.active_env.clone() else {
+                        let Some(env) = self.active_env().map(str::to_string) else {
                             self.toasts
                                 .push("no active environment to write to", ToastKind::Warning);
                             return true;
@@ -3829,7 +4067,7 @@ impl App {
                         );
                     }
                     ExtractDestination::ActiveEnv => {
-                        let Some(env) = self.project.active_env.clone() else {
+                        let Some(env) = self.active_env().map(str::to_string) else {
                             self.toasts
                                 .push("no active environment", ToastKind::Warning);
                             self.last_action_failed = true;
@@ -3838,10 +4076,14 @@ impl App {
                         // A secret's stored value lives in the secrets
                         // store, not the env file (the variable form's
                         // remove control reaches here for secrets too).
-                        let secret = self.project.model.vars.get(&name).is_some_and(|d| d.secret);
+                        let secret = self.variables().vars.get(&name).is_some_and(|d| d.secret);
                         if secret {
-                            match self.project.remove_secret_for(&env, &name) {
+                            match self.remove_secret_for(&env, &name) {
                                 Ok(()) => {
+                                    // Core journals the secrets write, so
+                                    // the removal is one undo step like
+                                    // every other variable write.
+                                    self.record_project_step();
                                     self.toasts.push(
                                         format!("removed {name}'s value for env {env}"),
                                         ToastKind::Success,
@@ -3854,13 +4096,10 @@ impl App {
                             }
                             return true;
                         }
-                        let before = self.read_file_states(&self.project.var_file_paths());
-                        match self
-                            .project
-                            .edit_env(&env, |doc| varedit::set_env_value(doc, &name, None))
+                        match self.edit_env(&env, |doc| varedit::set_env_value(doc, &name, None))
                         {
                             Ok(()) => {
-                                self.record_var_file_step(before);
+                                self.record_project_step();
                                 self.toasts.push(
                                     format!("removed {name} from env {env}"),
                                     ToastKind::Success,
@@ -3873,13 +4112,10 @@ impl App {
                         }
                     }
                     ExtractDestination::ProjectDefault => {
-                        let before = self.read_file_states(&self.project.var_file_paths());
-                        match self
-                            .project
-                            .edit_variables(|doc| varedit::clear_default(doc, &name))
+                        match self.edit_variables(|doc| varedit::clear_default(doc, &name))
                         {
                             Ok(()) => {
-                                self.record_var_file_step(before);
+                                self.record_project_step();
                                 self.toasts
                                     .push(format!("removed {name}'s default"), ToastKind::Success);
                             }
@@ -4003,9 +4239,8 @@ impl App {
                 true
             }
             Action::VarEdit(op) => {
-                let before = self.read_file_states(&self.project.var_file_paths());
                 match self.apply_var_edit(&op) {
-                    Ok(()) => self.record_var_file_step(before),
+                    Ok(()) => self.record_project_step(),
                     Err(msg) => {
                         self.toasts.push(msg, ToastKind::Error);
                         self.last_action_failed = true;
@@ -4044,9 +4279,7 @@ impl App {
                 true
             }
             Action::AddSelectorField { selector, field } => {
-                let current = self
-                    .project
-                    .model
+                let current = self.variables()
                     .selectors
                     .get(&selector)
                     .map(|g| g.fields.clone())
@@ -4071,9 +4304,7 @@ impl App {
                 // Env files first: variables.toml's validation runs against
                 // the active env, whose options must no longer carry the
                 // field by the time the selector's field list changes.
-                let Some(fields) = self
-                    .project
-                    .model
+                let Some(fields) = self.variables()
                     .selectors
                     .get(&selector)
                     .map(|g| g.fields.clone())
@@ -4082,37 +4313,44 @@ impl App {
                         .push(format!("no selector \"{selector}\""), ToastKind::Error);
                     return true;
                 };
-                let before = self.read_file_states(&self.project.var_file_paths());
                 let remaining: Vec<String> = fields.into_iter().filter(|f| f != &field).collect();
-                let result = if self.selector_is_shared(&selector) {
-                    // Options live beside the declaration: strip the field
-                    // from them and rewrite the list in one write.
-                    self.project.edit_variables(|doc| {
-                        let stripped =
-                            postui_core::varedit::strip_option_field(doc, &selector, &field)?;
-                        postui_core::varedit::upsert_selector(
-                            &stripped, &selector, None, &remaining,
-                        )
-                    })
-                } else {
-                    let envs = postui_core::project::list_environments(&self.project.root);
-                    envs.iter()
-                        .try_for_each(|env| {
-                            self.project.edit_env(env, |doc| {
-                                postui_core::varedit::strip_option_field(doc, &selector, &field)
-                            })
-                        })
-                        .and_then(|()| {
-                            self.project.edit_variables(|doc| {
+                let shared = self.selector_is_shared(&selector);
+                // One cascade: the env-side strips and the declaration's
+                // new field list are one undo step, as the file step they
+                // replace was.
+                let result = match self.project_mut() {
+                    None => Err(NO_PROJECT.to_string()),
+                    Some(p) => p
+                        .cascade("edit selector fields", |p| {
+                            if shared {
+                                // Options live beside the declaration:
+                                // strip the field from them and rewrite
+                                // the list in one write.
+                                return p.edit_variables(|doc| {
+                                    let stripped = postui_core::varedit::strip_option_field(
+                                        doc, &selector, &field,
+                                    )?;
+                                    postui_core::varedit::upsert_selector(
+                                        &stripped, &selector, None, &remaining,
+                                    )
+                                });
+                            }
+                            for env in p.environments().to_vec() {
+                                p.edit_env(&env, |doc| {
+                                    postui_core::varedit::strip_option_field(doc, &selector, &field)
+                                })?;
+                            }
+                            p.edit_variables(|doc| {
                                 postui_core::varedit::upsert_selector(
                                     doc, &selector, None, &remaining,
                                 )
                             })
                         })
+                        .map_err(|e| e.to_string()),
                 };
                 match result {
                     Ok(()) => {
-                        self.record_var_file_step(before);
+                        self.record_project_step();
                         self.toasts.push(
                             format!("removed \"{field}\" from {selector}{}", self.undo_hint()),
                             ToastKind::Info,
@@ -4131,7 +4369,7 @@ impl App {
                 // those requests (references keep the old name until
                 // someone edits them), but the user should still know the
                 // name isn't as free-standing as it looks.
-                let usage = postui_core::varedit::scan_usage(&self.project.root, &from);
+                let usage = self.project().map(|p| p.scan_usage(&from)).unwrap_or_default();
                 let title = if usage.is_empty() {
                     format!("Rename {from}")
                 } else {
@@ -4150,25 +4388,24 @@ impl App {
                 true
             }
             Action::DuplicateVar { name } => {
-                let before = self.read_file_states(&self.project.var_file_paths());
                 if let Err(msg) = self.apply_duplicate_var(&name) {
                     self.toasts.push(msg, ToastKind::Error);
                     self.last_action_failed = true;
                 } else {
-                    self.record_var_file_step(before);
-                    self.varmanager.sync(&self.project);
+                    self.record_project_step();
+                    self.sync_varmanager();
                 }
                 true
             }
             Action::DeleteVar { name } => {
-                let usage = postui_core::varedit::scan_usage(&self.project.root, &name);
+                let usage = self.project().map(|p| p.scan_usage(&name)).unwrap_or_default();
                 self.apply(Action::VarStruct(VarStructOp::Delete {
                     name: name.clone(),
                 }));
                 // The struct arm toasts the delete itself; the deleted
                 // declaration leaving dangling references is worth its own
                 // warning on top.
-                if !self.project.model.vars.contains_key(&name) && !usage.is_empty() {
+                if !self.variables().vars.contains_key(&name) && !usage.is_empty() {
                     self.toasts.push(
                         format!(
                             "\"{name}\" was referenced by {} request(s): {}",
@@ -4192,7 +4429,7 @@ impl App {
                 // (`ModelError::SecretWithDefault`), surfacing as an
                 // incidental parse-error toast instead of an intentional
                 // refusal. Refuse up front instead with a message modal.
-                if self.project.model.vars.get(&name).is_some_and(|d| d.secret) {
+                if self.variables().vars.get(&name).is_some_and(|d| d.secret) {
                     self.push_modal(Modal::Message {
                         title: "Can't promote".into(),
                         body: format!(
@@ -4209,7 +4446,7 @@ impl App {
                         target: postui_core::varedit::PromoteTarget::Default,
                     })],
                 )];
-                if let Some(env) = self.project.active_env.clone() {
+                if let Some(env) = self.active_env().map(str::to_string) {
                     choices.push((
                         'e',
                         format!("Env value ({env})"),
@@ -4232,7 +4469,7 @@ impl App {
                 // stay quiet when the target was already gone (deleting a
                 // missing entry is a no-op, not news).
                 let existed = match &op {
-                    VarStructOp::Delete { name } => self.project.model.vars.contains_key(name),
+                    VarStructOp::Delete { name } => self.variables().vars.contains_key(name),
                     VarStructOp::DeleteOption {
                         env,
                         selector,
@@ -4242,7 +4479,6 @@ impl App {
                         .is_some_and(|o| o.contains_key(name)),
                     _ => false,
                 };
-                let before = self.read_file_states(&self.project.var_file_paths());
                 match self.apply_var_struct(&op) {
                     Ok(()) => {
                         // A rename carries the detail pane's selection over
@@ -4257,7 +4493,7 @@ impl App {
                                 vm.detail = VmDetail::Group(to.clone());
                             }
                         }
-                        self.varmanager.sync(&self.project);
+                        self.sync_varmanager();
                         // A fresh declaration becomes the selected row —
                         // the user's next action is almost always on it.
                         if let VarStructOp::NewVar { name, .. }
@@ -4265,7 +4501,7 @@ impl App {
                         {
                             self.varmanager.select_name(name);
                         }
-                        self.record_var_file_step(before);
+                        self.record_project_step();
                         // Deletes act without a confirm gate, so their
                         // toasts advertise the way back.
                         match &op {
@@ -4292,9 +4528,7 @@ impl App {
             // -- Task 16: the selector options grid (spec §3.4) --
             Action::PromptGroupFields { selector } => {
                 use crate::components::modal::FieldsEditorState;
-                let current = self
-                    .project
-                    .model
+                let current = self.variables()
                     .selectors
                     .get(&selector)
                     .map(|g| g.fields.clone())
@@ -4305,18 +4539,17 @@ impl App {
                 true
             }
             Action::ApplyGroupFields { selector, slots } => {
-                let before = self.read_file_states(&self.project.var_file_paths());
                 self.apply_group_fields(selector, slots);
-                self.record_var_file_step(before);
+                self.record_project_step();
                 true
             }
             Action::StartOptionNameEdit { row } => {
                 if !matches!(&self.varmanager.detail, VmDetail::Group(_))
-                    || self.project.active_env.is_none()
+                    || self.active_env().is_none()
                 {
                     return false;
                 }
-                self.varmanager.start_cell_edit(&self.project, row, 0);
+                self.vm_start_cell_edit(row, 0);
                 true
             }
             Action::DeleteEntry {
@@ -4339,7 +4572,7 @@ impl App {
                 };
                 // A shared selector's options need no environment; anyone
                 // else's have nowhere to live without one.
-                if self.project.active_env.is_none() && !self.selector_is_shared(&selector) {
+                if self.active_env().is_none() && !self.selector_is_shared(&selector) {
                     self.toasts.push(
                         crate::components::varmanager::NO_ENV_HINT,
                         ToastKind::Warning,
@@ -4349,12 +4582,12 @@ impl App {
                 // The ghost row *is* the new-option affordance: put the
                 // cursor in its name cell and start typing.
                 let row = postui_core::varmodel::options_of(
-                    &self.project.model,
-                    &self.project.env_data,
+                    self.variables(),
+                    self.env_data(),
                     &selector,
                 )
                 .map_or(0, indexmap::IndexMap::len);
-                self.varmanager.start_cell_edit(&self.project, row, 0);
+                self.vm_start_cell_edit(row, 0);
                 true
             }
 
@@ -4367,9 +4600,7 @@ impl App {
                 // "Value". No description field: the quick-create flow
                 // stays lean; a description can be added later through
                 // the option's edit prompt in the Manager.
-                let selector_fields = self
-                    .project
-                    .model
+                let selector_fields = self.variables()
                     .selectors
                     .get(&owner)
                     .map(|g| g.fields.clone())
@@ -4447,7 +4678,7 @@ impl App {
                 // A shared selector's options don't live in an environment,
                 // so it doesn't need one to be active.
                 let shared = self.selector_is_shared(&owner);
-                let env = match self.project.active_env.clone() {
+                let env = match self.active_env().map(str::to_string) {
                     Some(env) => env,
                     None if shared => String::new(),
                     None => {
@@ -4462,8 +4693,8 @@ impl App {
                 // the same name from the add prompt would silently clobber
                 // its values.
                 if postui_core::varmodel::options_of(
-                    &self.project.model,
-                    &self.project.env_data,
+                    self.variables(),
+                    self.env_data(),
                     &owner,
                 )
                 .is_some_and(|options| options.contains_key(&key))
@@ -4480,9 +4711,7 @@ impl App {
                 // per field, and any field it didn't know about (a caller
                 // passing a partial map) starts empty for the Manager.
                 let mut values = values;
-                let fields = self
-                    .project
-                    .model
+                let fields = self.variables()
                     .selectors
                     .get(&owner)
                     .map(|g| g.fields.clone())
@@ -4490,19 +4719,16 @@ impl App {
                 for field in fields {
                     values.entry(field).or_default();
                 }
-                let before = self.read_file_states(&self.project.var_file_paths());
-                match self.edit_options_home(&owner, &env, |doc| {
-                    postui_core::varedit::upsert_option(
-                        doc,
-                        &owner,
-                        &key,
-                        description.as_deref(),
-                        &values,
-                    )
+                match self.apply_var_struct(&VarStructOp::NewOption {
+                    env: env.clone(),
+                    selector: owner.clone(),
+                    name: key.clone(),
+                    description,
+                    values,
                 }) {
                     Ok(()) => {
-                        self.record_var_file_step(before);
-                        self.project.set_selection_for(&env, &owner, &key);
+                        self.record_project_step();
+                        self.set_selection_for(&env, &owner, &key);
                         let where_label = if shared { "all environments" } else { &env };
                         self.toasts.push(
                             format!("{owner} \u{2192} {key} ({where_label})"),
@@ -4521,15 +4747,14 @@ impl App {
             } => {
                 // An option belongs to exactly one environment, so the
                 // edit always lands in the active env's file.
-                let Some(env) = self.project.active_env.clone() else {
+                let Some(env) = self.active_env().map(str::to_string) else {
                     self.toasts.push(
                         "no active environment \u{2014} switch to one first",
                         ToastKind::Warning,
                     );
                     return true;
                 };
-                let before = self.read_file_states(&self.project.var_file_paths());
-                let result = self.project.edit_env(&env, |doc| {
+                let result = self.edit_env(&env, |doc| {
                     // The prompt maps a cleared Description field to `None`,
                     // which means "remove the stored description" here —
                     // `upsert_option`'s own `None` deliberately preserves
@@ -4548,7 +4773,7 @@ impl App {
                 });
                 match result {
                     Ok(()) => {
-                        self.record_var_file_step(before);
+                        self.record_project_step();
                         self.toasts
                             .push(format!("{key} updated"), ToastKind::Success);
                     }
@@ -4623,7 +4848,7 @@ impl App {
                 source,
             } => self.confirm_extract_to_selector(name, option, shared, source),
             Action::SwitchSpace(name) => {
-                if name == self.project.active_space {
+                if name == self.active_space() {
                     return true;
                 }
                 if self.editor_holds_unsaved() {
@@ -4641,9 +4866,9 @@ impl App {
                 // What the space was last left on, when that request still
                 // exists; otherwise its first row; otherwise nothing.
                 let target = self
-                    .project
-                    .space_open_for(&name)
-                    .filter(|s| postui_core::storage::request_exists(&self.project.root, s))
+                    .project()
+                    .and_then(|p| p.space_open_for(&name))
+                    .filter(|s| self.request_exists(s))
                     .or_else(|| self.sidebar.first_request_slug());
                 match target {
                     Some(slug) => self.apply(Action::ForceOpenRequest(slug)),
@@ -4651,14 +4876,15 @@ impl App {
                         self.editor = Editor::default();
                         self.shadow = None;
                         self.sidebar.open_slug = None;
-                        self.apply(Action::PersistLocalState)
+                        self.persist_open_request();
+                        true
                     }
                 }
             }
             Action::JumpSpace(n) => {
                 match n
                     .checked_sub(1)
-                    .and_then(|i| self.project.spaces.get(i))
+                    .and_then(|i| self.spaces().get(i))
                     .cloned()
                 {
                     Some(name) => self.apply(Action::SwitchSpace(name)),
@@ -4666,13 +4892,13 @@ impl App {
                 }
             }
             Action::CycleSpace(delta) => {
-                let spaces = &self.project.spaces;
+                let spaces = self.spaces();
                 if spaces.is_empty() {
                     return true;
                 }
                 let idx = spaces
                     .iter()
-                    .position(|s| *s == self.project.active_space)
+                    .position(|s| *s == self.active_space())
                     .unwrap_or(0) as i32;
                 let next = (idx + delta).rem_euclid(spaces.len() as i32) as usize;
                 let name = spaces[next].clone();
@@ -4681,14 +4907,12 @@ impl App {
             Action::OpenSpaceChooser => {
                 self.apply(Action::ReloadProjectFiles);
                 use crate::components::modal::{DropdownState, MenuItem};
-                let mut items: Vec<MenuItem> = self
-                    .project
-                    .spaces
+                let mut items: Vec<MenuItem> = self.spaces()
                     .iter()
                     .enumerate()
                     .map(|(i, slug)| {
                         MenuItem::new(
-                            format!("{}  {}", i + 1, self.project.space_name(slug)),
+                            format!("{}  {}", i + 1, self.space_name(slug)),
                             Action::SwitchSpace(slug.clone()),
                         )
                     })
@@ -4700,11 +4924,9 @@ impl App {
                         tab: Some(crate::components::manage::ManageTab::Spaces),
                     },
                 ));
-                let current = self
-                    .project
-                    .spaces
+                let current = self.spaces()
                     .iter()
-                    .position(|s| *s == self.project.active_space);
+                    .position(|s| *s == self.active_space());
                 let anchor = self
                     .hits
                     .rect_of(&Hit::HeaderSpace)
@@ -4767,13 +4989,14 @@ impl App {
                 if self.refuse_without_project() {
                     return true;
                 }
-                match postui_core::project::create_space(&self.project.root, &name) {
+                let Some(p) = self.project.as_mut() else {
+                    return true;
+                };
+                match p.create_space(&name) {
                     Ok(slug) => {
-                        self.apply(Action::ReloadProjectFiles);
-                        self.project.reload_meta();
-                        self.project.reload_spaces();
+                        self.record_project_step();
                         self.toasts.push(
-                            format!("Created space {}", self.project.space_name(&slug)),
+                            format!("Created space {}", self.space_name(&slug)),
                             ToastKind::Success,
                         );
                         self.apply(Action::SwitchSpace(slug))
@@ -4790,7 +5013,7 @@ impl App {
                 self.push_modal(Modal::Prompt {
                     title: "Rename environment".into(),
                     input: crate::components::line_input::LineInput::new(
-                        &self.project.env_name(&name),
+                        &self.env_name(&name),
                     ),
                     kind: PromptKind::RenameEnvironment { from: name },
                     revealed: false,
@@ -4799,59 +5022,21 @@ impl App {
             }
             Action::RenameEnv { from, to } => {
                 // `from` is a slug; `to` is the display name typed.
-                if to.trim() == self.project.env_name(&from) {
+                if to.trim() == self.env_name(&from) {
                     return true;
                 }
-                let root = self.project.root.clone();
-                let from_path = postui_core::project::environment_path(&root, &from);
-                let to_slug =
-                    postui_core::project::environment_slug_for(&root, to.trim(), Some(&from));
-                let to_path = postui_core::project::environment_path(&root, &to_slug);
-                let secrets_path = root.join(".local").join("secrets.toml");
-                // `.local/state.toml` rides along: the per-env `selections`
-                // table is re-keyed in memory by `rename_env_state` and only
-                // ever reaches disk through `PersistLocalState`, so without
-                // it in the step an undo would strand this env's selections
-                // under the new name. So does project.toml, which holds the
-                // display name.
-                let state_path = root.join(".local").join("state.toml");
-                let project_toml = root.join("project.toml");
-                let paths = vec![from_path, to_path, secrets_path, state_path, project_toml];
-                let before = self.read_file_states(&paths);
-                let was_active = self.project.active_env.as_deref() == Some(from.as_str());
-                match postui_core::project::rename_environment(&root, &from, &to) {
+                let Some(p) = self.project.as_mut() else {
+                    return true;
+                };
+                match p.rename_environment(&from, &to) {
                     Ok(to) => {
-                        self.project.reload_meta();
-                        self.project.rename_env_state(&from, &to);
-                        if let Err(e) =
-                            postui_core::project::save_secrets(&root, &self.project.secrets)
-                        {
-                            self.toasts
-                                .push(format!("could not save secrets: {e}"), ToastKind::Warning);
-                        }
-                        self.project.environments = postui_core::project::list_environments(&root);
-                        if was_active {
-                            // Reload data under the new name (set_env re-stamps too).
-                            for w in self.project.set_env(Some(to.clone())) {
-                                self.toasts.push(w, ToastKind::Warning);
-                            }
-                        }
-                        // Persist first: the step's "after" side has to see
-                        // the re-keyed selections already on disk.
-                        self.apply(Action::PersistLocalState);
-                        self.record_file_step(
-                            before,
-                            &paths,
-                            was_active.then(|| (Some(from.clone()), Some(to.clone()))),
-                        );
+                        self.record_project_step();
                         if self.screen == Screen::Manage {
-                            self.varmanager.sync(&self.project);
-                            self.manage
-                                .list
-                                .select_name(self.manage.tab, &self.project, &to);
+                            self.sync_varmanager();
+                            self.manage_select_name(&to);
                         }
                         self.toasts.push(
-                            format!("Renamed environment to {}", self.project.env_name(&to)),
+                            format!("Renamed environment to {}", self.env_name(&to)),
                             ToastKind::Success,
                         );
                     }
@@ -4866,14 +5051,13 @@ impl App {
                 true
             }
             Action::SetEnvTls { env, policy } => {
-                let root = self.project.root.clone();
-                let paths = vec![root.join("project.toml")];
-                let before = self.read_file_states(&paths);
-                match postui_core::project::set_env_tls(&root, &env, policy) {
+                let Some(p) = self.project.as_mut() else {
+                    return true;
+                };
+                match p.set_env_tls(&env, policy) {
                     Ok(()) => {
-                        self.project.reload_meta();
-                        self.record_file_step(before, &paths, None);
-                        let name = self.project.env_name(&env);
+                        self.record_project_step();
+                        let name = self.env_name(&env);
                         let msg = match policy {
                             Some(postui_core::project::TlsPolicy::Verify) => {
                                 format!("{name} forces TLS verification")
@@ -4896,7 +5080,7 @@ impl App {
             Action::DeleteEnv(name) => {
                 // The last environment stays: the app has no "no
                 // environment" state to fall back to, only a default env.
-                if self.project.environments.len() <= 1 {
+                if self.environments().len() <= 1 {
                     self.toasts.push(
                         "a project keeps at least one environment — rename it instead",
                         ToastKind::Warning,
@@ -4904,7 +5088,7 @@ impl App {
                     return true;
                 }
                 self.push_modal(Modal::Confirm {
-                    title: format!("Delete environment \"{}\"?", self.project.env_name(&name)),
+                    title: format!("Delete environment \"{}\"?", self.env_name(&name)),
                     body: "Its values and secrets are removed.".into(),
                     choices: vec![(
                         'd',
@@ -4915,51 +5099,26 @@ impl App {
                 true
             }
             Action::ForceDeleteEnv(name) => {
-                let root = self.project.root.clone();
-                let secrets_path = root.join(".local").join("secrets.toml");
-                // See `Action::RenameEnv`: the dropped env's `selections`
-                // live in `.local/state.toml`, so it is a companion file.
-                let state_path = root.join(".local").join("state.toml");
-                let project_toml = root.join("project.toml");
-                let companions = [secrets_path, state_path, project_toml];
-                let before = self.read_file_states(&companions);
-                let prev_active = self.project.active_env.clone();
-                let was_active = prev_active.as_deref() == Some(name.as_str());
-                let display = self.project.env_name(&name);
-                match postui_core::project::delete_environment(&root, &name) {
-                    Ok(trashed) => {
-                        self.project.reload_meta();
-                        self.project.remove_env_state(&name);
-                        if let Err(e) =
-                            postui_core::project::save_secrets(&root, &self.project.secrets)
-                        {
-                            self.toasts
-                                .push(format!("could not save secrets: {e}"), ToastKind::Warning);
-                        }
-                        self.project.environments = postui_core::project::list_environments(&root);
-                        // The active env is gone: fall through to the
-                        // first remaining one rather than to no env.
-                        let fallback = self.project.environments.first().cloned();
-                        if was_active {
-                            for w in self.project.set_env(fallback.clone()) {
-                                self.toasts.push(w, ToastKind::Warning);
-                            }
-                        }
+                let display = self.env_name(&name);
+                let Some(p) = self.project.as_mut() else {
+                    return true;
+                };
+                // Core drops the table, the secrets and the selections,
+                // and falls through to the first remaining environment.
+                match p.delete_environment(&name) {
+                    Ok(()) => {
+                        // The undo toast names the file that went to the
+                        // trash, as the trashed-file step it replaces did.
+                        self.record_project_step_as(
+                            crate::undo::ProjectNoun::TrashNamed,
+                            Some(format!("{name}.toml")),
+                        );
                         self.toasts.push(
                             format!("Deleted environment {display}{}", self.undo_hint()),
                             ToastKind::Info,
                         );
-                        // Persist first, so the step's "after" side records
-                        // the state file without this environment.
-                        self.apply(Action::PersistLocalState);
-                        self.record_trashed_step(
-                            vec![trashed],
-                            before,
-                            &companions,
-                            was_active.then(|| (prev_active.clone(), fallback)),
-                        );
                         if self.screen == Screen::Manage {
-                            self.varmanager.sync(&self.project);
+                            self.sync_varmanager();
                         }
                     }
                     Err(e) => {
@@ -4974,7 +5133,7 @@ impl App {
                 self.push_modal(Modal::Prompt {
                     title: "Rename space".into(),
                     input: crate::components::line_input::LineInput::new(
-                        &self.project.space_name(&name),
+                        &self.space_name(&name),
                     ),
                     kind: PromptKind::RenameSpace { from: name },
                     revealed: false,
@@ -4983,26 +5142,16 @@ impl App {
             }
             Action::RenameSpace { from, to } => {
                 // `from` is a slug; `to` is the display name typed.
-                if to.trim() == self.project.space_name(&from) {
+                if to.trim() == self.space_name(&from) {
                     return true;
                 }
-                match postui_core::project::rename_space(&self.project.root, &from, &to) {
+                let Some(p) = self.project.as_mut() else {
+                    return true;
+                };
+                match p.rename_space(&from, &to) {
                     Ok(to) => {
-                        // Re-key local state (the active space included)
-                        // before anything re-lists: both
-                        // `ReloadProjectFiles` and `reload_spaces` drop an
-                        // active space they no longer find on disk, and
-                        // the old name is gone by now.
-                        self.project.rename_space_state(&from, &to);
-                        // A space rename is not an undo step, so the steps
-                        // already recorded must follow the space to its
-                        // new name or their undo would write to a space
-                        // that no longer exists.
-                        self.history.rename_space(&self.project.root, &from, &to);
+                        self.record_project_step();
                         self.session.rename_space(&from, &to);
-                        self.apply(Action::ReloadProjectFiles);
-                        self.project.reload_meta();
-                        self.project.reload_spaces();
                         let from_prefix = format!("{from}/");
                         if let Some(rest) = self
                             .editor
@@ -5018,16 +5167,13 @@ impl App {
                             }
                         }
                         self.refresh_sidebar();
-                        self.apply(Action::PersistLocalState);
                         self.toasts.push(
-                            format!("Renamed space to {}", self.project.space_name(&to)),
+                            format!("Renamed space to {}", self.space_name(&to)),
                             ToastKind::Success,
                         );
                         if self.screen == Screen::Manage {
-                            self.varmanager.sync(&self.project);
-                            self.manage
-                                .list
-                                .select_name(self.manage.tab, &self.project, &to);
+                            self.sync_varmanager();
+                            self.manage_select_name(&to);
                         }
                     }
                     Err(e) => {
@@ -5053,7 +5199,7 @@ impl App {
                 true
             }
             Action::PromptDeleteSpace(name) => {
-                if self.project.spaces.len() <= 1 {
+                if self.spaces().len() <= 1 {
                     self.toasts
                         .push("cannot delete the last space", ToastKind::Warning);
                     return true;
@@ -5069,93 +5215,75 @@ impl App {
                     )
                 };
                 self.push_modal(Modal::Confirm {
-                    title: format!("Delete space \"{}\"?", self.project.space_name(&name)),
+                    title: format!("Delete space \"{}\"?", self.space_name(&name)),
                     body,
                     choices: vec![('d', label, vec![Action::ForceDeleteSpace(name)])],
                 });
                 true
             }
             Action::ForceDeleteSpace(name) => {
-                if self.project.spaces.len() <= 1 {
+                if self.spaces().len() <= 1 {
                     self.toasts
                         .push("cannot delete the last space", ToastKind::Warning);
                     return true;
                 }
-                // Snapshot local state before anything moves: the step's
-                // "before" side is the space still active with its request
-                // open, so undo lands the user exactly where they were.
-                let slug_before = self.editor.slug.clone();
-                self.apply(Action::PersistLocalState);
-                let companions = [
-                    self.project.root.join("project.toml"),
-                    self.local_state_path(),
-                ];
-                let before = self.read_file_states(&companions);
-                // Leave the space before it goes: the switch restores the
-                // other space's own open request and clears this one's.
-                let mut switched = false;
-                if self.project.active_space == name
-                    && let Some(other) = self.project.spaces.iter().find(|s| **s != name).cloned()
-                {
-                    self.apply(Action::ForceSwitchSpace(other));
-                    switched = true;
-                }
-                let display = self.project.space_name(&name);
-                match postui_core::project::delete_space(&self.project.root, &name) {
-                    Ok(trashed) => {
+                // The delete goes first, so the entry records local state
+                // as it was *before* anything moved — the space still
+                // active with its request open, which is where an undo
+                // has to land the user. Core falls the active space back
+                // to the first remaining one and clears the open request;
+                // the view follows below. (Nothing to switch back on
+                // failure: the transaction is atomic.)
+                let was_active = self.active_space() == name;
+                let display = self.space_name(&name);
+                let Some(p) = self.project.as_mut() else {
+                    return true;
+                };
+                match p.delete_space(&name) {
+                    Ok(()) => {
+                        // The undo toast names the directory that went to
+                        // the trash, as the trashed-file step it replaces
+                        // did.
+                        self.record_project_step_as(
+                            crate::undo::ProjectNoun::TrashNamed,
+                            Some(name.clone()),
+                        );
                         self.toasts.push(
                             format!("Deleted space {display}{}", self.undo_hint()),
                             ToastKind::Info,
                         );
-                        self.project.forget_space(&name);
-                        self.reload_after_file_change();
-                        // Persist first, so the step's "after" side is the
-                        // state file without this space.
-                        self.apply(Action::PersistLocalState);
-                        self.record_trashed_step_with_orders(
-                            trashed.into_iter().collect(),
-                            before,
-                            &companions,
-                            None,
-                            Vec::new(),
-                            slug_before,
-                        );
+                        if was_active {
+                            self.follow_active_space();
+                        } else {
+                            self.refresh_sidebar();
+                        }
                     }
                     Err(e) => {
                         self.toasts
                             .push(format!("cannot delete space: {e}"), ToastKind::Error);
                         self.last_action_failed = true;
-                        // Nothing was deleted: go back to where the user was.
-                        if switched {
-                            match slug_before {
-                                Some(slug) => self.apply(Action::ForceOpenRequest(slug)),
-                                None => self.apply(Action::ForceSwitchSpace(name.clone())),
-                            };
-                        }
                     }
                 }
                 true
             }
             Action::MoveSpace { name, delta } => {
-                match postui_core::project::move_space(&self.project.root, &name, delta) {
-                    Ok(change) => {
-                        let target = crate::undo::ReorderTarget::Spaces { name: name.clone() };
-                        self.record_reorder_step(change, target, true);
-                        self.apply(Action::ReloadProjectFiles);
-                        // `ReloadProjectFiles` is mtime-gated, so a second
-                        // reorder in the same clock tick would re-list from
-                        // a stale `meta` and undo itself on screen. Read
-                        // the file we just wrote instead of waiting for the
-                        // stamp to move.
-                        self.project.reload_meta();
-                        self.project.reload_spaces();
+                let Some(p) = self.project.as_mut() else {
+                    return true;
+                };
+                match p.move_space(&name, delta) {
+                    Ok(_) => {
+                        // A burst merges in core: the journal's top id
+                        // stays the same, so nothing is re-recorded and
+                        // the whole burst stays one undo step.
+                        self.record_project_step_as(
+                            crate::undo::ProjectNoun::SpaceReorder,
+                            Some(name.clone()),
+                        );
                         // The Manage screen's list cursor follows the space
                         // that just moved, rather than staying on the row
                         // index the reorder swapped something else into.
                         if self.screen == Screen::Manage {
-                            self.manage
-                                .list
-                                .select_name(self.manage.tab, &self.project, &name);
+                            self.manage_select_name(&name);
                         }
                     }
                     Err(e) => {
@@ -5172,7 +5300,7 @@ impl App {
                 // `project.toml`, then the rows are rebuilt from the
                 // listing in hand. A row that isn't visible falls back to
                 // reading the displayed order from disk.
-                let space = self.project.active_space.clone();
+                let space = self.active_space();
                 let shown = postui_core::storage::space_of(&slug)
                     .filter(|s| *s == space)
                     .and_then(|_| self.sidebar.row_of(&slug))
@@ -5188,26 +5316,21 @@ impl App {
                     );
                     return true;
                 };
-                let r = postui_core::order::move_shown(
-                    &self.project.root,
-                    &space,
-                    &level,
-                    &shown,
-                    rel,
-                    delta,
-                );
-                match r {
-                    Ok(change) => {
-                        // Same mtime hazard as `MoveSpace`: read the file
-                        // we just wrote rather than waiting for the stamp.
-                        self.project.reload_meta();
+                let rel = rel.to_string();
+                let Some(p) = self.project.as_mut() else {
+                    return true;
+                };
+                match p.move_request_shown(&space, &level, &shown, &rel, delta) {
+                    Ok(_) => {
                         self.rebuild_sidebar();
                         self.sidebar.select_slug(&slug);
-                        let target = crate::undo::ReorderTarget::Requests {
-                            space,
-                            slug: slug.clone(),
-                        };
-                        self.record_reorder_step(change, target, true);
+                        // A burst merges in core: the journal's top id
+                        // stays the same, so nothing is re-recorded and
+                        // the whole burst stays one undo step.
+                        self.record_project_step_as(
+                            crate::undo::ProjectNoun::Reorder,
+                            Some(slug.clone()),
+                        );
                     }
                     Err(e) => {
                         self.toasts
@@ -5229,7 +5352,7 @@ impl App {
                     self.last_action_failed = true;
                     return true;
                 }
-                if !self.project.spaces.contains(&to) {
+                if !self.spaces().contains(&to) {
                     self.toasts
                         .push(format!("no space named {to:?}"), ToastKind::Warning);
                     self.last_action_failed = true;
@@ -5254,74 +5377,28 @@ impl App {
             }
             Action::ForceMoveAllRequests { from, to } => {
                 let open = self.editor.slug.clone();
-                let (moved, err) =
-                    postui_core::storage::move_all_requests(&self.project.root, &from, &to);
-                if let Some(e) = err {
-                    self.toasts.push(
-                        format!("moved {} request(s), then failed: {e}", moved.len()),
-                        ToastKind::Error,
-                    );
-                    self.last_action_failed = true;
-                } else {
-                    self.toasts.push(
-                        format!("Moved {} request(s) to {to}", moved.len()),
-                        ToastKind::Success,
-                    );
-                }
-                // Every moved request leaves a stale entry behind in the
-                // source's order list and arrives unlisted in the
-                // destination — entries the app itself made stale, so they
-                // are cascaded, exactly as the single-request move does.
-                // They arrive in the order the source displayed them (the
-                // listing and list in hand are both still pre-move), so a
-                // listed destination keeps the user's arrangement rather
-                // than the alphabetical order the walk returned them in.
-                let shown = postui_core::order::displayed_slugs(
-                    self.sidebar.listing(),
-                    postui_core::order::space_order(&self.project.meta, &from),
-                    &from,
+                let Some(p) = self.project.as_mut() else {
+                    return true;
+                };
+                // One entry for the whole move; the batch is pre-flighted,
+                // so a refusal has moved nothing.
+                let (moved, left_behind) = match p.move_all_requests(&from, &to) {
+                    Ok(result) => result,
+                    Err(e) => {
+                        self.toasts
+                            .push(format!("could not move requests: {e}"), ToastKind::Error);
+                        self.last_action_failed = true;
+                        return true;
+                    }
+                };
+                self.toasts.push(
+                    format!("Moved {} request(s) to {to}", moved.len()),
+                    ToastKind::Success,
                 );
-                let mut moves: Vec<(String, String)> = moved
-                    .iter()
-                    .filter_map(|(old, new)| {
-                        let (_, from_rel) = Self::split_rel(old)?;
-                        let (_, to_rel) = Self::split_rel(new)?;
-                        Some((from_rel.to_string(), to_rel.to_string()))
-                    })
-                    .collect();
-                moves.sort_by_key(|(from_rel, _)| {
-                    let slug = format!("{from}/{from_rel}");
-                    shown.iter().position(|s| *s == slug).unwrap_or(usize::MAX)
-                });
-                let r = postui_core::order::order_move_all(&self.project.root, &from, &to, &moves);
-                let orders = self.order_cascade("move", r);
-                // One undo step for the whole move: every file back where
-                // it was, plus the cascade's edits replayed backwards. The
-                // files moved byte-identically, so the destination's
-                // content is the source's `before`. The source space's
-                // local memory (its remembered open request, its expanded
-                // folders) is deliberately left alone: a remembered
-                // request is checked for existence before it is opened,
-                // so the entries are harmless while the space is empty and
-                // exactly right again once an undo refills it.
-                let mut before = Vec::new();
-                let mut after_paths = Vec::new();
-                for (old, new) in &moved {
-                    let from_path = postui_core::storage::request_path(&self.project.root, old);
-                    let to_path = postui_core::storage::request_path(&self.project.root, new);
-                    let content = std::fs::read_to_string(&to_path).ok();
-                    before.push((from_path.clone(), content));
-                    before.push((to_path.clone(), None));
-                    after_paths.push(from_path);
-                    after_paths.push(to_path);
+                for w in left_behind {
+                    self.toasts.push(w, ToastKind::Warning);
                 }
-                self.record_file_step_with_orders(
-                    before,
-                    &after_paths,
-                    None,
-                    orders,
-                    moved.clone(),
-                );
+                self.record_project_step();
                 for (old, new) in &moved {
                     self.session.rename(old, new);
                 }
@@ -5337,7 +5414,7 @@ impl App {
                     // record" branch and forge a phantom edit step.
                     self.apply(Action::ForceOpenRequest(new_slug.clone()));
                 } else {
-                    self.apply(Action::PersistLocalState);
+                    self.persist_open_request();
                 }
                 true
             }
@@ -5373,7 +5450,7 @@ impl App {
     /// simple/secret/undeclared name — `ctrl+v` there falls back to
     /// ordinary `Insert` autocomplete).
     fn selection_picker_target(
-        ctx: &ProjectContext,
+        ctx: &Project,
         text: &str,
         cursor: usize,
     ) -> Option<(String, String)> {
@@ -5386,11 +5463,10 @@ impl App {
             .into_iter()
             .find(|t| byte_off >= t.start && byte_off <= t.end)?;
         use postui_core::varmodel::VarMeta;
-        match ctx.resolved.meta.get(&token.name) {
+        match ctx.resolved().meta.get(&token.name) {
             Some(VarMeta::SelectorMember { selector, .. }) => Some((token.name, selector.clone())),
             Some(VarMeta::NeedsSelection) => {
-                let selector = ctx
-                    .model
+                let selector = ctx.variables()
                     .selectors
                     .iter()
                     .find(|(_, g)| g.fields.contains(&token.name))
@@ -5498,7 +5574,7 @@ impl App {
             self.last_action_failed = true;
             return true;
         }
-        if name_taken(&self.project, &name) {
+        if name_taken(self.variables(), &name) {
             self.toasts
                 .push(format!("\"{name}\" already exists"), ToastKind::Error);
             self.last_action_failed = true;
@@ -5526,7 +5602,7 @@ impl App {
         // A per-environment selector's option needs an environment file to
         // land in; a shared one writes variables.toml whatever is active,
         // and its selection is global too.
-        let env = match self.project.active_env.clone() {
+        let env = match self.active_env().map(str::to_string) {
             Some(env) => env,
             None if shared => String::new(),
             None => {
@@ -5535,29 +5611,38 @@ impl App {
                 return true;
             }
         };
-        let before = self.read_file_states(&self.project.var_file_paths());
-        let result = self
-            .apply_var_struct(&VarStructOp::NewSelector {
-                name: name.clone(),
-                fields: vec![name.clone()],
-                shared,
-            })
-            .and_then(|()| {
-                let mut values = indexmap::IndexMap::new();
-                values.insert(name.clone(), text.clone());
-                self.apply_var_struct(&VarStructOp::NewOption {
-                    env: env.clone(),
-                    selector: name.clone(),
-                    name: option.clone(),
-                    description: None,
-                    values,
+        // The declaration and its first option are one gesture: core runs
+        // both under one journal entry, so one undo peels the whole
+        // extraction (and a failed second half rolls the first back).
+        use postui_core::project::VarEdit as E;
+        let declare = E::NewSelector {
+            name: name.clone(),
+            fields: vec![name.clone()],
+            shared,
+        };
+        let mut values = indexmap::IndexMap::new();
+        values.insert(name.clone(), text.clone());
+        let add_option = E::NewOption {
+            env: env.clone(),
+            selector: name.clone(),
+            name: option.clone(),
+            description: None,
+            values,
+        };
+        let result = match self.project_mut() {
+            None => Err(NO_PROJECT.to_string()),
+            Some(p) => p
+                .cascade("extract variable", |p| {
+                    p.apply_var_edit(&declare)?;
+                    p.apply_var_edit(&add_option)
                 })
-            });
+                .map_err(|e| e.to_string()),
+        };
         match result {
             Ok(()) => {
-                self.project.set_selection_for(&env, &name, &option);
-                self.varmanager.sync(&self.project);
-                self.record_var_file_step(before);
+                self.set_selection_for(&env, &name, &option);
+                self.sync_varmanager();
+                self.record_project_step();
                 match source {
                     ExtractSource::FocusedField => self.replace_focused_field_with_token(&name),
                     ExtractSource::Selection(surface) => {
@@ -5568,10 +5653,11 @@ impl App {
                     .push(format!("extracted to {{{{{name}}}}}"), ToastKind::Success);
             }
             Err(msg) => {
-                // The selector may already be declared by the time the
-                // option write fails; the recorded step lets undo peel it.
-                self.varmanager.sync(&self.project);
-                self.record_var_file_step(before);
+                // A failed option write rolls the declaration back with
+                // it, so there is nothing to undo — but the Manager still
+                // re-reads, as it did when the half-write stood.
+                self.sync_varmanager();
+                self.record_project_step();
                 self.toasts.push(msg, ToastKind::Error);
                 self.last_action_failed = true;
             }
@@ -5611,22 +5697,21 @@ impl App {
             self.toasts.push(msg, ToastKind::Warning);
             return true;
         };
-        let before = self.read_file_states(&self.project.var_file_paths());
         use crate::action::ExtractDestination;
         let write_result: Result<(), String> = match destination {
             ExtractDestination::ProjectDefault => {
-                if self.project.model.vars.contains_key(&name)
-                    || self.project.model.selectors.contains_key(&name)
+                if self.variables().vars.contains_key(&name)
+                    || self.variables().selectors.contains_key(&name)
                 {
                     Err(format!("\"{name}\" already exists"))
                 } else {
-                    self.project.edit_variables(|doc| {
+                    self.edit_variables(|doc| {
                         postui_core::varedit::upsert_var(doc, &name, None, Some(&text))
                     })
                 }
             }
             ExtractDestination::ActiveEnv => {
-                let Some(env) = self.project.active_env.clone() else {
+                let Some(env) = self.active_env().map(str::to_string) else {
                     self.toasts
                         .push("no active environment", ToastKind::Warning);
                     return true;
@@ -5642,34 +5727,55 @@ impl App {
                 // the fact — keeps the refusal a clean toast
                 // instead of a write attempt against a doc that
                 // `validate_env` would then reject.
-                if self.project.model.selectors.contains_key(&name) {
+                if self.variables().selectors.contains_key(&name) {
                     self.toasts
                         .push(format!("\"{name}\" already exists"), ToastKind::Error);
                     self.last_action_failed = true;
                     return true;
                 }
-                if let Some(decl) = self.project.model.vars.get(&name) {
-                    if decl.secret {
-                        self.toasts.push(
-                            format!(
-                                "\"{name}\" is a secret variable \u{2014} can't set a plain env value for it"
-                            ),
-                            ToastKind::Error,
-                        );
-                        self.last_action_failed = true;
-                        return true;
-                    }
-                } else if let Err(msg) = self
-                    .project
-                    .edit_variables(|doc| postui_core::varedit::upsert_var(doc, &name, None, None))
-                {
-                    self.toasts.push(msg, ToastKind::Error);
+                if self.variables().vars.get(&name).is_some_and(|d| d.secret) {
+                    self.toasts.push(
+                        format!(
+                            "\"{name}\" is a secret variable \u{2014} can't set a plain env value for it"
+                        ),
+                        ToastKind::Error,
+                    );
                     self.last_action_failed = true;
                     return true;
                 }
-                self.project.edit_env(&env, |doc| {
-                    postui_core::varedit::set_env_value(doc, &name, Some(&text))
-                })
+                // The declaration (when the name is new) and the env value
+                // are one gesture: core runs both under one journal entry,
+                // so one undo peels the whole extraction. A failure of the
+                // declaration half keeps its own toast-and-stop, exactly
+                // as when it was a separate write.
+                let declare = !self.variables().vars.contains_key(&name);
+                let mut declare_failed = false;
+                let result = match self.project_mut() {
+                    None => Err(NO_PROJECT.to_string()),
+                    Some(p) => p
+                        .cascade("extract variable", |p| {
+                            if declare {
+                                p.edit_variables(|doc| {
+                                    postui_core::varedit::upsert_var(doc, &name, None, None)
+                                })
+                                .inspect_err(|_| declare_failed = true)?;
+                            }
+                            p.edit_env(&env, |doc| {
+                                postui_core::varedit::set_env_value(doc, &name, Some(&text))
+                            })
+                        })
+                        .map_err(|e| e.to_string()),
+                };
+                if let Err(msg) = result {
+                    if declare_failed {
+                        self.toasts.push(msg, ToastKind::Error);
+                        self.last_action_failed = true;
+                        return true;
+                    }
+                    Err(msg)
+                } else {
+                    Ok(())
+                }
             }
             ExtractDestination::Request => {
                 // No structural-file hazard here — `[variables]`
@@ -5707,7 +5813,7 @@ impl App {
                 // `[variables]` insert) is captured by the next
                 // `capture_undo` as an EditorDelta — undo peels the
                 // token-replacement, then the declaration.
-                self.record_var_file_step(before);
+                self.record_project_step();
                 match source {
                     ExtractSource::FocusedField => self.replace_focused_field_with_token(&name),
                     ExtractSource::Selection(surface) => {
@@ -5846,12 +5952,12 @@ impl App {
             .get(name)
             .filter(|e| e.enabled)
             .map(|e| e.value.clone());
-        let env_value = self.project.env_data.values.get(name).cloned();
-        let has_env = self.project.active_env.is_some();
+        let env_value = self.env_data().values.get(name).cloned();
+        let has_env = self.active_env().is_some();
 
         let seed = request_value
             .clone()
-            .or_else(|| self.project.resolved.values.get(name).cloned())
+            .or_else(|| self.resolved().values.get(name).cloned())
             .unwrap_or_default();
 
         let (choices, preselect) = crate::components::modal::value_popup_choices(
@@ -5866,9 +5972,7 @@ impl App {
         // What each destination currently stores (`None` = nothing), so
         // cycling the scope can reseed the value field, and the Remove
         // button knows whether there is anything to delete there.
-        let default_value = self
-            .project
-            .model
+        let default_value = self.variables()
             .vars
             .get(name)
             .and_then(|d| d.default.clone());
@@ -5902,17 +6006,16 @@ impl App {
         use crate::components::var_picker::{SelectOption, VarPickerState};
         use postui_core::varmodel;
 
-        let env_key = self.project.active_env.clone().unwrap_or_default();
+        let env_key = self.active_env().map(str::to_string).unwrap_or_default();
         let selected_key = if self.selector_is_shared(&selector) {
-            self.project.shared_selections().get(&selector).cloned()
+            self.shared_selections().get(&selector).cloned()
         } else {
-            self.project
-                .selections_for(&env_key)
+            self.selections_for(&env_key)
                 .get(&selector)
                 .cloned()
         };
         let options: Vec<SelectOption> =
-            varmodel::options_of(&self.project.model, &self.project.env_data, &selector)
+            varmodel::options_of(self.variables(), self.env_data(), &selector)
                 .map(|options| {
                     options
                         .iter()
@@ -5955,13 +6058,17 @@ impl App {
             return;
         };
         let value = input.text().to_string();
-        let op = var_edit_op_for(&self.project, &name, field, value);
+        let Some(op) = self
+            .project()
+            .map(|p| var_edit_op_for(p, &name, field, value))
+        else {
+            return;
+        };
         // This commit never routes through `self.apply` — it's called
-        // directly from `handle_key` (click-away/Enter), so it needs its
-        // own capture rather than relying on `Action::VarEdit`'s wrap.
-        let before = self.read_file_states(&self.project.var_file_paths());
+        // directly from `handle_key` (click-away/Enter), so it records its
+        // own marker rather than relying on `Action::VarEdit`'s wrap.
         match self.apply_var_edit(&op) {
-            Ok(()) => self.record_var_file_step(before),
+            Ok(()) => self.record_project_step(),
             Err(msg) => {
                 self.varmanager.form.editing = Some((field, input));
                 self.toasts.push(msg, ToastKind::Error);
@@ -5969,70 +6076,58 @@ impl App {
         }
     }
 
+    /// Maps one [`VarEditOp`] onto core's [`postui_core::project::VarEdit`]
+    /// and applies it there: every cascade, guard and refusal message
+    /// lives on `Project` now. The two editor-only ops never reach it.
     fn apply_var_edit(&mut self, op: &VarEditOp) -> Result<(), String> {
-        match op {
-            VarEditOp::SetEnvValue { env, name, value } => self.project.edit_env(env, |doc| {
-                postui_core::varedit::set_env_value(doc, name, Some(value))
-            }),
-            VarEditOp::SetDefault { name, value } => self.project.edit_variables(|doc| {
-                postui_core::varedit::upsert_var(doc, name, None, Some(value))
-            }),
-            VarEditOp::SetDescription { owner, value } => {
-                if self.project.model.vars.contains_key(owner) {
-                    self.project.edit_variables(|doc| {
-                        postui_core::varedit::upsert_var(doc, owner, Some(value), None)
-                    })
-                } else if let Some(fields) = self
-                    .project
-                    .model
-                    .selectors
-                    .get(owner)
-                    .map(|g| g.fields.clone())
-                {
-                    self.project.edit_variables(|doc| {
-                        postui_core::varedit::upsert_selector(doc, owner, Some(value), &fields)
-                    })
-                } else {
-                    Err(format!(
-                        "\"{owner}\" is not a declared variable or selector"
-                    ))
-                }
-            }
-            VarEditOp::SetSecretValue { env, name, value } => {
-                self.project.set_secret_for(env, name, value.clone())
-            }
+        use postui_core::project::VarEdit as E;
+        let edit = match op {
+            VarEditOp::SetEnvValue { env, name, value } => E::SetEnvValue {
+                env: env.clone(),
+                name: name.clone(),
+                value: value.clone(),
+            },
+            VarEditOp::SetDefault { name, value } => E::SetDefault {
+                name: name.clone(),
+                value: value.clone(),
+            },
+            VarEditOp::SetDescription { owner, value } => E::SetDescription {
+                owner: owner.clone(),
+                value: value.clone(),
+            },
+            VarEditOp::SetSecretValue { env, name, value } => E::SetSecretValue {
+                env: env.clone(),
+                name: name.clone(),
+                value: value.clone(),
+            },
             VarEditOp::SetOptionValue {
                 env,
                 selector,
                 option,
                 field,
                 value,
-            } => {
-                // An option's values live in one file — its selector's env
-                // file, or variables.toml for a shared selector; the cell
-                // being edited is one field of that option.
-                let mut values = indexmap::IndexMap::new();
-                values.insert(field.clone(), value.clone());
-                self.edit_options_home(selector, env, |doc| {
-                    postui_core::varedit::upsert_option(doc, selector, option, None, &values)
-                })
-            }
+            } => E::SetOptionValue {
+                env: env.clone(),
+                selector: selector.clone(),
+                option: option.clone(),
+                field: field.clone(),
+                value: value.clone(),
+            },
             VarEditOp::SetOptionDescription {
                 env,
                 selector,
                 option,
                 description,
-            } => self.edit_options_home(selector, env, |doc| match description {
-                Some(d) => postui_core::varedit::upsert_option(
-                    doc,
-                    selector,
-                    option,
-                    Some(d),
-                    &indexmap::IndexMap::new(),
-                ),
-                None => postui_core::varedit::remove_option_description(doc, selector, option),
-            }),
+            } => E::SetOptionDescription {
+                env: env.clone(),
+                selector: selector.clone(),
+                option: option.clone(),
+                description: description.clone(),
+            },
             VarEditOp::SetRequestVar { name, value } => {
+                // Editor-only: the open request's `[variables]` option
+                // rides the editor's own dirty/save path, so nothing is
+                // written (and nothing journaled) here.
                 match self.editor.variables.get_mut(name) {
                     Some(option) => option.value = value.clone(),
                     None => {
@@ -6045,17 +6140,23 @@ impl App {
                         );
                     }
                 }
-                Ok(())
+                return Ok(());
             }
             VarEditOp::SelectOption {
                 env,
                 selector,
                 option,
             } => {
-                self.project.set_selection_for(env, selector, option);
-                Ok(())
+                // A selection is local state, not a document: not
+                // journaled, so it records no undo step (as today).
+                self.set_selection_for(env, selector, option);
+                return Ok(());
             }
-        }
+        };
+        self.project_mut()
+            .ok_or_else(|| NO_PROJECT.to_string())?
+            .apply_var_edit(&edit)
+            .map_err(|e| e.to_string())
     }
 
     /// `s` on a `Var` row (spec §3's two transitions): opens
@@ -6066,7 +6167,7 @@ impl App {
     /// values will move into `.local/secrets.toml` and be stripped from
     /// their env files.
     fn open_toggle_secret_confirm(&mut self, name: String) {
-        let Some(decl) = self.project.model.vars.get(&name) else {
+        let Some(decl) = self.variables().vars.get(&name) else {
             // A selector (or a name that is not declared at all) has no
             // secret flag to flip: only a variable declaration carries one.
             self.toasts.push(
@@ -6078,8 +6179,8 @@ impl App {
         let is_secret = decl.secret;
         if is_secret {
             let mut lines: Vec<String> = Vec::new();
-            for env in &self.project.environments {
-                if let Some(v) = self.project.secrets.get(env).and_then(|m| m.get(&name)) {
+            for env in self.environments().to_vec() {
+                if let Some(v) = self.secrets().get(&env).and_then(|m| m.get(&name)) {
                     lines.push(format!("{env}: {v}"));
                 }
             }
@@ -6105,13 +6206,8 @@ impl App {
             });
         } else {
             let mut envs_with_values: Vec<String> = Vec::new();
-            for env in self.project.environments.clone() {
-                let env_data = if self.project.active_env.as_deref() == Some(env.as_str()) {
-                    self.project.env_data.clone()
-                } else {
-                    postui_core::project::load_environment(&self.project.root, &env)
-                        .unwrap_or_default()
-                };
+            for env in self.environments().to_vec() {
+                let env_data = self.env_data_for(&env);
                 if env_data.values.contains_key(&name) {
                     envs_with_values.push(env);
                 }
@@ -6149,256 +6245,109 @@ impl App {
     /// (e.g. `PromptKind::NewVariableAndInsert`'s trailing `InsertVarText`,
     /// which must never fire for a variable that failed to declare).
     fn apply_var_struct(&mut self, op: &VarStructOp) -> Result<(), String> {
-        use postui_core::varedit;
-        use postui_core::vars::is_valid_var_name;
-
-        match op {
-            VarStructOp::NewVar { name, description } => {
-                if !is_valid_var_name(name) {
-                    return Err(format!("\"{name}\" is not a valid variable name"));
-                }
-                if name_taken(&self.project, name) {
-                    return Err(format!("\"{name}\" already exists"));
-                }
-                self.project.edit_variables(|doc| {
-                    varedit::upsert_var(doc, name, description.as_deref(), None)
-                })
-            }
+        use postui_core::project::VarEdit as E;
+        let edit = match op {
+            VarStructOp::NewVar { name, description } => E::NewVar {
+                name: name.clone(),
+                description: description.clone(),
+            },
             VarStructOp::NewSelector {
                 name,
                 fields,
                 shared,
-            } => {
-                if !is_valid_var_name(name) {
-                    return Err(format!("\"{name}\" is not a valid selector name"));
-                }
-                if name_taken(&self.project, name) {
-                    return Err(format!("\"{name}\" already exists"));
-                }
-                for f in fields {
-                    if !is_valid_var_name(f) {
-                        return Err(format!("\"{f}\" is not a valid field name"));
-                    }
-                }
-                self.project.edit_variables(|doc| {
-                    let out = varedit::upsert_selector(doc, name, None, fields)?;
-                    if *shared {
-                        varedit::set_selector_shared(&out, name, true)
-                    } else {
-                        Ok(out)
-                    }
-                })
-            }
-            VarStructOp::Rename { from, to } => {
-                if !is_valid_var_name(to) {
-                    return Err(format!("\"{to}\" is not a valid variable name"));
-                }
-                if name_taken(&self.project, to) {
-                    return Err(format!("\"{to}\" already exists"));
-                }
-                if self.project.model.selectors.contains_key(from) {
-                    return self.apply_rename_group(from, to);
-                }
-                self.project
-                    .edit_variables(|doc| varedit::rename_var(doc, from, to))?;
-                // `rename_var` only ever touches `variables.toml` — an
-                // active env override for `from` would otherwise silently
-                // degrade to the default post-rename (no error, no
-                // warning, just a wrong-looking resolved value). Cascade
-                // into every environment's flat pair and its
-                // `[options.<from>]` table too; `rename_env_var` no-ops
-                // for an environment with nothing to rename.
-                for env in self.project.environments.clone() {
-                    self.project
-                        .edit_env(&env, |doc| varedit::rename_env_var(doc, from, to))?;
-                }
-                Ok(())
-            }
-            VarStructOp::Delete { name } => {
-                let is_group = self.project.model.selectors.contains_key(name);
-                if !is_group {
-                    // Mirror `delete_var`'s own "still a selector field"
-                    // conflict up front, using the already-loaded model —
-                    // before any environment file is touched, so a refusal
-                    // here leaves everything unchanged (`apply_var_struct`'s
-                    // documented contract), matching what `delete_var`
-                    // itself would have refused a moment later anyway.
-                    if let Some(gname) = self
-                        .project
-                        .model
-                        .selectors
-                        .iter()
-                        .find_map(|(gname, g)| g.fields.contains(name).then(|| gname.clone()))
-                    {
-                        return Err(format!(
-                            "variable \"{name}\" is a field of selector \"{gname}\"; remove it from the selector first"
-                        ));
-                    }
-                }
-                // Finding 1: `delete_var`/`delete_selector` only ever touch
-                // `variables.toml`. An env's `[options.<name>]` table for
-                // the deleted name would otherwise strand that env file —
-                // refused by `validate_env` in the ACTIVE env (a confusing
-                // parse-style toast), or silently left invalid with no GUI
-                // repair path in a NON-active one. Cascade into every
-                // environment FIRST — a strip can only shrink an env file,
-                // so it can never itself fail `validate_env` — and only
-                // THEN remove the declaration: doing it in the other order
-                // would have the declaration-removal's own `edit_variables`
-                // call validate the ACTIVE env's *not-yet-stripped*
-                // `[options.<name>]` table against a model that already
-                // doesn't declare `name`, reproducing the exact "confusing
-                // parse-style toast" this fix removes. `delete_env_var`
-                // no-ops for an environment with nothing to remove.
-                // A shared selector's options live in variables.toml with
-                // the declaration: both halves go in one write (an
-                // `[options.<name>]` table without its declaration fails
-                // validation in either order), and no env file holds
-                // anything to strip.
-                if is_group && self.selector_is_shared(name) {
-                    self.project.edit_variables(|doc| {
-                        let stripped = varedit::delete_selector_options(doc, name)?;
-                        varedit::delete_selector(&stripped, name)
-                    })?;
-                    self.project.clear_selection_for("", name);
-                    return Ok(());
-                }
-                for env in self.project.environments.clone() {
-                    if is_group {
-                        // The declaration's environment-side half: the whole
-                        // `[options.<name>]` subtree, plus the recorded
-                        // selection that named one of those options.
-                        self.project
-                            .edit_env(&env, |doc| varedit::delete_selector_options(doc, name))?;
-                        self.project.clear_selection_for(&env, name);
-                    } else {
-                        self.project
-                            .edit_env(&env, |doc| varedit::delete_env_var(doc, name))?;
-                    }
-                }
-                if is_group {
-                    self.project
-                        .edit_variables(|doc| varedit::delete_selector(doc, name))
-                } else {
-                    self.project
-                        .edit_variables(|doc| varedit::delete_var(doc, name))
+            } => E::NewSelector {
+                name: name.clone(),
+                fields: fields.clone(),
+                shared: *shared,
+            },
+            VarStructOp::Rename { from, to } => E::Rename {
+                from: from.clone(),
+                to: to.clone(),
+            },
+            VarStructOp::Delete { name } => E::Delete { name: name.clone() },
+            VarStructOp::ToggleSecret { name } => E::ToggleSecret { name: name.clone() },
+            VarStructOp::SetFields { selector, fields } => E::SetFields {
+                selector: selector.clone(),
+                fields: fields.clone(),
+            },
+            VarStructOp::Promote { name, target } => {
+                // The value being promoted lives in the open request's
+                // buffer, which core never sees: read it here, and refuse
+                // in the same words as before when it isn't there.
+                let value = self
+                    .editor
+                    .variables
+                    .get(name)
+                    .map(|o| o.value.clone())
+                    .ok_or_else(|| format!("\"{name}\" is not a request-scope variable"))?;
+                E::Promote {
+                    name: name.clone(),
+                    request_value: value,
+                    target: *target,
                 }
             }
-            VarStructOp::ToggleSecret { name } => self.apply_toggle_secret(name),
-            VarStructOp::SetFields { selector, fields } => {
-                for f in fields {
-                    if !is_valid_var_name(f) {
-                        return Err(format!("\"{f}\" is not a valid field name"));
-                    }
-                }
-                // A shared selector's options sit in the same file and
-                // must supply exactly the declared fields, so the list
-                // change carries them along in the one write (a non-shared
-                // selector's env-side halves go through the fields editor's
-                // `apply_group_fields` instead).
-                let current: Vec<String> = self
-                    .project
-                    .model
-                    .selectors
-                    .get(selector)
-                    .map(|g| g.fields.clone())
-                    .unwrap_or_default();
-                let shared = self.selector_is_shared(selector);
-                self.project.edit_variables(|doc| {
-                    let mut out = varedit::upsert_selector(doc, selector, None, fields)?;
-                    if shared {
-                        for field in fields.iter().filter(|f| !current.contains(f)) {
-                            out = varedit::ensure_option_field(&out, selector, field)?;
-                        }
-                        for field in current.iter().filter(|f| !fields.contains(f)) {
-                            out = varedit::strip_option_field(&out, selector, field)?;
-                        }
-                    }
-                    Ok(out)
-                })
-            }
-            VarStructOp::Promote { name, target } => self.apply_promote(name, *target),
             VarStructOp::NewOption {
                 env,
                 selector,
                 name,
                 description,
                 values,
-            } => self.edit_options_home(selector, env, |doc| {
-                varedit::upsert_option(doc, selector, name, description.as_deref(), values)
-            }),
+            } => E::NewOption {
+                env: env.clone(),
+                selector: selector.clone(),
+                name: name.clone(),
+                description: description.clone(),
+                values: values.clone(),
+            },
             VarStructOp::RenameOption {
                 env,
                 selector,
                 from,
                 to,
-            } => {
-                self.edit_options_home(selector, env, |doc| {
-                    varedit::rename_option(doc, selector, from, to)
-                })?;
-                // A selection names an option by key: carry it across the
-                // rename rather than leaving a dangling one behind. (A
-                // shared selector's selection is the global one;
-                // `set_selection_for` routes there itself.)
-                let selected = if self.selector_is_shared(selector) {
-                    self.project.shared_selections().get(selector)
-                } else {
-                    self.project.selections_for(env).get(selector)
-                };
-                if selected.map(String::as_str) == Some(from) {
-                    self.project.set_selection_for(env, selector, to);
-                }
-                Ok(())
-            }
+            } => E::RenameOption {
+                env: env.clone(),
+                selector: selector.clone(),
+                from: from.clone(),
+                to: to.clone(),
+            },
             VarStructOp::DeleteOption {
                 env,
                 selector,
                 name,
-            } => self.apply_delete_entry(env, selector, name),
+            } => E::DeleteOption {
+                env: env.clone(),
+                selector: selector.clone(),
+                name: name.clone(),
+            },
             VarStructOp::DuplicateOption {
                 env,
                 selector,
                 name,
-            } => self.apply_duplicate_entry(env, selector, name),
-        }
-    }
-
-    /// [`VarStructOp::Rename`] for a selector. Both halves of the declaration
-    /// have to move at once: an environment's `[options.<old>]` table names
-    /// a selector the renamed model no longer declares, and the new name has
-    /// no options yet — so `validate_env` refuses whichever half lands
-    /// first, in either order. `edit_variables_and_envs` builds and
-    /// validates them together, then writes.
-    ///
-    /// Selections name a selector by key, so each environment's recorded
-    /// selection is carried across the rename (the same repair
-    /// [`VarStructOp::RenameOption`] makes for an option key) — otherwise a
-    /// renamed selector would silently lose its "pick user 2" state
-    /// everywhere.
-    fn apply_rename_group(&mut self, from: &str, to: &str) -> Result<(), String> {
-        use postui_core::varedit;
-        // A shared selector renames wholly inside variables.toml — the
-        // declaration and its `[options.<from>]` subtree in one write —
-        // and carries its one global selection.
-        if self.selector_is_shared(from) {
-            self.project.edit_variables(|doc| {
-                let renamed = varedit::rename_selector(doc, from, to)?;
-                varedit::rename_selector_options(&renamed, from, to)
-            })?;
-            if let Some(key) = self.project.shared_selections().get(from).cloned() {
-                self.project.clear_selection_for("", from);
-                self.project.set_selection_for("", to, &key);
-            }
-            return Ok(());
-        }
-        self.project.edit_variables_and_envs(
-            |doc| varedit::rename_selector(doc, from, to),
-            |doc| varedit::rename_selector_options(doc, from, to),
-        )?;
-        for env in self.project.environments.clone() {
-            if let Some(key) = self.project.selections_for(&env).get(from).cloned() {
-                self.project.clear_selection_for(&env, from);
-                self.project.set_selection_for(&env, to, &key);
+            } => E::DuplicateOption {
+                env: env.clone(),
+                selector: selector.clone(),
+                name: name.clone(),
+            },
+        };
+        self.project_mut()
+            .ok_or_else(|| NO_PROJECT.to_string())?
+            .apply_var_edit(&edit)
+            .map_err(|e| e.to_string())?;
+        if let VarStructOp::Promote { name, .. } = op {
+            // The project side of the promote is durable the moment core
+            // returns `Ok`. The compensating half — removing the option
+            // from the request's own `[variables]` — only exists in the
+            // dirty editor buffer until now; save it synchronously so
+            // "promote, then quit" can't leave the old value stranded in
+            // both places. A save failure is reported as a toast rather
+            // than an `Err` (which would incorrectly roll back an op that,
+            // on the project side, already committed).
+            self.editor.variables.shift_remove(name);
+            if let Err(e) = self.save_open_request() {
+                self.toasts.push(
+                    format!("promoted \"{name}\" but {e} \u{2014} save the request manually"),
+                    ToastKind::Error,
+                );
             }
         }
         Ok(())
@@ -6423,9 +6372,7 @@ impl App {
         use postui_core::varedit;
         use postui_core::vars::is_valid_var_name;
 
-        let Some(current) = self
-            .project
-            .model
+        let Some(current) = self.variables()
             .selectors
             .get(&selector)
             .map(|g| g.fields.clone())
@@ -6480,7 +6427,7 @@ impl App {
             // A field belongs to exactly one selector, and shares the
             // declaration namespace with variables and selectors — a
             // {{token}} has to name one thing. The toast names the owner.
-            let owner = self.project.model.selectors.iter().find_map(|(g, decl)| {
+            let owner = self.variables().selectors.iter().find_map(|(g, decl)| {
                 if g == name {
                     Some(format!("\"{name}\" is already a selector"))
                 } else if g != &selector && decl.fields.iter().any(|f| f == name) {
@@ -6510,7 +6457,7 @@ impl App {
         // either way.
         let declared: Vec<bool> = renames
             .iter()
-            .map(|(from, _)| self.project.model.vars.contains_key(from))
+            .map(|(from, _)| self.variables().vars.contains_key(from))
             .collect();
         let declaration_half = |doc: &str| {
             let mut out = doc.to_string();
@@ -6537,15 +6484,13 @@ impl App {
         // A shared selector's options sit beside the declaration in
         // variables.toml, so the reshape is one write to one file.
         let result = if self.selector_is_shared(&selector) {
-            self.project
-                .edit_variables(|doc| options_half(&declaration_half(doc)?))
+            self.edit_variables(|doc| options_half(&declaration_half(doc)?))
         } else {
-            self.project
-                .edit_variables_and_envs(declaration_half, options_half)
+            self.edit_variables_and_envs(declaration_half, options_half)
         };
         match result {
             Ok(()) => {
-                self.varmanager.sync(&self.project);
+                self.sync_varmanager();
                 // Removals delete that column's values from every option —
                 // no confirm gate (the write is one undo step), so the
                 // toast says what happened and the way back.
@@ -6584,7 +6529,7 @@ impl App {
         };
         // A shared selector's grid works without an environment (its ops
         // ignore the env they carry); everyone else's needs one.
-        let env = match self.project.active_env.clone() {
+        let env = match self.active_env().map(str::to_string) {
             Some(env) => env,
             None if self.selector_is_shared(&selector) => String::new(),
             None => return,
@@ -6594,15 +6539,13 @@ impl App {
             return;
         }
         let options: Vec<String> = postui_core::varmodel::options_of(
-            &self.project.model,
-            &self.project.env_data,
+            self.variables(),
+            self.env_data(),
             &selector,
         )
         .map(|e| e.keys().cloned().collect())
         .unwrap_or_default();
-        let fields = self
-            .project
-            .model
+        let fields = self.variables()
             .selectors
             .get(&selector)
             .map(|g| g.fields.clone())
@@ -6610,8 +6553,7 @@ impl App {
         let ghost = edit.row >= options.len();
 
         // Same as `commit_var_form`: called directly from `handle_key`,
-        // never through `self.apply`, so it needs its own capture.
-        let before = self.read_file_states(&self.project.var_file_paths());
+        // never through `self.apply`, so it records its own marker.
         let result = if ghost {
             // Only the ghost's name cell creates anything; an emptied name
             // creates nothing (and neither does a value typed into a row
@@ -6664,13 +6606,13 @@ impl App {
         };
         match result {
             Ok(()) => {
-                self.varmanager.sync(&self.project);
-                self.record_var_file_step(before);
+                self.sync_varmanager();
+                self.record_project_step();
                 // The ghost flow keeps going left-to-right: the row that
                 // was the ghost is now a real option (appended, so it keeps
                 // its index) with its first field cell live.
                 if ghost && !fields.is_empty() {
-                    self.varmanager.start_cell_edit(&self.project, edit.row, 1);
+                    self.vm_start_cell_edit(edit.row, 1);
                 }
             }
             Err(msg) => {
@@ -6678,40 +6620,6 @@ impl App {
                 self.toasts.push(msg, ToastKind::Error);
             }
         }
-    }
-
-    /// [`VarStructOp::DuplicateOption`]: copies one option's description and
-    /// values to a fresh name in the same environment — `"<name> copy"`,
-    /// then `"<name> copy-2"`, … while that is taken. Nothing else moves:
-    /// the copy is unselected, and no other environment is touched.
-    fn apply_duplicate_entry(
-        &mut self,
-        env: &str,
-        selector: &str,
-        name: &str,
-    ) -> Result<(), String> {
-        let options = self
-            .options_of_for(env, selector)
-            .ok_or_else(|| format!("selector \"{selector}\" has no options in {env}"))?;
-        let source = options
-            .get(name)
-            .ok_or_else(|| format!("no option \"{name}\" in {selector}"))?
-            .clone();
-        let mut copy = format!("{name} copy");
-        let mut n = 2;
-        while options.contains_key(&copy) {
-            copy = format!("{name} copy-{n}");
-            n += 1;
-        }
-        self.edit_options_home(selector, env, |doc| {
-            postui_core::varedit::upsert_option(
-                doc,
-                selector,
-                &copy,
-                source.description.as_deref(),
-                &source.values,
-            )
-        })
     }
 
     /// [`Action::DuplicateVar`]: copies a declaration under `<name>-copy`
@@ -6722,235 +6630,80 @@ impl App {
         use postui_core::varedit;
         let mut copy = format!("{name}-copy");
         let mut n = 2;
-        while self.project.model.vars.contains_key(&copy)
-            || self.project.model.selectors.contains_key(&copy)
+        while self.variables().vars.contains_key(&copy)
+            || self.variables().selectors.contains_key(&copy)
         {
             copy = format!("{name}-copy-{n}");
             n += 1;
         }
-        if let Some(selector) = self.project.model.selectors.get(name) {
-            let (fields, description) = (selector.fields.clone(), selector.description.clone());
-            return self.project.edit_variables(|doc| {
-                varedit::upsert_selector(doc, &copy, description.as_deref(), &fields)
-            });
-        }
-        let decl = self
-            .project
-            .model
+        let selector = self
+            .variables()
+            .selectors
+            .get(name)
+            .map(|g| (g.fields.clone(), g.description.clone()));
+        let variable = self
+            .variables()
             .vars
             .get(name)
-            .ok_or_else(|| format!("no variable \"{name}\""))?;
-        let (description, default, secret) =
-            (decl.description.clone(), decl.default.clone(), decl.secret);
-        self.project.edit_variables(|doc| {
-            varedit::upsert_var(doc, &copy, description.as_deref(), default.as_deref())
-        })?;
-        if secret {
-            // Safe on a just-created declaration: it has no value in any
-            // environment for the flag flip to have to move.
-            self.project
-                .edit_variables(|doc| varedit::set_secret_flag(doc, &copy, true))?;
+            .map(|d| (d.description.clone(), d.default.clone(), d.secret));
+        if selector.is_none() && variable.is_none() {
+            return Err(format!("no variable \"{name}\""));
         }
-        Ok(())
+        let p = self.project_mut().ok_or_else(|| NO_PROJECT.to_string())?;
+        // The declaration and its secret flag are one undo step.
+        p.cascade("duplicate variable", |p| {
+            if let Some((fields, description)) = selector {
+                return p.edit_variables(|doc| {
+                    varedit::upsert_selector(doc, &copy, description.as_deref(), &fields)
+                });
+            }
+            let (description, default, secret) = variable.expect("checked above");
+            p.edit_variables(|doc| {
+                varedit::upsert_var(doc, &copy, description.as_deref(), default.as_deref())
+            })?;
+            if secret {
+                // Safe on a just-created declaration: it has no value in
+                // any environment for the flag flip to have to move.
+                p.edit_variables(|doc| varedit::set_secret_flag(doc, &copy, true))?;
+            }
+            Ok(())
+        })
+        .map_err(|e| e.to_string())
     }
 
     /// Whether `selector` is a shared selector — its options (and its one
     /// global selection) live in `variables.toml`, not per environment.
     fn selector_is_shared(&self, selector: &str) -> bool {
-        self.project
-            .model
+        self.variables()
             .selectors
             .get(selector)
             .is_some_and(|d| d.shared)
     }
 
-    /// Applies an option-table edit to wherever `selector`'s options live:
-    /// `variables.toml` for a shared selector (`env` is ignored — the same
-    /// `[options.*]` verbs apply, just in the model's own file), otherwise
-    /// `environments/<env>.toml`.
-    fn edit_options_home(
-        &mut self,
-        selector: &str,
-        env: &str,
-        f: impl FnOnce(&str) -> Result<String, postui_core::varedit::EditError>,
-    ) -> Result<(), String> {
-        if self.selector_is_shared(selector) {
-            self.project.edit_variables(f)
-        } else {
-            self.project.edit_env(env, f)
-        }
-    }
-
     /// `selector`'s options as they currently stand, from wherever they
     /// live: the model's own for a shared selector, `env`'s otherwise.
     fn options_of_for(
-        &self,
+        &mut self,
         env: &str,
         selector: &str,
     ) -> Option<indexmap::IndexMap<String, postui_core::varmodel::OptionDecl>> {
         if self.selector_is_shared(selector) {
-            self.project.model.options.get(selector).cloned()
+            self.variables().options.get(selector).cloned()
         } else {
             postui_core::varmodel::selector_options(&self.env_data_for(env), selector).cloned()
         }
     }
 
-    /// `env`'s data: the active environment's is already loaded on `ctx`;
-    /// any other is read fresh, degrading to empty rather than erroring.
-    fn env_data_for(&self, env: &str) -> postui_core::varmodel::EnvData {
-        if self.project.active_env.as_deref() == Some(env) {
-            self.project.env_data.clone()
-        } else {
-            postui_core::project::load_environment(&self.project.root, env).unwrap_or_default()
+    /// `env`'s data: the active environment's is already loaded on the
+    /// project; any other is read fresh, degrading to empty rather than
+    /// erroring.
+    fn env_data_for(&mut self, env: &str) -> postui_core::varmodel::EnvData {
+        if self.active_env() == Some(env) {
+            return self.env_data().clone();
         }
-    }
-
-    /// [`VarStructOp::DeleteOption`]: deletes one option of `selector` from
-    /// `env` (options belong to one environment each — spec §3.1). An option
-    /// that is already gone is a quiet no-op success (a stale row — nothing
-    /// left to do). Also clears any per-env selection naming the deleted
-    /// option, in every environment, so local state doesn't accumulate dead
-    /// selections (`resolve_env` already degrades a stale selection
-    /// harmlessly, but there's no reason to leave it).
-    fn apply_delete_entry(&mut self, env: &str, selector: &str, name: &str) -> Result<(), String> {
-        let present = self
-            .options_of_for(env, selector)
-            .is_some_and(|options| options.contains_key(name));
-        if present {
-            self.edit_options_home(selector, env, |doc| {
-                postui_core::varedit::delete_option(doc, selector, name)
-            })?;
-        }
-        if self.selector_is_shared(selector) {
-            if self
-                .project
-                .shared_selections()
-                .get(selector)
-                .map(String::as_str)
-                == Some(name)
-            {
-                self.project.clear_selection_for(env, selector);
-            }
-            return Ok(());
-        }
-        for other in self.project.environments.clone() {
-            if self
-                .project
-                .selections_for(&other)
-                .get(selector)
-                .map(String::as_str)
-                == Some(name)
-            {
-                self.project.clear_selection_for(&other, selector);
-            }
-        }
-        Ok(())
-    }
-
-    /// [`VarStructOp::ToggleSecret`]'s two directions (spec §3). Off->on
-    /// moves every environment's flat value for `name` into that
-    /// environment's `.local/secrets.toml` slot and strips it from the env
-    /// file; on->off only flips the flag — the local secret value is left
-    /// exactly where it is (never silently promoted into a git-tracked
-    /// file).
-    fn apply_toggle_secret(&mut self, name: &str) -> Result<(), String> {
-        let currently_secret = self.project.model.vars.get(name).is_some_and(|d| d.secret);
-        if currently_secret {
-            return self
-                .project
-                .edit_variables(|doc| postui_core::varedit::set_secret_flag(doc, name, false));
-        }
-        let mut to_move: Vec<(String, String)> = Vec::new();
-        for env in self.project.environments.clone() {
-            let env_data = if self.project.active_env.as_deref() == Some(env.as_str()) {
-                self.project.env_data.clone()
-            } else {
-                postui_core::project::load_environment(&self.project.root, &env).unwrap_or_default()
-            };
-            if let Some(v) = env_data.values.get(name) {
-                to_move.push((env, v.clone()));
-            }
-        }
-        // Order matters: `edit_variables` validates the flipped flag against
-        // the *active* env's current data, so a still-present flat value
-        // there (a flat value for a secret variable is a §1.2 error) would
-        // reject the flag flip. Move each value into secrets.toml and strip
-        // it from its env file first — harmless against the not-yet-secret
-        // model — so the flag flip last sees a model already consistent
-        // with every environment's (now-empty) flat value.
-        for (env, value) in &to_move {
-            self.project.set_secret_for(env, name, value.clone())?;
-        }
-        for (env, _) in &to_move {
-            self.project.edit_env(env, |doc| {
-                postui_core::varedit::set_env_value(doc, name, None)
-            })?;
-        }
-        self.project
-            .edit_variables(|doc| postui_core::varedit::set_secret_flag(doc, name, true))?;
-        Ok(())
-    }
-
-    /// [`VarStructOp::Promote`] (spec §4): writes the request's own
-    /// `[variables]` option into the project (default or the active
-    /// environment), then removes it from the request now that the
-    /// project owns it.
-    fn apply_promote(
-        &mut self,
-        name: &str,
-        target: postui_core::varedit::PromoteTarget,
-    ) -> Result<(), String> {
-        let option = self
-            .editor
-            .variables
-            .get(name)
-            .cloned()
-            .ok_or_else(|| format!("\"{name}\" is not a request-scope variable"))?;
-        let vars_path = self.project.root.join("variables.toml");
-        let vars_text = std::fs::read_to_string(&vars_path).unwrap_or_default();
-        let env_name = self.project.active_env.clone();
-        let env_text = match &env_name {
-            Some(env) => Some(
-                std::fs::read_to_string(
-                    self.project
-                        .root
-                        .join("environments")
-                        .join(format!("{env}.toml")),
-                )
-                .unwrap_or_default(),
-            ),
-            None => None,
-        };
-        let (new_vars, new_env) = postui_core::varedit::promote_var(
-            &vars_text,
-            env_text.as_deref(),
-            name,
-            &option.value,
-            target,
-        )
-        .map_err(|e| e.to_string())?;
-        self.project.edit_variables(|_| Ok(new_vars))?;
-        if let (Some(new_env), Some(env)) = (new_env, env_name) {
-            self.project.edit_env(&env, |_| Ok(new_env))?;
-        }
-        self.editor.variables.shift_remove(name);
-        // Finding 2: the project side of the promote is durable the moment
-        // `edit_variables`/`edit_env` above return `Ok` (both write
-        // atomically). The compensating half — removing the option from the
-        // request's own `[variables]` — only exists in the dirty editor
-        // buffer until now; save it synchronously so "promote, then quit"
-        // can't leave the old value stranded in both places. The project
-        // write already succeeded, so a save failure here is reported as a
-        // toast rather than an `Err` (which would incorrectly roll back an
-        // op that, on the project side, already committed) — the removal
-        // stays live in the editor buffer, just not yet on disk.
-        if let Err(e) = self.save_open_request() {
-            self.toasts.push(
-                format!("promoted \"{name}\" but {e} \u{2014} save the request manually"),
-                ToastKind::Error,
-            );
-        }
-        Ok(())
+        self.project_mut()
+            .and_then(|p| p.load_environment(env).ok())
+            .unwrap_or_default()
     }
 
     /// Synchronously persists the currently open request to disk, mirroring
@@ -6967,7 +6720,9 @@ impl App {
             .clone()
             .ok_or_else(|| "no request is open".to_string())?;
         let req = self.editor.current_request();
-        postui_core::storage::save_request(&self.project.root, &slug, &req)
+        self.project_mut()
+            .ok_or_else(|| "no project is open".to_string())?
+            .save_request(&slug, &req)
             .map_err(|e| format!("could not save {slug}: {e}"))?;
         self.mark_saved_after_write();
         self.refresh_sidebar();
@@ -6987,214 +6742,263 @@ impl App {
         self.history.break_coalescing();
     }
 
-    /// Reads each path's current contents; an unreadable path (gone, or a
-    /// permission error) reads as absent — these are small TOML files
-    /// postui itself wrote, so "can't read it" and "it isn't there" are
-    /// treated alike.
-    fn read_file_states(&self, paths: &[PathBuf]) -> Vec<(PathBuf, Option<String>)> {
-        paths
-            .iter()
-            .map(|p| (p.clone(), std::fs::read_to_string(p).ok()))
-            .collect()
+    /// Records a marker for the journal entry the last `Project` call
+    /// produced, if it produced a new one. Called right after every
+    /// mutating `Project` call. A merged burst (a held alt+↓) leaves the
+    /// top id unchanged and records nothing, so it stays one undo step;
+    /// a burst that netted to nothing is popped by the journal and the
+    /// marker already recorded for it is skipped as stale on undo.
+    ///
+    /// The step's toast names the open request and reads like the
+    /// `FileStates` step it replaces; [`Self::record_project_step_as`] is
+    /// for the arms that toast differently.
+    fn record_project_step(&mut self) {
+        let slug = self.editor.slug.clone();
+        self.record_project_step_as(crate::undo::ProjectNoun::FileChange, slug);
     }
 
-    /// Reads `after_paths`' current contents, drops any pair whose content
-    /// matches the corresponding `before` option (position-paired — callers
-    /// pass both in the same path order), and — when anything real
-    /// remains — records a `FileStates` undo step for the rest.
-    /// `record_no_coalesce`: a disk write is never a burst-coalescing
-    /// candidate and must clear the redo stack (spec: new steps invalidate
-    /// stale redo options).
-    fn record_file_step(
-        &mut self,
-        before: Vec<(PathBuf, Option<String>)>,
-        after_paths: &[PathBuf],
-        active_env: Option<(Option<String>, Option<String>)>,
-    ) {
-        self.record_file_step_with_orders(before, after_paths, active_env, Vec::new(), Vec::new());
-    }
-
-    /// [`Self::record_file_step`] for a request file op that also
-    /// cascaded the order lists: `orders` is what the cascade did, so
-    /// undo and redo can replay it, and `moves` pairs every request the
-    /// op moved with where it went, so they can follow the open request.
-    fn record_file_step_with_orders(
-        &mut self,
-        before: Vec<(PathBuf, Option<String>)>,
-        after_paths: &[PathBuf],
-        active_env: Option<(Option<String>, Option<String>)>,
-        orders: Vec<postui_core::order::OrderEdit>,
-        moves: Vec<(String, String)>,
-    ) {
-        let after = self.read_file_states(after_paths);
-        debug_assert_eq!(before.len(), after.len(), "before/after paths must line up");
-        let mut kept_before = Vec::new();
-        let mut kept_after = Vec::new();
-        for (b, a) in before.into_iter().zip(after) {
-            if b.1 != a.1 {
-                kept_before.push(b);
-                kept_after.push(a);
-            }
-        }
-        if kept_before.is_empty() {
+    /// [`Self::record_project_step`] with an explicit toast noun and the
+    /// request that noun names (the request that moved, for a reorder;
+    /// the deleted one, for a delete). The noun is chosen here rather
+    /// than derived from the entry's label because `move_request` and
+    /// `move_request_shown` both journal under the label `"move request"`
+    /// and toast differently — see [`crate::undo::ProjectNoun`].
+    fn record_project_step_as(&mut self, noun: crate::undo::ProjectNoun, slug: Option<String>) {
+        let top = self.journal_top();
+        if top == self.marked_entry {
+            // Nothing was journaled (a no-op call), or the call merged
+            // into the entry the marker on top already covers.
             return;
         }
+        // The journal's top went *backwards*: this call merged into the
+        // entry the marker on top covers and netted to identity, so the
+        // journal dropped that entry. Its marker goes with it — the entry
+        // now on top already has one. (When something else was recorded
+        // in between, the marker is not on top to pop; it is left where
+        // it is and undo skips it as stale.) Either way this call records
+        // nothing: the entry the journal fell back to already has a
+        // marker somewhere in the stack, and a second one for it would
+        // sit above the step that was recorded in between and undo out of
+        // order.
+        if self.marked_entry.is_some() && top.is_none_or(|t| Some(t) < self.marked_entry) {
+            if matches!(
+                self.history.peek_undo().map(|s| &s.kind),
+                Some(crate::undo::StepKind::Project { id, .. }) if Some(*id) == self.marked_entry
+            ) {
+                self.history.pop_undo();
+            }
+            self.marked_entry = top;
+            return;
+        }
+        self.marked_entry = top;
+        let Some(id) = top else { return };
         self.history.record_no_coalesce(crate::undo::Step {
-            kind: crate::undo::StepKind::FileStates {
-                before: kept_before,
-                after: kept_after,
-                active_env,
-                orders,
-                moves,
-            },
+            kind: crate::undo::StepKind::Project { id, slug: slug.clone(), noun },
             context: crate::undo::Context {
-                slug: self.editor.slug.clone(),
+                slug,
                 cursor_before: crate::undo::CursorPos::None,
                 cursor_after: crate::undo::CursorPos::None,
             },
         });
     }
 
-    /// Writes each `(path, content)`: `Some` writes atomically, `None`
-    /// removes (a missing file counts as removed). Stops at the first
-    /// failure with a toast-ready message; earlier writes stand.
-    fn write_file_states(
+    /// The id of the entry `Project::undo` would replay next.
+    fn journal_top(&self) -> Option<postui_core::journal::EntryId> {
+        self.project().and_then(|p| p.last_entry()).map(|(id, _)| id)
+    }
+
+    /// Whether `id` is the entry `p` would replay next in `redo`'s
+    /// direction.
+    fn entry_on_top(
+        &self,
+        p: &Project,
+        id: postui_core::journal::EntryId,
+        redo: bool,
+    ) -> bool {
+        let top = if redo {
+            p.next_redo()
+        } else {
+            p.last_entry().map(|(id, _)| id)
+        };
+        top == Some(id)
+    }
+
+    /// Re-reads the journal's top into `marked_entry` after something
+    /// other than a forward op moved it (an undo, a redo, a failed
+    /// replay that put its entry back). `marked_entry` tracks the top
+    /// itself, not merely the last marker's id: were it the latter, a
+    /// later call that journals nothing (a no-op move-all, a refused
+    /// reorder) would find a stale value and record a second marker for
+    /// an entry that already has one.
+    fn sync_marked_entry(&mut self) {
+        self.marked_entry = self.journal_top();
+    }
+
+    /// Whether `step` is a `Project` marker whose entry is no longer the
+    /// one the journal would replay next — merged into an earlier entry,
+    /// netted to nothing, or evicted by the journal cap. Undo and redo
+    /// drop such a step and carry on to the one beneath it.
+    fn is_stale_marker(&self, step: &crate::undo::Step, redo: bool) -> bool {
+        let crate::undo::StepKind::Project { id, .. } = &step.kind else {
+            return false;
+        };
+        let Some(p) = self.project() else { return true };
+        let top = if redo {
+            p.next_redo()
+        } else {
+            p.last_entry().map(|(id, _)| id)
+        };
+        top != Some(*id)
+    }
+
+    /// Refreshes everything that mirrors project state after `Project`
+    /// replayed an entry: the session and the editor follow the request
+    /// moves the entry recorded, the sidebar and the Variable Manager
+    /// re-read, and the reload's warnings toast. The counterpart of the
+    /// tail every `FileStates`/`Trashed` undo used to run by hand.
+    /// `reopen` replays the entry's own record of which request was open
+    /// when it ran — the `state.toml` restore only the `Trashed` steps
+    /// ever carried, which the journal does not cover (local state is not
+    /// journaled). Only a delete passes it: applying it to every entry
+    /// would make undoing a *create* reopen whatever was open when the
+    /// create ran, which is not what the `FileStates` tail did and would
+    /// short-circuit an undo walking back to an earlier request.
+    /// `space_before` and `env_before` are the active space and
+    /// environment as the app saw them just before the replay: core moves
+    /// both by itself (the restore of `.local/state.toml`, and the
+    /// entry's own `active_env` transition), so the view has to follow
+    /// them and say so in the same words a switch does.
+    fn after_undone(
         &mut self,
-        target: &[(PathBuf, Option<String>)],
-        verb: &str,
-    ) -> Result<(), String> {
-        for (path, content) in target {
-            let result: std::io::Result<()> = match content {
-                Some(text) => crate::project_ctx::atomic_write(path, text),
-                None => std::fs::remove_file(path).or_else(|e| {
-                    if e.kind() == std::io::ErrorKind::NotFound {
-                        Ok(())
-                    } else {
-                        Err(e)
-                    }
-                }),
-            };
-            if let Err(e) = result {
-                return Err(format!("{verb} failed at {}: {e}", path.display()));
+        u: &postui_core::project::Undone,
+        reopen: bool,
+        space_before: &str,
+        env_before: Option<&str>,
+    ) {
+        for w in &u.warnings {
+            self.toasts.push(w.clone(), ToastKind::Warning);
+        }
+        // Every request the entry moved changes slug again: the session's
+        // cache and in-flight entries follow, as they did for the forward
+        // op.
+        for (old, new) in &u.meta.moves {
+            if u.redo {
+                self.session.rename(old, new);
+            } else {
+                self.session.rename(new, old);
             }
         }
-        Ok(())
-    }
-
-    /// Records a `Trashed` step: reads `after_paths`' current contents as
-    /// the companion files' "after" side. Never coalesces; clears redo.
-    fn record_trashed_step(
-        &mut self,
-        items: Vec<postui_core::trash::Trashed>,
-        files_before: Vec<(PathBuf, Option<String>)>,
-        after_paths: &[PathBuf],
-        active_env: Option<(Option<String>, Option<String>)>,
-    ) {
-        let slug = self.editor.slug.clone();
-        self.record_trashed_step_with_orders(
-            items,
-            files_before,
-            after_paths,
-            active_env,
-            Vec::new(),
-            slug,
-        );
-    }
-
-    /// [`Self::record_trashed_step`] with the order-list cascade the op
-    /// ran (`orders`) and an explicit `context_slug` — the request the
-    /// step belongs to, captured by the caller *before* the op closed or
-    /// switched the editor.
-    fn record_trashed_step_with_orders(
-        &mut self,
-        items: Vec<postui_core::trash::Trashed>,
-        files_before: Vec<(PathBuf, Option<String>)>,
-        after_paths: &[PathBuf],
-        active_env: Option<(Option<String>, Option<String>)>,
-        orders: Vec<postui_core::order::OrderEdit>,
-        context_slug: Option<String>,
-    ) {
-        let files_after = self.read_file_states(after_paths);
-        self.history.record_no_coalesce(crate::undo::Step {
-            kind: crate::undo::StepKind::Trashed {
-                items,
-                files_before,
-                files_after,
-                active_env,
-                orders,
-            },
-            context: crate::undo::Context {
-                slug: context_slug,
-                cursor_before: crate::undo::CursorPos::None,
-                cursor_after: crate::undo::CursorPos::None,
-            },
-        });
-    }
-
-    /// `.local/state.toml`: the companion file every delete step carries,
-    /// so undo puts back what the delete's cascade took out of local state
-    /// (the active space, the open request, remembered requests, expanded
-    /// folders) and not just the files.
-    fn local_state_path(&self) -> PathBuf {
-        self.project.root.join(".local").join("state.toml")
-    }
-
-    /// Shared tail of every arm that changes files under the app — the
-    /// file-level undo/redo arms and the forward-path ops that write
-    /// through the trash (`ForceDeleteSpace`). Files changed underneath
-    /// the app, so reload wholesale, and drop the editor if its file is
-    /// gone. When the editor followed a rename into another space, the
-    /// sidebar follows it there too (it is rooted at the active space).
-    fn reload_after_file_change(&mut self) {
-        self.project.reload_selections_from_disk();
-        self.project.invalidate_stamps();
-        self.apply(Action::ReloadProjectFiles);
-        if let Some(w) = self.project.reload_spaces() {
-            self.toasts.push(w, ToastKind::Warning);
-        }
-        if let Some(space) = self
-            .editor
-            .slug
-            .as_deref()
-            .and_then(postui_core::storage::space_of)
-            .filter(|s| *s != self.project.active_space)
-            .map(str::to_string)
-        {
-            // The editor has already followed its file into `space`, so
-            // it says nothing about the space being left — recording it
-            // would erase that space's remembered request.
-            self.enter_space(&space, SpaceExit::Keep);
-        }
+        // A replay can land with the mouse button still held: the working
+        // order a live drag holds names rows the replay just rewrote.
+        self.finish_sidebar_drag(false);
+        self.finish_manage_drag(false);
         self.refresh_sidebar();
+        // Mirrors `Action::VarStruct`'s success path: the Variable
+        // Manager grid/form cache the current declarations and won't
+        // otherwise notice a var/env/secrets file a replay rewrote out
+        // from under them.
         if self.screen == Screen::Manage {
-            self.varmanager.sync(&self.project);
+            self.sync_varmanager();
         }
-        if let Some(open) = self.editor.slug.clone()
-            && !postui_core::storage::request_exists(&self.project.root, &open)
+        // The replay switched the active environment (creating one
+        // activates it; deleting the active one falls to the next): core
+        // did the switch, so all that is left is to announce it in
+        // `Action::SwitchEnv`'s own words. The Manager was re-synced
+        // just above, as that arm does.
+        if self.active_env() != env_before {
+            let label = self.env_label_display();
+            self.toasts
+                .push(format!("env: {label}"), ToastKind::Success);
+        }
+        // The replay moved the active space (undoing a space delete goes
+        // back into the deleted space; redoing it falls out again): the
+        // view follows it and says so, opening what that space was last
+        // left on. The entry's own record — its `moves` pairs and its
+        // `reopen` — is applied on top below, so an entry that says where
+        // the editor belongs still wins.
+        if self.active_space() != space_before {
+            self.follow_active_space();
+        }
+        if let Some(open) = self.editor.slug.clone() {
+            // The entry's own pairing says where the open request went (a
+            // rename, a move to space, or any one file of a move-all,
+            // collisions and their `-2` suffixes included); an entry that
+            // moved nothing and left the file absent is a true delete.
+            let moved_to = u.meta.moves.iter().find_map(|(old, new)| {
+                if u.redo {
+                    (*old == open).then(|| new.clone())
+                } else {
+                    (*new == open).then(|| old.clone())
+                }
+            });
+            match moved_to {
+                Some(new_slug) => {
+                    self.editor.slug = Some(new_slug.clone());
+                    // The rename wrote the new display name to disk;
+                    // mirror it in both the live fields and the saved
+                    // snapshot so the editor never reads as dirty.
+                    let name = match self.project_mut() {
+                        Some(p) => p.open_request(&new_slug).ok().and_then(|r| r.name.clone()),
+                        None => None,
+                    };
+                    if let Some(name) = name {
+                        self.editor.name = Some(name.clone());
+                        if let Some(saved) = self.editor.saved.as_mut() {
+                            saved.name = Some(name);
+                        }
+                    }
+                    self.sidebar.open_slug = Some(new_slug.clone());
+                    // The sidebar is rooted at the active space, so an
+                    // undo that put the open request back in another one
+                    // follows it there. The editor has already followed,
+                    // so the outgoing space keeps its memory.
+                    if let Some(space) = postui_core::storage::space_of(&new_slug)
+                        .filter(|s| *s != self.active_space())
+                        .map(str::to_string)
+                    {
+                        self.enter_space(&space, SpaceExit::Keep);
+                    }
+                }
+                None if !self.request_exists(&open) => {
+                    self.editor = Editor::default();
+                    self.shadow = None;
+                    self.sidebar.open_slug = None;
+                }
+                None => {}
+            }
+        }
+        // An undone delete puts back the request that was open when it
+        // ran (the delete closed it); `state.toml` is not journaled, so
+        // the entry's own record is what says so.
+        if reopen
+            && !u.redo
+            && let Some(slug) = u.meta.reopen.clone()
+            && self.editor.slug.as_deref() != Some(slug.as_str())
+            && self.request_exists(&slug)
         {
-            self.editor = Editor::default();
-            self.shadow = None;
-            self.sidebar.open_slug = None;
+            self.apply(Action::ForceOpenRequest(slug));
+        }
+        self.persist_open_request();
+    }
+
+    /// Writes whichever request the editor now holds (`None` when it
+    /// holds none) into the project's local state, as both the active
+    /// space's remembered request and the project-wide open one. Every
+    /// route that changes what the editor holds — open, create, delete,
+    /// rename, a space or project switch's landing, an undo's reopen —
+    /// ends with this call, so `state.toml` never disagrees with the
+    /// screen.
+    fn persist_open_request(&mut self) {
+        let slug = self.editor.slug.clone();
+        if let Some(p) = self.project_mut() {
+            p.record_space_open(slug.as_deref());
+            p.set_open_request(slug.as_deref());
         }
     }
 
-    /// The var-manager arms' capture helper: `before` is a
-    /// `read_file_states(&self.project.var_file_paths())` snapshot taken
-    /// before the op ran. `var_file_paths` is re-listed from disk, so an op
-    /// that creates or deletes an environment file changes the path set
-    /// between `before` and now — `record_file_step` position-pairs
-    /// before/after, so this extends `before` with a `None` option for any
-    /// current path it doesn't already cover (i.e. the union of the
-    /// before- and after-side path sets) before handing both to
-    /// `record_file_step`.
-    fn record_var_file_step(&mut self, mut before: Vec<(PathBuf, Option<String>)>) {
-        for path in self.project.var_file_paths() {
-            if !before.iter().any(|(p, _)| *p == path) {
-                before.push((path, None));
-            }
-        }
-        let all_paths: Vec<PathBuf> = before.iter().map(|(p, _)| p.clone()).collect();
-        self.record_file_step(before, &all_paths, None);
+    /// Whether a request file is there, through the open project.
+    fn request_exists(&self, slug: &str) -> bool {
+        self.project().is_some_and(|p| p.request_exists(slug))
     }
 
     /// Makes `space` the active one without opening anything: records the
@@ -7209,10 +7013,15 @@ impl App {
         // Same for a Manage screen space drag: the list it is rearranging
         // is about to be re-read under it.
         self.finish_manage_drag(false);
-        if let SpaceExit::Remember(slug) = outgoing {
-            self.project.record_space_open(slug);
+        if let SpaceExit::Remember(slug) = outgoing
+            && let Some(p) = self.project_mut()
+        {
+            p.record_space_open(slug);
         }
-        if !self.project.set_active_space(space) {
+        if !self
+            .project_mut()
+            .is_some_and(|p| p.set_active_space(space))
+        {
             self.toasts
                 .push(format!("no space named {space:?}"), ToastKind::Warning);
             return false;
@@ -7220,116 +7029,37 @@ impl App {
         self.sidebar.selected = None;
         self.refresh_sidebar();
         self.toasts.push(
-            format!("space: {}", self.project.space_name(space)),
+            format!("space: {}", self.space_name(space)),
             ToastKind::Success,
         );
         true
     }
 
-    /// Applies an order-list cascade after a request file op succeeded.
-    /// The file is the truth; a failed cascade only leaves a stale entry
-    /// (ignored for display), so it warns rather than failing the op.
-    /// Returns the edits the cascade made, for the op's undo step.
-    fn order_cascade(
-        &mut self,
-        what: &str,
-        r: Result<Vec<postui_core::order::OrderEdit>, postui_core::project::ProjectError>,
-    ) -> Vec<postui_core::order::OrderEdit> {
-        let edits = match r {
-            Ok(edits) => edits,
-            Err(e) => {
-                self.toasts.push(
-                    format!("could not update request order after {what}: {e}"),
-                    ToastKind::Warning,
-                );
-                Vec::new()
-            }
-        };
-        self.project.reload_meta();
-        edits
-    }
-
-    /// Records a reorder as an undo step; nothing when the reorder wrote
-    /// nothing. A keyboard move (`burst`) merges into a keyboard move of
-    /// the same target made within the history's coalesce window, so
-    /// holding alt+↓ is one step; a drag is always its own step and
-    /// merges with nothing.
-    fn record_reorder_step(
-        &mut self,
-        change: Option<postui_core::project::ListChange>,
-        target: crate::undo::ReorderTarget,
-        burst: bool,
-    ) {
-        let Some(change) = change else {
-            return;
-        };
-        let slug = match &target {
-            crate::undo::ReorderTarget::Requests { slug, .. } => Some(slug.clone()),
-            crate::undo::ReorderTarget::Spaces { .. } => self.editor.slug.clone(),
-        };
-        let step = crate::undo::Step {
-            kind: crate::undo::StepKind::Reorder {
-                target,
-                before: change.before,
-                after: change.after,
-                burst,
-            },
-            context: crate::undo::Context {
-                slug,
-                cursor_before: crate::undo::CursorPos::None,
-                cursor_after: crate::undo::CursorPos::None,
-            },
-        };
-        self.history.record_maybe_coalesce(step, burst);
-    }
-
-    /// Puts a step's order-list cascade back (undo) or forward again
-    /// (redo). The files are already restored by the time this runs; a
-    /// failure here leaves only a mis-slotted entry, so it warns.
-    fn replay_order_edits(&mut self, orders: &[postui_core::order::OrderEdit], redo: bool) {
-        if orders.is_empty() {
+    /// Brings the view to the space the project now says is active, after
+    /// an op moved it there in core (deleting the active space falls back
+    /// to the first remaining one). `SpaceExit::Keep`: the space being
+    /// left is gone, so there is nothing to remember for it. Opens what
+    /// the space it lands in was last left on, as a switch does.
+    fn follow_active_space(&mut self) {
+        let space = self.active_space();
+        if !self.enter_space(&space, SpaceExit::Keep) {
             return;
         }
-        if let Err(e) = postui_core::order::apply_edits(&self.project.root, orders, !redo) {
-            self.toasts.push(
-                format!(
-                    "could not {} the request order: {e}",
-                    if redo { "redo" } else { "undo" }
-                ),
-                ToastKind::Warning,
-            );
-        }
-    }
-
-    /// Splits a slug into its space and the path relative to that space,
-    /// for the order-list cascades below.
-    fn split_rel(slug: &str) -> Option<(&str, &str)> {
-        let space = postui_core::storage::space_of(slug)?;
-        let rel = postui_core::order::relative(slug, space)?;
-        Some((space, rel))
-    }
-
-    /// Runs one single-slug order cascade (`order_remove`, `order_arrive`)
-    /// for `slug` after a request file op named `what` succeeded, and
-    /// reports it through [`Self::order_cascade`]. A slug outside any
-    /// space has no list to cascade into.
-    fn cascade_slug(
-        &mut self,
-        what: &str,
-        slug: &str,
-        op: fn(
-            &std::path::Path,
-            &str,
-            &str,
-        )
-            -> Result<Vec<postui_core::order::OrderEdit>, postui_core::project::ProjectError>,
-    ) -> Vec<postui_core::order::OrderEdit> {
-        match Self::split_rel(slug) {
-            Some((space, rel)) => {
-                let r = op(&self.project.root, space, rel);
-                self.order_cascade(what, r)
+        let target = self
+            .project()
+            .and_then(|p| p.space_open_for(&space))
+            .filter(|s| self.request_exists(s))
+            .or_else(|| self.sidebar.first_request_slug());
+        match target {
+            Some(slug) => {
+                self.apply(Action::ForceOpenRequest(slug));
             }
-            None => Vec::new(),
+            None => {
+                self.editor = Editor::default();
+                self.shadow = None;
+                self.sidebar.open_slug = None;
+                self.persist_open_request();
+            }
         }
     }
 
@@ -7339,7 +7069,27 @@ impl App {
     /// `list_requests` + `sidebar.refresh` pair so the tree/expansion
     /// state stays consistent at every call site.
     fn refresh_sidebar(&mut self) {
-        let (listing, warning) = postui_core::storage::list_requests(&self.project.root);
+        let Some(p) = self.project.as_mut() else {
+            // No project: nothing to list, and nothing to warn about.
+            self.sidebar
+                .refresh(Vec::new(), "", &std::collections::BTreeSet::new(), &[]);
+            self.snap_sidebar_travel();
+            return;
+        };
+        p.relist();
+        let listing = p.requests().to_vec();
+        let warning = p.listing_warning().map(str::to_string);
+        let spaces_warning = p.spaces_warning().map(str::to_string);
+        let mut expanded = p.local().expanded.clone();
+        if !self.sidebar.pending_expand.is_empty() {
+            // Only when the set actually grows: `set_expanded` persists,
+            // and a refresh that changes nothing must not rewrite
+            // `.local/state.toml` on every tick.
+            expanded.append(&mut self.sidebar.pending_expand);
+            p.set_expanded(expanded.clone());
+        }
+        let space = p.local().active_space.clone();
+        let order = postui_core::order::space_order(p.meta(), &space).to_vec();
         if let Some(warning) = warning {
             // Two different failures share one warning string: a walk error
             // (transient, worth an error toast every time) and the
@@ -7366,24 +7116,11 @@ impl App {
         // the same shape of problem: chronic (never rewritten for the
         // user — see `project::write_list`), so it warns once per change
         // through its own channel rather than on every refresh.
-        let spaces_warning = {
-            let (_, warnings) = postui_core::project::list_spaces_with_warnings(
-                &self.project.root,
-                &self.project.meta,
-            );
-            (!warnings.is_empty()).then(|| warnings.join("; "))
-        };
         if spaces_warning.is_some() && spaces_warning != self.last_spaces_warning {
             self.toasts
                 .push(spaces_warning.clone().unwrap(), ToastKind::Warning);
         }
         self.last_spaces_warning = spaces_warning;
-        self.project
-            .expanded
-            .append(&mut self.sidebar.pending_expand);
-        let expanded = self.project.expanded.clone();
-        let space = self.project.active_space.clone();
-        let order = postui_core::order::space_order(&self.project.meta, &space).to_vec();
         self.sidebar.refresh(listing, &space, &expanded, &order);
         // `refresh` can re-map the open request's row to a different index
         // (rows added/removed/reordered above it) without the open request
@@ -7418,9 +7155,9 @@ impl App {
     /// row the open request used to be on — a ghost that lingers for the
     /// rest of the drag.
     fn rebuild_sidebar(&mut self) {
-        let expanded = self.project.expanded.clone();
-        let space = self.project.active_space.clone();
-        let order = postui_core::order::space_order(&self.project.meta, &space).to_vec();
+        let expanded = self.expanded();
+        let space = self.active_space();
+        let order = postui_core::order::space_order(self.meta(), &space).to_vec();
         self.sidebar.rebuild(&space, &expanded, &order);
         self.snap_sidebar_travel();
     }
@@ -7474,30 +7211,25 @@ impl App {
         // moved on underneath it, there is nothing sane to write — the
         // working order names the *old* space's siblings — so this is a
         // cancel however the drag ended.
-        let commit = commit && drag.space == self.project.active_space;
+        let commit = commit && drag.space == self.active_space();
         if commit && drag.working != drag.original {
             let space = drag.space.clone();
-            match postui_core::order::set_level_order(
-                &self.project.root,
-                &space,
-                &drag.level,
-                &drag.working,
-            ) {
-                Ok(change) => {
-                    self.project.reload_meta();
-                    let target = crate::undo::ReorderTarget::Requests {
-                        space: drag.space.clone(),
-                        slug: drag.slug.clone(),
-                    };
-                    self.record_reorder_step(change, target, false);
-                }
+            let written = match self.project.as_mut() {
+                Some(p) => p.set_request_order(&space, &drag.level, &drag.working),
+                None => return true,
+            };
+            match written {
+                Ok(_) => self.record_project_step_as(
+                    crate::undo::ProjectNoun::Reorder,
+                    Some(drag.slug.clone()),
+                ),
                 Err(e) => self
                     .toasts
                     .push(format!("cannot reorder: {e}"), ToastKind::Warning),
             }
         }
         self.refresh_sidebar();
-        if drag.space == self.project.active_space {
+        if drag.space == self.active_space() {
             self.sidebar.select_slug(&drag.slug);
         }
         true
@@ -7536,28 +7268,23 @@ impl App {
     /// armed press is disarmed either way — Escape ends the drag with the
     /// button still held, and a press left armed would let the next
     /// motion event promote straight back into the drag just cancelled.
-    /// Like `Action::MoveSpace`, this is not an undo step.
+    /// Like `Action::MoveSpace`, a committed drag records a
+    /// `SpaceReorder` marker for the entry core journaled; a drag never
+    /// merges with the keyboard bursts beside it.
     pub fn finish_manage_drag(&mut self, commit: bool) -> bool {
         self.manage_press = None;
         let Some(drag) = self.manage.list.drag.take() else {
             return false;
         };
-        if commit && drag.working != drag.original {
-            match postui_core::project::set_space_order(&self.project.root, &drag.working) {
-                Ok(change) => {
-                    let target = crate::undo::ReorderTarget::Spaces {
-                        name: drag.name.clone(),
-                    };
-                    self.record_reorder_step(change, target, false);
-                    // `ReloadProjectFiles` is mtime-gated (see
-                    // `Action::MoveSpace`), so read the file just written
-                    // rather than waiting for the stamp to move. Skipping
-                    // it entirely (unlike `MoveSpace`, which runs it
-                    // first) is deliberate: these two reloads cover
-                    // everything a `spaces`-key rewrite can change.
-                    self.project.reload_meta();
-                    self.project.reload_spaces();
-                }
+        if commit
+            && drag.working != drag.original
+            && let Some(p) = self.project.as_mut()
+        {
+            match p.set_space_order(&drag.working) {
+                Ok(_) => self.record_project_step_as(
+                    crate::undo::ProjectNoun::SpaceReorder,
+                    Some(drag.name.clone()),
+                ),
                 Err(e) => self
                     .toasts
                     .push(format!("cannot reorder: {e}"), ToastKind::Warning),
@@ -7566,7 +7293,8 @@ impl App {
         // The list cursor follows the space that was dragged, wherever it
         // ended up — committed or snapped back.
         let tab = self.manage.tab;
-        self.manage.list.select_name(tab, &self.project, &drag.name);
+        let _ = tab;
+        self.manage_select_name(&drag.name);
         true
     }
 
@@ -7862,14 +7590,14 @@ impl App {
             Hit::ManageRow(i) => {
                 return crate::components::manage_list::ManageList::context_menu(
                     self.manage.tab,
-                    &self.project,
+                    self.project()?,
                     *i,
                 );
             }
             // An option row (either half of it — the radio and the cells all
             // belong to the same record).
             Hit::VmEntryRadio(row) | Hit::VmEntryCell { row, .. } => {
-                return self.varmanager.entry_context_menu(&self.project, *row);
+                return self.varmanager.entry_context_menu(self.project()?, *row);
             }
             // A params/headers/vars row (Task 17, spec §5): the right-click
             // handler has already re-resolved `i` past any commit and
@@ -7885,7 +7613,7 @@ impl App {
         // borrow of `self` doesn't overlap the `vec![]` below (which also
         // borrows `self` via `Action::OpenRequest`/etc.).
         let move_rows = |slug: &str| -> Vec<MenuItem> {
-            if self.project.spaces.len() < 2 {
+            if self.spaces().len() < 2 {
                 return Vec::new();
             }
             vec![MenuItem::new(
@@ -8037,13 +7765,13 @@ impl App {
     /// today's callers ignore it.
     /// Returns whether the request was actually saved, so callers with a
     /// deferred follow-up (the scratch gate) only proceed on success.
-    /// The display name of the request at `slug` — its `name` field when
-    /// the file parses and has one, otherwise the slug leaf (legacy and
-    /// broken files).
+    /// The display name of the request at `slug` — its `name` from the
+    /// listing the project already holds, otherwise the slug leaf (legacy
+    /// and broken files). Reads no disk.
     fn request_display(&self, slug: &str) -> String {
-        postui_core::storage::load_request(&self.project.root, slug)
-            .ok()
-            .and_then(|r| r.name)
+        self.project()
+            .and_then(|p| p.requests().iter().find(|l| l.slug == slug))
+            .and_then(|l| l.name.clone())
             .unwrap_or_else(|| slug.rsplit('/').next().unwrap_or(slug).to_string())
     }
 
@@ -8052,35 +7780,46 @@ impl App {
         name: &str,
         build: impl FnOnce(&str) -> postui_core::model::HttpRequest,
     ) -> bool {
-        use postui_core::storage::{self, StorageError};
+        use postui_core::project::Error;
         // Every new request lands inside the active space — the name the
         // user typed is relative to it.
         let name = format!(
             "{}/{}",
-            self.project.active_space,
+            self.active_space(),
             name.trim_start_matches('/')
         );
         let name = name.as_str();
         let req = build(name);
-        match storage::create_request_named(&self.project.root, name, req) {
+        let Some(p) = self.project.as_mut() else {
+            return false;
+        };
+        // The create is journaled the moment it succeeds, so its marker
+        // is recorded before anything else can fail: reading the file
+        // back is a separate step, and a read-back failure must not leave
+        // the journal entry without a marker to undo it.
+        match p.create_request(name, req) {
             Ok((slug, leaf)) => {
-                // Reload from disk so the editor holds exactly what was
-                // written (display name included).
-                if let Ok(saved) = storage::load_request(&self.project.root, &slug) {
-                    self.editor.load(Some(slug.clone()), saved);
-                    self.editor.mark_saved();
-                }
-                // A brand-new file never existed before this write, so
-                // `before` is simply absent — no pre-read needed.
-                let path = storage::request_path(&self.project.root, &slug);
-                let orders = self.cascade_slug("create", &slug, postui_core::order::order_arrive);
-                self.record_file_step_with_orders(
-                    vec![(path.clone(), None)],
-                    &[path],
-                    None,
-                    orders,
-                    Vec::new(),
-                );
+                // Hold the created request so the editor gets exactly
+                // what was written (display name included).
+                let saved = match self.project.as_mut().expect("checked above").open_request(&slug)
+                {
+                    Ok(r) => r.clone(),
+                    Err(e) => {
+                        // The file landed, so the entry is real and keeps
+                        // its marker; the editor was never marked saved,
+                        // so this counts as a failed save and the
+                        // deferred step (quit, switch) does not run.
+                        self.record_project_step();
+                        self.toasts
+                            .push(format!("could not open {slug}: {e}"), ToastKind::Error);
+                        self.refresh_sidebar();
+                        self.last_action_failed = true;
+                        return false;
+                    }
+                };
+                self.editor.load(Some(slug.clone()), saved);
+                self.editor.mark_saved();
+                self.record_project_step();
                 self.toasts
                     .push(format!("Saved {leaf}"), ToastKind::Success);
                 // Queue the slug's ancestor folders open, rebuild the tree
@@ -8091,10 +7830,10 @@ impl App {
                 self.refresh_sidebar();
                 self.sidebar.select_slug(&slug);
                 self.retarget_sidebar_travel(prev);
-                self.apply(Action::PersistLocalState);
+                self.persist_open_request();
                 true
             }
-            Err(StorageError::AlreadyExists(taken)) => {
+            Err(Error::AlreadyExists(taken)) => {
                 self.toasts.push(
                     format!("a request named {taken:?} already exists here"),
                     ToastKind::Error,
@@ -8102,7 +7841,7 @@ impl App {
                 self.last_action_failed = true;
                 false
             }
-            Err(StorageError::InvalidSlug(_)) => {
+            Err(Error::BadName(_)) => {
                 self.toasts
                     .push("request name cannot be empty", ToastKind::Error);
                 self.last_action_failed = true;
@@ -8890,7 +8629,11 @@ impl App {
                 && self.manage.tab != crate::components::manage::ManageTab::Variables
             {
                 let tab = self.manage.tab;
-                if let Some(a) = self.manage.list.handle_key(ev, tab, &self.project) {
+                let action = match self.project.as_ref() {
+                    Some(p) => self.manage.list.handle_key(ev, tab, p),
+                    None => None,
+                };
+                if let Some(a) = action {
                     return self.update(a);
                 }
                 return true;
@@ -8898,7 +8641,7 @@ impl App {
             // A variable-form field under edit owns the keyboard: `Esc`
             // reverts, `Enter` commits (through `commit_var_form`, which
             // needs the mutable project access `VarManager::handle_key`'s
-            // shared `&ProjectContext` can't give it), everything else is
+            // shared `&Project` can't give it), everything else is
             // forwarded straight to its `LineInput`.
             if self.screen == Screen::Manage && self.varmanager.form.editing.is_some() {
                 return self.handle_var_form_key(ev);
@@ -8911,10 +8654,17 @@ impl App {
                 .slug
                 .is_some()
                 .then(|| self.editor.current_request());
-            if let Some(a) = self
-                .varmanager
-                .handle_key(ev, &self.project, open_request.as_ref())
-            {
+            let action = {
+                let Self {
+                    project,
+                    varmanager,
+                    ..
+                } = self;
+                project
+                    .as_ref()
+                    .and_then(|p| varmanager.handle_key(ev, p, open_request.as_ref()))
+            };
+            if let Some(a) = action {
                 return self.update(a);
             }
             return true; // swallowed: no fallback to the global keymap
@@ -9040,15 +8790,13 @@ impl App {
         let VmDetail::Group(selector) = self.varmanager.detail.clone() else {
             return;
         };
-        let ncols = 1 + self
-            .project
-            .model
+        let ncols = 1 + self.variables()
             .selectors
             .get(&selector)
             .map_or(0, |g| g.fields.len());
         let last_row = postui_core::varmodel::options_of(
-            &self.project.model,
-            &self.project.env_data,
+            self.variables(),
+            self.env_data(),
             &selector,
         )
         .map_or(0, indexmap::IndexMap::len);
@@ -9063,8 +8811,7 @@ impl App {
                 if r > last_row { (row, col) } else { (r, c) }
             }
         };
-        self.varmanager
-            .start_cell_edit(&self.project, next_row, next_col);
+        self.vm_start_cell_edit(next_row, next_col);
     }
 
     fn focused_component_key(&mut self, ev: KeyEvent) -> Option<Action> {
@@ -9235,12 +8982,11 @@ impl App {
         except: Option<&str>,
         action: impl Fn(String) -> Action,
     ) -> Vec<crate::components::chooser::ChooserItem> {
-        self.project
-            .spaces
+        self.spaces()
             .iter()
             .filter(|s| Some(s.as_str()) != except)
             .map(|s| crate::components::chooser::ChooserItem {
-                label: self.project.space_name(s),
+                label: self.space_name(s),
                 detail: None,
                 actions: vec![action(s.clone())],
                 ..Default::default()
@@ -9526,290 +9272,140 @@ impl App {
                 }
                 true
             }
-            StepKind::FileStates {
-                before,
-                after,
-                active_env,
-                orders,
-                moves,
-            } => {
-                let target = if redo { after } else { before };
-                if let Err(msg) = self.write_file_states(target, if redo { "redo" } else { "undo" })
-                {
-                    self.toasts.push(msg, ToastKind::Error);
-                    // Earlier writes in this step stand — the sidebar
-                    // and Variable Manager must reflect them (and drop
-                    // any stale pre-undo cache) even though the step
-                    // itself is dropped, or the UI shows a state that
-                    // no longer matches disk.
-                    self.project.invalidate_stamps();
-                    self.apply(Action::ReloadProjectFiles);
-                    self.refresh_sidebar();
-                    if self.screen == Screen::Manage {
-                        self.varmanager.sync(&self.project);
-                    }
-                    return false; // step dropped; earlier writes in this step stand
-                }
-                self.replay_order_edits(orders, redo);
-                // Every request the step moved changes slug again: the
-                // session's cache and in-flight entries follow, as they
-                // did for the forward op.
-                for (old, new) in moves {
-                    if redo {
-                        self.session.rename(old, new);
-                    } else {
-                        self.session.rename(new, old);
-                    }
-                }
-                // Before the `SwitchEnv` below, whose persist would write
-                // the stale in-memory table straight back over the
-                // `state.toml` these writes just restored.
-                self.project.reload_selections_from_disk();
-                if let Some((before_env, after_env)) = active_env {
-                    let env = if redo { after_env } else { before_env };
-                    self.apply(Action::SwitchEnv(env.clone()));
-                }
-                // Files changed under the app: reuse the wholesale reload +
-                // refresh paths rather than guessing what the step touched.
-                self.project.invalidate_stamps();
-                self.apply(Action::ReloadProjectFiles);
-                self.apply(Action::PersistLocalState);
-                self.refresh_sidebar();
-                // Mirrors `Action::VarStruct`'s success path: the Variable
-                // Manager grid/form cache the current declarations and
-                // won't otherwise notice a var/env/secrets file an undo or
-                // redo just rewrote out from under them.
-                if self.screen == Screen::Manage {
-                    self.varmanager.sync(&self.project);
-                }
-                // If the open request's file went absent in this step, it
-                // either moved (a rename — another option in the same
-                // `target` gained content) or was genuinely deleted. A
-                // move retitles in place, following the forward rename's
-                // own behavior, rather than closing a still-open editor;
-                // only a true delete closes it (mirroring
-                // Action::DeleteRequest's own arm).
-                if let Some(open) = self.editor.slug.clone() {
-                    let open_path = postui_core::storage::request_path(&self.project.root, &open);
-                    let went_absent = target.iter().any(|(p, c)| *p == open_path && c.is_none());
-                    if went_absent {
-                        // The step's own pairing says where the open
-                        // request went (a rename, a move to space, or
-                        // any one file of a move-all, collisions and
-                        // their `-2` suffixes included); a step that
-                        // moved nothing is a true delete.
-                        let moved_to = moves.iter().find_map(|(old, new)| {
-                            if redo {
-                                (*old == open).then(|| new.clone())
-                            } else {
-                                (*new == open).then(|| old.clone())
-                            }
-                        });
-                        match moved_to {
-                            Some(new_slug) => {
-                                self.editor.slug = Some(new_slug.clone());
-                                if let Ok(reloaded) = postui_core::storage::load_request(
-                                    &self.project.root,
-                                    &new_slug,
-                                ) {
-                                    self.editor.name = reloaded.name.clone();
-                                    if let Some(saved) = self.editor.saved.as_mut() {
-                                        saved.name = reloaded.name;
-                                    }
-                                }
-                                self.sidebar.open_slug = Some(new_slug.clone());
-                                // A move-to-space undo/redo can land the
-                                // open request back in a space that isn't
-                                // the active one (e.g. undoing a
-                                // `MoveRequestToSpace`) — the sidebar is
-                                // rooted at the active space, so follow it
-                                // there, same as `reload_after_file_change`.
-                                if let Some(space) = postui_core::storage::space_of(&new_slug)
-                                    .filter(|s| *s != self.project.active_space)
-                                {
-                                    // As in `reload_after_file_change`:
-                                    // the editor already followed, so the
-                                    // outgoing space keeps its memory.
-                                    self.enter_space(space, SpaceExit::Keep);
-                                }
-                            }
-                            None => {
-                                self.editor = Editor::default();
-                                self.shadow = None;
-                            }
-                        }
-                    }
-                }
-                let verb = if redo { "Redid" } else { "Undid" };
-                let msg = match &step.context.slug {
-                    Some(slug) => format!("{verb} file change to {}", self.request_display(slug)),
-                    None => format!("{verb} file change"),
+            StepKind::Project { id, slug, noun } => {
+                use crate::undo::ProjectNoun;
+                // The replay restores `.local/state.toml`, so the active
+                // space can move under the app (undoing a space delete
+                // goes back into the deleted space). `after_undone` needs
+                // to know where it started to announce the change. Same
+                // for the active environment, which the entry's own
+                // `active_env` transition moves.
+                let space_before = self.active_space();
+                let env_before = self.active_env().map(str::to_string);
+                let Some(p) = self.project.as_mut() else {
+                    return false;
                 };
-                self.toasts.push(msg, ToastKind::Info);
-                if redo {
-                    self.history.push_undo_no_coalesce(step.clone());
+                let expected = if redo {
+                    p.next_redo()
                 } else {
-                    self.history.push_redo(step.clone());
-                }
-                true
-            }
-            StepKind::Reorder {
-                target,
-                before,
-                after,
-                ..
-            } => {
-                use crate::undo::ReorderTarget;
-                let list = if redo { after } else { before };
-                let written = match target {
-                    ReorderTarget::Requests { space, .. } => {
-                        postui_core::order::set_order(&self.project.root, space, list)
-                    }
-                    ReorderTarget::Spaces { .. } => {
-                        // A space created since (not an undo step) is not
-                        // in the recorded list, so the list is applied as
-                        // a permutation of the spaces present now: the
-                        // recorded names still present, in recorded
-                        // order, then the rest in their current order.
-                        let current = self.project.spaces.clone();
-                        let mut perm: Vec<String> = list
-                            .iter()
-                            .filter(|n| current.contains(n))
-                            .cloned()
-                            .collect();
-                        perm.extend(current.iter().filter(|n| !list.contains(n)).cloned());
-                        postui_core::project::set_space_order(&self.project.root, &perm).map(|_| ())
-                    }
+                    p.last_entry().map(|(id, _)| id)
                 };
-                let verb = if redo { "redo" } else { "undo" };
-                if let Err(e) = written {
-                    self.toasts.push(
-                        format!("could not {verb} the reorder: {e}"),
-                        ToastKind::Error,
-                    );
+                if expected != Some(*id) {
+                    // Stale: the caller drops it and carries on to the
+                    // step beneath. (`Action::Undo`/`Redo` check this
+                    // before popping, so this is belt and braces.)
                     return false;
                 }
-                // Same mtime hazard as the forward reorders: read the list
-                // just written rather than waiting for the stamp.
-                self.project.reload_meta();
-                let what = match target {
-                    ReorderTarget::Requests { space, slug } => {
-                        // Only `project.toml` changed: the listing in hand
-                        // is still right, so no tree walk (as the forward
-                        // path).
-                        self.rebuild_sidebar();
-                        if *space == self.project.active_space {
-                            self.sidebar.select_slug(slug);
+                let result = if redo { p.redo() } else { p.undo() };
+                let (verb, done) = if redo {
+                    ("redo", "Redid")
+                } else {
+                    ("undo", "Undid")
+                };
+                match result {
+                    Ok(Some(u)) => {
+                        self.after_undone(
+                            &u,
+                            matches!(noun, ProjectNoun::Trash | ProjectNoun::TrashNamed),
+                            &space_before,
+                            env_before.as_deref(),
+                        );
+                        // `marked_entry` tracks the journal's top as the
+                        // app last saw it: a replay moved it, so re-read.
+                        self.sync_marked_entry();
+                        let msg = match noun {
+                            ProjectNoun::FileChange => match slug {
+                                Some(slug) => {
+                                    format!("{done} file change to {}", self.request_display(slug))
+                                }
+                                None => format!("{done} file change"),
+                            },
+                            ProjectNoun::Reorder => {
+                                let what = match slug {
+                                    Some(slug) => {
+                                        if let Some(space) =
+                                            postui_core::storage::space_of(slug)
+                                            && space == self.active_space()
+                                        {
+                                            self.sidebar.select_slug(slug);
+                                        }
+                                        self.request_display(slug)
+                                    }
+                                    None => "the requests".to_string(),
+                                };
+                                format!("{done} reorder of {what}")
+                            }
+                            ProjectNoun::SpaceReorder => {
+                                let what = match slug {
+                                    Some(name) => {
+                                        // The Manage cursor follows the
+                                        // space that moved back, as the
+                                        // forward reorder's own does.
+                                        if self.screen == Screen::Manage {
+                                            self.manage_select_name(name);
+                                        }
+                                        format!("space {}", self.space_name(name))
+                                    }
+                                    None => "the spaces".to_string(),
+                                };
+                                format!("{done} reorder of {what}")
+                            }
+                            ProjectNoun::Trash | ProjectNoun::TrashNamed => {
+                                let what = match (noun, slug.as_deref()) {
+                                    (ProjectNoun::TrashNamed, Some(name)) => name.to_string(),
+                                    (_, Some(s)) => {
+                                        format!("{}.toml", s.rsplit('/').next().unwrap_or(s))
+                                    }
+                                    (_, None) => "delete".into(),
+                                };
+                                if redo {
+                                    format!("Deleted {what} again")
+                                } else {
+                                    format!("Restored {what}")
+                                }
+                            }
+                        };
+                        self.toasts.push(msg, ToastKind::Info);
+                        if redo {
+                            self.history.push_undo_no_coalesce(step.clone());
+                        } else {
+                            self.history.push_redo(step.clone());
                         }
-                        self.request_display(slug)
+                        true
                     }
-                    ReorderTarget::Spaces { name } => {
-                        self.project.reload_spaces();
-                        if self.screen == Screen::Manage {
-                            self.manage
-                                .list
-                                .select_name(self.manage.tab, &self.project, name);
+                    // The journal emptied under the marker: nothing to
+                    // replay, and the step is dropped.
+                    Ok(None) => false,
+                    Err(e) => {
+                        let msg = match noun {
+                            ProjectNoun::Reorder | ProjectNoun::SpaceReorder => {
+                                format!("could not {verb} the reorder: {e}")
+                            }
+                            // The file the entry names changed under the
+                            // app; `{e}` says which and how.
+                            _ => format!("could not {verb}: {e}"),
+                        };
+                        self.toasts.push(msg, ToastKind::Error);
+                        // `replay` puts the entry back on the stack it came
+                        // from only after a *mid-replay* failure; a refused
+                        // preflight returns before that and drops the entry
+                        // for good. So the marker follows its entry: kept
+                        // for the retry, dropped when the entry is gone
+                        // (today's "the failed step is dropped").
+                        let kept = self
+                            .project()
+                            .is_some_and(|p| self.entry_on_top(p, *id, redo));
+                        self.sync_marked_entry();
+                        if kept {
+                            if redo {
+                                self.history.push_redo(step.clone());
+                            } else {
+                                self.history.push_undo_no_coalesce(step.clone());
+                            }
                         }
-                        format!("space {}", self.project.space_name(name))
-                    }
-                };
-                let done = if redo { "Redid" } else { "Undid" };
-                self.toasts
-                    .push(format!("{done} reorder of {what}"), ToastKind::Info);
-                if redo {
-                    self.history.push_undo_no_coalesce(step.clone());
-                } else {
-                    self.history.push_redo(step.clone());
-                }
-                true
-            }
-            StepKind::Trashed {
-                items,
-                files_before,
-                files_after,
-                active_env,
-                orders,
-            } => {
-                let result: Result<(), String> = if redo {
-                    items
-                        .iter()
-                        .try_for_each(|t| {
-                            postui_core::trash::retrash(t).map_err(|e| {
-                                format!("redo failed at {}: {e}", t.original.display())
-                            })
-                        })
-                        .and_then(|()| self.write_file_states(files_after, "redo"))
-                } else {
-                    items
-                        .iter()
-                        .rev()
-                        .try_for_each(|t| {
-                            postui_core::trash::restore(t).map_err(|e| {
-                                format!("undo failed at {}: {e}", t.original.display())
-                            })
-                        })
-                        .and_then(|()| self.write_file_states(files_before, "undo"))
-                };
-                if let Err(msg) = result {
-                    self.toasts.push(msg, ToastKind::Error);
-                    self.reload_after_file_change();
-                    return false; // step dropped; earlier renames stand
-                }
-                self.replay_order_edits(orders, redo);
-                // See the `FileStates` arm: `SwitchEnv` persists, so the
-                // restored table has to be in memory before it runs. A
-                // step that carries state.toml restores all of local
-                // state from it — the active space, open request,
-                // remembered requests and expanded folders the delete's
-                // cascade changed — not just the selections.
-                let state_toml = self.local_state_path();
-                let written = if redo { files_after } else { files_before };
-                let restored_state = if written.iter().any(|(p, _)| *p == state_toml) {
-                    self.project.reload_local_state_from_disk()
-                } else {
-                    self.project.reload_selections_from_disk();
-                    None
-                };
-                if let Some((before_env, after_env)) = active_env {
-                    let env = if redo { after_env } else { before_env };
-                    self.apply(Action::SwitchEnv(env.clone()));
-                }
-                self.reload_after_file_change();
-                if let Some(state) = restored_state {
-                    if let Some(space) = state.space.filter(|s| *s != self.project.active_space)
-                        && self.project.spaces.contains(&space)
-                    {
-                        // The editor describes the step's own target, not
-                        // the space being left.
-                        self.enter_space(&space, SpaceExit::Keep);
-                    }
-                    if let Some(slug) = state.open_request
-                        && self.editor.slug.as_deref() != Some(slug.as_str())
-                        && postui_core::storage::request_exists(&self.project.root, &slug)
-                    {
-                        self.apply(Action::ForceOpenRequest(slug));
+                        false
                     }
                 }
-                self.apply(Action::PersistLocalState);
-                let what = items
-                    .first()
-                    .and_then(|t| t.original.file_name())
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "delete".into());
-                self.toasts.push(
-                    if redo {
-                        format!("Deleted {what} again")
-                    } else {
-                        format!("Restored {what}")
-                    },
-                    ToastKind::Info,
-                );
-                if redo {
-                    self.history.push_undo_no_coalesce(step.clone());
-                } else {
-                    self.history.push_redo(step.clone());
-                }
-                true
             }
         }
     }

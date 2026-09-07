@@ -20,7 +20,7 @@ use crate::paint::{
     BUTTON_HEIGHT, Button, ButtonKind, ControlState, FIELD_HEIGHT, ListRow, RowHighlight,
     TextField, button_min_width, fill, text,
 };
-use crate::project_ctx::ProjectContext;
+use postui_core::project::Project;
 use crate::theme::Theme;
 use indexmap::IndexMap;
 use postui_core::model::HttpRequest;
@@ -93,8 +93,8 @@ pub enum VarEditOp {
 
 /// A structural mutation dispatched by the Variable Manager: unlike
 /// [`VarEditOp`] (one value), these add/remove/rename/reshape declarations
-/// and options. Each applies through `ctx.edit_variables`/`edit_env` in
-/// `App::apply_var_struct`.
+/// and options. Each maps onto a `postui_core::project::VarEdit` in
+/// `App::apply_var_struct`, which core applies as one journal entry.
 ///
 /// The declaration ops (`NewVar`..`Promote`) write `variables.toml`; the
 /// option ops (`NewOption`..`DuplicateOption`) write one environment file
@@ -189,7 +189,7 @@ impl VmDetail {
     }
 }
 
-/// One row of the left list, rebuilt from `&ProjectContext` at the top of
+/// One row of the left list, rebuilt from `&Project` at the top of
 /// every `draw` (and after every structural write).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VmRow {
@@ -269,21 +269,21 @@ pub struct VarFormState {
 /// value in this field. Unset reads empty, rendered "(not set)". With no
 /// active environment it falls back to the declaration default, mirroring
 /// [`var_edit_op_for`]'s write-target fallback.
-fn field_seed_text(ctx: &ProjectContext, name: &str, field: VmField) -> String {
-    let decl = ctx.model.vars.get(name);
+fn field_seed_text(ctx: &Project, name: &str, field: VmField) -> String {
+    let decl = ctx.variables().vars.get(name);
     match field {
         VmField::Description => decl.and_then(|d| d.description.clone()).unwrap_or_default(),
         VmField::Default => decl.and_then(|d| d.default.clone()).unwrap_or_default(),
-        VmField::EnvValue => match &ctx.active_env {
+        VmField::EnvValue => match ctx.active_env() {
             Some(env) => {
                 if decl.is_some_and(|d| d.secret) {
-                    ctx.secrets
+                    ctx.secrets()
                         .get(env)
                         .and_then(|m| m.get(name))
                         .cloned()
                         .unwrap_or_default()
                 } else {
-                    ctx.env_data.values.get(name).cloned().unwrap_or_default()
+                    ctx.env_data().values.get(name).cloned().unwrap_or_default()
                 }
             }
             None => decl.and_then(|d| d.default.clone()).unwrap_or_default(),
@@ -300,7 +300,7 @@ fn field_seed_text(ctx: &ProjectContext, name: &str, field: VmField) -> String {
 /// that edit fails and toasts rather than silently landing somewhere
 /// unexpected (spec's general write-failure rule: the text stays put).
 pub fn var_edit_op_for(
-    ctx: &ProjectContext,
+    ctx: &Project,
     name: &str,
     field: VmField,
     value: String,
@@ -314,18 +314,18 @@ pub fn var_edit_op_for(
             name: name.to_string(),
             value,
         },
-        VmField::EnvValue => match &ctx.active_env {
+        VmField::EnvValue => match ctx.active_env() {
             Some(env) => {
-                let secret = ctx.model.vars.get(name).is_some_and(|d| d.secret);
+                let secret = ctx.variables().vars.get(name).is_some_and(|d| d.secret);
                 if secret {
                     VarEditOp::SetSecretValue {
-                        env: env.clone(),
+                        env: env.to_string(),
                         name: name.to_string(),
                         value,
                     }
                 } else {
                     VarEditOp::SetEnvValue {
-                        env: env.clone(),
+                        env: env.to_string(),
                         name: name.to_string(),
                         value,
                     }
@@ -349,11 +349,11 @@ pub fn var_edit_op_for(
 /// request that needs it covers that rare case without tying a global
 /// screen to whichever request happens to be open.
 pub fn promote_action(
-    ctx: &ProjectContext,
+    ctx: &Project,
     open_request: Option<&HttpRequest>,
     name: &str,
 ) -> Option<(&'static str, Action)> {
-    if ctx.model.vars.get(name).is_some_and(|d| d.secret) {
+    if ctx.variables().vars.get(name).is_some_and(|d| d.secret) {
         return None;
     }
     let req = open_request?;
@@ -372,11 +372,11 @@ pub fn promote_action(
 /// Whether the active environment stores a value (a secret for secret
 /// variables) for `name` — gates the env row's "✕ remove" control and
 /// its keyboard twin (`x` with the form's cursor on the env field).
-fn env_stores(ctx: &ProjectContext, name: &str) -> bool {
-    let secret = ctx.model.vars.get(name).is_some_and(|d| d.secret);
-    match &ctx.active_env {
-        Some(env) if secret => ctx.secrets.get(env).is_some_and(|m| m.contains_key(name)),
-        Some(_) => ctx.env_data.values.contains_key(name),
+fn env_stores(ctx: &Project, name: &str) -> bool {
+    let secret = ctx.variables().vars.get(name).is_some_and(|d| d.secret);
+    match ctx.active_env() {
+        Some(env) if secret => ctx.secrets().get(env).is_some_and(|m| m.contains_key(name)),
+        Some(_) => ctx.env_data().values.contains_key(name),
         None => false,
     }
 }
@@ -435,7 +435,7 @@ pub struct VarManager {
     /// What the detail pane shows — set by [`VarManager::select_row`],
     /// whichever gesture (click or arrow key) got there.
     pub detail: VmDetail,
-    /// Rebuilt from `&ProjectContext` at the top of every `draw`.
+    /// Rebuilt from `&Project` at the top of every `draw`.
     pub left_rows: Vec<VmRow>,
     /// Index into `left_rows`.
     pub left_cursor: usize,
@@ -529,19 +529,19 @@ fn grid_columns(x0: u16, width: u16, ncols: usize) -> GridCols {
 
 /// Whether `selector` is shared — its options (and one global selection)
 /// live in variables.toml, so none of the per-environment gating applies.
-fn is_shared(ctx: &ProjectContext, selector: &str) -> bool {
-    ctx.model.selectors.get(selector).is_some_and(|d| d.shared)
+fn is_shared(ctx: &Project, selector: &str) -> bool {
+    ctx.variables().selectors.get(selector).is_some_and(|d| d.shared)
 }
 
 /// The `env` an option op on `selector` should carry: the active
 /// environment — or, for a shared selector (whose ops ignore it), the
 /// active env's name if any, else `""`. `None` only when a non-shared
 /// selector has no active environment: nowhere for its options to live.
-fn op_env(ctx: &ProjectContext, selector: &str) -> Option<String> {
+fn op_env(ctx: &Project, selector: &str) -> Option<String> {
     if is_shared(ctx, selector) {
-        Some(ctx.active_env.clone().unwrap_or_default())
+        Some(ctx.active_env().unwrap_or_default().to_string())
     } else {
-        ctx.active_env.clone()
+        ctx.active_env().map(str::to_string)
     }
 }
 
@@ -550,11 +550,11 @@ fn op_env(ctx: &ProjectContext, selector: &str) -> Option<String> {
 /// rows in file order. Empty when the selector has no options here (or a
 /// non-shared one has no active environment).
 type EntryRow = (String, Option<String>, IndexMap<String, String>);
-fn entry_rows(ctx: &ProjectContext, selector: &str) -> Vec<EntryRow> {
-    if ctx.active_env.is_none() && !is_shared(ctx, selector) {
+fn entry_rows(ctx: &Project, selector: &str) -> Vec<EntryRow> {
+    if ctx.active_env().is_none() && !is_shared(ctx, selector) {
         return Vec::new();
     }
-    postui_core::varmodel::options_of(&ctx.model, &ctx.env_data, selector)
+    postui_core::varmodel::options_of(ctx.variables(), ctx.env_data(), selector)
         .map(|options| {
             options
                 .iter()
@@ -567,7 +567,7 @@ fn entry_rows(ctx: &ProjectContext, selector: &str) -> Vec<EntryRow> {
 /// The text grid cell `(row, col)` currently shows — the seed a click
 /// starts editing from. Empty for the ghost row and for a field an option
 /// doesn't set.
-fn grid_cell_text(ctx: &ProjectContext, selector: &str, row: usize, col: usize) -> String {
+fn grid_cell_text(ctx: &Project, selector: &str, row: usize, col: usize) -> String {
     let rows = entry_rows(ctx, selector);
     let Some((name, description, values)) = rows.get(row) else {
         return String::new();
@@ -588,8 +588,8 @@ fn grid_cell_text(ctx: &ProjectContext, selector: &str, row: usize, col: usize) 
 }
 
 /// `selector`'s declared field list (empty for an undeclared name).
-fn group_fields(ctx: &ProjectContext, selector: &str) -> Vec<String> {
-    ctx.model
+fn group_fields(ctx: &Project, selector: &str) -> Vec<String> {
+    ctx.variables()
         .selectors
         .get(selector)
         .map(|g| g.fields.clone())
@@ -602,16 +602,16 @@ fn group_fields(ctx: &ProjectContext, selector: &str) -> Vec<String> {
 /// The split is the same one the detail pane's scope line states: a shared
 /// selector's options don't belong to the active environment, so grouping it
 /// with the ones that do would misfile it.
-pub fn build_left_rows(ctx: &ProjectContext) -> Vec<VmRow> {
+pub fn build_left_rows(ctx: &Project) -> Vec<VmRow> {
     let mut rows = vec![VmRow::SectionVars];
 
     let group_fields: std::collections::HashSet<&str> = ctx
-        .model
+        .variables()
         .selectors
         .values()
         .flat_map(|g| g.fields.iter().map(String::as_str))
         .collect();
-    for name in ctx.model.vars.keys() {
+    for name in ctx.variables().vars.keys() {
         if !group_fields.contains(name.as_str()) {
             rows.push(VmRow::Var(name.clone()));
         }
@@ -619,16 +619,16 @@ pub fn build_left_rows(ctx: &ProjectContext) -> Vec<VmRow> {
 
     rows.push(VmRow::Spacer);
     rows.push(VmRow::SectionGroups);
-    for (name, decl) in &ctx.model.selectors {
+    for (name, decl) in &ctx.variables().selectors {
         if !decl.shared {
             rows.push(VmRow::Group(name.clone()));
         }
     }
 
-    if ctx.model.selectors.values().any(|d| d.shared) {
+    if ctx.variables().selectors.values().any(|d| d.shared) {
         rows.push(VmRow::Spacer);
         rows.push(VmRow::SectionShared);
-        for (name, decl) in &ctx.model.selectors {
+        for (name, decl) in &ctx.variables().selectors {
             if decl.shared {
                 rows.push(VmRow::Group(name.clone()));
             }
@@ -640,14 +640,14 @@ pub fn build_left_rows(ctx: &ProjectContext) -> Vec<VmRow> {
 /// A selector's current selection in the active environment, as the left list
 /// shows it inline: the selected option's name, or `None` when the selector has
 /// no (or a stale) selection here.
-fn active_selection(ctx: &ProjectContext, selector: &str) -> Option<String> {
+fn active_selection(ctx: &Project, selector: &str) -> Option<String> {
     let key = if is_shared(ctx, selector) {
-        ctx.shared_selections().get(selector)?
+        ctx.local().shared_selections.get(selector)?
     } else {
-        let env = ctx.active_env.as_deref()?;
+        let env = ctx.active_env()?;
         ctx.selections_for(env).get(selector)?
     };
-    let options = postui_core::varmodel::options_of(&ctx.model, &ctx.env_data, selector)?;
+    let options = postui_core::varmodel::options_of(ctx.variables(), ctx.env_data(), selector)?;
     options.contains_key(key).then(|| key.clone())
 }
 
@@ -655,8 +655,8 @@ fn active_selection(ctx: &ProjectContext, selector: &str) -> Option<String> {
 /// false for a selector field awaiting a selection, a secret with no value,
 /// and a variable with neither default nor env value. Drives the left
 /// list's red dot.
-fn is_unresolved(ctx: &ProjectContext, name: &str) -> bool {
-    !ctx.resolved.values.contains_key(name)
+fn is_unresolved(ctx: &Project, name: &str) -> bool {
+    !ctx.resolved().values.contains_key(name)
 }
 
 impl VarManager {
@@ -700,7 +700,7 @@ impl VarManager {
     /// must not restart the edit and lose what was typed) — this always
     /// (re)starts one, so the caller checks first. A no-op with nothing
     /// selected (`self.detail` isn't `Var`).
-    pub fn start_field_edit(&mut self, ctx: &ProjectContext, field: VmField) {
+    pub fn start_field_edit(&mut self, ctx: &Project, field: VmField) {
         let VmDetail::Var(name) = &self.detail else {
             return;
         };
@@ -720,7 +720,7 @@ impl VarManager {
     /// A no-op with no selector selected, and on a ghost-row cell other than
     /// the name column (there is no option yet for a value to belong to —
     /// the click is redirected to the name cell by the caller).
-    pub fn start_cell_edit(&mut self, ctx: &ProjectContext, row: usize, col: usize) {
+    pub fn start_cell_edit(&mut self, ctx: &Project, row: usize, col: usize) {
         let VmDetail::Group(selector) = &self.detail else {
             return;
         };
@@ -743,7 +743,7 @@ impl VarManager {
     }
 
     /// The option `row` names, or `None` for the ghost row / no selector.
-    pub fn entry_at(&self, ctx: &ProjectContext, row: usize) -> Option<String> {
+    pub fn entry_at(&self, ctx: &Project, row: usize) -> Option<String> {
         let VmDetail::Group(selector) = &self.detail else {
             return None;
         };
@@ -762,7 +762,7 @@ impl VarManager {
     /// nothing.
     pub fn footer_chips(
         &self,
-        ctx: &ProjectContext,
+        ctx: &Project,
         open_request: Option<&HttpRequest>,
     ) -> Vec<(&'static str, &'static str, Option<Action>)> {
         // A live cell/field edit owns the keyboard: every letter types
@@ -778,7 +778,7 @@ impl VarManager {
         // env row's "✕ remove", the Promote button).
         if let (VmDetail::Var(name), VmFocus::Form) = (&self.detail, self.focus) {
             let mut chips: Vec<(&'static str, &'static str, Option<Action>)> = Vec::new();
-            if ctx.model.vars.contains_key(name) {
+            if ctx.variables().vars.contains_key(name) {
                 chips.push((
                     "s",
                     "secret",
@@ -788,7 +788,7 @@ impl VarManager {
             // The 👁 control's keyboard twin. A plain hint (no single
             // dispatchable action — the toggle is component state), like
             // the main screen's "enter open".
-            if ctx.model.vars.get(name).is_some_and(|d| d.secret) {
+            if ctx.variables().vars.get(name).is_some_and(|d| d.secret) {
                 chips.push((
                     "r",
                     if self.form.revealed { "hide" } else { "reveal" },
@@ -832,7 +832,7 @@ impl VarManager {
                         "e",
                         "edit",
                         target.clone().and_then(|(_, option)| {
-                            postui_core::varmodel::options_of(&ctx.model, &ctx.env_data, selector)
+                            postui_core::varmodel::options_of(ctx.variables(), ctx.env_data(), selector)
                                 .and_then(|options| options.get(&option))
                                 .map(|decl| Action::OpenEditOptionPrompt {
                                     owner: selector.clone(),
@@ -921,7 +921,7 @@ impl VarManager {
     fn handle_form_focus_key(
         &mut self,
         ev: KeyEvent,
-        ctx: &ProjectContext,
+        ctx: &Project,
         open_request: Option<&HttpRequest>,
     ) -> Option<Action> {
         // A live field edit owns every key (`App` routes those first).
@@ -932,7 +932,7 @@ impl VarManager {
             return None;
         };
         let mut fields = vec![VmField::Description, VmField::Default];
-        if ctx.active_env.is_some() {
+        if ctx.active_env().is_some() {
             fields.push(VmField::EnvValue);
         }
         let at = fields
@@ -959,7 +959,7 @@ impl VarManager {
             }
             // The form's quick actions — the keyboard twins of its
             // inline controls, advertised by the footer's Form chips.
-            KeyCode::Char('s') if ctx.model.vars.contains_key(&name) => {
+            KeyCode::Char('s') if ctx.variables().vars.contains_key(&name) => {
                 Some(Action::ToggleSecretVar { name })
             }
             KeyCode::Char('x')
@@ -971,7 +971,7 @@ impl VarManager {
                 })
             }
             KeyCode::Char('p') => promote_action(ctx, open_request, &name).map(|(_, a)| a),
-            KeyCode::Char('r') if ctx.model.vars.get(&name).is_some_and(|d| d.secret) => {
+            KeyCode::Char('r') if ctx.variables().vars.get(&name).is_some_and(|d| d.secret) => {
                 self.form.revealed = !self.form.revealed;
                 Some(Action::Render)
             }
@@ -988,15 +988,15 @@ impl VarManager {
     /// Rebuilds `left_rows` from `ctx` and repairs the selection after a
     /// structural write: the cursor clamps into range, and a detail pane
     /// pointing at a name that no longer exists empties.
-    pub fn sync(&mut self, ctx: &ProjectContext) {
+    pub fn sync(&mut self, ctx: &Project) {
         self.left_rows = build_left_rows(ctx);
         if self.left_cursor >= self.left_rows.len() {
             self.left_cursor = self.left_rows.len().saturating_sub(1);
         }
         let gone = match &self.detail {
             VmDetail::None => false,
-            VmDetail::Var(name) => !ctx.model.vars.contains_key(name),
-            VmDetail::Group(name) => !ctx.model.selectors.contains_key(name),
+            VmDetail::Var(name) => !ctx.variables().vars.contains_key(name),
+            VmDetail::Group(name) => !ctx.variables().selectors.contains_key(name),
         };
         if gone {
             self.detail = VmDetail::None;
@@ -1052,7 +1052,7 @@ impl VarManager {
     /// This is never reached while a form field is under edit — `App`
     /// intercepts Esc (revert)/Enter (commit)/plain typing itself first,
     /// since a commit needs write access to the project that this method's
-    /// `&ProjectContext` (shared, not mutable) can't give it. `form.editing`
+    /// `&Project` (shared, not mutable) can't give it. `form.editing`
     /// is still consulted below, for the single-letter command gate.
     ///
     /// # Keyboard focus (spec §4's keyboard parity)
@@ -1070,7 +1070,7 @@ impl VarManager {
     pub fn handle_key(
         &mut self,
         ev: KeyEvent,
-        ctx: &ProjectContext,
+        ctx: &Project,
         open_request: Option<&HttpRequest>,
     ) -> Option<Action> {
         // The grid is a focus stop of its own: while it has the keyboard,
@@ -1111,8 +1111,8 @@ impl VarManager {
                 if self.form.editing.is_none() && self.grid.editing.is_none() {
                     match &self.detail {
                         VmDetail::Group(g)
-                            if ctx.model.selectors.contains_key(g)
-                                && (ctx.active_env.is_some() || is_shared(ctx, g)) =>
+                            if ctx.variables().selectors.contains_key(g)
+                                && (ctx.active_env().is_some() || is_shared(ctx, g)) =>
                         {
                             self.focus = VmFocus::Grid;
                         }
@@ -1154,7 +1154,7 @@ impl VarManager {
                 name: self.selected_row()?.name()?.to_string(),
             }),
             KeyCode::Char('s') => match self.selected_row()? {
-                VmRow::Var(name) if ctx.model.vars.contains_key(name) => {
+                VmRow::Var(name) if ctx.variables().vars.contains_key(name) => {
                     Some(Action::ToggleSecretVar { name: name.clone() })
                 }
                 _ => None,
@@ -1173,7 +1173,7 @@ impl VarManager {
     fn handle_grid_focus_key(
         &mut self,
         ev: KeyEvent,
-        ctx: &ProjectContext,
+        ctx: &Project,
         selector: &str,
     ) -> Option<Action> {
         // A live cell edit owns every key (`App` routes those before this
@@ -1233,7 +1233,7 @@ impl VarManager {
             // inline name-cell edit, on `F2` and `Enter` on the name cell.
             KeyCode::Char('e') => {
                 let name = self.entry_at(ctx, self.grid.cursor.0)?;
-                let decl = postui_core::varmodel::options_of(&ctx.model, &ctx.env_data, selector)
+                let decl = postui_core::varmodel::options_of(ctx.variables(), ctx.env_data(), selector)
                     .and_then(|options| options.get(&name))?
                     .clone();
                 Some(Action::OpenEditOptionPrompt {
@@ -1276,7 +1276,7 @@ impl VarManager {
     /// `space`: select the option the grid cursor is on for the active
     /// environment. `None` on the ghost row (nothing to select yet) and
     /// with no active environment.
-    fn select_entry_action(&self, ctx: &ProjectContext, selector: &str) -> Option<Action> {
+    fn select_entry_action(&self, ctx: &Project, selector: &str) -> Option<Action> {
         Some(Action::VarEdit(VarEditOp::SelectOption {
             env: op_env(ctx, selector)?,
             selector: selector.to_string(),
@@ -1333,7 +1333,7 @@ impl VarManager {
     /// environment is active (there are no options at all then).
     pub fn entry_context_menu(
         &self,
-        ctx: &ProjectContext,
+        ctx: &Project,
         i: usize,
     ) -> Option<Vec<crate::components::modal::MenuItem>> {
         use crate::components::modal::MenuItem;
@@ -1343,7 +1343,7 @@ impl VarManager {
         let env = op_env(ctx, selector)?;
         let name = self.entry_at(ctx, i)?;
         let (selector, n) = (selector.clone(), name.clone());
-        let decl = postui_core::varmodel::options_of(&ctx.model, &ctx.env_data, &selector)
+        let decl = postui_core::varmodel::options_of(ctx.variables(), ctx.env_data(), &selector)
             .and_then(|options| options.get(&n))?;
         Some(vec![
             MenuItem::new(
@@ -1446,7 +1446,7 @@ impl VarManager {
         frame: &mut Frame,
         area: Rect,
         theme: &Theme,
-        ctx: &ProjectContext,
+        ctx: &Project,
         open_request: Option<&HttpRequest>,
         hits: &mut HitMap,
         hovered: Option<&Hit>,
@@ -1473,12 +1473,12 @@ impl VarManager {
         self.grid_area = Rect::default();
         self.grid_visible = 0;
         match self.detail.clone() {
-            VmDetail::Var(name) if ctx.model.vars.contains_key(&name) => {
+            VmDetail::Var(name) if ctx.variables().vars.contains_key(&name) => {
                 let buf = frame.buffer_mut();
                 fill(buf, right, theme.page);
                 self.draw_var_form(buf, right, theme, ctx, open_request, hits, hovered, &name);
             }
-            VmDetail::Group(name) if ctx.model.selectors.contains_key(&name) => {
+            VmDetail::Group(name) if ctx.variables().selectors.contains_key(&name) => {
                 let buf = frame.buffer_mut();
                 fill(buf, right, theme.page);
                 self.draw_entry_grid(buf, right, theme, ctx, hits, hovered, &name);
@@ -1501,7 +1501,7 @@ impl VarManager {
         buf: &mut Buffer,
         right: Rect,
         theme: &Theme,
-        ctx: &ProjectContext,
+        ctx: &Project,
         hits: &mut HitMap,
         hovered: Option<&Hit>,
         selector: &str,
@@ -1565,7 +1565,7 @@ impl VarManager {
             // about to be replaced by `NO_ENV_HINT`, which says it.
             let scope_badge = if shared {
                 Some(SHARED_BADGE)
-            } else if ctx.active_env.is_some() {
+            } else if ctx.active_env().is_some() {
                 Some(PER_ENV_BADGE)
             } else {
                 None
@@ -1589,7 +1589,7 @@ impl VarManager {
             }
         }
 
-        if ctx.active_env.is_none() && !shared {
+        if ctx.active_env().is_none() && !shared {
             if y < bottom {
                 text(
                     buf,
@@ -1792,7 +1792,10 @@ impl VarManager {
             let scope = if shared {
                 "all environments".to_string()
             } else {
-                ctx.env_label()
+                match ctx.active_env() {
+                    Some(e) => e.to_string(),
+                    None => "no env".to_string(),
+                }
             };
             text(
                 buf,
@@ -1818,7 +1821,7 @@ impl VarManager {
         buf: &mut Buffer,
         right: Rect,
         theme: &Theme,
-        ctx: &ProjectContext,
+        ctx: &Project,
         open_request: Option<&HttpRequest>,
         hits: &mut HitMap,
         hovered: Option<&Hit>,
@@ -1827,7 +1830,7 @@ impl VarManager {
         if right.width < 8 || right.height < 3 {
             return;
         }
-        let secret = ctx.model.vars.get(name).is_some_and(|d| d.secret);
+        let secret = ctx.variables().vars.get(name).is_some_and(|d| d.secret);
         let state_of = |hit: &Hit| {
             if hovered == Some(hit) {
                 ControlState::Hover
@@ -1929,7 +1932,7 @@ impl VarManager {
         }
 
         // --- Value in <env> (masked + reveal for a secret) -----------------
-        let value_label = match &ctx.active_env {
+        let value_label = match ctx.active_env() {
             Some(env) => format!("Value in {}", ctx.env_name(env)),
             None => "(no environment)".to_string(),
         };
@@ -2022,7 +2025,7 @@ impl VarManager {
 
         // --- used by -----------------------------------------------------
         if y < bottom {
-            let usage = postui_core::varedit::scan_usage(&ctx.root, name);
+            let usage = ctx.scan_usage(name);
             let line = if usage.is_empty() {
                 "used by: (none)".to_string()
             } else {
@@ -2057,7 +2060,7 @@ impl VarManager {
         y: u16,
         label: &str,
         field: VmField,
-        ctx: &ProjectContext,
+        ctx: &Project,
         name: &str,
         masked: bool,
     ) -> u16 {
@@ -2093,7 +2096,7 @@ impl VarManager {
         theme: &Theme,
         hovered: Option<&Hit>,
         field: VmField,
-        ctx: &ProjectContext,
+        ctx: &Project,
         name: &str,
         masked: bool,
     ) {
@@ -2137,7 +2140,7 @@ impl VarManager {
         frame: &mut Frame,
         left: Rect,
         theme: &Theme,
-        ctx: &ProjectContext,
+        ctx: &Project,
         hits: &mut HitMap,
         hovered: Option<&Hit>,
     ) {
@@ -2278,7 +2281,7 @@ impl VarManager {
 /// badge, unresolved dot) or a selector (`name (option)`).
 fn paint_left_row(
     buf: &mut ratatui::buffer::Buffer,
-    ctx: &ProjectContext,
+    ctx: &Project,
     row: &VmRow,
     y: u16,
     list: Rect,
@@ -2296,7 +2299,7 @@ fn paint_left_row(
         }
         VmRow::Spacer => {}
         VmRow::Var(name) => {
-            let secret = ctx.model.vars.get(name).is_some_and(|d| d.secret);
+            let secret = ctx.variables().vars.get(name).is_some_and(|d| d.secret);
             // The badges are right-aligned in their own columns, so names
             // stay left-aligned however long they are.
             let mut label_w = width;
@@ -2379,7 +2382,7 @@ fn draw_detail_placeholder(frame: &mut Frame, right: Rect, theme: &Theme) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use postui_core::project;
+    use postui_core::{fixtures, project};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::crossterm::event::KeyModifiers;
@@ -2389,9 +2392,9 @@ mod tests {
     /// a default; `api_key` secret with no value anywhere (so it reads as
     /// unresolved); selector `creds` with two fields and two options in qa,
     /// `alice` selected there and nothing selected in dev.
-    fn fixture() -> (tempfile::TempDir, ProjectContext) {
+    fn fixture() -> (tempfile::TempDir, Project) {
         let dir = tempfile::tempdir().unwrap();
-        project::init_project(dir.path(), Some("demo")).unwrap();
+        fixtures::init_project(dir.path(), Some("demo")).unwrap();
         std::fs::write(
             dir.path().join("variables.toml"),
             r#"
@@ -2420,7 +2423,7 @@ fields = ["user_id", "customer_id"]
         let mut qa_sel = IndexMap::new();
         qa_sel.insert("creds".to_string(), "alice".to_string());
         selections.insert("qa".to_string(), qa_sel);
-        project::save_local_state(
+        fixtures::save_local_state(
             dir.path(),
             &project::LocalState {
                 environment: Some("qa".into()),
@@ -2430,7 +2433,7 @@ fields = ["user_id", "customer_id"]
         )
         .unwrap();
 
-        let (ctx, warns) = ProjectContext::open(dir.path().to_path_buf()).unwrap();
+        let (ctx, warns) = Project::open(dir.path().to_path_buf()).unwrap();
         assert!(warns.is_empty(), "{warns:?}");
         (dir, ctx)
     }
@@ -2441,7 +2444,7 @@ fields = ["user_id", "customer_id"]
 
     /// `fixture()` plus a shared selector `region` (so the SHARED
     /// SELECTORS section appears).
-    fn fixture_with_shared_selector() -> (tempfile::TempDir, ProjectContext) {
+    fn fixture_with_shared_selector() -> (tempfile::TempDir, Project) {
         let (dir, _) = fixture();
         let path = dir.path().join("variables.toml");
         let mut text = std::fs::read_to_string(&path).unwrap();
@@ -2449,17 +2452,17 @@ fields = ["user_id", "customer_id"]
             "\n[selectors.region]\nshared = true\nfields = [\"host\"]\n\n[options.region.us]\nhost = \"us.example\"\n",
         );
         std::fs::write(&path, text).unwrap();
-        let (ctx, warns) = ProjectContext::open(dir.path().to_path_buf()).unwrap();
+        let (ctx, warns) = Project::open(dir.path().to_path_buf()).unwrap();
         assert!(warns.is_empty(), "{warns:?}");
         (dir, ctx)
     }
 
-    fn render(vm: &mut VarManager, ctx: &ProjectContext) -> (String, HitMap) {
+    fn render(vm: &mut VarManager, ctx: &Project) -> (String, HitMap) {
         let (buf, hits) = render_buf(vm, ctx);
         (format!("{buf:?}"), hits)
     }
 
-    fn render_buf(vm: &mut VarManager, ctx: &ProjectContext) -> (Buffer, HitMap) {
+    fn render_buf(vm: &mut VarManager, ctx: &Project) -> (Buffer, HitMap) {
         let theme = Theme::dark();
         // Wide enough for the selector pane's four title-row buttons
         // beside a fixture-length selector name.
@@ -2472,7 +2475,7 @@ fields = ["user_id", "customer_id"]
     }
 
     /// The text of left-list row `i`, as painted, with its cell colors.
-    fn left_row_cells(vm: &mut VarManager, ctx: &ProjectContext, i: usize) -> Vec<(String, Color)> {
+    fn left_row_cells(vm: &mut VarManager, ctx: &Project, i: usize) -> Vec<(String, Color)> {
         let (buf, hits) = render_buf(vm, ctx);
         let r = hits.rect_of(&Hit::VmLeftRow(i)).expect("row is registered");
         (r.x..r.x + r.width)
@@ -2483,7 +2486,7 @@ fields = ["user_id", "customer_id"]
             .collect()
     }
 
-    fn left_row_text(vm: &mut VarManager, ctx: &ProjectContext, i: usize) -> String {
+    fn left_row_text(vm: &mut VarManager, ctx: &Project, i: usize) -> String {
         left_row_cells(vm, ctx, i)
             .into_iter()
             .map(|(s, _)| s)
@@ -2843,7 +2846,7 @@ fields = ["user_id", "customer_id"]
             decls.push_str(&format!("[v{i:02}]\ndefault = \"x\"\n\n"));
         }
         std::fs::write(dir.path().join("variables.toml"), decls).unwrap();
-        let (ctx, _) = ProjectContext::open(dir.path().to_path_buf()).unwrap();
+        let (ctx, _) = Project::open(dir.path().to_path_buf()).unwrap();
 
         let mut vm = VarManager::default();
         let (content, hits) = render(&mut vm, &ctx);
@@ -2873,7 +2876,7 @@ fields = ["user_id", "customer_id"]
     /// need to see the whole column use this taller one instead.
     fn render_with_request(
         vm: &mut VarManager,
-        ctx: &ProjectContext,
+        ctx: &Project,
         open_request: Option<&HttpRequest>,
     ) -> (String, HitMap) {
         let theme = Theme::dark();
@@ -2885,7 +2888,7 @@ fields = ["user_id", "customer_id"]
         (format!("{:?}", terminal.backend().buffer()), hits)
     }
 
-    fn select_var(vm: &mut VarManager, ctx: &ProjectContext, name: &str) {
+    fn select_var(vm: &mut VarManager, ctx: &Project, name: &str) {
         render(vm, ctx); // populates left_rows
         let i = vm
             .left_rows
@@ -2925,8 +2928,8 @@ fields = ["user_id", "customer_id"]
         let mut qa_secrets = IndexMap::new();
         qa_secrets.insert("api_key".to_string(), "sk-live-secret".to_string());
         secrets.insert("qa".to_string(), qa_secrets);
-        project::save_secrets(dir.path(), &secrets).unwrap();
-        let (ctx, _) = ProjectContext::open(dir.path().to_path_buf()).unwrap();
+        fixtures::save_secrets(dir.path(), &secrets).unwrap();
+        let (ctx, _) = Project::open(dir.path().to_path_buf()).unwrap();
 
         let mut vm = VarManager::default();
         select_var(&mut vm, &ctx, "api_key");
@@ -2944,7 +2947,7 @@ fields = ["user_id", "customer_id"]
     #[test]
     fn no_active_environment_shows_a_hint_instead_of_a_value_field_target() {
         let (_dir, mut ctx) = fixture();
-        ctx.active_env = None;
+        ctx.set_active_env(None);
         let mut vm = VarManager::default();
         select_var(&mut vm, &ctx, "base_url");
         let (content, _) = render(&mut vm, &ctx);
@@ -2994,9 +2997,10 @@ fields = ["user_id", "customer_id"]
         // empty (rendered "(not set)"), never fall back to the default —
         // showing the default here made it look like an env value existed.
         assert_eq!(field_seed_text(&ctx, "base_url", VmField::EnvValue), "");
-        ctx.env_data
-            .values
-            .insert("base_url".into(), "https://qa.example.com".into());
+        ctx.edit_env("qa", |doc| {
+            Ok(format!("base_url = \"https://qa.example.com\"\n{doc}"))
+        })
+        .unwrap();
         assert_eq!(
             field_seed_text(&ctx, "base_url", VmField::EnvValue),
             "https://qa.example.com"
@@ -3004,10 +3008,7 @@ fields = ["user_id", "customer_id"]
 
         // A secret's stored value lives in the secrets store, not env_data.
         assert_eq!(field_seed_text(&ctx, "api_key", VmField::EnvValue), "");
-        ctx.secrets
-            .entry("qa".to_string())
-            .or_default()
-            .insert("api_key".into(), "s3cret".into());
+        ctx.set_secret_for("qa", "api_key", "s3cret".into()).unwrap();
         assert_eq!(
             field_seed_text(&ctx, "api_key", VmField::EnvValue),
             "s3cret"
@@ -3015,7 +3016,7 @@ fields = ["user_id", "customer_id"]
 
         // No active environment: the field edits the declaration default
         // (var_edit_op_for's fallback), so it seeds from it.
-        ctx.active_env = None;
+        ctx.set_active_env(None);
         assert_eq!(
             field_seed_text(&ctx, "base_url", VmField::EnvValue),
             "http://localhost:8080"
@@ -3057,7 +3058,7 @@ fields = ["user_id", "customer_id"]
             "a secret's value never lands in the env file"
         );
 
-        ctx.active_env = None;
+        ctx.set_active_env(None);
         assert_eq!(
             var_edit_op_for(&ctx, "base_url", VmField::EnvValue, "w".into()),
             VarEditOp::SetDefault {
@@ -3133,9 +3134,9 @@ fields = ["user_id", "customer_id"]
 
     /// `fixture()` plus a shared selector `locale` with two options in
     /// variables.toml and `fr` picked globally.
-    fn shared_fixture() -> (tempfile::TempDir, ProjectContext) {
+    fn shared_fixture() -> (tempfile::TempDir, Project) {
         let dir = tempfile::tempdir().unwrap();
-        project::init_project(dir.path(), Some("demo")).unwrap();
+        fixtures::init_project(dir.path(), Some("demo")).unwrap();
         std::fs::write(
             dir.path().join("variables.toml"),
             "[selectors.locale]\nshared = true\nfields = [\"lang\"]\n\n[options.locale.en]\nlang = \"en\"\n\n[options.locale.fr]\nlang = \"fr\"\n",
@@ -3144,7 +3145,7 @@ fields = ["user_id", "customer_id"]
         std::fs::write(dir.path().join("environments/qa.toml"), "").unwrap();
         let mut shared_selections = IndexMap::new();
         shared_selections.insert("locale".to_string(), "fr".to_string());
-        project::save_local_state(
+        fixtures::save_local_state(
             dir.path(),
             &project::LocalState {
                 environment: Some("qa".into()),
@@ -3153,7 +3154,7 @@ fields = ["user_id", "customer_id"]
             },
         )
         .unwrap();
-        let (ctx, warns) = ProjectContext::open(dir.path().to_path_buf()).unwrap();
+        let (ctx, warns) = Project::open(dir.path().to_path_buf()).unwrap();
         assert!(warns.is_empty(), "{warns:?}");
         (dir, ctx)
     }
@@ -3161,7 +3162,7 @@ fields = ["user_id", "customer_id"]
     #[test]
     fn a_shared_selector_renders_its_grid_even_without_an_environment() {
         let (_dir, mut ctx) = shared_fixture();
-        ctx.active_env = None;
+        ctx.set_active_env(None);
         let mut vm = VarManager::default();
         select_group(&mut vm, &ctx, "locale");
         let (content, hits) = render(&mut vm, &ctx);
@@ -3258,7 +3259,7 @@ fields = ["user_id", "customer_id"]
     #[test]
     fn grid_commands_work_on_a_shared_selector_without_an_environment() {
         let (_dir, mut ctx) = shared_fixture();
-        ctx.active_env = None;
+        ctx.set_active_env(None);
         let mut vm = VarManager::default();
         select_group(&mut vm, &ctx, "locale");
         render(&mut vm, &ctx);
@@ -3306,7 +3307,7 @@ fields = ["user_id", "customer_id"]
         assert!(copy.2.is_some(), "copy chip armed without an environment");
     }
 
-    fn select_group(vm: &mut VarManager, ctx: &ProjectContext, name: &str) {
+    fn select_group(vm: &mut VarManager, ctx: &Project, name: &str) {
         render(vm, ctx); // populates left_rows
         let i = vm
             .left_rows
@@ -3388,7 +3389,7 @@ fields = ["user_id", "customer_id"]
     #[test]
     fn a_group_with_no_active_environment_shows_the_hint_instead_of_a_grid() {
         let (_dir, mut ctx) = fixture();
-        ctx.active_env = None;
+        ctx.set_active_env(None);
         let mut vm = VarManager::default();
         select_group(&mut vm, &ctx, "creds");
         let (content, hits) = render(&mut vm, &ctx);
@@ -3461,14 +3462,14 @@ fields = ["user_id", "customer_id"]
 
     /// The base fixture with a description on alice's option — the
     /// description-column tests' data.
-    fn fixture_with_description() -> (tempfile::TempDir, ProjectContext) {
+    fn fixture_with_description() -> (tempfile::TempDir, Project) {
         let (dir, _) = fixture();
         std::fs::write(
             dir.path().join("environments/qa.toml"),
             "[options.creds.alice]\ndescription = \"the admin\"\nuser_id = \"1001\"\ncustomer_id = \"c-77\"\n\n[options.creds.bob]\nuser_id = \"2002\"\ncustomer_id = \"c-91\"\n",
         )
         .unwrap();
-        let (ctx, warns) = ProjectContext::open(dir.path().to_path_buf()).unwrap();
+        let (ctx, warns) = Project::open(dir.path().to_path_buf()).unwrap();
         assert!(warns.is_empty(), "{warns:?}");
         (dir, ctx)
     }

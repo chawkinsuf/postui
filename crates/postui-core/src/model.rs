@@ -176,7 +176,7 @@ pub enum Body {
 /// emits `[params.*]`/`[headers.*]` sub-table sections and is not
 /// order-preserving. Persist requests with [`HttpRequest::to_toml_string`],
 /// never `toml::to_string(&req)`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HttpRequest {
     /// The user-facing display name of this request (free-form; spaces and

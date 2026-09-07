@@ -96,7 +96,7 @@ async fn stage6_acceptance_flow() {
         .await;
 
     let dir = tempfile::tempdir().unwrap();
-    postui_core::project::init_project(dir.path(), Some("acme")).unwrap();
+    postui_core::fixtures::init_project(dir.path(), Some("acme")).unwrap();
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
@@ -187,7 +187,7 @@ async fn stage6_acceptance_flow() {
     }));
 
     app.update(Action::SwitchEnv(Some("qa".into())));
-    assert_eq!(app.project.active_env.as_deref(), Some("qa"));
+    assert_eq!(app.proj().active_env(), Some("qa"));
     let mut east = IndexMap::new();
     east.insert("region".to_string(), "east-1".to_string());
     app.update(Action::VarStruct(VarStructOp::NewOption {
@@ -208,12 +208,12 @@ async fn stage6_acceptance_flow() {
         values: alice,
     }));
     assert!(
-        postui_core::varmodel::selector_options(&app.project.env_data, "region")
+        postui_core::varmodel::selector_options(app.proj().env_data(), "region")
             .is_some_and(|e| e.contains_key("east")),
         "qa's own entry landed"
     );
     assert!(
-        postui_core::varmodel::selector_options(&app.project.env_data, "creds")
+        postui_core::varmodel::selector_options(app.proj().env_data(), "creds")
             .is_some_and(|e| e.contains_key("alice")),
         "the two-field group's entry landed too"
     );
@@ -254,7 +254,7 @@ async fn stage6_acceptance_flow() {
     app.handle_key(&keymap, enter()); // qa declares one option: east
     assert!(app.modals.is_empty(), "confirming closes the picker");
     assert_eq!(
-        app.project.selections_for("qa")["region"],
+        app.proj().selections_for("qa")["region"],
         "east",
         "picker confirm recorded the selection"
     );
@@ -284,22 +284,22 @@ async fn stage6_acceptance_flow() {
     // ------------------------------------------------------------------
 
     app.update(Action::SwitchEnv(Some("prod".into())));
-    assert_eq!(app.project.active_env.as_deref(), Some("prod"));
+    assert_eq!(app.proj().active_env(), Some("prod"));
     assert!(
-        !app.project.resolved.values.contains_key("region"),
+        !app.proj().resolved().values.contains_key("region"),
         "prod has no region selection yet: {:?}",
-        app.project.resolved.values.get("region")
+        app.proj().resolved().values.get("region")
     );
     app.update(Action::VarEdit(VarEditOp::SelectOption {
         env: "prod".into(),
         selector: "region".into(),
         option: "west".into(),
     }));
-    assert_eq!(app.project.resolved.values["region"], "west-9");
+    assert_eq!(app.proj().resolved().values["region"], "west-9");
 
     app.update(Action::SwitchEnv(Some("qa".into())));
     assert_eq!(
-        app.project.resolved.values["region"], "east-1",
+        app.proj().resolved().values["region"], "east-1",
         "switching back to qa restores qa's own resolved value"
     );
 
@@ -332,7 +332,7 @@ async fn stage6_acceptance_flow() {
     app.handle_key(&keymap, enter());
 
     assert!(app.modals.is_empty(), "confirming the secret closes it");
-    let secrets = postui_core::project::load_secrets(dir.path()).unwrap();
+    let secrets = postui_core::fixtures::load_secrets(dir.path()).unwrap();
     assert_eq!(secrets["qa"]["api_key"], "sk-qa-999");
 
     let generation = app.session.send_generation;
@@ -424,7 +424,7 @@ region = \"west-9\"\n",
 #[test]
 fn variables_toml_comments_survive_one_manager_edit() {
     let dir = tempfile::tempdir().unwrap();
-    postui_core::project::init_project(dir.path(), Some("acme")).unwrap();
+    postui_core::fixtures::init_project(dir.path(), Some("acme")).unwrap();
     std::fs::write(
         dir.path().join("variables.toml"),
         "\
@@ -444,7 +444,7 @@ description = \"legacy auth token\"
 
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    assert!(app.project.model.vars.contains_key("api_token"));
+    assert!(app.proj().variables().vars.contains_key("api_token"));
 
     app.update(Action::VarEdit(VarEditOp::SetDefault {
         name: "base_url".into(),

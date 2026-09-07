@@ -212,6 +212,7 @@ pub fn fold_text_nav_bytes(ev: KeyEvent, macos: bool) -> KeyEvent {
     }
 }
 
+#[derive(Clone)]
 pub struct Keymap {
     bindings: HashMap<KeyCombo, Action>,
 }
@@ -443,31 +444,12 @@ impl Keymap {
         Ok(())
     }
 
-    pub fn load() -> Self {
-        Self::load_reporting().0
-    }
-
-    /// [`Self::load`] plus the reason `keys.toml` was ignored, if it was:
+    /// The defaults with `contents` (a `keys.toml`) applied; on a bad file
+    /// the untouched defaults and the error to show.
+    ///
     /// `apply_overrides` validates the whole file before binding anything,
     /// so one bad entry leaves every default in place — a fact the user
     /// has to hear, or every rebinding just silently stops working.
-    fn load_reporting() -> (Self, Option<String>) {
-        let Some(dir) = postui_core::config_dir() else {
-            return (Self::default_bindings(), None);
-        };
-        let path = dir.join("keys.toml");
-        match std::fs::read_to_string(&path) {
-            Ok(contents) => Self::from_overrides(&contents),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (Self::default_bindings(), None),
-            Err(e) => (
-                Self::default_bindings(),
-                Some(format!("could not read {}: {e}", path.display())),
-            ),
-        }
-    }
-
-    /// The defaults with `contents` (a `keys.toml`) applied; on a bad file
-    /// the untouched defaults and the error to show.
     pub fn from_overrides(contents: &str) -> (Self, Option<String>) {
         let mut map = Self::default_bindings();
         match map.apply_overrides(contents) {
@@ -479,26 +461,25 @@ impl Keymap {
         }
     }
 
-    /// [`load`] plus caret-conflict warnings for the startup toasts:
-    /// on a macOS build (`macos` — parameterized for tests), a keys.toml
-    /// override on one of the caret-motion bytes (^A/^E = cmd+left/right,
-    /// ESC b/f = option+arrows) wins per the user's explicit config, but
-    /// silently costs the cmd/option+arrow gesture that sends the same
-    /// byte — worth a warning, not a rejection (an error would atomically
+    /// The caret-conflict warnings for the startup toasts: on a macOS
+    /// build (`macos` — parameterized for tests), a keys.toml override on
+    /// one of the caret-motion bytes (^A/^E = cmd+left/right, ESC b/f =
+    /// option+arrows) wins per the user's explicit config, but silently
+    /// costs the cmd/option+arrow gesture that sends the same byte —
+    /// worth a warning, not a rejection (an error would atomically
     /// discard the whole override file, and the same dotfile is legal on
     /// Linux). On Linux the list is always empty: ctrl+a select-all and
     /// friends are component behavior there, and an override shadowing
     /// them is an ordinary, deliberate rebind.
-    pub fn load_with_warnings(macos: bool) -> (Self, Vec<String>) {
-        let (map, ignored) = Self::load_reporting();
-        let mut warnings: Vec<String> = ignored.into_iter().collect();
+    pub fn caret_warnings(&self, macos: bool) -> Vec<String> {
         if macos {
-            warnings.extend(map.caret_conflicts());
+            self.caret_conflicts()
+        } else {
+            Vec::new()
         }
-        (map, warnings)
     }
 
-    /// The macOS caret-conflict report for [`load_with_warnings`]: one
+    /// The macOS caret-conflict report for [`Self::caret_warnings`]: one
     /// line per caret-motion combo something is bound to, naming the
     /// gesture the binding shadows.
     fn caret_conflicts(&self) -> Vec<String> {

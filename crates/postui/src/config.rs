@@ -14,64 +14,30 @@ pub struct ProjectsRegistry {
     pub last: Option<PathBuf>,
 }
 
-/// Reads and parses `config.toml`. `Ok(None)` when the file doesn't exist
-/// (every setting is then its default, silently); `Err` when it exists but
-/// can't be read or isn't valid TOML — the user's file, which they need to
-/// hear about rather than have quietly ignored.
-fn read_config(path: &Path) -> Result<Option<toml::Value>, String> {
-    let contents = match std::fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(format!("could not read {}: {e}", path.display())),
-    };
-    toml::from_str::<toml::Value>(&contents)
-        .map(Some)
-        .map_err(|e| format!("could not parse {}: {e}", path.display()))
-}
-
-/// Loads `path` as a `toml_edit` document for an in-place edit. A missing
-/// file is an empty document; one that doesn't parse is an error, so the
-/// edit never replaces the user's whole file with the one key being
-/// written.
-fn read_config_doc(path: &Path) -> anyhow::Result<toml_edit::DocumentMut> {
-    let existing = match std::fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(e) => anyhow::bail!("could not read {}: {e}", path.display()),
-    };
-    existing.parse().map_err(|e: toml_edit::TomlError| {
-        anyhow::anyhow!(
-            "{} has a syntax error and was left unchanged: {e}",
-            path.display()
-        )
-    })
-}
-
-/// Writes `doc` to `path` through a sibling temp file and a rename, so a
-/// crash mid-write can't leave a truncated config. Creates the parent
-/// directory if needed.
-fn write_config_doc(path: &Path, doc: &toml_edit::DocumentMut) -> anyhow::Result<()> {
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    std::fs::create_dir_all(parent)?;
-    let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
-    std::io::Write::write_all(&mut tmp, doc.to_string().as_bytes())?;
-    tmp.persist(path).map_err(|e| e.error)?;
-    Ok(())
-}
+/// The file name every `config.toml` message names, so a warning still
+/// tells the user which file to go and fix.
+const CONFIG_TOML: &str = "config.toml";
+const KEYS_TOML: &str = "keys.toml";
+const UI_TOML: &str = "ui.toml";
+const THEMES_DIR: &str = "themes";
 
 impl ProjectsRegistry {
-    /// Loads the registry from `path`. A missing file is the empty
-    /// registry; a mistyped piece of the `[projects]` table degrades to the
-    /// default for that piece. A file that exists but can't be parsed also
-    /// yields the empty registry — there is nothing else to run on — but
-    /// with a warning saying so, and every save then refuses to touch the
-    /// file (see [`Self::save_to`]).
-    pub fn load_from(path: &Path) -> (Self, Vec<String>) {
+    /// Parses the registry out of `config.toml`'s text. An empty string
+    /// (the missing file) is the empty registry; a mistyped piece of the
+    /// `[projects]` table degrades to the default for that piece. Text
+    /// that can't be parsed also yields the empty registry — there is
+    /// nothing else to run on — but with a warning saying so, and every
+    /// save then refuses to touch the file (see [`Config::edit`]).
+    pub fn parse(text: &str) -> (Self, Vec<String>) {
         let mut registry = Self::default();
-        let value = match read_config(path) {
-            Ok(Some(v)) => v,
-            Ok(None) => return (registry, Vec::new()),
-            Err(e) => return (registry, vec![e]),
+        let value = match toml::from_str::<toml::Value>(text) {
+            Ok(v) => v,
+            Err(e) => {
+                return (
+                    registry,
+                    vec![format!("could not parse {CONFIG_TOML}: {e}")],
+                );
+            }
         };
         let Some(projects) = value.get("projects").and_then(|v| v.as_table()) else {
             return (registry, Vec::new());
@@ -96,14 +62,11 @@ impl ProjectsRegistry {
         (registry, Vec::new())
     }
 
-    /// Writes the registry to `path`, round-tripping through
-    /// `toml_edit::DocumentMut` so only the `[projects]` table is touched;
-    /// unrelated keys are preserved byte-for-byte. Creates the parent
-    /// directory if needed. Refuses (leaving the file untouched) when the
-    /// existing file doesn't parse.
-    pub fn save_to(&self, path: &Path) -> anyhow::Result<()> {
-        let mut doc = read_config_doc(path)?;
-
+    /// Writes the registry into `doc`, touching only the `[projects]`
+    /// table; every unrelated key is preserved byte-for-byte. The I/O
+    /// around it (and the refusal to write over a file that doesn't
+    /// parse) is [`Config::edit`]'s business.
+    pub fn write_into(&self, doc: &mut toml_edit::DocumentMut) {
         let mut table = toml_edit::Table::new();
 
         let mut known = toml_edit::Array::new();
@@ -126,7 +89,6 @@ impl ProjectsRegistry {
         }
 
         doc["projects"] = toml_edit::Item::Table(table);
-        write_config_doc(path, &doc)
     }
 
     /// Registers `path` as known and as the last-used project. Dedups on
@@ -294,137 +256,300 @@ impl Default for UiSettings {
     }
 }
 
-/// Reads the top-level `clipboard_cmd` (string), `osc52_limit` (integer),
-/// `theme` (string), `animations` (bool), `ai_cmd` (string), `ai_confirmed`
-/// (bool), and `jq_tab` (string) keys from `config.toml`. Never errors: a
-/// missing file or a mistyped key degrades that piece to its default. A
-/// file that can't be parsed leaves everything at its default too, but
-/// says so in the returned warnings — the user's settings didn't apply and
-/// they need to know why. `theme` is taken verbatim as a raw name string —
-/// whether it names a real registry entry is the registry's business at
-/// resolve time, not this loader's, so no warning is produced here for an
-/// unrecognized value.
-pub fn load_ui_settings(path: &Path) -> (UiSettings, Vec<String>) {
-    let mut settings = UiSettings::default();
-    let mut warnings = Vec::new();
-    let value = match read_config(path) {
-        Ok(Some(v)) => v,
-        Ok(None) => return (settings, warnings),
-        Err(e) => {
-            warnings.push(format!("{e}; using default settings"));
-            return (settings, warnings);
-        }
-    };
-
-    if let Some(cmd) = value.get("clipboard_cmd").and_then(|v| v.as_str()) {
-        settings.clipboard_cmd = Some(cmd.to_string());
-    }
-    if let Some(limit) = value.get("osc52_limit").and_then(|v| v.as_integer())
-        && let Ok(limit) = usize::try_from(limit)
-    {
-        settings.osc52_limit = limit;
-    }
-    if let Some(raw) = value.get("theme").and_then(|v| v.as_str()) {
-        settings.theme = raw.to_string();
-    }
-    if let Some(b) = value.get("animations").and_then(|v| v.as_bool()) {
-        settings.animations = b;
-    }
-    if let Some(cmd) = value.get("ai_cmd").and_then(|v| v.as_str()) {
-        settings.ai_cmd = cmd.to_string();
-    }
-    if let Some(b) = value.get("ai_confirmed").and_then(|v| v.as_bool()) {
-        settings.ai_confirmed = b;
-    }
-    if let Some(raw) = value.get("jq_tab").and_then(|v| v.as_str()) {
-        match raw {
-            "cycle" => settings.jq_tab = JqTab::Cycle,
-            "menu" | "accept" => settings.jq_tab = JqTab::Menu,
-            other => warnings.push(format!(
-                "invalid value {other:?} for jq_tab in config.toml \
-                 (expected \"menu\" or \"cycle\"); using \"menu\""
-            )),
-        }
-    }
-
-    if let Some(table) = value.get("animation_ms").and_then(|v| v.as_table()) {
-        const KNOWN_KEYS: [&str; 9] = [
-            "tab_slide",
-            "hover",
-            "focus",
-            "list_travel",
-            "modal_open",
-            "dropdown_open",
-            "pane_collapse",
-            "toast",
-            "send_breathe",
-        ];
-        let mut set_ms = |key: &str, field: &mut std::time::Duration| {
-            let Some(v) = table.get(key) else {
-                return;
-            };
-            match v.as_integer().and_then(|ms| u64::try_from(ms).ok()) {
-                Some(ms) => *field = std::time::Duration::from_millis(ms),
-                None => warnings.push(format!(
-                    "invalid value for {key:?} in [animation_ms] section of \
-                     config.toml (expected a non-negative integer); using default"
-                )),
+impl UiSettings {
+    /// Reads the top-level `clipboard_cmd` (string), `osc52_limit`
+    /// (integer), `theme` (string), `animations` (bool), `ai_cmd`
+    /// (string), `ai_confirmed` (bool), and `jq_tab` (string) keys out of
+    /// `config.toml`'s text. Never errors: an empty string (the missing
+    /// file) or a mistyped key degrades that piece to its default. Text
+    /// that can't be parsed leaves everything at its default too, but says
+    /// so in the returned warnings — the user's settings didn't apply and
+    /// they need to know why. `theme` is taken verbatim as a raw name
+    /// string — whether it names a real registry entry is the registry's
+    /// business at resolve time, not this parser's, so no warning is
+    /// produced here for an unrecognized value.
+    pub fn parse(text: &str) -> (UiSettings, Vec<String>) {
+        let mut settings = UiSettings::default();
+        let mut warnings = Vec::new();
+        let value = match toml::from_str::<toml::Value>(text) {
+            Ok(v) => v,
+            Err(e) => {
+                warnings.push(format!(
+                    "could not parse {CONFIG_TOML}: {e}; using default settings"
+                ));
+                return (settings, warnings);
             }
         };
-        set_ms("tab_slide", &mut settings.anim_ms.tab_slide);
-        set_ms("hover", &mut settings.anim_ms.hover);
-        set_ms("focus", &mut settings.anim_ms.focus);
-        set_ms("list_travel", &mut settings.anim_ms.list_travel);
-        set_ms("modal_open", &mut settings.anim_ms.modal_open);
-        set_ms("dropdown_open", &mut settings.anim_ms.dropdown_open);
-        set_ms("pane_collapse", &mut settings.anim_ms.pane_collapse);
-        set_ms("toast", &mut settings.anim_ms.toast);
-        set_ms("send_breathe", &mut settings.anim_ms.send_breathe);
 
-        for key in table.keys() {
-            if !KNOWN_KEYS.contains(&key.as_str()) {
-                warnings.push(format!(
-                    "unknown key {key:?} in [animation_ms] section of config.toml"
-                ));
+        if let Some(cmd) = value.get("clipboard_cmd").and_then(|v| v.as_str()) {
+            settings.clipboard_cmd = Some(cmd.to_string());
+        }
+        if let Some(limit) = value.get("osc52_limit").and_then(|v| v.as_integer())
+            && let Ok(limit) = usize::try_from(limit)
+        {
+            settings.osc52_limit = limit;
+        }
+        if let Some(raw) = value.get("theme").and_then(|v| v.as_str()) {
+            settings.theme = raw.to_string();
+        }
+        if let Some(b) = value.get("animations").and_then(|v| v.as_bool()) {
+            settings.animations = b;
+        }
+        if let Some(cmd) = value.get("ai_cmd").and_then(|v| v.as_str()) {
+            settings.ai_cmd = cmd.to_string();
+        }
+        if let Some(b) = value.get("ai_confirmed").and_then(|v| v.as_bool()) {
+            settings.ai_confirmed = b;
+        }
+        if let Some(raw) = value.get("jq_tab").and_then(|v| v.as_str()) {
+            match raw {
+                "cycle" => settings.jq_tab = JqTab::Cycle,
+                "menu" | "accept" => settings.jq_tab = JqTab::Menu,
+                other => warnings.push(format!(
+                    "invalid value {other:?} for jq_tab in config.toml \
+                     (expected \"menu\" or \"cycle\"); using \"menu\""
+                )),
+            }
+        }
+
+        if let Some(table) = value.get("animation_ms").and_then(|v| v.as_table()) {
+            const KNOWN_KEYS: [&str; 9] = [
+                "tab_slide",
+                "hover",
+                "focus",
+                "list_travel",
+                "modal_open",
+                "dropdown_open",
+                "pane_collapse",
+                "toast",
+                "send_breathe",
+            ];
+            let mut set_ms = |key: &str, field: &mut std::time::Duration| {
+                let Some(v) = table.get(key) else {
+                    return;
+                };
+                match v.as_integer().and_then(|ms| u64::try_from(ms).ok()) {
+                    Some(ms) => *field = std::time::Duration::from_millis(ms),
+                    None => warnings.push(format!(
+                        "invalid value for {key:?} in [animation_ms] section of \
+                         config.toml (expected a non-negative integer); using default"
+                    )),
+                }
+            };
+            set_ms("tab_slide", &mut settings.anim_ms.tab_slide);
+            set_ms("hover", &mut settings.anim_ms.hover);
+            set_ms("focus", &mut settings.anim_ms.focus);
+            set_ms("list_travel", &mut settings.anim_ms.list_travel);
+            set_ms("modal_open", &mut settings.anim_ms.modal_open);
+            set_ms("dropdown_open", &mut settings.anim_ms.dropdown_open);
+            set_ms("pane_collapse", &mut settings.anim_ms.pane_collapse);
+            set_ms("toast", &mut settings.anim_ms.toast);
+            set_ms("send_breathe", &mut settings.anim_ms.send_breathe);
+
+            for key in table.keys() {
+                if !KNOWN_KEYS.contains(&key.as_str()) {
+                    warnings.push(format!(
+                        "unknown key {key:?} in [animation_ms] section of config.toml"
+                    ));
+                }
+            }
+        }
+
+        (settings, warnings)
+    }
+}
+
+/// Everything [`Config::load`] read at startup: the parsed contents of
+/// every config file, each already degraded to its defaults where the
+/// file was missing or unusable (the warnings say which).
+pub struct Loaded {
+    pub registry: ProjectsRegistry,
+    pub ui: UiSettings,
+    pub keymap: crate::keys::Keymap,
+    pub themes: crate::theme::ThemeRegistry,
+    pub usage: crate::usage::UsageStore,
+}
+
+/// The one reader and writer of the XDG config files (`config.toml`,
+/// `keys.toml`, `ui.toml`, `themes/*.toml`), through its own
+/// [`postui_core::disk::Disk`] rooted at the config directory: every read
+/// goes through here, every write is atomic, and a file that does not
+/// parse is reported rather than replaced.
+pub struct Config {
+    /// `None` when no config dir resolved for this platform, and in tests
+    /// — every save is then a silent no-op and every load a default, so a
+    /// test run never touches the user's real config.
+    disk: Option<postui_core::disk::Disk>,
+}
+
+impl Config {
+    /// Reads `config.toml` (the registry and the UI settings), `keys.toml`,
+    /// `themes/*.toml` and `ui.toml`, returning the parsed contents and
+    /// every warning the user needs to see at startup. A file that will
+    /// not parse yields its defaults and a warning; it is never written
+    /// over afterwards (see [`Self::edit`]).
+    pub fn load(macos: bool) -> (Config, Loaded, Vec<String>) {
+        let mut cfg = Config {
+            disk: postui_core::config_dir().map(postui_core::disk::Disk::new),
+        };
+        let mut warnings = Vec::new();
+
+        let config_text = cfg.read(CONFIG_TOML, &mut warnings).unwrap_or_default();
+        let (registry, registry_warnings) = ProjectsRegistry::parse(&config_text);
+        let (ui, mut config_warnings) = UiSettings::parse(&config_text);
+        // Both parsers read the same file: one parse failure, one toast.
+        if !registry_warnings.is_empty() && config_warnings.is_empty() {
+            config_warnings.extend(registry_warnings);
+        }
+        warnings.extend(config_warnings);
+
+        let (themes, theme_warnings) = cfg.reload_themes();
+        warnings.extend(theme_warnings);
+
+        let keymap = match cfg.read(KEYS_TOML, &mut warnings) {
+            Some(text) => {
+                let (keymap, ignored) = crate::keys::Keymap::from_overrides(&text);
+                warnings.extend(ignored);
+                keymap
+            }
+            None => crate::keys::Keymap::default_bindings(),
+        };
+        warnings.extend(keymap.caret_warnings(macos));
+
+        let usage = match cfg.read(UI_TOML, &mut warnings) {
+            Some(text) => {
+                let (usage, error) = crate::usage::UsageStore::parse(&text);
+                if let Some(e) = error {
+                    warnings.push(format!(
+                        "could not parse {UI_TOML}: {e}; palette usage stats will not be saved until it is fixed"
+                    ));
+                }
+                usage
+            }
+            None => crate::usage::UsageStore::default(),
+        };
+
+        (
+            cfg,
+            Loaded {
+                registry,
+                ui,
+                keymap,
+                themes,
+                usage,
+            },
+            warnings,
+        )
+    }
+
+    /// A `Config` with no files behind it: every save a silent `Ok(())`,
+    /// every read a `None`. What `App::bare` (and so every test) uses.
+    pub fn none() -> Config {
+        Config { disk: None }
+    }
+
+    /// The file's text, `None` when it (or the whole config dir) isn't
+    /// there. A read that fails for any other reason is reported and read
+    /// as absent — the app still starts, on defaults.
+    fn read(&mut self, name: &str, warnings: &mut Vec<String>) -> Option<String> {
+        let disk = self.disk.as_mut()?;
+        let rel = postui_core::disk::RelPath::new(name).ok()?;
+        match disk.read(&rel) {
+            Ok(text) => text,
+            Err(e) => {
+                warnings.push(e.to_string());
+                None
             }
         }
     }
 
-    (settings, warnings)
-}
+    /// Applies `f` to `name`'s document (an empty one when the file is
+    /// absent) and writes the result back atomically, so only the keys `f`
+    /// touches change and everything else survives byte-for-byte. A file
+    /// that does not parse is refused, not replaced: the user's config is
+    /// never the casualty of a syntax error they have yet to fix.
+    fn edit(
+        &mut self,
+        name: &str,
+        f: impl FnOnce(&mut toml_edit::DocumentMut),
+    ) -> Result<(), String> {
+        let Some(disk) = self.disk.as_mut() else {
+            return Ok(());
+        };
+        let rel = postui_core::disk::RelPath::new(name).map_err(|e| e.to_string())?;
+        let existing = disk
+            .read(&rel)
+            .map_err(|e| e.to_string())?
+            .unwrap_or_default();
+        let mut doc: toml_edit::DocumentMut =
+            existing.parse().map_err(|e: toml_edit::TomlError| {
+                format!("{name} has a syntax error and was left unchanged: {e}")
+            })?;
+        f(&mut doc);
+        disk.write(&rel, &doc.to_string())
+            .map_err(|e| e.to_string())
+    }
 
-/// The path to the global config file: `<config dir>/config.toml`.
-pub fn config_file_path() -> Option<PathBuf> {
-    postui_core::config_dir().map(|d| d.join("config.toml"))
-}
+    /// Persists the `[projects]` table of `config.toml`.
+    pub fn save_registry(&mut self, registry: &ProjectsRegistry) -> Result<(), String> {
+        self.edit(CONFIG_TOML, |doc| registry.write_into(doc))
+    }
 
-/// Writes `name` as the top-level `theme` key in the config file at
-/// `path`, round-tripping through `toml_edit::DocumentMut` so every other
-/// key is preserved byte-for-byte (same posture as
-/// `ProjectsRegistry::save_to`). Creates the parent directory if needed.
-pub fn save_ui_theme(path: &Path, name: &str) -> anyhow::Result<()> {
-    let mut doc = read_config_doc(path)?;
-    doc["theme"] = toml_edit::value(name);
-    write_config_doc(path, &doc)
-}
+    /// Persists the top-level `theme` key of `config.toml`.
+    pub fn save_ui_theme(&mut self, name: &str) -> Result<(), String> {
+        self.edit(CONFIG_TOML, |doc| doc["theme"] = toml_edit::value(name))
+    }
 
-/// Sets one top-level boolean in `config.toml`, keeping everything else
-/// byte-for-byte (the `ai_confirmed` "don't ask again" flag).
-pub fn save_ui_flag(path: &Path, key: &str, value: bool) -> anyhow::Result<()> {
-    let mut doc = read_config_doc(path)?;
-    doc[key] = toml_edit::value(value);
-    write_config_doc(path, &doc)
-}
+    /// Persists one top-level boolean of `config.toml` (the `ai_confirmed`
+    /// "don't ask again" flag).
+    pub fn save_ui_flag(&mut self, key: &str, value: bool) -> Result<(), String> {
+        self.edit(CONFIG_TOML, |doc| doc[key] = toml_edit::value(value))
+    }
 
-/// The directory custom theme files live in: `<config dir>/themes`.
-pub fn themes_dir_path() -> Option<PathBuf> {
-    postui_core::config_dir().map(|d| d.join("themes"))
-}
+    /// Persists the palette usage stats to `ui.toml`.
+    pub fn save_usage(&mut self, usage: &crate::usage::UsageStore) -> Result<(), String> {
+        self.edit(UI_TOML, |doc| usage.write_into(doc))
+    }
 
-/// The path to the mouse-first-GUI UI-state file (currently just palette
-/// usage stats): `<config dir>/ui.toml`.
-pub fn ui_file_path() -> Option<PathBuf> {
-    postui_core::config_dir().map(|d| d.join("ui.toml"))
+    /// Rescans `themes/` and rebuilds the registry, so a custom theme file
+    /// added or edited since startup shows up without a restart. A missing
+    /// directory is silently just the built-ins; one that can't be listed,
+    /// or a file that can't be read or parsed, is one warning and is
+    /// skipped.
+    pub fn reload_themes(&mut self) -> (crate::theme::ThemeRegistry, Vec<String>) {
+        let mut files = Vec::new();
+        let mut warnings = Vec::new();
+        if let Some(disk) = self.disk.as_mut()
+            && let Ok(dir) = postui_core::disk::RelPath::new(THEMES_DIR)
+        {
+            let entries = match disk.list(&dir) {
+                Ok(entries) => entries,
+                Err(e) => {
+                    warnings.push(format!("could not list {THEMES_DIR}/: {e}; custom themes unavailable"));
+                    Vec::new()
+                }
+            };
+            for entry in entries
+                .into_iter()
+                .filter(|e| !e.is_dir && e.name.ends_with(".toml"))
+            {
+                let Ok(rel) = dir.join(&entry.name) else {
+                    continue;
+                };
+                match disk.read(&rel) {
+                    Ok(Some(text)) => files.push((entry.name, text)),
+                    Ok(None) => {}
+                    Err(e) => warnings.push(format!(
+                        "theme file {}: unreadable: {e}; skipped",
+                        entry.name
+                    )),
+                }
+            }
+        }
+        let (registry, parse_warnings) = crate::theme::ThemeRegistry::from_files(files);
+        warnings.extend(parse_warnings);
+        (registry, warnings)
+    }
 }
 
 /// Expands a leading `~/` to the home directory. Paths not starting with
@@ -484,14 +609,11 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn load_missing_is_default_and_a_mistyped_table_degrades_silently() {
-        let dir = tempdir().unwrap();
-        let p = dir.path().join("config.toml");
-        let (r, warnings) = ProjectsRegistry::load_from(&p);
+    fn parse_empty_is_default_and_a_mistyped_table_degrades_silently() {
+        let (r, warnings) = ProjectsRegistry::parse("");
         assert!(r.known.is_empty() && r.last.is_none());
         assert!(warnings.is_empty(), "a missing file is nothing to report");
-        std::fs::write(&p, "projects = 5\n").unwrap();
-        let (r, warnings) = ProjectsRegistry::load_from(&p);
+        let (r, warnings) = ProjectsRegistry::parse("projects = 5\n");
         assert!(r.known.is_empty(), "mistyped table degrades to default");
         assert!(warnings.is_empty());
     }
@@ -503,26 +625,130 @@ mod tests {
         let broken = "theme = \"dark\"\nclipboard_cmd = \"xclip\nai_cmd = \"claude -p\"\n\n[projects]\nknown = [\"/tmp/a\"]\n";
         std::fs::write(&p, broken).unwrap();
 
-        let (r, warnings) = ProjectsRegistry::load_from(&p);
+        let (r, warnings) = ProjectsRegistry::parse(broken);
         assert!(r.known.is_empty());
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         assert!(warnings[0].contains("could not parse"), "{warnings:?}");
-        let (s, warnings) = load_ui_settings(&p);
+        let (s, warnings) = UiSettings::parse(broken);
         assert_eq!(s, UiSettings::default());
         assert!(
             warnings.iter().any(|w| w.contains("could not parse")),
             "{warnings:?}"
         );
 
+        let mut cfg = Config {
+            disk: Some(postui_core::disk::Disk::new(dir.path().to_path_buf())),
+        };
         let mut r = r;
         r.register(PathBuf::from("/tmp/b"));
-        assert!(r.save_to(&p).is_err(), "the registry save refuses");
-        assert!(save_ui_theme(&p, "light").is_err());
-        assert!(save_ui_flag(&p, "ai_confirmed", true).is_err());
+        assert!(cfg.save_registry(&r).is_err(), "the registry save refuses");
+        assert!(cfg.save_ui_theme("light").is_err());
+        assert!(cfg.save_ui_flag("ai_confirmed", true).is_err());
         assert_eq!(
             std::fs::read_to_string(&p).unwrap(),
             broken,
             "every refused save leaves the user's file byte-for-byte"
+        );
+    }
+
+    /// The `ui.toml` half of the same rule: `save_usage` refuses a file it
+    /// cannot parse rather than replacing the user's document with a fresh
+    /// one holding only `[palette.usage]`.
+    #[test]
+    fn config_edit_refuses_a_file_that_does_not_parse_and_leaves_it_alone() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("ui.toml"), "not = [toml").unwrap();
+        let mut cfg = Config {
+            disk: Some(postui_core::disk::Disk::new(dir.path().to_path_buf())),
+        };
+        let err = cfg
+            .save_usage(&crate::usage::UsageStore::default())
+            .unwrap_err();
+        assert!(err.contains("ui.toml has a syntax error"), "{err}");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("ui.toml")).unwrap(),
+            "not = [toml"
+        );
+    }
+
+    /// Every save on a `Config` with no config dir behind it is a silent
+    /// no-op, so a test run never touches the user's real files.
+    #[test]
+    fn config_none_saves_nothing_and_succeeds() {
+        let mut cfg = Config::none();
+        assert!(cfg.save_registry(&ProjectsRegistry::default()).is_ok());
+        assert!(cfg.save_ui_theme("dusk").is_ok());
+        assert!(cfg.save_ui_flag("ai_confirmed", true).is_ok());
+        assert!(cfg.save_usage(&crate::usage::UsageStore::default()).is_ok());
+        let (themes, warnings) = cfg.reload_themes();
+        assert!(warnings.is_empty());
+        assert_eq!(themes.entries().len(), 9, "the built-ins");
+    }
+
+    /// A valid theme text, as `from_files`' own tests write them.
+    const THEME_TOML: &str = "bg = \"#101418\"\nfg = \"#e2e2e6\"\naccent = \"#0178d4\"\n\
+         success = \"#9ece6a\"\nwarning = \"#e0af68\"\nerror = \"#f7768e\"\n";
+
+    /// `from_files` is unit-tested on pairs it is handed; this covers the
+    /// listing half `Config` does: only `*.toml` *files* in `themes/` are
+    /// read, so a note file and a directory that happens to end in `.toml`
+    /// are both skipped without a warning.
+    #[test]
+    fn reload_themes_reads_only_toml_files_from_the_themes_directory() {
+        let dir = tempdir().unwrap();
+        let themes = dir.path().join("themes");
+        std::fs::create_dir_all(&themes).unwrap();
+        std::fs::write(themes.join("good.toml"), THEME_TOML).unwrap();
+        std::fs::write(themes.join("notes.txt"), "not a theme").unwrap();
+        std::fs::create_dir_all(themes.join("sub.toml")).unwrap();
+
+        let mut cfg = Config {
+            disk: Some(postui_core::disk::Disk::new(dir.path().to_path_buf())),
+        };
+        let (registry, warnings) = cfg.reload_themes();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let customs: Vec<&str> = registry
+            .entries()
+            .iter()
+            .filter(|e| matches!(e.source, crate::theme::ThemeSource::Custom(_)))
+            .map(|e| e.name.as_str())
+            .collect();
+        assert_eq!(customs, vec!["good"], "named from the file stem");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reload_themes_warns_and_skips_a_theme_file_it_cannot_read() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        let themes = dir.path().join("themes");
+        std::fs::create_dir_all(&themes).unwrap();
+        std::fs::write(themes.join("good.toml"), THEME_TOML).unwrap();
+        let locked = themes.join("locked.toml");
+        std::fs::write(&locked, THEME_TOML).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let mut cfg = Config {
+            disk: Some(postui_core::disk::Disk::new(dir.path().to_path_buf())),
+        };
+        let (registry, warnings) = cfg.reload_themes();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let customs: Vec<&str> = registry
+            .entries()
+            .iter()
+            .filter(|e| matches!(e.source, crate::theme::ThemeSource::Custom(_)))
+            .map(|e| e.name.as_str())
+            .collect();
+        if customs == vec!["good", "locked"] {
+            // Running as root: nothing is unreadable. Not a failure.
+            return;
+        }
+        assert_eq!(customs, vec!["good"], "the readable one still loads");
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].starts_with("theme file locked.toml: unreadable: ")
+                && warnings[0].ends_with("; skipped"),
+            "{warnings:?}"
         );
     }
 
@@ -531,19 +757,22 @@ mod tests {
         let dir = tempdir().unwrap();
         let p = dir.path().join("config.toml");
         std::fs::write(&p, "theme = \"dark\"\n").unwrap();
-        let (mut r, _) = ProjectsRegistry::load_from(&p);
+        let mut cfg = Config {
+            disk: Some(postui_core::disk::Disk::new(dir.path().to_path_buf())),
+        };
+        let (mut r, _) = ProjectsRegistry::parse(&std::fs::read_to_string(&p).unwrap());
         r.register(PathBuf::from("/tmp/a"));
         r.register(PathBuf::from("/tmp/b"));
         r.register(PathBuf::from("/tmp/a")); // dedup, but last updates
         r.root = Some(PathBuf::from("/tmp/root"));
-        r.save_to(&p).unwrap();
+        cfg.save_registry(&r).unwrap();
 
         let text = std::fs::read_to_string(&p).unwrap();
         assert!(
             text.contains("theme = \"dark\""),
             "unrelated key preserved: {text}"
         );
-        let (r2, _) = ProjectsRegistry::load_from(&p);
+        let (r2, _) = ProjectsRegistry::parse(&text);
         assert_eq!(
             r2.known,
             vec![PathBuf::from("/tmp/a"), PathBuf::from("/tmp/b")]
@@ -554,7 +783,7 @@ mod tests {
 
     #[test]
     fn next_after_cycles_and_wraps() {
-        let (mut r, _) = ProjectsRegistry::load_from(&PathBuf::from("/nonexistent"));
+        let (mut r, _) = ProjectsRegistry::parse("");
         assert!(
             r.next_after(&PathBuf::from("/tmp/a")).is_none(),
             "fewer than two projects"
@@ -599,10 +828,8 @@ mod tests {
     }
 
     #[test]
-    fn load_ui_settings_missing_file_is_default() {
-        let dir = tempdir().unwrap();
-        let p = dir.path().join("config.toml");
-        let (s, warnings) = load_ui_settings(&p);
+    fn ui_settings_parse_empty_is_default() {
+        let (s, warnings) = UiSettings::parse("");
         assert_eq!(s, UiSettings::default());
         assert_eq!(s.clipboard_cmd, None);
         assert_eq!(s.osc52_limit, 65536);
@@ -611,41 +838,34 @@ mod tests {
     }
 
     #[test]
-    fn load_ui_settings_parses_configured_values() {
-        let dir = tempdir().unwrap();
-        let p = dir.path().join("config.toml");
-        std::fs::write(&p, "clipboard_cmd = \"xclip\"\nosc52_limit = 1000\n").unwrap();
-        let (s, warnings) = load_ui_settings(&p);
+    fn ui_settings_parse_configured_values() {
+        let (s, warnings) = UiSettings::parse("clipboard_cmd = \"xclip\"\nosc52_limit = 1000\n");
         assert_eq!(s.clipboard_cmd, Some("xclip".to_string()));
         assert_eq!(s.osc52_limit, 1000);
         assert!(warnings.is_empty());
     }
 
     #[test]
-    fn load_ui_settings_wrong_types_degrade_to_defaults() {
-        let dir = tempdir().unwrap();
-        let p = dir.path().join("config.toml");
-        std::fs::write(&p, "clipboard_cmd = 5\nosc52_limit = \"not a number\"\n").unwrap();
-        let (s, _warnings) = load_ui_settings(&p);
+    fn ui_settings_wrong_types_degrade_to_defaults() {
+        let (s, _warnings) =
+            UiSettings::parse("clipboard_cmd = 5\nosc52_limit = \"not a number\"\n");
         assert_eq!(s, UiSettings::default());
     }
 
     #[test]
-    fn load_ui_settings_corrupt_file_is_default_with_a_warning() {
-        let dir = tempdir().unwrap();
-        let p = dir.path().join("config.toml");
-        std::fs::write(&p, "not valid toml [[[").unwrap();
-        let (s, warnings) = load_ui_settings(&p);
+    fn ui_settings_corrupt_text_is_default_with_a_warning() {
+        let (s, warnings) = UiSettings::parse("not valid toml [[[");
         assert_eq!(s, UiSettings::default());
         assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].contains("using default settings"),
+            "{warnings:?}"
+        );
     }
 
     #[test]
-    fn load_ui_settings_theme_is_a_raw_name_string() {
-        let dir = tempdir().unwrap();
-        let p = dir.path().join("config.toml");
-        std::fs::write(&p, "theme = \"gruvbox-dark\"\n").unwrap();
-        let (s, warnings) = load_ui_settings(&p);
+    fn ui_settings_theme_is_a_raw_name_string() {
+        let (s, warnings) = UiSettings::parse("theme = \"gruvbox-dark\"\n");
         assert_eq!(s.theme, "gruvbox-dark");
         assert!(
             warnings.is_empty(),
@@ -658,36 +878,41 @@ mod tests {
         let dir = tempdir().unwrap();
         let p = dir.path().join("config.toml");
         std::fs::write(&p, "clipboard_cmd = \"xclip\"\n\n[projects]\nknown = []\n").unwrap();
-        save_ui_theme(&p, "catppuccin-mocha").unwrap();
+        let mut cfg = Config {
+            disk: Some(postui_core::disk::Disk::new(dir.path().to_path_buf())),
+        };
+        cfg.save_ui_theme("catppuccin-mocha").unwrap();
         let text = std::fs::read_to_string(&p).unwrap();
         assert!(text.contains("theme = \"catppuccin-mocha\""), "{text}");
         assert!(text.contains("clipboard_cmd = \"xclip\""), "{text}");
         assert!(text.contains("[projects]"), "{text}");
-        let (s, _) = load_ui_settings(&p);
-        assert_eq!(s.theme, "catppuccin-mocha");
-        save_ui_theme(&p, "dark").unwrap();
-        let (s, _) = load_ui_settings(&p);
-        assert_eq!(s.theme, "dark", "overwrites an existing key");
+        assert_eq!(UiSettings::parse(&text).0.theme, "catppuccin-mocha");
+        cfg.save_ui_theme("dark").unwrap();
+        let text = std::fs::read_to_string(&p).unwrap();
+        assert_eq!(
+            UiSettings::parse(&text).0.theme,
+            "dark",
+            "overwrites an existing key"
+        );
     }
 
     #[test]
     fn save_ui_theme_creates_a_missing_file() {
         let dir = tempdir().unwrap();
-        let p = dir.path().join("sub").join("config.toml");
-        save_ui_theme(&p, "light").unwrap();
-        let (s, _) = load_ui_settings(&p);
-        assert_eq!(s.theme, "light");
+        let mut cfg = Config {
+            disk: Some(postui_core::disk::Disk::new(dir.path().join("sub"))),
+        };
+        cfg.save_ui_theme("light").unwrap();
+        let text = std::fs::read_to_string(dir.path().join("sub").join("config.toml")).unwrap();
+        assert_eq!(UiSettings::parse(&text).0.theme, "light");
     }
 
     #[test]
     fn ai_settings_default_and_parse() {
-        let dir = tempdir().unwrap();
-        let p = dir.path().join("config.toml");
-        let (s, _) = load_ui_settings(&p);
+        let (s, _) = UiSettings::parse("");
         assert_eq!(s.ai_cmd, "claude -p");
         assert!(!s.ai_confirmed);
-        std::fs::write(&p, "ai_cmd = \"my-llm --jq\"\nai_confirmed = true\n").unwrap();
-        let (s, warnings) = load_ui_settings(&p);
+        let (s, warnings) = UiSettings::parse("ai_cmd = \"my-llm --jq\"\nai_confirmed = true\n");
         assert_eq!(s.ai_cmd, "my-llm --jq");
         assert!(s.ai_confirmed);
         assert!(warnings.is_empty());
@@ -695,22 +920,18 @@ mod tests {
 
     #[test]
     fn jq_tab_defaults_to_menu_and_parses_cycle() {
-        let dir = tempdir().unwrap();
-        let p = dir.path().join("config.toml");
-        let (s, _) = load_ui_settings(&p);
-        assert_eq!(s.jq_tab, JqTab::Menu);
-        std::fs::write(&p, "jq_tab = \"cycle\"\n").unwrap();
-        let (s, warnings) = load_ui_settings(&p);
+        assert_eq!(UiSettings::parse("").0.jq_tab, JqTab::Menu);
+        let (s, warnings) = UiSettings::parse("jq_tab = \"cycle\"\n");
         assert_eq!(s.jq_tab, JqTab::Cycle);
         assert!(warnings.is_empty());
-        std::fs::write(&p, "jq_tab = \"accept\"\n").unwrap();
-        let (s, warnings) = load_ui_settings(&p);
+        let (s, warnings) = UiSettings::parse("jq_tab = \"accept\"\n");
         assert_eq!(s.jq_tab, JqTab::Menu, "the older name still works");
         assert!(warnings.is_empty());
-        std::fs::write(&p, "jq_tab = \"menu\"\n").unwrap();
-        assert_eq!(load_ui_settings(&p).0.jq_tab, JqTab::Menu);
-        std::fs::write(&p, "jq_tab = \"popup\"\n").unwrap();
-        let (s, warnings) = load_ui_settings(&p);
+        assert_eq!(
+            UiSettings::parse("jq_tab = \"menu\"\n").0.jq_tab,
+            JqTab::Menu
+        );
+        let (s, warnings) = UiSettings::parse("jq_tab = \"popup\"\n");
         assert_eq!(s.jq_tab, JqTab::Menu, "a bad value falls back");
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("jq_tab"), "{warnings:?}");
@@ -721,32 +942,29 @@ mod tests {
         let dir = tempdir().unwrap();
         let p = dir.path().join("config.toml");
         std::fs::write(&p, "theme = \"x\"\n\n[projects]\nknown = []\n").unwrap();
-        save_ui_flag(&p, "ai_confirmed", true).unwrap();
+        let mut cfg = Config {
+            disk: Some(postui_core::disk::Disk::new(dir.path().to_path_buf())),
+        };
+        cfg.save_ui_flag("ai_confirmed", true).unwrap();
         let text = std::fs::read_to_string(&p).unwrap();
         assert!(text.contains("ai_confirmed = true"), "{text}");
         assert!(
             text.contains("theme = \"x\"") && text.contains("[projects]"),
             "{text}"
         );
-        assert!(load_ui_settings(&p).0.ai_confirmed);
+        assert!(UiSettings::parse(&text).0.ai_confirmed);
     }
 
     #[test]
-    fn load_ui_settings_missing_theme_key_defaults_to_terminal() {
-        let dir = tempdir().unwrap();
-        let p = dir.path().join("config.toml");
-        std::fs::write(&p, "clipboard_cmd = \"xclip\"\n").unwrap();
-        let (s, warnings) = load_ui_settings(&p);
+    fn ui_settings_missing_theme_key_defaults_to_terminal() {
+        let (s, warnings) = UiSettings::parse("clipboard_cmd = \"xclip\"\n");
         assert_eq!(s.theme, "terminal");
         assert!(warnings.is_empty());
     }
 
     #[test]
     fn animations_key_parses_and_defaults_true() {
-        let dir = tempdir().unwrap();
-        let p = dir.path().join("config.toml");
-        std::fs::write(&p, "animations = false\n").unwrap();
-        let (s, warnings) = load_ui_settings(&p);
+        let (s, warnings) = UiSettings::parse("animations = false\n");
         assert!(!s.animations);
         assert!(warnings.is_empty());
         assert!(UiSettings::default().animations);
@@ -754,9 +972,7 @@ mod tests {
 
     #[test]
     fn animation_ms_defaults_without_a_table() {
-        let dir = tempdir().unwrap();
-        let p = dir.path().join("config.toml");
-        let (s, warnings) = load_ui_settings(&p);
+        let (s, warnings) = UiSettings::parse("");
         assert_eq!(s.anim_ms, AnimDurations::default());
         assert_eq!(s.anim_ms.tab_slide, Duration::from_millis(250));
         assert_eq!(s.anim_ms.hover, Duration::from_millis(70));
@@ -772,10 +988,7 @@ mod tests {
 
     #[test]
     fn animation_ms_table_overrides_one_key_and_defaults_the_rest() {
-        let dir = tempdir().unwrap();
-        let p = dir.path().join("config.toml");
-        std::fs::write(&p, "[animation_ms]\ntab_slide = 400\n").unwrap();
-        let (s, warnings) = load_ui_settings(&p);
+        let (s, warnings) = UiSettings::parse("[animation_ms]\ntab_slide = 400\n");
         assert_eq!(s.anim_ms.tab_slide, Duration::from_millis(400));
         assert_eq!(s.anim_ms.hover, Duration::from_millis(70));
         assert_eq!(s.anim_ms.focus, Duration::from_millis(90));
@@ -790,10 +1003,7 @@ mod tests {
 
     #[test]
     fn animation_ms_table_can_override_every_key() {
-        let dir = tempdir().unwrap();
-        let p = dir.path().join("config.toml");
-        std::fs::write(
-            &p,
+        let (s, warnings) = UiSettings::parse(
             "[animation_ms]\n\
              tab_slide = 1\n\
              hover = 2\n\
@@ -804,9 +1014,7 @@ mod tests {
              pane_collapse = 7\n\
              toast = 8\n\
              send_breathe = 9\n",
-        )
-        .unwrap();
-        let (s, warnings) = load_ui_settings(&p);
+        );
         assert_eq!(
             s.anim_ms,
             AnimDurations {
@@ -826,10 +1034,7 @@ mod tests {
 
     #[test]
     fn animation_ms_unknown_key_warns_and_is_ignored() {
-        let dir = tempdir().unwrap();
-        let p = dir.path().join("config.toml");
-        std::fs::write(&p, "[animation_ms]\nbogus = 5\n").unwrap();
-        let (s, warnings) = load_ui_settings(&p);
+        let (s, warnings) = UiSettings::parse("[animation_ms]\nbogus = 5\n");
         assert_eq!(s.anim_ms, AnimDurations::default());
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("bogus"));
@@ -840,10 +1045,7 @@ mod tests {
     /// with no warning.
     #[test]
     fn animation_ms_non_integer_value_warns_and_defaults() {
-        let dir = tempdir().unwrap();
-        let p = dir.path().join("config.toml");
-        std::fs::write(&p, "[animation_ms]\nhover = \"fast\"\n").unwrap();
-        let (s, warnings) = load_ui_settings(&p);
+        let (s, warnings) = UiSettings::parse("[animation_ms]\nhover = \"fast\"\n");
         assert_eq!(s.anim_ms, AnimDurations::default());
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("hover"));
@@ -853,10 +1055,7 @@ mod tests {
     /// non-integer does, and must warn rather than silently default.
     #[test]
     fn animation_ms_negative_value_warns_and_defaults() {
-        let dir = tempdir().unwrap();
-        let p = dir.path().join("config.toml");
-        std::fs::write(&p, "[animation_ms]\nhover = -5\n").unwrap();
-        let (s, warnings) = load_ui_settings(&p);
+        let (s, warnings) = UiSettings::parse("[animation_ms]\nhover = -5\n");
         assert_eq!(s.anim_ms, AnimDurations::default());
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("hover"));

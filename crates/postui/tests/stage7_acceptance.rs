@@ -72,7 +72,7 @@ fn seed(app: &mut App, slugs: &[&str]) {
     // Every request lives in a space; these all go in the default one, so
     // call sites can keep speaking bare names.
     for slug in slugs {
-        postui_core::storage::save_request(&app.project.root, &format!("main/{slug}"), &req)
+        postui_core::fixtures::save_request(app.proj().root(), &format!("main/{slug}"), &req)
             .unwrap();
     }
     app.update(Action::RefreshSidebar);
@@ -99,9 +99,7 @@ fn expand_all(app: &mut App) {
 /// Writes a request file that cannot parse, so the sidebar lists it as a
 /// broken row.
 fn seed_broken(app: &mut App, slug: &str) {
-    let path = app
-        .project
-        .root
+    let path = app.proj().root()
         .join("requests")
         .join("main")
         .join(format!("{slug}.toml"));
@@ -149,8 +147,8 @@ fn right_click_sidebar_row_opens_menu_and_duplicate_creates_copy() {
     );
 
     press(&mut app, Hit::DropdownRow(1), left_down);
-    assert!(postui_core::storage::request_exists(
-        &app.project.root,
+    assert!(postui_core::fixtures::request_exists(
+        app.proj().root(),
         "main/users/list-copy"
     ));
     assert_eq!(app.editor.slug.as_deref(), Some("main/users/list-copy"));
@@ -267,8 +265,8 @@ fn context_menu_is_keyboard_navigable() {
     // Open, Duplicate — one Down lands on Duplicate.
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert!(postui_core::storage::request_exists(
-        &app.project.root,
+    assert!(postui_core::fixtures::request_exists(
+        app.proj().root(),
         "main/users/list-copy"
     ));
 }
@@ -345,8 +343,8 @@ fn duplicate_request_action_acts_on_the_selected_row() {
     expand_all(&mut app);
     app.sidebar.selected = Some(row_index_of(&app, "users/list"));
     app.update(Action::DuplicateRequest);
-    assert!(postui_core::storage::request_exists(
-        &app.project.root,
+    assert!(postui_core::fixtures::request_exists(
+        app.proj().root(),
         "main/users/list-copy"
     ));
     assert_eq!(app.editor.slug.as_deref(), Some("main/users/list-copy"));
@@ -354,8 +352,8 @@ fn duplicate_request_action_acts_on_the_selected_row() {
     // A second duplicate of the original does not collide.
     app.sidebar.selected = Some(row_index_of(&app, "users/list"));
     app.update(Action::DuplicateRequest);
-    assert!(postui_core::storage::request_exists(
-        &app.project.root,
+    assert!(postui_core::fixtures::request_exists(
+        app.proj().root(),
         "main/users/list-copy-2"
     ));
 }
@@ -382,7 +380,7 @@ type TestApp = (App, tempfile::TempDir, UnboundedReceiver<Action>);
 
 fn app_in_project(files: &[(&str, &str)]) -> TestApp {
     let dir = tempfile::tempdir().unwrap();
-    postui_core::project::init_project(dir.path(), Some("svc")).unwrap();
+    postui_core::fixtures::init_project(dir.path(), Some("svc")).unwrap();
     // A scenario that brings its own environments stands in for a project
     // whose author replaced the stock `default`; keep only theirs.
     if files
@@ -459,7 +457,7 @@ fn a_request_is_opened_edited_and_saved_with_nothing_but_clicks() {
     // ...and clicking it writes the file.
     click(&mut app, Hit::FooterChip(Action::SaveRequest));
     assert!(!app.editor.is_dirty(), "the click saved");
-    let on_disk = postui_core::storage::load_request(&app.project.root, "main/ping").unwrap();
+    let on_disk = postui_core::fixtures::load_request(app.proj().root(), "main/ping").unwrap();
     assert_eq!(on_disk.method, postui_core::model::Method::Post);
 }
 
@@ -534,13 +532,11 @@ fn the_headers_tab_shows_defaults_auto_content_type_and_host_resolved() {
 #[test]
 fn hovering_a_url_token_pops_its_value_and_scope() {
     let mut app = App::new_for_test();
-    app.project
-        .edit_variables(|_| Ok("[base_url]\ndefault = \"http://fallback\"\n".to_string()))
+    app.proj_mut().edit_variables(|_| Ok("[base_url]\ndefault = \"http://fallback\"\n".to_string()))
         .unwrap();
-    app.project
-        .edit_env("qa", |_| Ok("base_url = \"http://qa.test\"\n".to_string()))
+    app.proj_mut().edit_env("qa", |_| Ok("base_url = \"http://qa.test\"\n".to_string()))
         .unwrap();
-    app.project.set_env(Some("qa".into()));
+    app.proj_mut().set_active_env(Some("qa".into()));
     app.editor.url = postui::components::line_input::LineInput::new("{{base_url}}/x");
     app.update(Action::Render);
 
@@ -632,14 +628,14 @@ fn a_legacy_project_migrates_then_grows_a_group_whose_selection_drives_resolutio
     assert_eq!(title, "Migrate variables");
     click(&mut app, Hit::ConfirmChoice('y'));
     assert!(app.modals.is_empty(), "answering closes the prompt");
-    assert!(app.project.pending_migration().is_none());
+    assert!(app.proj().pending_migration().is_none());
     assert_eq!(
-        app.project.model.selectors["user"].fields,
+        app.proj().variables().selectors["user"].fields,
         ["user_id", "customer_id"],
         "`members` became `fields`"
     );
     assert!(
-        app.project.model.selectors.contains_key("tier"),
+        app.proj().variables().selectors.contains_key("tier"),
         "the enumerated variable became a one-field group"
     );
 
@@ -651,10 +647,10 @@ fn a_legacy_project_migrates_then_grows_a_group_whose_selection_drives_resolutio
     // header's env chip — still on screen above the Manager — is the
     // mouse path: the chip opens an anchored dropdown; one click on `qa`
     // (row 0) activates it and closes the menu.
-    assert_eq!(app.project.active_env.as_deref(), Some("qa"));
+    assert_eq!(app.proj().active_env(), Some("qa"));
     click(&mut app, Hit::HeaderEnv);
     click(&mut app, Hit::DropdownRow(0));
-    assert_eq!(app.project.active_env.as_deref(), Some("qa"));
+    assert_eq!(app.proj().active_env(), Some("qa"));
     assert!(app.modals.is_empty());
     let keymap = Keymap::default_bindings();
 
@@ -668,7 +664,7 @@ fn a_legacy_project_migrates_then_grows_a_group_whose_selection_drives_resolutio
         "creating a selector opens nothing else"
     );
     assert_eq!(
-        app.project.model.selectors["region"].fields,
+        app.proj().variables().selectors["region"].fields,
         ["region"],
         "the field defaults to the selector's own name"
     );
@@ -688,7 +684,7 @@ fn a_legacy_project_migrates_then_grows_a_group_whose_selection_drives_resolutio
     type_text(&mut app, &keymap, "dc");
     key(&mut app, &keymap, KeyCode::Enter);
     assert_eq!(
-        app.project.model.selectors["region"].fields,
+        app.proj().variables().selectors["region"].fields,
         ["zone", "dc"],
         "the fields editor renames and adds in one apply"
     );
@@ -696,27 +692,27 @@ fn a_legacy_project_migrates_then_grows_a_group_whose_selection_drives_resolutio
     // --- two entries, typed into the ghost row ---
     add_entry(&mut app, &keymap, &["eu", "eu-west-1", "dub"]);
     add_entry(&mut app, &keymap, &["us", "us-east-1", "iad"]);
-    let entries = postui_core::varmodel::selector_options(&app.project.env_data, "region")
+    let entries = postui_core::varmodel::selector_options(app.proj().env_data(), "region")
         .expect("the group has entries in qa");
     assert_eq!(entries.keys().collect::<Vec<_>>(), ["eu", "us"]);
     assert_eq!(entries["us"].values["dc"], "iad");
 
     // Until one is picked, the group's fields do not resolve at all.
     assert!(
-        !app.project.resolved.values.contains_key("zone"),
+        !app.proj().resolved().values.contains_key("zone"),
         "no selection means no value — that is the point of the model"
     );
 
     // --- flip the selection with the radio column ---
     click(&mut app, Hit::VmEntryRadio(0));
-    assert_eq!(app.project.resolved.values["zone"], "eu-west-1");
-    assert_eq!(app.project.resolved.values["dc"], "dub");
+    assert_eq!(app.proj().resolved().values["zone"], "eu-west-1");
+    assert_eq!(app.proj().resolved().values["dc"], "dub");
     click(&mut app, Hit::VmEntryRadio(1));
     assert_eq!(
-        app.project.resolved.values["zone"], "us-east-1",
+        app.proj().resolved().values["zone"], "us-east-1",
         "flipping the radio re-resolves every field of the group at once"
     );
-    assert_eq!(app.project.resolved.values["dc"], "iad");
+    assert_eq!(app.proj().resolved().values["dc"], "iad");
 
     // ...and the request sees it: a `{{zone}}` token in the URL resolves.
     click(&mut app, Hit::FooterChip(Action::CloseScreen));
@@ -781,7 +777,7 @@ async fn a_three_megabyte_json_body_spins_on_the_tree_tab_and_shows_it_when_it_p
         .await;
 
     let dir = tempfile::tempdir().unwrap();
-    postui_core::project::init_project(dir.path(), Some("svc")).unwrap();
+    postui_core::fixtures::init_project(dir.path(), Some("svc")).unwrap();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     app.editor.url =

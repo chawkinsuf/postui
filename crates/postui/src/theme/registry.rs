@@ -4,7 +4,6 @@
 use super::builtin::builtin_themes;
 use super::osc::QueriedColors;
 use super::{Seeds, Theme, seeds_from_queried};
-use std::path::Path;
 
 /// Where a registry entry's seeds come from.
 pub enum ThemeSource {
@@ -55,30 +54,21 @@ impl ThemeRegistry {
         Self { entries }
     }
 
-    /// `builtin()` plus every parseable `*.toml` in `themes_dir`. Returns
-    /// one warning per malformed file; a missing/unreadable dir (or `None`)
-    /// is silently just the built-ins.
-    pub fn load(themes_dir: Option<&Path>) -> (Self, Vec<String>) {
+    /// `builtin()` plus every parseable theme file in `files`, given as
+    /// `(file name, contents)` pairs (the reading is `Config`'s business).
+    /// Returns one warning per malformed file; no files at all is silently
+    /// just the built-ins.
+    pub fn from_files(files: Vec<(String, String)>) -> (Self, Vec<String>) {
         let mut registry = Self::builtin();
         let mut warnings = Vec::new();
-        let Some(dir) = themes_dir else {
-            return (registry, warnings);
-        };
-        let Ok(read) = std::fs::read_dir(dir) else {
-            return (registry, warnings);
-        };
         let mut customs: Vec<ThemeEntry> = Vec::new();
-        for entry in read.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("toml") {
-                continue;
-            }
-            match parse_theme_file(&path) {
+        for (file_name, text) in files {
+            match parse_theme_text(&text) {
                 Ok((label, counterpart, seeds)) => {
-                    let name = path
-                        .file_stem()
-                        .map(|s| s.to_string_lossy().into_owned())
-                        .unwrap_or_default();
+                    let name = file_name
+                        .strip_suffix(".toml")
+                        .unwrap_or(&file_name)
+                        .to_string();
                     customs.push(ThemeEntry {
                         label: label.unwrap_or_else(|| name.clone()),
                         counterpart: counterpart.or_else(|| conventional_counterpart(&name)),
@@ -86,10 +76,7 @@ impl ThemeRegistry {
                         source: ThemeSource::Custom(seeds),
                     });
                 }
-                Err(e) => warnings.push(format!(
-                    "theme file {}: {e}; skipped",
-                    path.file_name().unwrap_or_default().to_string_lossy()
-                )),
+                Err(e) => warnings.push(format!("theme file {file_name}: {e}; skipped")),
             }
         }
         customs.sort_by(|a, b| a.name.cmp(&b.name));
@@ -177,14 +164,13 @@ fn conventional_counterpart(name: &str) -> Option<String> {
     }
 }
 
-/// Parses one custom theme file: six required `#rrggbb` color keys plus an
-/// optional `name` display label and an optional `counterpart` (the name
-/// of the theme its light/dark switch should land on, overriding the stem
-/// convention). Any missing or malformed required piece fails the whole
-/// file — no partial themes.
-fn parse_theme_file(path: &Path) -> Result<(Option<String>, Option<String>, Seeds), String> {
-    let contents = std::fs::read_to_string(path).map_err(|e| format!("unreadable: {e}"))?;
-    let value: toml::Value = toml::from_str(&contents).map_err(|_| "invalid TOML".to_string())?;
+/// Parses one custom theme file's text: six required `#rrggbb` color keys
+/// plus an optional `name` display label and an optional `counterpart`
+/// (the name of the theme its light/dark switch should land on, overriding
+/// the stem convention). Any missing or malformed required piece fails the
+/// whole file — no partial themes.
+fn parse_theme_text(text: &str) -> Result<(Option<String>, Option<String>, Seeds), String> {
+    let value: toml::Value = toml::from_str(text).map_err(|_| "invalid TOML".to_string())?;
     let color = |key: &str| -> Result<(u8, u8, u8), String> {
         let raw = value
             .get(key)
@@ -227,7 +213,6 @@ mod tests {
     use super::*;
     use crate::theme::osc::QueriedColors;
     use ratatui::style::Color;
-    use tempfile::tempdir;
 
     #[test]
     fn builtin_registry_lists_terminal_first_then_the_seven_builtins() {
@@ -264,35 +249,30 @@ mod tests {
     /// unpaired.
     #[test]
     fn custom_counterparts_by_convention_key_and_validation() {
-        let dir = tempdir().unwrap();
         let seeds_body = "fg = \"#e2e2e6\"\naccent = \"#0178d4\"\n\
              success = \"#9ece6a\"\nwarning = \"#e0af68\"\nerror = \"#f7768e\"\n";
-        std::fs::write(
-            dir.path().join("zebra-dark.toml"),
-            format!("bg = \"#101418\"\n{seeds_body}"),
-        )
-        .unwrap();
-        std::fs::write(
-            dir.path().join("zebra-light.toml"),
-            format!("bg = \"#fafafa\"\n{seeds_body}"),
-        )
-        .unwrap();
-        std::fs::write(
-            dir.path().join("noir.toml"),
-            format!("counterpart = \"gruvbox-light\"\nbg = \"#000000\"\n{seeds_body}"),
-        )
-        .unwrap();
-        std::fs::write(
-            dir.path().join("dangling-dark.toml"),
-            format!("bg = \"#000005\"\n{seeds_body}"),
-        )
-        .unwrap();
-        std::fs::write(
-            dir.path().join("lone.toml"),
-            format!("bg = \"#000009\"\n{seeds_body}"),
-        )
-        .unwrap();
-        let (r, warnings) = ThemeRegistry::load(Some(dir.path()));
+        let (r, warnings) = ThemeRegistry::from_files(vec![
+            (
+                "zebra-dark.toml".into(),
+                format!("bg = \"#101418\"\n{seeds_body}"),
+            ),
+            (
+                "zebra-light.toml".into(),
+                format!("bg = \"#fafafa\"\n{seeds_body}"),
+            ),
+            (
+                "noir.toml".into(),
+                format!("counterpart = \"gruvbox-light\"\nbg = \"#000000\"\n{seeds_body}"),
+            ),
+            (
+                "dangling-dark.toml".into(),
+                format!("bg = \"#000005\"\n{seeds_body}"),
+            ),
+            (
+                "lone.toml".into(),
+                format!("bg = \"#000009\"\n{seeds_body}"),
+            ),
+        ]);
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(
             r.get("zebra-dark").unwrap().counterpart.as_deref(),
@@ -348,21 +328,21 @@ mod tests {
     }
 
     #[test]
-    fn load_parses_a_valid_custom_file_and_sorts_customs_by_name() {
-        let dir = tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("zebra.toml"),
-            "bg = \"#101418\"\nfg = \"#e2e2e6\"\naccent = \"#0178d4\"\n\
-             success = \"#9ece6a\"\nwarning = \"#e0af68\"\nerror = \"#f7768e\"\n",
-        )
-        .unwrap();
-        std::fs::write(
-            dir.path().join("aardvark.toml"),
-            "name = \"Aard Vark\"\nbg = \"#000000\"\nfg = \"#ffffff\"\naccent = \"#0178d4\"\n\
-             success = \"#9ece6a\"\nwarning = \"#e0af68\"\nerror = \"#f7768e\"\n",
-        )
-        .unwrap();
-        let (r, warnings) = ThemeRegistry::load(Some(dir.path()));
+    fn from_files_parses_a_valid_custom_file_and_sorts_customs_by_name() {
+        let (r, warnings) = ThemeRegistry::from_files(vec![
+            (
+                "zebra.toml".into(),
+                "bg = \"#101418\"\nfg = \"#e2e2e6\"\naccent = \"#0178d4\"\n\
+                 success = \"#9ece6a\"\nwarning = \"#e0af68\"\nerror = \"#f7768e\"\n"
+                    .into(),
+            ),
+            (
+                "aardvark.toml".into(),
+                "name = \"Aard Vark\"\nbg = \"#000000\"\nfg = \"#ffffff\"\naccent = \"#0178d4\"\n\
+                 success = \"#9ece6a\"\nwarning = \"#e0af68\"\nerror = \"#f7768e\"\n"
+                    .into(),
+            ),
+        ]);
         assert!(warnings.is_empty(), "{warnings:?}");
         let customs: Vec<&str> = r
             .entries()
@@ -390,37 +370,35 @@ mod tests {
     }
 
     #[test]
-    fn load_skips_bad_files_with_a_warning_each() {
-        let dir = tempdir().unwrap();
-        std::fs::write(dir.path().join("nokey.toml"), "bg = \"#101418\"\n").unwrap();
-        std::fs::write(
-            dir.path().join("badhex.toml"),
-            "bg = \"purple\"\nfg = \"#e2e2e6\"\naccent = \"#0178d4\"\n\
-             success = \"#9ece6a\"\nwarning = \"#e0af68\"\nerror = \"#f7768e\"\n",
-        )
-        .unwrap();
-        std::fs::write(dir.path().join("notes.txt"), "not a theme").unwrap();
-        let (r, warnings) = ThemeRegistry::load(Some(dir.path()));
-        assert_eq!(
-            warnings.len(),
-            2,
-            "one warning per bad .toml; non-toml ignored: {warnings:?}"
-        );
+    fn from_files_skips_bad_files_with_a_warning_each() {
+        let (r, warnings) = ThemeRegistry::from_files(vec![
+            ("nokey.toml".into(), "bg = \"#101418\"\n".into()),
+            (
+                "bad.toml".into(),
+                "bg = \"purple\"\nfg = \"#e2e2e6\"\naccent = \"#0178d4\"\n\
+                 success = \"#9ece6a\"\nwarning = \"#e0af68\"\nerror = \"#f7768e\"\n"
+                    .into(),
+            ),
+            ("invalid.toml".into(), "not valid { toml".into()),
+        ]);
+        assert_eq!(warnings.len(), 3, "one warning per bad file: {warnings:?}");
         assert!(warnings.iter().any(|w| w.contains("nokey")));
-        assert!(warnings.iter().any(|w| w.contains("badhex")));
+        assert!(warnings.iter().any(|w| w.contains("bad.toml")));
+        assert!(
+            warnings.contains(&"theme file invalid.toml: invalid TOML; skipped".to_string()),
+            "{warnings:?}"
+        );
         assert_eq!(r.entries().len(), 9, "builtins only");
     }
 
     #[test]
     fn custom_file_shadows_a_builtin_of_the_same_name_in_place() {
-        let dir = tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("dark.toml"),
+        let (r, warnings) = ThemeRegistry::from_files(vec![(
+            "dark.toml".into(),
             "bg = \"#000000\"\nfg = \"#ffffff\"\naccent = \"#0178d4\"\n\
-             success = \"#9ece6a\"\nwarning = \"#e0af68\"\nerror = \"#f7768e\"\n",
-        )
-        .unwrap();
-        let (r, warnings) = ThemeRegistry::load(Some(dir.path()));
+             success = \"#9ece6a\"\nwarning = \"#e0af68\"\nerror = \"#f7768e\"\n"
+                .into(),
+        )]);
         assert!(
             warnings.is_empty(),
             "shadowing is deliberate, no warning: {warnings:?}"
@@ -449,12 +427,9 @@ mod tests {
     }
 
     #[test]
-    fn load_missing_dir_is_builtins_with_no_warnings() {
-        let (r, warnings) = ThemeRegistry::load(Some(std::path::Path::new("/nonexistent/themes")));
+    fn no_files_is_builtins_with_no_warnings() {
+        let (r, warnings) = ThemeRegistry::from_files(Vec::new());
         assert!(warnings.is_empty());
         assert_eq!(r.entries().len(), 9);
-        let (r2, w2) = ThemeRegistry::load(None);
-        assert!(w2.is_empty());
-        assert_eq!(r2.entries().len(), 9);
     }
 }

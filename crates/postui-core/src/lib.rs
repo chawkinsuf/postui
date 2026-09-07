@@ -25,14 +25,20 @@ pub fn config_dir() -> Option<std::path::PathBuf> {
 }
 
 pub mod jq;
+pub mod disk;
+pub mod fixtures;
+#[cfg(any(test, feature = "test-util"))]
+pub mod fs_lint;
+pub mod journal;
 pub mod json;
 pub mod migrate;
 pub mod model;
 pub mod order;
 pub mod prepare;
+/// The open project. `project::Project` owns every read and write of
+/// project files; the modules beside it hold only pure helpers.
 pub mod project;
 pub mod storage;
-pub mod trash;
 pub mod varedit;
 pub mod varmodel;
 pub mod vars;
@@ -54,5 +60,15 @@ mod tests {
             dir.file_name().and_then(|n| n.to_str()),
             Some(super::APP_NAME)
         );
+    }
+}
+
+#[cfg(test)]
+mod fs_lint_test {
+    #[test]
+    fn std_fs_appears_only_in_disk_and_test_code() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let hits = crate::fs_lint::check(&src, &["disk.rs", "fs_lint.rs", "fixtures.rs"]);
+        assert!(hits.is_empty(), "std::fs outside Disk:\n{}", hits.join("\n"));
     }
 }

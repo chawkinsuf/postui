@@ -59,9 +59,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let mut hits = std::mem::take(&mut app.hits);
     hits.clear();
 
-    let project_name = app.project.display_name();
-    let env_label = app.project.env_label_display();
-    let space_label = app.project.space_name(&app.project.active_space);
+    let project_name = app.display_name();
+    let env_label = app.env_label_display();
+    let space_label = app.space_name(&app.active_space());
     crate::components::header_bar::draw_header(
         frame,
         layout.header,
@@ -99,10 +99,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             // the active tab -- there's nothing on screen to read it on any
             // other tab, so skip the two prepare_context-driven passes.
             if app.editor.active_tab == crate::components::editor::EditorTab::Headers {
-                let prepare_ctx = app.project.prepare_context();
+                let prepare_ctx = app.prepare_context();
                 app.editor.recompute_computed_headers(&prepare_ctx);
             }
-            app.editor.env_tls = app.project.env_tls();
+            app.editor.env_tls = app.env_tls();
             let hovered = app.hovered.as_ref();
             let dragged_pane = app.drag.as_ref().map(|d| d.pane);
             let modal_open = app.modals.top().is_some();
@@ -183,28 +183,48 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                         .slug
                         .is_some()
                         .then(|| app.editor.current_request());
-                    app.varmanager.draw(
-                        frame,
-                        body,
-                        &app.theme,
-                        &app.project,
-                        open_request.as_ref(),
-                        &mut hits,
-                        app.hovered.as_ref(),
-                    );
+                    let App {
+                        theme,
+                        varmanager,
+                        project,
+                        hovered,
+                        ..
+                    } = app;
+                    match project.as_ref() {
+                        Some(p) => varmanager.draw(
+                            frame,
+                            body,
+                            theme,
+                            p,
+                            open_request.as_ref(),
+                            &mut hits,
+                            hovered.as_ref(),
+                        ),
+                        None => draw_manage_without_a_project(frame, body, theme),
+                    }
                 }
                 tab => {
                     let requests = app.sidebar.space_requests();
-                    app.manage.list.draw(
-                        frame,
-                        body,
-                        &app.theme,
-                        tab,
-                        &app.project,
-                        &requests,
-                        &mut hits,
-                        app.hovered.as_ref(),
-                    );
+                    let App {
+                        theme,
+                        manage,
+                        project,
+                        hovered,
+                        ..
+                    } = app;
+                    match project.as_ref() {
+                        Some(p) => manage.list.draw(
+                            frame,
+                            body,
+                            theme,
+                            tab,
+                            p,
+                            &requests,
+                            &mut hits,
+                            hovered.as_ref(),
+                        ),
+                        None => draw_manage_without_a_project(frame, body, theme),
+                    }
                 }
             }
         }
@@ -254,9 +274,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         (app.screen == Screen::Manage).then(|| {
             if app.manage.tab != crate::components::manage::ManageTab::Variables {
                 return app
-                    .manage
-                    .list
-                    .footer_chips(app.manage.tab, &app.project)
+                    .project()
+                    .map(|p| app.manage.list.footer_chips(app.manage.tab, p))
+                    .unwrap_or_default()
                     .into_iter()
                     .map(|(k, l, a)| (k.to_string(), l.to_string(), a))
                     .collect();
@@ -266,8 +286,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 .slug
                 .is_some()
                 .then(|| app.editor.current_request());
-            app.varmanager
-                .footer_chips(&app.project, open_request.as_ref())
+            app.project()
+                .map(|p| app.varmanager.footer_chips(p, open_request.as_ref()))
+                .unwrap_or_default()
                 .into_iter()
                 .map(|(k, l, a)| (k.to_string(), l.to_string(), a))
                 .collect()
@@ -633,6 +654,25 @@ fn focus_bar(
             cell.set_fg(theme.focus_ring);
         }
     }
+}
+
+/// The Manage screen's body with no project open. Both tabs are built
+/// around `&Project`, so there is nothing to list — but the screen is
+/// reachable (`Action::OpenManage` is not gated), and an unpainted body
+/// would show raw terminal default where the themed page belongs. Paints
+/// the page and says why it is empty, in the same words the write gate
+/// uses.
+fn draw_manage_without_a_project(
+    frame: &mut ratatui::Frame,
+    body: ratatui::layout::Rect,
+    theme: &crate::theme::Theme,
+) {
+    use crate::paint::{fill, text};
+    fill(frame.buffer_mut(), body, theme.page);
+    const MSG: &str = "no project is open \u{2014} open or create one first";
+    let x = body.x + body.width.saturating_sub(MSG.chars().count() as u16) / 2;
+    let y = body.y + body.height / 3;
+    text(frame.buffer_mut(), x, y, MSG, theme.text_muted, theme.page, false);
 }
 
 #[cfg(test)]
