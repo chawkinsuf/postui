@@ -62,6 +62,7 @@ pub struct EntryMeta {
 pub enum MergeKey {
     RequestOrder { space: String, slug: String },
     SpaceOrder { name: String },
+    EnvOrder { name: String },
 }
 
 /// Identity of one journal entry for the life of the `Project`. The app's

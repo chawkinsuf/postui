@@ -90,7 +90,7 @@ impl Project {
         self.transaction("create space", EntryMeta::default(), |p| {
             p.fs_create_dir(&space_rel(&slug)?)?;
             p.edit_project_toml(|doc| {
-                doc["spaces"] = toml_edit::value(meta::spaces_array(&spaces));
+                doc["spaces"] = toml_edit::value(meta::slug_array(&spaces));
                 meta::set_item_name(doc, meta::Kind::Space, &slug, &display);
             })?;
             p.refresh_spaces();
@@ -137,7 +137,7 @@ impl Project {
                 p.fs_create_dir(&to_dir)?;
             }
             p.edit_project_toml(|doc| {
-                doc["spaces"] = toml_edit::value(meta::spaces_array(&spaces));
+                doc["spaces"] = toml_edit::value(meta::slug_array(&spaces));
                 meta::move_item_table(doc, meta::Kind::Space, &from, &to);
                 meta::set_item_name(doc, meta::Kind::Space, &to, &display);
             })?;
@@ -188,7 +188,7 @@ impl Project {
         };
         self.transaction("delete space", meta, |p| {
             p.edit_project_toml(|doc| {
-                doc["spaces"] = toml_edit::value(meta::spaces_array(&spaces));
+                doc["spaces"] = toml_edit::value(meta::slug_array(&spaces));
                 meta::remove_item_table(doc, meta::Kind::Space, &name);
             })?;
             let dir = space_rel(&name)?;
@@ -226,7 +226,7 @@ impl Project {
         let after = meta::displayed_spaces(&spaces);
         let key = MergeKey::SpaceOrder { name: name.to_string() };
         self.transaction_merging("move space", key, |p| {
-            p.edit_project_toml(|doc| doc["spaces"] = toml_edit::value(meta::spaces_array(&spaces)))?;
+            p.edit_project_toml(|doc| doc["spaces"] = toml_edit::value(meta::slug_array(&spaces)))?;
             p.refresh_spaces();
             Ok(())
         })?;
@@ -257,7 +257,7 @@ impl Project {
             spaces[*slot] = name.clone();
         }
         self.transaction("reorder spaces", EntryMeta::default(), |p| {
-            p.edit_project_toml(|doc| doc["spaces"] = toml_edit::value(meta::spaces_array(&spaces)))?;
+            p.edit_project_toml(|doc| doc["spaces"] = toml_edit::value(meta::slug_array(&spaces)))?;
             p.refresh_spaces();
             Ok(())
         })?;

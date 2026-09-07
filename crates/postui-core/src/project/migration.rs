@@ -13,7 +13,7 @@ pub(super) fn probe(disk: &mut Disk) -> (bool, Option<MigrationOutcome>, Vec<War
         .unwrap_or_default();
     // A listing that fails reads as "no environments" here only; `open`
     // lists again right after and refuses on the same error.
-    let envs: Vec<(String, String)> = Project::list_environments(disk)
+    let envs: Vec<(String, String)> = Project::environment_files(disk)
         .unwrap_or_default()
         .into_iter()
         .map(|env| {

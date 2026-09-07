@@ -124,6 +124,9 @@ pub struct Project {
     /// `project.toml` entries that are not valid space names, joined;
     /// re-derived by every `refresh_spaces`.
     spaces_warning: Option<String>,
+    /// `project.toml` entries that are not valid environment names,
+    /// joined; re-derived by every `refresh_environments`.
+    environments_warning: Option<String>,
     listing: Vec<RequestListing>,
     listing_warning: Option<String>,
     /// Requests loaded on demand, held while open (Task 7).
@@ -172,6 +175,7 @@ struct Memory {
     resolved: Resolved,
     spaces: Vec<String>,
     spaces_warning: Option<String>,
+    environments_warning: Option<String>,
     local: Local,
     /// Slugs held in `open_requests` with their seed stamp (bodies are
     /// re-read by `reload_held_requests`, not snapshotted here).
@@ -291,6 +295,12 @@ impl Project {
         self.spaces_warning.as_deref()
     }
 
+    /// `project.toml` entries that are not valid environment names,
+    /// joined; the app toasts it once per change.
+    pub fn environments_warning(&self) -> Option<&str> {
+        self.environments_warning.as_deref()
+    }
+
     pub fn space_name(&self, slug: &str) -> String {
         meta::space_display(&self.meta, slug)
     }
@@ -375,6 +385,7 @@ impl Project {
             resolved: self.resolved.clone(),
             spaces: self.spaces.clone(),
             spaces_warning: self.spaces_warning.clone(),
+            environments_warning: self.environments_warning.clone(),
             local: self.local.clone(),
             open_request_stamps: self.open_requests.iter().map(|(k, h)| (k.clone(), h.stamp)).collect(),
         }
@@ -390,6 +401,7 @@ impl Project {
         self.resolved = m.resolved;
         self.spaces = m.spaces;
         self.spaces_warning = m.spaces_warning;
+        self.environments_warning = m.environments_warning;
         self.local = m.local;
         self.open_requests = m
             .open_request_stamps
@@ -836,21 +848,55 @@ impl Project {
         }
     }
 
-    /// The environment slugs under `environments/`. A missing directory
-    /// is empty; one that fails to list is an error, never an empty list
-    /// — `open` would otherwise take it for "no environments" and create
-    /// a `default` the user never asked for.
-    fn list_environments(disk: &mut Disk) -> Result<Vec<String>, DiskError> {
+    /// The environment slugs that have a file under `environments/`,
+    /// alphabetically. A missing directory is empty; one that fails to
+    /// list is an error, never an empty list — `open` would otherwise
+    /// take it for "no environments" and create a `default` the user
+    /// never asked for.
+    fn environment_files(disk: &mut Disk) -> Result<Vec<String>, DiskError> {
         let dir = RelPath::new(ENVIRONMENTS_DIR)?;
         let mut out: Vec<String> = disk
             .list(&dir)?
             .into_iter()
             .filter(|e| !e.is_dir)
             .filter_map(|e| e.name.strip_suffix(".toml").map(str::to_string))
-            .filter(|stem| !stem.contains('/') && crate::storage::validate_slug(stem).is_ok())
+            .filter(|stem| meta::valid_env_name(stem))
             .collect();
         out.sort();
         Ok(out)
+    }
+
+    /// `meta.environments` first (invalid names skipped, duplicates
+    /// dropped, names with no file skipped), then the unlisted files
+    /// alphabetically. No array means the plain alphabetical listing.
+    fn list_environments(
+        disk: &mut Disk,
+        meta: &ProjectMeta,
+    ) -> Result<(Vec<String>, Vec<Warning>), DiskError> {
+        let files = Self::environment_files(disk)?;
+        let mut out: Vec<String> = Vec::new();
+        let mut skipped: Vec<String> = Vec::new();
+        for name in &meta.environments {
+            if !meta::valid_env_name(name) {
+                if !skipped.contains(name) {
+                    skipped.push(name.clone());
+                }
+                continue;
+            }
+            if files.contains(name) && !out.contains(name) {
+                out.push(name.clone());
+            }
+        }
+        let warnings: Vec<Warning> = skipped
+            .into_iter()
+            .map(|n| format!("project.toml lists {n:?}, which is not a valid environment name (environment names are a-z 0-9 - _)"))
+            .collect();
+        for name in files {
+            if !out.contains(&name) {
+                out.push(name);
+            }
+        }
+        Ok((out, warnings))
     }
 
     /// `meta.spaces` first (invalid names skipped, duplicates dropped),
@@ -942,7 +988,10 @@ impl Project {
                 error: e.to_string(),
             }
         };
-        let mut environments = Self::list_environments(&mut disk).map_err(&list_failed)?;
+        let (mut environments, env_warnings) =
+            Self::list_environments(&mut disk, &meta).map_err(&list_failed)?;
+        let environments_warning = join_warnings(&env_warnings);
+        warnings.extend(env_warnings);
         if environments.is_empty() && !legacy_vars && Self::is_project(disk.root()) {
             let path = RelPath::new(format!("{ENVIRONMENTS_DIR}/{DEFAULT_ENVIRONMENT}.toml"))
                 .expect("constant path");
@@ -954,7 +1003,9 @@ impl Project {
                     warnings.push(format!(
                         "no environments — created environments/{DEFAULT_ENVIRONMENT}.toml"
                     ));
-                    environments = Self::list_environments(&mut disk).map_err(&list_failed)?;
+                    environments = Self::list_environments(&mut disk, &meta)
+                        .map_err(&list_failed)?
+                        .0;
                 }
                 Err(e) => warnings.push(format!("could not create the default environment: {e}")),
             }
@@ -1032,6 +1083,7 @@ impl Project {
             resolved: Resolved::default(),
             spaces,
             spaces_warning,
+            environments_warning,
             listing,
             listing_warning,
             open_requests: IndexMap::new(),
@@ -1063,12 +1115,12 @@ impl Project {
         let mut disk = Disk::new(root.to_path_buf());
         // What `meta::init_project` wrote, through `Disk`: the two
         // directories, a `default` environment when the project has none
-        // that `list_environments` recognises, and the three seed files —
+        // that `environment_files` recognises, and the three seed files —
         // each created only if absent, never rewritten.
         let seed = |disk: &mut Disk| -> Result<(), DiskError> {
             disk.create_dir(&RelPath::new(REQUESTS_DIR)?)?;
             disk.create_dir(&RelPath::new(ENVIRONMENTS_DIR)?)?;
-            if Self::list_environments(disk)?.is_empty() {
+            if Self::environment_files(disk)?.is_empty() {
                 match disk.write_new(
                     &RelPath::new(format!("{ENVIRONMENTS_DIR}/{DEFAULT_ENVIRONMENT}.toml"))?,
                     "# environments/default.toml: values for this project's variables\n",
@@ -1118,7 +1170,7 @@ impl Project {
             let seeded = (|| -> Result<(), Error> {
                 project.fs_create_dir(&space_rel(&spaces[0])?)?;
                 project.edit_project_toml(|doc| {
-                    doc["spaces"] = toml_edit::value(meta::spaces_array(&spaces));
+                    doc["spaces"] = toml_edit::value(meta::slug_array(&spaces));
                 })
             })();
             match seeded {
@@ -1154,7 +1206,7 @@ impl Project {
             let mut doc: toml_edit::DocumentMut = text
                 .parse()
                 .map_err(|e: toml_edit::TomlError| parse_err(PROJECT_TOML)(&e))?;
-            doc["spaces"] = toml_edit::value(meta::spaces_array(&spaces));
+            doc["spaces"] = toml_edit::value(meta::slug_array(&spaces));
             let new_text = doc.to_string();
             // Validate before writing, as `edit_project_toml` does.
             let parsed: ProjectMeta =
@@ -1515,7 +1567,7 @@ mod tests {
         assert!(dir.path().join("requests").is_dir());
     }
 
-    /// `list_environments` skips files that are not valid slugs, so a
+    /// `environment_files` skips files that are not valid slugs, so a
     /// directory holding only those still gets the `default` environment.
     #[test]
     fn init_ignores_environment_files_that_are_not_valid_slugs() {
@@ -1579,6 +1631,54 @@ mod tests {
         assert_eq!(read(&dir, "project.toml").as_deref(), Some(before.as_str()));
         assert_eq!(p.spaces(), ["main", "auth"]);
         assert_eq!(p.journal_len(), 0);
+    }
+
+    #[test]
+    fn list_environments_takes_the_array_order_then_unlisted_files_alphabetically() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("requests/main")).unwrap();
+        std::fs::create_dir_all(dir.path().join("environments")).unwrap();
+        std::fs::write(dir.path().join("project.toml"), "environments = [\"qa\", \"dev\"]\n").unwrap();
+        for env in ["dev", "prod", "qa"] {
+            std::fs::write(dir.path().join(format!("environments/{env}.toml")), "").unwrap();
+        }
+        let (p, warnings) = Project::open(dir.path().to_path_buf()).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(p.environments(), ["qa", "dev", "prod"], "listed first, then the unlisted file");
+        assert_eq!(p.active_env(), Some("qa"), "the array decides which one opens");
+    }
+
+    #[test]
+    fn environments_warning_names_an_invalid_entry_and_a_stale_one_just_drops_out() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("requests/main")).unwrap();
+        std::fs::create_dir_all(dir.path().join("environments")).unwrap();
+        std::fs::write(
+            dir.path().join("project.toml"),
+            "environments = [\"qa\", \"gone\", \"Bad Name\", \"qa\"]\n",
+        )
+        .unwrap();
+        for env in ["dev", "qa"] {
+            std::fs::write(dir.path().join(format!("environments/{env}.toml")), "").unwrap();
+        }
+        let (mut p, warnings) = Project::open(dir.path().to_path_buf()).unwrap();
+        let w = p.environments_warning().expect("an invalid entry warns").to_string();
+        assert!(w.contains("Bad Name"), "{w}");
+        assert!(warnings.contains(&w), "open reports it too: {warnings:?}");
+        assert_eq!(p.environments(), ["qa", "dev"], "a duplicate and a name with no file drop out");
+
+        std::fs::write(dir.path().join("project.toml"), "environments = [\"qa\"]\n").unwrap();
+        p.invalidate_stamps();
+        assert!(p.poll().0);
+        assert_eq!(p.environments_warning(), None);
+        assert_eq!(p.environments(), ["qa", "dev"]);
+    }
+
+    #[test]
+    fn a_project_toml_without_the_environments_array_still_lists_alphabetically() {
+        let (_d, p) = fixture();
+        assert!(p.meta().environments.is_empty());
+        assert_eq!(p.environments(), ["dev", "qa"]);
     }
 
     #[test]

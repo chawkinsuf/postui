@@ -279,6 +279,32 @@ mod tests {
     }
 
     #[test]
+    fn undo_of_an_environment_reorder_restores_the_exact_previous_array() {
+        let (dir, _p) = fixture();
+        let text = read(&dir, "project.toml").unwrap();
+        std::fs::write(
+            dir.path().join("project.toml"),
+            format!("environments = [\"dev\", \"qa\"]\n{text}"),
+        )
+        .unwrap();
+        let (mut p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
+        p.move_environment("dev", 1).unwrap();
+        assert_eq!(p.meta().environments, ["qa", "dev"]);
+        let u = p.undo().unwrap().unwrap();
+        assert_eq!(u.label, "move environment");
+        assert_eq!(p.meta().environments, ["dev", "qa"]);
+        assert_eq!(p.environments(), ["dev", "qa"]);
+        p.redo().unwrap();
+        assert_eq!(p.meta().environments, ["qa", "dev"]);
+
+        p.set_environment_order(&["dev".into(), "qa".into()]).unwrap();
+        let u = p.undo().unwrap().unwrap();
+        assert_eq!(u.label, "reorder environments");
+        assert_eq!(p.meta().environments, ["qa", "dev"]);
+        assert_eq!(p.environments(), ["qa", "dev"]);
+    }
+
+    #[test]
     fn undo_of_a_delete_restores_from_trash_and_the_order_list() {
         let (dir, _p) = fixture();
         std::fs::write(dir.path().join("project.toml"), "spaces = [\"main\", \"auth\"]\n[space.main]\norder = [\"ping\"]\n").unwrap();

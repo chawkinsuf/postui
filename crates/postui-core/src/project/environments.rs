@@ -2,6 +2,7 @@
 //! tables, and the secrets and selections keyed by them.
 
 use super::*;
+use crate::journal::MergeKey;
 
 impl Project {
     pub fn environment_slug_for(&self, display: &str, exclude: Option<&str>) -> String {
@@ -13,12 +14,92 @@ impl Project {
         )
     }
 
-    /// Re-lists from disk; a listing that fails keeps the list we have
-    /// rather than emptying it.
-    pub(crate) fn refresh_environments(&mut self) {
-        if let Ok(environments) = Self::list_environments(&mut self.disk) {
-            self.environments = environments;
+    /// `meta.environments` exactly as written (duplicates dropped,
+    /// invalid and stale names kept in place) then unlisted files: the
+    /// list every environment op writes back. Never filters a
+    /// hand-written entry away.
+    fn env_write_list(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for name in &self.meta.environments {
+            if !out.contains(name) {
+                out.push(name.clone());
+            }
         }
+        for name in &self.environments {
+            if !out.contains(name) {
+                out.push(name.clone());
+            }
+        }
+        out
+    }
+
+    /// The indices of `list` the app displays, in order: the entries that
+    /// name an environment the project actually has.
+    fn env_slots(&self, list: &[String]) -> Vec<usize> {
+        (0..list.len())
+            .filter(|i| self.environments.contains(&list[*i]))
+            .collect()
+    }
+
+    /// Re-lists from `meta` and disk; a listing that fails keeps the list
+    /// we have rather than emptying it.
+    pub(crate) fn refresh_environments(&mut self) {
+        if let Ok((environments, invalid)) = Self::list_environments(&mut self.disk, &self.meta) {
+            self.environments = environments;
+            self.environments_warning = super::join_warnings(&invalid);
+        }
+    }
+
+    /// Moves `name` by `delta` among the displayed environments (a swap).
+    pub fn move_environment(&mut self, name: &str, delta: i32) -> Result<Option<ListChange>, Error> {
+        let mut envs = self.env_write_list();
+        let slots = self.env_slots(&envs);
+        let Some(pos) = slots.iter().position(|i| envs[*i] == *name) else {
+            return Err(Error::NotFound(name.to_string()));
+        };
+        let target = (pos as i32 + delta).clamp(0, slots.len() as i32 - 1) as usize;
+        if target == pos {
+            return Ok(None);
+        }
+        let before: Vec<String> = slots.iter().map(|i| envs[*i].clone()).collect();
+        envs.swap(slots[pos], slots[target]);
+        let after: Vec<String> = slots.iter().map(|i| envs[*i].clone()).collect();
+        let key = MergeKey::EnvOrder { name: name.to_string() };
+        self.transaction_merging("move environment", key, |p| {
+            p.edit_project_toml(|doc| doc["environments"] = toml_edit::value(meta::slug_array(&envs)))?;
+            p.refresh_environments();
+            Ok(())
+        })?;
+        Ok(Some(ListChange { before, after }))
+    }
+
+    /// Writes the whole displayed order as a drag left it. Refuses an
+    /// order that is not exactly the displayed set.
+    pub fn set_environment_order(&mut self, displayed: &[String]) -> Result<Option<ListChange>, Error> {
+        let mut envs = self.env_write_list();
+        let slots = self.env_slots(&envs);
+        let valid: Vec<String> = slots.iter().map(|i| envs[*i].clone()).collect();
+        if let Some(extra) = displayed.iter().find(|n| !valid.contains(n)) {
+            return Err(Error::NotFound(extra.clone()));
+        }
+        if let Some(missing) = valid.iter().find(|n| !displayed.contains(n)) {
+            return Err(Error::NotFound(missing.clone()));
+        }
+        if displayed.len() != valid.len() {
+            return Err(Error::NotFound(displayed[0].clone()));
+        }
+        if valid == displayed {
+            return Ok(None);
+        }
+        for (slot, name) in slots.iter().zip(displayed) {
+            envs[*slot] = name.clone();
+        }
+        self.transaction("reorder environments", EntryMeta::default(), |p| {
+            p.edit_project_toml(|doc| doc["environments"] = toml_edit::value(meta::slug_array(&envs)))?;
+            p.refresh_environments();
+            Ok(())
+        })?;
+        Ok(Some(ListChange { before: valid, after: displayed.to_vec() }))
     }
 
     /// Writes `.local/secrets.toml` from memory as a journaled text op.
@@ -71,6 +152,8 @@ impl Project {
             return Err(Error::AlreadyExists(display));
         }
         let slug = self.environment_slug_for(&display, None);
+        let mut envs = self.env_write_list();
+        envs.push(slug.clone());
         // Creating an environment switches to it, as today's app does;
         // the transition is recorded so undo puts the old one back.
         let entry_meta = EntryMeta {
@@ -79,7 +162,10 @@ impl Project {
         };
         self.transaction("create environment", entry_meta, |p| {
             p.fs_create_file(&env_rel(&slug)?, "")?;
-            p.edit_project_toml(|doc| meta::set_item_name(doc, meta::Kind::Environment, &slug, &display))?;
+            p.edit_project_toml(|doc| {
+                doc["environments"] = toml_edit::value(meta::slug_array(&envs));
+                meta::set_item_name(doc, meta::Kind::Environment, &slug, &display);
+            })?;
             p.refresh_environments();
             p.load_active_env(&slug)?;
             p.refresh_resolved();
@@ -102,6 +188,15 @@ impl Project {
         }
         let to = self.environment_slug_for(&display, Some(from));
         let from = from.to_string();
+        // Only rewritten when `project.toml` already lists `from`: a
+        // rename never creates an order list the project did without.
+        let order = self.meta.environments.contains(&from).then(|| {
+            let mut envs = self.env_write_list();
+            if let Some(i) = envs.iter().position(|n| *n == from) {
+                envs[i] = to.clone();
+            }
+            envs
+        });
         let was_active = self.active_env.as_deref() == Some(from.as_str());
         let entry_meta = EntryMeta {
             active_env: (to != from && was_active).then(|| (Some(from.clone()), Some(to.clone()))),
@@ -112,6 +207,9 @@ impl Project {
                 p.fs_rename(&from_path, &env_rel(&to)?)?;
             }
             p.edit_project_toml(|doc| {
+                if let Some(envs) = &order {
+                    doc["environments"] = toml_edit::value(meta::slug_array(envs));
+                }
                 meta::move_item_table(doc, meta::Kind::Environment, &from, &to);
                 meta::set_item_name(doc, meta::Kind::Environment, &to, &display);
             })?;
@@ -147,6 +245,13 @@ impl Project {
             return Err(Error::LastEnvironment);
         }
         let name = name.to_string();
+        // As in `rename_environment`: the list is only rewritten when the
+        // project already has one naming this environment.
+        let order = self.meta.environments.contains(&name).then(|| {
+            let mut envs = self.env_write_list();
+            envs.retain(|n| *n != name);
+            envs
+        });
         let was_active = self.active_env.as_deref() == Some(name.as_str());
         let fallback = self.environments.iter().find(|e| **e != name).cloned();
         let entry_meta = EntryMeta {
@@ -154,7 +259,12 @@ impl Project {
             ..EntryMeta::default()
         };
         self.transaction("delete environment", entry_meta, |p| {
-            p.edit_project_toml(|doc| meta::remove_item_table(doc, meta::Kind::Environment, &name))?;
+            p.edit_project_toml(|doc| {
+                if let Some(envs) = &order {
+                    doc["environments"] = toml_edit::value(meta::slug_array(envs));
+                }
+                meta::remove_item_table(doc, meta::Kind::Environment, &name);
+            })?;
             p.fs_trash(&path)?;
             p.local.selections.shift_remove(&name);
             if p.secrets.shift_remove(&name).is_some() {
@@ -237,6 +347,82 @@ impl Project {
 mod tests {
     use super::super::tests::{fixture, read};
     use super::*;
+
+    /// [`fixture`] with an explicit `environments` order already in
+    /// `project.toml` — a project that has been reordered once.
+    fn ordered_fixture() -> (tempfile::TempDir, Project) {
+        let (dir, _p) = fixture();
+        let text = read(&dir, "project.toml").unwrap();
+        std::fs::write(
+            dir.path().join("project.toml"),
+            format!("environments = [\"dev\", \"qa\"]\n{text}"),
+        )
+        .unwrap();
+        let (p, warnings) = Project::open(dir.path().to_path_buf()).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        (dir, p)
+    }
+
+    #[test]
+    fn move_environment_swaps_clamps_and_a_burst_merges_into_one_entry() {
+        let (_d, mut p) = ordered_fixture();
+        assert!(p.move_environment("dev", -1).unwrap().is_none());
+        let c = p.move_environment("dev", 1).unwrap().unwrap();
+        assert_eq!(c.before, ["dev", "qa"]);
+        assert_eq!(c.after, ["qa", "dev"]);
+        assert_eq!(p.environments(), ["qa", "dev"]);
+        p.move_environment("dev", -1).unwrap();
+        assert_eq!(p.environments(), ["dev", "qa"]);
+        assert_eq!(
+            p.journal_len(),
+            0,
+            "two keyboard moves within 2 s merge into one step, which nets to identity and is dropped"
+        );
+        assert!(matches!(p.move_environment("nope", 1), Err(Error::NotFound(_))));
+    }
+
+    #[test]
+    fn set_environment_order_writes_the_dragged_order_and_refuses_a_wrong_set() {
+        let (dir, mut p) = fixture();
+        let c = p.set_environment_order(&["qa".into(), "dev".into()]).unwrap().unwrap();
+        assert_eq!(c.before, ["dev", "qa"]);
+        assert_eq!(c.after, ["qa", "dev"]);
+        assert_eq!(p.environments(), ["qa", "dev"]);
+        assert!(
+            read(&dir, "project.toml").unwrap().contains("environments = [\"qa\", \"dev\"]"),
+            "the drag materialises the whole displayed order"
+        );
+        assert!(p.set_environment_order(&["qa".into(), "dev".into()]).unwrap().is_none());
+        assert!(matches!(p.set_environment_order(&["qa".into()]), Err(Error::NotFound(_))));
+        assert!(matches!(p.set_environment_order(&["qa".into(), "nope".into()]), Err(Error::NotFound(_))));
+        assert_eq!(p.journal_len(), 1, "a drag never merges");
+    }
+
+    #[test]
+    fn create_appends_rename_replaces_and_delete_removes_the_array_entry() {
+        let (dir, mut p) = ordered_fixture();
+        p.create_environment("Prod").unwrap();
+        assert_eq!(p.meta().environments, ["dev", "qa", "prod"]);
+        p.rename_environment("qa", "Staging").unwrap();
+        assert_eq!(p.meta().environments, ["dev", "staging", "prod"]);
+        assert_eq!(p.environments(), ["dev", "staging", "prod"]);
+        p.delete_environment("staging").unwrap();
+        assert_eq!(p.meta().environments, ["dev", "prod"]);
+        assert_eq!(p.environments(), ["dev", "prod"]);
+        assert!(!read(&dir, "project.toml").unwrap().contains("staging"));
+    }
+
+    #[test]
+    fn a_rename_or_a_delete_never_creates_an_array_the_project_did_without() {
+        let (dir, mut p) = fixture();
+        p.rename_environment("qa", "Staging").unwrap();
+        assert!(p.meta().environments.is_empty());
+        p.delete_environment("staging").unwrap();
+        assert!(p.meta().environments.is_empty());
+        assert_eq!(p.environments(), ["dev"]);
+        let text = read(&dir, "project.toml").unwrap();
+        assert!(!text.contains("environments"), "{text}");
+    }
 
     #[test]
     fn create_writes_an_empty_file_records_the_name_and_refuses_duplicates() {
