@@ -84,8 +84,7 @@ pub struct Entry {
 impl Entry {
     /// A merged burst that put the document back where it started.
     fn is_identity(&self) -> bool {
-        self.ops.len() == 1
-            && matches!(&self.ops[0], Op::Text { before, after, .. } if before == after)
+        self.ops.len() == 1 && matches!(&self.ops[0], Op::Text { before, after, .. } if before == after)
     }
 
     /// Folds `next` into `self` when both are single `Text` ops on the
@@ -103,9 +102,7 @@ impl Entry {
         };
         match (a, b) {
             (
-                Op::Text {
-                    path: p1, after, ..
-                },
+                Op::Text { path: p1, after, .. },
                 Op::Text {
                     path: p2,
                     after: after2,
@@ -355,18 +352,12 @@ mod tests {
     #[test]
     fn push_assigns_increasing_ids_and_a_merge_keeps_the_first_id() {
         let mut j = Journal::new();
-        let key = MergeKey::SpaceOrder {
-            name: "main".into(),
-        };
+        let key = MergeKey::SpaceOrder { name: "main".into() };
         j.push(merging_entry("a", "b", Some(key.clone())));
         let first = j.peek_undo().unwrap().id;
         j.push(merging_entry("b", "c", Some(key.clone())));
         assert_eq!(j.len(), 1, "burst merged");
-        assert_eq!(
-            j.peek_undo().unwrap().id,
-            first,
-            "merged entry keeps its id"
-        );
+        assert_eq!(j.peek_undo().unwrap().id, first, "merged entry keeps its id");
         j.push(merging_entry("c", "d", None));
         assert!(j.peek_undo().unwrap().id > first);
     }
@@ -374,17 +365,11 @@ mod tests {
     #[test]
     fn a_burst_that_nets_to_identity_is_dropped() {
         let mut j = Journal::new();
-        let key = MergeKey::SpaceOrder {
-            name: "main".into(),
-        };
+        let key = MergeKey::SpaceOrder { name: "main".into() };
         j.push(merging_entry("x", "y", None));
         j.push(merging_entry("a", "b", Some(key.clone())));
         j.push(merging_entry("b", "a", Some(key.clone())));
-        assert_eq!(
-            j.len(),
-            1,
-            "down then up is dropped, the step beneath stays"
-        );
+        assert_eq!(j.len(), 1, "down then up is dropped, the step beneath stays");
         match &j.peek_undo().unwrap().ops[0] {
             Op::Text { before, .. } => assert_eq!(before.as_deref(), Some("x")),
             other => panic!("unexpected {other:?}"),

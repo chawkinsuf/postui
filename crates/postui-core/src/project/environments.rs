@@ -33,10 +33,7 @@ impl Project {
         let env = env.to_string();
         let name = name.to_string();
         self.transaction("set secret", EntryMeta::default(), |p| {
-            p.secrets
-                .entry(env.clone())
-                .or_default()
-                .insert(name.clone(), value);
+            p.secrets.entry(env.clone()).or_default().insert(name.clone(), value);
             p.write_secrets_journaled()
         })?;
         if self.env_key() == env {
@@ -82,9 +79,7 @@ impl Project {
         };
         self.transaction("create environment", entry_meta, |p| {
             p.fs_create_file(&env_rel(&slug)?, "")?;
-            p.edit_project_toml(|doc| {
-                meta::set_item_name(doc, meta::Kind::Environment, &slug, &display)
-            })?;
+            p.edit_project_toml(|doc| meta::set_item_name(doc, meta::Kind::Environment, &slug, &display))?;
             p.refresh_environments();
             p.load_active_env(&slug)?;
             p.refresh_resolved();
@@ -102,12 +97,7 @@ impl Project {
         }
         let meta = self.meta.clone();
         let existing = self.environments.clone();
-        if meta::display_taken(
-            &display,
-            &existing,
-            |s| meta::env_display(&meta, s),
-            Some(from),
-        ) {
+        if meta::display_taken(&display, &existing, |s| meta::env_display(&meta, s), Some(from)) {
             return Err(Error::AlreadyExists(display));
         }
         let to = self.environment_slug_for(&display, Some(from));
@@ -164,9 +154,7 @@ impl Project {
             ..EntryMeta::default()
         };
         self.transaction("delete environment", entry_meta, |p| {
-            p.edit_project_toml(|doc| {
-                meta::remove_item_table(doc, meta::Kind::Environment, &name)
-            })?;
+            p.edit_project_toml(|doc| meta::remove_item_table(doc, meta::Kind::Environment, &name))?;
             p.fs_trash(&path)?;
             p.local.selections.shift_remove(&name);
             if p.secrets.shift_remove(&name).is_some() {
@@ -192,9 +180,7 @@ impl Project {
         let slug = slug.to_string();
         self.transaction("set tls policy", EntryMeta::default(), |p| {
             p.edit_project_toml(|doc| match policy {
-                Some(pol) => {
-                    meta::set_item_key(doc, meta::Kind::Environment, &slug, "tls", pol.as_str())
-                }
+                Some(pol) => meta::set_item_key(doc, meta::Kind::Environment, &slug, "tls", pol.as_str()),
                 None => {
                     if let Some(it) = doc
                         .get_mut(meta::Kind::Environment.table())
@@ -212,18 +198,9 @@ impl Project {
     /// Any environment's data, read now and validated against the model.
     pub fn load_environment(&mut self, name: &str) -> Result<EnvData, Error> {
         let path = env_rel(name)?;
-        let text = self
-            .disk
-            .read(&path)?
-            .ok_or_else(|| Error::NotFound(name.to_string()))?;
-        let data = varmodel::parse_environment(&text).map_err(|e| Error::Parse {
-            file: path.to_string(),
-            error: e.to_string(),
-        })?;
-        varmodel::validate_env(&self.model, &data).map_err(|e| Error::Parse {
-            file: path.to_string(),
-            error: e.to_string(),
-        })?;
+        let text = self.disk.read(&path)?.ok_or_else(|| Error::NotFound(name.to_string()))?;
+        let data = varmodel::parse_environment(&text).map_err(|e| Error::Parse { file: path.to_string(), error: e.to_string() })?;
+        varmodel::validate_env(&self.model, &data).map_err(|e| Error::Parse { file: path.to_string(), error: e.to_string() })?;
         Ok(data)
     }
 
@@ -266,16 +243,10 @@ mod tests {
         let (dir, mut p) = fixture();
         let slug = p.create_environment("Staging 2").unwrap();
         assert_eq!(slug, "staging-2");
-        assert_eq!(
-            read(&dir, "environments/staging-2.toml").as_deref(),
-            Some("")
-        );
+        assert_eq!(read(&dir, "environments/staging-2.toml").as_deref(), Some(""));
         assert_eq!(p.environments(), ["dev", "qa", "staging-2"]);
         assert_eq!(p.env_name("staging-2"), "Staging 2");
-        assert!(matches!(
-            p.create_environment("dev"),
-            Err(Error::AlreadyExists(_))
-        ));
+        assert!(matches!(p.create_environment("dev"), Err(Error::AlreadyExists(_))));
         assert_eq!(p.journal_len(), 1);
     }
 
@@ -285,23 +256,12 @@ mod tests {
         assert_eq!(p.active_env(), Some("dev"));
         let slug = p.create_environment("QA 2").unwrap();
         assert_eq!(slug, "qa-2");
-        assert_eq!(
-            p.active_env(),
-            Some("qa-2"),
-            "a new environment is switched to"
-        );
-        assert!(
-            read(&dir, ".local/state.toml")
-                .unwrap()
-                .contains("environment = \"qa-2\"")
-        );
+        assert_eq!(p.active_env(), Some("qa-2"), "a new environment is switched to");
+        assert!(read(&dir, ".local/state.toml").unwrap().contains("environment = \"qa-2\""));
         let (_id, label) = p.last_entry().unwrap();
         assert_eq!(label, "create environment");
         let u = p.undo().unwrap().unwrap();
-        assert_eq!(
-            u.meta.active_env,
-            Some((Some("dev".into()), Some("qa-2".into())))
-        );
+        assert_eq!(u.meta.active_env, Some((Some("dev".into()), Some("qa-2".into()))));
         assert_eq!(p.active_env(), Some("dev"));
         assert!(!dir.path().join("environments/qa-2.toml").exists());
         p.redo().unwrap().unwrap();
@@ -319,30 +279,11 @@ mod tests {
         assert!(dir.path().join("environments/development.toml").is_file());
         assert!(!dir.path().join("environments/dev.toml").exists());
         assert_eq!(p.active_env(), Some("development"));
-        assert_eq!(
-            p.secrets()
-                .get("development")
-                .and_then(|m| m.get("token"))
-                .map(String::as_str),
-            Some("s3cret")
-        );
+        assert_eq!(p.secrets().get("development").and_then(|m| m.get("token")).map(String::as_str), Some("s3cret"));
         assert!(p.secrets().get("dev").is_none());
-        assert_eq!(
-            p.selections_for("development")
-                .get("region")
-                .map(String::as_str),
-            Some("east")
-        );
-        assert!(
-            read(&dir, ".local/secrets.toml")
-                .unwrap()
-                .contains("[development]")
-        );
-        assert!(
-            read(&dir, "project.toml")
-                .unwrap()
-                .contains("[environment.development]")
-        );
+        assert_eq!(p.selections_for("development").get("region").map(String::as_str), Some("east"));
+        assert!(read(&dir, ".local/secrets.toml").unwrap().contains("[development]"));
+        assert!(read(&dir, "project.toml").unwrap().contains("[environment.development]"));
         assert_eq!(p.journal_len(), 2);
     }
 
@@ -350,10 +291,7 @@ mod tests {
     fn the_last_environment_cannot_be_deleted() {
         let (dir, mut p) = fixture();
         p.delete_environment("qa").unwrap();
-        assert!(matches!(
-            p.delete_environment("dev"),
-            Err(Error::LastEnvironment)
-        ));
+        assert!(matches!(p.delete_environment("dev"), Err(Error::LastEnvironment)));
         assert!(dir.path().join("environments/dev.toml").is_file());
         assert_eq!(p.environments(), ["dev"]);
     }
@@ -363,24 +301,13 @@ mod tests {
         let (dir, mut p) = fixture();
         p.set_secret_for("dev", "token", "x".into()).unwrap();
         p.delete_environment("dev").unwrap();
-        assert!(
-            dir.path()
-                .join(".local/trash/1/environments/dev.toml")
-                .is_file()
-        );
+        assert!(dir.path().join(".local/trash/1/environments/dev.toml").is_file());
         assert_eq!(p.environments(), ["qa"]);
         assert_eq!(p.active_env(), Some("qa"));
         assert!(p.secrets().get("dev").is_none());
-        assert!(
-            !read(&dir, "project.toml")
-                .unwrap()
-                .contains("[environment.dev]")
-        );
+        assert!(!read(&dir, "project.toml").unwrap().contains("[environment.dev]"));
         let e = p.journal.pop_undo().unwrap();
-        assert_eq!(
-            e.meta.active_env,
-            Some((Some("dev".into()), Some("qa".into())))
-        );
+        assert_eq!(e.meta.active_env, Some((Some("dev".into()), Some("qa".into()))));
     }
 
     #[test]
@@ -389,19 +316,12 @@ mod tests {
         let w = p.set_active_env(Some("qa".into()));
         assert!(w.is_empty());
         assert_eq!(p.active_env(), Some("qa"));
-        assert_eq!(
-            p.resolved().values.get("host").map(String::as_str),
-            Some("localhost")
-        );
+        assert_eq!(p.resolved().values.get("host").map(String::as_str), Some("localhost"));
         std::fs::write(dir.path().join("environments/dev.toml"), "host = [\n").unwrap();
         let w = p.set_active_env(Some("dev".into()));
         assert_eq!(w.len(), 1);
         assert_eq!(p.active_env(), Some("qa"));
-        assert!(
-            read(&dir, ".local/state.toml")
-                .unwrap()
-                .contains("environment = \"qa\"")
-        );
+        assert!(read(&dir, ".local/state.toml").unwrap().contains("environment = \"qa\""));
     }
 
     #[test]
@@ -430,24 +350,13 @@ mod tests {
     #[test]
     fn set_secret_writes_the_file_and_resolves_with_and_without_an_environment() {
         let (dir, mut p) = fixture();
-        std::fs::write(
-            dir.path().join("variables.toml"),
-            "[token]\nsecret = true\n",
-        )
-        .unwrap();
+        std::fs::write(dir.path().join("variables.toml"), "[token]\nsecret = true\n").unwrap();
         p.invalidate_stamps();
         p.poll();
 
         p.set_secret("token", "s3cret".into()).unwrap();
-        assert!(
-            read(&dir, ".local/secrets.toml")
-                .unwrap()
-                .contains("s3cret")
-        );
-        assert_eq!(
-            p.resolved().values.get("token").map(String::as_str),
-            Some("s3cret")
-        );
+        assert!(read(&dir, ".local/secrets.toml").unwrap().contains("s3cret"));
+        assert_eq!(p.resolved().values.get("token").map(String::as_str), Some("s3cret"));
 
         // With no environment active, the secret lives under the shared
         // `""` key and still resolves immediately — the send-time secret
@@ -455,21 +364,14 @@ mod tests {
         p.set_active_env(None);
         assert!(p.resolved().values.get("token").is_none());
         p.set_secret("token", "no-env".into()).unwrap();
-        assert_eq!(
-            p.resolved().values.get("token").map(String::as_str),
-            Some("no-env")
-        );
+        assert_eq!(p.resolved().values.get("token").map(String::as_str), Some("no-env"));
     }
 
     /// Ported from `prepare_context_carries_the_active_environment_tls_force`.
     #[test]
     fn prepare_context_carries_the_active_environments_tls_force() {
         let (_dir, mut p) = fixture();
-        assert_eq!(
-            p.prepare_context().tls_override,
-            None,
-            "no force: per request"
-        );
+        assert_eq!(p.prepare_context().tls_override, None, "no force: per request");
         p.set_env_tls("dev", Some(TlsPolicy::Verify)).unwrap();
         assert_eq!(p.prepare_context().tls_override, Some(TlsPolicy::Verify));
         p.set_active_env(Some("qa".into()));
@@ -493,11 +395,7 @@ mod tests {
         let (dir, mut p) = fixture();
         p.set_env_tls("dev", Some(TlsPolicy::Insecure)).unwrap();
         assert_eq!(p.env_tls(), Some(TlsPolicy::Insecure));
-        assert!(
-            read(&dir, "project.toml")
-                .unwrap()
-                .contains("tls = \"insecure\"")
-        );
+        assert!(read(&dir, "project.toml").unwrap().contains("tls = \"insecure\""));
         p.set_env_tls("dev", None).unwrap();
         assert_eq!(p.env_tls(), None);
         assert_eq!(p.env_name("dev"), "Dev");

@@ -54,8 +54,7 @@ fn left_down(x: u16, y: u16) -> MouseEvent {
 /// tooltip can name.
 fn app_with_vars() -> App {
     let mut app = App::new_for_test();
-    app.proj_mut()
-        .edit_variables(|_| {
+    app.proj_mut().edit_variables(|_| {
             Ok("[base_url]\ndefault = \"http://fallback\"\n\n\
                 [page]\ndefault = \"1\"\n\n\
                 [api_key]\nsecret = true\n\n\
@@ -63,16 +62,14 @@ fn app_with_vars() -> App {
                 .to_string())
         })
         .unwrap();
-    app.proj_mut()
-        .edit_env("qa", |_| {
+    app.proj_mut().edit_env("qa", |_| {
             Ok("base_url = \"http://qa.test\"\n\n\
                 [options.user.\"user 2\"]\nuid = \"1001\"\n"
                 .to_string())
         })
         .unwrap();
     app.proj_mut().set_active_env(Some("qa".into()));
-    app.proj_mut()
-        .set_secret("api_key", "sk-qa-999".into())
+    app.proj_mut().set_secret("api_key", "sk-qa-999".into())
         .unwrap();
     app.update(Action::Render);
     app
@@ -257,8 +254,7 @@ fn a_group_field_with_no_selection_reads_as_needs_selection() {
 fn a_long_value_wraps_across_tooltip_rows_instead_of_truncating() {
     let mut app = app_with_vars();
     let long = format!("http://qa.test/{}/tail-end", "a".repeat(70));
-    app.proj_mut()
-        .edit_env("qa", |_| Ok(format!("base_url = \"{long}\"\n")))
+    app.proj_mut().edit_env("qa", |_| Ok(format!("base_url = \"{long}\"\n")))
         .unwrap();
     app.update(Action::Render);
     set_url(&mut app, "{{base_url}}/x");
@@ -301,9 +297,7 @@ fn a_secrets_tooltip_is_masked_and_never_reveals_the_value() {
     // ...and a secret with no value for this env reads as missing.
     let mut app = app_with_vars();
     app.proj_mut().set_active_env(Some("qa".into()));
-    app.proj_mut()
-        .edit_env("dev", |_| Ok(String::new()))
-        .unwrap();
+    app.proj_mut().edit_env("dev", |_| Ok(String::new())).unwrap();
     app.proj_mut().set_active_env(Some("dev".into()));
     app.update(Action::Render);
     set_url(&mut app, "{{api_key}}");
@@ -415,8 +409,7 @@ fn computed_header_rows_tint_only_the_unresolved_span() {
             enabled: true,
         },
     );
-    app.proj_mut()
-        .edit_variables(|doc| Ok(format!("{doc}\n[missing_one]\n")))
+    app.proj_mut().edit_variables(|doc| Ok(format!("{doc}\n[missing_one]\n")))
         .unwrap();
     // A project default header carrying one resolvable and one unresolvable
     // token: only the second may be tinted red.

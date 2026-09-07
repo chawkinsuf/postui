@@ -175,10 +175,7 @@ mod tests {
         let (p2, _w) = Project::open(dir.path().to_path_buf()).unwrap();
         assert_eq!(p2.local().active_space, "auth");
         assert_eq!(p2.local().open_request.as_deref(), Some("auth/login"));
-        assert_eq!(
-            p2.local().space_open.get("auth").map(String::as_str),
-            Some("auth/login")
-        );
+        assert_eq!(p2.local().space_open.get("auth").map(String::as_str), Some("auth/login"));
         assert!(p2.local().expanded.contains("auth/sub"));
         assert_eq!(p2.local().main_split.as_deref(), Some("60"));
     }
@@ -188,47 +185,21 @@ mod tests {
     #[test]
     fn every_local_setter_writes_state_toml_at_once() {
         let (dir, mut p) = fixture();
-        assert!(
-            read(&dir, ".local/state.toml").is_none(),
-            "nothing written yet"
-        );
+        assert!(read(&dir, ".local/state.toml").is_none(), "nothing written yet");
         p.set_main_split(Some("60".into()));
-        assert!(
-            read(&dir, ".local/state.toml")
-                .unwrap()
-                .contains("main_split = \"60\"")
-        );
+        assert!(read(&dir, ".local/state.toml").unwrap().contains("main_split = \"60\""));
         p.set_expanded(["main/deep".to_string()].into_iter().collect());
-        assert!(
-            read(&dir, ".local/state.toml")
-                .unwrap()
-                .contains("main/deep")
-        );
+        assert!(read(&dir, ".local/state.toml").unwrap().contains("main/deep"));
         p.set_open_request(Some("main/ping"));
-        assert!(
-            read(&dir, ".local/state.toml")
-                .unwrap()
-                .contains("open_request = \"main/ping\"")
-        );
+        assert!(read(&dir, ".local/state.toml").unwrap().contains("open_request = \"main/ping\""));
         p.record_space_open(Some("main/ping"));
-        assert!(
-            read(&dir, ".local/state.toml")
-                .unwrap()
-                .contains("[space_open]")
-        );
+        assert!(read(&dir, ".local/state.toml").unwrap().contains("[space_open]"));
         assert!(p.set_active_space("auth"));
-        assert!(
-            read(&dir, ".local/state.toml")
-                .unwrap()
-                .contains("space = \"auth\"")
-        );
+        assert!(read(&dir, ".local/state.toml").unwrap().contains("space = \"auth\""));
         // A refused space change writes nothing new.
         let before = read(&dir, ".local/state.toml").unwrap();
         assert!(!p.set_active_space("ghost"));
-        assert_eq!(
-            read(&dir, ".local/state.toml").as_deref(),
-            Some(before.as_str())
-        );
+        assert_eq!(read(&dir, ".local/state.toml").as_deref(), Some(before.as_str()));
     }
 
     #[test]
@@ -246,22 +217,10 @@ mod tests {
         .unwrap();
         let (mut p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
         p.set_selection("region", "east");
-        assert_eq!(
-            p.resolved().values.get("host").map(String::as_str),
-            Some("east.local")
-        );
+        assert_eq!(p.resolved().values.get("host").map(String::as_str), Some("east.local"));
         p.set_selection_for("qa", "locale", "en");
-        assert_eq!(
-            p.local()
-                .shared_selections
-                .get("locale")
-                .map(String::as_str),
-            Some("en")
-        );
-        assert_eq!(
-            p.resolved().values.get("lang").map(String::as_str),
-            Some("en")
-        );
+        assert_eq!(p.local().shared_selections.get("locale").map(String::as_str), Some("en"));
+        assert_eq!(p.resolved().values.get("lang").map(String::as_str), Some("en"));
         let text = read(&dir, ".local/state.toml").unwrap();
         assert!(text.contains("east"), "{text}");
         p.clear_selection_for("dev", "region");
@@ -285,15 +244,9 @@ mod tests {
         let (mut p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
         p.set_active_env(Some("qa".into()));
         p.set_selection("locale", "fr");
+        assert_eq!(p.resolved().values.get("lang").map(String::as_str), Some("fr"));
         assert_eq!(
-            p.resolved().values.get("lang").map(String::as_str),
-            Some("fr")
-        );
-        assert_eq!(
-            p.local()
-                .shared_selections
-                .get("locale")
-                .map(String::as_str),
+            p.local().shared_selections.get("locale").map(String::as_str),
             Some("fr")
         );
 
@@ -303,10 +256,7 @@ mod tests {
         assert!(!p.local().shared_selections.contains_key("locale"));
         assert!(!p.resolved().values.contains_key("lang"));
         let text = read(&dir, ".local/state.toml").unwrap();
-        assert!(
-            !text.contains("fr"),
-            "the cleared pick is off disk too: {text}"
-        );
+        assert!(!text.contains("fr"), "the cleared pick is off disk too: {text}");
     }
 
     #[test]
@@ -317,23 +267,12 @@ mod tests {
             "[selectors.region]\nfields = [\"host\"]\n",
         )
         .unwrap();
-        std::fs::write(
-            dir.path().join("environments/qa.toml"),
-            "[options.region.west]\nhost = \"w\"\n",
-        )
-        .unwrap();
-        std::fs::write(
-            dir.path().join("environments/dev.toml"),
-            "[options.region.east]\nhost = \"e\"\n",
-        )
-        .unwrap();
+        std::fs::write(dir.path().join("environments/qa.toml"), "[options.region.west]\nhost = \"w\"\n").unwrap();
+        std::fs::write(dir.path().join("environments/dev.toml"), "[options.region.east]\nhost = \"e\"\n").unwrap();
         let (mut p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
         p.set_selection_for("qa", "region", "west");
         assert!(p.resolved().values.get("host").is_none());
-        assert_eq!(
-            p.selections_for("qa").get("region").map(String::as_str),
-            Some("west")
-        );
+        assert_eq!(p.selections_for("qa").get("region").map(String::as_str), Some("west"));
     }
 
     #[test]
@@ -341,17 +280,10 @@ mod tests {
         let (_d, mut p) = fixture();
         p.set_active_space("auth");
         p.record_space_open(Some("auth/login"));
-        p.set_expanded(
-            ["auth/x".to_string(), "main/y".to_string()]
-                .into_iter()
-                .collect(),
-        );
+        p.set_expanded(["auth/x".to_string(), "main/y".to_string()].into_iter().collect());
         p.rename_space_local("auth", "login");
         assert_eq!(p.local().active_space, "login");
-        assert_eq!(
-            p.local().space_open.get("login").map(String::as_str),
-            Some("login/login")
-        );
+        assert_eq!(p.local().space_open.get("login").map(String::as_str), Some("login/login"));
         assert!(p.local().expanded.contains("login/x"));
         p.forget_space_local("login");
         assert!(p.local().space_open.get("login").is_none());

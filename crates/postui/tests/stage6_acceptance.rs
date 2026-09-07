@@ -298,8 +298,7 @@ async fn stage6_acceptance_flow() {
 
     app.update(Action::SwitchEnv(Some("qa".into())));
     assert_eq!(
-        app.proj().resolved().values["region"],
-        "east-1",
+        app.proj().resolved().values["region"], "east-1",
         "switching back to qa restores qa's own resolved value"
     );
 

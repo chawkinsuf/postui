@@ -17,11 +17,7 @@ pub fn check(src_dir: &Path, allowed_files: &[&str]) -> Vec<String> {
     let mut files = Vec::new();
     walk(src_dir, &mut files);
     for file in files {
-        let rel = file
-            .strip_prefix(src_dir)
-            .unwrap_or(&file)
-            .to_string_lossy()
-            .replace('\\', "/");
+        let rel = file.strip_prefix(src_dir).unwrap_or(&file).to_string_lossy().replace('\\', "/");
         if allowed_files.contains(&rel.as_str())
             || rel.ends_with("tests.rs")
             || rel.split('/').any(|seg| seg == "tests")
@@ -29,24 +25,16 @@ pub fn check(src_dir: &Path, allowed_files: &[&str]) -> Vec<String> {
             continue;
         }
         let text = std::fs::read_to_string(&file).unwrap();
-        if text
-            .lines()
-            .find(|l| !l.trim().is_empty() && !l.trim_start().starts_with("//"))
+        if text.lines().find(|l| !l.trim().is_empty() && !l.trim_start().starts_with("//"))
             .is_some_and(|l| l.trim_start().starts_with("#![cfg(any(test"))
         {
             continue;
         }
         let lines: Vec<&str> = text.lines().collect();
         let mut in_tests = false;
-        let uses_fs_alias = lines
-            .iter()
-            .any(|l| l.trim_start().starts_with("use std::fs"));
+        let uses_fs_alias = lines.iter().any(|l| l.trim_start().starts_with("use std::fs"));
         for (i, line) in lines.iter().enumerate() {
-            if line.trim() == "#[cfg(test)]"
-                && lines
-                    .get(i + 1)
-                    .is_some_and(|n| n.trim_start().starts_with("mod "))
-            {
+            if line.trim() == "#[cfg(test)]" && lines.get(i + 1).is_some_and(|n| n.trim_start().starts_with("mod ")) {
                 in_tests = true;
             }
             if in_tests {
@@ -68,10 +56,6 @@ pub fn check(src_dir: &Path, allowed_files: &[&str]) -> Vec<String> {
 fn walk(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
     for e in std::fs::read_dir(dir).unwrap().flatten() {
         let p = e.path();
-        if p.is_dir() {
-            walk(&p, out)
-        } else if p.extension().is_some_and(|x| x == "rs") {
-            out.push(p)
-        }
+        if p.is_dir() { walk(&p, out) } else if p.extension().is_some_and(|x| x == "rs") { out.push(p) }
     }
 }

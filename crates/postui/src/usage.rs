@@ -196,9 +196,7 @@ mod tests {
     #[test]
     fn write_into_preserves_unrelated_keys() {
         let mut doc: toml_edit::DocumentMut =
-            "some_other_key = \"kept\"\n\n[palette]\nsibling = 1\n"
-                .parse()
-                .unwrap();
+            "some_other_key = \"kept\"\n\n[palette]\nsibling = 1\n".parse().unwrap();
 
         let mut store = UsageStore::default();
         store.record("quit", 1000);

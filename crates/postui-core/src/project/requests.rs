@@ -21,22 +21,15 @@ pub(crate) fn list(disk: &mut Disk) -> (Vec<RequestListing>, Option<String>) {
     let mut out = Vec::new();
     let mut loose = Vec::new();
     for path in files {
-        let rel = path
-            .as_str()
-            .strip_prefix("requests/")
-            .unwrap_or(path.as_str());
+        let rel = path.as_str().strip_prefix("requests/").unwrap_or(path.as_str());
         let slug = rel.strip_suffix(".toml").unwrap_or(rel).to_string();
         match crate::storage::space_of(&slug) {
             None => {
-                loose.push(format!(
-                    "requests/{rel} is not in a space (move it into a space directory)"
-                ));
+                loose.push(format!("requests/{rel} is not in a space (move it into a space directory)"));
                 continue;
             }
             Some(space) if crate::storage::validate_slug(space).is_err() => {
-                loose.push(format!(
-                    "requests/{rel} is not in a valid space (space names are a-z 0-9 - _)"
-                ));
+                loose.push(format!("requests/{rel} is not in a valid space (space names are a-z 0-9 - _)"));
                 continue;
             }
             Some(_) => {}
@@ -49,12 +42,7 @@ pub(crate) fn list(disk: &mut Disk) -> (Vec<RequestListing>, Option<String>) {
             Ok(None) => continue,
             Err(e) => (None, None, Some(e.to_string())),
         };
-        out.push(RequestListing {
-            slug,
-            broken,
-            method,
-            name,
-        });
+        out.push(RequestListing { slug, broken, method, name });
     }
     out.sort_by(|a, b| a.slug.cmp(&b.slug));
     let mut warnings: Vec<String> = walk_warning.into_iter().collect();
@@ -81,9 +69,7 @@ impl Project {
     }
 
     pub fn request_exists(&self, slug: &str) -> bool {
-        request_rel(slug)
-            .map(|p| self.disk.is_file(&p))
-            .unwrap_or(false)
+        request_rel(slug).map(|p| self.disk.is_file(&p)).unwrap_or(false)
     }
 
     pub fn held_request(&self, slug: &str) -> Option<&HttpRequest> {
@@ -131,12 +117,7 @@ impl Project {
 
     /// Whether a request in `folder` already answers to `leaf_display`
     /// (case-insensitive; a legacy file's display name is its slug leaf).
-    pub fn sibling_name_taken(
-        &self,
-        folder: &str,
-        leaf_display: &str,
-        exclude: Option<&str>,
-    ) -> bool {
+    pub fn sibling_name_taken(&self, folder: &str, leaf_display: &str, exclude: Option<&str>) -> bool {
         let wanted = leaf_display.to_lowercase();
         self.listing.iter().any(|l| {
             if exclude == Some(l.slug.as_str()) {
@@ -200,12 +181,7 @@ impl Project {
         self.order_edit(space, |order| order::remove(space, order, rel))
     }
 
-    pub(super) fn order_rename(
-        &mut self,
-        space: &str,
-        from: &str,
-        to: &str,
-    ) -> Result<Vec<OrderEdit>, Error> {
+    pub(super) fn order_rename(&mut self, space: &str, from: &str, to: &str) -> Result<Vec<OrderEdit>, Error> {
         if order::level_of(from) == order::level_of(to) {
             return self.order_edit(space, |order| {
                 for e in order.iter_mut() {
@@ -213,11 +189,7 @@ impl Project {
                         *e = to.to_string();
                     }
                 }
-                vec![OrderEdit::Renamed {
-                    space: space.to_string(),
-                    from: from.to_string(),
-                    to: to.to_string(),
-                }]
+                vec![OrderEdit::Renamed { space: space.to_string(), from: from.to_string(), to: to.to_string() }]
             });
         }
         let mut edits = self.order_remove(space, from)?;
@@ -225,40 +197,21 @@ impl Project {
         Ok(edits)
     }
 
-    pub(super) fn order_insert_after(
-        &mut self,
-        space: &str,
-        anchor: &str,
-        rel: &str,
-    ) -> Result<Vec<OrderEdit>, Error> {
+    pub(super) fn order_insert_after(&mut self, space: &str, anchor: &str, rel: &str) -> Result<Vec<OrderEdit>, Error> {
         self.order_edit(space, |order| {
             if order.iter().any(|e| e == rel) {
                 return Vec::new();
             }
-            let Some(i) = order.iter().position(|e| e == anchor) else {
-                return Vec::new();
-            };
+            let Some(i) = order.iter().position(|e| e == anchor) else { return Vec::new() };
             order.insert(i + 1, rel.to_string());
-            vec![OrderEdit::Inserted {
-                space: space.to_string(),
-                rel: rel.to_string(),
-                at: i + 1,
-            }]
+            vec![OrderEdit::Inserted { space: space.to_string(), rel: rel.to_string(), at: i + 1 }]
         })
     }
 
     /// One read-modify-write per space, however many requests moved.
-    pub(super) fn order_move_all(
-        &mut self,
-        from: &str,
-        to: &str,
-        moves: &[(String, String)],
-    ) -> Result<(), Error> {
+    pub(super) fn order_move_all(&mut self, from: &str, to: &str, moves: &[(String, String)]) -> Result<(), Error> {
         self.order_edit(from, |order| {
-            moves
-                .iter()
-                .flat_map(|(f, _)| order::remove(from, order, f))
-                .collect()
+            moves.iter().flat_map(|(f, _)| order::remove(from, order, f)).collect()
         })?;
         let exists: Vec<String> = self.listing.iter().map(|l| l.slug.clone()).collect();
         self.order_edit(to, |order| {
@@ -287,11 +240,7 @@ impl Project {
     }
 
     /// Creates a request from a typed display path ("Folder/My Request!").
-    pub fn create_request(
-        &mut self,
-        display_path: &str,
-        mut req: HttpRequest,
-    ) -> Result<(String, String), Error> {
+    pub fn create_request(&mut self, display_path: &str, mut req: HttpRequest) -> Result<(String, String), Error> {
         let Some((folder, leaf)) = crate::storage::split_display_path(display_path) else {
             return Err(Error::BadName(display_path.to_string()));
         };
@@ -314,11 +263,7 @@ impl Project {
 
     /// Renames to a new typed display path; rewrites `name` when the file
     /// parses (a broken file just moves).
-    pub fn rename_request(
-        &mut self,
-        from_slug: &str,
-        display_path: &str,
-    ) -> Result<(String, String), Error> {
+    pub fn rename_request(&mut self, from_slug: &str, display_path: &str) -> Result<(String, String), Error> {
         let from_path = request_rel(from_slug)?;
         if !self.disk.is_file(&from_path) {
             return Err(Error::NotFound(from_slug.to_string()));
@@ -573,10 +518,7 @@ mod tests {
         assert!(p.held_request("main/ping").is_some());
         p.close_request("main/ping");
         assert!(p.held_request("main/ping").is_none());
-        assert!(matches!(
-            p.open_request("main/nope"),
-            Err(Error::NotFound(_))
-        ));
+        assert!(matches!(p.open_request("main/nope"), Err(Error::NotFound(_))));
     }
 
     #[test]
@@ -586,19 +528,10 @@ mod tests {
         let mut r = req("https://x/new");
         r.name = Some("Renamed Ping".into());
         p.save_request("main/ping", &r).unwrap();
-        assert!(
-            read(&dir, "requests/main/ping.toml")
-                .unwrap()
-                .contains("https://x/new")
-        );
+        assert!(read(&dir, "requests/main/ping.toml").unwrap().contains("https://x/new"));
         assert_eq!(p.held_request("main/ping").unwrap().url, "https://x/new");
         assert_eq!(
-            p.requests()
-                .iter()
-                .find(|l| l.slug == "main/ping")
-                .unwrap()
-                .name
-                .as_deref(),
+            p.requests().iter().find(|l| l.slug == "main/ping").unwrap().name.as_deref(),
             Some("Renamed Ping")
         );
         assert_eq!(p.journal_len(), 0);
@@ -611,10 +544,7 @@ mod tests {
         assert_eq!((slug.as_str(), leaf.as_str()), ("main/my-ping", "My Ping!"));
         assert!(dir.path().join("requests/main/my-ping.toml").is_file());
         assert!(slugs(&p).contains(&"main/my-ping".to_string()));
-        assert!(matches!(
-            p.create_request("main/my ping!", req("u")),
-            Err(Error::AlreadyExists(_))
-        ));
+        assert!(matches!(p.create_request("main/my ping!", req("u")), Err(Error::AlreadyExists(_))));
         let (slug2, _) = p.create_request("main/My-Ping", req("u")).unwrap();
         assert_eq!(slug2, "main/my-ping-2");
         assert_eq!(p.journal_len(), 2);
@@ -629,21 +559,11 @@ mod tests {
         let (slug, _) = p.rename_request("main/ping", "main/Pong").unwrap();
         assert_eq!(slug, "main/pong");
         assert!(!dir.path().join("requests/main/ping.toml").exists());
-        assert!(
-            read(&dir, "requests/main/pong.toml")
-                .unwrap()
-                .contains("name = \"Pong\"")
-        );
+        assert!(read(&dir, "requests/main/pong.toml").unwrap().contains("name = \"Pong\""));
         let e = p.journal.pop_undo().unwrap();
-        assert_eq!(
-            e.meta.moves,
-            vec![("main/ping".to_string(), "main/pong".to_string())]
-        );
+        assert_eq!(e.meta.moves, vec![("main/ping".to_string(), "main/pong".to_string())]);
         assert!(e.ops.iter().any(|o| matches!(o, Op::Renamed { .. })));
-        assert!(
-            e.ops.iter().any(|o| matches!(o, Op::Text { .. })),
-            "the name rewrite"
-        );
+        assert!(e.ops.iter().any(|o| matches!(o, Op::Text { .. })), "the name rewrite");
     }
 
     #[test]
@@ -657,16 +577,10 @@ mod tests {
         let (mut p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
         let new = p.move_request("main/ping", "auth").unwrap();
         assert_eq!(new, "auth/ping");
-        assert_eq!(
-            order::space_order(p.meta(), "main"),
-            Vec::<String>::new().as_slice()
-        );
+        assert_eq!(order::space_order(p.meta(), "main"), Vec::<String>::new().as_slice());
         assert_eq!(order::space_order(p.meta(), "auth"), ["login", "ping"]);
         let e = p.journal.pop_undo().unwrap();
-        assert_eq!(
-            e.meta.moves,
-            vec![("main/ping".to_string(), "auth/ping".to_string())]
-        );
+        assert_eq!(e.meta.moves, vec![("main/ping".to_string(), "auth/ping".to_string())]);
     }
 
     #[test]
@@ -679,31 +593,17 @@ mod tests {
             )
             .unwrap();
         }
-        std::fs::write(
-            dir.path().join("requests/auth/r3.toml"),
-            "method = \"GET\"\nurl = \"u\"\n",
-        )
-        .unwrap();
+        std::fs::write(dir.path().join("requests/auth/r3.toml"), "method = \"GET\"\nurl = \"u\"\n").unwrap();
         p.relist();
         let (moved, _) = p.move_all_requests("main", "auth").unwrap();
         assert_eq!(moved.len(), 6);
-        assert!(
-            moved
-                .iter()
-                .any(|(f, t)| f == "main/r3" && t == "auth/r3-2")
-        );
+        assert!(moved.iter().any(|(f, t)| f == "main/r3" && t == "auth/r3-2"));
         assert!(!dir.path().join("requests/main/r0.toml").exists());
         let e = p.journal.pop_undo().unwrap();
         assert_eq!(e.meta.moves.len(), 6);
+        assert!(e.ops.iter().all(|o| matches!(o, Op::Renamed { .. } | Op::Text { .. })));
         assert!(
-            e.ops
-                .iter()
-                .all(|o| matches!(o, Op::Renamed { .. } | Op::Text { .. }))
-        );
-        assert!(
-            !e.ops.iter().any(
-                |o| matches!(o, Op::Text { path, .. } if path.as_str().starts_with("requests/"))
-            ),
+            !e.ops.iter().any(|o| matches!(o, Op::Text { path, .. } if path.as_str().starts_with("requests/"))),
             "no request text in the journal"
         );
     }
@@ -751,17 +651,10 @@ mod tests {
     #[test]
     fn move_all_leaves_a_non_slug_file_behind_with_a_warning() {
         let (dir, mut p) = fixture();
-        std::fs::write(
-            dir.path().join("requests/main/Get User.toml"),
-            "method = \"GET\"\nurl = \"u\"\n",
-        )
-        .unwrap();
+        std::fs::write(dir.path().join("requests/main/Get User.toml"), "method = \"GET\"\nurl = \"u\"\n").unwrap();
         p.relist();
         let (moved, warnings) = p.move_all_requests("main", "auth").unwrap();
-        assert_eq!(
-            moved,
-            vec![("main/ping".to_string(), "auth/ping".to_string())]
-        );
+        assert_eq!(moved, vec![("main/ping".to_string(), "auth/ping".to_string())]);
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         assert!(warnings[0].contains("requests/main/Get User.toml"));
         assert!(dir.path().join("requests/main/Get User.toml").is_file());
@@ -780,16 +673,8 @@ mod tests {
     #[test]
     fn move_all_refuses_whole_when_a_source_is_missing() {
         let (dir, mut p) = fixture();
-        std::fs::write(
-            dir.path().join("requests/main/r1.toml"),
-            "method = \"GET\"\nurl = \"u\"\n",
-        )
-        .unwrap();
-        std::fs::write(
-            dir.path().join("requests/main/r2.toml"),
-            "method = \"GET\"\nurl = \"u\"\n",
-        )
-        .unwrap();
+        std::fs::write(dir.path().join("requests/main/r1.toml"), "method = \"GET\"\nurl = \"u\"\n").unwrap();
+        std::fs::write(dir.path().join("requests/main/r2.toml"), "method = \"GET\"\nurl = \"u\"\n").unwrap();
         p.relist();
         std::fs::remove_file(dir.path().join("requests/main/r1.toml")).unwrap();
         let r = p.move_all_requests("main", "auth");
@@ -806,19 +691,11 @@ mod tests {
         let (dir, mut p) = fixture();
         p.delete_request("main/ping").unwrap();
         assert!(!dir.path().join("requests/main/ping.toml").exists());
-        assert!(
-            dir.path()
-                .join(".local/trash/1/requests/main/ping.toml")
-                .is_file()
-        );
+        assert!(dir.path().join(".local/trash/1/requests/main/ping.toml").is_file());
         assert!(!slugs(&p).contains(&"main/ping".to_string()));
         let copy = p.duplicate_request("auth/login").unwrap();
         assert_eq!(copy, "auth/login-copy");
-        assert!(
-            read(&dir, "requests/auth/login-copy.toml")
-                .unwrap()
-                .contains("Login copy")
-        );
+        assert!(read(&dir, "requests/auth/login-copy.toml").unwrap().contains("Login copy"));
         assert_eq!(p.journal_len(), 2);
     }
 
@@ -828,8 +705,6 @@ mod tests {
         let copy = p.duplicate_request("auth/login").unwrap();
         let e = p.journal.pop_undo().unwrap();
         assert_eq!(e.ops.len(), 1);
-        assert!(
-            matches!(&e.ops[0], Op::Created { path } if path.as_str() == format!("requests/{copy}.toml"))
-        );
+        assert!(matches!(&e.ops[0], Op::Created { path } if path.as_str() == format!("requests/{copy}.toml")));
     }
 }

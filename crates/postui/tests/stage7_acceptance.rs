@@ -99,9 +99,7 @@ fn expand_all(app: &mut App) {
 /// Writes a request file that cannot parse, so the sidebar lists it as a
 /// broken row.
 fn seed_broken(app: &mut App, slug: &str) {
-    let path = app
-        .proj()
-        .root()
+    let path = app.proj().root()
         .join("requests")
         .join("main")
         .join(format!("{slug}.toml"));
@@ -532,11 +530,9 @@ fn the_headers_tab_shows_defaults_auto_content_type_and_host_resolved() {
 #[test]
 fn hovering_a_url_token_pops_its_value_and_scope() {
     let mut app = App::new_for_test();
-    app.proj_mut()
-        .edit_variables(|_| Ok("[base_url]\ndefault = \"http://fallback\"\n".to_string()))
+    app.proj_mut().edit_variables(|_| Ok("[base_url]\ndefault = \"http://fallback\"\n".to_string()))
         .unwrap();
-    app.proj_mut()
-        .edit_env("qa", |_| Ok("base_url = \"http://qa.test\"\n".to_string()))
+    app.proj_mut().edit_env("qa", |_| Ok("base_url = \"http://qa.test\"\n".to_string()))
         .unwrap();
     app.proj_mut().set_active_env(Some("qa".into()));
     app.editor.url = postui::components::line_input::LineInput::new("{{base_url}}/x");
@@ -709,8 +705,7 @@ fn a_legacy_project_migrates_then_grows_a_group_whose_selection_drives_resolutio
     assert_eq!(app.proj().resolved().values["dc"], "dub");
     click(&mut app, Hit::VmEntryRadio(1));
     assert_eq!(
-        app.proj().resolved().values["zone"],
-        "us-east-1",
+        app.proj().resolved().values["zone"], "us-east-1",
         "flipping the radio re-resolves every field of the group at once"
     );
     assert_eq!(app.proj().resolved().values["dc"], "iad");
