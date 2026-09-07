@@ -162,6 +162,10 @@ impl Project {
     fn replay(&mut self, entry: Entry, redo: bool) -> Result<Option<Undone>, Error> {
         debug_assert!(self.recording.is_none());
         self.preflight(&entry.ops)?;
+        // Which held entries still matched their file before the replay
+        // rewrote anything — the only ones `rekey_held_after_own_op` may
+        // re-stamp below. Taken here, before the first inverse runs.
+        let clean_before = self.held_clean_before();
         self.recording = Some(Vec::new());
         let mut result = Ok(());
         for op in entry.ops.iter().rev() {
@@ -177,6 +181,24 @@ impl Project {
         let mut warnings = Vec::new();
         if result.is_ok() {
             warnings = self.reload_all();
+            // Every request this entry moved changes slug again; a held
+            // entry follows its file, and is re-stamped only if it was
+            // clean going in (the replay's own writes are never an
+            // outside edit — anything else is). `moves` is recorded in
+            // the forward direction, so an undo walks the pairs backwards.
+            let moves: Vec<(String, String)> = entry
+                .meta
+                .moves
+                .iter()
+                .map(|(old, new)| {
+                    if redo {
+                        (old.clone(), new.clone())
+                    } else {
+                        (new.clone(), old.clone())
+                    }
+                })
+                .collect();
+            self.rekey_held_after_own_op(&moves, &clean_before);
             warnings.extend(self.apply_meta_active_env(&entry.meta, redo));
         }
         let ops = self.recording.take().unwrap_or_default();

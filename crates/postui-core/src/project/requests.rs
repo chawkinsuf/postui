@@ -10,11 +10,12 @@
 //! re-reads the body to keep the held copy current but keeps the seed
 //! stamp — the editor's own buffer was not re-seeded by the poll, so the
 //! file is still "moved since the editor last saw it" as far as the app's
-//! drift check is concerned. `rename_request` rewrites the file's `name`,
-//! so it re-stamps the held entry — but only when the entry was already
-//! clean before the rename; re-stamping one that had already drifted would
-//! launder an outside edit into "clean" and let the next save overwrite it
-//! silently.
+//! drift check is concerned. An op of the app's own that moves a held
+//! request re-keys it through `rekey_held_after_own_op`, which states the
+//! one rule those ops share: re-stamp only an entry that still matched its
+//! file BEFORE the op started. Re-stamping one that had already drifted
+//! would launder an outside edit into "clean" and let the next save
+//! overwrite it silently.
 
 use super::*;
 use crate::journal::Op;
@@ -110,6 +111,55 @@ impl Project {
             Some(HeldDrift::Vanished)
         } else {
             Some(HeldDrift::Changed)
+        }
+    }
+
+    /// The held slugs whose file still matches their seed stamp, taken
+    /// BEFORE an op runs. Feed it to [`Self::rekey_held_after_own_op`]:
+    /// only an entry that was clean going in may be re-stamped afterwards.
+    pub(crate) fn held_clean_before(&self) -> std::collections::HashSet<String> {
+        self.open_requests
+            .keys()
+            .filter(|slug| self.held_request_drift(slug).is_none())
+            .cloned()
+            .collect()
+    }
+    /// Follows held entries through the `(old, new)` slug pairs an op the
+    /// app itself performed produced, re-reading each body at its new path
+    /// (keeping the last-good one if that fails).
+    ///
+    /// The one rule this exists to express: an entry is re-stamped only
+    /// when it was in `clean_before`, i.e. still matched its file before
+    /// this op wrote anything. Re-stamping an entry that had already
+    /// drifted would launder an outside edit into "clean" and let the next
+    /// save overwrite it with no prompt. A pure rename (no rewrite of the
+    /// bytes) needs neither half — the old stamp still matches at the new
+    /// path — so `move_request`, `move_all_requests` and the space rename
+    /// re-key inline; `rename_request` (which rewrites `name`) and the
+    /// undo/redo replay (which can rewrite anything) come through here.
+    pub(crate) fn rekey_held_after_own_op(
+        &mut self,
+        moves: &[(String, String)],
+        clean_before: &std::collections::HashSet<String>,
+    ) {
+        for (old, new) in moves {
+            if old == new {
+                continue;
+            }
+            let Some(mut held) = self.open_requests.shift_remove(old.as_str()) else {
+                continue;
+            };
+            if let Ok(path) = request_rel(new) {
+                if let Ok(Some(text)) = self.disk.read(&path)
+                    && let Ok(req) = HttpRequest::from_toml_str(&text)
+                {
+                    held.req = req;
+                }
+                if clean_before.contains(old) {
+                    held.stamp = self.disk.stamp(&path);
+                }
+            }
+            self.open_requests.insert(new.clone(), held);
         }
     }
 
@@ -333,12 +383,10 @@ impl Project {
                 "{display_path}: a rename stays in its space — move the request instead"
             )));
         }
-        // Whether the held entry still matched its file BEFORE this op
-        // touched anything — the re-stamp below is only allowed to cover
-        // this op's own rewrite. Re-stamping a file that had already moved
-        // outside the app would launder that edit into "clean" and the
-        // next save would overwrite it with no prompt.
-        let held_was_clean = self.held_request_drift(from_slug).is_none();
+        // Which held entries still matched their file BEFORE this op
+        // touched anything: only those may be re-stamped afterwards (see
+        // `rekey_held_after_own_op`).
+        let clean_before = self.held_clean_before();
         let meta = self.meta_for_moves(vec![(from_slug.to_string(), to_slug.clone())]);
         let from_slug = from_slug.to_string();
         self.transaction("rename request", meta, |p| {
@@ -352,21 +400,11 @@ impl Project {
                 req.name = Some(leaf.clone());
                 p.fs_write_text(&to_path, Some(&req.to_toml_string()))?;
             }
-            if let Some(mut held) = p.open_requests.shift_remove(&from_slug) {
-                // A rename can rewrite the file's `name` (above), so a
-                // held entry that was clean going in is re-stamped here:
-                // this op owns that write, and the app must never see its
-                // own rename as an outside edit. One that was already
-                // drifted keeps its seed stamp and goes on reporting
-                // `Changed` under the new slug. (The other re-key paths —
-                // `move_request`, `move_all_requests`, space rename — only
-                // rename bytes that stay identical, so their old stamp
-                // still matches either way.)
-                if held_was_clean {
-                    held.stamp = p.disk.stamp(&to_path);
-                }
-                p.open_requests.insert(to_slug.clone(), held);
-            }
+            // A rename can rewrite the file's `name` (above), so this op
+            // owns a write the app must never see as an outside edit —
+            // hence the shared re-key, which re-stamps only an entry that
+            // was clean going in.
+            p.rekey_held_after_own_op(&[(from_slug.clone(), to_slug.clone())], &clean_before);
             p.relist();
             if let (Some((space, from_rel)), Some((_, to_rel))) =
                 (Self::split_space(&from_slug), Self::split_space(&to_slug))
@@ -910,5 +948,52 @@ mod tests {
             "the last-good body is kept"
         );
         assert_eq!(p.held_request_drift("main/ping"), Some(HeldDrift::Changed));
+    }
+
+    #[test]
+    fn undo_of_a_move_carries_the_seed_stamp_and_still_reports_an_outside_edit() {
+        let (dir, mut p) = fixture();
+        p.open_request("main/ping").unwrap();
+        p.move_request("main/ping", "auth").unwrap();
+        // The outside world edits the moved file (a different length, so
+        // the stamp differs whatever the mtime granularity is).
+        std::fs::write(
+            dir.path().join("requests/auth/ping.toml"),
+            "url = \"https://example.test/edited-outside-the-app\"\n",
+        )
+        .unwrap();
+        p.undo().unwrap().unwrap();
+        assert!(dir.path().join("requests/main/ping.toml").is_file());
+        assert_eq!(
+            p.held_request_drift("main/ping"),
+            Some(HeldDrift::Changed),
+            "the undo moved the file back byte-for-byte; the outside edit \
+             the editor never saw must still be reported"
+        );
+    }
+
+    #[test]
+    fn undo_of_a_move_re_stamps_an_entry_that_was_still_clean() {
+        let (dir, mut p) = fixture();
+        p.open_request("main/ping").unwrap();
+        p.move_request("main/ping", "auth").unwrap();
+        p.undo().unwrap().unwrap();
+        assert!(dir.path().join("requests/main/ping.toml").is_file());
+        assert_eq!(
+            p.held_request_drift("main/ping"),
+            None,
+            "the app's own move and undo are never an outside edit"
+        );
+    }
+
+    #[test]
+    fn redo_of_a_move_follows_the_held_entry_to_the_new_slug() {
+        let (_dir, mut p) = fixture();
+        p.open_request("main/ping").unwrap();
+        p.move_request("main/ping", "auth").unwrap();
+        p.undo().unwrap().unwrap();
+        p.redo().unwrap().unwrap();
+        assert!(p.held_request("auth/ping").is_some());
+        assert_eq!(p.held_request_drift("auth/ping"), None);
     }
 }

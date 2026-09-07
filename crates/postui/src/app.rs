@@ -7039,11 +7039,16 @@ impl App {
                     self.editor.slug = Some(new_slug.clone());
                     // The rename wrote the new display name to disk;
                     // mirror it in both the live fields and the saved
-                    // snapshot so the editor never reads as dirty.
-                    let name = match self.project_mut() {
-                        Some(p) => p.open_request(&new_slug).ok().and_then(|r| r.name.clone()),
-                        None => None,
-                    };
+                    // snapshot so the editor never reads as dirty. Read
+                    // from the listing `reload_all` just rebuilt, NOT
+                    // through `open_request`: that re-stamps the held
+                    // entry without re-seeding the buffer, which would
+                    // launder an outside edit the replay carried along
+                    // into "clean" and let the next save overwrite it.
+                    let name = self
+                        .project()
+                        .and_then(|p| p.requests().iter().find(|l| l.slug == new_slug))
+                        .and_then(|l| l.name.clone());
                     if let Some(name) = name {
                         self.editor.name = Some(name.clone());
                         if let Some(saved) = self.editor.saved.as_mut() {

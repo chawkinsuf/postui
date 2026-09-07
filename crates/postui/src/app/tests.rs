@@ -21642,3 +21642,59 @@ fn saving_a_slug_that_is_neither_held_nor_readable_toasts_and_fails_the_gate() {
         app.toasts.messages()
     );
 }
+
+#[test]
+fn undo_of_a_move_all_does_not_launder_an_outside_edit_into_a_clean_save() {
+    // The editor follows a move-all, so the undo re-keys it back. The undo
+    // is a pure rename, so an outside edit made while the file sat in the
+    // other space survives it — and the editor, whose buffer never saw
+    // that edit, must still be told before it overwrites it.
+    let (mut app, dir) = spaced_app();
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    app.update(Action::MoveAllRequests {
+        from: "main".into(),
+        to: "auth".into(),
+    });
+    assert_eq!(app.editor.slug.as_deref(), Some("auth/alpha"));
+    postui_core::fixtures::save_request(
+        dir.path(),
+        "auth/alpha",
+        &req("https://x/edited-outside-the-app"),
+    )
+    .unwrap();
+
+    app.update(Action::Undo);
+    assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"));
+
+    dirty_the_editor(&mut app);
+    app.handle_key(&Keymap::default_bindings(), ctrl('s'));
+    assert!(
+        matches!(app.modals.top(), Some(Modal::Confirm { .. })),
+        "the outside edit the undo carried back is still unseen by the editor"
+    );
+    assert_eq!(
+        postui_core::fixtures::load_request(dir.path(), "main/alpha").unwrap().url,
+        "https://x/edited-outside-the-app",
+        "and nothing was written"
+    );
+}
+
+#[test]
+fn undo_of_a_move_all_without_an_outside_edit_saves_without_asking() {
+    let (mut app, dir) = spaced_app();
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    app.update(Action::MoveAllRequests {
+        from: "main".into(),
+        to: "auth".into(),
+    });
+    app.update(Action::Undo);
+
+    dirty_the_editor(&mut app);
+    let mine = app.editor.url.text().to_string();
+    app.handle_key(&Keymap::default_bindings(), ctrl('s'));
+    assert!(app.modals.is_empty(), "the app's own replay is not an outside edit");
+    assert_eq!(
+        postui_core::fixtures::load_request(dir.path(), "main/alpha").unwrap().url,
+        mine
+    );
+}
