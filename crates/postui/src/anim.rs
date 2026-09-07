@@ -131,6 +131,14 @@ impl Anims {
         }
     }
 
+    /// Flips the enabled flag without disturbing the entries. What a live
+    /// config reload uses: replacing `Anims` wholesale would wipe every
+    /// in-flight animation, freezing whatever was mid-transition at its
+    /// start value.
+    pub fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+    }
+
     /// Sets `key`'s value instantly, with no transition. Used for
     /// first-frame init and overlay close.
     pub fn snap(&mut self, key: AnimKey, value: f32) {

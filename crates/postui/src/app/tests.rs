@@ -21538,3 +21538,54 @@ fn the_manage_bar_reload_button_runs_the_reload() {
         app.toasts.messages()
     );
 }
+
+/// A reload must apply the new `UiSettings` without *replacing* the two
+/// pieces of live state derived from them. Dropping the `Clipboard` drops
+/// arboard's handle — on X11 without a clipboard manager that revokes
+/// everything the user had copied out of postui — and rebuilding `Anims`
+/// wipes whatever is mid-transition.
+#[test]
+fn reload_from_disk_reconfigures_the_clipboard_and_anims_without_replacing_them() {
+    let mut app = App::new_for_test();
+    let dir = config_at_tempdir(&mut app);
+    std::fs::write(
+        dir.path().join("config.toml"),
+        "clipboard_cmd = \"pbcopy\"\nosc52_limit = 4096\n",
+    )
+    .unwrap();
+
+    // A sentinel that only lives inside *this* `Clipboard` instance: a
+    // freshly built one would not have it.
+    app.clipboard.set_read_for_test("still the same handle");
+    // An animation part-way through its transition.
+    let t0 = std::time::Instant::now();
+    app.anims.snap(crate::anim::AnimKey::Hover, 0.0);
+    app.anims.retarget(
+        crate::anim::AnimKey::Hover,
+        1.0,
+        std::time::Duration::from_millis(100),
+        t0,
+    );
+
+    app.update(Action::ReloadFromDisk);
+
+    assert_eq!(
+        app.ui_settings.clipboard_cmd.as_deref(),
+        Some("pbcopy"),
+        "the new settings did land"
+    );
+    assert_eq!(app.ui_settings.osc52_limit, 4096);
+    assert_eq!(
+        app.clipboard.read(),
+        Ok("still the same handle".to_string()),
+        "the clipboard was reconfigured in place, not rebuilt"
+    );
+    assert_eq!(
+        app.anims.value(
+            crate::anim::AnimKey::Hover,
+            t0 + std::time::Duration::from_millis(100)
+        ),
+        Some(1.0),
+        "the in-flight animation survived the reload"
+    );
+}

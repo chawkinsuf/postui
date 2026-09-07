@@ -775,6 +775,36 @@ impl App {
     ) {
         self.clipboard = crate::clipboard::Clipboard::new(&ui_settings);
         self.anims = Anims::new(ui_settings.animations);
+        self.finish_ui_settings(ui_settings, theme_name, theme);
+    }
+
+    /// [`Self::apply_ui_settings`] for a *live* reload: the same settings
+    /// land, but the clipboard and the animation set are reconfigured in
+    /// place rather than replaced. Rebuilding either mid-session loses
+    /// state the user can see — a fresh `Clipboard` drops `arboard`'s
+    /// handle (on X11 without a clipboard manager that revokes everything
+    /// already copied out of postui), and a fresh `Anims` wipes every
+    /// in-flight transition.
+    fn reapply_ui_settings(
+        &mut self,
+        ui_settings: crate::config::UiSettings,
+        theme_name: String,
+        theme: Theme,
+    ) {
+        self.clipboard.reconfigure(&ui_settings);
+        self.anims.set_enabled(ui_settings.animations);
+        self.finish_ui_settings(ui_settings, theme_name, theme);
+    }
+
+    /// The half both paths share: the theme, the jq tab, and `ui_settings`
+    /// itself. Kept in one place so a new `UiSettings`-derived field can't
+    /// be wired into startup and forgotten on reload (or the reverse).
+    fn finish_ui_settings(
+        &mut self,
+        ui_settings: crate::config::UiSettings,
+        theme_name: String,
+        theme: Theme,
+    ) {
         self.theme = theme;
         self.theme_name = theme_name;
         self.session.response.set_jq_tab(ui_settings.jq_tab);
@@ -4023,10 +4053,12 @@ impl App {
                 let unknown_theme = (theme_name != wanted)
                     .then(|| format!("unknown theme {wanted:?} in config.toml; using terminal"));
                 match reloaded.ui {
-                    // Same call `App::new` makes, so every
+                    // The live-reload twin of `App::new`'s call, so every
                     // `UiSettings`-derived field (clipboard tier,
-                    // animations, the jq tab) follows the file too.
-                    Some(ui) => self.apply_ui_settings(ui, theme_name, theme),
+                    // animations, the jq tab) follows the file too — but
+                    // without replacing the clipboard handle or the
+                    // in-flight animations.
+                    Some(ui) => self.reapply_ui_settings(ui, theme_name, theme),
                     None => {
                         self.theme = theme;
                         self.theme_name = theme_name;
