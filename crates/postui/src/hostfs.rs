@@ -14,12 +14,24 @@ pub struct HostEntry {
     pub attributes: u32,
 }
 
-/// Writes `bytes` to `path`, creating parent directories. Overwrites.
+/// Writes `bytes` to `path`, creating parent directories. Overwrites —
+/// atomically, through a sibling temp file, so an export that fails
+/// part-way (disk full) leaves the file that was there rather than a
+/// truncated one. A new file takes the umask, like a plain create.
 pub fn write_user_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+    let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    std::fs::create_dir_all(parent)?;
+    let mut builder = tempfile::Builder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(std::fs::Permissions::from_mode(0o666));
     }
-    std::fs::write(path, bytes)
+    let mut tmp = builder.tempfile_in(parent)?;
+    std::io::Write::write_all(&mut tmp, bytes)?;
+    tmp.as_file().sync_all()?;
+    tmp.persist(path).map_err(|e| e.error)?;
+    Ok(())
 }
 
 /// The entries of `dir`, unsorted, with the platform hidden-attribute bits.
@@ -90,5 +102,10 @@ mod tests {
         write_user_file(&p, b"one").unwrap();
         write_user_file(&p, b"two").unwrap();
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "two");
+        let names: Vec<String> = std::fs::read_dir(p.parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(names, vec!["out.txt"], "no temp file left behind");
     }
 }

@@ -70,9 +70,17 @@ impl UsageStore {
                 toml_edit::Item::Value(toml_edit::Value::InlineTable(entry)),
             );
         }
-        let mut palette_table = toml_edit::Table::new();
-        palette_table.insert("usage", toml_edit::Item::Table(usage_table));
-        doc.insert("palette", toml_edit::Item::Table(palette_table));
+        let palette = doc
+            .entry("palette")
+            .or_insert(toml_edit::Item::Table(toml_edit::Table::new()));
+        if palette.as_table_mut().is_none() {
+            // Not a table: nothing of ours can live under it, replace it.
+            *palette = toml_edit::Item::Table(toml_edit::Table::new());
+        }
+        palette
+            .as_table_mut()
+            .expect("just ensured a table")
+            .insert("usage", toml_edit::Item::Table(usage_table));
     }
 
     /// Bumps `id`'s count and sets its last-used timestamp to `now_secs`.
@@ -187,7 +195,8 @@ mod tests {
 
     #[test]
     fn write_into_preserves_unrelated_keys() {
-        let mut doc: toml_edit::DocumentMut = "some_other_key = \"kept\"\n".parse().unwrap();
+        let mut doc: toml_edit::DocumentMut =
+            "some_other_key = \"kept\"\n\n[palette]\nsibling = 1\n".parse().unwrap();
 
         let mut store = UsageStore::default();
         store.record("quit", 1000);
@@ -195,6 +204,7 @@ mod tests {
 
         let contents = doc.to_string();
         assert!(contents.contains("some_other_key"), "{contents}");
+        assert!(contents.contains("sibling = 1"), "{contents}");
         assert!(contents.contains("quit"), "{contents}");
     }
 }

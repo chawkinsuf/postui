@@ -5382,8 +5382,8 @@ impl App {
                 };
                 // One entry for the whole move; the batch is pre-flighted,
                 // so a refusal has moved nothing.
-                let moved = match p.move_all_requests(&from, &to) {
-                    Ok(moved) => moved,
+                let (moved, left_behind) = match p.move_all_requests(&from, &to) {
+                    Ok(result) => result,
                     Err(e) => {
                         self.toasts
                             .push(format!("could not move requests: {e}"), ToastKind::Error);
@@ -5395,6 +5395,9 @@ impl App {
                     format!("Moved {} request(s) to {to}", moved.len()),
                     ToastKind::Success,
                 );
+                for w in left_behind {
+                    self.toasts.push(w, ToastKind::Warning);
+                }
                 self.record_project_step();
                 for (old, new) in &moved {
                     self.session.rename(old, new);
