@@ -328,61 +328,42 @@ pub fn draw_footer(
         ),
     };
     let start_x = area.x + 1;
-    match hint {
-        None => {
-            paint_chip_row(
-                buf,
-                mid_y,
-                start_x,
-                right_limit,
-                &chips,
-                theme,
-                hits,
-                hovered,
-            );
-        }
-        Some(hint) => {
-            // Middle placement while enough of the hint can show beside
-            // the chips; otherwise the hint takes the chip row for the
-            // duration of the hover (the chips return on leave).
-            let chips_end = chip_row_end(start_x, right_limit, &chips);
-            let free = right_limit.saturating_sub(chips_end + 1);
-            let hint_w = unicode_width::UnicodeWidthStr::width(hint) as u16;
-            // A hovered chip must stay under the pointer: hover is
-            // re-resolved against every frame's hit map, so swapping the
-            // chips out would un-hover it, bring them back, and so on.
-            // Its hint takes only what the middle offers.
-            let on_a_chip = matches!(hovered, Some(Hit::FooterChip(_)));
-            if free >= hint_w.min(HINT_MIN_SHOWN) || on_a_chip {
-                paint_chip_row(
-                    buf,
-                    mid_y,
-                    start_x,
-                    right_limit,
-                    &chips,
-                    theme,
-                    hits,
-                    hovered,
-                );
-                if free >= HINT_MIN_STUB {
-                    paint_hint(buf, mid_y, chips_end + 1, right_limit, hint, theme);
-                }
-            } else {
-                paint_hint(buf, mid_y, start_x, right_limit, hint, theme);
-            }
+    paint_chip_row(
+        buf,
+        mid_y,
+        start_x,
+        right_limit,
+        &chips,
+        theme,
+        hits,
+        hovered,
+    );
+    // The hint sits in the gap between the per-pane chips and the
+    // commands/quit pair, and the chips never yield it more room. They
+    // can't: a hovered chip must stay under the pointer, since hover is
+    // re-resolved against every frame's hit map and swapping the chips out
+    // would un-hover it, bring them back, and oscillate. Letting the other
+    // buttons displace them anyway would mean the same hover behaved two
+    // different ways depending on what was under it, so a gap too small
+    // for a useful line simply leaves the hint out.
+    if let Some(hint) = hint {
+        let hint_start = chip_row_end(start_x, right_limit, &chips) + 1;
+        // One column shy of `right_limit`: the commands chip's leading pad
+        // is painted in the pill's own fill rather than the panel's, so it
+        // reads as part of the chip. Without this an ellipsized hint would
+        // run right up against it.
+        let hint_end = right_limit.saturating_sub(1);
+        if hint_end.saturating_sub(hint_start) >= HINT_MIN_SHOWN {
+            paint_hint(buf, mid_y, hint_start, hint_end, hint, theme);
         }
     }
 }
 
-/// The hint keeps its place between the chip clusters while at least this
-/// many cells of it can show (ellipsized); with less room than that it
-/// displaces the per-pane chips instead, so a hover never reads as a
-/// three-letter stub beside an ellipsis.
+/// The hint shows only while at least this many cells of it fit between
+/// the chip clusters (ellipsized past that); with less room than that it
+/// is left out, so a hover never reads as a three-letter stub beside an
+/// ellipsis.
 const HINT_MIN_SHOWN: u16 = 24;
-
-/// Where the chips must stay (a hovered chip), the hint still needs this
-/// much of the middle to be worth painting at all.
-const HINT_MIN_STUB: u16 = 8;
 
 /// Where `paint_chip_row` would stop for `chips` from `start_x` — the same
 /// fit rule, without painting — so the footer can decide where the hint

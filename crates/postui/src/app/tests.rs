@@ -22295,32 +22295,50 @@ fn hovering_a_button_shows_its_hint_between_the_chip_clusters() {
     assert!(!row.contains("Open or"), "hint gone off-hover: {row:?}");
 }
 
-/// A gap that fits at least `HINT_MIN_SHOWN` cells keeps the middle
-/// placement with the hint ellipsized; a narrower one hands the hint the
-/// chip row for the hover instead, so it is never a stub beside `…`.
+/// A gap that fits at least `HINT_MIN_SHOWN` cells shows the hint
+/// ellipsized; a narrower one leaves it out entirely, so a hover is never
+/// a stub beside `…`. The chips never yield the row either way — every
+/// button behaves the same, chips and non-chips alike.
 #[test]
-fn footer_hint_ellipsizes_above_the_lower_bound_and_takes_the_row_below_it() {
+fn footer_hint_ellipsizes_above_the_lower_bound_and_is_left_out_below_it() {
     let mut app = App::new_for_test();
     hover_manage(&mut app);
     // 134 columns: the sidebar chips + commands/quit leave ~26 cells.
     let row = rendered_row(&mut app, 134, FOOTER_ROW);
-    assert!(row.contains("Open or close the Man"), "head shown: {row:?}");
+    assert!(row.contains("Open or close the Ma"), "head shown: {row:?}");
     assert!(row.contains('\u{2026}'), "ellipsized: {row:?}");
     assert!(row.contains("reorder"), "chips stay: {row:?}");
 
-    // 120 columns: ~12 cells — the hint stands in for the chips.
+    // 120 columns: ~12 cells — too few, so no hint at all.
     let row = rendered_row(&mut app, 120, FOOTER_ROW);
-    assert!(row.contains(MANAGE_HINT), "whole hint: {row:?}");
-    assert!(!row.contains("rename"), "chips displaced: {row:?}");
+    assert!(!row.contains("Open or"), "hint left out: {row:?}");
+    assert!(row.contains("rename"), "chips keep the row: {row:?}");
     assert!(
         row.contains("^P") && row.contains("quit"),
         "right pair stays: {row:?}"
     );
 }
 
+/// The ellipsized hint keeps two blank columns before the commands chip:
+/// the chip's leading pad is painted in the pill's own fill, so a hint
+/// butted against it reads as touching the button.
+#[test]
+fn an_ellipsized_hint_keeps_a_gap_before_the_commands_chip() {
+    let mut app = App::new_for_test();
+    hover_manage(&mut app);
+    let row = rendered_row(&mut app, 134, FOOTER_ROW);
+    let end = row.find('\u{2026}').unwrap() + '\u{2026}'.len_utf8();
+    let palette = row.find("^P").unwrap();
+    assert!(
+        row[end..palette].len() >= 2 && row[end..palette].trim().is_empty(),
+        "two blank columns at least: {row:?}"
+    );
+}
+
 /// A hovered footer chip never swaps the chips away (that would un-hover
-/// it and oscillate with `resync_hover`): its hint takes the middle,
-/// ellipsized, or stays off when there is no room.
+/// it and oscillate with `resync_hover`): its hint takes the middle when
+/// the middle has room, and is left out when it hasn't — the same rule
+/// every other button follows.
 #[test]
 fn a_hovered_footer_chip_keeps_the_chip_row() {
     let mut app = App::new_for_test();
@@ -22330,9 +22348,18 @@ fn a_hovered_footer_chip_keeps_the_chip_row() {
         .rect_of(&Hit::FooterChip(Action::PromptRenameRequest))
         .unwrap();
     app.handle_mouse(moved(rename.x, rename.y));
+    let row = rendered_row(&mut app, 160, FOOTER_ROW);
+    assert!(
+        row.contains("rename") && row.contains("reorder"),
+        "chips stay: {row:?}"
+    );
+    assert!(row.contains("Rename the"), "hint in the middle: {row:?}");
+
     let row = rendered_row(&mut app, 120, FOOTER_ROW);
-    assert!(row.contains("rename") && row.contains("reorder"), "chips stay: {row:?}");
-    assert!(row.contains("Rename the\u{2026}"), "hint in the middle: {row:?}");
+    assert!(
+        row.contains("rename") && !row.contains("Rename the"),
+        "no room, so no hint — but the chips are untouched: {row:?}"
+    );
     assert!(
         !app.resync_hover(),
         "the hovered chip is still under the pointer"
