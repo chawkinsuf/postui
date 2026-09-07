@@ -5817,7 +5817,19 @@ impl App {
                 // Overwrite / Reload / Cancel choice ctrl+s offers.
                 if wrote_to_request {
                     if self.editor.slug.is_some() {
+                        // Cleared first so the flag read below is this
+                        // save's own answer. `save_request_checked` sets
+                        // it both when the write failed and when it only
+                        // raised the drift confirm — in either case the
+                        // file has not been written, so the extract must
+                        // not claim it was. The confirm (or the error
+                        // toast) is the feedback; a success toast on top
+                        // of it would be a lie.
+                        self.last_action_failed = false;
                         self.save_request_checked(None);
+                        if self.last_action_failed {
+                            return true;
+                        }
                     } else if let Err(e) = self.save_open_request() {
                         self.toasts.push(
                             format!(

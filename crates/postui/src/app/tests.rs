@@ -21784,6 +21784,12 @@ fn extract_to_request_over_an_outside_edit_asks_instead_of_overwriting() {
         "https://x/ping-edited-outside-the-app",
         "nothing is written until the user chooses"
     );
+    assert!(
+        !app.toasts.messages().iter().any(|m| m.starts_with("extracted to")),
+        "nothing was written, so nothing is claimed: {:?}",
+        app.toasts.messages()
+    );
+    assert!(app.last_action_failed);
 }
 
 #[test]

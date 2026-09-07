@@ -146,9 +146,12 @@ impl Project {
         clean_before: &std::collections::HashSet<String>,
     ) {
         for (old, new) in moves {
-            if old == new {
-                continue;
-            }
+            // Only the map key is conditional. A pair whose slug did not
+            // change is still an op that rewrote the file — a rename that
+            // only changes the display name (`ping` → `Ping!!!`) keeps the
+            // slug — so the re-read and the clean-gated re-stamp run
+            // either way, or the app would report its own write as an
+            // outside edit on the next save.
             let Some(mut held) = self.open_requests.shift_remove(old.as_str()) else {
                 continue;
             };
@@ -1021,6 +1024,41 @@ mod tests {
             drift,
             Some(HeldDrift::Changed),
             "\"deleted outside the app\" would be a lie, and would withhold Reload"
+        );
+    }
+
+
+    #[test]
+    fn a_display_name_only_rename_re_stamps_the_held_entry_it_rewrote() {
+        // `Ping!!!` slugifies back to `ping`, so the file never moves —
+        // but its `name` is rewritten, so the stamp still has to follow.
+        let (_dir, mut p) = fixture();
+        p.open_request("main/ping").unwrap();
+        let (to_slug, leaf) = p.rename_request("main/ping", "main/Ping!!!").unwrap();
+        assert_eq!((to_slug.as_str(), leaf.as_str()), ("main/ping", "Ping!!!"));
+        assert_eq!(
+            p.held_request_drift("main/ping"),
+            None,
+            "the rename rewrote `name` in place; the app must never see its \
+             own write as an outside edit"
+        );
+    }
+
+    #[test]
+    fn a_display_name_only_rename_does_not_launder_an_outside_edit() {
+        let (dir, mut p) = fixture();
+        p.open_request("main/ping").unwrap();
+        std::fs::write(
+            dir.path().join("requests/main/ping.toml"),
+            "url = \"https://example.test/edited-outside-the-app\"\n",
+        )
+        .unwrap();
+        let (to_slug, _) = p.rename_request("main/ping", "main/Ping!!!").unwrap();
+        assert_eq!(to_slug, "main/ping");
+        assert_eq!(
+            p.held_request_drift("main/ping"),
+            Some(HeldDrift::Changed),
+            "the outside edit is still unseen by the editor"
         );
     }
 }
