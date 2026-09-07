@@ -17,7 +17,7 @@ pub use meta::*;
 pub use undo::Undone;
 pub use varedit_ops::VarEdit;
 
-use crate::disk::{Disk, DiskError, RelPath, Ticket};
+use crate::disk::{Disk, DiskError, RelPath, Stamp, Ticket};
 use crate::journal::{Entry, EntryId, EntryMeta, Journal, Op};
 use crate::migrate::MigrationOutcome;
 use crate::storage::RequestListing;
@@ -126,7 +126,7 @@ pub struct Project {
     listing: Vec<RequestListing>,
     listing_warning: Option<String>,
     /// Requests loaded on demand, held while open (Task 7).
-    open_requests: IndexMap<String, crate::model::HttpRequest>,
+    open_requests: IndexMap<String, Held>,
     local: Local,
     journal: Journal,
     /// The ops of the transaction in progress; `None` outside one.
@@ -136,6 +136,15 @@ pub struct Project {
     /// Set by `invalidate_stamps`; forces the next `poll` to reload even
     /// though no watched stamp actually differs.
     force_reload: bool,
+}
+
+/// A request held open in the editor, plus the stamp its file had when the
+/// editor's buffer was last seeded from disk (by `open_request` or
+/// `save_request`). `held_request_drift` compares that seed stamp against a
+/// fresh one to tell whether the file moved outside the app since.
+pub(crate) struct Held {
+    req: crate::model::HttpRequest,
+    stamp: Stamp,
 }
 
 /// A snapshot of every in-memory document `Project` holds, for restoring
@@ -372,7 +381,15 @@ impl Project {
         self.open_requests = m
             .open_request_keys
             .into_iter()
-            .map(|k| (k, crate::model::HttpRequest::default()))
+            .map(|k| {
+                (
+                    k,
+                    Held {
+                        req: crate::model::HttpRequest::default(),
+                        stamp: Stamp::Absent,
+                    },
+                )
+            })
             .collect();
     }
 
@@ -384,10 +401,14 @@ impl Project {
     pub(crate) fn reload_held_requests(&mut self) {
         let held: Vec<String> = self.open_requests.keys().cloned().collect();
         for slug in held {
+            // The editor's buffer was not re-seeded by this reload, so the
+            // seed stamp taken by `open_request`/`save_request` is kept as
+            // is — the file is still "moved since the editor last saw it".
+            let stamp = self.open_requests[&slug].stamp;
             match request_rel(&slug).and_then(|p| Ok(self.disk.read(&p)?)) {
                 Ok(Some(text)) => match crate::model::HttpRequest::from_toml_str(&text) {
                     Ok(req) => {
-                        self.open_requests.insert(slug, req);
+                        self.open_requests.insert(slug, Held { req, stamp });
                     }
                     Err(_) => {
                         self.open_requests.shift_remove(&slug);

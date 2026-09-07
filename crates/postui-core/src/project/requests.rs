@@ -10,6 +10,14 @@ use crate::order::{self, OrderEdit};
 /// `(from_slug, to_slug)` pairs of a batch move.
 pub type Moves = Vec<(String, String)>;
 
+/// How a held request's file has drifted from the stamp taken when the
+/// editor's buffer was last seeded from it. See [`Project::held_request_drift`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeldDrift {
+    Changed,
+    Vanished,
+}
+
 /// Walks `requests/` through `Disk`: every `.toml` in a valid space,
 /// parsed for its method and name; broken files listed with the error.
 /// The warning names the first unreadable directory and every loose file.
@@ -73,7 +81,22 @@ impl Project {
     }
 
     pub fn held_request(&self, slug: &str) -> Option<&HttpRequest> {
-        self.open_requests.get(slug)
+        self.open_requests.get(slug).map(|held| &held.req)
+    }
+
+    /// `None` when `slug` is not held or its file still matches the stamp
+    /// taken when it was opened or last saved.
+    pub fn held_request_drift(&self, slug: &str) -> Option<HeldDrift> {
+        let path = request_rel(slug).ok()?;
+        let held = self.open_requests.get(slug)?;
+        let fresh = self.disk.stamp(&path);
+        if fresh == held.stamp {
+            None
+        } else if matches!(fresh, Stamp::Absent) {
+            Some(HeldDrift::Vanished)
+        } else {
+            Some(HeldDrift::Changed)
+        }
     }
 
     /// Parses the request and holds it until `close_request`.
@@ -87,8 +110,9 @@ impl Project {
             file: path.to_string(),
             error: e.to_string(),
         })?;
-        self.open_requests.insert(slug.to_string(), req);
-        Ok(&self.open_requests[slug])
+        let stamp = self.disk.stamp(&path);
+        self.open_requests.insert(slug.to_string(), Held { req, stamp });
+        Ok(&self.open_requests[slug].req)
     }
 
     pub fn close_request(&mut self, slug: &str) {
@@ -102,7 +126,14 @@ impl Project {
         let path = request_rel(slug)?;
         self.disk.write(&path, &req.to_toml_string())?;
         if self.open_requests.contains_key(slug) {
-            self.open_requests.insert(slug.to_string(), req.clone());
+            let stamp = self.disk.stamp(&path);
+            self.open_requests.insert(
+                slug.to_string(),
+                Held {
+                    req: req.clone(),
+                    stamp,
+                },
+            );
         }
         match self.listing.iter_mut().find(|l| l.slug == slug) {
             Some(row) => {
@@ -706,5 +737,88 @@ mod tests {
         let e = p.journal.pop_undo().unwrap();
         assert_eq!(e.ops.len(), 1);
         assert!(matches!(&e.ops[0], Op::Created { path } if path.as_str() == format!("requests/{copy}.toml")));
+    }
+
+    fn bump_mtime(path: &std::path::Path) {
+        // Coarse-mtime filesystems need the clock to move.
+        let t = std::fs::metadata(path).unwrap().modified().unwrap() + std::time::Duration::from_secs(2);
+        std::fs::File::open(path).unwrap().set_modified(t).unwrap();
+    }
+
+    #[test]
+    fn held_request_drift_is_none_right_after_open() {
+        let (_dir, mut p) = fixture();
+        p.open_request("main/ping").unwrap();
+        assert_eq!(p.held_request_drift("main/ping"), None);
+    }
+
+    #[test]
+    fn held_request_drift_reports_changed_after_an_outside_write() {
+        let (dir, mut p) = fixture();
+        p.open_request("main/ping").unwrap();
+        std::fs::write(
+            dir.path().join("requests/main/ping.toml"),
+            "name = \"Ping\"\nmethod = \"GET\"\nurl = \"https://{{host}}/ping-changed\"\n",
+        )
+        .unwrap();
+        assert_eq!(p.held_request_drift("main/ping"), Some(HeldDrift::Changed));
+    }
+
+    #[test]
+    fn held_request_drift_reports_vanished_after_an_outside_delete() {
+        let (dir, mut p) = fixture();
+        p.open_request("main/ping").unwrap();
+        std::fs::remove_file(dir.path().join("requests/main/ping.toml")).unwrap();
+        assert_eq!(p.held_request_drift("main/ping"), Some(HeldDrift::Vanished));
+    }
+
+    #[test]
+    fn held_request_drift_is_none_again_after_save_request_refreshes_the_stamp() {
+        let (dir, mut p) = fixture();
+        p.open_request("main/ping").unwrap();
+        std::fs::write(
+            dir.path().join("requests/main/ping.toml"),
+            "name = \"Ping\"\nmethod = \"GET\"\nurl = \"https://{{host}}/ping-changed\"\n",
+        )
+        .unwrap();
+        bump_mtime(&dir.path().join("requests/main/ping.toml"));
+        assert_eq!(p.held_request_drift("main/ping"), Some(HeldDrift::Changed));
+        p.save_request("main/ping", &req("https://{{host}}/ping-saved")).unwrap();
+        assert_eq!(p.held_request_drift("main/ping"), None);
+    }
+
+    #[test]
+    fn held_request_drift_survives_a_poll_reload_the_seed_stamp_is_kept() {
+        let (dir, mut p) = fixture();
+        p.open_request("main/ping").unwrap();
+        std::fs::write(
+            dir.path().join("requests/main/ping.toml"),
+            "name = \"Ping\"\nmethod = \"GET\"\nurl = \"https://{{host}}/ping-changed\"\n",
+        )
+        .unwrap();
+        bump_mtime(&dir.path().join("requests/main/ping.toml"));
+        p.invalidate_stamps();
+        assert!(p.poll().0);
+        assert_eq!(p.held_request("main/ping").unwrap().url, "https://{{host}}/ping-changed");
+        assert_eq!(
+            p.held_request_drift("main/ping"),
+            Some(HeldDrift::Changed),
+            "poll re-read the held copy but the seed stamp is kept"
+        );
+    }
+
+    #[test]
+    fn held_request_drift_is_none_for_a_slug_that_is_not_held() {
+        let (_dir, p) = fixture();
+        assert_eq!(p.held_request_drift("main/ping"), None);
+    }
+
+    #[test]
+    fn held_request_drift_is_none_for_the_new_slug_after_a_rename_reopens_it() {
+        let (_dir, mut p) = fixture();
+        p.open_request("main/ping").unwrap();
+        let (to_slug, _) = p.rename_request("main/ping", "main/renamed").unwrap();
+        p.open_request(&to_slug).unwrap();
+        assert_eq!(p.held_request_drift(&to_slug), None);
     }
 }
