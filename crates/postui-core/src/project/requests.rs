@@ -100,7 +100,10 @@ impl Project {
     }
 
     /// `None` when `slug` is not held or its file still matches the stamp
-    /// taken when it was opened or last saved.
+    /// taken when it was opened or last saved. A file that exists but
+    /// cannot be statted reports `Changed`, not `Vanished`: the user is
+    /// told the truth and keeps the Reload choice, which surfaces the real
+    /// io error. See [`Stamp`] for what the comparison can and cannot see.
     pub fn held_request_drift(&self, slug: &str) -> Option<HeldDrift> {
         let path = request_rel(slug).ok()?;
         let held = self.open_requests.get(slug)?;
@@ -195,7 +198,14 @@ impl Project {
         let path = request_rel(slug)?;
         self.disk.write(&path, &req.to_toml_string())?;
         if self.open_requests.contains_key(slug) {
-            let stamp = self.disk.stamp(&path);
+            // The stamp the write itself recorded (taken from the staged
+            // file before the rename), not a fresh stat: an outside write
+            // landing in the window between the two would otherwise
+            // become the seed and never be reported.
+            let stamp = self
+                .disk
+                .recorded(&path)
+                .unwrap_or_else(|| self.disk.stamp(&path));
             self.open_requests.insert(
                 slug.to_string(),
                 Held {
@@ -995,5 +1005,22 @@ mod tests {
         p.redo().unwrap().unwrap();
         assert!(p.held_request("auth/ping").is_some());
         assert_eq!(p.held_request_drift("auth/ping"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_that_cannot_be_statted_reports_changed_not_vanished() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, mut p) = fixture();
+        p.open_request("main/ping").unwrap();
+        let space = dir.path().join("requests/main");
+        std::fs::set_permissions(&space, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let drift = p.held_request_drift("main/ping");
+        std::fs::set_permissions(&space, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(
+            drift,
+            Some(HeldDrift::Changed),
+            "\"deleted outside the app\" would be a lie, and would withhold Reload"
+        );
     }
 }

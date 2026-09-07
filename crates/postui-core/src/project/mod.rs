@@ -143,6 +143,17 @@ pub struct Project {
 /// editor's buffer was last seeded from disk (by `open_request` or
 /// `save_request`). `held_request_drift` compares that seed stamp against a
 /// fresh one to tell whether the file moved outside the app since.
+///
+/// The stamp is mtime + length ([`Stamp`]), deliberately cheap: one stat,
+/// no read. The cost is two known blind spots. On a coarse-mtime
+/// filesystem (HFS+, exFAT, some network mounts), or when `mtime` is
+/// unavailable, an outside write of the same length in the same tick as
+/// our own open or save is invisible — that save overwrites it silently.
+/// The other way round, a byte-identical rewrite (a git checkout, a
+/// formatter, `touch`) raises a "changed outside the app" confirm with
+/// nothing behind it. A content hash kept beside the stamp would close
+/// both; it is deliberately deferred — the extra confirm is harmless, and
+/// the missed write needs a same-length edit inside one mtime tick.
 pub(crate) struct Held {
     req: crate::model::HttpRequest,
     stamp: Stamp,
