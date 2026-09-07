@@ -360,7 +360,7 @@ pub fn all_commands() -> Vec<Command> {
 /// that reconciles them. Commands with no option here (most of them: focus
 /// moves, prompts, the palette itself has no self-referential binding,
 /// …) simply show no keybinding column, which is correct — they have none.
-fn keymap_action_name(command_id: &str) -> Option<&'static str> {
+pub(crate) fn keymap_action_name(command_id: &str) -> Option<&'static str> {
     match command_id {
         "quit" => Some("quit"),
         "send" => Some("send"),
@@ -382,6 +382,7 @@ fn keymap_action_name(command_id: &str) -> Option<&'static str> {
         "table-add-row" => Some("table_add_row"),
         "vars-insert" => Some("pick_variable"),
         "manage-variables" => Some("manage_open"),
+        "theme-choose" => Some("theme_choose"),
         "vars-extract" => Some("extract_to_variable"),
         "undo" => Some("undo"),
         "redo" => Some("redo"),

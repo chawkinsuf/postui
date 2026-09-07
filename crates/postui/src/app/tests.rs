@@ -22244,3 +22244,102 @@ fn reload_from_disk_reconfigures_the_clipboard_and_anims_without_replacing_them(
         "the in-flight animation survived the reload"
     );
 }
+
+/// Reads row `y` of a `w`x40 render as plain text (cells joined, no
+/// styling), for asserting on what the footer's content row shows.
+fn rendered_row(app: &mut App, w: u16, y: u16) -> String {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    app.anims.finish_all();
+    let backend = TestBackend::new(w, 40);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
+    let buf = terminal.backend().buffer();
+    (0..w)
+        .map(|x| buf[(x, y)].symbol().to_string())
+        .collect::<String>()
+}
+
+const FOOTER_ROW: u16 = 40 - 2; // content row of the 3-row footer
+const MANAGE_HINT: &str = "Open or close the Manage screen";
+
+/// Hovers the header's Manage chip (registered at every test width).
+fn hover_manage(app: &mut App) {
+    render_once(app);
+    let manage = app.hits.rect_of(&Hit::HeaderManage).unwrap();
+    app.handle_mouse(moved(manage.x, manage.y));
+}
+
+/// Wide enough: hovering a button paints its one-line hint on the
+/// footer's content row, centred between the per-pane chips and the
+/// right-hand commands/quit pair, and the chips stay; moving off takes
+/// the hint away. No popup.
+#[test]
+fn hovering_a_button_shows_its_hint_between_the_chip_clusters() {
+    let mut app = App::new_for_test();
+    hover_manage(&mut app);
+    let row = rendered_row(&mut app, 160, FOOTER_ROW);
+    let at = row
+        .find(MANAGE_HINT)
+        .unwrap_or_else(|| panic!("hint shown: {row:?}"));
+    let chips_end = row.find("reorder").unwrap() + "reorder".len();
+    let palette = row.find("^P").unwrap();
+    assert!(
+        chips_end < at && at + MANAGE_HINT.len() < palette,
+        "{row:?}"
+    );
+
+    let pane = app.hits.rect_of(&Hit::Pane(PaneId::Sidebar)).unwrap();
+    app.handle_mouse(moved(pane.x + 2, pane.y + 6));
+    let row = rendered_row(&mut app, 160, FOOTER_ROW);
+    assert!(!row.contains("Open or"), "hint gone off-hover: {row:?}");
+}
+
+/// A gap that fits at least `HINT_MIN_SHOWN` cells keeps the middle
+/// placement with the hint ellipsized; a narrower one hands the hint the
+/// chip row for the hover instead, so it is never a stub beside `…`.
+#[test]
+fn footer_hint_ellipsizes_above_the_lower_bound_and_takes_the_row_below_it() {
+    let mut app = App::new_for_test();
+    hover_manage(&mut app);
+    // 134 columns: the sidebar chips + commands/quit leave ~26 cells.
+    let row = rendered_row(&mut app, 134, FOOTER_ROW);
+    assert!(row.contains("Open or close the Man"), "head shown: {row:?}");
+    assert!(row.contains('\u{2026}'), "ellipsized: {row:?}");
+    assert!(row.contains("reorder"), "chips stay: {row:?}");
+
+    // 120 columns: ~12 cells — the hint stands in for the chips.
+    let row = rendered_row(&mut app, 120, FOOTER_ROW);
+    assert!(row.contains(MANAGE_HINT), "whole hint: {row:?}");
+    assert!(!row.contains("rename"), "chips displaced: {row:?}");
+    assert!(
+        row.contains("^P") && row.contains("quit"),
+        "right pair stays: {row:?}"
+    );
+}
+
+/// A footer chip's own hint says what the action does (the chip only
+/// has room for a word) — from the palette's description where the
+/// action has a command, and from the hint table's fallback otherwise.
+#[test]
+fn footer_chip_hints_describe_the_action() {
+    let mut app = App::new_for_test();
+    app.focus = PaneId::Editor;
+    render_once(&mut app);
+    let send = app.hits.rect_of(&Hit::FooterChip(Action::Send)).unwrap();
+    app.handle_mouse(moved(send.x, send.y));
+    let row = rendered_row(&mut app, 160, FOOTER_ROW);
+    assert!(row.contains("Send the open request"), "{row:?}");
+
+    let mut app = app_with_one_param();
+    app.editor.sub_focus = SubFocus::Content;
+    app.editor.table.selected = Some(0);
+    render_once(&mut app);
+    let del = app
+        .hits
+        .rect_of(&Hit::FooterChip(Action::DeleteTableRow(0)))
+        .unwrap();
+    app.handle_mouse(moved(del.x, del.y));
+    let row = rendered_row(&mut app, 160, FOOTER_ROW);
+    assert!(row.contains("Delete the selected row"), "{row:?}");
+}

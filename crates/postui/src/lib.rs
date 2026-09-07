@@ -6,6 +6,7 @@ pub mod clipboard;
 pub mod components;
 pub mod config;
 pub mod glyph;
+pub mod hint;
 pub mod hit;
 pub mod hostfs;
 pub mod http;

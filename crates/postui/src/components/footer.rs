@@ -250,6 +250,11 @@ pub fn draw_footer(
     // areas — the quit chip's keycap shows the pre-empting `^C` combo
     // instead of advertising a key that would just type.
     plain_q_quits: bool,
+    // The hovered button's one-line hint (`hint::hint_for`) — the footer
+    // is the tooltip. Centred in the gap between the per-pane chips and
+    // the commands/quit pair while enough of it fits there (ellipsized);
+    // on a narrow footer it stands in for the per-pane chips instead.
+    hint: Option<&str>,
     hits: &mut HitMap,
     hovered: Option<&Hit>,
 ) {
@@ -322,16 +327,78 @@ pub fn draw_footer(
             jq_bar,
         ),
     };
-    paint_chip_row(
-        buf,
-        mid_y,
-        area.x + 1,
-        right_limit,
-        &chips,
-        theme,
-        hits,
-        hovered,
-    );
+    let start_x = area.x + 1;
+    match hint {
+        None => {
+            paint_chip_row(
+                buf,
+                mid_y,
+                start_x,
+                right_limit,
+                &chips,
+                theme,
+                hits,
+                hovered,
+            );
+        }
+        Some(hint) => {
+            // Middle placement while enough of the hint can show beside
+            // the chips; otherwise the hint takes the chip row for the
+            // duration of the hover (the chips return on leave).
+            let chips_end = chip_row_end(start_x, right_limit, &chips);
+            let free = right_limit.saturating_sub(chips_end + 1);
+            let hint_w = unicode_width::UnicodeWidthStr::width(hint) as u16;
+            if free >= hint_w.min(HINT_MIN_SHOWN) {
+                paint_chip_row(
+                    buf,
+                    mid_y,
+                    start_x,
+                    right_limit,
+                    &chips,
+                    theme,
+                    hits,
+                    hovered,
+                );
+                paint_hint(buf, mid_y, chips_end + 1, right_limit, hint, theme);
+            } else {
+                paint_hint(buf, mid_y, start_x, right_limit, hint, theme);
+            }
+        }
+    }
+}
+
+/// The hint keeps its place between the chip clusters while at least this
+/// many cells of it can show (ellipsized); with less room than that it
+/// displaces the per-pane chips instead, so a hover never reads as a
+/// three-letter stub beside an ellipsis.
+const HINT_MIN_SHOWN: u16 = 24;
+
+/// Where `paint_chip_row` would stop for `chips` from `start_x` — the same
+/// fit rule, without painting — so the footer can decide where the hint
+/// goes before anything is drawn.
+fn chip_row_end(start_x: u16, right_limit: u16, chips: &[(&str, &str, Option<Action>)]) -> u16 {
+    let mut x = start_x;
+    for chip in chips {
+        let width = chip_width(chip);
+        if x + width > right_limit {
+            break;
+        }
+        x += width + 2;
+    }
+    x
+}
+
+/// Paints `hint` centred in the free span `[start_x, end_x)`, muted on
+/// the panel, ellipsized to fit.
+fn paint_hint(buf: &mut Buffer, y: u16, start_x: u16, end_x: u16, hint: &str, theme: &Theme) {
+    let free = end_x.saturating_sub(start_x);
+    if free == 0 {
+        return;
+    }
+    let shown = crate::ui::ellipsize(hint, free as usize);
+    let w = unicode_width::UnicodeWidthStr::width(shown.as_str()) as u16;
+    let x = start_x + (free - w) / 2;
+    text(buf, x, y, &shown, theme.text_muted, theme.panel, false);
 }
 
 /// Paints a left-to-right row of `(key, label, action)` chips starting at
@@ -482,6 +549,7 @@ mod tests {
                     None,
                     true,
                     true,
+                    None,
                     &mut hits,
                     None,
                 )
@@ -762,6 +830,7 @@ mod tests {
                     None,
                     true,
                     true,
+                    None,
                     &mut hits,
                     None,
                 )
@@ -806,6 +875,7 @@ mod tests {
                     None,
                     true,
                     true,
+                    None,
                     &mut hits,
                     None,
                 )
@@ -853,6 +923,7 @@ mod tests {
                     None,
                     true,
                     true,
+                    None,
                     &mut hits,
                     None,
                 )
@@ -889,6 +960,7 @@ mod tests {
                     None,
                     true,
                     true,
+                    None,
                     &mut hits,
                     None,
                 )
@@ -959,6 +1031,7 @@ mod tests {
                     None,
                     true,
                     true,
+                    None,
                     &mut hits,
                     None,
                 )
@@ -1015,6 +1088,7 @@ mod tests {
                     None,
                     true,
                     true,
+                    None,
                     &mut hits,
                     None,
                 )
@@ -1110,6 +1184,7 @@ mod tests {
                     None,
                     true,
                     true,
+                    None,
                     &mut hits,
                     None,
                 )
