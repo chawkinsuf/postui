@@ -50,9 +50,15 @@ fn of(action: Action) -> Option<Source> {
 /// (a last resort that keeps every chip hintable).
 fn describe_action(action: &Action, keymap: &Keymap) -> String {
     if let Some(cmd) = all_commands().into_iter().find(|c| c.action == *action) {
+        // The palette has a whole row for its caveats ("(live preview;
+        // Esc reverts)"); the footer line keeps just the verb phrase.
+        let description = match cmd.description.rfind(" (") {
+            Some(i) if cmd.description.ends_with(')') => &cmd.description[..i],
+            _ => cmd.description,
+        };
         return match keymap_action_name(cmd.id).and_then(|n| keymap.combo_for(n)) {
-            Some(combo) => format!("{} \u{b7} {combo}", cmd.description),
-            None => cmd.description.to_string(),
+            Some(combo) => format!("{description} \u{b7} {combo}"),
+            None => description.to_string(),
         };
     }
     fallback_description(action).unwrap_or_else(|| format!("{action:?}"))
@@ -220,7 +226,7 @@ mod tests {
         let keymap = Keymap::default_bindings();
         assert_eq!(
             hint_for(&Hit::HeaderTheme, &keymap).unwrap(),
-            "Pick a color theme (live preview; Esc reverts) \u{b7} alt+t"
+            "Pick a color theme \u{b7} alt+t"
         );
     }
 
@@ -231,6 +237,16 @@ mod tests {
         assert_eq!(hint_for(&Hit::SidebarRow(0), &keymap), None);
         assert!(hint_for(&Hit::TableDelete(0), &keymap).is_some());
         assert!(hint_for(&Hit::FooterChip(Action::Quit), &keymap).is_some());
+    }
+
+    /// A palette caveat in parentheses stays in the palette.
+    #[test]
+    fn palette_parentheticals_are_dropped() {
+        let keymap = Keymap::default_bindings();
+        assert_eq!(
+            hint_for(&Hit::FooterChip(Action::DeleteSelectedRequest), &keymap).unwrap(),
+            "Delete the open request"
+        );
     }
 
     /// A chip action the palette doesn't list still gets real words, not

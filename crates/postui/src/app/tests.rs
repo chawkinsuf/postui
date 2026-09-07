@@ -22318,6 +22318,27 @@ fn footer_hint_ellipsizes_above_the_lower_bound_and_takes_the_row_below_it() {
     );
 }
 
+/// A hovered footer chip never swaps the chips away (that would un-hover
+/// it and oscillate with `resync_hover`): its hint takes the middle,
+/// ellipsized, or stays off when there is no room.
+#[test]
+fn a_hovered_footer_chip_keeps_the_chip_row() {
+    let mut app = App::new_for_test();
+    render_once(&mut app);
+    let rename = app
+        .hits
+        .rect_of(&Hit::FooterChip(Action::PromptRenameRequest))
+        .unwrap();
+    app.handle_mouse(moved(rename.x, rename.y));
+    let row = rendered_row(&mut app, 120, FOOTER_ROW);
+    assert!(row.contains("rename") && row.contains("reorder"), "chips stay: {row:?}");
+    assert!(row.contains("Rename the\u{2026}"), "hint in the middle: {row:?}");
+    assert!(
+        !app.resync_hover(),
+        "the hovered chip is still under the pointer"
+    );
+}
+
 /// A footer chip's own hint says what the action does (the chip only
 /// has room for a word) — from the palette's description where the
 /// action has a command, and from the hint table's fallback otherwise.

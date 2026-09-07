@@ -348,7 +348,12 @@ pub fn draw_footer(
             let chips_end = chip_row_end(start_x, right_limit, &chips);
             let free = right_limit.saturating_sub(chips_end + 1);
             let hint_w = unicode_width::UnicodeWidthStr::width(hint) as u16;
-            if free >= hint_w.min(HINT_MIN_SHOWN) {
+            // A hovered chip must stay under the pointer: hover is
+            // re-resolved against every frame's hit map, so swapping the
+            // chips out would un-hover it, bring them back, and so on.
+            // Its hint takes only what the middle offers.
+            let on_a_chip = matches!(hovered, Some(Hit::FooterChip(_)));
+            if free >= hint_w.min(HINT_MIN_SHOWN) || on_a_chip {
                 paint_chip_row(
                     buf,
                     mid_y,
@@ -359,7 +364,9 @@ pub fn draw_footer(
                     hits,
                     hovered,
                 );
-                paint_hint(buf, mid_y, chips_end + 1, right_limit, hint, theme);
+                if free >= HINT_MIN_STUB {
+                    paint_hint(buf, mid_y, chips_end + 1, right_limit, hint, theme);
+                }
             } else {
                 paint_hint(buf, mid_y, start_x, right_limit, hint, theme);
             }
@@ -372,6 +379,10 @@ pub fn draw_footer(
 /// displaces the per-pane chips instead, so a hover never reads as a
 /// three-letter stub beside an ellipsis.
 const HINT_MIN_SHOWN: u16 = 24;
+
+/// Where the chips must stay (a hovered chip), the hint still needs this
+/// much of the middle to be worth painting at all.
+const HINT_MIN_STUB: u16 = 8;
 
 /// Where `paint_chip_row` would stop for `chips` from `start_x` — the same
 /// fit rule, without painting — so the footer can decide where the hint
