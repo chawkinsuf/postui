@@ -802,18 +802,21 @@ impl Project {
         }
     }
 
-    fn list_environments(disk: &mut Disk) -> Vec<String> {
-        let Ok(dir) = RelPath::new(ENVIRONMENTS_DIR) else { return Vec::new() };
+    /// The environment slugs under `environments/`. A missing directory
+    /// is empty; one that fails to list is an error, never an empty list
+    /// — `open` would otherwise take it for "no environments" and create
+    /// a `default` the user never asked for.
+    fn list_environments(disk: &mut Disk) -> Result<Vec<String>, DiskError> {
+        let dir = RelPath::new(ENVIRONMENTS_DIR)?;
         let mut out: Vec<String> = disk
-            .list(&dir)
-            .unwrap_or_default()
+            .list(&dir)?
             .into_iter()
             .filter(|e| !e.is_dir)
             .filter_map(|e| e.name.strip_suffix(".toml").map(str::to_string))
             .filter(|stem| !stem.contains('/') && crate::storage::validate_slug(stem).is_ok())
             .collect();
         out.sort();
-        out
+        Ok(out)
     }
 
     /// `meta.spaces` first (invalid names skipped, duplicates dropped),
@@ -833,19 +836,24 @@ impl Project {
             }
         }
         let mut unlisted = Vec::new();
+        let mut warnings: Vec<Warning> = skipped
+            .into_iter()
+            .map(|n| format!("project.toml lists {n:?}, which is not a valid space name (space names are a-z 0-9 - _)"))
+            .collect();
         if let Ok(dir) = RelPath::new(REQUESTS_DIR) {
-            for e in disk.list(&dir).unwrap_or_default() {
-                if e.is_dir && meta::valid_space_name(&e.name) && !out.contains(&e.name) {
-                    unlisted.push(e.name);
+            match disk.list(&dir) {
+                Ok(entries) => {
+                    for e in entries {
+                        if e.is_dir && meta::valid_space_name(&e.name) && !out.contains(&e.name) {
+                            unlisted.push(e.name);
+                        }
+                    }
                 }
+                Err(e) => warnings.push(format!("could not list {REQUESTS_DIR}/: {e}")),
             }
         }
         unlisted.sort();
         out.extend(unlisted);
-        let warnings = skipped
-            .into_iter()
-            .map(|n| format!("project.toml lists {n:?}, which is not a valid space name (space names are a-z 0-9 - _)"))
-            .collect();
         (out, warnings)
     }
 
@@ -866,6 +874,9 @@ impl Project {
             });
         }
         let mut disk = Disk::new(root);
+        // The one file whose mode is not the umask's business: secrets
+        // land owner-only however the project directory is shared.
+        disk.mark_private(RelPath::new(SECRETS_TOML).expect("constant path"));
         let mut warnings = Vec::new();
 
         let meta: ProjectMeta = Self::read_doc(&mut disk, PROJECT_TOML, |t| {
@@ -889,7 +900,15 @@ impl Project {
             })?
         };
 
-        let mut environments = Self::list_environments(&mut disk);
+        let list_failed = {
+            let root = disk.root().to_path_buf();
+            move |e: DiskError| OpenError {
+                root: root.clone(),
+                file: ENVIRONMENTS_DIR.to_string(),
+                error: e.to_string(),
+            }
+        };
+        let mut environments = Self::list_environments(&mut disk).map_err(&list_failed)?;
         if environments.is_empty() && !legacy_vars && Self::is_project(disk.root()) {
             let path = RelPath::new(format!("{ENVIRONMENTS_DIR}/{DEFAULT_ENVIRONMENT}.toml"))
                 .expect("constant path");
@@ -901,7 +920,7 @@ impl Project {
                     warnings.push(format!(
                         "no environments — created environments/{DEFAULT_ENVIRONMENT}.toml"
                     ));
-                    environments = Self::list_environments(&mut disk);
+                    environments = Self::list_environments(&mut disk).map_err(&list_failed)?;
                 }
                 Err(e) => warnings.push(format!("could not create the default environment: {e}")),
             }
@@ -1015,7 +1034,7 @@ impl Project {
         let seed = |disk: &mut Disk| -> Result<(), DiskError> {
             disk.create_dir(&RelPath::new(REQUESTS_DIR)?)?;
             disk.create_dir(&RelPath::new(ENVIRONMENTS_DIR)?)?;
-            if Self::list_environments(disk).is_empty() {
+            if Self::list_environments(disk)?.is_empty() {
                 match disk.write_new(
                     &RelPath::new(format!("{ENVIRONMENTS_DIR}/{DEFAULT_ENVIRONMENT}.toml"))?,
                     "# environments/default.toml: values for this project's variables\n",
@@ -1249,6 +1268,48 @@ mod tests {
         assert!(p.meta().name.is_none());
         assert!(p.variables().vars.is_empty());
         assert!(!dir.path().join(".local/trash").exists());
+    }
+
+    /// An `environments/` that cannot be listed must not read as "no
+    /// environments": that path creates `default.toml` and switches the
+    /// active environment, which a transient listing failure must never do.
+    #[cfg(unix)]
+    #[test]
+    fn an_unlistable_environments_dir_refuses_the_open_instead_of_recreating_default() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, _p) = fixture();
+        let envs = dir.path().join("environments");
+        std::fs::set_permissions(&envs, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let result = Project::open(dir.path().to_path_buf());
+        std::fs::set_permissions(&envs, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let err = result.unwrap_err();
+        assert_eq!(err.file, "environments");
+        assert!(!envs.join("default.toml").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unlistable_requests_dir_is_a_warning_not_an_empty_space_list() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, _p) = fixture();
+        let requests = dir.path().join("requests");
+        std::fs::set_permissions(&requests, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let result = Project::open(dir.path().to_path_buf());
+        std::fs::set_permissions(&requests, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let (_p, warnings) = result.unwrap();
+        assert!(warnings.iter().any(|w| w.contains("could not list requests/")), "{warnings:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_secrets_file_is_written_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, mut p) = fixture();
+        p.set_secret_for("dev", "token", "s3cret".to_string()).unwrap();
+        let mode = std::fs::metadata(dir.path().join(".local/secrets.toml")).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        let public = std::fs::metadata(dir.path().join("project.toml")).unwrap().permissions().mode() & 0o777;
+        assert_ne!(public, 0o600, "project.toml keeps the umask mode");
     }
 
     #[test]

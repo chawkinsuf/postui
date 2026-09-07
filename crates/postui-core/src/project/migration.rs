@@ -11,7 +11,10 @@ pub(super) fn probe(disk: &mut Disk) -> (bool, Option<MigrationOutcome>, Vec<War
         .ok()
         .flatten()
         .unwrap_or_default();
+    // A listing that fails reads as "no environments" here only; `open`
+    // lists again right after and refuses on the same error.
     let envs: Vec<(String, String)> = Project::list_environments(disk)
+        .unwrap_or_default()
         .into_iter()
         .map(|env| {
             let text = RelPath::new(format!("{ENVIRONMENTS_DIR}/{env}.toml"))

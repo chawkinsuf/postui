@@ -2,7 +2,7 @@
 //! local and config files. Every path is relative to a root; every write
 //! is atomic; every read and write records a stamp for `changed`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -110,6 +110,9 @@ pub struct Ticket {
 pub struct Disk {
     root: PathBuf,
     stamps: HashMap<RelPath, Stamp>,
+    /// Files written owner-only (0600) regardless of the umask or the
+    /// mode already on disk — the secrets file.
+    private: HashSet<RelPath>,
 }
 
 impl Disk {
@@ -117,7 +120,14 @@ impl Disk {
         Disk {
             root,
             stamps: HashMap::new(),
+            private: HashSet::new(),
         }
+    }
+
+    /// Marks `rel` private: every write of it lands 0600, tightening a
+    /// file that is already wider rather than keeping its mode.
+    pub fn mark_private(&mut self, rel: RelPath) {
+        self.private.insert(rel);
     }
 
     pub fn root(&self) -> &Path {
@@ -180,10 +190,10 @@ impl Disk {
         result
     }
 
-    /// Atomic write: sibling temp file, mode copied from the existing
-    /// file (a new file takes the umask, as a plain create would), written
-    /// through a symlink, then renamed over. Creates the parent directory.
-    /// Records a stamp.
+    /// Atomic write: sibling temp file, fsynced, mode copied from the
+    /// existing file (a new file takes the umask, as a plain create
+    /// would; a private one is always 0600), written through a symlink,
+    /// then renamed over. Creates the parent directory. Records a stamp.
     pub fn write(&mut self, rel: &RelPath, text: &str) -> Result<(), DiskError> {
         self.write_bytes(rel, text.as_bytes())
     }
@@ -200,8 +210,9 @@ impl Disk {
         };
         let parent = target.parent().unwrap_or_else(|| Path::new("."));
         std::fs::create_dir_all(parent).map_err(DiskError::io("create the directory of", rel))?;
-        let tmp = Self::staged(parent, contents, rel)?;
-        if let Ok(existing) = std::fs::metadata(&target) {
+        let private = self.private.contains(rel);
+        let tmp = Self::staged(parent, contents, rel, private)?;
+        if !private && let Ok(existing) = std::fs::metadata(&target) {
             std::fs::set_permissions(tmp.path(), existing.permissions())
                 .map_err(DiskError::io("write", rel))?;
         }
@@ -219,7 +230,7 @@ impl Disk {
         let path = self.abs(rel);
         let parent = path.parent().unwrap_or_else(|| Path::new("."));
         std::fs::create_dir_all(parent).map_err(DiskError::io("create the directory of", rel))?;
-        let tmp = Self::staged(parent, text.as_bytes(), rel)?;
+        let tmp = Self::staged(parent, text.as_bytes(), rel, self.private.contains(rel))?;
         match tmp.persist_noclobber(&path) {
             Ok(_) => {}
             Err(e) if e.error.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -231,22 +242,27 @@ impl Disk {
         Ok(())
     }
 
-    /// A sibling temp file in `parent` holding `contents`, created with
-    /// the mode a plain create would get (0666 filtered by the umask)
-    /// rather than `NamedTempFile`'s owner-only default.
+    /// A sibling temp file in `parent` holding `contents`, synced to the
+    /// device so the rename that follows can never surface an empty file
+    /// after a power loss. Created with the mode a plain create would get
+    /// (0666 filtered by the umask) rather than `NamedTempFile`'s
+    /// owner-only default — unless `private`, which keeps owner-only.
     fn staged(
         parent: &Path,
         contents: &[u8],
         rel: &RelPath,
+        private: bool,
     ) -> Result<tempfile::NamedTempFile, DiskError> {
         let mut builder = tempfile::Builder::new();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            builder.permissions(std::fs::Permissions::from_mode(0o666));
+            let mode = if private { 0o600 } else { 0o666 };
+            builder.permissions(std::fs::Permissions::from_mode(mode));
         }
         let mut tmp = builder.tempfile_in(parent).map_err(DiskError::io("write", rel))?;
         std::io::Write::write_all(&mut tmp, contents).map_err(DiskError::io("write", rel))?;
+        tmp.as_file().sync_all().map_err(DiskError::io("write", rel))?;
         Ok(tmp)
     }
 
@@ -305,13 +321,15 @@ impl Disk {
     }
 
     /// The entries of a directory, sorted by name. A missing directory
-    /// lists as empty. Records the directory's stamp.
+    /// lists as empty; an entry that fails to read is skipped rather than
+    /// failing the whole listing (a directory that fails to open still
+    /// is). Records the directory's stamp.
     pub fn list(&mut self, dir: &RelPath) -> Result<Vec<DirEntry>, DiskError> {
         let mut out = Vec::new();
         match std::fs::read_dir(self.abs(dir)) {
             Ok(entries) => {
                 for e in entries {
-                    let e = e.map_err(DiskError::io("list", dir))?;
+                    let Ok(e) = e else { continue };
                     let is_dir = e.path().is_dir();
                     out.push(DirEntry {
                         name: e.file_name().to_string_lossy().to_string(),
@@ -528,6 +546,26 @@ mod tests {
             let mode = std::fs::metadata(disk.abs(rel)).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, control, "{rel} should have the umask mode, not the temp file's");
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_files_are_owner_only_even_when_the_existing_file_is_wider() {
+        use std::os::unix::fs::PermissionsExt;
+        let (d, mut disk) = disk();
+        let secrets = RelPath::new(".local/secrets.toml").unwrap();
+        disk.mark_private(secrets.clone());
+        disk.write(&secrets, "[dev]\n").unwrap();
+        let abs = d.path().join(".local/secrets.toml");
+        assert_eq!(std::fs::metadata(&abs).unwrap().permissions().mode() & 0o777, 0o600);
+        // A file already leaked wider is tightened, not preserved.
+        std::fs::set_permissions(&abs, std::fs::Permissions::from_mode(0o644)).unwrap();
+        disk.write(&secrets, "[qa]\n").unwrap();
+        assert_eq!(std::fs::metadata(&abs).unwrap().permissions().mode() & 0o777, 0o600);
+        let fresh = RelPath::new(".local/other.toml").unwrap();
+        disk.mark_private(fresh.clone());
+        disk.write_new(&fresh, "").unwrap();
+        assert_eq!(std::fs::metadata(disk.abs(&fresh)).unwrap().permissions().mode() & 0o777, 0o600);
     }
 
     #[test]

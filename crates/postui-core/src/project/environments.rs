@@ -13,8 +13,12 @@ impl Project {
         )
     }
 
+    /// Re-lists from disk; a listing that fails keeps the list we have
+    /// rather than emptying it.
     pub(crate) fn refresh_environments(&mut self) {
-        self.environments = Self::list_environments(&mut self.disk);
+        if let Ok(environments) = Self::list_environments(&mut self.disk) {
+            self.environments = environments;
+        }
     }
 
     /// Writes `.local/secrets.toml` from memory as a journaled text op.
