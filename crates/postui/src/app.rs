@@ -2832,16 +2832,6 @@ impl App {
                         self.session.rename(&from, &slug);
                         self.refresh_sidebar();
                         if self.editor.slug.as_deref() == Some(from.as_str()) {
-                            // The rename moved the held request to the new
-                            // slug but kept the stamp of the file it was
-                            // opened from — and it just rewrote that file's
-                            // `name`. Re-seed, or the app's own rename would
-                            // read as an outside edit on the next save. A
-                            // failed re-read leaves the old stamp, which
-                            // only costs one extra prompt.
-                            if let Some(p) = self.project.as_mut() {
-                                let _ = p.open_request(&slug);
-                            }
                             self.editor.slug = Some(slug.clone());
                             // The rename wrote the new display name to
                             // disk; mirror it in both the live fields and

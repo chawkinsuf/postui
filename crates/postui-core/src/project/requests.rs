@@ -332,8 +332,15 @@ impl Project {
                 req.name = Some(leaf.clone());
                 p.fs_write_text(&to_path, Some(&req.to_toml_string()))?;
             }
-            if let Some(req) = p.open_requests.shift_remove(&from_slug) {
-                p.open_requests.insert(to_slug.clone(), req);
+            if let Some(mut held) = p.open_requests.shift_remove(&from_slug) {
+                // A rename can rewrite the file's `name` (above), so the
+                // seed stamp is re-taken here — this op owns that write,
+                // and the app must never see its own rename as an outside
+                // edit. The other re-key paths (`move_request`,
+                // `move_all_requests`, space rename) only rename bytes
+                // that stay identical, so their old stamp still matches.
+                held.stamp = p.disk.stamp(&to_path);
+                p.open_requests.insert(to_slug.clone(), held);
             }
             p.relist();
             if let (Some((space, from_rel)), Some((_, to_rel))) =
@@ -819,10 +826,17 @@ mod tests {
     }
 
     #[test]
-    fn held_request_drift_is_none_for_the_new_slug_after_a_rename_reopens_it() {
+    fn held_request_drift_is_none_for_the_new_slug_after_a_rename() {
         let (_dir, mut p) = fixture();
         p.open_request("main/ping").unwrap();
         let (to_slug, _) = p.rename_request("main/ping", "main/renamed").unwrap();
+        assert_eq!(
+            p.held_request_drift(&to_slug),
+            None,
+            "the rename rewrote the file's `name` and re-stamped the held \
+             entry itself — its own write is never an outside edit"
+        );
+        // And re-opening it (what the app used to rely on) changes nothing.
         p.open_request(&to_slug).unwrap();
         assert_eq!(p.held_request_drift(&to_slug), None);
     }
