@@ -18,6 +18,11 @@ impl Project {
     /// invalid and stale names kept in place) then unlisted files: the
     /// list every environment op writes back. Never filters a
     /// hand-written entry away.
+    ///
+    /// Unlike the spaces `write_list`, this works from `self.environments`
+    /// — the last `refresh_environments` listing — rather than re-listing
+    /// disk. A file that appeared since that refresh simply stays
+    /// unlisted until the next poll.
     fn env_write_list(&self) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
         for name in &self.meta.environments {
@@ -190,6 +195,13 @@ impl Project {
         let from = from.to_string();
         // Only rewritten when `project.toml` already lists `from`: a
         // rename never creates an order list the project did without.
+        // When no array is present, the renamed environment re-sorts
+        // within the alphabetical unlisted tail rather than keeping the
+        // slot `from` held — the tail is alphabetical by definition, so
+        // there is no slot to keep. This is deliberate: unlike
+        // `rename_space`, which always writes the full list, an
+        // environment rename does not promote a project into having an
+        // order array just because one entry changed name.
         let order = self.meta.environments.contains(&from).then(|| {
             let mut envs = self.env_write_list();
             if let Some(i) = envs.iter().position(|n| *n == from) {
@@ -379,6 +391,36 @@ mod tests {
             "two keyboard moves within 2 s merge into one step, which nets to identity and is dropped"
         );
         assert!(matches!(p.move_environment("nope", 1), Err(Error::NotFound(_))));
+    }
+
+    #[test]
+    fn move_environment_keeps_an_invalid_middle_entry_in_place() {
+        // An `environments` array can hold an entry with no file behind it
+        // (or an invalid name) that a move must not disturb: it sits in
+        // the array between two real environments and stays there.
+        let (dir, _p) = fixture();
+        let text = read(&dir, "project.toml").unwrap();
+        std::fs::write(
+            dir.path().join("project.toml"),
+            format!("environments = [\"prod\", \"Not Valid\", \"qa\"]\n{text}"),
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("environments/prod.toml"), "").unwrap();
+        std::fs::remove_file(dir.path().join("environments/dev.toml")).unwrap();
+        let (mut p, warnings) = Project::open(dir.path().to_path_buf()).unwrap();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert_eq!(p.environments(), ["prod", "qa"]);
+
+        let c = p.move_environment("qa", -1).unwrap().unwrap();
+        assert_eq!(c.before, ["prod", "qa"]);
+        assert_eq!(c.after, ["qa", "prod"]);
+        assert_eq!(p.environments(), ["qa", "prod"]);
+
+        let text = read(&dir, "project.toml").unwrap();
+        assert!(
+            text.contains("environments = [\"qa\", \"Not Valid\", \"prod\"]"),
+            "the invalid entry keeps its middle slot: {text}"
+        );
     }
 
     #[test]

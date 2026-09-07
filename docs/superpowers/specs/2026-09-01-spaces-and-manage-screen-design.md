@@ -271,7 +271,10 @@ Environments and Spaces tabs share one **ListEditState** face:
 
 - Left: the item list (environments in file order; spaces in `spaces`
   order, numbered). Top of the left list: a `+ New` button that opens the
-  existing name prompt.
+  existing name prompt. *(2026-09-07: environments now order by an
+  `environments = [...]` array in `project.toml`, kept in sync the same
+  way `spaces` is; the row drag and alt+up/alt+down reorder both list
+  tabs.)*
 - Right, for the selected item, the Variables pane's title-row layout:
   `Space: name` / `Environment: name` at the left and the buttons
   right-aligned on the same row — **Rename** (opens the rename prompt),
@@ -284,7 +287,9 @@ Environments and Spaces tabs share one **ListEditState** face:
   reordered spaces, and the row menu still offers Move up/Move down.)*
 - Keys within the list: `r` rename, `n` new, `d` delete, and on Spaces
   `m` move all and `alt+up` / `alt+down` move. Footer chips advertise
-  them. Tabs switch by click or `alt+left` / `alt+right`.
+  them. Tabs switch by click or `alt+left` / `alt+right`. *(2026-09-07:
+  `alt+up` / `alt+down` (and the row drag and row-menu Move up/down) now
+  apply on the Environments tab too, reordering `environments`.)*
 - Undo coverage on these tabs: deletes are `Trashed` steps; an
   environment rename is a `FileStates` step; **a space rename is not an
   undo step** (a directory rename has no bounded content capture; rename
