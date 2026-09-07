@@ -319,6 +319,12 @@ impl Project {
                 "{display_path}: a rename stays in its space — move the request instead"
             )));
         }
+        // Whether the held entry still matched its file BEFORE this op
+        // touched anything — the re-stamp below is only allowed to cover
+        // this op's own rewrite. Re-stamping a file that had already moved
+        // outside the app would launder that edit into "clean" and the
+        // next save would overwrite it with no prompt.
+        let held_was_clean = self.held_request_drift(from_slug).is_none();
         let meta = self.meta_for_moves(vec![(from_slug.to_string(), to_slug.clone())]);
         let from_slug = from_slug.to_string();
         self.transaction("rename request", meta, |p| {
@@ -333,13 +339,18 @@ impl Project {
                 p.fs_write_text(&to_path, Some(&req.to_toml_string()))?;
             }
             if let Some(mut held) = p.open_requests.shift_remove(&from_slug) {
-                // A rename can rewrite the file's `name` (above), so the
-                // seed stamp is re-taken here — this op owns that write,
-                // and the app must never see its own rename as an outside
-                // edit. The other re-key paths (`move_request`,
-                // `move_all_requests`, space rename) only rename bytes
-                // that stay identical, so their old stamp still matches.
-                held.stamp = p.disk.stamp(&to_path);
+                // A rename can rewrite the file's `name` (above), so a
+                // held entry that was clean going in is re-stamped here:
+                // this op owns that write, and the app must never see its
+                // own rename as an outside edit. One that was already
+                // drifted keeps its seed stamp and goes on reporting
+                // `Changed` under the new slug. (The other re-key paths —
+                // `move_request`, `move_all_requests`, space rename — only
+                // rename bytes that stay identical, so their old stamp
+                // still matches either way.)
+                if held_was_clean {
+                    held.stamp = p.disk.stamp(&to_path);
+                }
                 p.open_requests.insert(to_slug.clone(), held);
             }
             p.relist();
@@ -839,5 +850,26 @@ mod tests {
         // And re-opening it (what the app used to rely on) changes nothing.
         p.open_request(&to_slug).unwrap();
         assert_eq!(p.held_request_drift(&to_slug), None);
+    }
+
+    #[test]
+    fn a_rename_does_not_launder_an_outside_edit_into_a_clean_stamp() {
+        let (dir, mut p) = fixture();
+        p.open_request("main/ping").unwrap();
+        // The outside world edits the file (a different length, so the
+        // stamp differs whatever the mtime granularity is), and only then
+        // does the user rename the open request.
+        std::fs::write(
+            dir.path().join("requests/main/ping.toml"),
+            "url = \"https://example.test/edited-outside-the-app\"\n",
+        )
+        .unwrap();
+        let (to_slug, _) = p.rename_request("main/ping", "main/renamed").unwrap();
+        assert_eq!(
+            p.held_request_drift(&to_slug),
+            Some(HeldDrift::Changed),
+            "the rename only rewrote `name`; the outside edit is still \
+             unseen by the editor and must still be reported"
+        );
     }
 }

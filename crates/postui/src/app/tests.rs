@@ -21364,7 +21364,7 @@ fn app_with_an_outside_edit() -> App {
     app
 }
 
-fn on_disk_url(app: &App) -> String {
+fn on_disk_ping_url(app: &App) -> String {
     postui_core::fixtures::load_request(app.proj().root(), "main/ping")
         .unwrap()
         .url
@@ -21388,7 +21388,7 @@ fn saving_over_an_outside_edit_asks_first_and_writes_nothing() {
     app.handle_key(&Keymap::default_bindings(), ctrl('s'));
 
     assert_eq!(
-        on_disk_url(&app),
+        on_disk_ping_url(&app),
         "https://x/ping-edited-outside-the-app",
         "the drifted file is untouched until the user chooses"
     );
@@ -21414,7 +21414,7 @@ fn drift_confirm_overwrite_writes_the_editors_version() {
     app.handle_key(&Keymap::default_bindings(), ctrl('s'));
     press(&mut app, 'o');
 
-    assert_eq!(on_disk_url(&app), mine, "Overwrite means my edits win");
+    assert_eq!(on_disk_ping_url(&app), mine, "Overwrite means my edits win");
     assert!(!app.editor.is_dirty());
     assert!(
         app.toasts.messages().iter().any(|m| m.starts_with("Saved")),
@@ -21438,7 +21438,7 @@ fn drift_confirm_reload_replaces_the_editor_from_disk() {
     );
     assert!(!app.editor.is_dirty(), "the reloaded buffer matches disk");
     assert_eq!(
-        on_disk_url(&app),
+        on_disk_ping_url(&app),
         "https://x/ping-edited-outside-the-app",
         "a reload writes nothing"
     );
@@ -21455,7 +21455,7 @@ fn drift_confirm_esc_keeps_both_versions() {
     press_esc(&mut app);
 
     assert_eq!(
-        on_disk_url(&app),
+        on_disk_ping_url(&app),
         "https://x/ping-edited-outside-the-app",
         "cancelling writes nothing"
     );
@@ -21486,7 +21486,7 @@ fn saving_over_an_outside_delete_offers_no_reload_and_recreates_the_file() {
     );
 
     press(&mut app, 'o');
-    assert_eq!(on_disk_url(&app), mine, "Overwrite recreates the file");
+    assert_eq!(on_disk_ping_url(&app), mine, "Overwrite recreates the file");
 }
 
 #[test]
@@ -21501,7 +21501,7 @@ fn saving_an_unchanged_file_never_asks() {
     app.handle_key(&Keymap::default_bindings(), ctrl('s'));
 
     assert!(app.modals.is_empty(), "no drift, no question");
-    assert_eq!(on_disk_url(&app), mine);
+    assert_eq!(on_disk_ping_url(&app), mine);
     assert!(!app.editor.is_dirty());
 }
 
@@ -21554,7 +21554,7 @@ fn save_and_quit_with_drift_asks_before_quitting_and_quits_on_overwrite() {
     assert!(!app.should_quit, "the quit waits on the user's choice");
 
     press(&mut app, 'o');
-    assert_eq!(on_disk_url(&app), mine);
+    assert_eq!(on_disk_ping_url(&app), mine);
     assert!(app.should_quit, "the follow-on rides the Overwrite choice");
 }
 
