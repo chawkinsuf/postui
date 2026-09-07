@@ -31,6 +31,10 @@ pub struct HintCtx {
     /// The scope the open value popup's "✕ remove" would clear, from
     /// `ModalStack::value_popup_remove_scope`.
     pub remove_scope: Option<ExtractDestination>,
+    /// The Manage screen is up, so its header chip closes rather than
+    /// opens (the chip holds the pressed fill to say so, but the fill
+    /// alone doesn't name the direction).
+    pub manage_open: bool,
 }
 
 /// What the footer should say while `hit` is hovered, or `None` for a hit
@@ -193,7 +197,11 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         Hit::HeaderSpaceCycle => text("Switch to the next space"),
         Hit::HeaderEnv => of(Action::OpenEnvChooser),
         Hit::HeaderEnvCycle => of(Action::CycleEnv(1)),
-        Hit::HeaderManage => text("Open or close the Manage screen"),
+        Hit::HeaderManage => text(if ctx.manage_open {
+            "Close the Manage screen"
+        } else {
+            "Open the Manage screen"
+        }),
         Hit::HeaderTheme => of(Action::OpenThemeChooser),
         Hit::FooterChip(action) => of(action.clone()),
 
@@ -325,6 +333,29 @@ mod tests {
         assert_eq!(
             hint_for(&Hit::FooterChip(Action::PromptRenameRequest), &keymap, &ctx()).unwrap(),
             "Rename the open request"
+        );
+    }
+
+    /// The chip toggles, so its hint names the direction the click would
+    /// go rather than both.
+    #[test]
+    fn the_manage_chip_hint_follows_the_screen() {
+        let keymap = Keymap::default_bindings();
+        assert_eq!(
+            hint_for(&Hit::HeaderManage, &keymap, &ctx()).unwrap(),
+            "Open the Manage screen"
+        );
+        assert_eq!(
+            hint_for(
+                &Hit::HeaderManage,
+                &keymap,
+                &HintCtx {
+                    manage_open: true,
+                    ..ctx()
+                }
+            )
+            .unwrap(),
+            "Close the Manage screen"
         );
     }
 

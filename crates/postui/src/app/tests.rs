@@ -22261,13 +22261,21 @@ fn rendered_row(app: &mut App, w: u16, y: u16) -> String {
 }
 
 const FOOTER_ROW: u16 = 40 - 2; // content row of the 3-row footer
-const MANAGE_HINT: &str = "Open or close the Manage screen";
+const MANAGE_HINT: &str = "Open the Manage screen";
 
 /// Hovers the header's Manage chip (registered at every test width).
 fn hover_manage(app: &mut App) {
     render_once(app);
     let manage = app.hits.rect_of(&Hit::HeaderManage).unwrap();
     app.handle_mouse(moved(manage.x, manage.y));
+}
+
+/// Hovers the header's environment chip — a hint long enough
+/// ("Switch to another environment") to ellipsize in the middle gap.
+fn hover_env(app: &mut App) {
+    render_once(app);
+    let env = app.hits.rect_of(&Hit::HeaderEnv).unwrap();
+    app.handle_mouse(moved(env.x, env.y));
 }
 
 /// Wide enough: hovering a button paints its one-line hint on the
@@ -22302,16 +22310,16 @@ fn hovering_a_button_shows_its_hint_between_the_chip_clusters() {
 #[test]
 fn footer_hint_ellipsizes_above_the_lower_bound_and_is_left_out_below_it() {
     let mut app = App::new_for_test();
-    hover_manage(&mut app);
+    hover_env(&mut app);
     // 134 columns: the sidebar chips + commands/quit leave ~26 cells.
     let row = rendered_row(&mut app, 134, FOOTER_ROW);
-    assert!(row.contains("Open or close the Ma"), "head shown: {row:?}");
+    assert!(row.contains("Switch to another en"), "head shown: {row:?}");
     assert!(row.contains('\u{2026}'), "ellipsized: {row:?}");
     assert!(row.contains("reorder"), "chips stay: {row:?}");
 
     // 120 columns: ~12 cells — too few, so no hint at all.
     let row = rendered_row(&mut app, 120, FOOTER_ROW);
-    assert!(!row.contains("Open or"), "hint left out: {row:?}");
+    assert!(!row.contains("Switch to"), "hint left out: {row:?}");
     assert!(row.contains("rename"), "chips keep the row: {row:?}");
     assert!(
         row.contains("^P") && row.contains("quit"),
@@ -22325,7 +22333,7 @@ fn footer_hint_ellipsizes_above_the_lower_bound_and_is_left_out_below_it() {
 #[test]
 fn an_ellipsized_hint_keeps_a_gap_before_the_commands_chip() {
     let mut app = App::new_for_test();
-    hover_manage(&mut app);
+    hover_env(&mut app);
     let row = rendered_row(&mut app, 134, FOOTER_ROW);
     let end = row.find('\u{2026}').unwrap() + '\u{2026}'.len_utf8();
     let palette = row.find("^P").unwrap();

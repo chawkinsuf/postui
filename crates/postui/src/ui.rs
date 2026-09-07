@@ -362,6 +362,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                     &crate::hint::HintCtx {
                         sending: app.editor.sending,
                         remove_scope: app.modals.value_popup_remove_scope(),
+                        manage_open: app.screen == crate::app::Screen::Manage,
                     },
                 )
             })
