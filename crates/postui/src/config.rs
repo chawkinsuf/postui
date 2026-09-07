@@ -370,6 +370,16 @@ pub struct Loaded {
     pub usage: crate::usage::UsageStore,
 }
 
+/// What a live reload re-read. A field is `None` when its file exists but
+/// will not parse — the caller keeps what it has and shows the warning.
+/// A missing file parses as its defaults, exactly as at startup.
+pub struct Reloaded {
+    pub registry: Option<ProjectsRegistry>,
+    pub ui: Option<UiSettings>,
+    pub keymap: Option<crate::keys::Keymap>,
+    pub themes: crate::theme::ThemeRegistry,
+}
+
 /// The one reader and writer of the XDG config files (`config.toml`,
 /// `keys.toml`, `ui.toml`, `themes/*.toml`), through its own
 /// [`postui_core::disk::Disk`] rooted at the config directory: every read
@@ -446,6 +456,74 @@ impl Config {
     /// every read a `None`. What `App::bare` (and so every test) uses.
     pub fn none() -> Config {
         Config { disk: None }
+    }
+
+    /// A `Config` rooted at `dir`, for app tests that need a real (but
+    /// tempdir-backed) disk behind reload.
+    #[cfg(test)]
+    pub(crate) fn at(dir: PathBuf) -> Config {
+        Config {
+            disk: Some(postui_core::disk::Disk::new(dir)),
+        }
+    }
+
+    /// Re-reads every XDG config file from disk for the user-triggered
+    /// Reload command. Unlike [`Self::load`], a file that exists but will
+    /// not parse yields `None` here rather than silently falling back to
+    /// its defaults: reload must never discard settings the user is
+    /// relying on just because a *different* file grew a syntax error.
+    /// The caller keeps whatever it already has for a `None` field and
+    /// shows the accompanying warning.
+    pub fn reload(&mut self, macos: bool) -> (Reloaded, Vec<String>) {
+        let mut warnings = Vec::new();
+
+        let config_text = self.read(CONFIG_TOML, &mut warnings).unwrap_or_default();
+        let (registry, ui) = match toml::from_str::<toml::Value>(&config_text) {
+            Ok(_) => {
+                // The whole-file parse above already succeeded, so these
+                // two per-field parsers (which degrade piecemeal, never
+                // fail) run clean: no warnings left to collect from them.
+                let (registry, _) = ProjectsRegistry::parse(&config_text);
+                let (ui, _) = UiSettings::parse(&config_text);
+                (Some(registry), Some(ui))
+            }
+            Err(e) => {
+                warnings.push(format!(
+                    "could not parse {CONFIG_TOML}: {e}; keeping the current settings"
+                ));
+                (None, None)
+            }
+        };
+
+        let (themes, theme_warnings) = self.reload_themes();
+        warnings.extend(theme_warnings);
+
+        let keymap = match self.read(KEYS_TOML, &mut warnings) {
+            Some(text) => {
+                let mut map = crate::keys::Keymap::default_bindings();
+                match map.apply_overrides(&text) {
+                    Ok(()) => Some(map),
+                    Err(e) => {
+                        warnings.push(format!("keys.toml ignored, keeping the current keys: {e}"));
+                        None
+                    }
+                }
+            }
+            None => Some(crate::keys::Keymap::default_bindings()),
+        };
+        if let Some(map) = &keymap {
+            warnings.extend(map.caret_warnings(macos));
+        }
+
+        (
+            Reloaded {
+                registry,
+                ui,
+                keymap,
+                themes,
+            },
+            warnings,
+        )
     }
 
     /// The file's text, `None` when it (or the whole config dir) isn't
@@ -1113,5 +1191,121 @@ mod tests {
         assert_eq!(expand_tilde("~"), home);
         assert_eq!(expand_tilde("/abs/x"), PathBuf::from("/abs/x"));
         assert_eq!(expand_tilde("rel"), PathBuf::from("rel"));
+    }
+
+    #[test]
+    fn reload_parses_a_good_config_toml() {
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "theme = \"x\"\n\n[projects]\nknown = [\"/tmp/a\", \"/tmp/b\"]\n",
+        )
+        .unwrap();
+        let mut cfg = Config::at(dir.path().to_path_buf());
+
+        let (reloaded, warnings) = cfg.reload(false);
+
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(reloaded.ui.unwrap().theme, "x");
+        assert_eq!(
+            reloaded.registry.unwrap().known,
+            vec![PathBuf::from("/tmp/a"), PathBuf::from("/tmp/b")]
+        );
+    }
+
+    #[test]
+    fn reload_reports_an_unparsable_config_toml_and_keeps_current_settings() {
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "theme = \"dark\"\nclipboard_cmd = \"xclip\n",
+        )
+        .unwrap();
+        let mut cfg = Config::at(dir.path().to_path_buf());
+
+        let (reloaded, warnings) = cfg.reload(false);
+
+        assert!(reloaded.registry.is_none());
+        assert!(reloaded.ui.is_none());
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("config.toml"), "{warnings:?}");
+        assert!(warnings[0].contains("keeping"), "{warnings:?}");
+    }
+
+    #[test]
+    fn reload_missing_config_toml_is_defaults_with_no_warnings() {
+        let dir = tempdir().unwrap();
+        let mut cfg = Config::at(dir.path().to_path_buf());
+
+        let (reloaded, warnings) = cfg.reload(false);
+
+        assert_eq!(reloaded.registry, Some(ProjectsRegistry::default()));
+        assert_eq!(reloaded.ui, Some(UiSettings::default()));
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    #[test]
+    fn reload_applies_a_good_keys_toml() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("keys.toml"), "save = \"alt+shift+s\"\n").unwrap();
+        let mut cfg = Config::at(dir.path().to_path_buf());
+
+        let (reloaded, _warnings) = cfg.reload(false);
+
+        let keymap = reloaded.keymap.expect("good keys.toml parses");
+        let combo = crate::keys::KeyCombo::parse("alt+shift+s").unwrap();
+        assert_eq!(
+            keymap.lookup(&combo),
+            Some(crate::action::Action::SaveRequest)
+        );
+    }
+
+    #[test]
+    fn reload_reports_a_bad_keys_toml_and_keeps_current_keys() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("keys.toml"), "save = \"not-a-combo\"\n").unwrap();
+        let mut cfg = Config::at(dir.path().to_path_buf());
+
+        let (reloaded, warnings) = cfg.reload(false);
+
+        assert!(reloaded.keymap.is_none());
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("keys.toml") && w.contains("keeping")),
+            "{warnings:?}"
+        );
+    }
+
+    #[test]
+    fn reload_picks_up_a_theme_file_added_after_startup() {
+        let dir = tempdir().unwrap();
+        let themes = dir.path().join("themes");
+        std::fs::create_dir_all(&themes).unwrap();
+        std::fs::write(themes.join("good.toml"), THEME_TOML).unwrap();
+        let mut cfg = Config::at(dir.path().to_path_buf());
+
+        let (reloaded, _warnings) = cfg.reload(false);
+
+        let customs: Vec<&str> = reloaded
+            .themes
+            .entries()
+            .iter()
+            .filter(|e| matches!(e.source, crate::theme::ThemeSource::Custom(_)))
+            .map(|e| e.name.as_str())
+            .collect();
+        assert_eq!(customs, vec!["good"]);
+    }
+
+    #[test]
+    fn reload_on_config_none_is_all_defaults_no_warnings() {
+        let mut cfg = Config::none();
+
+        let (reloaded, warnings) = cfg.reload(false);
+
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(reloaded.registry, Some(ProjectsRegistry::default()));
+        assert_eq!(reloaded.ui, Some(UiSettings::default()));
+        assert!(reloaded.keymap.is_some());
     }
 }
