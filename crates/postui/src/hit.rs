@@ -40,10 +40,6 @@ pub enum Hit {
     ManageRename,
     /// The right pane's `Delete` button: deletes the selected space / env.
     ManageDelete,
-    /// The Spaces tab's `Move up` button: reorders the selected space.
-    ManageMoveUp,
-    /// The Spaces tab's `Move down` button: reorders the selected space.
-    ManageMoveDown,
     /// The Spaces tab's `Move all requests…` button: opens the chooser of
     /// the other spaces to move this space's requests into.
     ManageMoveAll,

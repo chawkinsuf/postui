@@ -15432,12 +15432,14 @@ fn spaces_tab_lists_numbered_spaces_with_request_names_and_buttons() {
         Hit::ManageNew,
         Hit::ManageRename,
         Hit::ManageDelete,
-        Hit::ManageMoveUp,
-        Hit::ManageMoveDown,
         Hit::ManageMoveAll,
     ] {
         assert!(app.hits.rect_of(&hit).is_some(), "{hit:?} missing");
     }
+    // Reordering is drag/alt+up-down/row-menu only now — no detail-pane
+    // buttons for it.
+    assert!(!text.contains("Move up"), "{text}");
+    assert!(!text.contains("Move down"), "{text}");
 }
 
 /// The Environments/Spaces panes share the Variables pane's title-row
@@ -15488,7 +15490,6 @@ fn environments_tab_lists_envs_and_hides_the_space_only_buttons() {
     assert!(text.contains("prod"), "{text}");
     assert!(text.contains("Environment: prod"), "{text}");
     assert!(text.contains("environments/prod.toml"), "{text}");
-    assert!(app.hits.rect_of(&Hit::ManageMoveUp).is_none());
     assert!(app.hits.rect_of(&Hit::ManageMoveAll).is_none());
     assert!(app.hits.rect_of(&Hit::ManageRename).is_some());
 }

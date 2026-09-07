@@ -275,11 +275,13 @@ Environments and Spaces tabs share one **ListEditState** face:
 - Right, for the selected item, the Variables pane's title-row layout:
   `Space: name` / `Environment: name` at the left and the buttons
   right-aligned on the same row — **Rename** (opens the rename prompt),
-  **Delete**, and on the Spaces tab **Move up** / **Move down** and
-  **Move all requests…** (the same space chooser as the row menu).
-  Beneath: the environment's file path, or the space's requests listed
-  by name in sidebar order (as many as fit, then `+ n more`). No mark on
-  the active item — the header chip already says which one is active.
+  **Delete**, and on the Spaces tab **Move all requests…** (the same
+  space chooser as the row menu). Beneath: the environment's file path,
+  or the space's requests listed by name in sidebar order (as many as
+  fit, then `+ n more`). No mark on the active item — the header chip
+  already says which one is active. *(Removed 2026-09-07: Move up /
+  Move down buttons — the row drag and alt+up/alt+down already
+  reordered spaces, and the row menu still offers Move up/Move down.)*
 - Keys within the list: `r` rename, `n` new, `d` delete, and on Spaces
   `m` move all and `alt+up` / `alt+down` move. Footer chips advertise
   them. Tabs switch by click or `alt+left` / `alt+right`.
@@ -416,7 +418,8 @@ Rulings taken during implementation that amend the text above.
   (`+ Selector` yields there when the column is too narrow). The
   Environments/Spaces panes' title-row buttons drop from the left
   (Move all requests…, then Move up, …) like the selector pane's; every
-  dropped button has a key.
+  dropped button has a key. *(Removed 2026-09-07: Move up / Move down
+  buttons — drag and alt+up/alt+down replaced them.)*
 - H: in the header, the env-cycle and space-cycle keycap pills yield
   first at narrow widths — and whenever the dirty bar's Save/Discard
   group would otherwise not fit — then the Manage keycap; chip labels

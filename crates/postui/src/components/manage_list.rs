@@ -198,9 +198,9 @@ impl ManageList {
     }
 
     /// The right-click menu for row `i` of `tab`'s list — the same
-    /// actions the detail pane's buttons and the footer keys offer, so a
-    /// row can be worked on where it sits, like a Variables row can.
-    /// `None` past the end of the list.
+    /// actions the detail pane's buttons and footer keys offer, plus (on
+    /// the Spaces tab) Move up/down, so a row can be worked on where it
+    /// sits, like a Variables row can. `None` past the end of the list.
     pub fn context_menu(
         tab: ManageTab,
         ctx: &Project,
@@ -584,8 +584,6 @@ impl ManageList {
             let mut buttons: Vec<(&str, Hit)> =
                 vec![("Delete", Hit::ManageDelete), ("Rename", Hit::ManageRename)];
             if tab == ManageTab::Spaces {
-                buttons.push(("Move down", Hit::ManageMoveDown));
-                buttons.push(("Move up", Hit::ManageMoveUp));
                 buttons.push(("Move all requests\u{2026}", Hit::ManageMoveAll));
             }
             let mut bx = right.x + right.width;

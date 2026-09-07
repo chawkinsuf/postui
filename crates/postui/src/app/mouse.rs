@@ -1145,17 +1145,6 @@ impl App {
                     None => false,
                 }
             }
-            Hit::ManageMoveUp | Hit::ManageMoveDown => {
-                let delta = if matches!(hit, Hit::ManageMoveUp) {
-                    -1
-                } else {
-                    1
-                };
-                match self.manage_selected(ManageTab::Spaces) {
-                    Some(name) => self.update(Action::MoveSpace { name, delta }),
-                    None => false,
-                }
-            }
             Hit::ManageEnvTls(policy) => {
                 match self.manage_selected(ManageTab::Environments) {
                     Some(env) => self.update(Action::SetEnvTls { env, policy }),
