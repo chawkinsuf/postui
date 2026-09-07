@@ -309,7 +309,7 @@ shows; drag feels right at the edges.
 - A "sort alphabetically" reset.
 - Ordering on the Manage screen. *(Superseded — see §Space drag
   (Manage screen) below, which brings the same gesture to the Spaces
-  tab. Environments still have no order to rearrange.)*
+  tab, and from 2026-09-07 to the Environments tab too.)*
 
 ## Space drag (Manage screen)
 
@@ -324,8 +324,9 @@ outside the list — the same containment test the release commits on —
 the working order snaps back to the order the drag started from
 (`ManageList::drag_reset`, the cursor riding back with it) without
 ending the drag, so the rows preview the cancel a release there would
-be; motion back onto a row rearranges them again. The Environments tab never
-arms a press — environments have no order to rearrange.
+be; motion back onto a row rearranges them again. The Environments tab
+behaves identically *(2026-09-07 — see the note at the end of this
+section)*.
 
 While the drag is live the list paints the working order the pointer
 has arranged rather than the project's spaces, the dragged row keeps
@@ -367,6 +368,19 @@ a space that does not exist, so no undo can plant an orphan
 window and a burst that ends where it started records nothing; a drag
 is always its own step. The alt+↑↓ keys and the row menu's Move up/Move
 down remain the keyboard route to the same change.
+
+**The Environments tab reorders the same way** *(2026-09-07)*. The
+Manage screen's Environments tab now shares this whole gesture — the
+armed press, the live drag with its grip glyph and preview, alt+↑/↓ and
+the row menu's Move up/Move down — with `Action::MoveEnv` and
+`Project::{move_environment, set_environment_order}` in place of their
+space twins, recorded as its own undo marker
+(`ProjectNoun::EnvReorder`, toasting "reorder of environment {name}").
+The order lives in `project.toml` as `environments = [...]`, read and
+written exactly as `spaces` is: hand-written entries that name no
+environment keep their slot, and the displayed order is dealt back out
+over the slots the project's own environments occupy. The Environments
+row menu has no "Move all requests…" item; everything else matches.
 
 The terminal quirks recorded for the sidebar drag apply here
 unchanged: a right click is the in-band cancel because Ghostty (Linux)

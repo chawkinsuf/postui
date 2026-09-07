@@ -3289,6 +3289,52 @@ fn an_invalid_listed_space_name_warns_once_and_survives_the_next_space_op() {
 }
 
 #[test]
+fn an_invalid_listed_environment_name_warns_once_and_survives_the_next_env_op() {
+    let (mut app, dir) = app_with_envs();
+    let toml = dir.path().join("project.toml");
+    let text = std::fs::read_to_string(&toml).unwrap();
+    std::fs::write(
+        &toml,
+        format!("environments = [\"prod\", \"Not Valid\", \"qa\"]\n{text}"),
+    )
+    .unwrap();
+    app.reload_project_documents();
+
+    app.toasts = Default::default();
+    app.update(Action::RefreshSidebar);
+    let warned: Vec<_> = app
+        .toasts
+        .entries()
+        .into_iter()
+        .filter(|(m, _)| m.contains("Not Valid"))
+        .collect();
+    assert_eq!(warned.len(), 1, "{:?}", app.toasts.messages());
+    assert_eq!(warned[0].1, &crate::components::toast::ToastKind::Warning);
+
+    app.toasts = Default::default();
+    app.update(Action::RefreshSidebar);
+    assert!(
+        !app.toasts
+            .messages()
+            .iter()
+            .any(|m| m.contains("Not Valid")),
+        "{:?}",
+        app.toasts.messages()
+    );
+
+    // The next environment op must not quietly erase the user's
+    // hand-written entry — it keeps its slot in `project.toml`.
+    app.update(Action::CreateEnv("dev".into()));
+    assert_eq!(
+        postui_core::fixtures::load_meta(dir.path())
+            .unwrap()
+            .environments,
+        ["prod", "Not Valid", "qa", "dev"]
+    );
+    assert_eq!(app.proj().environments(), ["prod", "qa", "dev"]);
+}
+
+#[test]
 fn sidebar_footer_advertises_move_to_space_not_the_space_cycle() {
     let (mut app, _dir) = spaced_app();
     app.focus = PaneId::Sidebar;
@@ -3620,6 +3666,42 @@ fn move_space_reorders_and_persists() {
     assert_eq!(
         app.proj().local().active_space, "auth",
         "alt+1 follows the new order"
+    );
+}
+
+#[test]
+fn move_env_reorders_and_persists() {
+    let (mut app, dir) = app_with_envs();
+    app.update(Action::MoveEnv {
+        name: "qa".into(),
+        delta: -1,
+    });
+    assert_eq!(app.proj().environments(), ["qa", "prod"]);
+    assert_eq!(
+        postui_core::fixtures::load_meta(dir.path())
+            .unwrap()
+            .environments,
+        ["qa", "prod"]
+    );
+}
+
+#[test]
+fn cycling_environments_follows_the_new_order() {
+    let (mut app, _dir) = app_with_envs();
+    // The create switches to `dev`, which lands last in the list.
+    app.update(Action::CreateEnv("dev".into()));
+    assert_eq!(app.proj().environments(), ["prod", "qa", "dev"]);
+    assert_eq!(app.env_label(), "dev");
+    app.update(Action::MoveEnv {
+        name: "dev".into(),
+        delta: -1,
+    });
+    assert_eq!(app.proj().environments(), ["prod", "dev", "qa"]);
+    app.update(Action::CycleEnv(1));
+    assert_eq!(
+        app.env_label(),
+        "qa",
+        "alt+x steps through the reordered list, not the old one"
     );
 }
 
@@ -4205,6 +4287,55 @@ fn quick_keyboard_space_moves_roll_up_into_one_undo_step() {
 }
 
 #[test]
+fn quick_keyboard_env_moves_roll_up_into_one_undo_step() {
+    let (mut app, dir) = app_with_envs();
+    app.update(Action::CreateEnv("dev".into()));
+    assert_eq!(app.proj().environments(), ["prod", "qa", "dev"]);
+    let steps = app.history.undo_len();
+    for _ in 0..2 {
+        app.update(Action::MoveEnv {
+            name: "dev".into(),
+            delta: -1,
+        });
+    }
+    assert_eq!(listed_envs(&dir), ["dev", "prod", "qa"]);
+    assert_eq!(app.history.undo_len(), steps + 1, "a burst is one step");
+    app.update(Action::MoveEnv {
+        name: "dev".into(),
+        delta: -1,
+    });
+    assert_eq!(
+        app.history.undo_len(),
+        steps + 1,
+        "a no-op move records nothing"
+    );
+
+    app.update(Action::Undo);
+    assert_eq!(listed_envs(&dir), ["prod", "qa", "dev"]);
+    assert_eq!(app.proj().environments(), ["prod", "qa", "dev"]);
+    app.update(Action::Redo);
+    assert_eq!(listed_envs(&dir), ["dev", "prod", "qa"]);
+    assert_eq!(app.proj().environments(), ["dev", "prod", "qa"]);
+    assert!(
+        rendered_text(&mut app).contains("Redid reorder of environment dev"),
+        "{}",
+        rendered_text(&mut app)
+    );
+
+    // Down then up: the burst ends where it started and records nothing.
+    let steps = app.history.undo_len();
+    app.update(Action::MoveEnv {
+        name: "prod".into(),
+        delta: 1,
+    });
+    app.update(Action::MoveEnv {
+        name: "prod".into(),
+        delta: -1,
+    });
+    assert_eq!(app.history.undo_len(), steps);
+}
+
+#[test]
 fn a_dropped_space_drag_is_its_own_undo_step_and_undo_follows_the_cursor() {
     let (mut app, dir) = manage_spaces_app();
     let r0 = manage_row(&mut app, 0);
@@ -4230,6 +4361,34 @@ fn a_dropped_space_drag_is_its_own_undo_step_and_undo_follows_the_cursor() {
     );
     app.update(Action::Redo);
     assert_eq!(listed_spaces(&dir), ["auth", "billing", "main"]);
+}
+
+#[test]
+fn a_dropped_environment_drag_is_its_own_undo_step_and_undo_follows_the_cursor() {
+    let (mut app, dir) = manage_envs_app();
+    let r0 = manage_row(&mut app, 0);
+    let r2 = manage_row(&mut app, 2);
+    let steps = app.history.undo_len();
+    app.handle_mouse(left_down(r0.x + 2, r0.y));
+    app.handle_mouse(moved(r0.x + 2, r2.y));
+    app.handle_mouse(left_up(r0.x + 2, r2.y));
+    assert_eq!(listed_envs(&dir), ["qa", "dev", "prod"]);
+    assert_eq!(app.history.undo_len(), steps + 1);
+
+    app.update(Action::Undo);
+    assert_eq!(listed_envs(&dir), ["prod", "qa", "dev"]);
+    assert_eq!(app.proj().environments(), ["prod", "qa", "dev"]);
+    assert_eq!(
+        app.manage
+            .list
+            .selected(ManageTab::Environments, app.proj())
+            .map(str::to_string)
+            .as_deref(),
+        Some("prod"),
+        "the cursor follows the dragged environment back"
+    );
+    app.update(Action::Redo);
+    assert_eq!(listed_envs(&dir), ["qa", "dev", "prod"]);
 }
 
 #[test]
@@ -15432,12 +15591,14 @@ fn spaces_tab_lists_numbered_spaces_with_request_names_and_buttons() {
         Hit::ManageNew,
         Hit::ManageRename,
         Hit::ManageDelete,
-        Hit::ManageMoveUp,
-        Hit::ManageMoveDown,
         Hit::ManageMoveAll,
     ] {
         assert!(app.hits.rect_of(&hit).is_some(), "{hit:?} missing");
     }
+    // Reordering is drag/alt+up-down/row-menu only now — no detail-pane
+    // buttons for it.
+    assert!(!text.contains("Move up"), "{text}");
+    assert!(!text.contains("Move down"), "{text}");
 }
 
 /// The Environments/Spaces panes share the Variables pane's title-row
@@ -15488,9 +15649,28 @@ fn environments_tab_lists_envs_and_hides_the_space_only_buttons() {
     assert!(text.contains("prod"), "{text}");
     assert!(text.contains("Environment: prod"), "{text}");
     assert!(text.contains("environments/prod.toml"), "{text}");
-    assert!(app.hits.rect_of(&Hit::ManageMoveUp).is_none());
     assert!(app.hits.rect_of(&Hit::ManageMoveAll).is_none());
     assert!(app.hits.rect_of(&Hit::ManageRename).is_some());
+}
+
+#[test]
+fn alt_arrows_reorder_the_environments_tab_too() {
+    use crate::components::manage::ManageTab;
+    let (mut app, _dir) = app_with_envs();
+    app.update(Action::OpenManage {
+        tab: Some(ManageTab::Environments),
+    });
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert_eq!(app.manage.list.cursor, 1);
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
+    assert_eq!(app.proj().environments(), ["qa", "prod"]);
+    assert_eq!(
+        app.manage.list.cursor, 0,
+        "cursor follows the moved environment"
+    );
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::ALT));
+    assert_eq!(app.proj().environments(), ["prod", "qa"]);
+    assert_eq!(app.manage.list.cursor, 1);
 }
 
 #[test]
@@ -15600,7 +15780,7 @@ fn clicking_new_delete_and_a_row_dispatch_the_right_actions() {
 }
 
 #[test]
-fn right_clicking_an_environment_row_selects_it_and_opens_its_menu() {
+fn right_clicking_an_environment_row_opens_its_menu_with_move_items() {
     use crate::components::manage::ManageTab;
     let (mut app, _dir) = app_with_envs();
     app.update(Action::OpenManage {
@@ -15614,12 +15794,27 @@ fn right_clicking_an_environment_row_selects_it_and_opens_its_menu() {
         panic!("expected a context menu");
     };
     let labels: Vec<String> = menu.items.iter().map(|i| i.label.clone()).collect();
-    assert_eq!(labels, vec!["Rename\u{2026}", "Delete"]);
+    assert_eq!(
+        labels,
+        vec!["Rename\u{2026}", "Move up", "Move down", "Delete"],
+        "environments have no move-all item"
+    );
     assert_eq!(
         menu.items[0].action,
         Some(Action::PromptRenameEnv("qa".into()))
     );
-    assert_eq!(menu.items[1].action, Some(Action::DeleteEnv("qa".into())));
+    assert_eq!(
+        menu.items[1].action,
+        Some(Action::MoveEnv {
+            name: "qa".into(),
+            delta: -1
+        })
+    );
+    assert!(
+        menu.items[2].action.is_none(),
+        "the last row cannot move down"
+    );
+    assert_eq!(menu.items[3].action, Some(Action::DeleteEnv("qa".into())));
 }
 
 #[test]
@@ -15676,6 +15871,13 @@ fn manage_tabs_footer_chips_advertise_list_keys() {
     });
     let text = rendered_text_wide_tall(&mut app);
     for label in ["rename", "new", "delete", "move all", "reorder"] {
+        assert!(text.contains(label), "{label}: {text}");
+    }
+    // The Environments tab reorders too, so it advertises the same keys
+    // (its own `t` in place of the Spaces tab's move-all).
+    app.update(Action::SelectManageTab(ManageTab::Environments));
+    let text = rendered_text_wide_tall(&mut app);
+    for label in ["rename", "new", "delete", "tls", "reorder"] {
         assert!(text.contains(label), "{label}: {text}");
     }
 }
@@ -19979,6 +20181,25 @@ fn listed_spaces(dir: &tempfile::TempDir) -> Vec<String> {
     postui_core::fixtures::load_meta(dir.path()).unwrap().spaces
 }
 
+/// The Manage screen on its Environments tab, over a project with three
+/// environments (`prod`, `qa`, `dev`) drawn once so the rows have rects.
+fn manage_envs_app() -> (App, tempfile::TempDir) {
+    let (mut app, dir) = app_with_envs();
+    app.update(Action::CreateEnv("dev".into()));
+    app.update(Action::OpenManage {
+        tab: Some(ManageTab::Environments),
+    });
+    render_once(&mut app);
+    assert_eq!(app.proj().environments(), ["prod", "qa", "dev"]);
+    (app, dir)
+}
+
+fn listed_envs(dir: &tempfile::TempDir) -> Vec<String> {
+    postui_core::fixtures::load_meta(dir.path())
+        .unwrap()
+        .environments
+}
+
 #[test]
 fn dragging_a_space_row_reorders_and_persists() {
     let (mut app, dir) = manage_spaces_app();
@@ -20064,17 +20285,36 @@ fn a_press_and_wiggle_on_one_space_row_is_not_a_drag() {
 }
 
 #[test]
-fn a_press_on_an_environments_row_never_arms_a_drag() {
-    let (mut app, _dir) = manage_spaces_app();
-    app.update(Action::CreateEnv("dev".into()));
-    app.update(Action::CreateEnv("prod".into()));
-    app.update(Action::SelectManageTab(ManageTab::Environments));
+fn dragging_an_environment_row_reorders_and_persists() {
+    let (mut app, dir) = manage_envs_app();
     let r0 = manage_row(&mut app, 0);
-    let r1 = manage_row(&mut app, 1);
+    let r2 = manage_row(&mut app, 2);
     app.handle_mouse(left_down(r0.x + 2, r0.y));
-    assert!(app.manage_press.is_none(), "environments never arm");
-    app.handle_mouse(moved(r0.x + 2, r1.y));
+    assert!(
+        app.manage.list.drag.is_none(),
+        "a press alone is not a drag"
+    );
+    assert!(app.manage_press.is_some());
+    app.handle_mouse(moved(r0.x + 2, r2.y));
+    assert!(
+        app.manage.list.drag.is_some(),
+        "motion onto another row promotes"
+    );
+    assert_eq!(
+        app.manage.list.drag.as_ref().unwrap().working,
+        ["qa", "dev", "prod"]
+    );
+
+    app.handle_mouse(left_up(r0.x + 2, r2.y));
     assert!(app.manage.list.drag.is_none());
+    assert!(app.manage_press.is_none());
+    assert_eq!(listed_envs(&dir), ["qa", "dev", "prod"]);
+    assert_eq!(app.proj().environments(), ["qa", "dev", "prod"]);
+    assert_eq!(
+        app.manage.list.selected(app.manage.tab, app.proj()),
+        Some("prod"),
+        "the cursor stays on the environment that moved"
+    );
 }
 
 #[test]

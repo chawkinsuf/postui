@@ -23,6 +23,10 @@ pub struct ProjectMeta {
     /// listed still count — see `list_spaces`.
     #[serde(default)]
     pub spaces: Vec<String>,
+    /// Environment order (spec: "Order lives in project.toml"). Files not
+    /// listed still count — see `list_environments`.
+    #[serde(default)]
+    pub environments: Vec<String>,
     /// Per-space settings, keyed by slug: `[space.<slug>]`.
     #[serde(default)]
     pub space: IndexMap<String, ItemSettings>,
@@ -299,9 +303,17 @@ pub fn space_dir(root: &Path, name: &str) -> PathBuf {
     crate::storage::requests_dir(root).join(name)
 }
 
-pub(crate) fn spaces_array(spaces: &[String]) -> toml_edit::Array {
+/// A name that can be an `environments/<name>.toml` file: the rule
+/// `env_rel` enforces.
+pub(crate) fn valid_env_name(name: &str) -> bool {
+    !name.contains('/') && crate::storage::validate_slug(name).is_ok()
+}
+
+/// One of `project.toml`'s order lists (`spaces`, `environments`) as a
+/// `toml_edit` array.
+pub(crate) fn slug_array(slugs: &[String]) -> toml_edit::Array {
     let mut arr = toml_edit::Array::new();
-    for s in spaces {
+    for s in slugs {
         arr.push(s.as_str());
     }
     arr

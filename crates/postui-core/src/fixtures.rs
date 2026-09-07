@@ -10,7 +10,7 @@ use crate::order::{OrderEdit, level_of, merge_level, space_order, write_order};
 use crate::project::{
     DEFAULT_ENVIRONMENT, DEFAULT_SPACE, Kind, ListChange, LocalState, Project, ProjectError, ProjectMeta,
     display_name_of, display_taken, env_display, environment_path, set_item_name, space_dir,
-    space_display, spaces_array, unique_slug_among, valid_space_name,
+    slug_array, space_display, unique_slug_among, valid_space_name,
 };
 use crate::storage::{
     RequestListing, StorageError, request_path, requests_dir, space_of, validate_slug,
@@ -226,7 +226,7 @@ pub fn write_spaces(root: &Path, spaces: &[String]) -> Result<(), ProjectError> 
     let mut doc: toml_edit::DocumentMut = text
         .parse()
         .map_err(|e: toml_edit::TomlError| ProjectError::Parse(e.to_string()))?;
-    doc["spaces"] = toml_edit::value(spaces_array(spaces));
+    doc["spaces"] = toml_edit::value(slug_array(spaces));
     write_atomic(&path, doc.to_string().as_bytes())?;
     Ok(())
 }
@@ -298,7 +298,7 @@ pub fn create_space(root: &Path, display: &str) -> Result<String, ProjectError> 
     std::fs::create_dir_all(space_dir(root, &slug))?;
     spaces.push(slug.clone());
     edit_project_toml(root, |doc| {
-        doc["spaces"] = toml_edit::value(spaces_array(&spaces));
+        doc["spaces"] = toml_edit::value(slug_array(&spaces));
         set_item_name(doc, Kind::Space, &slug, &display);
     })?;
     Ok(slug)
