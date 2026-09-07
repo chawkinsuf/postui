@@ -42,9 +42,11 @@ impl Project {
         self.pending_migration.as_ref()
     }
 
-    /// Each rewritten file is copied to `<file>.bak` first — only once,
-    /// so a retry after a failed apply never overwrites the original —
-    /// then written atomically. The whole conversion is one journal entry
+    /// Each rewritten file is copied to `<file>.bak` first, then written
+    /// atomically. A `.bak` that is already there is refused, not
+    /// overwritten and not skipped: it is one the user made (a failed
+    /// apply rolls its own back), and converting without a fresh copy
+    /// would leave a stale one claiming to be the original. The whole conversion is one journal entry
     /// (backups included), so it undoes like any other project write; a
     /// failure part-way rolls every file back and stays pending for a
     /// retry. Reloads everything afterwards.
@@ -79,7 +81,12 @@ impl Project {
     /// `.bak` this apply created and puts the rewritten file back.
     fn write_with_backup(&mut self, path: &RelPath, text: &str) -> Result<(), Error> {
         let backup = RelPath::new(format!("{}.bak", path.as_str()))?;
-        if self.disk.is_file(path) && !self.disk.is_file(&backup) {
+        if self.disk.is_file(&backup) {
+            return Err(Error::AlreadyExists(format!(
+                "{backup} — move it aside before applying the migration"
+            )));
+        }
+        if self.disk.is_file(path) {
             let existing = self.disk.read(path)?.unwrap_or_default();
             self.fs_write_text(&backup, Some(&existing))?;
         }

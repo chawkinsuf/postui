@@ -135,11 +135,16 @@ impl Project {
     }
 
     /// Trashes the file, drops the table, its secrets and selections; the
-    /// active environment falls to the first remaining one.
+    /// active environment falls to the first remaining one. The last
+    /// environment stays (`LastEnvironment`): a project always has one,
+    /// and secrets written with none active would land under no key.
     pub fn delete_environment(&mut self, name: &str) -> Result<(), Error> {
         let path = env_rel(name)?;
         if !self.disk.is_file(&path) {
             return Err(Error::NotFound(name.to_string()));
+        }
+        if self.environments.iter().all(|e| e == name) {
+            return Err(Error::LastEnvironment);
         }
         let name = name.to_string();
         let was_active = self.active_env.as_deref() == Some(name.as_str());
@@ -280,6 +285,15 @@ mod tests {
         assert!(read(&dir, ".local/secrets.toml").unwrap().contains("[development]"));
         assert!(read(&dir, "project.toml").unwrap().contains("[environment.development]"));
         assert_eq!(p.journal_len(), 2);
+    }
+
+    #[test]
+    fn the_last_environment_cannot_be_deleted() {
+        let (dir, mut p) = fixture();
+        p.delete_environment("qa").unwrap();
+        assert!(matches!(p.delete_environment("dev"), Err(Error::LastEnvironment)));
+        assert!(dir.path().join("environments/dev.toml").is_file());
+        assert_eq!(p.environments(), ["dev"]);
     }
 
     #[test]

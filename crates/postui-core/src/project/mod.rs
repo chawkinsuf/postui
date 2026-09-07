@@ -38,6 +38,8 @@ pub enum Error {
     BadName(String),
     #[error("cannot delete the last space")]
     LastSpace,
+    #[error("cannot delete the last environment")]
+    LastEnvironment,
     #[error("already exists: {0}")]
     AlreadyExists(String),
     #[error("not found: {0}")]
@@ -1690,6 +1692,23 @@ mod tests {
         p.reload_all();
         assert_eq!(p.held_request("main/ping").unwrap().url, "outside");
         assert!(p.held_request("auth/login").is_none());
+    }
+
+    #[test]
+    fn a_migration_refuses_to_run_over_a_backup_the_user_already_has() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("environments")).unwrap();
+        std::fs::write(dir.path().join("project.toml"), "").unwrap();
+        let legacy = "[groups.region]\nmembers = [\"host\"]\n";
+        std::fs::write(dir.path().join("variables.toml"), legacy).unwrap();
+        std::fs::write(dir.path().join("variables.toml.bak"), "theirs").unwrap();
+        std::fs::write(dir.path().join("environments/dev.toml"), "").unwrap();
+        let (mut p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
+        let r = p.apply_migration();
+        assert!(matches!(r, Err(Error::AlreadyExists(_))), "{r:?}");
+        assert_eq!(read(&dir, "variables.toml").unwrap(), legacy, "the original is untouched");
+        assert_eq!(read(&dir, "variables.toml.bak").unwrap(), "theirs", "so is their backup");
+        assert!(p.pending_migration().is_some(), "still offered once the .bak is moved aside");
     }
 
     #[test]

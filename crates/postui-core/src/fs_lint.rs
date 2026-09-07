@@ -38,6 +38,10 @@ pub fn check(src_dir: &Path, allowed_files: &[&str]) -> Vec<String> {
                 in_tests = true;
             }
             if in_tests {
+                // The module's own closing brace, at column 0, ends it.
+                if *line == "}" {
+                    in_tests = false;
+                }
                 continue;
             }
             let hit = line.contains("std::fs") || (uses_fs_alias && line.contains("fs::"));

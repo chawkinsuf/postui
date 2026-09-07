@@ -7,6 +7,9 @@ use crate::journal::Op;
 use crate::model::HttpRequest;
 use crate::order::{self, OrderEdit};
 
+/// `(from_slug, to_slug)` pairs of a batch move.
+pub type Moves = Vec<(String, String)>;
+
 /// Walks `requests/` through `Disk`: every `.toml` in a valid space,
 /// parsed for its method and name; broken files listed with the error.
 /// The warning names the first unreadable directory and every loose file.
@@ -273,6 +276,13 @@ impl Project {
         }
         let to_slug = self.unique_slug(&folder, &leaf, Some(from_slug));
         let to_path = request_rel(&to_slug)?;
+        // A rename stays in its space (the order bookkeeping below is
+        // keyed by one space); crossing spaces is `move_request`'s job.
+        if crate::storage::space_of(from_slug) != crate::storage::space_of(&to_slug) {
+            return Err(Error::BadName(format!(
+                "{display_path}: a rename stays in its space — move the request instead"
+            )));
+        }
         let meta = self.meta_for_moves(vec![(from_slug.to_string(), to_slug.clone())]);
         let from_slug = from_slug.to_string();
         self.transaction("rename request", meta, |p| {
@@ -344,8 +354,15 @@ impl Project {
 
     /// Every request of `from` into `to`, as one entry. Pre-flights the
     /// whole batch (every destination computed and every source present)
-    /// before the first rename, so a refusal moves nothing.
-    pub fn move_all_requests(&mut self, from: &str, to: &str) -> Result<Vec<(String, String)>, Error> {
+    /// before the first rename, so a refusal moves nothing. A listed file
+    /// whose name is not a valid slug (`Get User.toml`) cannot be moved
+    /// through the slug API; it stays behind, named in the warnings,
+    /// rather than holding the rest of the space hostage.
+    pub fn move_all_requests(
+        &mut self,
+        from: &str,
+        to: &str,
+    ) -> Result<(Moves, Vec<Warning>), Error> {
         space_rel(from)?;
         space_rel(to)?;
         // In the order the sidebar shows them (every level of the space),
@@ -354,7 +371,14 @@ impl Project {
             order::displayed_slugs(&self.listing, order::space_order(&self.meta, from), from);
         let mut pairs: Vec<(String, String)> = Vec::new();
         let mut reserved: Vec<String> = Vec::new();
+        let mut left_behind: Vec<Warning> = Vec::new();
         for slug in &sources {
+            if request_rel(slug).is_err() {
+                left_behind.push(format!(
+                    "left behind: requests/{slug}.toml (its name is not a valid slug; rename the file first)"
+                ));
+                continue;
+            }
             if !self.request_exists(slug) {
                 return Err(Error::NotFound(slug.clone()));
             }
@@ -383,7 +407,7 @@ impl Project {
             p.order_move_all(from, to, &rel_pairs)?;
             Ok(())
         })?;
-        Ok(pairs)
+        Ok((pairs, left_behind))
     }
 
     pub fn delete_request(&mut self, slug: &str) -> Result<(), Error> {
@@ -571,7 +595,7 @@ mod tests {
         }
         std::fs::write(dir.path().join("requests/auth/r3.toml"), "method = \"GET\"\nurl = \"u\"\n").unwrap();
         p.relist();
-        let moved = p.move_all_requests("main", "auth").unwrap();
+        let (moved, _) = p.move_all_requests("main", "auth").unwrap();
         assert_eq!(moved.len(), 6);
         assert!(moved.iter().any(|(f, t)| f == "main/r3" && t == "auth/r3-2"));
         assert!(!dir.path().join("requests/main/r0.toml").exists());
@@ -606,7 +630,7 @@ mod tests {
             .unwrap();
         }
         let (mut p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
-        let moved = p.move_all_requests("main", "auth").unwrap();
+        let (moved, _) = p.move_all_requests("main", "auth").unwrap();
         assert_eq!(
             moved.iter().map(|(f, _)| f.as_str()).collect::<Vec<_>>(),
             ["main/b", "main/a", "main/sub/c"],
@@ -619,8 +643,30 @@ mod tests {
     #[test]
     fn move_all_from_a_space_with_no_directory_is_a_no_op() {
         let (_dir, mut p) = fixture();
-        let moved = p.move_all_requests("ghost", "auth").unwrap();
+        let (moved, _) = p.move_all_requests("ghost", "auth").unwrap();
         assert!(moved.is_empty());
+        assert_eq!(p.journal_len(), 0);
+    }
+
+    #[test]
+    fn move_all_leaves_a_non_slug_file_behind_with_a_warning() {
+        let (dir, mut p) = fixture();
+        std::fs::write(dir.path().join("requests/main/Get User.toml"), "method = \"GET\"\nurl = \"u\"\n").unwrap();
+        p.relist();
+        let (moved, warnings) = p.move_all_requests("main", "auth").unwrap();
+        assert_eq!(moved, vec![("main/ping".to_string(), "auth/ping".to_string())]);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("requests/main/Get User.toml"));
+        assert!(dir.path().join("requests/main/Get User.toml").is_file());
+        assert!(dir.path().join("requests/auth/ping.toml").is_file());
+    }
+
+    #[test]
+    fn rename_refuses_to_cross_spaces() {
+        let (dir, mut p) = fixture();
+        let r = p.rename_request("main/ping", "auth/Pong");
+        assert!(matches!(r, Err(Error::BadName(_))), "{r:?}");
+        assert!(dir.path().join("requests/main/ping.toml").is_file());
         assert_eq!(p.journal_len(), 0);
     }
 
