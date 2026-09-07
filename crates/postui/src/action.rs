@@ -364,6 +364,13 @@ pub enum Action {
         env: String,
         policy: Option<postui_core::project::TlsPolicy>,
     },
+    /// Move `name` `delta` positions in the environment list (clamped).
+    /// Recorded as a project step; a burst of moves inside the coalesce
+    /// window undoes as one.
+    MoveEnv {
+        name: String,
+        delta: i32,
+    },
     /// User asked to delete an environment: opens the confirm.
     DeleteEnv(String),
     /// Confirmed; trashes the environment file (undoable), drops its
@@ -392,8 +399,9 @@ pub enum Action {
     /// Confirmed; trashes the space's directory (undoable) and drops the
     /// list entry.
     ForceDeleteSpace(String),
-    /// Move `name` `delta` positions in the space list (clamped). Not an
-    /// undo step.
+    /// Move `name` `delta` positions in the space list (clamped).
+    /// Recorded as a project step; a burst of moves inside the coalesce
+    /// window undoes as one.
     MoveSpace {
         name: String,
         delta: i32,

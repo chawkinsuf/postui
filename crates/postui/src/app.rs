@@ -357,6 +357,9 @@ pub struct App {
     /// never rewritten away (the user's file stays the user's), so they
     /// too are a chronic state that must not re-toast on every refresh.
     last_spaces_warning: Option<String>,
+    /// The same warn-once channel again, for entries in `project.toml`'s
+    /// `environments` that aren't valid environment names.
+    last_environments_warning: Option<String>,
     /// Set when the project the app was asked to open refused (a file it
     /// would write back is unreadable — see `Project::open`). The
     /// app then runs on an empty root with nothing loaded; the message is
@@ -1279,6 +1282,7 @@ impl App {
             last_action_failed: false,
             last_loose_warning: None,
             last_spaces_warning: None,
+            last_environments_warning: None,
             open_error,
             _test_rx: None,
             _test_dir: None,
@@ -3342,6 +3346,7 @@ impl App {
                 // A different tree has a different set of loose files.
                 self.last_loose_warning = None;
                 self.last_spaces_warning = None;
+                self.last_environments_warning = None;
                 for w in warnings {
                     self.toasts.push(w, ToastKind::Warning);
                 }
@@ -5429,6 +5434,34 @@ impl App {
                 }
                 true
             }
+            Action::MoveEnv { name, delta } => {
+                let Some(p) = self.project.as_mut() else {
+                    return true;
+                };
+                match p.move_environment(&name, delta) {
+                    Ok(_) => {
+                        // A burst merges in core: the journal's top id
+                        // stays the same, so nothing is re-recorded and
+                        // the whole burst stays one undo step.
+                        self.record_project_step_as(
+                            crate::undo::ProjectNoun::EnvReorder,
+                            Some(name.clone()),
+                        );
+                        // The Manage screen's list cursor follows the
+                        // environment that just moved, rather than staying
+                        // on the row index the reorder swapped something
+                        // else into.
+                        if self.screen == Screen::Manage {
+                            self.manage_select_name(&name);
+                        }
+                    }
+                    Err(e) => {
+                        self.toasts
+                            .push(format!("cannot move environment: {e}"), ToastKind::Warning);
+                    }
+                }
+                true
+            }
             Action::MoveRequest { slug, delta } => {
                 // The sidebar already holds the level's displayed order
                 // (the rows it painted), so a visible row moves without
@@ -7384,6 +7417,7 @@ impl App {
         let listing = p.requests().to_vec();
         let warning = p.listing_warning().map(str::to_string);
         let spaces_warning = p.spaces_warning().map(str::to_string);
+        let environments_warning = p.environments_warning().map(str::to_string);
         let mut expanded = p.local().expanded.clone();
         if !self.sidebar.pending_expand.is_empty() {
             // Only when the set actually grows: `set_expanded` persists,
@@ -7425,6 +7459,13 @@ impl App {
                 .push(spaces_warning.clone().unwrap(), ToastKind::Warning);
         }
         self.last_spaces_warning = spaces_warning;
+        // And the same again for `project.toml`'s `environments`.
+        if environments_warning.is_some() && environments_warning != self.last_environments_warning
+        {
+            self.toasts
+                .push(environments_warning.clone().unwrap(), ToastKind::Warning);
+        }
+        self.last_environments_warning = environments_warning;
         self.sidebar.refresh(listing, &space, &expanded, &order);
         // `refresh` can re-map the open request's row to a different index
         // (rows added/removed/reordered above it) without the open request
@@ -7566,16 +7607,18 @@ impl App {
             || matches!(self.hits.hit_at(x, y), Some(Hit::ManageRow(_)))
     }
 
-    /// Ends a space-row drag. `commit` writes the working order when it
-    /// differs from the original; otherwise (release outside, Escape, a
+    /// Ends a row drag of the Spaces or Environments list — whichever tab
+    /// the drag itself belongs to. `commit` writes the working order when
+    /// it differs from the original; otherwise (release outside, Escape, a
     /// right click, a tab switch) the rows snap back to disk truth. The
     /// armed press is disarmed either way — Escape ends the drag with the
     /// button still held, and a press left armed would let the next
     /// motion event promote straight back into the drag just cancelled.
-    /// Like `Action::MoveSpace`, a committed drag records a
-    /// `SpaceReorder` marker for the entry core journaled; a drag never
+    /// Like `Action::MoveSpace` and `Action::MoveEnv`, a committed drag
+    /// records a reorder marker for the entry core journaled; a drag never
     /// merges with the keyboard bursts beside it.
     pub fn finish_manage_drag(&mut self, commit: bool) -> bool {
+        use crate::components::manage::ManageTab;
         self.manage_press = None;
         let Some(drag) = self.manage.list.drag.take() else {
             return false;
@@ -7584,20 +7627,25 @@ impl App {
             && drag.working != drag.original
             && let Some(p) = self.project.as_mut()
         {
-            match p.set_space_order(&drag.working) {
-                Ok(_) => self.record_project_step_as(
+            let (written, noun) = match drag.tab {
+                ManageTab::Spaces => (
+                    p.set_space_order(&drag.working),
                     crate::undo::ProjectNoun::SpaceReorder,
-                    Some(drag.name.clone()),
                 ),
+                _ => (
+                    p.set_environment_order(&drag.working),
+                    crate::undo::ProjectNoun::EnvReorder,
+                ),
+            };
+            match written {
+                Ok(_) => self.record_project_step_as(noun, Some(drag.name.clone())),
                 Err(e) => self
                     .toasts
                     .push(format!("cannot reorder: {e}"), ToastKind::Warning),
             }
         }
-        // The list cursor follows the space that was dragged, wherever it
+        // The list cursor follows the item that was dragged, wherever it
         // ended up — committed or snapped back.
-        let tab = self.manage.tab;
-        let _ = tab;
         self.manage_select_name(&drag.name);
         true
     }
@@ -9664,6 +9712,21 @@ impl App {
                                 };
                                 format!("{done} reorder of {what}")
                             }
+                            ProjectNoun::EnvReorder => {
+                                let what = match slug {
+                                    Some(name) => {
+                                        // The Manage cursor follows the
+                                        // environment that moved back, as
+                                        // the forward reorder's own does.
+                                        if self.screen == Screen::Manage {
+                                            self.manage_select_name(name);
+                                        }
+                                        format!("environment {}", self.env_name(name))
+                                    }
+                                    None => "the environments".to_string(),
+                                };
+                                format!("{done} reorder of {what}")
+                            }
                             ProjectNoun::Trash | ProjectNoun::TrashNamed => {
                                 let what = match (noun, slug.as_deref()) {
                                     (ProjectNoun::TrashNamed, Some(name)) => name.to_string(),
@@ -9692,7 +9755,9 @@ impl App {
                     Ok(None) => false,
                     Err(e) => {
                         let msg = match noun {
-                            ProjectNoun::Reorder | ProjectNoun::SpaceReorder => {
+                            ProjectNoun::Reorder
+                            | ProjectNoun::SpaceReorder
+                            | ProjectNoun::EnvReorder => {
                                 format!("could not {verb} the reorder: {e}")
                             }
                             // The file the entry names changed under the

@@ -98,12 +98,13 @@ impl App {
                         Some(_) => {}
                     }
                 }
-                // The Manage screen's Spaces list runs the same two-step:
-                // a live drag owns every motion event, and an armed press
-                // promotes the moment the pointer reaches another row.
-                // The pressed row index can be stale (a reload relisted
-                // the spaces), so the drag target is re-resolved by name;
-                // a press whose space is gone promotes nothing.
+                // The Manage screen's Spaces and Environments lists run
+                // the same two-step: a live drag owns every motion event,
+                // and an armed press promotes the moment the pointer
+                // reaches another row. The pressed row index can be stale
+                // (a reload relisted the tab), so the drag target is
+                // re-resolved by name; a press whose item is gone promotes
+                // nothing.
                 if self.manage.list.drag.is_some() {
                     return self.manage_drag_to(m.column, m.row);
                 }
@@ -1111,13 +1112,10 @@ impl App {
             )),
             Hit::ManageRow(i) => {
                 self.manage.list.cursor = i;
-                // A press on a Spaces row also arms a possible row drag;
-                // the click itself still just selects (the drag only
-                // starts once the pointer leaves the row). Environments
-                // have no order to rearrange, so they never arm.
-                if self.manage.tab == ManageTab::Spaces
-                    && let Some(name) = self.manage_selected(self.manage.tab)
-                {
+                // A press on a Spaces or Environments row also arms a
+                // possible row drag; the click itself still just selects
+                // (the drag only starts once the pointer leaves the row).
+                if let Some(name) = self.manage_selected(self.manage.tab) {
                     self.manage_press = Some((i, name));
                 }
                 self.update(Action::Render)

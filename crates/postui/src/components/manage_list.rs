@@ -30,8 +30,9 @@ pub struct ManageList {
     pub scroll: usize,
     visible_rows: usize,
     ensure_visible: bool,
-    /// A live row drag of the Spaces tab (spec §Space drag): while
-    /// `Some`, `draw` lists `working` instead of the project's spaces.
+    /// A live row drag of the Spaces or Environments tab (spec §Space
+    /// drag): while `Some`, `draw` lists `working` instead of the
+    /// project's own list.
     pub drag: Option<ListDrag>,
     /// The row list's rect as of the last draw — with `scroll` it maps a
     /// pointer row back to a row index (`row_at_y`), and it is what the
@@ -41,11 +42,15 @@ pub struct ManageList {
     last_len: usize,
 }
 
-/// A live drag of one Spaces-tab row: the working order the pointer has
-/// arranged so far, over the displayed space names.
+/// A live drag of one list row: the working order the pointer has
+/// arranged so far, over the displayed names of the tab it started on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListDrag {
-    /// The space being dragged.
+    /// The tab the drag belongs to. A drag outlives no tab switch (that
+    /// cancels it), but the commit reads it to know which list it is
+    /// writing back.
+    pub tab: ManageTab,
+    /// The space or environment being dragged.
     pub name: String,
     /// Displayed order at drag start.
     pub original: Vec<String>,
@@ -96,10 +101,10 @@ impl ManageList {
 
     /// Starts a drag of row `i`: records the displayed order as both
     /// `original` and the starting `working` order, and lands the cursor
-    /// on the dragged row. Only the Spaces tab reorders, so every other
-    /// tab (and a row past the end) refuses.
+    /// on the dragged row. Both list tabs reorder; the Variables tab has
+    /// no list of its own here, and a row past the end refuses.
     pub fn begin_drag(&mut self, i: usize, tab: ManageTab, ctx: &Project) -> bool {
-        if tab != ManageTab::Spaces {
+        if tab == ManageTab::Variables {
             return false;
         }
         let items = Self::items(tab, ctx);
@@ -108,6 +113,7 @@ impl ManageList {
         };
         let order = items.to_vec();
         self.drag = Some(ListDrag {
+            tab,
             name,
             original: order.clone(),
             working: order,
@@ -116,7 +122,7 @@ impl ManageList {
         true
     }
 
-    /// Moves the dragged space to the slot under row `i` (clamped to the
+    /// Moves the dragged row to the slot under row `i` (clamped to the
     /// list) and takes the cursor with it. Returns whether the working
     /// order changed; the caller then repaints.
     pub fn drag_to_row(&mut self, i: usize) -> bool {
@@ -185,6 +191,21 @@ impl ManageList {
         }
     }
 
+    /// Moving `name` `delta` positions in its own list — the tab's
+    /// reorder action, for alt+↑/↓ and the row menu's Move up/down.
+    fn move_action(tab: ManageTab, name: &str, delta: i32) -> Action {
+        match tab {
+            ManageTab::Spaces => Action::MoveSpace {
+                name: name.to_string(),
+                delta,
+            },
+            _ => Action::MoveEnv {
+                name: name.to_string(),
+                delta,
+            },
+        }
+    }
+
     /// The Spaces tab's move-all chooser for `name` (`m`, or the button).
     fn move_all_action(name: &str) -> Action {
         Action::PromptMoveAllRequests(name.to_string())
@@ -198,9 +219,9 @@ impl ManageList {
     }
 
     /// The right-click menu for row `i` of `tab`'s list — the same
-    /// actions the detail pane's buttons and footer keys offer, plus (on
-    /// the Spaces tab) Move up/down, so a row can be worked on where it
-    /// sits, like a Variables row can. `None` past the end of the list.
+    /// actions the detail pane's buttons and footer keys offer, plus
+    /// Move up/down, so a row can be worked on where it sits, like a
+    /// Variables row can. `None` past the end of the list.
     pub fn context_menu(
         tab: ManageTab,
         ctx: &Project,
@@ -213,24 +234,18 @@ impl ManageList {
             "Rename\u{2026}",
             Self::rename_action(tab, name),
         )];
+        // The edge rows keep their move item, disabled, so the menu holds
+        // its shape from row to row.
+        let mv = |label: &str, delta: i32, can: bool| {
+            if can {
+                MenuItem::new(label, Self::move_action(tab, name, delta))
+            } else {
+                MenuItem::disabled(label)
+            }
+        };
+        menu.push(mv("Move up", -1, i > 0));
+        menu.push(mv("Move down", 1, i + 1 < items.len()));
         if tab == ManageTab::Spaces {
-            // The edge rows keep their move item, disabled, so the menu
-            // holds its shape from row to row.
-            let mv = |label: &str, delta: i32, can: bool| {
-                if can {
-                    MenuItem::new(
-                        label,
-                        Action::MoveSpace {
-                            name: name.to_string(),
-                            delta,
-                        },
-                    )
-                } else {
-                    MenuItem::disabled(label)
-                }
-            };
-            menu.push(mv("Move up", -1, i > 0));
-            menu.push(mv("Move down", 1, i + 1 < items.len()));
             menu.push(MenuItem::new(
                 "Move all requests\u{2026}",
                 Self::move_all_action(name),
@@ -252,14 +267,8 @@ impl ManageList {
         match ev.code {
             KeyCode::Esc => Some(Action::CloseScreen),
             KeyCode::Char('q') => Some(Action::Quit),
-            KeyCode::Up if alt && tab == ManageTab::Spaces => {
-                let name = self.selected(tab, ctx)?.to_string();
-                Some(Action::MoveSpace { name, delta: -1 })
-            }
-            KeyCode::Down if alt && tab == ManageTab::Spaces => {
-                let name = self.selected(tab, ctx)?.to_string();
-                Some(Action::MoveSpace { name, delta: 1 })
-            }
+            KeyCode::Up if alt => Some(Self::move_action(tab, self.selected(tab, ctx)?, -1)),
+            KeyCode::Down if alt => Some(Self::move_action(tab, self.selected(tab, ctx)?, 1)),
             KeyCode::Up => {
                 self.cursor = self.cursor.saturating_sub(1);
                 self.ensure_visible = true;
@@ -300,10 +309,11 @@ impl ManageList {
         ];
         if tab == ManageTab::Spaces {
             chips.push(("m", "move all", selected.map(Self::move_all_action)));
-            chips.push(("alt+↑↓", "reorder", None));
         } else {
             chips.push(("t", "tls", selected.map(|n| Self::cycle_tls_action(ctx, n))));
         }
+        // Both lists reorder with the same keys.
+        chips.push(("alt+↑↓", "reorder", None));
         chips
     }
 
@@ -331,7 +341,7 @@ impl ManageList {
         // disk truth only comes back once the drag is committed or
         // cancelled.
         let items = match self.drag.as_ref() {
-            Some(d) if tab == ManageTab::Spaces => d.working.clone(),
+            Some(d) if d.tab == tab => d.working.clone(),
             _ => Self::items(tab, ctx).to_vec(),
         };
         if self.cursor >= items.len() {
@@ -480,9 +490,11 @@ impl ManageList {
             // The dragged row keeps the selected fill while it travels
             // (the cursor rides with it, so this only matters if the two
             // ever part company). Tab-gated exactly like `items` above:
-            // only the Spaces tab lists the names a drag holds.
-            let dragged =
-                tab == ManageTab::Spaces && self.drag.as_ref().is_some_and(|d| d.name == items[i]);
+            // only the drag's own tab lists the names it holds.
+            let dragged = self
+                .drag
+                .as_ref()
+                .is_some_and(|d| d.tab == tab && d.name == items[i]);
             let highlight = if dragged || i == self.cursor {
                 RowHighlight::Selected
             } else if hovered == Some(&Hit::ManageRow(i)) {
@@ -722,10 +734,14 @@ mod tests {
     }
 
     #[test]
-    fn begin_drag_refuses_the_environments_tab_and_a_row_past_the_end() {
+    fn begin_drag_takes_either_list_tab_and_refuses_a_row_past_the_end() {
         let (ctx, _dir) = ctx();
         let mut l = ManageList::default();
-        assert!(!l.begin_drag(0, ManageTab::Environments, &ctx));
+        assert!(l.begin_drag(0, ManageTab::Environments, &ctx));
+        let d = l.drag.take().expect("the environments list drags too");
+        assert_eq!(d.tab, ManageTab::Environments);
+        assert_eq!(d.original, ctx.environments());
+        assert!(!l.begin_drag(0, ManageTab::Variables, &ctx));
         assert!(!l.begin_drag(3, ManageTab::Spaces, &ctx));
         assert!(l.drag.is_none());
     }

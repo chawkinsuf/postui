@@ -56,6 +56,9 @@ pub enum ProjectNoun {
     /// `"{Undid|Redid} reorder of space {display}"` — the step's `slug`
     /// is a space name, not a request slug.
     SpaceReorder,
+    /// `"{Undid|Redid} reorder of environment {display}"` — the step's
+    /// `slug` is an environment name, not a request slug.
+    EnvReorder,
     /// `"Restored {file}"` / `"Deleted {file} again"`.
     Trash,
     /// [`Self::Trash`] for something that is not a request: the step's
