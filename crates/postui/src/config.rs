@@ -480,11 +480,15 @@ impl Config {
         let config_text = self.read(CONFIG_TOML, &mut warnings).unwrap_or_default();
         let (registry, ui) = match toml::from_str::<toml::Value>(&config_text) {
             Ok(_) => {
-                // The whole-file parse above already succeeded, so these
-                // two per-field parsers (which degrade piecemeal, never
-                // fail) run clean: no warnings left to collect from them.
+                // The whole-file parse above already succeeded, so neither
+                // per-field parser can hit its own "could not parse"
+                // branch. `UiSettings::parse` can still warn on a value
+                // that IS valid TOML but out of range (a bad `jq_tab`, an
+                // unknown `animation_ms` key) — those still need to reach
+                // the user, so they're not discarded here.
                 let (registry, _) = ProjectsRegistry::parse(&config_text);
-                let (ui, _) = UiSettings::parse(&config_text);
+                let (ui, ui_warnings) = UiSettings::parse(&config_text);
+                warnings.extend(ui_warnings);
                 (Some(registry), Some(ui))
             }
             Err(e) => {
@@ -1230,6 +1234,25 @@ mod tests {
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         assert!(warnings[0].contains("config.toml"), "{warnings:?}");
         assert!(warnings[0].contains("keeping"), "{warnings:?}");
+    }
+
+    #[test]
+    fn reload_surfaces_a_ui_settings_warning_from_otherwise_valid_toml() {
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "theme = \"x\"\njq_tab = \"bogus\"\n",
+        )
+        .unwrap();
+        let mut cfg = Config::at(dir.path().to_path_buf());
+
+        let (reloaded, warnings) = cfg.reload(false);
+
+        assert!(reloaded.ui.is_some(), "valid TOML still parses");
+        assert!(
+            warnings.iter().any(|w| w.contains("jq_tab")),
+            "{warnings:?}"
+        );
     }
 
     #[test]
