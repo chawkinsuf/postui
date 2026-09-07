@@ -54,11 +54,13 @@ fn shows_its_own_keycap(hit: &Hit) -> bool {
         hit,
         // The chip's own keycap pill.
         Hit::FooterChip(_)
-            // The header bar leads every chip with its keycap pill.
-            | Hit::HeaderProject
+            // The header bar leads a chip with the keycap that drives it —
+            // but the selector pills (`alt+z`/`alt+x`) drive the *cycle*,
+            // a hit of its own. The name chip beside one wears no key, so
+            // its chooser shortcut is news, not an echo.
             | Hit::HeaderProjectCycle
-            | Hit::HeaderEnv
             | Hit::HeaderEnvCycle
+            // A single chip whose leading keycap is its own action.
             | Hit::HeaderTheme
     )
 }
@@ -116,7 +118,10 @@ fn short_description(action: &Action) -> Option<&'static str> {
         Action::OpenResponseSearch => "Search the response body",
         Action::PromptNewRequest => "Create a request in this folder",
         Action::PromptSaveBody => "Save the response body to a file",
-        Action::OpenProjectChooser => "Switch to another project",
+        // "Open" over "Switch to", matching the ^O the hint carries; the
+        // space and env choosers keep "Switch to", since neither is a
+        // thing you open.
+        Action::OpenProjectChooser => "Open another project",
         Action::CycleProject(1) => "Switch to the next project",
         Action::CycleEnv(1) => "Switch to the next environment",
         Action::OpenMethodDropdown => "Pick an HTTP method",
@@ -320,6 +325,21 @@ mod tests {
         assert_eq!(
             hint_for(&Hit::FooterChip(Action::PromptRenameRequest), &keymap, &ctx()).unwrap(),
             "Rename the open request"
+        );
+    }
+
+    /// The selector pill drives the cycle, not the chooser: the name chip
+    /// beside it wears no key, so it carries its own.
+    #[test]
+    fn a_selector_name_chip_carries_its_chooser_key_but_the_cycle_pill_does_not() {
+        let keymap = Keymap::default_bindings();
+        assert_eq!(
+            hint_for(&Hit::HeaderProject, &keymap, &ctx()).unwrap(),
+            "Open another project \u{b7} ^O"
+        );
+        assert_eq!(
+            hint_for(&Hit::HeaderProjectCycle, &keymap, &ctx()).unwrap(),
+            "Switch to the next project"
         );
     }
 
