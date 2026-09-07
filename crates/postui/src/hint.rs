@@ -154,13 +154,13 @@ fn hint_source(hit: &Hit) -> Option<Source> {
         Hit::MethodSelector => of(Action::OpenMethodDropdown),
         Hit::CopyUrl => of(Action::CopyToClipboard(CopyTarget::Url)),
         Hit::TableCheckbox(_) => text("Enable or disable this row"),
-        Hit::TableDelete(_) => text("Delete this row (undoable)"),
+        Hit::TableDelete(_) => text("Delete this row"),
         Hit::SplitStop(stop) => text(match stop {
-            SplitStop::EditorFull => "Editor takes the whole column",
-            SplitStop::EditorBig => "Split 75/25, editor first",
+            SplitStop::EditorFull => "Editor full size",
+            SplitStop::EditorBig => "Split 75/25",
             SplitStop::Even => "Split evenly",
-            SplitStop::ResponseBig => "Split 75/25, response first",
-            SplitStop::ResponseFull => "Response takes the whole column",
+            SplitStop::ResponseBig => "Split 25/75",
+            SplitStop::ResponseFull => "Response full size",
         }),
         Hit::SplitStep(d) => text(if *d > 0 {
             "Give the response pane more room"
