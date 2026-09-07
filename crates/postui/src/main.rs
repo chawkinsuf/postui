@@ -196,8 +196,6 @@ async fn run(
         Ok(true)
     );
     let mut events = EventStream::new();
-    // The event loop's own copy of the bindings `App::new` loaded.
-    let keymap = app.keymap.clone();
 
     app.update(Action::ShowToast(
         "Welcome to postui".into(),
@@ -254,7 +252,7 @@ async fn run(
                     Some(Ok(event)) => {
                         match event {
                             Event::Key(ev) if ev.kind == KeyEventKind::Press => {
-                                redraw |= app.handle_key(&keymap, ev);
+                                redraw |= app.handle_key(ev);
                             }
                             Event::Mouse(m) => {
                                 redraw |= app.handle_mouse(m);

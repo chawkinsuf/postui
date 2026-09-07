@@ -248,8 +248,7 @@ fn esc_closes_the_context_menu() {
     expand_all(&mut app);
     let row = row_index_of(&app, "users/list");
     press(&mut app, Hit::SidebarRow(row), right_down);
-    let keymap = Keymap::default_bindings();
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(app.modals.top().is_none());
 }
 
@@ -261,10 +260,9 @@ fn context_menu_is_keyboard_navigable() {
     let row = row_index_of(&app, "users/list");
     press(&mut app, Hit::SidebarRow(row), right_down);
 
-    let keymap = Keymap::default_bindings();
     // Open, Duplicate — one Down lands on Duplicate.
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(postui_core::fixtures::request_exists(
         app.proj().root(),
         "main/users/list-copy"
@@ -412,14 +410,14 @@ fn open_request(app: &mut App, slug: &str) {
     press(app, Hit::SidebarRow(row), left_down);
 }
 
-fn type_text(app: &mut App, keymap: &Keymap, text: &str) {
+fn type_text(app: &mut App, text: &str) {
     for c in text.chars() {
-        app.handle_key(keymap, KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
     }
 }
 
-fn key(app: &mut App, keymap: &Keymap, code: KeyCode) {
-    app.handle_key(keymap, KeyEvent::new(code, KeyModifiers::NONE));
+fn key(app: &mut App, code: KeyCode) {
+    app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
 }
 
 // --- goal 2: saving is mouse-reachable -----------------------------------
@@ -567,16 +565,15 @@ fn a_param_cell_commits_on_click_away_reverts_on_esc_and_the_ghost_row_creates()
     let mut app = App::new_for_test();
     seed(&mut app, &["ping"]);
     open_request(&mut app, "ping");
-    let keymap = Keymap::default_bindings();
     assert!(app.editor.params.is_empty());
     click(&mut app, Hit::EditorTab(1)); // Params
 
     // The ghost row is row 0 of an empty table: click into its key cell and
     // type — no select-then-edit dance.
     click(&mut app, Hit::TableCell { row: 0, col: 0 });
-    type_text(&mut app, &keymap, "page");
+    type_text(&mut app, "page");
     click(&mut app, Hit::TableCell { row: 0, col: 1 });
-    type_text(&mut app, &keymap, "2");
+    type_text(&mut app, "2");
 
     // Clicking outside the table commits rather than discarding.
     click(&mut app, Hit::Pane(PaneId::Response));
@@ -588,8 +585,8 @@ fn a_param_cell_commits_on_click_away_reverts_on_esc_and_the_ghost_row_creates()
 
     // Esc reverts the active cell to its pre-edit value.
     click(&mut app, Hit::TableCell { row: 0, col: 1 });
-    type_text(&mut app, &keymap, "99");
-    key(&mut app, &keymap, KeyCode::Esc);
+    type_text(&mut app, "99");
+    key(&mut app, KeyCode::Esc);
     assert_eq!(
         app.editor.params.get("page").map(|e| e.value.as_str()),
         Some("2"),
@@ -652,13 +649,12 @@ fn a_legacy_project_migrates_then_grows_a_group_whose_selection_drives_resolutio
     click(&mut app, Hit::DropdownRow(0));
     assert_eq!(app.proj().active_env(), Some("qa"));
     assert!(app.modals.is_empty());
-    let keymap = Keymap::default_bindings();
 
     // --- create a selector: the [+ Selector] button takes just a name and
     // defaults the field to it ---
     click(&mut app, Hit::VmNewSelector);
-    type_text(&mut app, &keymap, "region");
-    key(&mut app, &keymap, KeyCode::Enter);
+    type_text(&mut app, "region");
+    key(&mut app, KeyCode::Enter);
     assert!(
         app.modals.is_empty(),
         "creating a selector opens nothing else"
@@ -677,12 +673,12 @@ fn a_legacy_project_migrates_then_grows_a_group_whose_selection_drives_resolutio
     // field to `zone` and add `dc` ---
     click(&mut app, Hit::VmEditFields);
     for _ in 0.."region".len() {
-        key(&mut app, &keymap, KeyCode::Backspace);
+        key(&mut app, KeyCode::Backspace);
     }
-    type_text(&mut app, &keymap, "zone");
+    type_text(&mut app, "zone");
     click(&mut app, Hit::ModalAddRow);
-    type_text(&mut app, &keymap, "dc");
-    key(&mut app, &keymap, KeyCode::Enter);
+    type_text(&mut app, "dc");
+    key(&mut app, KeyCode::Enter);
     assert_eq!(
         app.proj().variables().selectors["region"].fields,
         ["zone", "dc"],
@@ -690,8 +686,8 @@ fn a_legacy_project_migrates_then_grows_a_group_whose_selection_drives_resolutio
     );
 
     // --- two entries, typed into the ghost row ---
-    add_entry(&mut app, &keymap, &["eu", "eu-west-1", "dub"]);
-    add_entry(&mut app, &keymap, &["us", "us-east-1", "iad"]);
+    add_entry(&mut app, &["eu", "eu-west-1", "dub"]);
+    add_entry(&mut app, &["us", "us-east-1", "iad"]);
     let entries = postui_core::varmodel::selector_options(app.proj().env_data(), "region")
         .expect("the group has entries in qa");
     assert_eq!(entries.keys().collect::<Vec<_>>(), ["eu", "us"]);
@@ -748,15 +744,15 @@ fn left_row_of(app: &App, name: &str) -> usize {
 
 /// Types one whole entry into the group grid's ghost row: `cells[0]` is the
 /// entry name, the rest are its field values, `Tab` between them.
-fn add_entry(app: &mut App, keymap: &Keymap, cells: &[&str]) {
+fn add_entry(app: &mut App, cells: &[&str]) {
     click(app, Hit::VmNewOption);
     for (i, cell) in cells.iter().enumerate() {
-        type_text(app, keymap, cell);
+        type_text(app, cell);
         if i + 1 < cells.len() {
-            key(app, keymap, KeyCode::Tab);
+            key(app, KeyCode::Tab);
         }
     }
-    key(app, keymap, KeyCode::Enter);
+    key(app, KeyCode::Enter);
 }
 
 // --- goal 8: no pretty-print cap -----------------------------------------

@@ -51,6 +51,18 @@ impl Clipboard {
         }
     }
 
+    /// Updates the settings-derived fields in place, keeping the lazily
+    /// created native handle. What a live config reload must use instead
+    /// of building a fresh `Clipboard`: dropping the old one drops
+    /// `arboard`'s handle, and on X11 without a clipboard manager that
+    /// destroys the selection-owning window — everything the user had
+    /// copied out of postui would stop being pasteable the moment they
+    /// pressed the reload key.
+    pub fn reconfigure(&mut self, settings: &UiSettings) {
+        self.cmd = settings.clipboard_cmd.clone();
+        self.osc52_limit = settings.osc52_limit;
+    }
+
     /// Test-only constructor that lets tests disable the arboard tier so
     /// the cmd and OSC 52 tiers can be exercised deterministically without
     /// touching a real OS clipboard. Gated on the `test-util` feature

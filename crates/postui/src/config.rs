@@ -21,6 +21,14 @@ const KEYS_TOML: &str = "keys.toml";
 const UI_TOML: &str = "ui.toml";
 const THEMES_DIR: &str = "themes";
 
+/// The one place the "`config.toml` will not parse" sentence is written.
+/// What was *done* about it differs by caller — startup drops to the
+/// defaults, a reload keeps what it has — so each caller appends its own
+/// clause rather than the sentence being written out again.
+fn config_parse_error(e: &toml::de::Error) -> String {
+    format!("could not parse {CONFIG_TOML}: {e}")
+}
+
 impl ProjectsRegistry {
     /// Parses the registry out of `config.toml`'s text. An empty string
     /// (the missing file) is the empty registry; a mistyped piece of the
@@ -29,18 +37,19 @@ impl ProjectsRegistry {
     /// nothing else to run on — but with a warning saying so, and every
     /// save then refuses to touch the file (see [`Config::edit`]).
     pub fn parse(text: &str) -> (Self, Vec<String>) {
+        match toml::from_str::<toml::Value>(text) {
+            Ok(value) => (Self::from_value(&value), Vec::new()),
+            Err(e) => (Self::default(), vec![config_parse_error(&e)]),
+        }
+    }
+
+    /// [`Self::parse`] on an already-parsed document. The form
+    /// [`Config::read_all`] uses, so `config.toml` is parsed exactly once
+    /// for this and [`UiSettings`] together instead of once each.
+    pub fn from_value(value: &toml::Value) -> Self {
         let mut registry = Self::default();
-        let value = match toml::from_str::<toml::Value>(text) {
-            Ok(v) => v,
-            Err(e) => {
-                return (
-                    registry,
-                    vec![format!("could not parse {CONFIG_TOML}: {e}")],
-                );
-            }
-        };
         let Some(projects) = value.get("projects").and_then(|v| v.as_table()) else {
-            return (registry, Vec::new());
+            return registry;
         };
 
         if let Some(known) = projects.get("known").and_then(|v| v.as_array()) {
@@ -59,7 +68,7 @@ impl ProjectsRegistry {
             .and_then(|v| v.as_str())
             .map(expand_tilde);
 
-        (registry, Vec::new())
+        registry
     }
 
     /// Writes the registry into `doc`, touching only the `[projects]`
@@ -269,17 +278,20 @@ impl UiSettings {
     /// business at resolve time, not this parser's, so no warning is
     /// produced here for an unrecognized value.
     pub fn parse(text: &str) -> (UiSettings, Vec<String>) {
+        match toml::from_str::<toml::Value>(text) {
+            Ok(value) => Self::from_value(&value),
+            Err(e) => (
+                UiSettings::default(),
+                vec![format!("{}; using default settings", config_parse_error(&e))],
+            ),
+        }
+    }
+
+    /// [`Self::parse`] on an already-parsed document — see
+    /// [`ProjectsRegistry::from_value`] for why the parse is hoisted out.
+    pub fn from_value(value: &toml::Value) -> (UiSettings, Vec<String>) {
         let mut settings = UiSettings::default();
         let mut warnings = Vec::new();
-        let value = match toml::from_str::<toml::Value>(text) {
-            Ok(v) => v,
-            Err(e) => {
-                warnings.push(format!(
-                    "could not parse {CONFIG_TOML}: {e}; using default settings"
-                ));
-                return (settings, warnings);
-            }
-        };
 
         if let Some(cmd) = value.get("clipboard_cmd").and_then(|v| v.as_str()) {
             settings.clipboard_cmd = Some(cmd.to_string());
@@ -370,6 +382,35 @@ pub struct Loaded {
     pub usage: crate::usage::UsageStore,
 }
 
+/// What one pass of [`Config::read_all`] got off disk. Each field is a
+/// `Result` so the *caller* decides what a failure means: startup falls
+/// back to defaults, a live reload keeps what it already has. A file that
+/// is simply absent is not a failure — it reads as its defaults, in both
+/// callers.
+struct ReadAll {
+    /// `config.toml`'s two halves, parsed from one `toml::Value`: they
+    /// succeed and fail together, so they travel together.
+    config: Result<(ProjectsRegistry, UiSettings), String>,
+    keymap: Result<crate::keys::Keymap, String>,
+    /// `Err` only when `themes/` itself could not be listed; an
+    /// individual theme file that will not read or parse is skipped with
+    /// a warning and the rest of the registry still builds.
+    themes: Result<crate::theme::ThemeRegistry, String>,
+}
+
+/// What a live reload re-read. A field is `None` when its file exists but
+/// could not be read or parsed — the caller keeps what it has and shows
+/// the warning. A missing file reads as its defaults, exactly as at
+/// startup.
+pub struct Reloaded {
+    /// `config.toml`'s registry and UI settings — one file, one outcome.
+    pub config: Option<(ProjectsRegistry, UiSettings)>,
+    pub keymap: Option<crate::keys::Keymap>,
+    /// `None` when `themes/` could not be listed at all; the app then
+    /// keeps the registry it has.
+    pub themes: Option<crate::theme::ThemeRegistry>,
+}
+
 /// The one reader and writer of the XDG config files (`config.toml`,
 /// `keys.toml`, `ui.toml`, `themes/*.toml`), through its own
 /// [`postui_core::disk::Disk`] rooted at the config directory: every read
@@ -386,38 +427,53 @@ impl Config {
     /// Reads `config.toml` (the registry and the UI settings), `keys.toml`,
     /// `themes/*.toml` and `ui.toml`, returning the parsed contents and
     /// every warning the user needs to see at startup. A file that will
-    /// not parse yields its defaults and a warning; it is never written
-    /// over afterwards (see [`Self::edit`]).
+    /// not read or parse yields its defaults and a warning; it is never
+    /// written over afterwards (see [`Self::edit`]).
     pub fn load(macos: bool) -> (Config, Loaded, Vec<String>) {
-        let mut cfg = Config {
-            disk: postui_core::config_dir().map(postui_core::disk::Disk::new),
-        };
-        let mut warnings = Vec::new();
+        Self::load_from(
+            Config {
+                disk: postui_core::config_dir().map(postui_core::disk::Disk::new),
+            },
+            macos,
+        )
+    }
 
-        let config_text = cfg.read(CONFIG_TOML, &mut warnings).unwrap_or_default();
-        let (registry, registry_warnings) = ProjectsRegistry::parse(&config_text);
-        let (ui, mut config_warnings) = UiSettings::parse(&config_text);
-        // Both parsers read the same file: one parse failure, one toast.
-        if !registry_warnings.is_empty() && config_warnings.is_empty() {
-            config_warnings.extend(registry_warnings);
-        }
-        warnings.extend(config_warnings);
+    /// [`Self::load`] with the config directory already resolved: the half
+    /// that reads and words, split from the half that decides *where*, so
+    /// startup's behaviour — which file failure yields which defaults and
+    /// which sentence — can be tested against a tempdir instead of only
+    /// against the user's real XDG directory.
+    pub(crate) fn load_from(mut cfg: Config, macos: bool) -> (Config, Loaded, Vec<String>) {
+        let (read, mut warnings) = cfg.read_all();
 
-        let (themes, theme_warnings) = cfg.reload_themes();
-        warnings.extend(theme_warnings);
-
-        let keymap = match cfg.read(KEYS_TOML, &mut warnings) {
-            Some(text) => {
-                let (keymap, ignored) = crate::keys::Keymap::from_overrides(&text);
-                warnings.extend(ignored);
-                keymap
+        // Startup's answer to every failure is the same: run on the
+        // defaults and say so. (A reload's answer is the opposite — see
+        // [`Self::reload`] — which is exactly why `read_all` reports the
+        // bare error and leaves the consequence to us.)
+        let (registry, ui) = match read.config {
+            Ok(pair) => pair,
+            Err(e) => {
+                warnings.push(format!("{e}; using default settings"));
+                (ProjectsRegistry::default(), UiSettings::default())
             }
-            None => crate::keys::Keymap::default_bindings(),
+        };
+        let keymap = match read.keymap {
+            Ok(keymap) => keymap,
+            Err(e) => {
+                warnings.push(format!("keys.toml ignored, using default keys: {e}"));
+                crate::keys::Keymap::default_bindings()
+            }
         };
         warnings.extend(keymap.caret_warnings(macos));
+        let themes = read
+            .themes
+            .unwrap_or_else(|_| crate::theme::ThemeRegistry::from_files(Vec::new()).0);
 
-        let usage = match cfg.read(UI_TOML, &mut warnings) {
-            Some(text) => {
+        // `ui.toml` is the app's own state file rather than a config file
+        // the user edits, so it is read here and *not* by `read_all` —
+        // a reload has no business re-reading it (see [`Self::reload`]).
+        let usage = match cfg.read(UI_TOML) {
+            Ok(Some(text)) => {
                 let (usage, error) = crate::usage::UsageStore::parse(&text);
                 if let Some(e) = error {
                     warnings.push(format!(
@@ -426,7 +482,11 @@ impl Config {
                 }
                 usage
             }
-            None => crate::usage::UsageStore::default(),
+            Ok(None) => crate::usage::UsageStore::default(),
+            Err(e) => {
+                warnings.push(e);
+                crate::usage::UsageStore::default()
+            }
         };
 
         (
@@ -448,19 +508,131 @@ impl Config {
         Config { disk: None }
     }
 
-    /// The file's text, `None` when it (or the whole config dir) isn't
-    /// there. A read that fails for any other reason is reported and read
-    /// as absent — the app still starts, on defaults.
-    fn read(&mut self, name: &str, warnings: &mut Vec<String>) -> Option<String> {
-        let disk = self.disk.as_mut()?;
-        let rel = postui_core::disk::RelPath::new(name).ok()?;
-        match disk.read(&rel) {
-            Ok(text) => text,
+    /// A `Config` rooted at `dir`, for app tests that need a real (but
+    /// tempdir-backed) disk behind reload.
+    #[cfg(test)]
+    pub(crate) fn at(dir: PathBuf) -> Config {
+        Config {
+            disk: Some(postui_core::disk::Disk::new(dir)),
+        }
+    }
+
+    /// The single reader of the user-editable config files: `config.toml`
+    /// (parsed once, into both the registry and the UI settings),
+    /// `keys.toml` and `themes/`. Every outcome that is not a clean read
+    /// comes back as the bare error text, because [`Self::load`] and
+    /// [`Self::reload`] disagree about what to do with it — the only
+    /// thing they agree on is what the files say.
+    ///
+    /// `ui.toml` is deliberately not here: it is app-owned state, written
+    /// by the app itself, and only startup reads it.
+    fn read_all(&mut self) -> (ReadAll, Vec<String>) {
+        let mut warnings = Vec::new();
+
+        let config = match self.read(CONFIG_TOML) {
+            // A missing file is the empty document, which parses to the
+            // defaults — the same thing an empty `config.toml` says.
+            Ok(text) => match toml::from_str::<toml::Value>(&text.unwrap_or_default()) {
+                Ok(value) => {
+                    let registry = ProjectsRegistry::from_value(&value);
+                    let (ui, ui_warnings) = UiSettings::from_value(&value);
+                    // Warnings from values that ARE valid TOML but out of
+                    // range (a bad `jq_tab`, an unknown `animation_ms`
+                    // key): the file still applied, so these are advice,
+                    // not the failure above.
+                    warnings.extend(ui_warnings);
+                    Ok((registry, ui))
+                }
+                Err(e) => Err(config_parse_error(&e)),
+            },
+            Err(e) => Err(e),
+        };
+
+        let (themes, theme_warnings) = self.reload_themes();
+        warnings.extend(theme_warnings);
+        let themes = themes.ok_or_else(|| format!("{THEMES_DIR}/ could not be listed"));
+
+        let keymap = match self.read(KEYS_TOML) {
+            Ok(Some(text)) => crate::keys::Keymap::try_from_overrides(&text),
+            Ok(None) => Ok(crate::keys::Keymap::default_bindings()),
+            Err(e) => Err(e),
+        };
+
+        (
+            ReadAll {
+                config,
+                keymap,
+                themes,
+            },
+            warnings,
+        )
+    }
+
+    /// Re-reads the user-editable XDG config files — `config.toml`,
+    /// `keys.toml` and `themes/` — for the user-triggered Reload command.
+    /// `ui.toml` is app-owned state and is not re-read.
+    ///
+    /// Unlike [`Self::load`], a file that exists but will not read or
+    /// parse yields `None` here rather than silently falling back to its
+    /// defaults: reload must never discard settings the user is relying
+    /// on because a file grew a syntax error, or because a read failed.
+    /// The caller keeps whatever it already has for a `None` field and
+    /// shows the accompanying warning.
+    /// `current_keys` is the keymap the app is running on: the
+    /// caret-conflict advisories are re-issued only when the file's
+    /// bindings actually differ from it, so re-reading an unchanged
+    /// keys.toml is silent rather than a nag.
+    pub fn reload(
+        &mut self,
+        macos: bool,
+        current_keys: &crate::keys::Keymap,
+    ) -> (Reloaded, Vec<String>) {
+        let (read, mut warnings) = self.read_all();
+
+        let config = match read.config {
+            Ok(pair) => Some(pair),
             Err(e) => {
-                warnings.push(e.to_string());
+                warnings.push(format!("{e}; keeping the current settings"));
                 None
             }
+        };
+        let keymap = match read.keymap {
+            Ok(keymap) => Some(keymap),
+            Err(e) => {
+                warnings.push(format!("keys.toml ignored, keeping the current keys: {e}"));
+                None
+            }
+        };
+        if let Some(keymap) = &keymap
+            && keymap != current_keys
+        {
+            warnings.extend(keymap.caret_warnings(macos));
         }
+        // A `themes/` that would not list already warned inside
+        // `read_all`; here it just means "keep the registry you have".
+        let themes = read.themes.ok();
+
+        (
+            Reloaded {
+                config,
+                keymap,
+                themes,
+            },
+            warnings,
+        )
+    }
+
+    /// The file's text: `Ok(None)` when it (or the whole config dir)
+    /// isn't there, `Err` when it is there but could not be read (a
+    /// permission or I/O error, invalid UTF-8). The two are kept apart on
+    /// purpose — an unreadable file is not an absent one, and only the
+    /// caller knows whether "absent" is a safe thing to substitute.
+    fn read(&mut self, name: &str) -> Result<Option<String>, String> {
+        let Some(disk) = self.disk.as_mut() else {
+            return Ok(None);
+        };
+        let rel = postui_core::disk::RelPath::new(name).map_err(|e| e.to_string())?;
+        disk.read(&rel).map_err(|e| e.to_string())
     }
 
     /// Applies `f` to `name`'s document (an empty one when the file is
@@ -513,10 +685,12 @@ impl Config {
 
     /// Rescans `themes/` and rebuilds the registry, so a custom theme file
     /// added or edited since startup shows up without a restart. A missing
-    /// directory is silently just the built-ins; one that can't be listed,
-    /// or a file that can't be read or parsed, is one warning and is
-    /// skipped.
-    pub fn reload_themes(&mut self) -> (crate::theme::ThemeRegistry, Vec<String>) {
+    /// directory is silently just the built-ins; a file that can't be read
+    /// or parsed is one warning and is skipped. `None` — with a warning —
+    /// when the directory itself could not be listed: nothing was read, so
+    /// there is no registry to speak of and the caller must not mistake
+    /// the built-ins for "the user has no custom themes".
+    pub fn reload_themes(&mut self) -> (Option<crate::theme::ThemeRegistry>, Vec<String>) {
         let mut files = Vec::new();
         let mut warnings = Vec::new();
         if let Some(disk) = self.disk.as_mut()
@@ -525,8 +699,10 @@ impl Config {
             let entries = match disk.list(&dir) {
                 Ok(entries) => entries,
                 Err(e) => {
-                    warnings.push(format!("could not list {THEMES_DIR}/: {e}; custom themes unavailable"));
-                    Vec::new()
+                    warnings.push(format!(
+                        "could not list {THEMES_DIR}/: {e}; custom themes unavailable"
+                    ));
+                    return (None, warnings);
                 }
             };
             for entry in entries
@@ -548,7 +724,7 @@ impl Config {
         }
         let (registry, parse_warnings) = crate::theme::ThemeRegistry::from_files(files);
         warnings.extend(parse_warnings);
-        (registry, warnings)
+        (Some(registry), warnings)
     }
 }
 
@@ -682,7 +858,14 @@ mod tests {
         assert!(cfg.save_usage(&crate::usage::UsageStore::default()).is_ok());
         let (themes, warnings) = cfg.reload_themes();
         assert!(warnings.is_empty());
-        assert_eq!(themes.entries().len(), 9, "the built-ins");
+        assert_eq!(
+            themes
+                .expect("no config dir is not a listing failure")
+                .entries()
+                .len(),
+            9,
+            "the built-ins"
+        );
     }
 
     /// A valid theme text, as `from_files`' own tests write them.
@@ -707,6 +890,7 @@ mod tests {
         };
         let (registry, warnings) = cfg.reload_themes();
         assert!(warnings.is_empty(), "{warnings:?}");
+        let registry = registry.expect("the directory listed");
         let customs: Vec<&str> = registry
             .entries()
             .iter()
@@ -733,6 +917,7 @@ mod tests {
         };
         let (registry, warnings) = cfg.reload_themes();
         std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let registry = registry.expect("one unreadable file is not a listing failure");
         let customs: Vec<&str> = registry
             .entries()
             .iter()
@@ -1113,5 +1298,326 @@ mod tests {
         assert_eq!(expand_tilde("~"), home);
         assert_eq!(expand_tilde("/abs/x"), PathBuf::from("/abs/x"));
         assert_eq!(expand_tilde("rel"), PathBuf::from("rel"));
+    }
+
+    #[test]
+    fn reload_parses_a_good_config_toml() {
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "theme = \"x\"\n\n[projects]\nknown = [\"/tmp/a\", \"/tmp/b\"]\n",
+        )
+        .unwrap();
+        let mut cfg = Config::at(dir.path().to_path_buf());
+
+        let (reloaded, warnings) = cfg.reload(false, &crate::keys::Keymap::default_bindings());
+
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(reloaded.config.as_ref().unwrap().1.theme, "x");
+        assert_eq!(
+            reloaded.config.unwrap().0.known,
+            vec![PathBuf::from("/tmp/a"), PathBuf::from("/tmp/b")]
+        );
+    }
+
+    #[test]
+    fn reload_reports_an_unparsable_config_toml_and_keeps_current_settings() {
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "theme = \"dark\"\nclipboard_cmd = \"xclip\n",
+        )
+        .unwrap();
+        let mut cfg = Config::at(dir.path().to_path_buf());
+
+        let (reloaded, warnings) = cfg.reload(false, &crate::keys::Keymap::default_bindings());
+
+        assert!(reloaded.config.is_none());
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("config.toml"), "{warnings:?}");
+        assert!(warnings[0].contains("keeping"), "{warnings:?}");
+    }
+
+    #[test]
+    fn reload_surfaces_a_ui_settings_warning_from_otherwise_valid_toml() {
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "theme = \"x\"\njq_tab = \"bogus\"\n",
+        )
+        .unwrap();
+        let mut cfg = Config::at(dir.path().to_path_buf());
+
+        let (reloaded, warnings) = cfg.reload(false, &crate::keys::Keymap::default_bindings());
+
+        assert!(reloaded.config.is_some(), "valid TOML still parses");
+        assert!(
+            warnings.iter().any(|w| w.contains("jq_tab")),
+            "{warnings:?}"
+        );
+    }
+
+    #[test]
+    fn reload_missing_config_toml_is_defaults_with_no_warnings() {
+        let dir = tempdir().unwrap();
+        let mut cfg = Config::at(dir.path().to_path_buf());
+
+        let (reloaded, warnings) = cfg.reload(false, &crate::keys::Keymap::default_bindings());
+
+        assert_eq!(
+            reloaded.config,
+            Some((ProjectsRegistry::default(), UiSettings::default()))
+        );
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    #[test]
+    fn reload_applies_a_good_keys_toml() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("keys.toml"), "save = \"alt+shift+s\"\n").unwrap();
+        let mut cfg = Config::at(dir.path().to_path_buf());
+
+        let (reloaded, _warnings) = cfg.reload(false, &crate::keys::Keymap::default_bindings());
+
+        let keymap = reloaded.keymap.expect("good keys.toml parses");
+        let combo = crate::keys::KeyCombo::parse("alt+shift+s").unwrap();
+        assert_eq!(
+            keymap.lookup(&combo),
+            Some(crate::action::Action::SaveRequest)
+        );
+    }
+
+    #[test]
+    fn reload_reports_a_bad_keys_toml_and_keeps_current_keys() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("keys.toml"), "save = \"not-a-combo\"\n").unwrap();
+        let mut cfg = Config::at(dir.path().to_path_buf());
+
+        let (reloaded, warnings) = cfg.reload(false, &crate::keys::Keymap::default_bindings());
+
+        assert!(reloaded.keymap.is_none());
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("keys.toml") && w.contains("keeping")),
+            "{warnings:?}"
+        );
+    }
+
+    #[test]
+    fn reload_picks_up_a_theme_file_added_after_startup() {
+        let dir = tempdir().unwrap();
+        let themes = dir.path().join("themes");
+        std::fs::create_dir_all(&themes).unwrap();
+        std::fs::write(themes.join("good.toml"), THEME_TOML).unwrap();
+        let mut cfg = Config::at(dir.path().to_path_buf());
+
+        let (reloaded, _warnings) = cfg.reload(false, &crate::keys::Keymap::default_bindings());
+
+        let themes = reloaded.themes.expect("the directory listed");
+        let customs: Vec<&str> = themes
+            .entries()
+            .iter()
+            .filter(|e| matches!(e.source, crate::theme::ThemeSource::Custom(_)))
+            .map(|e| e.name.as_str())
+            .collect();
+        assert_eq!(customs, vec!["good"]);
+    }
+
+    // --- startup, against a tempdir ------------------------------------
+    //
+    // `Config::load` resolves the real XDG directory, so these go through
+    // `load_from` — the same reading and wording, handed a config dir the
+    // test owns. Startup's contract: every failure runs on the defaults
+    // and says so, and a *missing* file is not a failure at all.
+
+    #[test]
+    fn startup_runs_on_defaults_and_says_so_when_config_toml_will_not_parse() {
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "theme = \"dark\"\nclipboard_cmd = \"xclip\n",
+        )
+        .unwrap();
+
+        let (_cfg, loaded, warnings) =
+            Config::load_from(Config::at(dir.path().to_path_buf()), false);
+
+        assert_eq!(loaded.ui, UiSettings::default());
+        assert_eq!(loaded.registry, ProjectsRegistry::default());
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].starts_with("could not parse config.toml: "), "{warnings:?}");
+        assert!(warnings[0].ends_with("; using default settings"), "{warnings:?}");
+    }
+
+    /// An unreadable config.toml gets the same treatment as an unparsable
+    /// one at startup — the app has to come up on something — but the
+    /// sentence names the read failure rather than a parse error.
+    #[cfg(unix)]
+    #[test]
+    fn startup_runs_on_defaults_and_says_so_when_config_toml_cannot_be_read() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "theme = \"gruvbox-dark\"\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let (_cfg, loaded, warnings) =
+            Config::load_from(Config::at(dir.path().to_path_buf()), false);
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        if loaded.ui.theme == "gruvbox-dark" {
+            // Running as root: nothing is unreadable. Not a failure.
+            return;
+        }
+        assert_eq!(loaded.ui, UiSettings::default());
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("config.toml"), "{warnings:?}");
+        assert!(warnings[0].ends_with("; using default settings"), "{warnings:?}");
+    }
+
+    #[test]
+    fn startup_with_no_config_files_at_all_is_silent_defaults() {
+        let dir = tempdir().unwrap();
+
+        let (_cfg, loaded, warnings) =
+            Config::load_from(Config::at(dir.path().to_path_buf()), false);
+
+        assert!(warnings.is_empty(), "a missing file is not a problem: {warnings:?}");
+        assert_eq!(loaded.ui, UiSettings::default());
+        assert_eq!(loaded.registry, ProjectsRegistry::default());
+        assert_eq!(loaded.keymap, crate::keys::Keymap::default_bindings());
+    }
+
+    #[test]
+    fn startup_falls_back_to_the_default_keys_and_says_so_on_a_bad_keys_toml() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("keys.toml"), "save = \"not-a-combo\"\n").unwrap();
+
+        let (_cfg, loaded, warnings) =
+            Config::load_from(Config::at(dir.path().to_path_buf()), false);
+
+        assert_eq!(loaded.keymap, crate::keys::Keymap::default_bindings());
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].starts_with("keys.toml ignored, using default keys: "),
+            "{warnings:?}"
+        );
+    }
+
+    /// The caret-conflict lines are advice about what a keys.toml costs
+    /// on macOS — true the moment the file is written, and no truer the
+    /// tenth time the user reloads. Repeating them on every reload turns
+    /// the reload into a nag.
+    #[test]
+    fn reload_repeats_the_caret_advisories_only_when_the_keys_changed() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("keys.toml"), "save = \"ctrl+a\"\n").unwrap();
+        let mut cfg = Config::at(dir.path().to_path_buf());
+
+        let (first, warnings) = cfg.reload(true, &crate::keys::Keymap::default_bindings());
+        let keymap = first.keymap.expect("the file parsed");
+        assert!(
+            warnings.iter().any(|w| w.contains("shadows")),
+            "the new bindings are worth one warning: {warnings:?}"
+        );
+
+        // Same file, and the app is already running on it.
+        let (_, warnings) = cfg.reload(true, &keymap);
+        assert!(
+            !warnings.iter().any(|w| w.contains("shadows")),
+            "nothing changed, so there is nothing to warn about: {warnings:?}"
+        );
+    }
+
+    /// An UNREADABLE file is not a MISSING file: reload must not hand the
+    /// app defaults (emptying its registry, resetting its settings)
+    /// because a read failed. `#[cfg(unix)]` — the mode bits are the only
+    /// portable way to make a read fail on demand.
+    #[cfg(unix)]
+    #[test]
+    fn reload_treats_an_unreadable_config_toml_as_a_failure_not_an_absent_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "theme = \"x\"\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let mut cfg = Config::at(dir.path().to_path_buf());
+
+        let (reloaded, warnings) = cfg.reload(false, &crate::keys::Keymap::default_bindings());
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        if reloaded.config.is_some() {
+            // Running as root: nothing is unreadable. Not a failure.
+            return;
+        }
+        assert!(
+            warnings.iter().any(|w| w.contains("config.toml")),
+            "{warnings:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reload_treats_an_unreadable_keys_toml_as_a_failure_not_an_absent_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("keys.toml");
+        std::fs::write(&path, "save = \"alt+shift+s\"\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let mut cfg = Config::at(dir.path().to_path_buf());
+
+        let (reloaded, warnings) = cfg.reload(false, &crate::keys::Keymap::default_bindings());
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        if reloaded.keymap.is_some() {
+            // Running as root: nothing is unreadable. Not a failure.
+            return;
+        }
+        assert!(
+            warnings.iter().any(|w| w.contains("keys.toml")),
+            "{warnings:?}"
+        );
+    }
+
+    /// A `themes/` that cannot be listed is not an empty `themes/`: the
+    /// app must keep the registry it built at startup rather than lose
+    /// every custom theme to a transient permission problem.
+    #[cfg(unix)]
+    #[test]
+    fn reload_reports_an_unlistable_themes_dir_rather_than_emptying_the_registry() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        let themes = dir.path().join("themes");
+        std::fs::create_dir_all(&themes).unwrap();
+        std::fs::write(themes.join("good.toml"), THEME_TOML).unwrap();
+        std::fs::set_permissions(&themes, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let mut cfg = Config::at(dir.path().to_path_buf());
+
+        let (reloaded, warnings) = cfg.reload(false, &crate::keys::Keymap::default_bindings());
+
+        std::fs::set_permissions(&themes, std::fs::Permissions::from_mode(0o755)).unwrap();
+        if reloaded.themes.is_some() {
+            // Running as root: nothing is unlistable. Not a failure.
+            return;
+        }
+        assert!(
+            warnings.iter().any(|w| w.contains("themes/")),
+            "{warnings:?}"
+        );
+    }
+
+    #[test]
+    fn reload_on_config_none_is_all_defaults_no_warnings() {
+        let mut cfg = Config::none();
+
+        let (reloaded, warnings) = cfg.reload(false, &crate::keys::Keymap::default_bindings());
+
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(
+            reloaded.config,
+            Some((ProjectsRegistry::default(), UiSettings::default()))
+        );
+        assert!(reloaded.keymap.is_some());
     }
 }

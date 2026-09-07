@@ -4,7 +4,6 @@ use postui::components::editor::SubFocus;
 use postui::components::line_input::LineInput;
 use postui::components::modal::Modal;
 use postui::components::sidebar::Row;
-use postui::keys::Keymap;
 use postui::layout::PaneId;
 use postui_core::fixtures;
 use postui_core::model::HttpRequest;
@@ -150,18 +149,16 @@ async fn stage3_acceptance_flow() {
     app.registry.register(alpha_dir.path().to_path_buf());
     app.registry.register(beta_dir.path().to_path_buf());
 
-    let keymap = Keymap::default_bindings();
-
     // --- create "users/list" via the `n` prompt flow -----------------
-    app.handle_key(&keymap, plain('n'));
+    app.handle_key(plain('n'));
     assert!(
         matches!(app.modals.top(), Some(Modal::Prompt { .. })),
         "'n' opens the new-request prompt"
     );
     for c in "users/list".chars() {
-        app.handle_key(&keymap, plain(c));
+        app.handle_key(plain(c));
     }
-    app.handle_key(&keymap, enter());
+    app.handle_key(enter());
     assert_eq!(app.editor.slug.as_deref(), Some("main/users/list"));
 
     app.editor.url = LineInput::new("{{base}}/users?tok={{tok}}");
@@ -203,7 +200,7 @@ async fn stage3_acceptance_flow() {
     assert!(frame.contains("qa"), "qa response body visible: {frame}");
 
     // --- cycle to prod via alt+x (real binding), send again ----------
-    app.handle_key(&keymap, alt('x'));
+    app.handle_key(alt('x'));
     assert_eq!(app.proj().active_env(), Some("prod"));
     app.update(Action::Send);
     let generation = app.session.send_generation;
@@ -220,8 +217,8 @@ async fn stage3_acceptance_flow() {
         app.sidebar.rows.as_slice(),
         [Row::Folder { expanded: true, .. }, Row::Request { .. }]
     ));
-    app.handle_key(&keymap, plain('k')); // move selection up to the folder row
-    app.handle_key(&keymap, enter()); // collapse
+    app.handle_key(plain('k')); // move selection up to the folder row
+    app.handle_key(enter()); // collapse
     assert!(matches!(
         app.sidebar.rows.as_slice(),
         [Row::Folder {
@@ -229,7 +226,7 @@ async fn stage3_acceptance_flow() {
             ..
         }]
     ));
-    app.handle_key(&keymap, enter()); // expand again
+    app.handle_key(enter()); // expand again
     assert!(matches!(
         app.sidebar.rows.as_slice(),
         [Row::Folder { expanded: true, .. }, Row::Request { .. }]
@@ -244,7 +241,7 @@ async fn stage3_acceptance_flow() {
     );
 
     // --- alt+z cycles projects (real binding): alpha -> beta -> alpha
-    app.handle_key(&keymap, alt('z'));
+    app.handle_key(alt('z'));
     assert!(
         app.modals.is_empty(),
         "editor is clean: no dirty-gate prompt"
@@ -265,7 +262,7 @@ async fn stage3_acceptance_flow() {
     app.update(Action::ForceOpenRequest("main/ping".into()));
     assert_eq!(app.editor.slug.as_deref(), Some("main/ping"));
 
-    app.handle_key(&keymap, alt('z'));
+    app.handle_key(alt('z'));
     assert_eq!(app.proj().root(), alpha_dir.path().to_path_buf());
     assert_eq!(
         app.editor.slug.as_deref(),
@@ -286,13 +283,13 @@ async fn stage3_acceptance_flow() {
     app.focus = PaneId::Editor;
     app.editor.sub_focus = SubFocus::Url;
     app.editor.url = LineInput::new("");
-    app.handle_key(&keymap, plain('{'));
-    app.handle_key(&keymap, plain('{'));
+    app.handle_key(plain('{'));
+    app.handle_key(plain('{'));
     assert!(
         matches!(app.modals.top(), Some(Modal::VarPicker(_))),
         "typing {{{{ opens the variable picker"
     );
-    app.handle_key(&keymap, enter()); // first option: declared order is base, then tok
+    app.handle_key(enter()); // first option: declared order is base, then tok
     assert_eq!(
         app.editor.url.text(),
         "{{base}}",

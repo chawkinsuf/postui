@@ -131,6 +131,27 @@ impl Anims {
         }
     }
 
+    /// Flips the enabled flag without replacing the entries. What a live
+    /// config reload uses: replacing `Anims` wholesale would wipe every
+    /// in-flight animation, freezing whatever was mid-transition at its
+    /// start value.
+    ///
+    /// Turning motion *off* is an instruction about now, not about the
+    /// next transition: everything in flight lands on its target
+    /// immediately, so the user sees the still frame they asked for and
+    /// the tick loop stops redrawing for animations that would otherwise
+    /// go on easing invisibly. Turning it on leaves the entries where
+    /// they are — only the next `retarget` eases.
+    pub fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+        if !enabled {
+            for anim in self.entries.values_mut() {
+                anim.start = anim.target;
+                anim.dur = Duration::ZERO;
+            }
+        }
+    }
+
     /// Sets `key`'s value instantly, with no transition. Used for
     /// first-frame init and overlay close.
     pub fn snap(&mut self, key: AnimKey, value: f32) {
@@ -247,6 +268,39 @@ impl Anims {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Turning animations off is an instruction to stop moving, not to
+    /// keep easing invisibly: whatever is in flight lands on its target
+    /// at once, so the tick loop stops redrawing for it.
+    #[test]
+    fn disabling_snaps_everything_in_flight_to_its_target() {
+        let t0 = Instant::now();
+        let mut a = Anims::new(true);
+        a.snap(AnimKey::Hover, 0.0);
+        a.retarget(AnimKey::Hover, 1.0, Duration::from_millis(100), t0);
+
+        a.set_enabled(false);
+
+        assert_eq!(a.value(AnimKey::Hover, t0), Some(1.0), "landed at once");
+        assert!(!a.active(t0), "and nothing is left to redraw for");
+    }
+
+    /// Turning them back on leaves the entries alone — their values are
+    /// where the app last put them; only the *next* transition eases.
+    #[test]
+    fn enabling_leaves_in_flight_entries_alone() {
+        let t0 = Instant::now();
+        let mut a = Anims::new(true);
+        a.snap(AnimKey::Hover, 0.0);
+        a.retarget(AnimKey::Hover, 1.0, Duration::from_millis(100), t0);
+
+        a.set_enabled(true);
+
+        let mid = a
+            .value(AnimKey::Hover, t0 + Duration::from_millis(50))
+            .unwrap();
+        assert!(mid > 0.0 && mid < 1.0, "still mid-transition, got {mid}");
+    }
 
     #[test]
     fn retarget_eases_toward_target_and_finishes() {

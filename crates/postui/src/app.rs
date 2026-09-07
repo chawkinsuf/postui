@@ -11,7 +11,7 @@ use crate::components::varmanager::{
 };
 use crate::components::{Component, sidebar::Sidebar};
 use crate::hit::{Hit, HitMap, PointerShape, ScrollbarSpec};
-use crate::keys::{KeyCombo, Keymap};
+use crate::keys::KeyCombo;
 use crate::layout::PaneId;
 use crate::theme::Theme;
 use postui_core::project::{HeldDrift, OpenError, Project};
@@ -201,8 +201,8 @@ pub struct App {
     animating_last_tick: bool,
     /// The active key bindings (defaults + `keys.toml` overrides), used at
     /// draw time for the palette's keybinding column (`keys::combo_for`)
-    /// and cloned by `main.rs`'s event loop for `handle_key` — `App` has no
-    /// way to reach a keymap from inside `Component::draw` otherwise.
+    /// and read by `handle_key` itself, so a live reload's new bindings
+    /// are in force from the next key with no copy to keep in step.
     pub keymap: crate::keys::Keymap,
     /// Palette command frecency stats (recency + count per command id),
     /// loaded from `ui.toml` at startup and saved back on quit.
@@ -771,25 +771,57 @@ impl App {
         self.anims = Anims::new(ui_settings.animations);
         self.theme = theme;
         self.theme_name = theme_name;
+        self.finish_ui_settings(ui_settings);
+    }
+
+    /// [`Self::apply_ui_settings`] for a *live* reload, minus the theme
+    /// (the reload arm resolves that through [`Self::set_theme_by_name`],
+    /// which knows what to do when the name no longer names anything).
+    /// The same settings land, but the clipboard and the animation set
+    /// are reconfigured in
+    /// place rather than replaced. Rebuilding either mid-session loses
+    /// state the user can see — a fresh `Clipboard` drops `arboard`'s
+    /// handle (on X11 without a clipboard manager that revokes everything
+    /// already copied out of postui), and a fresh `Anims` wipes every
+    /// in-flight transition.
+    fn reapply_ui_settings(&mut self, ui_settings: crate::config::UiSettings) {
+        self.clipboard.reconfigure(&ui_settings);
+        self.anims.set_enabled(ui_settings.animations);
+        self.finish_ui_settings(ui_settings);
+    }
+
+    /// The half both paths share: the jq tab and `ui_settings` itself.
+    /// Kept in one place so a new `UiSettings`-derived field can't be
+    /// wired into startup and forgotten on reload (or the reverse).
+    fn finish_ui_settings(&mut self, ui_settings: crate::config::UiSettings) {
         self.session.response.set_jq_tab(ui_settings.jq_tab);
         self.ui_settings = ui_settings;
     }
 
     /// Applies the named theme from the registry (the Terminal option seeds
     /// from the startup query). An unknown name — a custom file deleted since
-    /// the registry was built — degrades to the terminal theme.
-    fn set_theme_by_name(&mut self, name: &str) {
-        let (resolved, theme) = match self.themes.resolve(name, &self.terminal_colors) {
-            Some(t) => (name.to_string(), t),
-            None => (
-                "terminal".to_string(),
-                self.themes
+    /// the registry was built — degrades to the terminal theme, and comes
+    /// back as the warning to show: this is the one resolve-or-terminal in
+    /// the app, so callers that have a user to tell can tell them without
+    /// hand-rolling the fallback again.
+    fn set_theme_by_name(&mut self, name: &str) -> Option<String> {
+        match self.themes.resolve(name, &self.terminal_colors) {
+            Some(theme) => {
+                self.theme = theme;
+                self.theme_name = name.to_string();
+                None
+            }
+            None => {
+                self.theme = self
+                    .themes
                     .resolve("terminal", &self.terminal_colors)
-                    .expect("terminal is always registered"),
-            ),
-        };
-        self.theme = theme;
-        self.theme_name = resolved;
+                    .expect("terminal is always registered");
+                self.theme_name = "terminal".to_string();
+                Some(format!(
+                    "theme {name:?} is no longer available; using terminal"
+                ))
+            }
+        }
     }
 
     /// Live preview: while the theme picker is open, keep the applied theme
@@ -1068,8 +1100,9 @@ impl App {
 
     /// The Manage screen's items for `tab` — empty with no project open.
     pub(crate) fn manage_items(&self, tab: crate::components::manage::ManageTab) -> &[String] {
-        self.project()
-            .map_or(&[], |p| crate::components::manage_list::ManageList::items(tab, p))
+        self.project().map_or(&[], |p| {
+            crate::components::manage_list::ManageList::items(tab, p)
+        })
     }
 
     /// The name the Manage screen's `tab` list has selected.
@@ -1541,10 +1574,9 @@ impl App {
         // project's resolved values and the open request's own `[variables]`
         // the same way `shadowed` is.
         let vars = match self.project() {
-            Some(p) => crate::components::var_tokens::VarView::from_context(
-                p,
-                &self.editor.variables,
-            ),
+            Some(p) => {
+                crate::components::var_tokens::VarView::from_context(p, &self.editor.variables)
+            }
             None => crate::components::var_tokens::VarView::default(),
         };
         self.editor.vars = vars;
@@ -3186,7 +3218,12 @@ impl App {
                 for w in warnings {
                     self.toasts.push(w, ToastKind::Warning);
                 }
-                self.themes = themes;
+                // A `themes/` that would not list keeps the registry the
+                // app already has — the warning above says why the
+                // picker's custom entries may be stale.
+                if let Some(themes) = themes {
+                    self.themes = themes;
+                }
                 // The picker opens filtered to the current theme's
                 // polarity: browsing themes must not flash the opposite
                 // polarity's (much brighter/darker) palettes. Left/Right
@@ -3468,10 +3505,9 @@ impl App {
                 // always has at least one env (a fresh one gets `default`),
                 // so the no-env state is only ever reached by a file going
                 // missing — in which case the cursor opens on row 0.
-                let current =
-                    self.active_env().and_then(|active| {
-                        self.environments().iter().position(|n| n == active)
-                    });
+                let current = self
+                    .active_env()
+                    .and_then(|active| self.environments().iter().position(|n| n == active));
                 // Anchored under the header's env chip — the one env
                 // button, visible on every screen. A keyboard open with
                 // no frame drawn yet (bare test apps) falls back to the
@@ -3583,11 +3619,10 @@ impl App {
                 true
             }
             Action::ApplyMigration => {
-                match self
-                    .project_mut()
-                    .map_or_else(|| Err(NO_PROJECT.to_string()), |p| {
-                        p.apply_migration().map_err(|e| e.to_string())
-                    }) {
+                match self.project_mut().map_or_else(
+                    || Err(NO_PROJECT.to_string()),
+                    |p| p.apply_migration().map_err(|e| e.to_string()),
+                ) {
                     Ok(notes) => {
                         // Core journals the whole conversion (the `.bak`
                         // copies included) as one entry.
@@ -3958,6 +3993,125 @@ impl App {
                 }
                 self.prompt_migration_if_pending();
                 changed
+            }
+            Action::ReloadFromDisk => {
+                // The project half. With a project open it is a forced
+                // re-read (mtime gates skipped) plus the sidebar rebuild,
+                // so a file another process wrote a second ago shows up.
+                // With none open because startup refused one, it is a
+                // retry of that very open — "fix the file and pick it up
+                // without restarting" is the whole point of the command —
+                // through `SwitchProject`, which clears `open_error` and
+                // the sidebar notice itself. `SwitchProject` and not
+                // `ForceSwitchProject`: opening a project resets the
+                // session and can hand the editor a fresh buffer, and in
+                // this exact state nothing has been saved anywhere, so
+                // that buffer may be the only copy of what the user
+                // typed. The standard unsaved-request confirm stands in
+                // front of it, as it does for every other switch.
+                //
+                // The editor's buffer is not part of any of this: unsaved
+                // edits are the user's, and a reload is not a discard.
+                let retried = match (self.project.is_none(), self.open_error.as_ref()) {
+                    (true, Some(e)) => {
+                        let root = e.root.clone();
+                        self.apply(Action::SwitchProject(root));
+                        true
+                    }
+                    _ => {
+                        self.resync_project();
+                        false
+                    }
+                };
+
+                // The config half. Every `None` field means "that file
+                // exists but could not be read or parsed": keep what we
+                // have, and let the warning say which file to fix.
+                let (reloaded, warnings) =
+                    self.config.reload(cfg!(target_os = "macos"), &self.keymap);
+                if let Some(themes) = reloaded.themes {
+                    self.themes = themes;
+                }
+                let ui = match reloaded.config {
+                    Some((registry, ui)) => {
+                        self.registry = registry;
+                        // The registry on disk can legitimately not know
+                        // the open project: it was registered in memory
+                        // only, because the config.toml that would have
+                        // recorded it did not parse at the time. Losing it
+                        // here would drop the *current* project out of the
+                        // chooser. Memory only — the file is not written.
+                        if let Some(root) = self.project.as_ref().map(|p| p.root().to_path_buf()) {
+                            self.registry.register(root);
+                        }
+                        Some(ui)
+                    }
+                    None => None,
+                };
+
+                // The theme name comes from the freshly-read settings when
+                // there are any, and otherwise stays what it is — but it
+                // is always re-resolved, because `themes` was rescanned
+                // and a custom file may have appeared or vanished.
+                let from_config = ui.is_some();
+                let wanted = ui
+                    .as_ref()
+                    .map(|u| u.theme.clone())
+                    .unwrap_or_else(|| self.theme_name.clone());
+                let theme_warning = self.set_theme_by_name(&wanted).map(|gone| {
+                    if from_config {
+                        // The name came out of the config.toml just read,
+                        // so point the user at the line to fix.
+                        format!("unknown theme {wanted:?} in config.toml; using terminal")
+                    } else {
+                        // config.toml was NOT read this time round: the
+                        // name is the app's own live one, and naming the
+                        // file would blame something never opened.
+                        gone
+                    }
+                });
+                // The live-reload twin of `App::new`'s call, so every
+                // `UiSettings`-derived field (clipboard tier, animations,
+                // the jq tab) follows the file too — but without replacing
+                // the clipboard handle or the in-flight animations.
+                if let Some(ui) = ui {
+                    self.reapply_ui_settings(ui);
+                }
+
+                // Safe to swap under a key that is being dispatched right
+                // now: `handle_key` looks the combo up once, before it
+                // dispatches anything, so the new bindings can only take
+                // effect from the *next* key.
+                if let Some(keymap) = reloaded.keymap {
+                    self.keymap = keymap;
+                }
+
+                for w in warnings.into_iter().chain(theme_warning) {
+                    self.toasts.push(w, ToastKind::Warning);
+                }
+                // Only claim what was actually reloaded: with no project
+                // open (and none recorded to retry, or the retry still
+                // waiting on the unsaved-request confirm) the config is
+                // all there was. And when the retry did open the project,
+                // the open path has already announced it — "Switched to
+                // …" — so a second toast saying the same thing is noise.
+                if !(retried && self.project.is_some()) {
+                    self.toasts.push(
+                        if self.project.is_some() {
+                            "Reloaded project and config"
+                        } else {
+                            "Reloaded config (no project is open)"
+                        },
+                        ToastKind::Success,
+                    );
+                }
+
+                // The Variable Manager caches the declarations it shows;
+                // like `after_undone`, a reload has to hand it the new ones.
+                if self.screen == Screen::Manage {
+                    self.sync_varmanager();
+                }
+                true
             }
             Action::OpenVarPicker { completing } => {
                 self.apply(Action::ReloadProjectFiles);
@@ -8639,13 +8793,13 @@ impl App {
     /// (i.e. whether the caller should redraw): the OR of every
     /// `self.update(..)` call's result along the branch taken, plus any
     /// modal state change (close/typing) that bypasses `update`.
-    pub fn handle_key(&mut self, keymap: &Keymap, ev: KeyEvent) -> bool {
-        let changed = self.handle_key_inner(keymap, ev);
+    pub fn handle_key(&mut self, ev: KeyEvent) -> bool {
+        let changed = self.handle_key_inner(ev);
         self.arm_pending_toasts();
         changed
     }
 
-    fn handle_key_inner(&mut self, keymap: &Keymap, ev: KeyEvent) -> bool {
+    fn handle_key_inner(&mut self, ev: KeyEvent) -> bool {
         let ev = crate::keys::normalize_super_keys(ev);
         // cmd+c — SUPER+c, from terminals that report it — is copy-only:
         // copy the live selection, otherwise nothing. It is deliberately
@@ -8659,7 +8813,12 @@ impl App {
             return true;
         }
         let combo = KeyCombo::from_event(&ev);
-        let global = keymap.lookup(&combo);
+        // The one keymap read of the whole router, and it happens before
+        // any action is dispatched: an action that swaps `self.keymap`
+        // (the Reload command) therefore cannot change the meaning of the
+        // key currently being handled. That is the "never mid-key"
+        // guarantee — no copy, no handshake, just ordering.
+        let global = self.keymap.lookup(&combo);
         let modified = ev
             .modifiers
             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
@@ -9571,7 +9730,11 @@ impl App {
 /// input: opening a modal on top of the screen (today, just the command
 /// palette and the theme chooser — the spec's "the modal stack works on
 /// top unchanged"), the
-/// screen open/close actions themselves, quit, cycling the active
+/// screen open/close actions themselves, quit, re-reading the project and
+/// config from disk (alt+r — the files a non-`Main` screen shows are
+/// exactly the ones a user edits in another window, and the Environments
+/// and Spaces tabs bind a bare `r` to Rename, which is what alt+r would
+/// otherwise reach), cycling the active
 /// environment (alt+x) — the one Main shortcut whose target state, the
 /// active env, is also meaningful inside the Variable Manager (it shows
 /// per-env values; `SwitchEnv` re-syncs the Manager) — and the space
@@ -9589,6 +9752,7 @@ fn screen_escape_whitelist(action: &Action) -> bool {
             | Action::OpenThemeChooser
             | Action::OpenManage { .. }
             | Action::CloseScreen
+            | Action::ReloadFromDisk
             | Action::Quit
             | Action::Undo
             | Action::Redo

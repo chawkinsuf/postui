@@ -5,7 +5,6 @@
 use postui::app::App;
 use postui::components::editor::{EditorTab, SubFocus};
 use postui::hit::Hit;
-use postui::keys::Keymap;
 use postui::layout::PaneId;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -25,9 +24,9 @@ fn plain(c: char) -> KeyEvent {
 fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
 }
-fn type_text(app: &mut App, keymap: &Keymap, text: &str) {
+fn type_text(app: &mut App, text: &str) {
     for c in text.chars() {
-        app.handle_key(keymap, plain(c));
+        app.handle_key(plain(c));
     }
 }
 
@@ -56,11 +55,10 @@ fn click(app: &mut App, hit: Hit) {
 #[test]
 fn enter_deselects_the_url_input() {
     let mut app = App::new_for_test();
-    let keymap = Keymap::default_bindings();
     click(&mut app, Hit::UrlBar);
     assert_eq!(app.editor.sub_focus, SubFocus::Url);
-    type_text(&mut app, &keymap, "https://x");
-    app.handle_key(&keymap, key(KeyCode::Enter));
+    type_text(&mut app, "https://x");
+    app.handle_key(key(KeyCode::Enter));
     assert_eq!(
         app.editor.sub_focus,
         SubFocus::None,
@@ -76,9 +74,8 @@ fn enter_deselects_the_url_input() {
 #[test]
 fn esc_deselects_the_url_input() {
     let mut app = App::new_for_test();
-    let keymap = Keymap::default_bindings();
     click(&mut app, Hit::UrlBar);
-    app.handle_key(&keymap, key(KeyCode::Esc));
+    app.handle_key(key(KeyCode::Esc));
     assert_eq!(
         app.editor.sub_focus,
         SubFocus::None,
@@ -111,11 +108,10 @@ fn clicking_another_pane_deselects_the_url_input() {
 #[test]
 fn esc_deselects_the_body_editor() {
     let mut app = App::new_for_test();
-    let keymap = Keymap::default_bindings();
     app.focus = PaneId::Editor;
     app.editor.active_tab = EditorTab::Body;
     app.editor.sub_focus = SubFocus::Content;
-    app.handle_key(&keymap, key(KeyCode::Esc));
+    app.handle_key(key(KeyCode::Esc));
     assert_eq!(
         app.editor.sub_focus,
         SubFocus::None,
@@ -126,11 +122,10 @@ fn esc_deselects_the_body_editor() {
 #[test]
 fn typing_while_blurred_reaches_no_input() {
     let mut app = App::new_for_test();
-    let keymap = Keymap::default_bindings();
     click(&mut app, Hit::UrlBar);
-    type_text(&mut app, &keymap, "abc");
-    app.handle_key(&keymap, key(KeyCode::Enter));
-    type_text(&mut app, &keymap, "xyz");
+    type_text(&mut app, "abc");
+    app.handle_key(key(KeyCode::Enter));
+    type_text(&mut app, "xyz");
     assert_eq!(
         app.editor.url.text(),
         "abc",
@@ -210,7 +205,6 @@ fn pane_has_focus_bar(term: &Terminal<TestBackend>, app: &App, pane: PaneId) -> 
 #[test]
 fn focused_pane_shows_a_left_accent_bar() {
     let mut app = App::new_for_test();
-    let keymap = Keymap::default_bindings();
     for pane in [PaneId::Sidebar, PaneId::Editor, PaneId::Response] {
         assert_eq!(app.focus, pane);
         let term = render(&mut app);
@@ -221,7 +215,7 @@ fn focused_pane_shows_a_left_accent_bar() {
                 "exactly the focused pane ({pane:?}) shows the accent bar; checked {p:?}"
             );
         }
-        app.handle_key(&keymap, key(KeyCode::Tab));
+        app.handle_key(key(KeyCode::Tab));
     }
 }
 

@@ -130,15 +130,26 @@ pub fn draw_manage_bar(
     // the strip's last tab.
     let buttons_limit = left_edge + 1 + strip_w + 2;
 
-    // The close button, right-aligned: the mouse's way back to the main
-    // screen (the header's Manage chip toggles it too), labelled with the
-    // key that does the same thing.
+    // The bar's button strip, right-aligned: Close is the mouse's way back
+    // to the main screen (the header's Manage chip toggles it too) and
+    // Reload re-reads the project and config from disk. Each is labelled
+    // with the key that does the same thing.
     let mut x = bar.x + bar.width;
-    let buttons: Vec<(&str, ButtonKind, Hit)> = vec![(
-        "Close (esc)",
-        ButtonKind::Secondary,
-        Hit::FooterChip(Action::CloseScreen),
-    )];
+    // Laid out right-to-left from the bar's right edge, so the first
+    // entry is the right-most button: Close stays on the corner and
+    // Reload All sits to its left.
+    let buttons: Vec<(&str, ButtonKind, Hit)> = vec![
+        (
+            "Close (esc)",
+            ButtonKind::Secondary,
+            Hit::FooterChip(Action::CloseScreen),
+        ),
+        (
+            "Reload All (alt+r)",
+            ButtonKind::Secondary,
+            Hit::FooterChip(Action::ReloadFromDisk),
+        ),
+    ];
     for (label, kind, hit) in buttons {
         let w = button_min_width(label);
         if x < buttons_limit + w + 1 {
@@ -309,11 +320,12 @@ mod tests {
         assert_eq!(ManageTab::from_index(99), ManageTab::Spaces, "clamps");
     }
 
-    /// The close button is the mouse's way back on every tab; the "new"
-    /// buttons moved into the Variables tab's own left column, so no tab
-    /// puts anything but the strip and Close on the bar.
+    /// Close is the mouse's way back on every tab and Reload its way to
+    /// re-read disk; the "new" buttons moved into the Variables tab's own
+    /// left column, so no tab puts anything but the strip and those two
+    /// buttons on the bar.
     #[test]
-    fn every_tab_gets_a_label_a_hit_and_close_and_nothing_else() {
+    fn every_tab_gets_a_label_a_hit_and_the_two_bar_buttons_and_nothing_else() {
         for tab in ManageTab::ALL {
             let (content, hits) = render(tab);
             for (i, t) in ManageTab::ALL.iter().enumerate() {
@@ -325,10 +337,16 @@ mod tests {
                 assert!(hits.rect_of(&Hit::ManageTab(i)).is_some());
             }
             assert!(content.contains("Close (esc)"), "{content}");
+            assert!(content.contains("Reload All (alt+r)"), "{content}");
+            let close = hits
+                .rect_of(&Hit::FooterChip(Action::CloseScreen))
+                .expect("close is registered");
+            let reload = hits
+                .rect_of(&Hit::FooterChip(Action::ReloadFromDisk))
+                .expect("the reload button is the mouse's way to re-read disk");
             assert!(
-                hits.rect_of(&Hit::FooterChip(Action::CloseScreen))
-                    .is_some(),
-                "the close button is the mouse's way back"
+                reload.x + reload.width <= close.x,
+                "Close stays right-most: {close:?} vs {reload:?}"
             );
             assert!(hits.rect_of(&Hit::VmNewVar).is_none(), "{tab:?}");
             assert!(hits.rect_of(&Hit::VmNewSelector).is_none(), "{tab:?}");
