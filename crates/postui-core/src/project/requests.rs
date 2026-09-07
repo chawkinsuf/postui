@@ -776,12 +776,6 @@ mod tests {
         assert!(matches!(&e.ops[0], Op::Created { path } if path.as_str() == format!("requests/{copy}.toml")));
     }
 
-    fn bump_mtime(path: &std::path::Path) {
-        // Coarse-mtime filesystems need the clock to move.
-        let t = std::fs::metadata(path).unwrap().modified().unwrap() + std::time::Duration::from_secs(2);
-        std::fs::File::open(path).unwrap().set_modified(t).unwrap();
-    }
-
     #[test]
     fn held_request_drift_is_none_right_after_open() {
         let (_dir, mut p) = fixture();
@@ -818,7 +812,6 @@ mod tests {
             "name = \"Ping\"\nmethod = \"GET\"\nurl = \"https://{{host}}/ping-changed\"\n",
         )
         .unwrap();
-        bump_mtime(&dir.path().join("requests/main/ping.toml"));
         assert_eq!(p.held_request_drift("main/ping"), Some(HeldDrift::Changed));
         p.save_request("main/ping", &req("https://{{host}}/ping-saved")).unwrap();
         assert_eq!(p.held_request_drift("main/ping"), None);
@@ -833,7 +826,6 @@ mod tests {
             "name = \"Ping\"\nmethod = \"GET\"\nurl = \"https://{{host}}/ping-changed\"\n",
         )
         .unwrap();
-        bump_mtime(&dir.path().join("requests/main/ping.toml"));
         p.invalidate_stamps();
         assert!(p.poll().0);
         assert_eq!(p.held_request("main/ping").unwrap().url, "https://{{host}}/ping-changed");
@@ -885,5 +877,38 @@ mod tests {
             "the rename only rewrote `name`; the outside edit is still \
              unseen by the editor and must still be reported"
         );
+    }
+
+    #[test]
+    fn a_poll_after_an_outside_delete_keeps_the_held_entry_and_still_reports_vanished() {
+        let (dir, mut p) = fixture();
+        p.open_request("main/ping").unwrap();
+        std::fs::remove_file(dir.path().join("requests/main/ping.toml")).unwrap();
+        p.invalidate_stamps();
+        assert!(p.poll().0);
+        assert!(
+            p.held_request("main/ping").is_some(),
+            "the entry (and its seed stamp) survives a file that vanished"
+        );
+        assert_eq!(
+            p.held_request_drift("main/ping"),
+            Some(HeldDrift::Vanished),
+            "a reload must never blind the drift check"
+        );
+    }
+
+    #[test]
+    fn a_poll_after_an_outside_write_of_unparsable_text_still_reports_changed() {
+        let (dir, mut p) = fixture();
+        p.open_request("main/ping").unwrap();
+        std::fs::write(dir.path().join("requests/main/ping.toml"), "url = \"unclosed\n").unwrap();
+        p.invalidate_stamps();
+        assert!(p.poll().0);
+        assert_eq!(
+            p.held_request("main/ping").unwrap().url,
+            "https://{{host}}/ping",
+            "the last-good body is kept"
+        );
+        assert_eq!(p.held_request_drift("main/ping"), Some(HeldDrift::Changed));
     }
 }

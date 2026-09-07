@@ -21580,3 +21580,65 @@ fn the_drift_confirm_stacks_on_an_open_modal() {
         "Esc returns to the modal it stacked on"
     );
 }
+
+#[test]
+fn saving_a_slug_the_project_no_longer_holds_re_seeds_before_deciding() {
+    // `held_request_drift` answers `None` for a slug the project does not
+    // hold, and that `None` must never be read as "clean". The save
+    // re-seeds from disk first, so the check is live again from here on.
+    let mut app = App::new_for_test();
+    postui_core::fixtures::save_request(app.proj().root(), "main/ping", &req("https://x/ping"))
+        .unwrap();
+    app.update(Action::RefreshSidebar);
+    app.update(Action::OpenRequest("main/ping".into()));
+    app.proj_mut().close_request("main/ping");
+
+    dirty_the_editor(&mut app);
+    app.handle_key(&Keymap::default_bindings(), ctrl('s'));
+    assert!(app.modals.is_empty(), "the file had not moved, so no question");
+    assert!(
+        app.proj().held_request("main/ping").is_some(),
+        "the save re-seeded the held entry rather than writing blind"
+    );
+
+    // And the very next outside edit is caught, instead of the drift check
+    // staying blind for the rest of the session.
+    postui_core::fixtures::save_request(
+        app.proj().root(),
+        "main/ping",
+        &req("https://x/ping-edited-outside-the-app"),
+    )
+    .unwrap();
+    dirty_the_editor(&mut app);
+    app.handle_key(&Keymap::default_bindings(), ctrl('s'));
+    assert!(
+        matches!(app.modals.top(), Some(Modal::Confirm { .. })),
+        "the drift check is live again"
+    );
+    assert_eq!(on_disk_ping_url(&app), "https://x/ping-edited-outside-the-app");
+}
+
+#[test]
+fn saving_a_slug_that_is_neither_held_nor_readable_toasts_and_fails_the_gate() {
+    let mut app = App::new_for_test();
+    postui_core::fixtures::save_request(app.proj().root(), "main/ping", &req("https://x/ping"))
+        .unwrap();
+    app.update(Action::RefreshSidebar);
+    app.update(Action::OpenRequest("main/ping".into()));
+    dirty_the_editor(&mut app);
+    app.proj_mut().close_request("main/ping");
+    std::fs::write(
+        postui_core::storage::request_path(app.proj().root(), "main/ping"),
+        "url = \"unclosed\n",
+    )
+    .unwrap();
+
+    app.update(Action::Quit);
+    press(&mut app, 's');
+    assert!(!app.should_quit, "a save that could not even be checked stops the quit");
+    assert!(
+        app.toasts.messages().iter().any(|m| m.contains("main/ping")),
+        "the real error is reported: {:?}",
+        app.toasts.messages()
+    );
+}

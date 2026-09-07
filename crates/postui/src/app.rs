@@ -6747,6 +6747,19 @@ impl App {
             });
             return true;
         };
+        // `held_request_drift` answers `None` both for "the file still
+        // matches" and for a slug the project does not hold at all — and
+        // only the first of those is permission to write. An un-held slug
+        // is re-seeded from disk first (`open_request` stamps honestly),
+        // so the check below is always answering the first question.
+        if self.project().is_some_and(|p| p.held_request(&slug).is_none())
+            && let Some(Err(e)) = self.project_mut().map(|p| p.open_request(&slug).map(|_| ()))
+        {
+            self.toasts
+                .push(format!("could not read {slug}: {e}"), ToastKind::Error);
+            self.last_action_failed = true;
+            return true;
+        }
         let drift = self.project().and_then(|p| p.held_request_drift(&slug));
         let Some(drift) = drift else {
             // Cleared first so what the save itself reports is what

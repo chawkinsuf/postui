@@ -395,30 +395,28 @@ impl Project {
             .collect();
     }
 
-    /// Re-reads every key of `open_requests` from disk (re-parse, or drop
-    /// when it no longer parses or exists). Extracted so both `reload_all`
-    /// and a failed transaction's rollback can use it: the listing and
-    /// every held request are not part of [`Memory`] (they can be large),
-    /// so both are re-derived from disk instead of snapshotted.
+    /// Re-reads every key of `open_requests` from disk. Extracted so both
+    /// `reload_all` and a failed transaction's rollback can use it: the
+    /// listing and every held request are not part of [`Memory`] (they can
+    /// be large), so both are re-derived from disk instead of snapshotted.
+    ///
+    /// An entry is NEVER dropped, whatever the re-read finds: a file that
+    /// vanished or no longer parses keeps its last-good body and, above
+    /// all, its seed stamp — that stamp is what
+    /// [`Project::held_request_drift`] compares, and dropping the entry
+    /// would make the drift check answer "clean" for exactly the two cases
+    /// it exists for, for the rest of the session.
     pub(crate) fn reload_held_requests(&mut self) {
         let held: Vec<String> = self.open_requests.keys().cloned().collect();
         for slug in held {
-            // The editor's buffer was not re-seeded by this reload, so the
-            // seed stamp taken by `open_request`/`save_request` is kept as
-            // is — the file is still "moved since the editor last saw it".
-            let stamp = self.open_requests[&slug].stamp;
-            match request_rel(&slug).and_then(|p| Ok(self.disk.read(&p)?)) {
-                Ok(Some(text)) => match crate::model::HttpRequest::from_toml_str(&text) {
-                    Ok(req) => {
-                        self.open_requests.insert(slug, Held { req, stamp });
-                    }
-                    Err(_) => {
-                        self.open_requests.shift_remove(&slug);
-                    }
-                },
-                _ => {
-                    self.open_requests.shift_remove(&slug);
-                }
+            // Only the body is refreshed; the seed stamp taken by
+            // `open_request`/`save_request` stays, because the editor's own
+            // buffer was not re-seeded by this reload — the file is still
+            // "moved since the editor last saw it".
+            if let Ok(Some(text)) = request_rel(&slug).and_then(|p| Ok(self.disk.read(&p)?))
+                && let Ok(req) = crate::model::HttpRequest::from_toml_str(&text)
+            {
+                self.open_requests[&slug].req = req;
             }
         }
     }
@@ -1669,7 +1667,11 @@ mod tests {
         p.invalidate_stamps();
         assert!(p.poll().0);
         assert_eq!(p.held_request("main/ping").unwrap().url, "outside");
-        assert!(p.held_request("auth/login").is_none(), "a vanished request is dropped");
+        assert!(
+            p.held_request("auth/login").is_some(),
+            "a vanished request keeps its entry — the seed stamp is what the \
+             drift check needs, and dropping it would answer \"clean\""
+        );
     }
 
     #[test]
@@ -1706,7 +1708,7 @@ mod tests {
     }
 
     #[test]
-    fn reload_all_re_reads_held_requests_and_drops_vanished_ones() {
+    fn reload_all_re_reads_held_requests_and_keeps_vanished_ones() {
         let (dir, mut p) = fixture();
         p.open_request("main/ping").unwrap();
         p.open_request("auth/login").unwrap();
@@ -1714,7 +1716,12 @@ mod tests {
         std::fs::remove_file(dir.path().join("requests/auth/login.toml")).unwrap();
         p.reload_all();
         assert_eq!(p.held_request("main/ping").unwrap().url, "outside");
-        assert!(p.held_request("auth/login").is_none());
+        assert_eq!(
+            p.held_request("auth/login").unwrap().url,
+            "https://{{host}}/login",
+            "the entry and its seed stamp survive; only the body is refreshed"
+        );
+        assert_eq!(p.held_request_drift("auth/login"), Some(HeldDrift::Vanished));
     }
 
     #[test]
