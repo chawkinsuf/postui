@@ -9,14 +9,19 @@ use ratatui::layout::Rect;
 /// bottom — matching the painted 3-row rhythm of buttons/fields elsewhere.
 pub const HEADER_HEIGHT: u16 = 3;
 
-/// The gap after each selector chip (project → env pill, env → space
-/// pill, space → Manage pill): wide enough against the one-column
-/// pill-to-chip gap that each pill reads as the shortcut of the chip it
-/// leads rather than of the chip it follows, and no wider — three of
-/// them have to fit a 120-column bar beside a ten-character project name.
-/// Collapses to the ordinary one-column chip gap when the pills yield on
-/// a narrow bar.
-const MANAGE_GROUP_GAP: u16 = 4;
+/// The gap after a chip that another chip's keycap pill follows (project
+/// → env pill, env → space pill, Manage → Theme pill): wide enough
+/// against the one-column pill-to-chip gap that each pill reads as the
+/// shortcut of the chip it leads rather than of the chip it follows, and
+/// no wider — three of them have to fit a 120-column bar beside a
+/// ten-character project name. The left cluster's collapse to the
+/// ordinary one-column chip gap when the pills yield on a narrow bar.
+const CHIP_GROUP_GAP: u16 = 4;
+
+/// The gap between the save/discard group and the Manage chip: wider
+/// than a chip group gap, so the dirty-request pair reads as its own
+/// group rather than as more of the app menu.
+const SAVE_GROUP_GAP: u16 = 8;
 
 const SAVE_LABEL: &str = " Save ";
 const DISCARD_LABEL: &str = " Discard ";
@@ -34,6 +39,14 @@ const SAVE_GROUP_W: u16 =
 /// ([`Hit::HeaderProjectCycle`]/[`Hit::HeaderEnvCycle`]/
 /// [`Hit::HeaderSpaceCycle`]).
 ///
+/// The bar has two clusters. The left one answers "where am I": the
+/// three selectors, each cycling in place. The right one, anchored at the
+/// bar's 3-column right margin, is the app menu — `Manage` then `Theme`,
+/// both of which leave the current screen for another — with the
+/// save/discard group a wider gap left of them while the open request is
+/// dirty. Manage sits with Theme rather than after the selectors because
+/// it is the same kind of button: a door, not a dial.
+///
 /// Every keycap on the bar sits *left* of the name it belongs to. The
 /// selector labels change width as they cycle (a longer environment
 /// name, a shorter project name), and a pill trailing its chip would
@@ -44,15 +57,16 @@ const SAVE_GROUP_W: u16 =
 /// so the bar reads as one idiom.
 ///
 /// Narrow-bar rule: the chip *labels* never yield — their keycaps do, in
-/// order. The left cluster is measured through the Manage chip (the three
-/// chips, each with its pill, then the Manage chip, with the gaps between
-/// them). If it overruns `area`, the three cycle pills are dropped and the
-/// group gaps after the chips collapse to the ordinary one-column gap. If it still overruns, the Manage chip's own
-/// `alt+v` keycap goes too and the chip becomes a bare ` Manage `. The
-/// keys themselves keep working in every case, and their hints stay in the
-/// footer/palette. If even that doesn't fit, the cluster clips as before.
-/// The right-aligned Theme chip keeps its own separate rule (it drops when
-/// there's no room left of it).
+/// order. The left cluster is measured through the space chip; the right
+/// cluster's essentials are the Manage chip and, while dirty, the save
+/// group. As the bar narrows: the Theme chip drops first (it is the only
+/// chip with nothing to do with the request); then the three cycle pills,
+/// and the group gaps after the selector chips collapse to the ordinary
+/// one-column gap; then the Manage chip's own `alt+v` keycap, leaving a
+/// bare ` Manage `; then Discard, then Save. The keys themselves keep
+/// working in every case, and their hints stay in the footer/palette. If
+/// even the bare Manage chip can't fit right-anchored beside the
+/// selectors, it follows them and clips at the bar's edge as before.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_header(
     frame: &mut Frame,
@@ -62,7 +76,7 @@ pub fn draw_header(
     space: &str,
     env: &str,
     manage_active: bool,
-    // Shows the save/discard group beside the Theme chip. Only ever true
+    // Shows the save/discard group beside the Manage chip. Only ever true
     // while the open request has unsaved edits (a clean request needs
     // neither button) on the Main screen with no modal capturing keys.
     dirty: bool,
@@ -77,8 +91,8 @@ pub fn draw_header(
     }
     let mid_y = area.y + area.height / 2;
 
-    // The bar opens at a 3-column margin (mirrored by the Theme chip at
-    // the right edge). No wordmark: the terminal title carries the app
+    // The bar opens at a 3-column margin (mirrored by the right cluster
+    // at the right edge). No wordmark: the terminal title carries the app
     // name, and the project chip is the bar's first word.
     let mut x = area.x + 3;
 
@@ -103,12 +117,6 @@ pub fn draw_header(
         label: "alt+c",
         color: theme.text_muted,
     };
-    let manage_label = " Manage ";
-    let manage_label_w = manage_label.chars().count() as u16;
-    let manage_pill = crate::paint::Chip {
-        label: "alt+v",
-        color: theme.text_muted,
-    };
     let chips = [
         (
             &project_label,
@@ -125,37 +133,55 @@ pub fn draw_header(
         ),
     ];
 
-    // Measure the left cluster three ways and take the widest that fits
-    // (see the narrow-bar rule above): everything; then without the
-    // three cycle pills — which also collapses the wide group gaps, since
-    // with no pill left to disambiguate they have nothing to separate;
-    // then without the Manage chip's own keycap as well. The labels are
-    // in every measurement: they never yield.
+    // The right cluster's pieces, measured before anything is painted:
+    // the left cluster's keycaps yield to whatever the right cluster
+    // must show.
+    let manage_label = " Manage ";
+    let manage_label_w = manage_label.chars().count() as u16;
+    let manage_pill = crate::paint::Chip {
+        label: "alt+v",
+        color: theme.text_muted,
+    };
+    let theme_label = " Theme ";
+    let theme_pill = crate::paint::Chip {
+        label: "alt+t",
+        color: theme.text_muted,
+    };
+    let theme_w = theme_label.chars().count() as u16 + theme_pill.width();
+    // What the right cluster needs at minimum, margin included: the bare
+    // Manage name, plus the save group and its wider gap while dirty.
+    let right_essential = 3
+        + manage_label_w
+        + if dirty {
+            SAVE_GROUP_W + SAVE_GROUP_GAP
+        } else {
+            0
+        };
+
+    // Measure the left cluster two ways (see the narrow-bar rule above):
+    // everything, then without the three cycle pills — which also
+    // collapses the wide group gaps, since with no pill left to
+    // disambiguate they have nothing to separate. The labels are in both
+    // measurements: they never yield. Each measurement is the column
+    // just past the cluster's last chip.
     let labels_w: u16 = chips
         .iter()
         .map(|(label, _, _, _)| label.chars().count() as u16)
         .sum();
-    let pills_w: u16 = chips
-        .iter()
-        .map(|(_, _, pill, _)| 1 + pill.width() + MANAGE_GROUP_GAP)
-        .sum();
+    let pills_w: u16 = chips.iter().map(|(_, _, pill, _)| pill.width() + 1).sum();
     let margin = x - area.x;
-    let cluster_full = margin + labels_w + pills_w + manage_label_w + manage_pill.width();
-    let cluster_no_cycle_pills =
-        margin + labels_w + chips.len() as u16 + manage_label_w + manage_pill.width();
-    // While the request is dirty the save/discard group (laid out below)
-    // needs its own room at the bar's right: saving beats keycaps, so the
-    // cluster's budget shrinks by the group and its margin and the pills
-    // yield to it exactly as they yield to the Manage chip.
-    let budget = if dirty {
-        area.width.saturating_sub(SAVE_GROUP_W + 3 + 1)
-    } else {
-        area.width
-    };
-    let show_cycle_pills = cluster_full <= budget;
-    let show_manage_pill = show_cycle_pills || cluster_no_cycle_pills <= budget;
+    let cluster_full = margin + labels_w + pills_w + CHIP_GROUP_GAP * (chips.len() as u16 - 1);
+    let cluster_no_cycle_pills = margin + labels_w + (chips.len() as u16 - 1);
+    // Both clusters fit when a column of panel separates them.
+    let fits = |left_end: u16, right_w: u16| left_end + 1 + right_w <= area.width;
+    let show_cycle_pills = fits(cluster_full, right_essential + manage_pill.width());
+    let show_manage_pill = show_cycle_pills
+        || fits(
+            cluster_no_cycle_pills,
+            right_essential + manage_pill.width(),
+        );
 
-    for (label, hit, pill, cycle_hit) in chips {
+    for (i, (label, hit, pill, cycle_hit)) in chips.iter().enumerate() {
         // The keycap pill leads: it is the cycle affordance — the footer
         // chips' keycap styling (muted tint over the control fill,
         // lifting on hover), one gap column off the chip so it reads as
@@ -165,7 +191,7 @@ pub fn draw_header(
         // follows the chip, so the pill keeps reading as this chip's —
         // not the previous chip's — shortcut.
         if show_cycle_pills {
-            let on = if hovered == Some(&cycle_hit) {
+            let on = if hovered == Some(cycle_hit) {
                 theme.control_hover
             } else {
                 theme.control
@@ -178,7 +204,7 @@ pub fn draw_header(
                     width: pill_w,
                     height: 1,
                 },
-                cycle_hit,
+                cycle_hit.clone(),
             );
             x += pill_w + 1;
         }
@@ -191,29 +217,81 @@ pub fn draw_header(
             width: w,
             height: 1,
         };
-        let bg = if hovered == Some(&hit) {
+        let bg = if hovered == Some(hit) {
             theme.control_hover
         } else {
             theme.control
         };
         fill(buf, rect, bg);
         text(buf, rect.x, mid_y, label, theme.text, bg, true);
-        hits.register(rect, hit);
-        x += w + if show_cycle_pills {
-            MANAGE_GROUP_GAP
+        hits.register(rect, hit.clone());
+        x += w;
+        if i + 1 < chips.len() {
+            x += if show_cycle_pills { CHIP_GROUP_GAP } else { 1 };
+        }
+    }
+    // The column just past the left cluster: nothing on the right may
+    // start before `left_end + 1`.
+    let left_end = x;
+
+    // The right cluster is laid out from the right margin inwards, each
+    // piece taking its place only if it was budgeted for above.
+    let right_edge = (area.x + area.width).saturating_sub(3);
+    let manage_pill_w = if show_manage_pill {
+        manage_pill.width()
+    } else {
+        0
+    };
+    let manage_w = manage_label_w + manage_pill_w;
+    let right_w = if dirty {
+        SAVE_GROUP_W + SAVE_GROUP_GAP + manage_w
+    } else {
+        manage_w
+    };
+    // Theme goes first: it shows only when the whole cluster, Theme
+    // included, sits clear of the selectors.
+    let theme_visible = fits(left_end, 3 + right_w + CHIP_GROUP_GAP + theme_w);
+    let mut rx = right_edge;
+    if theme_visible {
+        let theme_x = rx - theme_w;
+        let pill_on = if hovered == Some(&Hit::HeaderTheme) {
+            theme.control_hover
         } else {
-            1
+            theme.control
         };
+        let key_w = theme_pill.paint(buf, theme_x, mid_y, pill_on, theme);
+        text(
+            buf,
+            theme_x + key_w,
+            mid_y,
+            theme_label,
+            theme.text,
+            theme.panel,
+            false,
+        );
+        hits.register(
+            Rect {
+                x: theme_x,
+                y: mid_y,
+                width: theme_w,
+                height: 1,
+            },
+            Hit::HeaderTheme,
+        );
+        // A group gap before Theme, so its `alt+t` pill reads as Theme's
+        // key and not as a trailing key of Manage.
+        rx = theme_x - CHIP_GROUP_GAP;
     }
 
-    // The Manage-screen toggle, in the footer's clickable idiom with
-    // the keycap leading the name: `alt+v` pill + prominent full name.
-    // While the Manage screen is open the whole chip holds the pressed
-    // fill, keeping the old `vars` toggle's stateful read. The name paints
-    // unconditionally like the rest of the left cluster (a bar too narrow
-    // even for it clips rather than dropping it); only its keycap yields.
-    let vm_label = manage_label;
-    let vm_label_w = manage_label_w;
+    // The Manage-screen toggle, in the footer's clickable idiom with the
+    // keycap leading the name: `alt+v` pill + prominent full name. While
+    // the Manage screen is open the whole chip holds the pressed fill,
+    // keeping the old `vars` toggle's stateful read. The name paints
+    // unconditionally (a bar too narrow even for it beside the selectors
+    // pushes it right of them, clipping at the edge, rather than dropping
+    // it: this chip is the only mouse path to the Manage screen); only
+    // its keycap yields.
+    let manage_x = rx.saturating_sub(manage_w).max(left_end + 1);
     let (vm_pill_on, vm_label_bg) = if manage_active {
         (theme.control_pressed, theme.control_pressed)
     } else if hovered == Some(&Hit::HeaderManage) {
@@ -221,75 +299,50 @@ pub fn draw_header(
     } else {
         (theme.control, theme.panel)
     };
-    // The last keycap to yield on a narrow bar: the name stays clickable
-    // (and `alt+v` keeps working) with the pill gone.
-    let vm_pill_w = if show_manage_pill {
-        manage_pill.paint(buf, x, mid_y, vm_pill_on, theme)
-    } else {
-        0
-    };
+    if show_manage_pill {
+        manage_pill.paint(buf, manage_x, mid_y, vm_pill_on, theme);
+    }
     text(
         buf,
-        x + vm_pill_w,
+        manage_x + manage_pill_w,
         mid_y,
-        vm_label,
+        manage_label,
         theme.text,
         vm_label_bg,
         false,
     );
-    let vm_rect = Rect {
-        x,
-        y: mid_y,
-        width: vm_label_w + vm_pill_w,
-        height: 1,
-    };
-    hits.register(vm_rect, Hit::HeaderManage);
-    x += vm_rect.width + 1;
-
-    // The theme-picker chip sits alone at the bar's right edge, mirroring
-    // the left cluster's 3-column margin — same keycap-then-name idiom
-    // as the Manage chip.
-    let theme_label = " Theme ";
-    let theme_key_w = " alt+t ".chars().count() as u16;
-    let theme_w = theme_label.chars().count() as u16 + theme_key_w;
-    let theme_x = (area.x + area.width).saturating_sub(theme_w + 3);
+    hits.register(
+        Rect {
+            x: manage_x,
+            y: mid_y,
+            width: manage_w,
+            height: 1,
+        },
+        Hit::HeaderManage,
+    );
 
     // The save/discard group, in the bar's same keycap-then-name idiom,
-    // right-aligned a group gap left of the Theme chip — up here
-    // near the data being saved rather than down in the footer. Present
-    // only while there is actually something to save: both chips appear
-    // together when the request goes dirty and leave when it's clean
-    // again, so an idle bar carries no dead buttons. Registered as
-    // `Hit::FooterChip` so clicks dispatch through the existing routing.
+    // a wide gap left of the Manage chip — up here near the data being
+    // saved rather than down in the footer. Present only while there is
+    // actually something to save: both chips appear together when the
+    // request goes dirty and leave when it's clean again, so an idle bar
+    // carries no dead buttons. Registered as `Hit::FooterChip` so clicks
+    // dispatch through the existing routing.
     //
-    // On a bar too narrow to hold both, the group outranks the Theme
-    // chip (saving beats restyling): it takes the right margin and the
-    // Theme chip sits out until the request is clean again. Tighter
-    // still, discard drops before save — the group's essential half
-    // survives longest.
-    const GROUP_GAP: u16 = 8;
-    let save_w = SAVE_LABEL.chars().count() as u16 + " ^S ".chars().count() as u16;
-    let discard_w = DISCARD_LABEL.chars().count() as u16 + " alt+d ".chars().count() as u16;
-    let group_w = SAVE_GROUP_W;
-    let beside_theme = theme_x > x + group_w + GROUP_GAP;
-    let theme_visible = if dirty {
-        theme_x > x && beside_theme
-    } else {
-        theme_x > x
-    };
+    // Tighter still, discard drops before save — the group's essential
+    // half survives longest — and either drops rather than overlapping
+    // the selectors.
     if dirty {
         use crate::action::Action;
         let save_hit = Hit::FooterChip(Action::SaveRequest);
         let discard_hit = Hit::FooterChip(Action::DiscardChanges);
-        let group_right = if beside_theme {
-            theme_x.saturating_sub(GROUP_GAP)
-        } else {
-            (area.x + area.width).saturating_sub(3)
-        };
+        let save_w = SAVE_LABEL.chars().count() as u16 + " ^S ".chars().count() as u16;
+        let discard_w = DISCARD_LABEL.chars().count() as u16 + " alt+d ".chars().count() as u16;
+        let group_right = manage_x.saturating_sub(SAVE_GROUP_GAP);
         let save_x = group_right.saturating_sub(save_w);
         // Discard sits left of save so save keeps its anchored spot.
         let discard_x = save_x.saturating_sub(discard_w + 2);
-        if save_x > x {
+        if save_x > left_end {
             let pill_on = if hovered == Some(&save_hit) {
                 theme.control_hover
             } else {
@@ -318,7 +371,7 @@ pub fn draw_header(
                 },
                 save_hit,
             );
-            if discard_x > x {
+            if discard_x > left_end {
                 let pill_on = if hovered == Some(&discard_hit) {
                     theme.control_hover
                 } else {
@@ -349,37 +402,6 @@ pub fn draw_header(
                 );
             }
         }
-    }
-
-    // Never collide with the left-side chips on a very narrow bar (and
-    // yield to the save group while it needs the right margin).
-    if theme_visible {
-        let theme_rect = Rect {
-            x: theme_x,
-            y: mid_y,
-            width: theme_w,
-            height: 1,
-        };
-        let pill_on = if hovered == Some(&Hit::HeaderTheme) {
-            theme.control_hover
-        } else {
-            theme.control
-        };
-        let key_w = crate::paint::Chip {
-            label: "alt+t",
-            color: theme.text_muted,
-        }
-        .paint(buf, theme_x, mid_y, pill_on, theme);
-        text(
-            buf,
-            theme_x + key_w,
-            mid_y,
-            theme_label,
-            theme.text,
-            theme.panel,
-            false,
-        );
-        hits.register(theme_rect, Hit::HeaderTheme);
     }
 }
 
@@ -574,11 +596,12 @@ mod tests {
     }
 
     /// The left cluster reads (pill +) project, (pill +) env, (pill +)
-    /// space, (pill +) Manage — each chip's pill one column ahead of it
-    /// and the same wide group gap after every chip, so no keycap pill
-    /// reads as the previous chip's key.
+    /// space — each chip's pill one column ahead of it and the same wide
+    /// group gap between chips, so no keycap pill reads as the previous
+    /// chip's key. Manage is not part of it: it sits in the right cluster
+    /// with Theme, well clear of the space chip.
     #[test]
-    fn env_then_space_then_manage_each_a_group_gap_apart() {
+    fn project_then_env_then_space_each_a_group_gap_apart() {
         let theme = Theme::dark();
         let (term, hits) = render_wide(&theme, "alpha", "qa", false, None, 130);
         let project = hits.rect_of(&Hit::HeaderProject).unwrap();
@@ -609,10 +632,9 @@ mod tests {
             "a group gap before the space pill"
         );
         assert_eq!(space.x, space_cycle.x + space_cycle.width + 1);
-        assert_eq!(
-            manage.x,
-            space.x + space.width + 4,
-            "and the same gap before Manage"
+        assert!(
+            manage.x > space.x + space.width + 4,
+            "Manage is off in the right cluster, not the next chip along: {manage:?} vs {space:?}"
         );
         let label: String = (space.x..space.x + space.width)
             .map(|x| cell(&term, x, space.y).symbol().to_string())
@@ -655,10 +677,19 @@ mod tests {
             "chips keep their full labels"
         );
         assert_eq!(space.x, env.x + env.width + 1, "no pill gap left");
-        assert_eq!(manage.x, space.x + space.width + 1, "group gap collapses");
         assert!(
-            manage.x + manage.width <= 75,
-            "the whole Manage chip fits: {manage:?}"
+            manage.x > space.x + space.width,
+            "Manage sits clear of the selectors: {manage:?} vs {space:?}"
+        );
+        assert_eq!(
+            manage.x + manage.width,
+            75 - 3,
+            "and keeps its place at the right margin: {manage:?}"
+        );
+        assert_eq!(
+            manage.width,
+            " Manage ".chars().count() as u16 + alt_pill_w(),
+            "with room for its keycap once the cycle pills are gone"
         );
 
         // Given the room for the full cluster, all three pills are back.
@@ -759,22 +790,22 @@ mod tests {
         );
     }
 
-    /// The Manage chip sits in the left cluster — a wide group gap after
-    /// the space chip, so its own pill clearly belongs to it rather than
-    /// to the space chip — in the footer's clickable idiom with the
-    /// keycap leading the name: `alt+v` pill + prominent full name.
+    /// The Manage chip sits in the right cluster, a wide group gap left
+    /// of the Theme chip — so Theme's own pill clearly belongs to Theme
+    /// rather than trailing Manage — in the footer's clickable idiom with
+    /// the keycap leading the name: `alt+v` pill + prominent full name.
     #[test]
-    fn manage_chip_follows_the_env_cluster_with_a_leading_keycap() {
+    fn manage_chip_leads_the_theme_chip_with_a_leading_keycap() {
         let theme = Theme::dark();
-        let (term, hits) = render_wide(&theme, "alpha", "qa", false, None, 130);
+        let (term, hits) = render_wide(&theme, "alpha", "qa", false, None, 150);
         let rect = hits
             .rect_of(&Hit::HeaderManage)
             .expect("manage chip registered");
-        let space_rect = hits.rect_of(&Hit::HeaderSpace).unwrap();
+        let theme_rect = hits.rect_of(&Hit::HeaderTheme).expect("theme chip");
         assert_eq!(
-            rect.x,
-            space_rect.x + space_rect.width + 4,
-            "a group gap after the space chip"
+            theme_rect.x,
+            rect.x + rect.width + 4,
+            "a group gap between Manage and Theme"
         );
         assert_eq!(
             row_text(&term, &rect),
@@ -877,11 +908,11 @@ mod tests {
         );
     }
 
-    /// The save/discard group appears beside the Theme chip only while
+    /// The save/discard group appears beside the Manage chip only while
     /// the request is dirty — a clean request needs neither button, so
     /// the bar carries none.
     #[test]
-    fn save_group_appears_beside_the_theme_chip_only_while_dirty() {
+    fn save_group_appears_beside_the_manage_chip_only_while_dirty() {
         use crate::action::Action;
         let theme = Theme::dark();
         let (_term, hits) = render_wide(&theme, "alpha", "qa", false, None, 180);
@@ -903,14 +934,20 @@ mod tests {
         let discard = hits
             .rect_of(&Hit::FooterChip(Action::DiscardChanges))
             .expect("dirty: discard chip registered");
+        let manage = hits.rect_of(&Hit::HeaderManage).unwrap();
         let theme_rect = hits.rect_of(&Hit::HeaderTheme).unwrap();
         assert!(
             discard.x + discard.width < save.x,
             "discard sits left of save"
         );
+        assert_eq!(
+            save.x + save.width + 8,
+            manage.x,
+            "the group sits a clear gap left of the Manage chip: save {save:?} manage {manage:?}"
+        );
         assert!(
-            save.x + save.width + 8 <= theme_rect.x,
-            "the group sits a clear gap left of the Theme chip: save {save:?} theme {theme_rect:?}"
+            manage.x + manage.width < theme_rect.x,
+            "and Manage, then Theme, close the bar"
         );
         assert_eq!(
             row_text(&term, &save),
@@ -942,9 +979,9 @@ mod tests {
         );
     }
 
-    /// The Manage chip is part of the left cluster now: it paints
-    /// (clipped, like the project/env chips) on a bar too narrow for the
-    /// right-aligned theme chip, which still drops.
+    /// The Manage chip never drops: on a bar too narrow to right-anchor
+    /// it beside the selectors it follows them and paints (clipped, like
+    /// the project/env chips), while the Theme chip drops.
     #[test]
     fn manage_chip_stays_when_the_theme_chip_drops() {
         let theme = Theme::dark();

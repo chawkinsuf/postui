@@ -239,9 +239,12 @@ Footer chips when the sidebar is focused: existing new/rename/delete plus
 ### Header (`components/header_bar.rs`, `hit.rs`)
 
 Left cluster order: wordmark, project chip, env chip (with its cycle
-pill), **space chip** (with its cycle pill), Manage chip, with the same
-wide group gap after each cycle pill so no pill reads as the next chip's
-key. Theme stays on the right.
+pill), **space chip** (with its cycle pill), with the same wide group gap
+after each cycle pill so no pill reads as the next chip's key. *(Moved
+2026-09-07: the Manage chip left this cluster for the right one — it
+sits a group gap left of Theme, since both leave the screen rather than
+cycle a selector; the dirty bar's Save/Discard group sits a wider gap
+left of Manage.)*
 
 The space chip mirrors the env chip's idiom: `▾ auth` with an `alt+l`
 cycle pill (`Hit::HeaderSpace`, `Hit::HeaderSpaceCycle`). Its dropdown
@@ -425,10 +428,11 @@ Rulings taken during implementation that amend the text above.
   (Move all requests…, then Move up, …) like the selector pane's; every
   dropped button has a key. *(Removed 2026-09-07: Move up / Move down
   buttons — drag and alt+up/alt+down replaced them.)*
-- H: in the header, the env-cycle and space-cycle keycap pills yield
-  first at narrow widths — and whenever the dirty bar's Save/Discard
-  group would otherwise not fit — then the Manage keycap; chip labels
-  never shorten. The space chip reads `Space: <name> ▾`.
+- H: in the header, the Theme chip yields first at narrow widths, then
+  the cycle keycap pills — also whenever the dirty bar's Save/Discard
+  group would otherwise not fit — then the Manage keycap, then Discard,
+  then Save; chip labels never shorten. The space chip reads
+  `Space: <name> ▾`.
 - I/I': move-all and move-to-space are dirty-gated when the open request
   is affected, via `ForceMoveAllRequests` / `ForceMoveRequestToSpace`;
   `ForceOpenRequest` owns move-all's follow (move-to-space no longer
