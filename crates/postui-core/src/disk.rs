@@ -181,8 +181,9 @@ impl Disk {
     }
 
     /// Atomic write: sibling temp file, mode copied from the existing
-    /// file, written through a symlink, then renamed over. Creates the
-    /// parent directory. Records a stamp.
+    /// file (a new file takes the umask, as a plain create would), written
+    /// through a symlink, then renamed over. Creates the parent directory.
+    /// Records a stamp.
     pub fn write(&mut self, rel: &RelPath, text: &str) -> Result<(), DiskError> {
         self.write_bytes(rel, text.as_bytes())
     }
@@ -199,8 +200,7 @@ impl Disk {
         };
         let parent = target.parent().unwrap_or_else(|| Path::new("."));
         std::fs::create_dir_all(parent).map_err(DiskError::io("create the directory of", rel))?;
-        let mut tmp = tempfile::NamedTempFile::new_in(parent).map_err(DiskError::io("write", rel))?;
-        std::io::Write::write_all(&mut tmp, contents).map_err(DiskError::io("write", rel))?;
+        let tmp = Self::staged(parent, contents, rel)?;
         if let Ok(existing) = std::fs::metadata(&target) {
             std::fs::set_permissions(tmp.path(), existing.permissions())
                 .map_err(DiskError::io("write", rel))?;
@@ -212,27 +212,42 @@ impl Disk {
     }
 
     /// Creates the file with `text`; `AlreadyExists` when it is there.
-    /// Check and create are one atomic step (`create_new`).
+    /// Atomic like `write`: the content is staged in a sibling temp file
+    /// and linked into place only if nothing is there, so a failed write
+    /// leaves no partial file and a refused one leaves no residue.
     pub fn write_new(&mut self, rel: &RelPath, text: &str) -> Result<(), DiskError> {
         let path = self.abs(rel);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(DiskError::io("create the directory of", rel))?;
-        }
-        let mut f = match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-        {
-            Ok(f) => f,
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        std::fs::create_dir_all(parent).map_err(DiskError::io("create the directory of", rel))?;
+        let tmp = Self::staged(parent, text.as_bytes(), rel)?;
+        match tmp.persist_noclobber(&path) {
+            Ok(_) => {}
+            Err(e) if e.error.kind() == std::io::ErrorKind::AlreadyExists => {
                 return Err(DiskError::AlreadyExists(rel.to_string()));
             }
-            Err(e) => return Err(DiskError::io("create", rel)(e)),
-        };
-        std::io::Write::write_all(&mut f, text.as_bytes()).map_err(DiskError::io("write", rel))?;
+            Err(e) => return Err(DiskError::io("create", rel)(e.error)),
+        }
         self.record(rel);
         Ok(())
+    }
+
+    /// A sibling temp file in `parent` holding `contents`, created with
+    /// the mode a plain create would get (0666 filtered by the umask)
+    /// rather than `NamedTempFile`'s owner-only default.
+    fn staged(
+        parent: &Path,
+        contents: &[u8],
+        rel: &RelPath,
+    ) -> Result<tempfile::NamedTempFile, DiskError> {
+        let mut builder = tempfile::Builder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            builder.permissions(std::fs::Permissions::from_mode(0o666));
+        }
+        let mut tmp = builder.tempfile_in(parent).map_err(DiskError::io("write", rel))?;
+        std::io::Write::write_all(&mut tmp, contents).map_err(DiskError::io("write", rel))?;
+        Ok(tmp)
     }
 
     /// Removes a file. A missing file is success.
@@ -496,6 +511,37 @@ mod tests {
         disk.write(&RelPath::new("config.toml").unwrap(), "new").unwrap();
         assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
         assert_eq!(std::fs::read_to_string(&real).unwrap(), "new");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn new_files_take_the_umask_like_a_plain_write_would() {
+        use std::os::unix::fs::PermissionsExt;
+        let (d, mut disk) = disk();
+        std::fs::write(d.path().join("control"), b"").unwrap();
+        let control = std::fs::metadata(d.path().join("control")).unwrap().permissions().mode() & 0o777;
+        let a = RelPath::new("project.toml").unwrap();
+        let b = RelPath::new("environments/dev.toml").unwrap();
+        disk.write(&a, "").unwrap();
+        disk.write_new(&b, "").unwrap();
+        for rel in [&a, &b] {
+            let mode = std::fs::metadata(disk.abs(rel)).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, control, "{rel} should have the umask mode, not the temp file's");
+        }
+    }
+
+    #[test]
+    fn a_refused_write_new_leaves_no_temp_file_behind() {
+        let (d, mut disk) = disk();
+        let p = RelPath::new("environments/dev.toml").unwrap();
+        disk.write_new(&p, "first").unwrap();
+        assert!(matches!(disk.write_new(&p, "second"), Err(DiskError::AlreadyExists(_))));
+        let names: Vec<String> = std::fs::read_dir(d.path().join("environments"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec!["dev.toml"]);
+        assert_eq!(std::fs::read_to_string(disk.abs(&p)).unwrap(), "first");
     }
 
     #[test]
