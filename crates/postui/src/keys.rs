@@ -525,6 +525,27 @@ impl Keymap {
             .map(|(combo, _)| format_combo(combo))
             .min()
     }
+
+    /// Every combo bound to `action_id`, sorted so a seeded `keys.toml`
+    /// is byte-stable across runs.
+    ///
+    /// The plural matters: `apply_overrides` removes *all* of an action's
+    /// existing combos before binding the ones it is given, so a seed
+    /// listing only one would silently unbind the rest the moment a user
+    /// uncommented it -- taking the vim-key aliases with it.
+    pub fn combos_for(&self, action_id: &str) -> Vec<String> {
+        let Some((_, action)) = named_actions().into_iter().find(|(n, _)| n == &action_id) else {
+            return Vec::new();
+        };
+        let mut combos: Vec<String> = self
+            .bindings
+            .iter()
+            .filter(|(_, a)| **a == action)
+            .map(|(combo, _)| format_combo(combo))
+            .collect();
+        combos.sort();
+        combos
+    }
 }
 
 /// Formats a `KeyCombo` the way the footer displays a combo: `ctrl` as
@@ -1082,6 +1103,52 @@ mod tests {
         // '^' sorts before 'q', so "^C" is the deterministic pick.
         let m = Keymap::default_bindings();
         assert_eq!(m.combo_for("quit"), Some("^C".to_string()));
+    }
+
+    /// Seeding keys.toml from the singular accessor would drop aliases, and
+    /// `apply_overrides` replaces *all* of an action's combos -- so
+    /// uncommenting a seeded line would silently unbind the others.
+    #[test]
+    fn combos_for_lists_every_alias_not_just_one() {
+        let map = Keymap::default_bindings();
+        let mut found_multi = false;
+        for (name, _) in named_actions() {
+            let combos = map.combos_for(name);
+            if let Some(one) = map.combo_for(name) {
+                assert!(
+                    combos.contains(&one),
+                    "{name}: combos_for must include what combo_for returns"
+                );
+            }
+            if combos.len() > 1 {
+                found_multi = true;
+            }
+        }
+        assert!(
+            found_multi,
+            "the default map has aliased actions; combos_for must expose them"
+        );
+    }
+
+    #[test]
+    fn combos_for_is_stable_across_calls() {
+        let map = Keymap::default_bindings();
+        for (name, _) in named_actions() {
+            assert_eq!(
+                map.combos_for(name),
+                map.combos_for(name),
+                "{name}: a seed built twice must be identical"
+            );
+        }
+    }
+
+    #[test]
+    fn combos_for_an_unknown_action_is_empty() {
+        assert!(
+            Keymap::default_bindings()
+                .combos_for("no_such_action")
+                .is_empty()
+        );
     }
 
     #[test]
