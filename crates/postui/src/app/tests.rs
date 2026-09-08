@@ -22369,6 +22369,10 @@ fn the_response_toolbar_hints_follow_the_open_tab() {
         hint(&app, &Hit::ResponseEditorButton).unwrap(),
         "Open the headers in your editor"
     );
+    assert_eq!(
+        hint(&app, &Hit::ResponseSearchButton).unwrap(),
+        "Search the response headers"
+    );
 }
 
 /// `hover_hints = false` switches them off wholesale, leaving the chip

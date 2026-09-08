@@ -912,10 +912,14 @@ impl App {
                 Some(Row::Folder { expanded: true, .. })
             ),
             Hit::AutoHeaderReveal => self.editor.computed.revealed,
-            // The response toolbar acts on the tab that is up. Read from
-            // the same view the copy/save actions read, so the hint can't
-            // disagree with what a click lands on.
-            Hit::CopyBodyButton | Hit::SaveBodyButton | Hit::ResponseEditorButton => {
+            // The response toolbar acts on the tab that is up: copy,
+            // save, the external editor and search all run over
+            // `search_corpus`, the open tab's text. Read from the same
+            // view they do, so the hint can't disagree with the click.
+            Hit::CopyBodyButton
+            | Hit::SaveBodyButton
+            | Hit::ResponseEditorButton
+            | Hit::ResponseSearchButton => {
                 self.session
                     .response
                     .view()

@@ -137,7 +137,6 @@ fn short_description(action: &Action) -> Option<&'static str> {
         Action::OpenJqDescribe => "Write a jq filter with AI",
         Action::CopyToClipboard(CopyTarget::Url) => "Copy the resolved URL",
         Action::OpenJqBar => "Filter the JSON with jq",
-        Action::OpenResponseSearch => "Search the response body",
         Action::PromptNewRequest => "Create a request in this folder",
         // "Open" over "Switch to", matching the ^O the hint carries; the
         // space and env choosers keep "Switch to", since neither is a
@@ -316,7 +315,11 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         } else {
             "Open the response body in your editor"
         }),
-        Hit::ResponseSearchButton => of(Action::OpenResponseSearch),
+        Hit::ResponseSearchButton => text(if ctx.on {
+            "Search the response headers"
+        } else {
+            "Search the response body"
+        }),
         Hit::ResponseSearchNext => text("Go to the next match"),
         Hit::ResponseSearchPrev => text("Go to the previous match"),
         Hit::HeaderCopy(_) => text("Copy this header's value"),
@@ -625,6 +628,7 @@ mod tests {
             Hit::CopyBodyButton,
             Hit::SaveBodyButton,
             Hit::ResponseEditorButton,
+            Hit::ResponseSearchButton,
         ] {
             let off = hint_for(&hit, &keymap, &ctx()).unwrap();
             let on = hint_for(&hit, &keymap, &HintCtx { on: true, ..ctx() }).unwrap();

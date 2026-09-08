@@ -266,7 +266,7 @@ pub fn all_commands() -> Vec<Command> {
         Command {
             id: "response-search",
             name: "Response: search",
-            description: "Search within the response body",
+            description: "Search the response's active tab",
             action: Action::OpenResponseSearch,
         },
         Command {
