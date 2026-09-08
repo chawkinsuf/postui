@@ -23,7 +23,11 @@ impl App {
     pub fn handle_mouse(&mut self, m: ratatui::crossterm::event::MouseEvent) -> bool {
         let changed = self.handle_mouse_inner(m);
         self.arm_pending_toasts();
-        changed
+        // Same reason as `handle_key`: a click that only pops a modal
+        // never reaches `update`, and an unanswered startup gate must
+        // not be left down.
+        let regated = self.reraise_startup_config_gate();
+        changed || regated
     }
 
     fn handle_mouse_inner(&mut self, m: ratatui::crossterm::event::MouseEvent) -> bool {
@@ -1142,20 +1146,34 @@ impl App {
             // -- Settings tab --
             // A click anywhere on the tab commits whatever field was
             // under edit first: typing is never silently thrown away,
-            // the same rule the params/headers table follows.
+            // the same rule the params/headers table follows. A commit
+            // the field *refuses* swallows the click instead -- see
+            // `commit_settings_edit_for_click`.
             Hit::SettingsRow(i) => {
-                self.commit_settings_edit();
+                if !self.commit_settings_edit_for_click() {
+                    return true;
+                }
                 self.settings.cursor = i;
                 self.update(Action::Render)
             }
+            // Clicking the well of the field you are already editing is
+            // not a commit: committing and immediately reopening would
+            // select-all over a rejected value and replace it with the
+            // stored one, and there would be no way to click inside a
+            // live field at all. The edit simply stands.
+            Hit::SettingsControl(field) if self.settings.editing == Some(field) => true,
             Hit::SettingsControl(field) => {
-                self.commit_settings_edit();
+                if !self.commit_settings_edit_for_click() {
+                    return true;
+                }
                 self.settings.focus_field(field);
                 self.activate_settings_row()
             }
             Hit::SettingsJqTab(mode) => {
                 use crate::components::settings::{SettingsField, jq_tab_spelling};
-                self.commit_settings_edit();
+                if !self.commit_settings_edit_for_click() {
+                    return true;
+                }
                 self.settings.focus_field(SettingsField::JqTab);
                 self.update(Action::SetUiString {
                     key: SettingsField::JqTab.key(),
@@ -1164,7 +1182,9 @@ impl App {
             }
             Hit::SettingsFile { file, reset } => {
                 use crate::components::settings::{SettingsRow, SettingsTab};
-                self.commit_settings_edit();
+                if !self.commit_settings_edit_for_click() {
+                    return true;
+                }
                 if let Some(i) = SettingsTab::rows()
                     .iter()
                     .position(|r| *r == SettingsRow::File(file))

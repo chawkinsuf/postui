@@ -394,6 +394,14 @@ pub struct App {
     /// session behind `Modal::ConfigStartup` until the user answers —
     /// running on defaults would also mean an empty `[projects]`.
     pub config_error: Option<String>,
+    /// Whether the startup gate (`Modal::ConfigStartup`) is still
+    /// unanswered. Set when the gate is first raised and cleared only by
+    /// the two answers that resolve it -- Continue unsaved and Quit --
+    /// so that Edit and Reset, both of which have escape routes that
+    /// leave `config.toml` exactly as broken, put the question back
+    /// rather than dropping the gate (see
+    /// `Self::reraise_startup_config_gate`).
+    startup_config_gate: bool,
     /// Keeps the test-only channel's receiver alive so `tx` doesn't become
     /// a dangling sender in `App::new_for_test()`. Always `None` outside
     /// of tests.
@@ -686,7 +694,37 @@ impl App {
         let Some(error) = self.config_error.clone() else {
             return;
         };
+        self.startup_config_gate = true;
         self.modals.push(Modal::ConfigStartup { error });
+    }
+
+    /// The startup gate is sticky. `Action::ConfigStartupChoice` pops it
+    /// to run Edit or Reset, and both have escape routes that leave
+    /// `config.toml` exactly as broken as it was: Esc on the Reset
+    /// confirm, or an `$EDITOR` that will not launch. Dropping the gate
+    /// there would contradict [`Self::apply_startup_config_gate`]'s
+    /// promise that startup does not reach a normal session until the
+    /// question is answered -- so every time the app comes to rest with
+    /// the error still unanswered, the question goes back up.
+    ///
+    /// "At rest" means no modal is up (the Reset confirm and
+    /// `ConfigEditInvalid` are the gate's own continuations, not an
+    /// escape) and no terminal handover is pending (the editor is about
+    /// to take the screen). Continue unsaved and Quit are the two
+    /// answers that genuinely resolve the gate; they clear the flag.
+    fn reraise_startup_config_gate(&mut self) -> bool {
+        if !self.startup_config_gate || self.pending_terminal_action.is_some() {
+            return false;
+        }
+        let Some(error) = self.config_error.clone() else {
+            self.startup_config_gate = false;
+            return false;
+        };
+        if !self.modals.is_empty() {
+            return false;
+        }
+        self.modals.push(Modal::ConfigStartup { error });
+        true
     }
 
     /// `Modal::ConfigEditInvalid`'s "Keep editing" answer: stashes `path`
@@ -721,6 +759,36 @@ impl App {
                 None
             }
         }
+    }
+
+    /// `main::run_editor` came back with nothing -- the editor would not
+    /// launch, exited non-zero (`vim :cq`), or its text could not be read
+    /// back. Returns whether the caller may remove the temp copy.
+    ///
+    /// On a *resumed* round-trip (`resumed`, which the caller knows from
+    /// [`Self::take_resumed_config_edit`]) it may not: that file is the user's
+    /// in-progress work and the only copy of it, which is precisely what
+    /// "Keep editing" was holding on to. `Modal::ConfigEditInvalid` goes
+    /// back up instead, so Keep editing still reaches the work and
+    /// Discard stays the one deliberate way to throw it away. A first
+    /// pass has nothing in the copy the live file does not already have,
+    /// so that one is dropped.
+    pub fn abandon_config_edit(
+        &mut self,
+        file: crate::action::ConfigFile,
+        path: std::path::PathBuf,
+        resumed: bool,
+    ) -> bool {
+        if !resumed {
+            return true;
+        }
+        self.update(Action::ConfigEditInvalid {
+            file,
+            path,
+            error: "the editor exited without saving -- your edits are still in the copy"
+                .to_string(),
+        });
+        false
     }
 
     /// Reads `name` (`config.toml` or `keys.toml`) through the app's
@@ -1486,6 +1554,7 @@ impl App {
             last_environments_warning: None,
             open_error,
             config_error: None,
+            startup_config_gate: false,
             _test_rx: None,
             _test_dir: None,
             history: crate::undo::History::new(),
@@ -1624,7 +1693,11 @@ impl App {
     pub fn update(&mut self, action: Action) -> bool {
         let changed = self.dispatch(action);
         self.sync_jq();
-        changed
+        // Last, so it sees where the dispatch actually left the app --
+        // including a nested dispatch that pushed the gate's own
+        // continuation, or one that finally fixed `config.toml`.
+        let regated = self.reraise_startup_config_gate();
+        changed || regated
     }
 
     /// Keeps the response pane's jq bar and the editor's `jq` field in
@@ -2153,6 +2226,10 @@ impl App {
                         self.update(Action::ResetConfigFile(crate::action::ConfigFile::Config))
                     }
                     C::ContinueUnsaved => {
+                        // The two answers that resolve the gate for good;
+                        // Edit and Reset leave it armed so an abandoned
+                        // one puts the question back.
+                        self.startup_config_gate = false;
                         self.toasts.push(
                             "running on default settings — changes will not be saved \
                              until config.toml parses",
@@ -2160,7 +2237,10 @@ impl App {
                         );
                         true
                     }
-                    C::Quit => self.update(Action::Quit),
+                    C::Quit => {
+                        self.startup_config_gate = false;
+                        self.update(Action::Quit)
+                    }
                 }
             }
             Action::EditConfigFile(file) => {
@@ -9245,7 +9325,10 @@ impl App {
     pub fn handle_key(&mut self, ev: KeyEvent) -> bool {
         let changed = self.handle_key_inner(ev);
         self.arm_pending_toasts();
-        changed
+        // Not every key reaches `update` -- Esc on a modal just pops it
+        // -- so the gate is re-checked at the event boundary too.
+        let regated = self.reraise_startup_config_gate();
+        changed || regated
     }
 
     fn handle_key_inner(&mut self, ev: KeyEvent) -> bool {
@@ -9645,6 +9728,20 @@ impl App {
             key: field.key(),
             value: text,
         })
+    }
+
+    /// [`Self::commit_settings_edit`] for a click that is about to land
+    /// somewhere else, reporting whether that click may proceed.
+    ///
+    /// A rejected `osc52_limit` keeps its edit open, so the click has to
+    /// stop: moving `settings.cursor` out from under a still-live edit
+    /// would leave the painted well on a row the cursor has left, with
+    /// `editing` and `cursor` naming different rows. The toast the
+    /// refusal raised is the answer to the click, and the typed text is
+    /// still there to fix.
+    pub(crate) fn commit_settings_edit_for_click(&mut self) -> bool {
+        self.commit_settings_edit();
+        self.settings.editing.is_none()
     }
 
     /// The tail every Settings-tab write shares. `Config::edit` refuses

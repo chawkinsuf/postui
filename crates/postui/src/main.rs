@@ -460,7 +460,9 @@ fn edit_config_externally(
 ) -> anyhow::Result<()> {
     use postui::action::ConfigFile;
 
-    let path = match app.take_resumed_config_edit(file) {
+    let resumed = app.take_resumed_config_edit(file);
+    let resuming = resumed.is_some();
+    let path = match resumed {
         Some(existing) => existing,
         None => {
             // Seed an absent file so the editor never opens empty.
@@ -480,7 +482,13 @@ fn edit_config_externally(
     };
 
     let Some(text) = run_editor(terminal, app, &path)? else {
-        postui::hostfs::remove_tempfile(&path);
+        // The editor could not be run, exited non-zero (`:cq`), or its
+        // text could not be read back. Whether the temp copy may be
+        // dropped is `App`'s decision (testable without a terminal), for
+        // the same reason the validate-then-write one below is.
+        if app.abandon_config_edit(file, path.clone(), resuming) {
+            postui::hostfs::remove_tempfile(&path);
+        }
         return Ok(());
     };
 

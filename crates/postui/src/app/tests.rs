@@ -22848,6 +22848,112 @@ fn a_broken_config_blocks_startup_until_answered() {
     assert!(app.modals.top().is_none(), "the choice dismisses the modal");
 }
 
+/// An editor that comes back with nothing (`vim :cq`, a crash, an
+/// unreadable file) must not take the user's in-progress config edit
+/// with it. On a resumed round-trip the temp copy is the only copy of
+/// that work, so it stays on disk and the modal goes back up.
+#[test]
+fn an_abandoned_resumed_config_edit_keeps_its_temp_copy() {
+    use crate::action::ConfigFile;
+    let dir = tempfile::tempdir().unwrap();
+    let temp = dir.path().join("postui-config-abc.toml");
+    std::fs::write(&temp, "half = written").unwrap();
+    let mut app = App::new_for_test();
+
+    let remove = app.abandon_config_edit(ConfigFile::Config, temp.clone(), true);
+
+    assert!(!remove, "a resumed edit's copy is never dropped");
+    assert!(temp.exists());
+    let Some(Modal::ConfigEditInvalid { path, .. }) = app.modals.top() else {
+        panic!("Keep editing must still reach the work");
+    };
+    assert_eq!(path, &temp);
+
+    // A first pass has nothing the live file does not already have, so
+    // its copy is the caller's to remove.
+    let mut app = App::new_for_test();
+    assert!(app.abandon_config_edit(ConfigFile::Config, temp.clone(), false));
+    assert!(app.modals.top().is_none());
+}
+
+/// Reset raises a confirm, and Esc on that confirm resets nothing --
+/// `config.toml` is exactly as broken as it was, so the gate goes back
+/// up rather than letting the session run on defaults with an empty
+/// `[projects]`.
+#[test]
+fn escaping_the_reset_confirm_puts_the_startup_gate_back() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("config.toml"), "not = [toml").unwrap();
+    let mut app = App::new_for_test();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+    let (_cfg, loaded, _warnings) = crate::config::Config::load_from(
+        crate::config::Config::at(dir.path().to_path_buf()),
+        false,
+    );
+    app.config_error = loaded.config_error;
+    app.apply_startup_config_gate();
+
+    app.update(Action::ConfigStartupChoice(
+        crate::action::ConfigStartupChoice::Reset,
+    ));
+    assert!(
+        matches!(app.modals.top(), Some(Modal::Confirm { .. })),
+        "Reset asks first"
+    );
+
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(
+        matches!(app.modals.top(), Some(Modal::ConfigStartup { .. })),
+        "a cancelled reset leaves the question unanswered, so it is asked again"
+    );
+
+    // And the answer that does resolve it still works from there.
+    app.update(Action::ConfigStartupChoice(
+        crate::action::ConfigStartupChoice::ContinueUnsaved,
+    ));
+    assert!(app.modals.top().is_none());
+}
+
+/// The other escape route: Edit... hands the file to `$EDITOR`, and an
+/// editor that will not launch comes back with nothing but a toast. The
+/// config is still broken, so the gate returns.
+#[test]
+fn an_editor_that_never_ran_puts_the_startup_gate_back() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("config.toml"), "not = [toml").unwrap();
+    let mut app = App::new_for_test();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+    let (_cfg, loaded, _warnings) = crate::config::Config::load_from(
+        crate::config::Config::at(dir.path().to_path_buf()),
+        false,
+    );
+    app.config_error = loaded.config_error;
+    app.apply_startup_config_gate();
+
+    app.update(Action::ConfigStartupChoice(
+        crate::action::ConfigStartupChoice::Edit,
+    ));
+    assert!(
+        app.modals.top().is_none(),
+        "the editor is about to take the screen, so nothing is up"
+    );
+    assert!(
+        app.pending_terminal_action.take().is_some(),
+        "the main loop was handed the editor run"
+    );
+
+    // What `main::run_editor` does when the editor could not be run: a
+    // toast, and nothing else.
+    app.update(Action::ShowToast(
+        "could not run nosuchditor: no such file".into(),
+        ToastKind::Error,
+    ));
+    assert!(
+        matches!(app.modals.top(), Some(Modal::ConfigStartup { .. })),
+        "the config is still broken, so the question comes back"
+    );
+}
+
 /// The same block Esc already gets: a stray click outside the modal must
 /// not be a back door out of it. Only an actual answer dismisses it.
 #[test]
@@ -23086,6 +23192,78 @@ fn a_bad_osc52_limit_is_rejected_and_the_stored_value_stands() {
     app.commit_settings_edit();
     assert_eq!(app.ui_settings.osc52_limit, 1024);
     assert!(app.settings.editing.is_none());
+}
+
+/// A refused `osc52_limit` keeps its edit open, so a click landing on
+/// another row must not move the cursor out from under it -- `editing`
+/// and `cursor` would then name different rows and the painted well
+/// would sit where the cursor no longer is. The click is swallowed; the
+/// refusal's toast is the answer.
+#[test]
+fn a_click_during_a_refused_settings_edit_is_swallowed() {
+    use crate::components::manage::ManageTab;
+    use crate::components::settings::{SettingsField, SettingsRow, SettingsTab};
+    let mut app = App::new_for_test();
+    app.update(Action::OpenManage {
+        tab: Some(ManageTab::Settings),
+    });
+    let row_of = |field| {
+        SettingsTab::rows()
+            .iter()
+            .position(|r| *r == SettingsRow::Setting(field))
+            .unwrap()
+    };
+    let osc_row = row_of(SettingsField::Osc52Limit);
+    app.settings.cursor = osc_row;
+    app.settings.begin_edit(SettingsField::Osc52Limit, "abc");
+
+    click_hit(&mut app, Hit::SettingsRow(row_of(SettingsField::AiCmd)));
+
+    assert_eq!(
+        app.settings.editing,
+        Some(SettingsField::Osc52Limit),
+        "the refused edit stays open"
+    );
+    assert_eq!(
+        app.settings.cursor, osc_row,
+        "and the cursor stays on the row the well is painted under"
+    );
+
+    // A commit that *succeeds* lets the very same click through.
+    app.settings.begin_edit(SettingsField::Osc52Limit, "1024");
+    click_hit(&mut app, Hit::SettingsRow(row_of(SettingsField::AiCmd)));
+    assert!(app.settings.editing.is_none());
+    assert_eq!(app.settings.cursor, row_of(SettingsField::AiCmd));
+}
+
+/// Clicking the well of the field already under edit leaves it exactly
+/// as it is. Committing and reopening would select-all over a rejected
+/// value and hand back the stored one -- silently destroying the typed
+/// text the refusal asked the user to fix.
+#[test]
+fn clicking_the_live_field_does_not_commit_and_reopen_it() {
+    use crate::components::manage::ManageTab;
+    use crate::components::settings::SettingsField;
+    let mut app = App::new_for_test();
+    app.update(Action::OpenManage {
+        tab: Some(ManageTab::Settings),
+    });
+    app.ui_settings.osc52_limit = 65536;
+    app.settings.begin_edit(SettingsField::Osc52Limit, "abc");
+
+    click_hit(&mut app, Hit::SettingsControl(SettingsField::Osc52Limit));
+
+    assert_eq!(app.settings.editing, Some(SettingsField::Osc52Limit));
+    assert_eq!(
+        app.settings.field_text(),
+        "abc",
+        "the rejected text survives the click"
+    );
+    assert!(
+        app.toasts.messages().is_empty(),
+        "and nothing was committed, so nothing was refused: {:?}",
+        app.toasts.messages()
+    );
 }
 
 /// An empty command field clears the key rather than writing `""`: an
