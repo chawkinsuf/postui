@@ -330,7 +330,17 @@ fn edit_body_externally(
     app: &mut App,
 ) -> anyhow::Result<()> {
     let path = postui::hostfs::editor_tempfile("postui-body-", ".json", &app.editor.body_text())?;
-    run_editor_and_restore(terminal, app, &path, true)
+    let edited = run_editor(terminal, app, &path)?;
+    postui::hostfs::remove_tempfile(&path);
+    if let Some(text) = edited {
+        // Editors conventionally leave a trailing newline; keeping it
+        // would add a phantom blank line and a spurious dirty flag on
+        // every round-trip.
+        let text = text.strip_suffix('\n').unwrap_or(&text);
+        let text = text.strip_suffix('\r').unwrap_or(text);
+        app.editor.set_body_text(text);
+    }
+    Ok(())
 }
 
 /// Hands the response pane's active tab's text to `$EDITOR`, view-only:
@@ -352,18 +362,28 @@ fn view_response_externally(
         );
     let suffix = if is_json_body { ".json" } else { ".txt" };
     let path = postui::hostfs::editor_tempfile("postui-response-", suffix, &view.view_text())?;
-    run_editor_and_restore(terminal, app, &path, false)
+    let _ = run_editor(terminal, app, &path)?; // view-only: nothing is read back
+    postui::hostfs::remove_tempfile(&path);
+    Ok(())
 }
 
 /// Tears the TUI down, runs `$EDITOR` (falling back to `vi`) on `path`,
-/// rebuilds the TUI, then — only when `read_back` — feeds the edited text
-/// back into the request body. The temp file is removed either way.
-fn run_editor_and_restore(
+/// rebuilds the TUI, and returns the file's text on a clean exit.
+///
+/// Deliberately does two things less than it used to. It does not remove
+/// `path`: the config round-trip keeps its temp file alive across a
+/// "Keep editing" answer, so removal belongs to whoever knows the
+/// outcome. And it does not know what the text is *for* -- feeding the
+/// request body was one caller's business, not this function's.
+///
+/// `None` means the editor could not be run or exited non-zero. Callers
+/// treat that as "change nothing", because silently discarding a
+/// half-written file is the worst available outcome.
+fn run_editor(
     terminal: &mut ratatui::DefaultTerminal,
     app: &mut App,
     path: &std::path::Path,
-    read_back: bool,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Option<String>> {
     let command = std::env::var("EDITOR").unwrap_or_default();
     let command = if command.trim().is_empty() {
         "vi".to_string()
@@ -396,42 +416,20 @@ fn run_editor_and_restore(
     terminal.clear()?;
 
     match status {
-        Ok(s) if s.success() => {
-            if read_back {
-                match postui::hostfs::read_tempfile(path) {
-                    // Editors conventionally leave a trailing newline;
-                    // keeping it would add a phantom blank line and a
-                    // spurious dirty flag on every round-trip.
-                    Ok(text) => {
-                        let text = text.strip_suffix('\n').unwrap_or(&text);
-                        let text = text.strip_suffix('\r').unwrap_or(text);
-                        app.editor.set_body_text(text);
-                    }
-                    Err(e) => {
-                        app.update(Action::ShowToast(
-                            format!("could not read back the edited body: {e}"),
-                            ToastKind::Error,
-                        ));
-                    }
-                }
-            }
-        }
+        Ok(s) if s.success() => Ok(Some(postui::hostfs::read_tempfile(path)?)),
         Ok(s) => {
             app.update(Action::ShowToast(
-                format!(
-                    "{program} exited with {s}{}",
-                    if read_back { "; body unchanged" } else { "" }
-                ),
+                format!("{program} exited with {s}"),
                 ToastKind::Error,
             ));
+            Ok(None)
         }
         Err(e) => {
             app.update(Action::ShowToast(
                 format!("could not run {program}: {e}"),
                 ToastKind::Error,
             ));
+            Ok(None)
         }
     }
-    postui::hostfs::remove_tempfile(path);
-    Ok(())
 }
