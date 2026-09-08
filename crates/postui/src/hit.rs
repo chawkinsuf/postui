@@ -46,6 +46,21 @@ pub enum Hit {
     /// One segment of the Environments tab's `TLS` control: sets the
     /// selected environment's force to this policy (`None` = per request).
     ManageEnvTls(Option<postui_core::project::TlsPolicy>),
+    /// One row of the Settings tab, by index into
+    /// [`crate::components::settings::SettingsTab::rows`]: click puts
+    /// the cursor on it. A surface, like `ManageRow` — the row's own
+    /// control is registered on top of it.
+    SettingsRow(usize),
+    /// One setting's control: the checkbox on a boolean row, the text
+    /// well on a string row. Click toggles it / opens the edit.
+    SettingsControl(crate::components::settings::SettingsField),
+    /// One segment of the Settings tab's `jq Tab behavior` control.
+    SettingsJqTab(crate::config::JqTab),
+    /// A Files row's button: `reset` false is Edit…, true is Reset.
+    SettingsFile {
+        file: crate::action::ConfigFile,
+        reset: bool,
+    },
     /// The right-aligned "theme" chip on the app bar: opens the theme
     /// picker.
     HeaderTheme,

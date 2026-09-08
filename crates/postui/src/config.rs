@@ -798,6 +798,28 @@ impl Config {
         self.edit(CONFIG_TOML, |doc| doc[key] = toml_edit::value(value))
     }
 
+    /// Persists one top-level string of `config.toml`. An empty `value`
+    /// *removes* the key instead of writing `""`: the two string
+    /// settings the Settings tab exposes are shell commands, and an
+    /// empty one is not a command but a request to fall back to the
+    /// default — an empty `clipboard_cmd` would otherwise run `sh -c ""`
+    /// and swallow every copy in silence. Removing rather than writing a
+    /// default is the same shape [`ProjectsRegistry::write_into`] uses.
+    pub fn save_ui_string(&mut self, key: &str, value: &str) -> Result<(), String> {
+        self.edit(CONFIG_TOML, |doc| {
+            if value.is_empty() {
+                doc.remove(key);
+            } else {
+                doc[key] = toml_edit::value(value)
+            }
+        })
+    }
+
+    /// Persists one top-level integer of `config.toml`.
+    pub fn save_ui_int(&mut self, key: &str, value: usize) -> Result<(), String> {
+        self.edit(CONFIG_TOML, |doc| doc[key] = toml_edit::value(value as i64))
+    }
+
     /// Persists the palette usage stats to `ui.toml`.
     pub fn save_usage(&mut self, usage: &crate::usage::UsageStore) -> Result<(), String> {
         self.edit(UI_TOML, |doc| usage.write_into(doc))

@@ -215,10 +215,15 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 crate::components::manage::ManageTab::Settings => {
                     // The one tab that isn't about the open project: it
                     // renders regardless (see `ManageTab::is_project_scoped`).
-                    // Its own body lands in a later task; for now, just the
-                    // themed page so an unpainted body doesn't show raw
-                    // terminal default.
-                    crate::paint::fill(frame.buffer_mut(), body, app.theme.page);
+                    crate::components::settings::draw_settings(
+                        frame,
+                        body,
+                        &app.theme,
+                        &app.settings,
+                        &app.ui_settings,
+                        &mut hits,
+                        app.hovered.as_ref(),
+                    );
                 }
                 tab => {
                     let requests = app.sidebar.space_requests();
@@ -282,13 +287,31 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             && (matches!(focus, PaneId::Sidebar | PaneId::Response)
                 || focus == PaneId::Editor && !app.editor.plain_keys_type())
             // The manager binds plain q to quit in every focus stop; only
-            // a live edit types it.
+            // a live edit types it — the Variables tab's form and grid
+            // cells, and the Settings tab's field rows.
             || app.screen == Screen::Manage
-                && (app.manage.tab != crate::components::manage::ManageTab::Variables
-                    || app.varmanager.form.editing.is_none()
-                        && app.varmanager.grid.editing.is_none()));
+                && match app.manage.tab {
+                    crate::components::manage::ManageTab::Variables => {
+                        app.varmanager.form.editing.is_none()
+                            && app.varmanager.grid.editing.is_none()
+                    }
+                    crate::components::manage::ManageTab::Settings => {
+                        app.settings.editing.is_none()
+                    }
+                    _ => true,
+                });
     let vm_chips = modal_chips.or_else(|| {
         (app.screen == Screen::Manage).then(|| {
+            // Settings publishes its own chips and works with no project
+            // open, so it is answered before the project-scoped tabs.
+            if app.manage.tab == crate::components::manage::ManageTab::Settings {
+                return app
+                    .settings
+                    .footer_chips()
+                    .into_iter()
+                    .map(|(k, l, a)| (k.to_string(), l.to_string(), a))
+                    .collect();
+            }
             if app.manage.tab != crate::components::manage::ManageTab::Variables {
                 return app
                     .project()
@@ -740,6 +763,35 @@ mod tests {
         assert!(content.contains("Params")); // editor tab bar
         assert!(content.contains("Headers")); // editor tab bar
         assert!(content.contains("Body")); // editor tab bar
+    }
+
+    /// The Settings tab paints both sections and its own footer chips —
+    /// never the previously open tab's, whose keys do nothing here.
+    #[test]
+    fn the_settings_tab_paints_its_sections_and_its_own_chips() {
+        let mut app = App::new_for_test();
+        app.screen = Screen::Manage;
+        app.manage.tab = crate::components::manage::ManageTab::Settings;
+        let content = render(&mut app);
+        for label in [
+            "Settings",
+            "Animations",
+            "Hover hints",
+            "jq Tab behavior",
+            "AI command",
+            "Clipboard command",
+            "OSC 52 limit",
+            "Files",
+            "Edit",
+            "Reset",
+        ] {
+            assert!(content.contains(label), "missing {label:?}");
+        }
+        assert!(content.contains("move"), "the row chips are advertised");
+        assert!(
+            !content.contains("rename"),
+            "the list tabs' chips must not leak in: {content}"
+        );
     }
 
     /// Panes carry no border or title of their own anymore: no `│` pane

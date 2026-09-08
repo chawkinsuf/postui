@@ -175,10 +175,12 @@ fn fallback_description(action: &Action) -> Option<String> {
 }
 
 fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
+    use crate::components::settings::SettingsField;
     match hit {
         // -- Surfaces, not buttons: no hint. --
         Hit::Pane(_)
         | Hit::ManageRow(_)
+        | Hit::SettingsRow(_)
         | Hit::SidebarRow(_)
         | Hit::UrlBar
         | Hit::TableRow(_)
@@ -272,6 +274,48 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
             manage_noun(ctx.manage_tab)
         ))),
         Hit::ManageMoveAll => text("Move all requests to another space"),
+
+        // -- Settings tab --
+        // Each control names the single action a click performs, in the
+        // state it is currently in. `ctx.on` is the tick the user sees:
+        // `ai_confirmed` is stored inverted from its row, which is
+        // worded as the consent question.
+        Hit::SettingsControl(SettingsField::Animations) => text(if ctx.on {
+            "Turn eased transitions off"
+        } else {
+            "Turn eased transitions on"
+        }),
+        Hit::SettingsControl(SettingsField::HoverHints) => text(if ctx.on {
+            "Stop explaining hovered buttons"
+        } else {
+            "Explain hovered buttons in the footer"
+        }),
+        Hit::SettingsControl(SettingsField::AiConfirmed) => text(if ctx.on {
+            "Stop asking before sending to the AI"
+        } else {
+            "Ask before sending to the AI command"
+        }),
+        Hit::SettingsControl(SettingsField::AiCmd) => text("Edit the command the AI filter runs"),
+        Hit::SettingsControl(SettingsField::ClipboardCmd) => {
+            text("Edit the external clipboard command")
+        }
+        Hit::SettingsControl(SettingsField::Osc52Limit) => {
+            text("Edit the terminal clipboard size limit")
+        }
+        // The two-state control's own row hit is never registered — its
+        // segments are — so this arm only keeps the match exhaustive.
+        Hit::SettingsControl(SettingsField::JqTab) => text("Choose what Tab does in the jq bar"),
+        Hit::SettingsJqTab(crate::config::JqTab::Menu) => text("List jq completions under the bar"),
+        Hit::SettingsJqTab(crate::config::JqTab::Cycle) => {
+            text("Ghost the best jq completion in place")
+        }
+        Hit::SettingsFile { file, reset: false } => {
+            Some(Source::Text(format!("Open {} in your editor", file.name())))
+        }
+        Hit::SettingsFile { file, reset: true } => Some(Source::Text(format!(
+            "Reset {} to its defaults",
+            file.name()
+        ))),
         Hit::ManageEnvTls(None) => text("Let each request decide on TLS checks"),
         Hit::ManageEnvTls(Some(postui_core::project::TlsPolicy::Verify)) => {
             text("Always check TLS certificates here")
@@ -667,6 +711,9 @@ mod tests {
             Hit::SaveBodyButton,
             Hit::ResponseEditorButton,
             Hit::ResponseSearchButton,
+            Hit::SettingsControl(crate::components::settings::SettingsField::Animations),
+            Hit::SettingsControl(crate::components::settings::SettingsField::HoverHints),
+            Hit::SettingsControl(crate::components::settings::SettingsField::AiConfirmed),
         ] {
             let off = hint_for(&hit, &keymap, &ctx()).unwrap();
             let on = hint_for(&hit, &keymap, &HintCtx { on: true, ..ctx() }).unwrap();
@@ -761,6 +808,18 @@ mod tests {
             Hit::EditorTab(0),
             Hit::ResponseTab(crate::components::response::ViewMode::Pretty),
             Hit::ManageTab(0),
+            Hit::SettingsControl(crate::components::settings::SettingsField::AiCmd),
+            Hit::SettingsControl(crate::components::settings::SettingsField::Osc52Limit),
+            Hit::SettingsJqTab(crate::config::JqTab::Menu),
+            Hit::SettingsJqTab(crate::config::JqTab::Cycle),
+            Hit::SettingsFile {
+                file: crate::action::ConfigFile::Config,
+                reset: false,
+            },
+            Hit::SettingsFile {
+                file: crate::action::ConfigFile::Keys,
+                reset: true,
+            },
         ] {
             let h = hint_for(&hit, &keymap, &ctx()).unwrap();
             // The key, where one is appended, doesn't count against the

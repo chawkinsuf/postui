@@ -1139,6 +1139,41 @@ impl App {
                     None => false,
                 }
             }
+            // -- Settings tab --
+            // A click anywhere on the tab commits whatever field was
+            // under edit first: typing is never silently thrown away,
+            // the same rule the params/headers table follows.
+            Hit::SettingsRow(i) => {
+                self.commit_settings_edit();
+                self.settings.cursor = i;
+                self.update(Action::Render)
+            }
+            Hit::SettingsControl(field) => {
+                self.commit_settings_edit();
+                self.settings.focus_field(field);
+                self.activate_settings_row()
+            }
+            Hit::SettingsJqTab(mode) => {
+                use crate::components::settings::{SettingsField, jq_tab_spelling};
+                self.commit_settings_edit();
+                self.settings.focus_field(SettingsField::JqTab);
+                self.update(Action::SetUiString {
+                    key: SettingsField::JqTab.key(),
+                    value: jq_tab_spelling(mode).to_string(),
+                })
+            }
+            Hit::SettingsFile { file, reset } => {
+                use crate::components::settings::{SettingsRow, SettingsTab};
+                self.commit_settings_edit();
+                if let Some(i) = SettingsTab::rows()
+                    .iter()
+                    .position(|r| *r == SettingsRow::File(file))
+                {
+                    self.settings.cursor = i;
+                }
+                self.settings.file_button = usize::from(reset);
+                self.activate_settings_row()
+            }
             Hit::ManageEnvTls(policy) => match self.manage_selected(ManageTab::Environments) {
                 Some(env) => self.update(Action::SetEnvTls { env, policy }),
                 None => false,

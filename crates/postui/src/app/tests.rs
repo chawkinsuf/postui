@@ -22825,3 +22825,147 @@ fn a_write_failure_is_reported_not_swallowed() {
         "a write failure must be reported, not silently swallowed"
     );
 }
+
+/// The Settings tab is fully operable from the keyboard: the cursor
+/// reaches a row, enter activates its control, and the change is on disk
+/// before the key is released -- there is no save step.
+#[test]
+fn enter_on_a_settings_row_writes_the_change_straight_to_config_toml() {
+    use crate::components::manage::ManageTab;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("config.toml"), "animations = true\n").unwrap();
+    let mut app = App::new_for_test();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+    app.screen = Screen::Manage;
+    app.manage.tab = ManageTab::Settings;
+    app.ui_settings.animations = true;
+
+    // Row 0 is Animations; enter toggles it.
+    app.handle_key(ratatui::crossterm::event::KeyEvent::from(KeyCode::Enter));
+
+    assert!(!app.ui_settings.animations, "the toggle applied in memory");
+    let text = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+    assert!(
+        text.contains("animations = false"),
+        "the change must be on disk with no save step: {text:?}"
+    );
+}
+
+/// `Config::edit` refuses a `config.toml` that will not parse. The
+/// control must not go on showing a state that never landed -- the write
+/// says so and the value on disk stands.
+#[test]
+fn a_refused_settings_write_toasts_and_leaves_the_value_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("config.toml"), "not = [toml").unwrap();
+    let mut app = App::new_for_test();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+    app.ui_settings.hover_hints = true;
+
+    app.update(Action::SetUiFlag {
+        key: "hover_hints",
+        value: false,
+    });
+
+    assert!(
+        app.ui_settings.hover_hints,
+        "a refused write must leave the control showing the on-disk value"
+    );
+    let said = app.toasts.messages();
+    assert!(
+        said.iter().any(|m| m.contains("config.toml")),
+        "a refused write names the file: {said:?}"
+    );
+}
+
+/// osc52_limit is rejected, never coerced: a silent 0 would disable OSC
+/// 52 copying without ever saying so. The edit stays open on what was
+/// typed so it can be fixed.
+#[test]
+fn a_bad_osc52_limit_is_rejected_and_the_stored_value_stands() {
+    use crate::components::settings::SettingsField;
+    let mut app = App::new_for_test();
+    app.ui_settings.osc52_limit = 65536;
+    app.settings.begin_edit(SettingsField::Osc52Limit, "abc");
+
+    app.commit_settings_edit();
+
+    assert_eq!(app.ui_settings.osc52_limit, 65536, "the old value stands");
+    assert_eq!(
+        app.settings.editing,
+        Some(SettingsField::Osc52Limit),
+        "the edit stays open on what was typed"
+    );
+    assert!(
+        app.toasts.messages().iter().any(|m| m.contains("65536")),
+        "the toast says what was expected: {:?}",
+        app.toasts.messages()
+    );
+
+    app.settings.begin_edit(SettingsField::Osc52Limit, "1024");
+    app.commit_settings_edit();
+    assert_eq!(app.ui_settings.osc52_limit, 1024);
+    assert!(app.settings.editing.is_none());
+}
+
+/// An empty command field clears the key rather than writing `""`: an
+/// empty `clipboard_cmd` is `sh -c ""`, which would swallow every copy
+/// in silence.
+#[test]
+fn clearing_a_command_field_removes_the_key_rather_than_emptying_it() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("config.toml"),
+        "clipboard_cmd = \"pbcopy\"\n",
+    )
+    .unwrap();
+    let mut app = App::new_for_test();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+    app.ui_settings.clipboard_cmd = Some("pbcopy".into());
+
+    app.update(Action::SetUiString {
+        key: "clipboard_cmd",
+        value: String::new(),
+    });
+
+    assert_eq!(app.ui_settings.clipboard_cmd, None);
+    let text = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+    assert!(!text.contains("clipboard_cmd"), "{text:?}");
+}
+
+/// A Files row is aimed with left/right and run with enter -- the same
+/// two keys every other row uses, so the section is not mouse-only.
+#[test]
+fn a_files_row_runs_edit_or_reset_from_the_keyboard() {
+    use crate::components::manage::ManageTab;
+    use crate::components::settings::{SettingsRow, SettingsTab};
+    use ratatui::crossterm::event::KeyEvent;
+    let mut app = App::new_for_test();
+    app.screen = Screen::Manage;
+    app.manage.tab = ManageTab::Settings;
+    let first_file = SettingsTab::rows()
+        .iter()
+        .position(|r| matches!(r, SettingsRow::File(_)))
+        .unwrap();
+    app.settings.cursor = first_file;
+
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(
+        app.pending_terminal_action,
+        Some(Action::EditConfigFile(crate::action::ConfigFile::Config)),
+        "Edit… is the left button"
+    );
+    app.pending_terminal_action = None;
+
+    app.handle_key(KeyEvent::from(KeyCode::Right));
+    assert_eq!(app.settings.file_button, 1);
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(
+        app.toasts
+            .messages()
+            .iter()
+            .any(|m| m.contains("config.toml")),
+        "Reset is the right button (stubbed until Task 14): {:?}",
+        app.toasts.messages()
+    );
+}

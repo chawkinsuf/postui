@@ -144,6 +144,9 @@ pub struct App {
     pub manage: crate::components::manage::Manage,
     /// The Variables tab's own state — the list, detail pane and edits.
     pub varmanager: VarManager,
+    /// The Settings tab's own state — the row cursor, the live field
+    /// edit and which of a Files row's two buttons is aimed at.
+    pub settings: crate::components::settings::SettingsTab,
     /// The request session: the open request's on-screen response, the
     /// per-request response cache, and the in-flight send.
     pub session: crate::session::Session,
@@ -1042,6 +1045,10 @@ impl App {
                 }
                 _ => false,
             },
+            // The Settings tab's checkbox rows. `SettingsField::checkbox`
+            // is the one place `ai_confirmed`'s inversion lives, so the
+            // hint reads the tick the user sees.
+            Hit::SettingsControl(f) => f.checkbox(&self.ui_settings).unwrap_or(false),
             Hit::PickerHidden => picker(&|s| s.show_hidden()),
             Hit::PickerPrimary => picker(&|s| s.mode() == PickerMode::SaveFile),
             Hit::ChooserToggle => self.theme_picker_dark,
@@ -1409,6 +1416,7 @@ impl App {
             editor: Editor::default(),
             manage: crate::components::manage::Manage::default(),
             varmanager: VarManager::default(),
+            settings: crate::components::settings::SettingsTab::default(),
             session: crate::session::Session::default(),
             toasts,
             modals: ModalStack::default(),
@@ -2168,6 +2176,48 @@ impl App {
                     ToastKind::Info,
                 );
                 true
+            }
+            Action::SetUiFlag { key, value } => {
+                let saved = self.config.save_ui_flag(key, value);
+                self.apply_ui_write(saved, |ui| match key {
+                    "animations" => ui.animations = value,
+                    "hover_hints" => ui.hover_hints = value,
+                    "ai_confirmed" => ui.ai_confirmed = value,
+                    _ => {}
+                })
+            }
+            Action::SetUiString { key, value } => {
+                let saved = self.config.save_ui_string(key, &value);
+                // An empty commit removed the key (see
+                // `Config::save_ui_string`), so what applies is the
+                // default, not an empty command.
+                let default = crate::config::UiSettings::default();
+                self.apply_ui_write(saved, move |ui| match key {
+                    "ai_cmd" => {
+                        ui.ai_cmd = if value.is_empty() {
+                            default.ai_cmd
+                        } else {
+                            value
+                        }
+                    }
+                    "clipboard_cmd" => ui.clipboard_cmd = (!value.is_empty()).then_some(value),
+                    "jq_tab" => {
+                        ui.jq_tab = if value == "menu" {
+                            crate::config::JqTab::Menu
+                        } else {
+                            crate::config::JqTab::Cycle
+                        }
+                    }
+                    _ => {}
+                })
+            }
+            Action::SetUiInt { key, value } => {
+                let saved = self.config.save_ui_int(key, value);
+                self.apply_ui_write(saved, |ui| {
+                    if key == "osc52_limit" {
+                        ui.osc52_limit = value
+                    }
+                })
             }
             Action::Quit | Action::ForceQuit => {
                 let slug = self.editor.slug.clone();
@@ -8512,6 +8562,10 @@ impl App {
             return false;
         }
         if self.screen == Screen::Manage {
+            if self.settings.editing.is_some() {
+                self.settings.paste(text);
+                return self.update(Action::Render);
+            }
             if let Some((_, input)) = self.varmanager.form.editing.as_mut() {
                 input.paste(text);
                 return self.update(Action::Render);
@@ -8587,6 +8641,9 @@ impl App {
             return input.selected_text();
         }
         if self.screen == Screen::Manage {
+            if let Some(text) = self.settings.selected_text() {
+                return Some(text);
+            }
             if let Some((_, input)) = self.varmanager.form.editing.as_ref() {
                 return input.selected_text();
             }
@@ -9226,6 +9283,14 @@ impl App {
                 let delta = if ev.code == KeyCode::Right { 1 } else { -1 };
                 return self.update(Action::SelectManageTab(self.manage.tab.cycle(delta)));
             }
+            // The Settings tab owns its own row cursor and live field
+            // edit, and — unlike the two list tabs below — runs with no
+            // project open.
+            if self.screen == Screen::Manage
+                && self.manage.tab == crate::components::manage::ManageTab::Settings
+            {
+                return self.handle_settings_key(ev);
+            }
             // The Environments and Spaces tabs: the list's own keys run
             // and anything they don't claim is swallowed like on any other
             // non-`Main` screen.
@@ -9320,6 +9385,159 @@ impl App {
         }
 
         false
+    }
+
+    /// Keys on the Settings tab. A live field edit owns the keyboard —
+    /// `Enter` commits, `Esc` cancels, everything else types — exactly
+    /// as the Manage grid's cell edit does; otherwise up/down walk the
+    /// rows, left/right aim a Files row's two buttons, and enter/space
+    /// activates whatever the cursor is on. Always reports a redraw:
+    /// like every other non-`Main` screen, keys it doesn't claim are
+    /// swallowed rather than falling through to the global keymap.
+    fn handle_settings_key(&mut self, ev: KeyEvent) -> bool {
+        use crate::components::settings::SettingsRow;
+        if self.settings.editing.is_some() {
+            return match ev.code {
+                KeyCode::Esc => {
+                    self.settings.end_edit();
+                    true
+                }
+                KeyCode::Enter => self.commit_settings_edit(),
+                _ => {
+                    self.settings.type_key(ev);
+                    true
+                }
+            };
+        }
+        match ev.code {
+            KeyCode::Esc => self.update(Action::CloseScreen),
+            KeyCode::Char('q') => self.update(Action::Quit),
+            KeyCode::Up => {
+                self.settings.move_cursor(-1);
+                true
+            }
+            KeyCode::Down => {
+                self.settings.move_cursor(1);
+                true
+            }
+            // Only a Files row has two buttons to choose between; on a
+            // settings row the arrows have nothing to aim at.
+            KeyCode::Left | KeyCode::Right
+                if matches!(self.settings.row(), SettingsRow::File(_)) =>
+            {
+                self.settings.file_button = usize::from(ev.code == KeyCode::Right);
+                true
+            }
+            KeyCode::Enter | KeyCode::Char(' ') => self.activate_settings_row(),
+            _ => true,
+        }
+    }
+
+    /// Enter/space on the focused Settings row: a checkbox toggles, the
+    /// two-state control advances, a text row opens its edit, and a
+    /// Files row runs whichever of its two buttons is aimed at.
+    pub(crate) fn activate_settings_row(&mut self) -> bool {
+        use crate::components::settings::{SettingsField, SettingsRow, jq_tab_spelling};
+        match self.settings.row() {
+            SettingsRow::File(file) => {
+                let action = if self.settings.file_button == 0 {
+                    Action::EditConfigFile(file)
+                } else {
+                    Action::ResetConfigFile(file)
+                };
+                self.update(action)
+            }
+            SettingsRow::Setting(SettingsField::JqTab) => {
+                let next = match self.ui_settings.jq_tab {
+                    crate::config::JqTab::Menu => crate::config::JqTab::Cycle,
+                    crate::config::JqTab::Cycle => crate::config::JqTab::Menu,
+                };
+                self.update(Action::SetUiString {
+                    key: SettingsField::JqTab.key(),
+                    value: jq_tab_spelling(next).to_string(),
+                })
+            }
+            SettingsRow::Setting(field) => {
+                if let Some(on) = field.checkbox(&self.ui_settings) {
+                    // The tick is what the user sees, so the tick is what
+                    // flips; `ai_confirmed` is stored inverted from it
+                    // (the row asks the consent question) and
+                    // `SettingsField::checkbox` is the one place that
+                    // inversion lives.
+                    let ticked = !on;
+                    let value = match field {
+                        SettingsField::AiConfirmed => !ticked,
+                        _ => ticked,
+                    };
+                    return self.update(Action::SetUiFlag {
+                        key: field.key(),
+                        value,
+                    });
+                }
+                let seed = field.text_value(&self.ui_settings).unwrap_or_default();
+                self.settings.begin_edit(field, &seed);
+                true
+            }
+        }
+    }
+
+    /// Enter in a live Settings field edit. `osc52_limit` is validated
+    /// here and *rejected* rather than coerced: the edit stays open with
+    /// what was typed, the stored value stands, and a toast says what
+    /// was expected.
+    pub(crate) fn commit_settings_edit(&mut self) -> bool {
+        use crate::components::settings::{SettingsField, parse_osc52_limit};
+        let Some(field) = self.settings.editing else {
+            return false;
+        };
+        let text = self.settings.field_text.clone();
+        if field == SettingsField::Osc52Limit {
+            return match parse_osc52_limit(&text) {
+                Ok(value) => {
+                    self.settings.end_edit();
+                    self.update(Action::SetUiInt {
+                        key: field.key(),
+                        value,
+                    })
+                }
+                Err(why) => {
+                    self.toasts.push(
+                        format!("{}: {why}", SettingsField::Osc52Limit.label()),
+                        ToastKind::Error,
+                    );
+                    true
+                }
+            };
+        }
+        self.settings.end_edit();
+        self.update(Action::SetUiString {
+            key: field.key(),
+            value: text,
+        })
+    }
+
+    /// The tail every Settings-tab write shares. `Config::edit` refuses
+    /// a `config.toml` that will not parse, so a refused write says so
+    /// and changes nothing — the control keeps painting the value on
+    /// disk rather than one that never landed. A write that did land is
+    /// applied through the same `reapply_ui_settings` path
+    /// `ReloadFromDisk` uses, so the tab and a hand-edit converge.
+    fn apply_ui_write(
+        &mut self,
+        saved: Result<(), String>,
+        apply: impl FnOnce(&mut crate::config::UiSettings),
+    ) -> bool {
+        if let Err(e) = saved {
+            self.toasts.push(
+                format!("could not save {}: {e}", crate::config::CONFIG_TOML),
+                ToastKind::Error,
+            );
+            return true;
+        }
+        let mut ui = self.ui_settings.clone();
+        apply(&mut ui);
+        self.reapply_ui_settings(ui);
+        true
     }
 
     /// Keys while a variable-form field owns the keyboard (Task 8's model,

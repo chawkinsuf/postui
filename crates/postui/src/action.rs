@@ -132,6 +132,25 @@ pub enum Action {
     /// Resets `file`'s user-editable keys to their defaults. Stubbed
     /// until Task 14 lands the real reset.
     ResetConfigFile(ConfigFile),
+    /// Persist and apply one boolean setting. There is no save step on
+    /// the Settings tab: each of these three writes `config.toml`
+    /// through `Config::edit` and applies the result immediately.
+    SetUiFlag {
+        key: &'static str,
+        value: bool,
+    },
+    /// Persist and apply one string setting. An empty `value` clears the
+    /// key back to its default rather than writing an empty string — an
+    /// empty `clipboard_cmd` would otherwise swallow every copy.
+    SetUiString {
+        key: &'static str,
+        value: String,
+    },
+    /// Persist and apply one integer setting.
+    SetUiInt {
+        key: &'static str,
+        value: usize,
+    },
     EditorTabSelect(usize),
     EditorTabCycle(i8),
     CycleMethod,
