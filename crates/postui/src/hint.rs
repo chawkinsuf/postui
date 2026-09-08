@@ -179,11 +179,9 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         | Hit::ManageRow(_)
         | Hit::SidebarRow(_)
         | Hit::UrlBar
-        | Hit::EditorTab(_)
         | Hit::TableRow(_)
         | Hit::TableCell { .. }
         | Hit::BodyEditor
-        | Hit::ResponseTab(_)
         | Hit::JsonRow(_)
         | Hit::JsonArrow(_)
         | Hit::ScrollbarThumb(_)
@@ -204,8 +202,35 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         | Hit::ModalBody
         | Hit::ModalField(_)
         | Hit::ModalInput(_)
-        | Hit::ResponseJqBar
-        | Hit::ManageTab(_) => None,
+        | Hit::ResponseJqBar => None,
+
+        // -- Tab strips --
+        // A tab's label is most of its own hint already, but not all of
+        // it: two strips carry a `Headers` — the request's, and what came
+        // back — so the hint says what the tab holds rather than saying
+        // the label again. The strips paint no keycaps (`editor_tab_N` is
+        // bindable but unbound by default), so nothing is echoed there.
+        Hit::EditorTab(i) => {
+            use crate::components::editor::EditorTab;
+            text(match EditorTab::from_draw_position(*i) {
+                EditorTab::Params => "Edit the query params",
+                EditorTab::Headers => "Edit the request headers",
+                EditorTab::Vars => "Edit the request variables",
+                EditorTab::Body => "Edit the request body",
+            })
+        }
+        Hit::ResponseTab(mode) => of(Action::ResponseViewMode(*mode)),
+        // Not `SelectManageTab`'s own wording ("Show the Spaces tab"),
+        // which is written for a footer chip a strip away from the tab;
+        // on the tab itself that is the label twice over.
+        Hit::ManageTab(i) => {
+            use crate::components::manage::ManageTab;
+            text(match ManageTab::from_index(*i) {
+                ManageTab::Variables => "Manage your variables",
+                ManageTab::Environments => "Manage your environments",
+                ManageTab::Spaces => "Manage your spaces",
+            })
+        }
 
         // -- Header --
         Hit::HeaderProject => of(Action::OpenProjectChooser),
@@ -639,6 +664,45 @@ mod tests {
         }
     }
 
+    /// A tab strip is hintable like any other button. The label alone
+    /// doesn't say which pane a tab belongs to — `Headers` is a tab in
+    /// both — so each hint names what its tab holds.
+    #[test]
+    fn every_tab_says_what_it_holds() {
+        use crate::components::editor::EditorTab;
+        use crate::components::manage::ManageTab;
+        use crate::components::response::ViewMode;
+        let keymap = Keymap::default_bindings();
+        let mut seen: Vec<String> = Vec::new();
+        for i in 0..4 {
+            seen.push(hint_for(&Hit::EditorTab(i), &keymap, &ctx()).unwrap());
+        }
+        for mode in [ViewMode::Pretty, ViewMode::Raw, ViewMode::Headers] {
+            seen.push(hint_for(&Hit::ResponseTab(mode), &keymap, &ctx()).unwrap());
+        }
+        for i in 0..ManageTab::ALL.len() {
+            seen.push(hint_for(&Hit::ManageTab(i), &keymap, &ctx()).unwrap());
+        }
+        // The two `Headers` tabs read differently, which is the whole point.
+        assert_eq!(
+            hint_for(
+                &Hit::EditorTab(EditorTab::Headers.draw_position()),
+                &keymap,
+                &ctx()
+            )
+            .unwrap(),
+            "Edit the request headers"
+        );
+        assert_eq!(
+            hint_for(&Hit::ResponseTab(ViewMode::Headers), &keymap, &ctx()).unwrap(),
+            "Show the response headers"
+        );
+        let mut sorted = seen.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), seen.len(), "two tabs read the same: {seen:?}");
+    }
+
     /// Hints read as one voice: an imperative phrase, one clause, no
     /// trailing stop, and short enough to sit beside the chips whole.
     #[test]
@@ -681,6 +745,9 @@ mod tests {
             Hit::CopyUrl,
             Hit::SidebarNewRequest,
             Hit::MethodSelector,
+            Hit::EditorTab(0),
+            Hit::ResponseTab(crate::components::response::ViewMode::Pretty),
+            Hit::ManageTab(0),
         ] {
             let h = hint_for(&hit, &keymap, &ctx()).unwrap();
             // The key, where one is appended, doesn't count against the
