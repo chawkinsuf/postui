@@ -215,7 +215,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 }
                 crate::components::manage::ManageTab::Settings => {
                     // The one tab that isn't about the open project: it
-                    // renders regardless (see `ManageTab::is_project_scoped`).
+                    // renders regardless, which is why it is a match arm
+                    // of its own rather than a branch of the no-project
+                    // message the other three share.
                     crate::components::settings::draw_settings(
                         frame,
                         body,
@@ -708,8 +710,8 @@ fn focus_bar(
 }
 
 /// The Manage screen's body with no project open, for the project-scoped
-/// tabs (`ManageTab::is_project_scoped`) — Variables, Environments and
-/// Spaces are all built around `&Project`, so there is nothing to list.
+/// tabs — Variables, Environments and Spaces are all built around
+/// `&Project`, so there is nothing to list.
 /// Settings is exempt: it renders its own body regardless (see the
 /// `ManageTab::Settings` match arm above), which is also why the screen is
 /// reachable with no project at all (`Action::OpenManage` is not gated).

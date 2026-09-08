@@ -2271,15 +2271,18 @@ impl App {
                 use crate::action::ConfigFile;
                 let (title, body) = match file {
                     ConfigFile::Config => {
+                        // Every key `Config::reset_ui_settings` removes
+                        // is named: a destructive action behind a confirm
+                        // must say exactly what it destroys.
                         let body = if self.config_toml_recovers_projects() {
-                            "Resets theme, animations, hover hints, jq tab, the AI \
-                             command, clipboard command, and OSC 52 limit to their \
-                             defaults. Your project list is preserved."
+                            "Resets theme, animations, animation speeds, hover hints, \
+                             jq tab, the AI command, the AI confirmation, clipboard \
+                             command, and OSC 52 limit to their defaults. Your project \
+                             list is preserved."
                         } else {
-                            "config.toml has a syntax error broad enough that its \
-                             [projects] table can't be recovered, so resetting \
-                             replaces the whole file -- your project list will be \
-                             lost."
+                            "config.toml could not be read far enough to recover its \
+                             [projects] table, so resetting replaces the whole file -- \
+                             your project list will be lost."
                         };
                         ("Reset config.toml?".to_string(), body.to_string())
                     }
@@ -4802,6 +4805,7 @@ impl App {
                 }
                 let prev = self.manage.tab;
                 self.manage.tab = target;
+                self.settings.clamp_to_live(self.ui_settings_are_editable());
                 if self.screen != Screen::Manage {
                     self.prior_focus = self.focus;
                     self.screen = Screen::Manage;
@@ -4832,6 +4836,7 @@ impl App {
                     self.settings.end_edit();
                     let prev = self.manage.tab;
                     self.manage.tab = tab;
+                    self.settings.clamp_to_live(self.ui_settings_are_editable());
                     self.retarget_manage_tab_underline(prev);
                 }
                 true
@@ -9612,11 +9617,13 @@ impl App {
             KeyCode::Esc => self.update(Action::CloseScreen),
             KeyCode::Char('q') => self.update(Action::Quit),
             KeyCode::Up => {
-                self.settings.move_cursor(-1);
+                self.settings
+                    .move_cursor(-1, self.ui_settings_are_editable());
                 true
             }
             KeyCode::Down => {
-                self.settings.move_cursor(1);
+                self.settings
+                    .move_cursor(1, self.ui_settings_are_editable());
                 true
             }
             // Only a Files row has two buttons to choose between; on a

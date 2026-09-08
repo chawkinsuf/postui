@@ -1564,8 +1564,11 @@ impl ModalStack {
                     frame.buffer_mut(),
                     area.x + 2,
                     title_y,
+                    // Not "will not parse": `config_error` is also set
+                    // for a file that could not be *read*. The error
+                    // itself, in the body below, says which.
                     &format!(
-                        "{} will not parse",
+                        "{} could not be loaded",
                         crate::action::ConfigFile::Config.name()
                     ),
                     theme.text,

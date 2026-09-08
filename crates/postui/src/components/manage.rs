@@ -55,12 +55,6 @@ impl ManageTab {
         Self::ALL[i.min(Self::ALL.len() - 1)]
     }
 
-    /// Whether this tab's body is about the open project. The three that
-    /// are show the no-project message; Settings renders regardless.
-    pub fn is_project_scoped(self) -> bool {
-        !matches!(self, ManageTab::Settings)
-    }
-
     /// Each tab's `(x, width)` span relative to the strip's origin, at
     /// strip `width` — the geometry `draw_manage_bar` lays the strip out
     /// with, exposed so the app can glide the underline between them.
@@ -329,14 +323,6 @@ mod tests {
         assert_eq!(ManageTab::Spaces.cycle(1), ManageTab::Settings);
         assert_eq!(ManageTab::Settings.cycle(1), ManageTab::Variables, "wraps");
         assert_eq!(ManageTab::Variables.cycle(-1), ManageTab::Settings);
-        assert!(!ManageTab::Settings.is_project_scoped());
-        for tab in [
-            ManageTab::Variables,
-            ManageTab::Environments,
-            ManageTab::Spaces,
-        ] {
-            assert!(tab.is_project_scoped());
-        }
     }
 
     #[test]

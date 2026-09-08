@@ -156,12 +156,42 @@ impl SettingsTab {
         ]
     }
 
+    /// The first row the cursor may occupy. Normally `0`; while
+    /// `config.toml` will not parse every *setting* row is disabled --
+    /// it paints no highlight and registers no hit -- so a cursor above
+    /// the Files rows would simply be invisible. The Files rows are the
+    /// two ways out of a broken config and stay live, so the cursor
+    /// lives among them until the file is fixed.
+    pub fn first_live_row(editable: bool) -> usize {
+        if editable {
+            return 0;
+        }
+        Self::rows()
+            .iter()
+            .position(|r| matches!(r, SettingsRow::File(_)))
+            .unwrap_or(0)
+    }
+
+    /// Lifts the cursor onto the first row that can actually show it --
+    /// called wherever the tab becomes visible, so the very first paint
+    /// after a broken-config open already has a visible cursor.
+    pub fn clamp_to_live(&mut self, editable: bool) {
+        let floor = Self::first_live_row(editable);
+        if self.cursor < floor {
+            self.cursor = floor;
+            self.file_button = 0;
+        }
+    }
+
     /// Steps the cursor by `delta`, clamped at both ends -- the list
     /// does not wrap, so holding a key never rolls off one end onto the
-    /// other.
-    pub fn move_cursor(&mut self, delta: i32) {
+    /// other. The bottom clamp is [`Self::first_live_row`], so with a
+    /// broken config the cursor cannot walk up into the disabled rows
+    /// and vanish.
+    pub fn move_cursor(&mut self, delta: i32, editable: bool) {
         let n = Self::rows().len() as i32;
-        self.cursor = (self.cursor as i32 + delta).clamp(0, n - 1) as usize;
+        let floor = Self::first_live_row(editable) as i32;
+        self.cursor = (self.cursor as i32 + delta).clamp(floor, n - 1) as usize;
         // Aim resets to Edit… on every row change: Reset is destructive,
         // and inheriting the previous row's aim would fire it on a file
         // the user never pointed at.
@@ -241,7 +271,10 @@ impl SettingsTab {
         }
         let mut chips = vec![("↑↓", "move", None), ("enter", "change", None)];
         if matches!(self.row(), SettingsRow::File(_)) {
-            chips.push(("←→", "edit / reset", None));
+            // Names what the key dispatches, not the two buttons it
+            // aims between: ←→ moves the selection, enter is what
+            // actually edits or resets.
+            chips.push(("←→", "select button", None));
         }
         chips
     }
@@ -397,7 +430,10 @@ fn draw_broken_config_banner(
         buf,
         x0,
         y,
-        "config.toml has a syntax error -- showing the settings this session started with:",
+        // `config_error` covers an unreadable file as well as an
+        // unparsable one, so the banner does not claim which; `err`
+        // itself, painted just below, says.
+        "config.toml could not be loaded -- showing the settings this session started with:",
         theme.error,
         theme.page,
         true,
@@ -643,11 +679,11 @@ mod tests {
         let n = SettingsTab::rows().len();
         assert!(n >= 9, "7 settings + 2 file rows");
         for _ in 0..n * 2 {
-            tab.move_cursor(1);
+            tab.move_cursor(1, true);
         }
         assert_eq!(tab.cursor, n - 1, "the cursor clamps at the bottom");
         for _ in 0..n * 2 {
-            tab.move_cursor(-1);
+            tab.move_cursor(-1, true);
         }
         assert_eq!(tab.cursor, 0, "and at the top -- the list never wraps");
         tab.cursor = n - 1;
@@ -708,6 +744,40 @@ mod tests {
 
     /// Reset is destructive, so aiming it on one file must not arm it on
     /// the next: moving off a Files row re-aims at Edit….
+    /// With a broken config every *setting* row is disabled and paints
+    /// no highlight, so a cursor sitting up there is simply invisible.
+    /// It lives among the Files rows -- the two ways out -- instead.
+    #[test]
+    fn a_broken_config_keeps_the_cursor_on_the_rows_that_still_work() {
+        let first_file = SettingsTab::rows()
+            .iter()
+            .position(|r| matches!(r, SettingsRow::File(_)))
+            .unwrap();
+        assert_eq!(SettingsTab::first_live_row(true), 0);
+        assert_eq!(SettingsTab::first_live_row(false), first_file);
+
+        let mut tab = SettingsTab::default();
+        tab.clamp_to_live(false);
+        assert_eq!(tab.cursor, first_file, "opening lands on a visible row");
+
+        // And it cannot walk back up into the invisible ones.
+        for _ in 0..SettingsTab::rows().len() * 2 {
+            tab.move_cursor(-1, false);
+        }
+        assert_eq!(tab.cursor, first_file);
+
+        // A working config is unchanged: row 0 is reachable.
+        let mut tab = SettingsTab {
+            cursor: SettingsTab::rows().len() - 1,
+            ..Default::default()
+        };
+        tab.clamp_to_live(true);
+        for _ in 0..SettingsTab::rows().len() * 2 {
+            tab.move_cursor(-1, true);
+        }
+        assert_eq!(tab.cursor, 0);
+    }
+
     #[test]
     fn moving_off_a_file_row_re_aims_at_edit() {
         let mut tab = SettingsTab {
@@ -715,7 +785,7 @@ mod tests {
             file_button: 1,
             ..Default::default()
         };
-        tab.move_cursor(1);
+        tab.move_cursor(1, true);
         assert_eq!(tab.file_button, 0, "the next file row starts on Edit…");
     }
 

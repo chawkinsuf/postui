@@ -29,8 +29,10 @@ const DISCARD_LABEL: &str = " Discard ";
 const SAVE_GROUP_W: u16 =
     (DISCARD_LABEL.len() + " alt+d ".len() + 2 + SAVE_LABEL.len() + " ^S ".len()) as u16;
 
-const RELOAD_LABEL: &str = "Reload";
-/// The Manage screen's Reload chip: ` alt+r Reload`.
+/// Padded like its slot-mates `SAVE_LABEL`/`DISCARD_LABEL` -- they share
+/// one slot, and an unpadded label butts straight against its keycap.
+const RELOAD_LABEL: &str = " Reload ";
+/// The Manage screen's Reload chip: ` alt+r  Reload `.
 const RELOAD_W: u16 = (RELOAD_LABEL.len() + " alt+r ".len()) as u16;
 
 /// Paints the app bar: a flat `theme.panel` fill across all 3 rows and the
