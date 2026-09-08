@@ -8927,8 +8927,8 @@ fn manager_screen_replaces_the_three_panes_but_keeps_header_and_footer() {
     let content = rendered_text(&mut app);
     assert!(content.contains("Project:"), "header chips stay");
     assert!(
-        content.contains("esc"),
-        "footer hint stays / manager hint shows"
+        content.contains("quit"),
+        "footer stays / manager's own chips show"
     );
     assert!(
         !content.contains("New request"),
@@ -22347,28 +22347,6 @@ fn reload_from_disk_resyncs_the_variable_manager_while_manage_is_open() {
             )),
         "{:?}",
         app.varmanager.left_rows
-    );
-}
-
-#[test]
-fn the_manage_bar_reload_button_runs_the_reload() {
-    let dir = tempfile::tempdir().unwrap();
-    var_project(dir.path());
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut app = App::with_root(tx, dir.path().to_path_buf());
-    let _cfg = config_at_tempdir(&mut app);
-    app.update(Action::OpenManage { tab: None });
-    render_once(&mut app);
-    app.toasts = Default::default();
-
-    click_hit(&mut app, Hit::FooterChip(Action::ReloadFromDisk));
-
-    assert!(
-        app.toasts
-            .messages()
-            .contains(&"Reloaded project and config"),
-        "{:?}",
-        app.toasts.messages()
     );
 }
 

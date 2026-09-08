@@ -1,13 +1,10 @@
 //! The Manage screen's shell: which tab is up, and the top bar shared by
-//! every tab (tab strip left, Close right). Each tab's "new" buttons live
+//! every tab (nothing but the tab strip). Each tab's "new" buttons live
 //! at the top of its own left column. Tab bodies are drawn by `ui.rs` — `VarManager` for
 //! Variables, `ManageList` for Environments and Spaces.
 
-use crate::action::Action;
 use crate::hit::{Hit, HitMap};
-use crate::paint::{
-    BUTTON_HEIGHT, Button, ButtonKind, ControlState, TabStrip, button_min_width, fill,
-};
+use crate::paint::{BUTTON_HEIGHT, TabStrip, fill};
 use crate::theme::Theme;
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -96,16 +93,18 @@ pub struct Manage {
 /// and the tab strip needs two rows (label + underline) inside that.
 pub const BAR_HEIGHT: u16 = BUTTON_HEIGHT;
 
-/// Paints the top bar: tab strip at the left edge (registering
-/// `Hit::ManageTab(i)`) and `Close (esc)` at the right. `underline` is
-/// the accent segment's `(left, width)` in fractional columns relative to
-/// the strip's origin — the app's eased edges mid-glide — or `None` for
-/// the active tab's own static span.
+/// Paints the top bar: nothing but the tab strip, registering
+/// `Hit::ManageTab(i)` for each tab. `underline` is the accent segment's
+/// `(left, width)` in fractional columns relative to the strip's origin —
+/// the app's eased edges mid-glide — or `None` for the active tab's own
+/// static span.
 ///
-/// The strip has priority for its natural width: the Close button lays
-/// out only into the room left of it and is dropped rather than painted
-/// over the strip. Dropped, it stays reachable by key (`esc`) and through
-/// the footer chips, so nothing is lost.
+/// Close and Reload All used to share this bar with the strip. Close was
+/// redundant — `OpenManage` toggles, so the header's Manage chip is
+/// already a working close for the mouse, and `esc` is still bound — and
+/// Reload moved into the header's save/discard slot, which is free
+/// whenever this screen is up. With both gone the strip gets the bar's
+/// full width.
 pub fn draw_manage_bar(
     frame: &mut Frame,
     bar: Rect,
@@ -120,18 +119,9 @@ pub fn draw_manage_bar(
     if bar.height < BAR_HEIGHT || bar.width < 8 {
         return;
     }
-    let state_of = |hit: &Hit| {
-        if hovered == Some(hit) {
-            ControlState::Hover
-        } else {
-            ControlState::Normal
-        }
-    };
 
     let left_edge = bar.x + 1;
 
-    // The strip's natural width, measured before anything is laid out:
-    // the buttons are fitted into what is left of the bar beyond it.
     let tabs: Vec<(String, Option<(&'static str, ratatui::style::Color)>)> = ManageTab::ALL
         .iter()
         .map(|t| (t.label().to_string(), None))
@@ -141,48 +131,9 @@ pub fn draw_manage_bar(
         .last()
         .map_or(0, |(x, w)| x + w)
         .min(bar.width.saturating_sub(2));
-    // No button may start left of here — a 2-column breathing gap after
-    // the strip's last tab.
-    let buttons_limit = left_edge + 1 + strip_w + 2;
-
-    // The bar's button strip, right-aligned: Close is the mouse's way back
-    // to the main screen (the header's Manage chip toggles it too) and
-    // Reload re-reads the project and config from disk. Each is labelled
-    // with the key that does the same thing.
-    let mut x = bar.x + bar.width;
-    // Laid out right-to-left from the bar's right edge, so the first
-    // entry is the right-most button: Close stays on the corner and
-    // Reload All sits to its left.
-    let buttons: Vec<(&str, ButtonKind, Hit)> = vec![
-        (
-            "Close (esc)",
-            ButtonKind::Secondary,
-            Hit::FooterChip(Action::CloseScreen),
-        ),
-        (
-            "Reload All (alt+r)",
-            ButtonKind::Secondary,
-            Hit::FooterChip(Action::ReloadFromDisk),
-        ),
-    ];
-    for (label, kind, hit) in buttons {
-        let w = button_min_width(label);
-        if x < buttons_limit + w + 1 {
-            break;
-        }
-        x -= w + 1;
-        let rect = Rect {
-            x,
-            y: bar.y,
-            width: w,
-            height: BUTTON_HEIGHT,
-        };
-        let state = state_of(&hit);
-        Button { label, kind, state }.paint(buf, rect, theme);
-        hits.register(rect, hit);
-    }
 
     // Tab strip: label row on the bar's middle row, underline below it.
+    // Nothing else shares the bar, so it gets the full width.
     let hovered_tab = ManageTab::ALL
         .iter()
         .enumerate()
@@ -191,7 +142,7 @@ pub fn draw_manage_bar(
     let strip_area = Rect {
         x: left_edge + 1,
         y: bar.y + BUTTON_HEIGHT / 2,
-        width: strip_w.min(x.saturating_sub(left_edge + 1)),
+        width: strip_w.min((bar.x + bar.width).saturating_sub(left_edge + 1)),
         height: 2,
     };
     // The static fallback must agree with what `TabStrip::paint` below
@@ -215,11 +166,10 @@ pub fn draw_manage_bar(
         right_anchored: ManageTab::RIGHT_ANCHORED,
     }
     .paint(buf, strip_area, theme.panel, theme);
-    // Belt and braces: the buttons now yield to the strip's full width,
-    // but `TabStrip::paint` returns each tab's whole span even where the
-    // strip area is narrower than its tabs (a bar too narrow for even the
-    // strip), so clip every rect to the strip's own room rather than let
-    // one register over a button.
+    // `TabStrip::paint` returns each tab's whole span even where the strip
+    // area is narrower than its tabs (a bar too narrow for the strip's
+    // natural width), so clip every rect to the strip's own room rather
+    // than register a hit past the bar's edge.
     let strip_end = strip_area.x + strip_area.width;
     for (i, rect) in rects.iter().enumerate() {
         if rect.x >= strip_end {
@@ -236,6 +186,7 @@ pub fn draw_manage_bar(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::action::Action;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
@@ -253,20 +204,15 @@ mod tests {
         (format!("{:?}", terminal.backend().buffer()), hits)
     }
 
-    fn intersects(a: Rect, b: Rect) -> bool {
-        a.x < b.x + b.width && b.x < a.x + a.width
-    }
-
-    /// The tab strip has priority for its natural width: on a bar too
-    /// narrow for the strip plus the Close button, the contiguous left
-    /// group's labels still paint in full and Close drops rather than
-    /// overlapping the strip's last left-group tab. At 80 columns there is
-    /// room for both. The right-anchored Settings tab is exempt from the
-    /// "paints in full" guarantee -- `TabStrip::spans_in` clips it at the
-    /// right edge rather than dropping it, so it stays reachable by
-    /// keyboard even where there isn't room to show its whole label.
+    /// The bar has nothing left to yield to: the strip now owns the full
+    /// bar width, so even on a narrow bar the contiguous left group's
+    /// labels paint in full. The right-anchored Settings tab is exempt
+    /// from the "paints in full" guarantee -- `TabStrip::spans_in` clips
+    /// it at the right edge rather than dropping it, so it stays
+    /// reachable by keyboard even where there isn't room to show its
+    /// whole label.
     #[test]
-    fn close_yields_to_the_tab_strip_on_a_narrow_bar() {
+    fn the_strip_gets_the_full_bar_width() {
         let (content, hits) = render_at(ManageTab::Variables, 44);
         for t in [
             ManageTab::Variables,
@@ -284,22 +230,6 @@ mod tests {
                 .is_some(),
             "Settings stays reachable even clipped"
         );
-        let spaces = hits
-            .rect_of(&Hit::ManageTab(2))
-            .expect("the last tab is registered");
-        if let Some(close) = hits.rect_of(&Hit::FooterChip(Action::CloseScreen)) {
-            assert!(
-                !intersects(spaces, close),
-                "Close must not sit on the Spaces tab: {spaces:?} vs {close:?}"
-            );
-        }
-
-        let (_content, hits) = render_at(ManageTab::Variables, 80);
-        let spaces = hits.rect_of(&Hit::ManageTab(2)).unwrap();
-        let r = hits
-            .rect_of(&Hit::FooterChip(Action::CloseScreen))
-            .expect("Close fits at 80");
-        assert!(!intersects(spaces, r), "Close overlaps the strip: {r:?}");
     }
 
     #[test]
@@ -371,12 +301,12 @@ mod tests {
         assert_eq!(ManageTab::from_index(99), ManageTab::Settings, "clamps");
     }
 
-    /// Close is the mouse's way back on every tab and Reload its way to
-    /// re-read disk; the "new" buttons moved into the Variables tab's own
-    /// left column, so no tab puts anything but the strip and those two
-    /// buttons on the bar.
+    /// The bar is now nothing but the strip. Close is gone -- the header's
+    /// Manage chip already toggles the screen and esc is still bound -- and
+    /// Reload moved to the header's save/discard slot, which is free
+    /// whenever this screen is up.
     #[test]
-    fn every_tab_gets_a_label_a_hit_and_the_two_bar_buttons_and_nothing_else() {
+    fn the_bar_is_the_strip_and_nothing_else() {
         for tab in ManageTab::ALL {
             let (content, hits) = render(tab);
             for (i, t) in ManageTab::ALL.iter().enumerate() {
@@ -387,20 +317,21 @@ mod tests {
                 );
                 assert!(hits.rect_of(&Hit::ManageTab(i)).is_some());
             }
-            assert!(content.contains("Close (esc)"), "{content}");
-            assert!(content.contains("Reload All (alt+r)"), "{content}");
-            let close = hits
-                .rect_of(&Hit::FooterChip(Action::CloseScreen))
-                .expect("close is registered");
-            let reload = hits
-                .rect_of(&Hit::FooterChip(Action::ReloadFromDisk))
-                .expect("the reload button is the mouse's way to re-read disk");
+            assert!(!content.contains("Close"), "Close was removed: {content}");
             assert!(
-                reload.x + reload.width <= close.x,
-                "Close stays right-most: {close:?} vs {reload:?}"
+                !content.contains("Reload"),
+                "Reload moved to the header: {content}"
             );
-            assert!(hits.rect_of(&Hit::VmNewVar).is_none(), "{tab:?}");
-            assert!(hits.rect_of(&Hit::VmNewSelector).is_none(), "{tab:?}");
+            assert!(
+                hits.rect_of(&Hit::FooterChip(Action::CloseScreen))
+                    .is_none(),
+                "no close hit remains"
+            );
+            assert!(
+                hits.rect_of(&Hit::FooterChip(Action::ReloadFromDisk))
+                    .is_none(),
+                "no reload hit remains on the bar"
+            );
         }
     }
 }
