@@ -266,15 +266,28 @@ const MAX_W: u16 = 76;
 /// Edit…/Reset rows. Every row registers `Hit::SettingsRow`, and every
 /// control its own hit on top of it, so the mouse reaches exactly what
 /// the keyboard does.
+///
+/// `config_error` is `Some` when a *reload* has found `config.toml`
+/// broken since it was last read: startup can no longer begin in this
+/// state (it blocks behind a modal instead), but a reload can enter it
+/// while the tab is open. The values shown are then the ones the session
+/// started with -- not what is on disk, which no longer parses -- so
+/// every setting row is dimmed and registers no hit (a write would be
+/// refused by `Config::edit` anyway). The two file rows' Edit… stays
+/// live, since fixing the file is the way out; Reset does not, since it
+/// too would be refused.
+#[allow(clippy::too_many_arguments)]
 pub fn draw_settings(
     frame: &mut Frame,
     body: Rect,
     theme: &Theme,
     tab: &SettingsTab,
     ui: &UiSettings,
+    config_error: Option<&str>,
     hits: &mut HitMap,
     hovered: Option<&Hit>,
 ) {
+    let editable = config_error.is_none();
     let buf = frame.buffer_mut();
     fill(buf, body, theme.page);
     if body.width < 32 || body.height < 6 {
@@ -286,6 +299,13 @@ pub fn draw_settings(
     let bottom = body.y + body.height;
     let mut y = body.y + 1;
     let mut files_started = false;
+
+    if let Some(err) = config_error {
+        y = draw_broken_config_banner(buf, x0, y, row_w, bottom, err, theme);
+        if y >= bottom {
+            return;
+        }
+    }
 
     heading(buf, x0, y, "Settings", theme);
     y += 2;
@@ -310,8 +330,12 @@ pub fn draw_settings(
             height: 1,
         };
         // A live edit is its own "you are here", so the row band steps
-        // back to let the field carry the focus.
-        let highlight = if tab.cursor == i && tab.editing.is_none() {
+        // back to let the field carry the focus. Disabled rows never
+        // highlight: there is nothing for the cursor or the pointer to
+        // land on.
+        let highlight = if !editable {
+            RowHighlight::None
+        } else if tab.cursor == i && tab.editing.is_none() {
             RowHighlight::Selected
         } else if hovered == Some(&Hit::SettingsRow(i)) {
             RowHighlight::Hover
@@ -324,20 +348,62 @@ pub fn draw_settings(
         }
         .paint(buf, y, rect.x, rect.width, theme.page, 1.0, theme);
         let bg = ListRow::resolve_fill(theme, highlight, theme.page, 1.0);
-        text(buf, x0, y, row.label(), theme.text, bg, false);
-        hits.register(rect, Hit::SettingsRow(i));
+        let label_fg = if editable {
+            theme.text
+        } else {
+            theme.text_disabled
+        };
+        text(buf, x0, y, row.label(), label_fg, bg, false);
+        // A disabled setting row registers no hit at all: a control that
+        // looks live and silently refuses every write is the defect this
+        // banner exists to remove. A disabled File row keeps its row hit
+        // (moving the cursor there is harmless) but its Reset button
+        // loses its own hit below.
+        if editable || matches!(row, SettingsRow::File(_)) {
+            hits.register(rect, Hit::SettingsRow(i));
+        }
 
         let right = rect.x + rect.width;
         match row {
-            SettingsRow::Setting(field) => {
-                draw_setting_control(buf, hits, hovered, theme, tab, ui, *field, cx, y, right, bg)
-            }
-            SettingsRow::File(file) => {
-                draw_file_buttons(buf, hits, hovered, theme, tab, i, *file, cx, y, right)
-            }
+            SettingsRow::Setting(field) => draw_setting_control(
+                buf, hits, hovered, theme, tab, ui, *field, cx, y, right, bg, editable,
+            ),
+            SettingsRow::File(file) => draw_file_buttons(
+                buf, hits, hovered, theme, tab, i, *file, cx, y, right, editable,
+            ),
         }
         y += 1;
     }
+}
+
+/// The parse-error banner painted when a reload has left `config.toml`
+/// broken. Returns the `y` the caller should resume painting at.
+fn draw_broken_config_banner(
+    buf: &mut Buffer,
+    x0: u16,
+    mut y: u16,
+    row_w: u16,
+    bottom: u16,
+    err: &str,
+    theme: &Theme,
+) -> u16 {
+    let w = row_w.saturating_sub(2) as usize;
+    text(
+        buf,
+        x0,
+        y,
+        "config.toml has a syntax error -- showing the settings this session started with:",
+        theme.error,
+        theme.page,
+        true,
+    );
+    y += 1;
+    if y >= bottom {
+        return y;
+    }
+    let shown: String = err.chars().take(w).collect();
+    text(buf, x0, y, &shown, theme.text_muted, theme.page, false);
+    y + 2
 }
 
 fn heading(buf: &mut Buffer, x: u16, y: u16, label: &str, theme: &Theme) {
@@ -375,25 +441,30 @@ fn draw_setting_control(
     y: u16,
     right: u16,
     bg: Color,
+    editable: bool,
 ) {
     if cx + 6 > right {
         return;
     }
     let hit = Hit::SettingsControl(field);
-    let hot = hovered == Some(&hit);
+    let hot = editable && hovered == Some(&hit);
 
     if field == SettingsField::JqTab {
         let mut x = cx;
         for (label, mode) in JQ_SEGMENTS {
             let seg = Hit::SettingsJqTab(mode);
-            let face = if ui.jq_tab == mode {
+            let face = if !editable {
+                theme.control
+            } else if ui.jq_tab == mode {
                 theme.accent
             } else if hovered == Some(&seg) {
                 theme.control_hover
             } else {
                 theme.control
             };
-            let fg = if ui.jq_tab == mode {
+            let fg = if !editable {
+                theme.text_disabled
+            } else if ui.jq_tab == mode {
                 theme.on_accent
             } else {
                 theme.text
@@ -403,15 +474,17 @@ fn draw_setting_control(
                 return;
             }
             pill(buf, x, y, label, face, fg);
-            hits.register(
-                Rect {
-                    x,
-                    y,
-                    width: w,
-                    height: 1,
-                },
-                seg,
-            );
+            if editable {
+                hits.register(
+                    Rect {
+                        x,
+                        y,
+                        width: w,
+                        height: 1,
+                    },
+                    seg,
+                );
+            }
             x += w + 1;
         }
         return;
@@ -423,7 +496,13 @@ fn draw_setting_control(
         } else {
             glyph::CHECKBOX_OFF
         };
-        let fg = if on { theme.accent } else { theme.text_muted };
+        let fg = if !editable {
+            theme.text_disabled
+        } else if on {
+            theme.accent
+        } else {
+            theme.text_muted
+        };
         let face = if hot { theme.control_hover } else { bg };
         let rect = Rect {
             x: cx,
@@ -433,7 +512,9 @@ fn draw_setting_control(
         };
         fill(buf, rect, face);
         text(buf, cx + 1, y, glyph, fg, face, false);
-        hits.register(rect, hit);
+        if editable {
+            hits.register(rect, hit);
+        }
         return;
     }
 
@@ -450,7 +531,9 @@ fn draw_setting_control(
         width,
         height: 1,
     };
-    let face = if editing {
+    let face = if !editable {
+        theme.control
+    } else if editing {
         theme.control_pressed
     } else if hot {
         theme.control_hover
@@ -463,12 +546,28 @@ fn draw_setting_control(
         tab.input.draw_line_windowed(true, theme, inner)
     } else {
         match field.text_value(ui).unwrap_or_default() {
-            v if v.is_empty() => Line::styled("(not set)", Style::default().fg(theme.text_muted)),
-            v => Line::styled(v, Style::default().fg(theme.text)),
+            v if v.is_empty() => Line::styled(
+                "(not set)",
+                Style::default().fg(if editable {
+                    theme.text_muted
+                } else {
+                    theme.text_disabled
+                }),
+            ),
+            v => Line::styled(
+                v,
+                Style::default().fg(if editable {
+                    theme.text
+                } else {
+                    theme.text_disabled
+                }),
+            ),
         }
     };
     buf.set_line(rect.x + 1, y, &line, inner);
-    hits.register(rect, hit);
+    if editable {
+        hits.register(rect, hit);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -483,9 +582,14 @@ fn draw_file_buttons(
     cx: u16,
     y: u16,
     right: u16,
+    editable: bool,
 ) {
     let mut x = cx;
     for (slot, label) in [(0usize, "Edit…"), (1, "Reset")] {
+        // Edit… is always the way out, even while `config.toml` won't
+        // parse; Reset would be refused the same as every setting write,
+        // so it is disabled right alongside them.
+        let live = slot == 0 || editable;
         let hit = Hit::SettingsFile {
             file,
             reset: slot == 1,
@@ -493,28 +597,38 @@ fn draw_file_buttons(
         // The keyboard's chosen button reads exactly like the hovered
         // one: left/right are how a File row is aimed.
         let chosen = tab.cursor == index && tab.file_button == slot;
-        let face = if chosen {
+        let face = if !live {
+            theme.control
+        } else if chosen {
             theme.accent
         } else if hovered == Some(&hit) {
             theme.control_hover
         } else {
             theme.control
         };
-        let fg = if chosen { theme.on_accent } else { theme.text };
+        let fg = if !live {
+            theme.text_disabled
+        } else if chosen {
+            theme.on_accent
+        } else {
+            theme.text
+        };
         let w = label.chars().count() as u16 + 2;
         if x + w > right {
             return;
         }
         pill(buf, x, y, label, face, fg);
-        hits.register(
-            Rect {
-                x,
-                y,
-                width: w,
-                height: 1,
-            },
-            hit,
-        );
+        if live {
+            hits.register(
+                Rect {
+                    x,
+                    y,
+                    width: w,
+                    height: 1,
+                },
+                hit,
+            );
+        }
         x += w + 1;
     }
 }
@@ -634,7 +748,7 @@ mod tests {
         terminal
             .draw(|f| {
                 let area = f.area();
-                draw_settings(f, area, &theme, tab, ui, &mut hits, None);
+                draw_settings(f, area, &theme, tab, ui, None, &mut hits, None);
             })
             .unwrap();
         hits

@@ -22048,6 +22048,31 @@ fn reload_from_disk_keeps_the_current_settings_when_config_toml_will_not_parse()
     assert_eq!(named.len(), 1, "{warnings:?}");
 }
 
+/// A file that breaks after startup must not make the tab lie: the rows
+/// show what the session loaded with, and every write would be refused
+/// anyway, so they are disabled -- except Edit…, which is the way out.
+#[test]
+fn a_config_broken_after_startup_banners_and_disables_the_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("config.toml"), "animations = false\n").unwrap();
+    let mut app = App::new_for_test();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+    app.update(Action::ReloadFromDisk);
+    assert!(app.config_error.is_none());
+
+    std::fs::write(dir.path().join("config.toml"), "not = [toml").unwrap();
+    app.update(Action::ReloadFromDisk);
+
+    assert!(
+        app.config_error.is_some(),
+        "a reload that refuses the file must record why"
+    );
+    assert!(
+        !app.ui_settings_are_editable(),
+        "rows are disabled while writes would be refused"
+    );
+}
+
 #[test]
 fn reload_from_disk_applies_a_new_keys_toml_end_to_end() {
     let mut app = App::new_for_test();

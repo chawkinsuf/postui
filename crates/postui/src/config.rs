@@ -507,6 +507,11 @@ struct ReadAll {
 pub struct Reloaded {
     /// `config.toml`'s registry and UI settings — one file, one outcome.
     pub config: Option<(ProjectsRegistry, UiSettings)>,
+    /// The bare parse error when `config` is `None` because the file
+    /// exists but will not parse — the same text [`Loaded::config_error`]
+    /// carries at startup, so the Settings tab's banner can show it
+    /// without hunting through `warnings` for the right sentence.
+    pub config_error: Option<String>,
     pub keymap: Option<crate::keys::Keymap>,
     /// `None` when `themes/` could not be listed at all; the app then
     /// keeps the registry it has.
@@ -694,10 +699,12 @@ impl Config {
     ) -> (Reloaded, Vec<String>) {
         let (read, mut warnings) = self.read_all();
 
+        let mut config_error = None;
         let config = match read.config {
             Ok(pair) => Some(pair),
             Err(e) => {
                 warnings.push(format!("{e}; keeping the current settings"));
+                config_error = Some(e);
                 None
             }
         };
@@ -720,6 +727,7 @@ impl Config {
         (
             Reloaded {
                 config,
+                config_error,
                 keymap,
                 themes,
             },

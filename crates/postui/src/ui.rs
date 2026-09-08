@@ -221,6 +221,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                         &app.theme,
                         &app.settings,
                         &app.ui_settings,
+                        app.config_error.as_deref(),
                         &mut hits,
                         app.hovered.as_ref(),
                     );

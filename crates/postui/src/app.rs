@@ -4383,6 +4383,12 @@ impl App {
                 if let Some(themes) = reloaded.themes {
                     self.themes = themes;
                 }
+                // A reload that refuses `config.toml` leaves the in-memory
+                // settings exactly as they were, so the Settings tab must
+                // say so too: `config_error` records why, and
+                // `ui_settings_are_editable` is what the tab's paint and
+                // its keyboard/mouse guard both consult.
+                self.config_error = reloaded.config_error.clone();
                 let ui = match reloaded.config {
                     Some((registry, ui)) => {
                         self.registry = registry;
@@ -9525,20 +9531,33 @@ impl App {
         }
     }
 
+    /// Whether the Settings tab's rows accept input. False while
+    /// `config.toml` will not parse: `Config::edit` refuses to write over
+    /// it, so every change would be rejected. Edit… stays enabled
+    /// regardless -- it is the way out.
+    pub(crate) fn ui_settings_are_editable(&self) -> bool {
+        self.config_error.is_none()
+    }
+
     /// Enter/space on the focused Settings row: a checkbox toggles, the
     /// two-state control advances, a text row opens its edit, and a
-    /// Files row runs whichever of its two buttons is aimed at.
+    /// Files row runs whichever of its two buttons is aimed at. A File
+    /// row's Edit… is always live; every other row is a no-op while
+    /// `config.toml` will not parse.
     pub(crate) fn activate_settings_row(&mut self) -> bool {
         use crate::components::settings::{SettingsField, SettingsRow, jq_tab_spelling};
         match self.settings.row() {
             SettingsRow::File(file) => {
                 let action = if self.settings.file_button == 0 {
                     Action::EditConfigFile(file)
-                } else {
+                } else if self.ui_settings_are_editable() {
                     Action::ResetConfigFile(file)
+                } else {
+                    return true;
                 };
                 self.update(action)
             }
+            _ if !self.ui_settings_are_editable() => true,
             SettingsRow::Setting(SettingsField::JqTab) => {
                 let next = match self.ui_settings.jq_tab {
                     crate::config::JqTab::Menu => crate::config::JqTab::Cycle,
