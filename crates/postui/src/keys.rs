@@ -526,8 +526,9 @@ impl Keymap {
             .min()
     }
 
-    /// Every combo bound to `action_id`, sorted so a seeded `keys.toml`
-    /// is byte-stable across runs.
+    /// Every combo bound to `action_id`, in `keys.toml`'s input grammar
+    /// (via [`format_combo_config`], not the footer's `format_combo`
+    /// keycap), sorted so a seeded `keys.toml` is byte-stable across runs.
     ///
     /// The plural matters: `apply_overrides` removes *all* of an action's
     /// existing combos before binding the ones it is given, so a seed
@@ -541,7 +542,7 @@ impl Keymap {
             .bindings
             .iter()
             .filter(|(_, a)| **a == action)
-            .map(|(combo, _)| format_combo(combo))
+            .map(|(combo, _)| format_combo_config(combo))
             .collect();
         combos.sort();
         combos
@@ -591,6 +592,45 @@ fn format_combo(combo: &KeyCombo) -> String {
     } else {
         key
     };
+    parts.push(key);
+    parts.join("+")
+}
+
+/// The inverse of [`KeyCombo::parse`]: renders a `KeyCombo` in the exact
+/// grammar `keys.toml` accepts as input (`ctrl+p`, `alt+shift+m`, `f9`,
+/// `shift+tab`). Deliberately not [`format_combo`], which renders the
+/// footer's caret keycap (`^P`) — a display convention `parse` does not
+/// understand, and which is spelled with `alt_label()`'s platform text
+/// ("opt" on macOS) rather than the literal `alt+` the parser requires.
+/// Used wherever a combo is written into a `keys.toml` a user will
+/// hand-edit or uncomment (see [`Keymap::combos_for`]), so what lands
+/// there is always exactly what `parse` will read back.
+fn format_combo_config(combo: &KeyCombo) -> String {
+    let mut parts = Vec::new();
+    if combo.modifiers.contains(KeyModifiers::CONTROL) {
+        parts.push("ctrl".to_string());
+    }
+    if combo.modifiers.contains(KeyModifiers::ALT) {
+        parts.push("alt".to_string());
+    }
+    let (implicit_shift, key) = match combo.code {
+        KeyCode::Char(c) if c.is_ascii_uppercase() => (true, c.to_ascii_lowercase().to_string()),
+        KeyCode::Char(c) => (false, c.to_string()),
+        KeyCode::BackTab => (true, "tab".to_string()),
+        KeyCode::Esc => (false, "esc".to_string()),
+        KeyCode::Enter => (false, "enter".to_string()),
+        KeyCode::Tab => (false, "tab".to_string()),
+        KeyCode::Backspace => (false, "backspace".to_string()),
+        KeyCode::Up => (false, "up".to_string()),
+        KeyCode::Down => (false, "down".to_string()),
+        KeyCode::Left => (false, "left".to_string()),
+        KeyCode::Right => (false, "right".to_string()),
+        KeyCode::F(n) => (false, format!("f{n}")),
+        other => (false, format!("{other:?}").to_lowercase()),
+    };
+    if implicit_shift || combo.modifiers.contains(KeyModifiers::SHIFT) {
+        parts.push("shift".to_string());
+    }
     parts.push(key);
     parts.join("+")
 }
@@ -1115,8 +1155,16 @@ mod tests {
         for (name, _) in named_actions() {
             let combos = map.combos_for(name);
             if let Some(one) = map.combo_for(name) {
+                let as_keycaps: Vec<String> = combos
+                    .iter()
+                    .map(|c| {
+                        format_combo(
+                            &KeyCombo::parse(c).expect("combos_for must emit parseable combos"),
+                        )
+                    })
+                    .collect();
                 assert!(
-                    combos.contains(&one),
+                    as_keycaps.contains(&one),
                     "{name}: combos_for must include what combo_for returns"
                 );
             }
