@@ -469,11 +469,14 @@ pub enum Modal {
     ConfigStartup {
         error: String,
     },
-    /// Raised when the Edit… round-trip's `$EDITOR` text does not
-    /// validate (see `main::edit_config_externally`). Like
-    /// `ConfigStartup`, `Esc` and click-away do not close it: `path` is a
-    /// temp file holding the user's unsaved work, and a stray dismissal
-    /// must not silently drop it. Only Keep editing or Discard do.
+    /// Raised when the Edit… round-trip's `$EDITOR` text could not be
+    /// applied (see `main::edit_config_externally`) -- either it didn't
+    /// parse, or it parsed but the write to disk failed; `error` says
+    /// which happened. Like `ConfigStartup`, `Esc` and click-away do not
+    /// close it: `path` is a temp file holding the user's unsaved (and,
+    /// in the write-failure case, already-validated) work, and a stray
+    /// dismissal must not silently drop it. Only Keep editing or Discard
+    /// do.
     ConfigEditInvalid {
         file: crate::action::ConfigFile,
         path: std::path::PathBuf,
@@ -1628,7 +1631,10 @@ impl ModalStack {
                     frame.buffer_mut(),
                     area.x + 2,
                     title_y,
-                    &format!("{} did not validate", file.name()),
+                    // Covers both ways this modal gets raised: the text
+                    // didn't parse, or it parsed but the write to disk
+                    // failed -- `error` (below) says which.
+                    &format!("{} could not be applied", file.name()),
                     theme.text,
                     theme.panel,
                     true,

@@ -417,7 +417,16 @@ fn run_editor(
     terminal.clear()?;
 
     match status {
-        Ok(s) if s.success() => Ok(Some(postui::hostfs::read_tempfile(path)?)),
+        Ok(s) if s.success() => match postui::hostfs::read_tempfile(path) {
+            Ok(text) => Ok(Some(text)),
+            Err(e) => {
+                app.update(Action::ShowToast(
+                    format!("could not read back the edited file: {e}"),
+                    ToastKind::Error,
+                ));
+                Ok(None)
+            }
+        },
         Ok(s) => {
             app.update(Action::ShowToast(
                 format!("{program} exited with {s}"),
@@ -455,7 +464,7 @@ fn edit_config_externally(
         Some(existing) => existing,
         None => {
             // Seed an absent file so the editor never opens empty.
-            let current = match app.config.read(file.name()) {
+            let current = match app.read_config_file(file.name()) {
                 Ok(Some(text)) => text,
                 Ok(None) => match file {
                     ConfigFile::Config => postui::config::config_seed(),
@@ -475,20 +484,13 @@ fn edit_config_externally(
         return Ok(());
     };
 
-    let invalid = match file {
-        ConfigFile::Config => toml::from_str::<toml::Value>(&text)
-            .err()
-            .map(|e| e.to_string()),
-        ConfigFile::Keys => postui::keys::Keymap::try_from_overrides(&text).err(),
-    };
-
-    if let Some(error) = invalid {
+    // The validate-then-write decision lives on `App` (testable without a
+    // terminal); a message back means the text didn't parse, or it
+    // parsed but the write failed -- either way `Action::ConfigEditInvalid`
+    // keeps `path` alive so Keep editing still reaches that work instead
+    // of stranding it in a temp file with no way back.
+    if let Some(error) = app.validate_and_write_config_edit(file, &text) {
         app.update(Action::ConfigEditInvalid { file, path, error });
-        return Ok(());
-    }
-
-    if let Err(e) = app.config.write_validated(file.name(), &text) {
-        app.update(Action::ShowToast(e, ToastKind::Error));
         return Ok(());
     }
     postui::hostfs::remove_tempfile(&path);

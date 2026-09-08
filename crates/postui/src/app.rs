@@ -159,12 +159,12 @@ pub struct App {
     /// The XDG config files (`config.toml`, `keys.toml`, `ui.toml`,
     /// `themes/*.toml`) — the sole owner of every config file read and
     /// write. `Config::none()` in tests, so test runs never touch the
-    /// user's real config. `pub` so `main::edit_config_externally` (the
-    /// terminal-suspending boundary, like `pending_terminal_action`) can
-    /// reach `Config::read` / `Config::write_validated` directly — those
-    /// two methods stay the sole entry points, this just lets the one
-    /// legitimate outside caller use them.
-    pub config: crate::config::Config,
+    /// user's real config. Kept private: `main::edit_config_externally`
+    /// (the terminal-suspending boundary, like `pending_terminal_action`)
+    /// reaches it only through `read_config_file` / `write_config_file`
+    /// below, not the whole `Config` surface (`save_registry`,
+    /// `save_ui_theme`, `edit`, …).
+    config: crate::config::Config,
     /// The tiered clipboard (external command / OS clipboard / OSC 52),
     /// configured from `ui_settings`.
     pub clipboard: crate::clipboard::Clipboard,
@@ -709,6 +709,43 @@ impl App {
                 None
             }
         }
+    }
+
+    /// Reads `name` (`config.toml` or `keys.toml`) through the app's
+    /// `Config` -- the sole owner of that file, per-repo rule. The only
+    /// slice of `Config`'s surface `main::edit_config_externally` needs,
+    /// so the field itself stays private.
+    pub fn read_config_file(&mut self, name: &str) -> Result<Option<String>, String> {
+        self.config.read(name)
+    }
+
+    /// Writes `text` to `name` verbatim and atomically, provided the
+    /// caller has already validated it -- see `Config::write_validated`.
+    pub fn write_config_file(&mut self, name: &str, text: &str) -> Result<(), String> {
+        self.config.write_validated(name, text)
+    }
+
+    /// The Edit… round-trip's validate-then-write decision, factored out
+    /// of `main::edit_config_externally` so it's testable without a
+    /// terminal. Validates `text` for `file` (a `toml` parse for
+    /// `Config`, `Keymap::try_from_overrides` for `Keys`) and, only if
+    /// that's clean, writes it. Returns the message to raise as
+    /// `Action::ConfigEditInvalid` on either kind of failure -- a syntax
+    /// error or, once past that, an I/O one -- and `None` once the write
+    /// has actually landed on disk.
+    pub fn validate_and_write_config_edit(
+        &mut self,
+        file: crate::action::ConfigFile,
+        text: &str,
+    ) -> Option<String> {
+        use crate::action::ConfigFile;
+        let invalid = match file {
+            ConfigFile::Config => toml::from_str::<toml::Value>(text)
+                .err()
+                .map(|e| crate::config::config_parse_error(&e)),
+            ConfigFile::Keys => crate::keys::Keymap::try_from_overrides(text).err(),
+        };
+        invalid.or_else(|| self.write_config_file(file.name(), text).err())
     }
 
     /// Persists the registry to `config.toml`, telling the user when it
@@ -2106,6 +2143,12 @@ impl App {
                 true
             }
             Action::ConfigEditDiscard { path } => {
+                // Only ever answers `Modal::ConfigEditInvalid`: popping
+                // whatever happens to be on top would close an unrelated
+                // modal if this ever raced with one.
+                let Some(Modal::ConfigEditInvalid { .. }) = self.modals.top() else {
+                    return false;
+                };
                 crate::hostfs::remove_tempfile(&path);
                 self.modals.pop();
                 true

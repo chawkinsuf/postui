@@ -22712,3 +22712,58 @@ fn the_config_edit_invalid_modal_ignores_click_away() {
     );
     assert!(!temp.exists(), "discard removes the temp file");
 }
+
+/// `Action::ConfigEditDiscard` must answer only `Modal::ConfigEditInvalid`
+/// -- never pop (or touch the temp file of) whatever else happens to be
+/// on top, or nothing at all.
+#[test]
+fn config_edit_discard_only_answers_its_own_modal() {
+    let dir = tempfile::tempdir().unwrap();
+    let temp = dir.path().join("scratch.toml");
+    std::fs::write(&temp, "not = [toml").unwrap();
+    let mut app = App::new_for_test();
+
+    assert!(
+        !app.update(Action::ConfigEditDiscard { path: temp.clone() }),
+        "nothing to answer -> no-op"
+    );
+    assert!(
+        temp.exists(),
+        "a stray discard must not remove an unrelated temp file"
+    );
+
+    app.modals.push(Modal::Message {
+        title: "Unrelated".into(),
+        body: "some other modal".into(),
+    });
+    assert!(
+        !app.update(Action::ConfigEditDiscard { path: temp.clone() }),
+        "the top modal isn't ConfigEditInvalid -> no-op"
+    );
+    assert!(
+        app.modals.top().is_some(),
+        "an unrelated modal must not be popped by a discard meant for another"
+    );
+    assert!(temp.exists());
+}
+
+/// A write failure past validation is not silently accepted -- the
+/// caller still has to raise `Action::ConfigEditInvalid` with it, the
+/// same as a syntax error, so the user's already-validated edit isn't
+/// stranded with no way back.
+#[test]
+fn a_write_failure_is_reported_not_swallowed() {
+    let dir = tempfile::tempdir().unwrap();
+    // A directory in the way of the write turns `write_validated` into a
+    // reliable, portable I/O failure.
+    std::fs::create_dir(dir.path().join("config.toml")).unwrap();
+    let mut app = App::new_for_test();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+
+    let error = app
+        .validate_and_write_config_edit(crate::action::ConfigFile::Config, "animations = true\n");
+    assert!(
+        error.is_some(),
+        "a write failure must be reported, not silently swallowed"
+    );
+}

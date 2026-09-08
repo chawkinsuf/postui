@@ -25,7 +25,7 @@ const THEMES_DIR: &str = "themes";
 /// What was *done* about it differs by caller — startup drops to the
 /// defaults, a reload keeps what it has — so each caller appends its own
 /// clause rather than the sentence being written out again.
-fn config_parse_error(e: &toml::de::Error) -> String {
+pub fn config_parse_error(e: &toml::de::Error) -> String {
     format!("could not parse {CONFIG_TOML}: {e}")
 }
 
