@@ -426,6 +426,48 @@ impl UiSettings {
     }
 }
 
+/// A fully commented `config.toml`, written when Edit… finds no file, so
+/// the editor opens something self-documenting rather than an empty
+/// buffer. Commented rather than live: a seed that *set* every value
+/// would pin choices the user never made and starve them of any default
+/// that ships later.
+pub fn config_seed() -> String {
+    let d = UiSettings::default();
+    format!(
+        "\
+# postui settings. Uncomment a line to override its default.
+# Anything not listed here keeps the app's default.
+
+# The theme's name: a built-in, or the file stem of a themes/*.toml.
+# theme = {:?}
+
+# Whether eased transitions play at all (tab underline, hover, modals).
+# animations = {}
+
+# Whether a hovered control explains itself on the footer row.
+# hover_hints = {}
+
+# What Tab does in the jq bar while a completion is showing:
+#   \"menu\"  - list the candidates below the bar, shell-style
+#   \"ghost\" - ghost the best one after the caret and step in place
+# jq_tab = \"menu\"
+
+# The shell command \"Describe a filter…\" pipes its prompt into.
+# ai_cmd = {:?}
+
+# Set once by the AI prompt's \"Always send\" choice. false asks again.
+# ai_confirmed = {}
+
+# An external clipboard command, when the built-in tiers do not suit.
+# clipboard_cmd = \"xclip -selection clipboard\"
+
+# The size in bytes above which OSC 52 copying is not attempted.
+# osc52_limit = {}
+",
+        d.theme, d.animations, d.hover_hints, d.ai_cmd, d.ai_confirmed, d.osc52_limit,
+    )
+}
+
 /// Everything [`Config::load`] read at startup: the parsed contents of
 /// every config file, each already degraded to its defaults where the
 /// file was missing or unusable (the warnings say which).
@@ -1235,6 +1277,40 @@ mod tests {
             cfg.write_validated(CONFIG_TOML, "animations = true\n")
                 .is_ok()
         );
+    }
+
+    /// The seed documents every setting without setting any of them: an
+    /// uncommented seed would pin values the user never chose.
+    #[test]
+    fn the_config_seed_is_entirely_commented_and_parses_as_empty() {
+        let seed = config_seed();
+        for line in seed.lines() {
+            let line = line.trim();
+            assert!(
+                line.is_empty() || line.starts_with('#'),
+                "seed line is live, not commented: {line:?}"
+            );
+        }
+        let (settings, warnings) = UiSettings::parse(&seed);
+        assert_eq!(settings, UiSettings::default(), "a seed changes nothing");
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    #[test]
+    fn the_config_seed_names_every_setting() {
+        let seed = config_seed();
+        for key in [
+            "animations",
+            "hover_hints",
+            "jq_tab",
+            "ai_cmd",
+            "ai_confirmed",
+            "clipboard_cmd",
+            "osc52_limit",
+            "theme",
+        ] {
+            assert!(seed.contains(key), "{key} missing from the seed");
+        }
     }
 
     #[test]

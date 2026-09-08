@@ -635,6 +635,40 @@ fn format_combo_config(combo: &KeyCombo) -> String {
     parts.join("+")
 }
 
+/// A fully commented `keys.toml` listing every bindable action at its
+/// current binding. Commented for the same reason `config_seed` is, and
+/// more urgently: `keys.toml` is an overrides file, so an uncommented
+/// seed would pin every binding forever and no future default would ever
+/// reach the user.
+///
+/// Each line lists *every* combo bound to its action (see `combos_for`),
+/// because `apply_overrides` replaces all of them -- a line naming one
+/// would unbind the rest when uncommented.
+pub fn keys_seed(map: &Keymap) -> String {
+    let mut out = String::from(
+        "\
+# postui key bindings. Uncomment a line to rebind its action.
+# Each line lists every combo currently bound to that action; the list
+# replaces them all, so keep the ones you want to keep.
+# ctrl+c is reserved for quit and cannot be rebound.
+
+",
+    );
+    for (name, _) in named_actions() {
+        let combos = map.combos_for(name);
+        if combos.is_empty() {
+            continue;
+        }
+        let list = combos
+            .iter()
+            .map(|c| format!("{c:?}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        out.push_str(&format!("# {name} = [{list}]\n"));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -1228,5 +1262,45 @@ mod tests {
         let c = KeyCombo::from_event(&ev);
         assert_eq!(c.code, KeyCode::BackTab);
         assert_eq!(c.modifiers, KeyModifiers::NONE);
+    }
+
+    /// The load-bearing test for `combos_for`: uncommenting any seeded line
+    /// must reproduce exactly the bindings that line names, aliases and all.
+    #[test]
+    fn uncommenting_any_seeded_line_changes_nothing() {
+        let defaults = Keymap::default_bindings();
+        let seed = keys_seed(&defaults);
+        let live: String = seed
+            .lines()
+            .filter_map(|l| l.strip_prefix("# "))
+            .filter(|l| l.contains(" = ["))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let applied = Keymap::try_from_overrides(&live)
+            .expect("an uncommented seed must be a valid overrides file");
+        for (name, _) in named_actions() {
+            assert_eq!(
+                applied.combos_for(name),
+                defaults.combos_for(name),
+                "{name} changed when its seeded line was uncommented"
+            );
+        }
+    }
+
+    #[test]
+    fn the_keys_seed_is_entirely_commented_and_is_a_no_op() {
+        let defaults = Keymap::default_bindings();
+        let seed = keys_seed(&defaults);
+        for line in seed.lines() {
+            let line = line.trim();
+            assert!(
+                line.is_empty() || line.starts_with('#'),
+                "seed line is live: {line:?}"
+            );
+        }
+        let applied = Keymap::try_from_overrides(&seed).unwrap();
+        for (name, _) in named_actions() {
+            assert_eq!(applied.combos_for(name), defaults.combos_for(name));
+        }
     }
 }
