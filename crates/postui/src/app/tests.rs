@@ -1726,6 +1726,28 @@ fn no_project_opens_on_settings_but_alt_v_still_closes() {
         Screen::Manage,
         "alt+v closes the screen it opened"
     );
+
+    // The scenario above alone doesn't pin the opening-path-only guard:
+    // once `manage.tab` is already `Settings`, the pre-existing
+    // `self.manage.tab == target` toggle disjunct closes the screen on
+    // its own, even with the guard's `self.screen != Screen::Manage`
+    // clause deleted. Opening on a *different* tab first, so `target`
+    // (Settings, from the guard) would differ from the current tab
+    // (Environments), is what actually exercises that clause: dropping
+    // it would make `OpenManage{tab:None}` re-target to Settings and
+    // stay open, instead of closing.
+    app.update(Action::OpenManage {
+        tab: Some(ManageTab::Environments),
+    });
+    assert_eq!(app.screen, Screen::Manage);
+    assert_eq!(app.manage.tab, ManageTab::Environments);
+
+    app.update(Action::OpenManage { tab: None });
+    assert_ne!(
+        app.screen,
+        Screen::Manage,
+        "alt+v closes; it does not re-target the tab"
+    );
 }
 
 /// An explicit request is honoured as asked, message and all.

@@ -107,14 +107,20 @@ impl TabStrip<'_> {
     /// The gap floor is the same 2 columns that separates any two tabs, so
     /// the layout degrades with no fallback branch: as `width` shrinks the
     /// tail slides left and arrives exactly where a contiguous strip would
-    /// have put it. Below that it clips at the right edge rather than
-    /// dropping a tab -- every tab stays reachable by keyboard regardless.
+    /// have put it. Below that the tail's `x` simply stays pinned at the
+    /// floor rather than sliding further left -- it never drops a tab, but
+    /// this function does not clip anything itself; a strip too narrow
+    /// even for the floor is truncated downstream, by `paint`/the caller's
+    /// own area, the same as any other overflowing content.
     pub fn spans_in(
         tabs: &[(String, Option<(&'static str, Color)>)],
         right_anchored: usize,
         width: u16,
     ) -> Vec<(u16, u16)> {
         let mut spans = Self::spans(tabs);
+        // `right_anchored >= tabs.len()` would leave no left group at all,
+        // underflowing `split - 1` below -- degrade to the plain
+        // contiguous spans instead, same as `right_anchored == 0`.
         if right_anchored == 0 || right_anchored >= tabs.len() {
             return spans;
         }
