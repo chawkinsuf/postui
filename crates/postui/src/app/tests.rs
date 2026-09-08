@@ -1686,7 +1686,7 @@ fn switching_manage_tabs_retargets_the_underline_slide() {
         app.anims.active(now),
         "the underline is easing after the switch"
     );
-    let spans = ManageTab::strip_spans();
+    let spans = ManageTab::strip_spans(app.manage_bar_width);
     let (x, w) = spans[ManageTab::Spaces.index()];
     let done_at = now + app.ui_settings.anim_ms.tab_slide + Duration::from_millis(5);
     assert_eq!(app.anims.value(left_key, done_at), Some(x as f32));
@@ -1704,6 +1704,40 @@ fn switching_manage_tabs_retargets_the_underline_slide() {
         tab: Some(ManageTab::Variables),
     });
     assert!(app.anims.value(left_key, Instant::now()).is_none());
+}
+
+/// With no project the screen lands on the one tab that works, instead
+/// of an apology -- but only when it is *opening*: OpenManage{tab:None}
+/// is also the close half of the toggle.
+#[test]
+fn no_project_opens_on_settings_but_alt_v_still_closes() {
+    use crate::components::manage::ManageTab;
+    let mut app = App::new_for_test();
+    app.project = None;
+
+    app.update(Action::OpenManage { tab: None });
+    assert_eq!(app.screen, Screen::Manage);
+    assert_eq!(app.manage.tab, ManageTab::Settings);
+
+    // The close half must not re-open on Settings.
+    app.update(Action::OpenManage { tab: None });
+    assert_ne!(
+        app.screen,
+        Screen::Manage,
+        "alt+v closes the screen it opened"
+    );
+}
+
+/// An explicit request is honoured as asked, message and all.
+#[test]
+fn no_project_honours_an_explicit_tab_request() {
+    use crate::components::manage::ManageTab;
+    let mut app = App::new_for_test();
+    app.project = None;
+    app.update(Action::OpenManage {
+        tab: Some(ManageTab::Environments),
+    });
+    assert_eq!(app.manage.tab, ManageTab::Environments);
 }
 
 #[test]
@@ -15490,8 +15524,8 @@ fn manage_opens_on_the_requested_tab_and_alt_arrows_cycle_tabs() {
     app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
     assert_eq!(
         app.manage.tab,
-        crate::components::manage::ManageTab::Variables,
-        "wraps"
+        crate::components::manage::ManageTab::Settings,
+        "Settings joins the cycle right after Spaces"
     );
     app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::ALT));
     assert_eq!(app.manage.tab, crate::components::manage::ManageTab::Spaces);

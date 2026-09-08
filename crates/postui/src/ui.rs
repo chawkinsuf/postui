@@ -149,6 +149,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 height: crate::components::manage::BAR_HEIGHT.min(layout.body.height),
                 ..layout.body
             };
+            // Recorded so `App::retarget_manage_tab_underline` (run from
+            // `update`, off the draw path) can lay the strip out with the
+            // same right-anchored geometry `draw_manage_bar` below will
+            // actually paint.
+            app.manage_bar_width = bar.width;
             let body = Rect {
                 y: layout.body.y + bar.height,
                 height: layout.body.height - bar.height,
@@ -202,6 +207,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                         ),
                         None => draw_manage_without_a_project(frame, body, theme),
                     }
+                }
+                crate::components::manage::ManageTab::Settings => {
+                    // The one tab that isn't about the open project: it
+                    // renders regardless (see `ManageTab::is_project_scoped`).
+                    // Its own body lands in a later task; for now, just the
+                    // themed page so an unpainted body doesn't show raw
+                    // terminal default.
+                    crate::paint::fill(frame.buffer_mut(), body, app.theme.page);
                 }
                 tab => {
                     let requests = app.sidebar.space_requests();
@@ -665,12 +678,14 @@ fn focus_bar(
     }
 }
 
-/// The Manage screen's body with no project open. Both tabs are built
-/// around `&Project`, so there is nothing to list — but the screen is
-/// reachable (`Action::OpenManage` is not gated), and an unpainted body
-/// would show raw terminal default where the themed page belongs. Paints
-/// the page and says why it is empty, in the same words the write gate
-/// uses.
+/// The Manage screen's body with no project open, for the project-scoped
+/// tabs (`ManageTab::is_project_scoped`) — Variables, Environments and
+/// Spaces are all built around `&Project`, so there is nothing to list.
+/// Settings is exempt: it renders its own body regardless (see the
+/// `ManageTab::Settings` match arm above), which is also why the screen is
+/// reachable with no project at all (`Action::OpenManage` is not gated).
+/// Paints the page and says why it is empty, in the same words the write
+/// gate uses.
 fn draw_manage_without_a_project(
     frame: &mut ratatui::Frame,
     body: ratatui::layout::Rect,
@@ -681,7 +696,15 @@ fn draw_manage_without_a_project(
     const MSG: &str = "no project is open \u{2014} open or create one first";
     let x = body.x + body.width.saturating_sub(MSG.chars().count() as u16) / 2;
     let y = body.y + body.height / 3;
-    text(frame.buffer_mut(), x, y, MSG, theme.text_muted, theme.page, false);
+    text(
+        frame.buffer_mut(),
+        x,
+        y,
+        MSG,
+        theme.text_muted,
+        theme.page,
+        false,
+    );
 }
 
 #[cfg(test)]

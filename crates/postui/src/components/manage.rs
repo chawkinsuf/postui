@@ -19,22 +19,31 @@ pub enum ManageTab {
     Variables,
     Environments,
     Spaces,
+    /// Global app settings. The one tab that is not about the open
+    /// project, which is why it sits apart at the strip's right edge and
+    /// why it still works with no project open.
+    Settings,
 }
 
 impl ManageTab {
     /// Every tab, in on-screen order — the order `index`/`from_index`/
     /// `cycle` and the tab strip all read from.
-    pub const ALL: [ManageTab; 3] = [
+    pub const ALL: [ManageTab; 4] = [
         ManageTab::Variables,
         ManageTab::Environments,
         ManageTab::Spaces,
+        ManageTab::Settings,
     ];
+
+    /// How many trailing tabs sit at the strip's right edge.
+    pub const RIGHT_ANCHORED: usize = 1;
 
     pub fn label(self) -> &'static str {
         match self {
             ManageTab::Variables => "Variables",
             ManageTab::Environments => "Environments",
             ManageTab::Spaces => "Spaces",
+            ManageTab::Settings => "Settings",
         }
     }
 
@@ -49,15 +58,21 @@ impl ManageTab {
         Self::ALL[i.min(Self::ALL.len() - 1)]
     }
 
-    /// Each tab's `(x, width)` span relative to the strip's origin — the
-    /// geometry `draw_manage_bar` lays the strip out with, exposed so the
-    /// app can glide the underline between them.
-    pub fn strip_spans() -> Vec<(u16, u16)> {
+    /// Whether this tab's body is about the open project. The three that
+    /// are show the no-project message; Settings renders regardless.
+    pub fn is_project_scoped(self) -> bool {
+        !matches!(self, ManageTab::Settings)
+    }
+
+    /// Each tab's `(x, width)` span relative to the strip's origin, at
+    /// strip `width` — the geometry `draw_manage_bar` lays the strip out
+    /// with, exposed so the app can glide the underline between them.
+    pub fn strip_spans(width: u16) -> Vec<(u16, u16)> {
         let tabs: Vec<(String, Option<(&'static str, ratatui::style::Color)>)> = Self::ALL
             .iter()
             .map(|t| (t.label().to_string(), None))
             .collect();
-        TabStrip::spans(&tabs)
+        TabStrip::spans_in(&tabs, Self::RIGHT_ANCHORED, width)
     }
 
     /// Steps `delta` tabs along `ALL`, wrapping in both directions.
@@ -173,18 +188,23 @@ pub fn draw_manage_bar(
         .enumerate()
         .find(|(i, _)| hovered == Some(&Hit::ManageTab(*i)))
         .map(|(i, _)| i);
-    let (ul_x, ul_w) = underline.unwrap_or_else(|| {
-        spans
-            .get(tab.index())
-            .map(|(x, w)| (*x as f32, *w as f32))
-            .unwrap_or((0.0, 0.0))
-    });
     let strip_area = Rect {
         x: left_edge + 1,
         y: bar.y + BUTTON_HEIGHT / 2,
         width: strip_w.min(x.saturating_sub(left_edge + 1)),
         height: 2,
     };
+    // The static fallback must agree with what `TabStrip::paint` below
+    // will actually lay out (including the right-anchored Settings tab),
+    // not the plain contiguous `spans` used only to size `strip_w` above
+    // — otherwise an untracked underline would land under the contiguous
+    // position while the labels themselves sit right-anchored.
+    let (ul_x, ul_w) = underline.unwrap_or_else(|| {
+        TabStrip::spans_in(&tabs, ManageTab::RIGHT_ANCHORED, strip_area.width)
+            .get(tab.index())
+            .map(|(x, w)| (*x as f32, *w as f32))
+            .unwrap_or((0.0, 0.0))
+    });
     let rects = TabStrip {
         tabs: &tabs,
         active: tab.index(),
@@ -192,7 +212,7 @@ pub fn draw_manage_bar(
         focused: false,
         underline: (ul_x, ul_w),
         disabled: None,
-        right_anchored: 0,
+        right_anchored: ManageTab::RIGHT_ANCHORED,
     }
     .paint(buf, strip_area, theme.panel, theme);
     // Belt and braces: the buttons now yield to the strip's full width,
@@ -238,19 +258,32 @@ mod tests {
     }
 
     /// The tab strip has priority for its natural width: on a bar too
-    /// narrow for the strip plus the Close button, every tab label still
-    /// paints in full and Close drops rather than overlapping the strip's
-    /// last tab. At 80 columns there is room for both.
+    /// narrow for the strip plus the Close button, the contiguous left
+    /// group's labels still paint in full and Close drops rather than
+    /// overlapping the strip's last left-group tab. At 80 columns there is
+    /// room for both. The right-anchored Settings tab is exempt from the
+    /// "paints in full" guarantee -- `TabStrip::spans_in` clips it at the
+    /// right edge rather than dropping it, so it stays reachable by
+    /// keyboard even where there isn't room to show its whole label.
     #[test]
     fn close_yields_to_the_tab_strip_on_a_narrow_bar() {
         let (content, hits) = render_at(ManageTab::Variables, 44);
-        for t in ManageTab::ALL {
+        for t in [
+            ManageTab::Variables,
+            ManageTab::Environments,
+            ManageTab::Spaces,
+        ] {
             assert!(
                 content.contains(t.label()),
                 "{} missing: {content}",
                 t.label()
             );
         }
+        assert!(
+            hits.rect_of(&Hit::ManageTab(ManageTab::Settings.index()))
+                .is_some(),
+            "Settings stays reachable even clipped"
+        );
         let spaces = hits
             .rect_of(&Hit::ManageTab(2))
             .expect("the last tab is registered");
@@ -272,7 +305,7 @@ mod tests {
     #[test]
     fn bar_paints_the_underline_where_it_is_told_to() {
         let theme = Theme::dark();
-        let spans = ManageTab::strip_spans();
+        let spans = ManageTab::strip_spans(100);
         let (x0, _) = spans[0];
         let (x2, w2) = spans[2];
         let mid = ((x0 + x2) / 2) as f32;
@@ -310,15 +343,32 @@ mod tests {
     }
 
     #[test]
+    fn settings_is_the_right_anchored_tab_and_joins_the_cycle() {
+        assert_eq!(ManageTab::ALL.len(), 4);
+        assert_eq!(ManageTab::ALL[3], ManageTab::Settings);
+        assert_eq!(ManageTab::Spaces.cycle(1), ManageTab::Settings);
+        assert_eq!(ManageTab::Settings.cycle(1), ManageTab::Variables, "wraps");
+        assert_eq!(ManageTab::Variables.cycle(-1), ManageTab::Settings);
+        assert!(!ManageTab::Settings.is_project_scoped());
+        for tab in [
+            ManageTab::Variables,
+            ManageTab::Environments,
+            ManageTab::Spaces,
+        ] {
+            assert!(tab.is_project_scoped());
+        }
+    }
+
+    #[test]
     fn cycle_wraps_in_both_directions() {
-        assert_eq!(ManageTab::Spaces.cycle(1), ManageTab::Variables);
-        assert_eq!(ManageTab::Variables.cycle(-1), ManageTab::Spaces);
+        assert_eq!(ManageTab::Settings.cycle(1), ManageTab::Variables);
+        assert_eq!(ManageTab::Variables.cycle(-1), ManageTab::Settings);
         assert_eq!(ManageTab::Variables.cycle(1), ManageTab::Environments);
         for (i, t) in ManageTab::ALL.iter().enumerate() {
             assert_eq!(t.index(), i);
             assert_eq!(ManageTab::from_index(i), *t);
         }
-        assert_eq!(ManageTab::from_index(99), ManageTab::Spaces, "clamps");
+        assert_eq!(ManageTab::from_index(99), ManageTab::Settings, "clamps");
     }
 
     /// Close is the mouse's way back on every tab and Reload its way to

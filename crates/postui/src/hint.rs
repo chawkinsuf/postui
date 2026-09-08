@@ -53,6 +53,7 @@ fn manage_noun(tab: Option<crate::components::manage::ManageTab>) -> &'static st
         Some(ManageTab::Spaces) => "space",
         Some(ManageTab::Environments) => "environment",
         Some(ManageTab::Variables) => "variable",
+        Some(ManageTab::Settings) => "item",
         None => "item",
     }
 }
@@ -229,6 +230,7 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
                 ManageTab::Variables => "Manage your variables",
                 ManageTab::Environments => "Manage your environments",
                 ManageTab::Spaces => "Manage your spaces",
+                ManageTab::Settings => "Manage app settings",
             })
         }
 
