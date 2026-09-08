@@ -114,11 +114,7 @@ impl App {
                     && matches!(self.hits.hit_at(m.column, m.row), Some(Hit::ManageRow(_)))
                 {
                     let tab = self.manage.tab;
-                    match self
-                        .manage_items(tab)
-                        .iter()
-                        .position(|n| *n == pressed)
-                    {
+                    match self.manage_items(tab).iter().position(|n| *n == pressed) {
                         None => self.manage_press = None,
                         Some(i) if self.manage.list.row_at_y(m.row) != i => {
                             let Self {
@@ -1143,18 +1139,14 @@ impl App {
                     None => false,
                 }
             }
-            Hit::ManageEnvTls(policy) => {
-                match self.manage_selected(ManageTab::Environments) {
-                    Some(env) => self.update(Action::SetEnvTls { env, policy }),
-                    None => false,
-                }
-            }
-            Hit::ManageMoveAll => {
-                match self.manage_selected(ManageTab::Spaces) {
-                    Some(from) => self.update(Action::PromptMoveAllRequests(from)),
-                    None => false,
-                }
-            }
+            Hit::ManageEnvTls(policy) => match self.manage_selected(ManageTab::Environments) {
+                Some(env) => self.update(Action::SetEnvTls { env, policy }),
+                None => false,
+            },
+            Hit::ManageMoveAll => match self.manage_selected(ManageTab::Spaces) {
+                Some(from) => self.update(Action::PromptMoveAllRequests(from)),
+                None => false,
+            },
             Hit::FooterChip(action) => {
                 // Chips that live inside the request panel (the Body
                 // toolbar row, the address bar's TLS lock, the split
@@ -1649,6 +1641,7 @@ impl App {
                     self.update(Action::Render)
                 }
             }
+            Hit::ConfigStartupChoice(choice) => self.update(Action::ConfigStartupChoice(choice)),
             Hit::ConfirmChoice(c) => {
                 let Some(Modal::Confirm { choices, .. }) = self.modals.top() else {
                     return false;
@@ -2024,11 +2017,7 @@ impl App {
                     .is_some()
                     .then(|| self.editor.current_request());
                 let Some((_, action)) = self.project().and_then(|p| {
-                    crate::components::varmanager::promote_action(
-                        p,
-                        open_request.as_ref(),
-                        &name,
-                    )
+                    crate::components::varmanager::promote_action(p, open_request.as_ref(), &name)
                 }) else {
                     return false;
                 };

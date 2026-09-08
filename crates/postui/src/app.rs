@@ -367,6 +367,11 @@ pub struct App {
     /// shown where the request list would be, and only opening another
     /// project (or fixing the file and relaunching) leaves this state.
     pub open_error: Option<OpenError>,
+    /// `Some` when `config.toml` exists on disk but would not parse at
+    /// startup (see `config::Loaded::config_error`). Blocks a normal
+    /// session behind `Modal::ConfigStartup` until the user answers —
+    /// running on defaults would also mean an empty `[projects]`.
+    pub config_error: Option<String>,
     /// Keeps the test-only channel's receiver alive so `tx` doesn't become
     /// a dangling sender in `App::new_for_test()`. Always `None` outside
     /// of tests.
@@ -521,6 +526,7 @@ impl App {
             keymap,
             themes,
             usage,
+            config_error,
         } = loaded;
         let terminal_colors = {
             use crate::theme::TerminalPalette;
@@ -557,6 +563,7 @@ impl App {
             app.apply_ui_settings(ui_settings, theme_name, theme);
             app.usage = usage;
             app.keymap = keymap;
+            app.config_error = config_error;
             for w in warnings {
                 app.toasts.push(w, ToastKind::Warning);
             }
@@ -564,6 +571,7 @@ impl App {
                 "could not determine a project directory for this platform",
                 ToastKind::Error,
             );
+            app.apply_startup_config_gate();
             if testbed {
                 app.screen = Screen::Testbed;
             }
@@ -578,6 +586,7 @@ impl App {
         app.apply_ui_settings(ui_settings, theme_name, theme);
         app.usage = usage;
         app.keymap = keymap;
+        app.config_error = config_error;
         for w in warnings {
             app.toasts.push(w, ToastKind::Warning);
         }
@@ -595,6 +604,7 @@ impl App {
         if app.open_error.is_some() {
             // The project refused to open: the app runs empty until the
             // user opens another one, so none of the dispositions apply.
+            app.apply_startup_config_gate();
             if testbed {
                 app.screen = Screen::Testbed;
             }
@@ -636,11 +646,25 @@ impl App {
             }
         }
 
+        app.apply_startup_config_gate();
+
         if testbed {
             app.screen = Screen::Testbed;
         }
 
         app
+    }
+
+    /// Raises the blocking modal when `config.toml` exists but will not
+    /// parse. Startup does not reach a normal session until it is
+    /// answered: running on defaults would also mean an empty
+    /// `[projects]`, and `registry.last` is what picks the project to
+    /// open -- so a stray bracket would silently open something else.
+    pub(crate) fn apply_startup_config_gate(&mut self) {
+        let Some(error) = self.config_error.clone() else {
+            return;
+        };
+        self.modals.push(Modal::ConfigStartup { error });
     }
 
     /// Persists the registry to `config.toml`, telling the user when it
@@ -898,9 +922,7 @@ impl App {
         use crate::components::modal::Modal;
         use crate::components::sidebar::Row;
         use crate::components::varmanager::VmDetail;
-        let picker = |f: &dyn Fn(&crate::components::file_picker::FilePickerState) -> bool| {
-            matches!(self.modals.top(), Some(Modal::FilePicker(s)) if f(s))
-        };
+        let picker = |f: &dyn Fn(&crate::components::file_picker::FilePickerState) -> bool| matches!(self.modals.top(), Some(Modal::FilePicker(s)) if f(s));
         let on = match hit {
             Hit::SendButton => self.editor.sending,
             Hit::HeaderManage => self.screen == Screen::Manage,
@@ -919,12 +941,11 @@ impl App {
             Hit::CopyBodyButton
             | Hit::SaveBodyButton
             | Hit::ResponseEditorButton
-            | Hit::ResponseSearchButton => {
-                self.session
-                    .response
-                    .view()
-                    .is_some_and(|v| v.mode == crate::components::response::ViewMode::Headers)
-            }
+            | Hit::ResponseSearchButton => self
+                .session
+                .response
+                .view()
+                .is_some_and(|v| v.mode == crate::components::response::ViewMode::Headers),
             Hit::TipReveal(name) => self.tip_revealed.as_ref().is_some_and(|(n, _)| n == name),
             Hit::VmRevealToggle => self.varmanager.form.revealed,
             Hit::VmSecretToggle => match (&self.varmanager.detail, self.project()) {
@@ -1017,7 +1038,9 @@ impl App {
             .map_or_else(|| EMPTY.get_or_init(Default::default), |p| p.resolved())
     }
 
-    pub(crate) fn secrets(&self) -> &indexmap::IndexMap<String, indexmap::IndexMap<String, String>> {
+    pub(crate) fn secrets(
+        &self,
+    ) -> &indexmap::IndexMap<String, indexmap::IndexMap<String, String>> {
         static EMPTY: std::sync::OnceLock<
             indexmap::IndexMap<String, indexmap::IndexMap<String, String>>,
         > = std::sync::OnceLock::new();
@@ -1171,7 +1194,10 @@ impl App {
     }
 
     /// The name the Manage screen's `tab` list has selected.
-    pub(crate) fn manage_selected(&self, tab: crate::components::manage::ManageTab) -> Option<String> {
+    pub(crate) fn manage_selected(
+        &self,
+        tab: crate::components::manage::ManageTab,
+    ) -> Option<String> {
         self.project()
             .and_then(|p| self.manage.list.selected(tab, p))
             .map(str::to_string)
@@ -1346,6 +1372,7 @@ impl App {
             last_spaces_warning: None,
             last_environments_warning: None,
             open_error,
+            config_error: None,
             _test_rx: None,
             _test_dir: None,
             history: crate::undo::History::new(),
@@ -2000,6 +2027,43 @@ impl App {
                         ToastKind::Info,
                     );
                 }
+                true
+            }
+            Action::ConfigStartupChoice(choice) => {
+                use crate::action::ConfigStartupChoice as C;
+                self.modals.pop();
+                match choice {
+                    C::Edit => {
+                        self.update(Action::EditConfigFile(crate::action::ConfigFile::Config))
+                    }
+                    C::Reset => {
+                        self.update(Action::ResetConfigFile(crate::action::ConfigFile::Config))
+                    }
+                    C::ContinueUnsaved => {
+                        self.toasts.push(
+                            "running on default settings — changes will not be saved \
+                             until config.toml parses",
+                            ToastKind::Warning,
+                        );
+                        true
+                    }
+                    C::Quit => self.update(Action::Quit),
+                }
+            }
+            // Stubbed until Task 7 (Edit…) and Task 14 (Reset) land the
+            // real behaviour.
+            Action::EditConfigFile(file) => {
+                self.toasts.push(
+                    format!("editing {} is not implemented yet", file.name()),
+                    ToastKind::Info,
+                );
+                true
+            }
+            Action::ResetConfigFile(file) => {
+                self.toasts.push(
+                    format!("resetting {} is not implemented yet", file.name()),
+                    ToastKind::Info,
+                );
                 true
             }
             Action::Quit | Action::ForceQuit => {
@@ -2882,11 +2946,7 @@ impl App {
                 use postui_core::project::Error;
                 // The typed name is relative to the active space, same as
                 // a create.
-                let to = format!(
-                    "{}/{}",
-                    self.active_space(),
-                    to.trim_start_matches('/')
-                );
+                let to = format!("{}/{}", self.active_space(), to.trim_start_matches('/'));
                 let Some(p) = self.project.as_mut() else {
                     return true;
                 };
@@ -3554,10 +3614,7 @@ impl App {
                     .environments()
                     .iter()
                     .map(|slug| {
-                        MenuItem::new(
-                            self.env_name(slug),
-                            Action::SwitchEnv(Some(slug.clone())),
-                        )
+                        MenuItem::new(self.env_name(slug), Action::SwitchEnv(Some(slug.clone())))
                     })
                     .collect();
                 items.push(MenuItem::new("new environment…", Action::OpenNewEnvPrompt));
@@ -4182,9 +4239,9 @@ impl App {
                 if !completing
                     && let Some((text, cursor)) =
                         self.focused_field_text().map(|(t, c)| (t.to_string(), c))
-                    && let Some((name, selector)) =
-                        self.project()
-                            .and_then(|p| Self::selection_picker_target(p, &text, cursor))
+                    && let Some((name, selector)) = self
+                        .project()
+                        .and_then(|p| Self::selection_picker_target(p, &text, cursor))
                 {
                     return self.open_select_picker(name, selector);
                 }
@@ -4198,7 +4255,8 @@ impl App {
                         return self.open_select_picker(name, selector);
                     }
                     Some(VarMeta::NeedsSelection) => {
-                        let Some(selector) = self.variables()
+                        let Some(selector) = self
+                            .variables()
                             .selectors
                             .iter()
                             .find(|(_, s)| s.fields.contains(&name))
@@ -4296,8 +4354,7 @@ impl App {
                             }
                             return true;
                         }
-                        match self.edit_env(&env, |doc| varedit::set_env_value(doc, &name, None))
-                        {
+                        match self.edit_env(&env, |doc| varedit::set_env_value(doc, &name, None)) {
                             Ok(()) => {
                                 self.record_project_step();
                                 self.toasts.push(
@@ -4312,8 +4369,7 @@ impl App {
                         }
                     }
                     ExtractDestination::ProjectDefault => {
-                        match self.edit_variables(|doc| varedit::clear_default(doc, &name))
-                        {
+                        match self.edit_variables(|doc| varedit::clear_default(doc, &name)) {
                             Ok(()) => {
                                 self.record_project_step();
                                 self.toasts
@@ -4480,7 +4536,8 @@ impl App {
                 true
             }
             Action::AddSelectorField { selector, field } => {
-                let current = self.variables()
+                let current = self
+                    .variables()
                     .selectors
                     .get(&selector)
                     .map(|g| g.fields.clone())
@@ -4505,7 +4562,8 @@ impl App {
                 // Env files first: variables.toml's validation runs against
                 // the active env, whose options must no longer carry the
                 // field by the time the selector's field list changes.
-                let Some(fields) = self.variables()
+                let Some(fields) = self
+                    .variables()
                     .selectors
                     .get(&selector)
                     .map(|g| g.fields.clone())
@@ -4570,7 +4628,10 @@ impl App {
                 // those requests (references keep the old name until
                 // someone edits them), but the user should still know the
                 // name isn't as free-standing as it looks.
-                let usage = self.project().map(|p| p.scan_usage(&from)).unwrap_or_default();
+                let usage = self
+                    .project()
+                    .map(|p| p.scan_usage(&from))
+                    .unwrap_or_default();
                 let title = if usage.is_empty() {
                     format!("Rename {from}")
                 } else {
@@ -4599,7 +4660,10 @@ impl App {
                 true
             }
             Action::DeleteVar { name } => {
-                let usage = self.project().map(|p| p.scan_usage(&name)).unwrap_or_default();
+                let usage = self
+                    .project()
+                    .map(|p| p.scan_usage(&name))
+                    .unwrap_or_default();
                 self.apply(Action::VarStruct(VarStructOp::Delete {
                     name: name.clone(),
                 }));
@@ -4729,7 +4793,8 @@ impl App {
             // -- Task 16: the selector options grid (spec §3.4) --
             Action::PromptGroupFields { selector } => {
                 use crate::components::modal::FieldsEditorState;
-                let current = self.variables()
+                let current = self
+                    .variables()
                     .selectors
                     .get(&selector)
                     .map(|g| g.fields.clone())
@@ -4782,12 +4847,9 @@ impl App {
                 }
                 // The ghost row *is* the new-option affordance: put the
                 // cursor in its name cell and start typing.
-                let row = postui_core::varmodel::options_of(
-                    self.variables(),
-                    self.env_data(),
-                    &selector,
-                )
-                .map_or(0, indexmap::IndexMap::len);
+                let row =
+                    postui_core::varmodel::options_of(self.variables(), self.env_data(), &selector)
+                        .map_or(0, indexmap::IndexMap::len);
                 self.vm_start_cell_edit(row, 0);
                 true
             }
@@ -4801,7 +4863,8 @@ impl App {
                 // "Value". No description field: the quick-create flow
                 // stays lean; a description can be added later through
                 // the option's edit prompt in the Manager.
-                let selector_fields = self.variables()
+                let selector_fields = self
+                    .variables()
                     .selectors
                     .get(&owner)
                     .map(|g| g.fields.clone())
@@ -4893,12 +4956,8 @@ impl App {
                 // Create means create: writing over an existing option of
                 // the same name from the add prompt would silently clobber
                 // its values.
-                if postui_core::varmodel::options_of(
-                    self.variables(),
-                    self.env_data(),
-                    &owner,
-                )
-                .is_some_and(|options| options.contains_key(&key))
+                if postui_core::varmodel::options_of(self.variables(), self.env_data(), &owner)
+                    .is_some_and(|options| options.contains_key(&key))
                 {
                     self.toasts.push(
                         format!("option \"{key}\" already exists on {owner}"),
@@ -4912,7 +4971,8 @@ impl App {
                 // per field, and any field it didn't know about (a caller
                 // passing a partial map) starts empty for the Manager.
                 let mut values = values;
-                let fields = self.variables()
+                let fields = self
+                    .variables()
                     .selectors
                     .get(&owner)
                     .map(|g| g.fields.clone())
@@ -5083,11 +5143,7 @@ impl App {
                 }
             }
             Action::JumpSpace(n) => {
-                match n
-                    .checked_sub(1)
-                    .and_then(|i| self.spaces().get(i))
-                    .cloned()
-                {
+                match n.checked_sub(1).and_then(|i| self.spaces().get(i)).cloned() {
                     Some(name) => self.apply(Action::SwitchSpace(name)),
                     None => true,
                 }
@@ -5108,7 +5164,8 @@ impl App {
             Action::OpenSpaceChooser => {
                 self.apply(Action::ReloadProjectFiles);
                 use crate::components::modal::{DropdownState, MenuItem};
-                let mut items: Vec<MenuItem> = self.spaces()
+                let mut items: Vec<MenuItem> = self
+                    .spaces()
                     .iter()
                     .enumerate()
                     .map(|(i, slug)| {
@@ -5125,9 +5182,7 @@ impl App {
                         tab: Some(crate::components::manage::ManageTab::Spaces),
                     },
                 ));
-                let current = self.spaces()
-                    .iter()
-                    .position(|s| *s == self.active_space());
+                let current = self.spaces().iter().position(|s| *s == self.active_space());
                 let anchor = self
                     .hits
                     .rect_of(&Hit::HeaderSpace)
@@ -5213,9 +5268,7 @@ impl App {
             Action::PromptRenameEnv(name) => {
                 self.push_modal(Modal::Prompt {
                     title: "Rename environment".into(),
-                    input: crate::components::line_input::LineInput::new(
-                        &self.env_name(&name),
-                    ),
+                    input: crate::components::line_input::LineInput::new(&self.env_name(&name)),
                     kind: PromptKind::RenameEnvironment { from: name },
                     revealed: false,
                 });
@@ -5333,9 +5386,7 @@ impl App {
             Action::PromptRenameSpace(name) => {
                 self.push_modal(Modal::Prompt {
                     title: "Rename space".into(),
-                    input: crate::components::line_input::LineInput::new(
-                        &self.space_name(&name),
-                    ),
+                    input: crate::components::line_input::LineInput::new(&self.space_name(&name)),
                     kind: PromptKind::RenameSpace { from: name },
                     revealed: false,
                 });
@@ -5695,7 +5746,8 @@ impl App {
         match ctx.resolved().meta.get(&token.name) {
             Some(VarMeta::SelectorMember { selector, .. }) => Some((token.name, selector.clone())),
             Some(VarMeta::NeedsSelection) => {
-                let selector = ctx.variables()
+                let selector = ctx
+                    .variables()
                     .selectors
                     .iter()
                     .find(|(_, g)| g.fields.contains(&token.name))
@@ -6222,7 +6274,8 @@ impl App {
         // What each destination currently stores (`None` = nothing), so
         // cycling the scope can reseed the value field, and the Remove
         // button knows whether there is anything to delete there.
-        let default_value = self.variables()
+        let default_value = self
+            .variables()
             .vars
             .get(name)
             .and_then(|d| d.default.clone());
@@ -6260,9 +6313,7 @@ impl App {
         let selected_key = if self.selector_is_shared(&selector) {
             self.shared_selections().get(&selector).cloned()
         } else {
-            self.selections_for(&env_key)
-                .get(&selector)
-                .cloned()
+            self.selections_for(&env_key).get(&selector).cloned()
         };
         let options: Vec<SelectOption> =
             varmodel::options_of(self.variables(), self.env_data(), &selector)
@@ -6638,7 +6689,8 @@ impl App {
         use postui_core::varedit;
         use postui_core::vars::is_valid_var_name;
 
-        let Some(current) = self.variables()
+        let Some(current) = self
+            .variables()
             .selectors
             .get(&selector)
             .map(|g| g.fields.clone())
@@ -6804,14 +6856,12 @@ impl App {
         if value == edit.original {
             return;
         }
-        let options: Vec<String> = postui_core::varmodel::options_of(
-            self.variables(),
-            self.env_data(),
-            &selector,
-        )
-        .map(|e| e.keys().cloned().collect())
-        .unwrap_or_default();
-        let fields = self.variables()
+        let options: Vec<String> =
+            postui_core::varmodel::options_of(self.variables(), self.env_data(), &selector)
+                .map(|e| e.keys().cloned().collect())
+                .unwrap_or_default();
+        let fields = self
+            .variables()
             .selectors
             .get(&selector)
             .map(|g| g.fields.clone())
@@ -7039,8 +7089,12 @@ impl App {
         // only the first of those is permission to write. An un-held slug
         // is re-seeded from disk first (`open_request` stamps honestly),
         // so the check below is always answering the first question.
-        if self.project().is_some_and(|p| p.held_request(&slug).is_none())
-            && let Some(Err(e)) = self.project_mut().map(|p| p.open_request(&slug).map(|_| ()))
+        if self
+            .project()
+            .is_some_and(|p| p.held_request(&slug).is_none())
+            && let Some(Err(e)) = self
+                .project_mut()
+                .map(|p| p.open_request(&slug).map(|_| ()))
         {
             self.toasts
                 .push(format!("could not read {slug}: {e}"), ToastKind::Error);
@@ -7185,7 +7239,11 @@ impl App {
         self.marked_entry = top;
         let Some(id) = top else { return };
         self.history.record_no_coalesce(crate::undo::Step {
-            kind: crate::undo::StepKind::Project { id, slug: slug.clone(), noun },
+            kind: crate::undo::StepKind::Project {
+                id,
+                slug: slug.clone(),
+                noun,
+            },
             context: crate::undo::Context {
                 slug,
                 cursor_before: crate::undo::CursorPos::None,
@@ -7196,17 +7254,14 @@ impl App {
 
     /// The id of the entry `Project::undo` would replay next.
     fn journal_top(&self) -> Option<postui_core::journal::EntryId> {
-        self.project().and_then(|p| p.last_entry()).map(|(id, _)| id)
+        self.project()
+            .and_then(|p| p.last_entry())
+            .map(|(id, _)| id)
     }
 
     /// Whether `id` is the entry `p` would replay next in `redo`'s
     /// direction.
-    fn entry_on_top(
-        &self,
-        p: &Project,
-        id: postui_core::journal::EntryId,
-        redo: bool,
-    ) -> bool {
+    fn entry_on_top(&self, p: &Project, id: postui_core::journal::EntryId, redo: bool) -> bool {
         let top = if redo {
             p.next_redo()
         } else {
@@ -8200,11 +8255,7 @@ impl App {
         use postui_core::project::Error;
         // Every new request lands inside the active space — the name the
         // user typed is relative to it.
-        let name = format!(
-            "{}/{}",
-            self.active_space(),
-            name.trim_start_matches('/')
-        );
+        let name = format!("{}/{}", self.active_space(), name.trim_start_matches('/'));
         let name = name.as_str();
         let req = build(name);
         let Some(p) = self.project.as_mut() else {
@@ -8218,7 +8269,11 @@ impl App {
             Ok((slug, leaf)) => {
                 // Hold the created request so the editor gets exactly
                 // what was written (display name included).
-                let saved = match self.project.as_mut().expect("checked above").open_request(&slug)
+                let saved = match self
+                    .project
+                    .as_mut()
+                    .expect("checked above")
+                    .open_request(&slug)
                 {
                     Ok(r) => r.clone(),
                     Err(e) => {
@@ -9212,16 +9267,14 @@ impl App {
         let VmDetail::Group(selector) = self.varmanager.detail.clone() else {
             return;
         };
-        let ncols = 1 + self.variables()
+        let ncols = 1 + self
+            .variables()
             .selectors
             .get(&selector)
             .map_or(0, |g| g.fields.len());
-        let last_row = postui_core::varmodel::options_of(
-            self.variables(),
-            self.env_data(),
-            &selector,
-        )
-        .map_or(0, indexmap::IndexMap::len);
+        let last_row =
+            postui_core::varmodel::options_of(self.variables(), self.env_data(), &selector)
+                .map_or(0, indexmap::IndexMap::len);
         let flat = (row * ncols + col) as i32 + dir;
         let (next_row, next_col) = match flat {
             // Off either end of the grid: the walk stops rather than
@@ -9745,8 +9798,7 @@ impl App {
                             ProjectNoun::Reorder => {
                                 let what = match slug {
                                     Some(slug) => {
-                                        if let Some(space) =
-                                            postui_core::storage::space_of(slug)
+                                        if let Some(space) = postui_core::storage::space_of(slug)
                                             && space == self.active_space()
                                         {
                                             self.sidebar.select_slug(slug);

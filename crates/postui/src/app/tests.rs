@@ -156,7 +156,9 @@ fn resolve_startup_returns_none_when_nothing_available() {
 #[test]
 fn init_project_here_creates_project_toml_at_current_root() {
     let mut app = App::new_for_test();
-    assert!(!postui_core::project::Project::is_project(app.proj().root()));
+    assert!(!postui_core::project::Project::is_project(
+        app.proj().root()
+    ));
     app.update(Action::InitProjectHere);
     assert!(postui_core::project::Project::is_project(app.proj().root()));
     assert_eq!(
@@ -2087,7 +2089,9 @@ fn duplicating_a_variable_copies_its_description_and_default() {
     app.update(Action::DuplicateVar {
         name: "base_url".into(),
     });
-    let copy = app.proj().variables()
+    let copy = app
+        .proj()
+        .variables()
         .vars
         .get("base_url-copy")
         .expect("copy declared");
@@ -2849,7 +2853,8 @@ fn startup_restores_open_request_inside_a_collapsed_folder() {
     // `auth` is a folder *inside* the active space, not a space: the point
     // of this test is the ancestor-folder expansion, which only happens for
     // a slug nested under the space root.
-    postui_core::fixtures::save_request(dir.path(), "main/auth/login", &req("https://x/l")).unwrap();
+    postui_core::fixtures::save_request(dir.path(), "main/auth/login", &req("https://x/l"))
+        .unwrap();
     postui_core::fixtures::save_local_state(
         dir.path(),
         &postui_core::project::LocalState {
@@ -2894,7 +2899,8 @@ fn force_open_request_selects_its_sidebar_row() {
     postui_core::fixtures::ensure_project(dir.path()).unwrap();
     // `auth` is a folder inside the active space, so opening `login`
     // really does have an ancestor folder to expand.
-    postui_core::fixtures::save_request(dir.path(), "main/auth/login", &req("https://x/l")).unwrap();
+    postui_core::fixtures::save_request(dir.path(), "main/auth/login", &req("https://x/l"))
+        .unwrap();
     postui_core::fixtures::save_request(dir.path(), "main/ping", &req("https://x/ping")).unwrap();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
 
@@ -3089,7 +3095,11 @@ fn switching_spaces_goes_through_the_dirty_gate() {
     );
     assert_eq!(app.proj().local().active_space, "main", "not switched yet");
     app.update(Action::Close);
-    assert_eq!(app.proj().local().active_space, "main", "cancel keeps the space");
+    assert_eq!(
+        app.proj().local().active_space,
+        "main",
+        "cancel keeps the space"
+    );
 }
 
 #[test]
@@ -3098,7 +3108,11 @@ fn jump_and_cycle_resolve_by_position_and_wrap() {
     app.update(Action::JumpSpace(2));
     assert_eq!(app.proj().local().active_space, "auth");
     app.update(Action::JumpSpace(9));
-    assert_eq!(app.proj().local().active_space, "auth", "out of range is a no-op");
+    assert_eq!(
+        app.proj().local().active_space,
+        "auth",
+        "out of range is a no-op"
+    );
     app.update(Action::CycleSpace(1));
     assert_eq!(app.proj().local().active_space, "main", "wraps");
     app.update(Action::CycleSpace(-1));
@@ -3588,7 +3602,8 @@ fn delete_space_confirms_with_the_count_then_trashes_and_undoes() {
     assert!(!dir.path().join("requests/main").exists());
     assert_eq!(app.proj().spaces(), ["auth"]);
     assert_eq!(
-        app.proj().local().active_space, "auth",
+        app.proj().local().active_space,
+        "auth",
         "switched away before deleting"
     );
     assert_eq!(app.editor.slug.as_deref(), Some("auth/login"));
@@ -3664,7 +3679,8 @@ fn move_space_reorders_and_persists() {
     );
     app.update(Action::JumpSpace(1));
     assert_eq!(
-        app.proj().local().active_space, "auth",
+        app.proj().local().active_space,
+        "auth",
         "alt+1 follows the new order"
     );
 }
@@ -4098,7 +4114,10 @@ fn a_keyboard_reorder_that_returns_to_the_start_leaves_no_step_and_undo_reaches_
         delta: -1,
     });
     assert_eq!(
-        app.proj().last_entry().map(|(_, l)| l.to_string()).as_deref(),
+        app.proj()
+            .last_entry()
+            .map(|(_, l)| l.to_string())
+            .as_deref(),
         Some("create request"),
         "the burst netted to nothing: no order entry remains"
     );
@@ -4145,7 +4164,10 @@ fn a_dissolved_burst_with_an_edit_between_its_halves_records_no_second_marker() 
         delta: -1,
     });
     assert_eq!(
-        app.proj().last_entry().map(|(_, l)| l.to_string()).as_deref(),
+        app.proj()
+            .last_entry()
+            .map(|(_, l)| l.to_string())
+            .as_deref(),
         Some("create request"),
         "the burst netted to nothing: no order entry remains"
     );
@@ -4162,7 +4184,10 @@ fn a_dissolved_burst_with_an_edit_between_its_halves_records_no_second_marker() 
         "undo applied the editor delta, not the create beneath it"
     );
     assert_eq!(
-        app.proj().last_entry().map(|(_, l)| l.to_string()).as_deref(),
+        app.proj()
+            .last_entry()
+            .map(|(_, l)| l.to_string())
+            .as_deref(),
         Some("create request"),
         "the journal did not move: no project entry was replayed"
     );
@@ -4517,8 +4542,13 @@ fn move_all_requests_holding_a_dirty_open_request_gates_first() {
 fn ordered_app() -> (App, tempfile::TempDir) {
     // main: alpha, beta (listed as beta, alpha); auth: login
     let (mut app, dir) = spaced_app();
-    postui_core::fixtures::set_level_order(dir.path(), "main", "", &["beta".into(), "alpha".into()])
-        .unwrap();
+    postui_core::fixtures::set_level_order(
+        dir.path(),
+        "main",
+        "",
+        &["beta".into(), "alpha".into()],
+    )
+    .unwrap();
     app.reload_project_documents();
     app.update(Action::RefreshSidebar);
     (app, dir)
@@ -5452,7 +5482,8 @@ fn rename_flow_speaks_display_names_and_regenerates_the_slug() {
     assert_eq!(app.editor.slug.as_deref(), Some("main/get-user-v2"));
     assert_eq!(app.editor.name.as_deref(), Some("Get User v2"));
     assert_eq!(app.sidebar.open_slug.as_deref(), Some("main/get-user-v2"));
-    let loaded = postui_core::fixtures::load_request(app.proj().root(), "main/get-user-v2").unwrap();
+    let loaded =
+        postui_core::fixtures::load_request(app.proj().root(), "main/get-user-v2").unwrap();
     assert_eq!(loaded.name.as_deref(), Some("Get User v2"));
 }
 
@@ -6732,11 +6763,7 @@ fn padlock_shows_the_effective_tls_state_under_an_environment_force() {
 #[test]
 fn cycle_env_wraps_and_skips_no_env() {
     let (mut app, dir) = app_with_envs();
-    assert_eq!(
-        app.env_label(),
-        "prod",
-        "an open lands in the first env"
-    );
+    assert_eq!(app.env_label(), "prod", "an open lands in the first env");
     app.update(Action::CycleEnv(1));
     assert_eq!(app.env_label(), "qa");
     app.update(Action::CycleEnv(1));
@@ -6803,7 +6830,8 @@ fn rename_env_moves_the_file_rekeys_secrets_and_follows_the_active_env() {
     assert!(dir.path().join("environments/qa.toml").is_file());
     assert_eq!(app.env_label(), "qa");
     assert_eq!(
-        app.proj().secrets()["qa"]["tok"], "s3cret",
+        app.proj().secrets()["qa"]["tok"],
+        "s3cret",
         "secrets re-keyed back"
     );
     assert_eq!(
@@ -6883,7 +6911,8 @@ fn delete_env_confirms_trashes_clears_the_active_env_and_undoes() {
         "s3cret"
     );
     assert_eq!(
-        app.proj().secrets()["qa"]["tok"], "s3cret",
+        app.proj().secrets()["qa"]["tok"],
+        "s3cret",
         "the restored secrets file is re-read into memory, not just to disk"
     );
     assert_eq!(
@@ -9102,7 +9131,8 @@ fn var_edit_set_env_value_on_a_non_active_env_does_not_disturb_the_active_resolu
     let on_disk = std::fs::read_to_string(dir.path().join("environments/dev.toml")).unwrap();
     assert!(on_disk.contains("http://dev.local"), "{on_disk}");
     assert_eq!(
-        app.proj().resolved().values["base_url"], "https://qa.example.com",
+        app.proj().resolved().values["base_url"],
+        "https://qa.example.com",
         "qa is still active; its own resolution must be untouched"
     );
 }
@@ -9575,7 +9605,10 @@ fn add_and_remove_selector_field_reshape_a_shared_selectors_options() {
         field: "fmt".into(),
     });
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
-    assert_eq!(app.proj().variables().options["locale"]["en"].values["fmt"], "");
+    assert_eq!(
+        app.proj().variables().options["locale"]["en"].values["fmt"],
+        ""
+    );
 
     app.update(Action::RemoveSelectorField {
         selector: "locale".into(),
@@ -9766,7 +9799,9 @@ fn var_struct_new_group_creates_group_with_members() {
     }));
 
     assert!(app.toasts.is_empty());
-    let g = app.proj().variables()
+    let g = app
+        .proj()
+        .variables()
         .selectors
         .get("creds")
         .expect("group created");
@@ -10618,7 +10653,9 @@ fn prompt_new_selector_takes_a_name_and_defaults_its_field() {
     // Creating the selector is the whole gesture: no follow-up prompt
     // opens, the new declaration is simply selected in the manager.
     assert!(app.modals.is_empty());
-    let g = app.proj().variables()
+    let g = app
+        .proj()
+        .variables()
         .selectors
         .get("creds")
         .expect("selector created");
@@ -10650,7 +10687,12 @@ fn add_and_remove_group_members_one_at_a_time() {
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     }
     assert_eq!(
-        app.proj().variables().selectors.get("creds").unwrap().fields,
+        app.proj()
+            .variables()
+            .selectors
+            .get("creds")
+            .unwrap()
+            .fields,
         vec!["user_id".to_string(), "customer_id".to_string()]
     );
 
@@ -10665,7 +10707,8 @@ fn add_and_remove_group_members_one_at_a_time() {
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.toasts.messages().len() > toasts_before);
     assert_eq!(
-        app.proj().variables()
+        app.proj()
+            .variables()
             .selectors
             .get("creds")
             .unwrap()
@@ -10684,7 +10727,12 @@ fn add_and_remove_group_members_one_at_a_time() {
     });
     assert!(app.modals.is_empty(), "removal is undoable, no confirm");
     assert_eq!(
-        app.proj().variables().selectors.get("creds").unwrap().fields,
+        app.proj()
+            .variables()
+            .selectors
+            .get("creds")
+            .unwrap()
+            .fields,
         vec!["customer_id".to_string()]
     );
 }
@@ -10910,7 +10958,8 @@ fn confirming_the_value_popup_writes_the_env_scope_and_re_resolves() {
         "{on_disk}"
     );
     assert_eq!(
-        app.proj().resolved().values["base_url"], "https://qa2.example.com",
+        app.proj().resolved().values["base_url"],
+        "https://qa2.example.com",
         "linked tokens re-resolve immediately"
     );
 }
@@ -11310,7 +11359,8 @@ fn remove_is_pending_until_confirm_and_cancel_puts_nothing_on_disk() {
     let vars_on_disk = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
     assert!(vars_on_disk.contains("default"), "{vars_on_disk}");
     assert_eq!(
-        app.proj().resolved().values["base_url"], "https://qa.example.com",
+        app.proj().resolved().values["base_url"],
+        "https://qa.example.com",
         "the env value still supplies"
     );
     // Reopening starts clean: the env value is back on offer to remove.
@@ -11334,7 +11384,8 @@ fn confirming_applies_the_pending_removal_and_the_default_shows_through() {
     let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     assert!(!on_disk.contains("base_url"), "{on_disk}");
     assert_eq!(
-        app.proj().resolved().values["base_url"], "http://localhost:8080",
+        app.proj().resolved().values["base_url"],
+        "http://localhost:8080",
         "the default shows through once the env value is gone"
     );
 }
@@ -12661,7 +12712,10 @@ fn declining_the_migration_leaves_the_files_alone_and_the_project_open() {
         "declining must not touch a single file"
     );
     assert!(!dir.path().join("variables.toml.bak").exists());
-    assert!(app.proj().variables().vars.is_empty(), "variables stay inert");
+    assert!(
+        app.proj().variables().vars.is_empty(),
+        "variables stay inert"
+    );
     assert!(app.proj().resolved().values.is_empty());
 
     // The project itself is still perfectly usable, and the prompt does
@@ -12760,7 +12814,8 @@ fn a_legacy_projects_saved_selections_survive_the_prompt_and_resolve_after_apply
 
     assert_eq!(app.proj().selections_for("qa")["tier"], "gold");
     assert_eq!(
-        app.proj().resolved().values["tier"], "g-qa",
+        app.proj().resolved().values["tier"],
+        "g-qa",
         "the carried-over selection resolves: {:?}",
         app.proj().resolved().values
     );
@@ -13126,7 +13181,9 @@ fn enter_commits_a_field_edit_and_esc_reverts_it() {
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(app.varmanager.form.editing.is_none());
     assert_eq!(
-        app.proj().variables().vars["base_url"].description.as_deref(),
+        app.proj().variables().vars["base_url"]
+            .description
+            .as_deref(),
         Some("API root"),
         "Esc must not write anything"
     );
@@ -13138,7 +13195,9 @@ fn enter_commits_a_field_edit_and_esc_reverts_it() {
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.varmanager.form.editing.is_none());
     assert_eq!(
-        app.proj().variables().vars["base_url"].description.as_deref(),
+        app.proj().variables().vars["base_url"]
+            .description
+            .as_deref(),
         Some("API root!")
     );
 }
@@ -13170,7 +13229,9 @@ fn clicking_directly_from_one_field_into_another_commits_the_first() {
     app.handle_mouse(left_down(r.x + 1, r.y + 1));
 
     assert_eq!(
-        app.proj().variables().vars["base_url"].description.as_deref(),
+        app.proj().variables().vars["base_url"]
+            .description
+            .as_deref(),
         Some("API root!"),
         "the description field must have committed, not been discarded"
     );
@@ -13558,7 +13619,10 @@ fn fields_editor_remove_button_marks_the_row_and_confirm_deletes_the_field() {
     app.handle_mouse(left_down(r.x, r.y));
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.modals.is_empty(), "removal is undoable, no confirm");
-    assert_eq!(app.proj().variables().selectors["creds"].fields, vec!["user_id"]);
+    assert_eq!(
+        app.proj().variables().selectors["creds"].fields,
+        vec!["user_id"]
+    );
 }
 
 #[test]
@@ -13660,7 +13724,10 @@ fn fields_editor_alt_d_toggles_removal_of_the_focused_row() {
     app.handle_key(alt('d'));
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.modals.is_empty(), "removal is undoable, no confirm");
-    assert_eq!(app.proj().variables().selectors["creds"].fields, vec!["user_id"]);
+    assert_eq!(
+        app.proj().variables().selectors["creds"].fields,
+        vec!["user_id"]
+    );
 }
 
 /// While the fields editor is open, the footer swaps to *its* context
@@ -13804,7 +13871,8 @@ fn clicking_an_entrys_radio_records_the_selection_and_re_resolves_every_field() 
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
     assert_eq!(app.proj().selections_for("qa")["user"], "bob");
     assert_eq!(
-        app.proj().resolved().values["user"], "2002",
+        app.proj().resolved().values["user"],
+        "2002",
         "{{user}} now resolves through the selected entry"
     );
     let state = postui_core::fixtures::load_local_state(dir.path()).unwrap();
@@ -14117,9 +14185,7 @@ fn form_focus_advertises_and_handles_the_field_verbs() {
         name: "base_url".into(),
     };
     let open_request = app.editor.current_request();
-    let chips = app
-        .varmanager
-        .footer_chips(app.proj(), Some(&open_request));
+    let chips = app.varmanager.footer_chips(app.proj(), Some(&open_request));
     assert!(
         chips
             .iter()
@@ -14402,7 +14468,10 @@ fn the_field_editor_renames_adds_and_removes_across_variables_and_every_env() {
         slots: vec!["user_id".into()],
     });
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
-    assert_eq!(app.proj().variables().selectors["user"].fields, vec!["user_id"]);
+    assert_eq!(
+        app.proj().variables().selectors["user"].fields,
+        vec!["user_id"]
+    );
     let qa = postui_core::fixtures::load_environment(dir.path(), "qa").unwrap();
     assert_eq!(qa.options["user"]["alice"].values["user_id"], "1001");
     let dev = postui_core::fixtures::load_environment(dir.path(), "dev").unwrap();
@@ -14433,7 +14502,10 @@ fn the_field_editor_renames_adds_and_removes_across_variables_and_every_env() {
         slots: vec!["user_id".into(), String::new()],
     });
     assert!(app.modals.is_empty(), "removal is undoable, no confirm");
-    assert_eq!(app.proj().variables().selectors["user"].fields, vec!["user_id"]);
+    assert_eq!(
+        app.proj().variables().selectors["user"].fields,
+        vec!["user_id"]
+    );
     let qa = postui_core::fixtures::load_environment(dir.path(), "qa").unwrap();
     assert!(
         !qa.options["user"]["alice"]
@@ -16634,7 +16706,8 @@ mod undo_tests {
         let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
         assert!(!on_disk.contains("base_url"), "pair removed: {on_disk}");
         assert_eq!(
-            app.proj().resolved().values["base_url"], "http://localhost:8080",
+            app.proj().resolved().values["base_url"],
+            "http://localhost:8080",
             "resolution falls back to the declaration default"
         );
 
@@ -16709,7 +16782,10 @@ mod undo_tests {
         app.handle_mouse(left_down(r.x, r.y));
 
         assert_eq!(
-            app.proj().secrets().get("qa").and_then(|m| m.get("api_key")),
+            app.proj()
+                .secrets()
+                .get("qa")
+                .and_then(|m| m.get("api_key")),
             None,
             "the stored secret is gone"
         );
@@ -16740,7 +16816,10 @@ mod undo_tests {
         });
         app.capture_undo();
         assert_eq!(
-            app.proj().secrets().get("qa").and_then(|m| m.get("api_key")),
+            app.proj()
+                .secrets()
+                .get("qa")
+                .and_then(|m| m.get("api_key")),
             None,
             "the stored secret is gone"
         );
@@ -16757,7 +16836,10 @@ mod undo_tests {
         );
         app.update(Action::Redo);
         assert_eq!(
-            app.proj().secrets().get("qa").and_then(|m| m.get("api_key")),
+            app.proj()
+                .secrets()
+                .get("qa")
+                .and_then(|m| m.get("api_key")),
             None,
             "redo removes it again"
         );
@@ -17934,7 +18016,8 @@ fn extract_selector_from_a_url_selection_creates_the_selector_its_option_and_sel
     assert!(env.contains("[options.region.us-east]"), "{env}");
     assert!(env.contains("region = \"east\""), "{env}");
     assert_eq!(
-        app.proj().selections_for("qa")
+        app.proj()
+            .selections_for("qa")
             .get("region")
             .map(String::as_str),
         Some("us-east"),
@@ -17985,7 +18068,9 @@ fn extract_selector_shared_puts_the_option_in_variables_toml() {
     let env = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     assert!(!env.contains("api_version"), "{env}");
     assert_eq!(
-        app.proj().local().shared_selections
+        app.proj()
+            .local()
+            .shared_selections
             .get("api_version")
             .map(String::as_str),
         Some("v2")
@@ -20015,8 +20100,12 @@ fn escape_disarms_the_press_so_motion_cannot_restart_the_drag() {
 fn dragging_at_the_list_edge_scrolls_on_tick() {
     let (mut app, dir) = spaced_app();
     for i in 0..60 {
-        postui_core::fixtures::save_request(dir.path(), &format!("main/r{i:02}"), &req("https://x"))
-            .unwrap();
+        postui_core::fixtures::save_request(
+            dir.path(),
+            &format!("main/r{i:02}"),
+            &req("https://x"),
+        )
+        .unwrap();
     }
     app.update(Action::RefreshSidebar);
     let r0 = row_rect(&mut app, 0);
@@ -21258,7 +21347,8 @@ fn undo_of_a_space_delete_restores_the_space_its_request_and_its_memory() {
     app.update(Action::Undo);
     assert_eq!(app.proj().spaces(), ["main", "auth"]);
     assert_eq!(
-        app.proj().local().active_space, "main",
+        app.proj().local().active_space,
+        "main",
         "undo returns to the deleted space"
     );
     // Exactly one space switch: restoring `.local/state.toml` must not
@@ -21360,7 +21450,10 @@ fn saving_over_an_outside_edit_asks_first_and_writes_nothing() {
         choices.iter().any(|(c, _, _)| *c == 'r'),
         "a file that still exists can be reloaded"
     );
-    assert!(app.editor.is_dirty(), "nothing was saved, so nothing is clean");
+    assert!(
+        app.editor.is_dirty(),
+        "nothing was saved, so nothing is clean"
+    );
 }
 
 #[test]
@@ -21552,7 +21645,10 @@ fn saving_a_slug_the_project_no_longer_holds_re_seeds_before_deciding() {
 
     dirty_the_editor(&mut app);
     app.handle_key(ctrl('s'));
-    assert!(app.modals.is_empty(), "the file had not moved, so no question");
+    assert!(
+        app.modals.is_empty(),
+        "the file had not moved, so no question"
+    );
     assert!(
         app.proj().held_request("main/ping").is_some(),
         "the save re-seeded the held entry rather than writing blind"
@@ -21572,7 +21668,10 @@ fn saving_a_slug_the_project_no_longer_holds_re_seeds_before_deciding() {
         matches!(app.modals.top(), Some(Modal::Confirm { .. })),
         "the drift check is live again"
     );
-    assert_eq!(on_disk_ping_url(&app), "https://x/ping-edited-outside-the-app");
+    assert_eq!(
+        on_disk_ping_url(&app),
+        "https://x/ping-edited-outside-the-app"
+    );
 }
 
 #[test]
@@ -21592,9 +21691,15 @@ fn saving_a_slug_that_is_neither_held_nor_readable_toasts_and_fails_the_gate() {
 
     app.update(Action::Quit);
     press(&mut app, 's');
-    assert!(!app.should_quit, "a save that could not even be checked stops the quit");
     assert!(
-        app.toasts.messages().iter().any(|m| m.contains("main/ping")),
+        !app.should_quit,
+        "a save that could not even be checked stops the quit"
+    );
+    assert!(
+        app.toasts
+            .messages()
+            .iter()
+            .any(|m| m.contains("main/ping")),
         "the real error is reported: {:?}",
         app.toasts.messages()
     );
@@ -21630,7 +21735,9 @@ fn undo_of_a_move_all_does_not_launder_an_outside_edit_into_a_clean_save() {
         "the outside edit the undo carried back is still unseen by the editor"
     );
     assert_eq!(
-        postui_core::fixtures::load_request(dir.path(), "main/alpha").unwrap().url,
+        postui_core::fixtures::load_request(dir.path(), "main/alpha")
+            .unwrap()
+            .url,
         "https://x/edited-outside-the-app",
         "and nothing was written"
     );
@@ -21649,9 +21756,14 @@ fn undo_of_a_move_all_without_an_outside_edit_saves_without_asking() {
     dirty_the_editor(&mut app);
     let mine = app.editor.url.text().to_string();
     app.handle_key(ctrl('s'));
-    assert!(app.modals.is_empty(), "the app's own replay is not an outside edit");
+    assert!(
+        app.modals.is_empty(),
+        "the app's own replay is not an outside edit"
+    );
     assert_eq!(
-        postui_core::fixtures::load_request(dir.path(), "main/alpha").unwrap().url,
+        postui_core::fixtures::load_request(dir.path(), "main/alpha")
+            .unwrap()
+            .url,
         mine
     );
 }
@@ -21698,7 +21810,9 @@ fn promote_refuses_when_the_open_request_changed_outside_the_app() {
         "the variable half never ran"
     );
     assert_eq!(
-        postui_core::fixtures::load_request(dir.path(), "main/ping").unwrap().url,
+        postui_core::fixtures::load_request(dir.path(), "main/ping")
+            .unwrap()
+            .url,
         "https://x/ping-edited-outside-the-app",
         "and the request file is untouched"
     );
@@ -21737,12 +21851,17 @@ fn extract_to_request_over_an_outside_edit_asks_instead_of_overwriting() {
         "the ordinary drift confirm handles it"
     );
     assert_eq!(
-        postui_core::fixtures::load_request(dir.path(), "main/ping").unwrap().url,
+        postui_core::fixtures::load_request(dir.path(), "main/ping")
+            .unwrap()
+            .url,
         "https://x/ping-edited-outside-the-app",
         "nothing is written until the user chooses"
     );
     assert!(
-        !app.toasts.messages().iter().any(|m| m.starts_with("extracted to")),
+        !app.toasts
+            .messages()
+            .iter()
+            .any(|m| m.starts_with("extracted to")),
         "nothing was written, so nothing is claimed: {:?}",
         app.toasts.messages()
     );
@@ -21761,7 +21880,10 @@ fn a_reload_from_disk_is_its_own_undo_step_and_says_so() {
     app.capture_undo();
     app.handle_key(ctrl('s'));
     press(&mut app, 'r');
-    assert_eq!(app.editor.url.text(), "https://x/ping-edited-outside-the-app");
+    assert_eq!(
+        app.editor.url.text(),
+        "https://x/ping-edited-outside-the-app"
+    );
     assert!(
         rendered_text(&mut app).contains("^Z undoes"),
         "the toast advertises the escape hatch, as Discard's does"
@@ -22458,4 +22580,32 @@ fn footer_chip_hints_describe_the_action() {
     app.handle_mouse(moved(del.x, del.y));
     let row = rendered_row(&mut app, 160, FOOTER_ROW);
     assert!(row.contains("Delete this row"), "{row:?}");
+}
+
+/// A syntax error in config.toml must block startup rather than drop the
+/// user into a session running on defaults -- with, silently, no project
+/// list either.
+#[test]
+fn a_broken_config_blocks_startup_until_answered() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("config.toml"), "not = [toml").unwrap();
+    let mut app = App::new_for_test();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+    let (_cfg, loaded, _warnings) = crate::config::Config::load_from(
+        crate::config::Config::at(dir.path().to_path_buf()),
+        false,
+    );
+    app.config_error = loaded.config_error;
+    app.apply_startup_config_gate();
+
+    assert!(
+        app.modals.top().is_some(),
+        "a broken config must raise a blocking modal"
+    );
+    // Continue-without-saving is the only path that reaches a session,
+    // and it is honest about what it costs.
+    app.update(Action::ConfigStartupChoice(
+        crate::action::ConfigStartupChoice::ContinueUnsaved,
+    ));
+    assert!(app.modals.top().is_none(), "the choice dismisses the modal");
 }

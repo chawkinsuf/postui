@@ -369,6 +369,15 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         }),
         Hit::NewProjectBrowse => text("Browse for the project folder"),
         Hit::ConfirmChoice(_) => text("Answer with this choice"),
+        Hit::ConfigStartupChoice(choice) => {
+            use crate::action::ConfigStartupChoice as C;
+            text(match choice {
+                C::Edit => "Open config.toml in your editor",
+                C::Reset => "Reset config.toml to its defaults",
+                C::ContinueUnsaved => "Run this session on defaults; nothing will be saved",
+                C::Quit => "Quit without changing config.toml",
+            })
+        }
         Hit::ModalCancel => text("Close without changes \u{b7} esc"),
         Hit::ModalConfirm => text("Confirm and close \u{b7} enter"),
         Hit::ModalChoiceArrow { dir, .. } => text(if *dir > 0 {
@@ -451,7 +460,12 @@ mod tests {
             "Pick a color theme"
         );
         assert_eq!(
-            hint_for(&Hit::FooterChip(Action::PromptRenameRequest), &keymap, &ctx()).unwrap(),
+            hint_for(
+                &Hit::FooterChip(Action::PromptRenameRequest),
+                &keymap,
+                &ctx()
+            )
+            .unwrap(),
             "Rename the open request"
         );
     }
@@ -466,15 +480,7 @@ mod tests {
             "Open the Manage screen"
         );
         assert_eq!(
-            hint_for(
-                &Hit::HeaderManage,
-                &keymap,
-                &HintCtx {
-                    on: true,
-                    ..ctx()
-                }
-            )
-            .unwrap(),
+            hint_for(&Hit::HeaderManage, &keymap, &HintCtx { on: true, ..ctx() }).unwrap(),
             "Close the Manage screen"
         );
     }
@@ -508,7 +514,12 @@ mod tests {
     fn palette_parentheticals_are_dropped() {
         let keymap = Keymap::default_bindings();
         assert_eq!(
-            hint_for(&Hit::FooterChip(Action::DeleteSelectedRequest), &keymap, &ctx()).unwrap(),
+            hint_for(
+                &Hit::FooterChip(Action::DeleteSelectedRequest),
+                &keymap,
+                &ctx()
+            )
+            .unwrap(),
             "Delete the open request"
         );
     }
@@ -575,7 +586,12 @@ mod tests {
         }
         // The split pill and the always-present right-hand pair, which
         // `footer_chips` doesn't list.
-        for action in [Action::CycleSplit, Action::CycleSplitBack, Action::OpenPalette, Action::Quit] {
+        for action in [
+            Action::CycleSplit,
+            Action::CycleSplitBack,
+            Action::OpenPalette,
+            Action::Quit,
+        ] {
             let h = hint_for(&Hit::FooterChip(action.clone()), &keymap, &ctx()).unwrap();
             assert_ne!(h, format!("{action:?}"), "{action:?} has no wording");
         }
@@ -587,15 +603,7 @@ mod tests {
         let keymap = Keymap::default_bindings();
         let idle = hint_for(&Hit::SendButton, &keymap, &ctx()).unwrap();
         assert!(idle.starts_with("Send the open request"), "{idle:?}");
-        let busy = hint_for(
-            &Hit::SendButton,
-            &keymap,
-            &HintCtx {
-                on: true,
-                ..ctx()
-            },
-        )
-        .unwrap();
+        let busy = hint_for(&Hit::SendButton, &keymap, &HintCtx { on: true, ..ctx() }).unwrap();
         assert_eq!(busy, "Cancel the request in flight");
     }
 
@@ -753,14 +761,23 @@ mod tests {
             // The key, where one is appended, doesn't count against the
             // wording — it is the same three or four cells everywhere.
             let words = h.split(" \u{b7} ").next().unwrap();
-            assert!(words.chars().count() <= 42, "too long \u{2014} {hit:?}: {h:?}");
+            assert!(
+                words.chars().count() <= 42,
+                "too long \u{2014} {hit:?}: {h:?}"
+            );
             assert!(
                 !words.contains(';') && !words.contains('('),
                 "one clause, no caveats \u{2014} {hit:?}: {h:?}"
             );
-            assert!(!words.ends_with('.'), "no full stop \u{2014} {hit:?}: {h:?}");
+            assert!(
+                !words.ends_with('.'),
+                "no full stop \u{2014} {hit:?}: {h:?}"
+            );
             let first = words.chars().next().unwrap();
-            assert!(first.is_uppercase(), "sentence case \u{2014} {hit:?}: {h:?}");
+            assert!(
+                first.is_uppercase(),
+                "sentence case \u{2014} {hit:?}: {h:?}"
+            );
         }
     }
 }

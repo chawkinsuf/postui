@@ -435,6 +435,11 @@ pub struct Loaded {
     pub keymap: crate::keys::Keymap,
     pub themes: crate::theme::ThemeRegistry,
     pub usage: crate::usage::UsageStore,
+    /// `Some` when `config.toml` exists but will not parse. Startup
+    /// blocks on this rather than running on defaults: `[projects]`
+    /// lives in the same file, so defaulting loses the project list and
+    /// `registry.last`, which is what picks the project to open.
+    pub config_error: Option<String>,
 }
 
 /// What one pass of [`Config::read_all`] got off disk. Each field is a
@@ -505,9 +510,11 @@ impl Config {
         // defaults and say so. (A reload's answer is the opposite — see
         // [`Self::reload`] — which is exactly why `read_all` reports the
         // bare error and leaves the consequence to us.)
+        let mut config_error = None;
         let (registry, ui) = match read.config {
             Ok(pair) => pair,
             Err(e) => {
+                config_error = Some(e.clone());
                 warnings.push(format!("{e}; using default settings"));
                 (ProjectsRegistry::default(), UiSettings::default())
             }
@@ -552,6 +559,7 @@ impl Config {
                 keymap,
                 themes,
                 usage,
+                config_error,
             },
             warnings,
         )
@@ -838,6 +846,33 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use tempfile::tempdir;
+
+    /// Startup must not silently swallow a broken config: the parse error
+    /// travels out so the app can block on it. `[projects]` is in the same
+    /// file, so defaulting here also loses the project list.
+    #[test]
+    fn startup_reports_a_config_that_will_not_parse() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.toml"), "not = [toml").unwrap();
+        let (_cfg, loaded, _warnings) =
+            Config::load_from(Config::at(dir.path().to_path_buf()), false);
+        let err = loaded
+            .config_error
+            .expect("a config that will not parse must be reported, not defaulted");
+        assert!(err.contains("config.toml"), "{err}");
+    }
+
+    #[test]
+    fn startup_reports_nothing_for_a_valid_or_absent_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_cfg, loaded, _) = Config::load_from(Config::at(dir.path().to_path_buf()), false);
+        assert!(loaded.config_error.is_none(), "absent is not broken");
+
+        std::fs::write(dir.path().join("config.toml"), "animations = false\n").unwrap();
+        let (_cfg, loaded, _) = Config::load_from(Config::at(dir.path().to_path_buf()), false);
+        assert!(loaded.config_error.is_none(), "valid is not broken");
+        assert!(!loaded.ui.animations);
+    }
 
     #[test]
     fn parse_empty_is_default_and_a_mistyped_table_degrades_silently() {

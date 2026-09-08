@@ -60,6 +60,41 @@ pub enum CopyTarget {
     ComputedHeader(usize),
 }
 
+/// Which user-editable config file an Edit…/Reset button targets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigFile {
+    Config,
+    Keys,
+}
+
+impl ConfigFile {
+    pub fn name(self) -> &'static str {
+        match self {
+            ConfigFile::Config => "config.toml",
+            ConfigFile::Keys => "keys.toml",
+        }
+    }
+}
+
+/// The answer to the startup modal raised when `config.toml` exists but
+/// will not parse. Startup does not continue into a normal session until
+/// one of these is chosen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigStartupChoice {
+    /// Hand `config.toml` to `$EDITOR` (Task 7's round-trip). A valid
+    /// save resumes startup; an invalid one returns to this modal.
+    Edit,
+    /// Reset the `UiSettings` keys (Task 14). `[projects]` survives only
+    /// if the file parses far enough to recover it; the confirm says so
+    /// when it does not.
+    Reset,
+    /// Run on defaults for this session. Every settings write stays
+    /// refused, because `Config::edit` will not write an unparseable
+    /// file — so nothing persists, including newly-registered projects.
+    ContinueUnsaved,
+    Quit,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     Quit,
@@ -76,6 +111,14 @@ pub enum Action {
     Close,
     ShowToast(String, ToastKind),
     ShowAbout,
+    /// Answers the broken-`config.toml` startup modal.
+    ConfigStartupChoice(ConfigStartupChoice),
+    /// Hands `file` to `$EDITOR` for a round trip. Stubbed until Task 7
+    /// lands the real editor round-trip.
+    EditConfigFile(ConfigFile),
+    /// Resets `file`'s user-editable keys to their defaults. Stubbed
+    /// until Task 14 lands the real reset.
+    ResetConfigFile(ConfigFile),
     EditorTabSelect(usize),
     EditorTabCycle(i8),
     CycleMethod,

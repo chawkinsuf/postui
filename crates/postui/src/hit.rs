@@ -229,6 +229,9 @@ pub enum Hit {
     TipReveal(String),
     /// A clickable `[y] Label` chip in a Confirm modal.
     ConfirmChoice(char),
+    /// One of `Modal::ConfigStartup`'s four buttons (Edit…/Reset/Continue
+    /// without saving settings/Quit).
+    ConfigStartupChoice(crate::action::ConfigStartupChoice),
     /// The top modal's painted Cancel button (Message has none; Prompt and
     /// NewProject each have one). Click parity with `Esc`: the app-side
     /// handler synthesizes an `Esc` key event into `ModalStack::handle_key`
