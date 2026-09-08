@@ -146,6 +146,7 @@ fn short_description(action: &Action) -> Option<&'static str> {
         Action::CycleProject(1) => "Switch to the next project",
         Action::CycleEnv(1) => "Switch to the next environment",
         Action::OpenMethodDropdown => "Pick an HTTP method",
+        Action::ReloadFromDisk => "Re-read this project's files and your config from disk",
         _ => return None,
     })
 }

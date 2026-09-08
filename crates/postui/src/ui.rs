@@ -79,6 +79,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         (app.editor.is_dirty() || app.editor.table.editing.is_some())
             && screen == Screen::Main
             && app.modals.top().is_none(),
+        // Reload takes the same slot whenever the Manage screen is up —
+        // the save/discard group above requires Screen::Main, so the two
+        // never both show.
+        screen == Screen::Manage,
         &mut hits,
         app.hovered.as_ref(),
     );

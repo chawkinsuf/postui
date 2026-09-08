@@ -22350,6 +22350,30 @@ fn reload_from_disk_resyncs_the_variable_manager_while_manage_is_open() {
     );
 }
 
+/// The header's Reload chip -- Reload's new home now that it has left the
+/// Manage bar -- runs the same reload a click always did.
+#[test]
+fn the_header_reload_chip_runs_the_reload() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    let _cfg = config_at_tempdir(&mut app);
+    app.update(Action::OpenManage { tab: None });
+    render_once(&mut app);
+    app.toasts = Default::default();
+
+    click_hit(&mut app, Hit::FooterChip(Action::ReloadFromDisk));
+
+    assert!(
+        app.toasts
+            .messages()
+            .contains(&"Reloaded project and config"),
+        "{:?}",
+        app.toasts.messages()
+    );
+}
+
 /// A reload must apply the new `UiSettings` without *replacing* the two
 /// pieces of live state derived from them. Dropping the `Clipboard` drops
 /// arboard's handle — on X11 without a clipboard manager that revokes
