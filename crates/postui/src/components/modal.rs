@@ -713,6 +713,23 @@ impl ModalStack {
         self.stack.last()
     }
 
+    /// The scope the value popup's "\u{2715} remove" would clear, when that
+    /// control is painted at all (the chosen Write-to scope stores
+    /// something). `None` for every other modal, and for a chosen scope
+    /// with nothing to remove -- exactly when the control is absent.
+    /// Feeds the footer hint, so the line under the pointer names the same
+    /// scope the remove chip does.
+    pub fn value_popup_remove_scope(&self) -> Option<ExtractDestination> {
+        let Modal::MultiPrompt { fields, kind, .. } = self.top()? else {
+            return None;
+        };
+        let PromptKind::EditVarValue { scope_values, .. } = kind else {
+            return None;
+        };
+        let (chosen, stored) = chosen_scope(fields, scope_values);
+        stored.then(|| destination_from_label(&chosen))
+    }
+
     /// The footer's context chips for the top modal — every screen-owning
     /// modal has some, so while one is open the footer always describes
     /// the keys that actually work (the modal captures everything else)

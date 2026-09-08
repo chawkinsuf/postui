@@ -352,6 +352,15 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         vm_chips,
         globals_live,
         plain_q_quits,
+        // The hovered button's hint — the footer stands in for a tooltip.
+        // Switched off wholesale by `hover_hints = false` in config.toml,
+        // which leaves the chip row untouched under the pointer.
+        app.ui_settings
+            .hover_hints
+            .then_some(app.hovered.as_ref())
+            .flatten()
+            .and_then(|h| crate::hint::hint_for(h, &app.keymap, &app.hint_ctx(h)))
+            .as_deref(),
         &mut hits,
         app.hovered.as_ref(),
     );
@@ -608,7 +617,7 @@ fn wrap_cells(s: &str, max: usize) -> Vec<String> {
 }
 
 /// `s` cut to at most `max` display cells, the last of which becomes `…`.
-fn ellipsize(s: &str, max: usize) -> String {
+pub(crate) fn ellipsize(s: &str, max: usize) -> String {
     use unicode_width::UnicodeWidthStr;
     if s.width() <= max {
         return s.to_string();
@@ -617,7 +626,7 @@ fn ellipsize(s: &str, max: usize) -> String {
 }
 
 /// The longest prefix of `s` that fits in `max` display cells.
-fn take_cells(s: &str, max: usize) -> String {
+pub(crate) fn take_cells(s: &str, max: usize) -> String {
     use unicode_width::UnicodeWidthChar;
     let mut out = String::new();
     let mut w = 0;

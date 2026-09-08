@@ -234,6 +234,11 @@ pub struct UiSettings {
     /// Whether eased transitions (tab underline, hover, modal open, ...)
     /// play, or every animated value jumps straight to its target.
     pub animations: bool,
+    /// Whether a hovered button explains itself on the footer row (see
+    /// `crate::hint`). Off leaves the footer's chips alone under the
+    /// pointer -- the hints are a teaching aid, and a user who knows the
+    /// app may prefer the chip row to stay put.
+    pub hover_hints: bool,
     /// Per-transition durations, tunable via the optional `[animation_ms]`
     /// table; see [`AnimDurations`].
     pub anim_ms: AnimDurations,
@@ -257,6 +262,7 @@ impl Default for UiSettings {
             osc52_limit: 65536,
             theme: "terminal".into(),
             animations: true,
+            hover_hints: true,
             anim_ms: AnimDurations::default(),
             ai_cmd: "claude -p".into(),
             ai_confirmed: false,
@@ -267,8 +273,9 @@ impl Default for UiSettings {
 
 impl UiSettings {
     /// Reads the top-level `clipboard_cmd` (string), `osc52_limit`
-    /// (integer), `theme` (string), `animations` (bool), `ai_cmd`
-    /// (string), `ai_confirmed` (bool), and `jq_tab` (string) keys out of
+    /// (integer), `theme` (string), `animations` (bool), `hover_hints`
+    /// (bool), `ai_cmd` (string), `ai_confirmed` (bool), and `jq_tab`
+    /// (string) keys out of
     /// `config.toml`'s text. Never errors: an empty string (the missing
     /// file) or a mistyped key degrades that piece to its default. Text
     /// that can't be parsed leaves everything at its default too, but says
@@ -306,6 +313,9 @@ impl UiSettings {
         }
         if let Some(b) = value.get("animations").and_then(|v| v.as_bool()) {
             settings.animations = b;
+        }
+        if let Some(b) = value.get("hover_hints").and_then(|v| v.as_bool()) {
+            settings.hover_hints = b;
         }
         if let Some(cmd) = value.get("ai_cmd").and_then(|v| v.as_str()) {
             settings.ai_cmd = cmd.to_string();
@@ -1145,6 +1155,14 @@ mod tests {
         let (s, warnings) = UiSettings::parse("clipboard_cmd = \"xclip\"\n");
         assert_eq!(s.theme, "terminal");
         assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn hover_hints_key_parses_and_defaults_true() {
+        let (s, warnings) = UiSettings::parse("hover_hints = false\n");
+        assert!(!s.hover_hints);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(UiSettings::default().hover_hints);
     }
 
     #[test]

@@ -22244,3 +22244,218 @@ fn reload_from_disk_reconfigures_the_clipboard_and_anims_without_replacing_them(
         "the in-flight animation survived the reload"
     );
 }
+
+/// Reads row `y` of a `w`x40 render as plain text (cells joined, no
+/// styling), for asserting on what the footer's content row shows.
+fn rendered_row(app: &mut App, w: u16, y: u16) -> String {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    app.anims.finish_all();
+    let backend = TestBackend::new(w, 40);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
+    let buf = terminal.backend().buffer();
+    (0..w)
+        .map(|x| buf[(x, y)].symbol().to_string())
+        .collect::<String>()
+}
+
+const FOOTER_ROW: u16 = 40 - 2; // content row of the 3-row footer
+const MANAGE_HINT: &str = "Open the Manage screen";
+
+/// Hovers the header's Manage chip (registered at every test width).
+fn hover_manage(app: &mut App) {
+    render_once(app);
+    let manage = app.hits.rect_of(&Hit::HeaderManage).unwrap();
+    app.handle_mouse(moved(manage.x, manage.y));
+}
+
+/// Hovers the header's environment chip — a hint long enough
+/// ("Switch to another environment") to ellipsize in the middle gap.
+fn hover_env(app: &mut App) {
+    render_once(app);
+    let env = app.hits.rect_of(&Hit::HeaderEnv).unwrap();
+    app.handle_mouse(moved(env.x, env.y));
+}
+
+/// Wide enough: hovering a button paints its one-line hint on the
+/// footer's content row, centred between the per-pane chips and the
+/// right-hand commands/quit pair, and the chips stay; moving off takes
+/// the hint away. No popup.
+#[test]
+fn hovering_a_button_shows_its_hint_between_the_chip_clusters() {
+    let mut app = App::new_for_test();
+    hover_manage(&mut app);
+    let row = rendered_row(&mut app, 160, FOOTER_ROW);
+    let at = row
+        .find(MANAGE_HINT)
+        .unwrap_or_else(|| panic!("hint shown: {row:?}"));
+    let chips_end = row.find("reorder").unwrap() + "reorder".len();
+    let palette = row.find("^P").unwrap();
+    assert!(
+        chips_end < at && at + MANAGE_HINT.len() < palette,
+        "{row:?}"
+    );
+
+    let pane = app.hits.rect_of(&Hit::Pane(PaneId::Sidebar)).unwrap();
+    app.handle_mouse(moved(pane.x + 2, pane.y + 6));
+    let row = rendered_row(&mut app, 160, FOOTER_ROW);
+    assert!(!row.contains("Open or"), "hint gone off-hover: {row:?}");
+}
+
+/// A gap that fits at least `HINT_MIN_SHOWN` cells shows the hint
+/// ellipsized; a narrower one leaves it out entirely, so a hover is never
+/// a stub beside `…`. The chips never yield the row either way — every
+/// button behaves the same, chips and non-chips alike.
+#[test]
+fn footer_hint_ellipsizes_above_the_lower_bound_and_is_left_out_below_it() {
+    let mut app = App::new_for_test();
+    hover_env(&mut app);
+    // 134 columns: the sidebar chips + commands/quit leave ~26 cells.
+    let row = rendered_row(&mut app, 134, FOOTER_ROW);
+    assert!(row.contains("Switch to another en"), "head shown: {row:?}");
+    assert!(row.contains('\u{2026}'), "ellipsized: {row:?}");
+    assert!(row.contains("reorder"), "chips stay: {row:?}");
+
+    // 120 columns: ~12 cells — too few, so no hint at all.
+    let row = rendered_row(&mut app, 120, FOOTER_ROW);
+    assert!(!row.contains("Switch to"), "hint left out: {row:?}");
+    assert!(row.contains("rename"), "chips keep the row: {row:?}");
+    assert!(
+        row.contains("^P") && row.contains("quit"),
+        "right pair stays: {row:?}"
+    );
+}
+
+/// The response toolbar acts on the tab that is up, so its hints follow
+/// the tab rather than always saying "body" (the buttons dispatch
+/// `CopyTarget::ResponseView` / `PromptSaveView`, not the palette's
+/// body-only commands).
+#[test]
+fn the_response_toolbar_hints_follow_the_open_tab() {
+    use crate::components::response::{ResponseState, ViewMode};
+    let mut app = App::new_for_test();
+    app.session.response.set_state(
+        ResponseState::Ready(Box::new(crate::http::ResponseData {
+            status: 200,
+            url: "https://x.test/a".into(),
+            headers: vec![("content-type".into(), "application/json".into())],
+            body: r#"{"a": 1}"#.into(),
+            ttfb: std::time::Duration::from_millis(5),
+            elapsed: std::time::Duration::from_millis(5),
+            size: 8,
+            content_type: None,
+        })),
+        0,
+    );
+    render_once(&mut app);
+    let hint = |app: &App, hit: &Hit| crate::hint::hint_for(hit, &app.keymap, &app.hint_ctx(hit));
+    assert_eq!(
+        hint(&app, &Hit::CopyBodyButton).unwrap(),
+        "Copy the response body"
+    );
+
+    app.update(crate::action::Action::ResponseViewMode(ViewMode::Headers));
+    render_once(&mut app);
+    assert_eq!(
+        hint(&app, &Hit::CopyBodyButton).unwrap(),
+        "Copy the response headers"
+    );
+    assert_eq!(
+        hint(&app, &Hit::SaveBodyButton).unwrap(),
+        "Save the headers to a file"
+    );
+    assert_eq!(
+        hint(&app, &Hit::ResponseEditorButton).unwrap(),
+        "Open the headers in your editor"
+    );
+    assert_eq!(
+        hint(&app, &Hit::ResponseSearchButton).unwrap(),
+        "Search the response headers"
+    );
+}
+
+/// `hover_hints = false` switches them off wholesale, leaving the chip
+/// row exactly as it reads with nothing hovered.
+#[test]
+fn hover_hints_can_be_turned_off_in_config() {
+    let mut app = App::new_for_test();
+    app.ui_settings.hover_hints = false;
+    hover_manage(&mut app);
+    let row = rendered_row(&mut app, 160, FOOTER_ROW);
+    assert!(!row.contains(MANAGE_HINT), "no hint: {row:?}");
+    assert!(row.contains("reorder"), "chips unchanged: {row:?}");
+}
+
+/// The ellipsized hint keeps two blank columns before the commands chip:
+/// the chip's leading pad is painted in the pill's own fill, so a hint
+/// butted against it reads as touching the button.
+#[test]
+fn an_ellipsized_hint_keeps_a_gap_before_the_commands_chip() {
+    let mut app = App::new_for_test();
+    hover_env(&mut app);
+    let row = rendered_row(&mut app, 134, FOOTER_ROW);
+    let end = row.find('\u{2026}').unwrap() + '\u{2026}'.len_utf8();
+    let palette = row.find("^P").unwrap();
+    assert!(
+        row[end..palette].len() >= 2 && row[end..palette].trim().is_empty(),
+        "two blank columns at least: {row:?}"
+    );
+}
+
+/// A hovered footer chip never swaps the chips away (that would un-hover
+/// it and oscillate with `resync_hover`): its hint takes the middle when
+/// the middle has room, and is left out when it hasn't — the same rule
+/// every other button follows.
+#[test]
+fn a_hovered_footer_chip_keeps_the_chip_row() {
+    let mut app = App::new_for_test();
+    render_once(&mut app);
+    let rename = app
+        .hits
+        .rect_of(&Hit::FooterChip(Action::PromptRenameRequest))
+        .unwrap();
+    app.handle_mouse(moved(rename.x, rename.y));
+    let row = rendered_row(&mut app, 160, FOOTER_ROW);
+    assert!(
+        row.contains("rename") && row.contains("reorder"),
+        "chips stay: {row:?}"
+    );
+    assert!(row.contains("Rename the"), "hint in the middle: {row:?}");
+
+    let row = rendered_row(&mut app, 120, FOOTER_ROW);
+    assert!(
+        row.contains("rename") && !row.contains("Rename the"),
+        "no room, so no hint — but the chips are untouched: {row:?}"
+    );
+    assert!(
+        !app.resync_hover(),
+        "the hovered chip is still under the pointer"
+    );
+}
+
+/// A footer chip's own hint says what the action does (the chip only
+/// has room for a word) — from the palette's description where the
+/// action has a command, and from the hint table's fallback otherwise.
+#[test]
+fn footer_chip_hints_describe_the_action() {
+    let mut app = App::new_for_test();
+    app.focus = PaneId::Editor;
+    render_once(&mut app);
+    let send = app.hits.rect_of(&Hit::FooterChip(Action::Send)).unwrap();
+    app.handle_mouse(moved(send.x, send.y));
+    let row = rendered_row(&mut app, 160, FOOTER_ROW);
+    assert!(row.contains("Send the open request"), "{row:?}");
+
+    let mut app = app_with_one_param();
+    app.editor.sub_focus = SubFocus::Content;
+    app.editor.table.selected = Some(0);
+    render_once(&mut app);
+    let del = app
+        .hits
+        .rect_of(&Hit::FooterChip(Action::DeleteTableRow(0)))
+        .unwrap();
+    app.handle_mouse(moved(del.x, del.y));
+    let row = rendered_row(&mut app, 160, FOOTER_ROW);
+    assert!(row.contains("Delete this row"), "{row:?}");
+}

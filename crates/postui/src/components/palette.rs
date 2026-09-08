@@ -194,7 +194,7 @@ pub fn all_commands() -> Vec<Command> {
         Command {
             id: "reload-from-disk",
             name: "Reload from disk",
-            description: "Re-read the project files, config.toml, keys.toml and themes/ from disk",
+            description: "Re-read the configuration and project files from disk",
             action: Action::ReloadFromDisk,
         },
         Command {
@@ -266,7 +266,7 @@ pub fn all_commands() -> Vec<Command> {
         Command {
             id: "response-search",
             name: "Response: search",
-            description: "Search within the response body",
+            description: "Search the response's active tab",
             action: Action::OpenResponseSearch,
         },
         Command {
@@ -360,7 +360,7 @@ pub fn all_commands() -> Vec<Command> {
 /// that reconciles them. Commands with no option here (most of them: focus
 /// moves, prompts, the palette itself has no self-referential binding,
 /// …) simply show no keybinding column, which is correct — they have none.
-fn keymap_action_name(command_id: &str) -> Option<&'static str> {
+pub(crate) fn keymap_action_name(command_id: &str) -> Option<&'static str> {
     match command_id {
         "quit" => Some("quit"),
         "send" => Some("send"),
@@ -382,6 +382,7 @@ fn keymap_action_name(command_id: &str) -> Option<&'static str> {
         "table-add-row" => Some("table_add_row"),
         "vars-insert" => Some("pick_variable"),
         "manage-variables" => Some("manage_open"),
+        "theme-choose" => Some("theme_choose"),
         "vars-extract" => Some("extract_to_variable"),
         "undo" => Some("undo"),
         "redo" => Some("redo"),
