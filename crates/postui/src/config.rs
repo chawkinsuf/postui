@@ -211,7 +211,8 @@ impl Default for AnimDurations {
 /// is showing (`jq_tab` in `config.toml`): list the candidates under the
 /// bar and step through them, shell-style (`menu`, the default; `accept`
 /// is accepted as an older name for it), or ghost the best one after the
-/// caret and step through the rest in place (`cycle`).
+/// caret and step through the rest in place (`ghost`; `cycle` is
+/// accepted as its older name).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum JqTab {
     Cycle,
@@ -289,7 +290,10 @@ impl UiSettings {
             Ok(value) => Self::from_value(&value),
             Err(e) => (
                 UiSettings::default(),
-                vec![format!("{}; using default settings", config_parse_error(&e))],
+                vec![format!(
+                    "{}; using default settings",
+                    config_parse_error(&e)
+                )],
             ),
         }
     }
@@ -300,38 +304,79 @@ impl UiSettings {
         let mut settings = UiSettings::default();
         let mut warnings = Vec::new();
 
-        if let Some(cmd) = value.get("clipboard_cmd").and_then(|v| v.as_str()) {
-            settings.clipboard_cmd = Some(cmd.to_string());
+        // A key that is present but of the wrong type falls back to its
+        // default *and says so*: silent per-key defaulting is how a
+        // customised app quietly becomes a default one.
+        let mut wrong_type = |key: &str, expected: &str| {
+            warnings.push(format!(
+                "invalid value for {key:?} in config.toml (expected {expected}); using default"
+            ));
+        };
+
+        match value.get("clipboard_cmd") {
+            None => {}
+            Some(v) => match v.as_str() {
+                Some(cmd) => settings.clipboard_cmd = Some(cmd.to_string()),
+                None => wrong_type("clipboard_cmd", "a string"),
+            },
         }
-        if let Some(limit) = value.get("osc52_limit").and_then(|v| v.as_integer())
-            && let Ok(limit) = usize::try_from(limit)
-        {
-            settings.osc52_limit = limit;
+        match value.get("osc52_limit") {
+            None => {}
+            Some(v) => match v.as_integer().and_then(|n| usize::try_from(n).ok()) {
+                Some(limit) => settings.osc52_limit = limit,
+                None => wrong_type("osc52_limit", "a non-negative integer"),
+            },
         }
-        if let Some(raw) = value.get("theme").and_then(|v| v.as_str()) {
-            settings.theme = raw.to_string();
+        match value.get("theme") {
+            None => {}
+            Some(v) => match v.as_str() {
+                Some(raw) => settings.theme = raw.to_string(),
+                None => wrong_type("theme", "a string"),
+            },
         }
-        if let Some(b) = value.get("animations").and_then(|v| v.as_bool()) {
-            settings.animations = b;
+        match value.get("animations") {
+            None => {}
+            Some(v) => match v.as_bool() {
+                Some(b) => settings.animations = b,
+                None => wrong_type("animations", "a boolean"),
+            },
         }
-        if let Some(b) = value.get("hover_hints").and_then(|v| v.as_bool()) {
-            settings.hover_hints = b;
+        match value.get("hover_hints") {
+            None => {}
+            Some(v) => match v.as_bool() {
+                Some(b) => settings.hover_hints = b,
+                None => wrong_type("hover_hints", "a boolean"),
+            },
         }
-        if let Some(cmd) = value.get("ai_cmd").and_then(|v| v.as_str()) {
-            settings.ai_cmd = cmd.to_string();
+        match value.get("ai_cmd") {
+            None => {}
+            Some(v) => match v.as_str() {
+                Some(cmd) => settings.ai_cmd = cmd.to_string(),
+                None => wrong_type("ai_cmd", "a string"),
+            },
         }
-        if let Some(b) = value.get("ai_confirmed").and_then(|v| v.as_bool()) {
-            settings.ai_confirmed = b;
+        match value.get("ai_confirmed") {
+            None => {}
+            Some(v) => match v.as_bool() {
+                Some(b) => settings.ai_confirmed = b,
+                None => wrong_type("ai_confirmed", "a boolean"),
+            },
         }
-        if let Some(raw) = value.get("jq_tab").and_then(|v| v.as_str()) {
-            match raw {
-                "cycle" => settings.jq_tab = JqTab::Cycle,
-                "menu" | "accept" => settings.jq_tab = JqTab::Menu,
-                other => warnings.push(format!(
+        match value.get("jq_tab") {
+            None => {}
+            Some(v) => match v.as_str() {
+                // "ghost" is the written spelling; "cycle" is its older name
+                // and stays parseable forever, exactly as "accept" is kept as
+                // the older name for "menu".
+                Some("ghost" | "cycle") => settings.jq_tab = JqTab::Cycle,
+                Some("menu" | "accept") => settings.jq_tab = JqTab::Menu,
+                Some(other) => warnings.push(format!(
                     "invalid value {other:?} for jq_tab in config.toml \
-                     (expected \"menu\" or \"cycle\"); using \"menu\""
+                     (expected \"menu\" or \"ghost\", or the older name \"cycle\"); \
+                     using \"menu\""
                 )),
-            }
+                None => wrong_type("jq_tab", "a string"),
+            },
         }
 
         if let Some(table) = value.get("animation_ms").and_then(|v| v.as_table()) {
@@ -1133,6 +1178,78 @@ mod tests {
     }
 
     #[test]
+    fn a_mistyped_key_warns_instead_of_silently_defaulting() {
+        let (settings, warnings) = UiSettings::parse("animations = \"yes\"\n");
+        assert!(settings.animations, "falls back to the default");
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("animations") && w.contains("boolean")),
+            "the fallback must name the key and the expected type: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn every_wrong_typed_key_warns() {
+        let text = "\
+clipboard_cmd = 1
+osc52_limit = \"big\"
+theme = true
+animations = \"yes\"
+hover_hints = 3
+ai_cmd = []
+ai_confirmed = \"yes\"
+";
+        let (_, warnings) = UiSettings::parse(text);
+        for key in [
+            "clipboard_cmd",
+            "osc52_limit",
+            "theme",
+            "animations",
+            "hover_hints",
+            "ai_cmd",
+            "ai_confirmed",
+        ] {
+            assert!(
+                warnings.iter().any(|w| w.contains(key)),
+                "{key} defaulted with no warning: {warnings:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn ghost_and_cycle_are_the_same_mode() {
+        let (ghost, w1) = UiSettings::parse("jq_tab = \"ghost\"\n");
+        let (cycle, w2) = UiSettings::parse("jq_tab = \"cycle\"\n");
+        assert_eq!(ghost.jq_tab, JqTab::Cycle);
+        assert_eq!(cycle.jq_tab, JqTab::Cycle);
+        assert!(w1.is_empty() && w2.is_empty(), "{w1:?} {w2:?}");
+    }
+
+    #[test]
+    fn an_unknown_jq_tab_names_every_accepted_spelling() {
+        let (settings, warnings) = UiSettings::parse("jq_tab = \"nope\"\n");
+        assert_eq!(settings.jq_tab, JqTab::Menu);
+        let w = warnings.join(" ");
+        for spelling in ["menu", "ghost", "cycle"] {
+            assert!(w.contains(spelling), "{spelling} not named: {w}");
+        }
+    }
+
+    #[test]
+    fn a_valid_file_produces_no_warnings() {
+        let text = "\
+animations = false
+hover_hints = false
+jq_tab = \"ghost\"
+ai_cmd = \"claude -p\"
+osc52_limit = 1024
+";
+        let (_, warnings) = UiSettings::parse(text);
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    #[test]
     fn save_ui_flag_sets_the_key_and_preserves_unrelated_content() {
         let dir = tempdir().unwrap();
         let p = dir.path().join("config.toml");
@@ -1464,8 +1581,14 @@ mod tests {
         assert_eq!(loaded.ui, UiSettings::default());
         assert_eq!(loaded.registry, ProjectsRegistry::default());
         assert_eq!(warnings.len(), 1, "{warnings:?}");
-        assert!(warnings[0].starts_with("could not parse config.toml: "), "{warnings:?}");
-        assert!(warnings[0].ends_with("; using default settings"), "{warnings:?}");
+        assert!(
+            warnings[0].starts_with("could not parse config.toml: "),
+            "{warnings:?}"
+        );
+        assert!(
+            warnings[0].ends_with("; using default settings"),
+            "{warnings:?}"
+        );
     }
 
     /// An unreadable config.toml gets the same treatment as an unparsable
@@ -1491,7 +1614,10 @@ mod tests {
         assert_eq!(loaded.ui, UiSettings::default());
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         assert!(warnings[0].contains("config.toml"), "{warnings:?}");
-        assert!(warnings[0].ends_with("; using default settings"), "{warnings:?}");
+        assert!(
+            warnings[0].ends_with("; using default settings"),
+            "{warnings:?}"
+        );
     }
 
     #[test]
@@ -1501,7 +1627,10 @@ mod tests {
         let (_cfg, loaded, warnings) =
             Config::load_from(Config::at(dir.path().to_path_buf()), false);
 
-        assert!(warnings.is_empty(), "a missing file is not a problem: {warnings:?}");
+        assert!(
+            warnings.is_empty(),
+            "a missing file is not a problem: {warnings:?}"
+        );
         assert_eq!(loaded.ui, UiSettings::default());
         assert_eq!(loaded.registry, ProjectsRegistry::default());
         assert_eq!(loaded.keymap, crate::keys::Keymap::default_bindings());
