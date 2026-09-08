@@ -864,7 +864,7 @@ impl App {
     /// Like [`Self::vm_field_drag_to`], for the Settings tab's field
     /// under edit — a one-row well, so only the column maps.
     fn settings_field_drag_to(&mut self, column: u16) -> bool {
-        use crate::components::settings::WELL_PAD;
+        use crate::paint::WELL_PAD;
         let Some(field) = self.settings.editing else {
             return false;
         };
@@ -1188,7 +1188,7 @@ impl App {
             // only moves the caret, which is what a click in a live text
             // box means everywhere else in the app.
             Hit::SettingsControl(field) => {
-                use crate::components::settings::WELL_PAD;
+                use crate::paint::WELL_PAD;
                 let already_editing = self.settings.editing == Some(field);
                 let mut changed = false;
                 if !already_editing {

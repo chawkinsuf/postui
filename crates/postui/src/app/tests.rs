@@ -23598,7 +23598,8 @@ fn right_click_on_a_settings_row_not_under_edit_offers_no_text_menu() {
 #[test]
 fn a_click_in_a_settings_field_places_the_caret_where_it_landed() {
     use crate::components::manage::ManageTab;
-    use crate::components::settings::{SettingsField, WELL_PAD};
+    use crate::components::settings::SettingsField;
+    use crate::paint::WELL_PAD;
     let mut app = App::new_for_test();
     app.update(Action::OpenManage {
         tab: Some(ManageTab::Settings),
@@ -23631,7 +23632,8 @@ fn a_click_in_a_settings_field_places_the_caret_where_it_landed() {
 #[test]
 fn dragging_in_a_settings_field_sweeps_a_selection() {
     use crate::components::manage::ManageTab;
-    use crate::components::settings::{SettingsField, WELL_PAD};
+    use crate::components::settings::SettingsField;
+    use crate::paint::WELL_PAD;
     let mut app = App::new_for_test();
     app.update(Action::OpenManage {
         tab: Some(ManageTab::Settings),
@@ -23661,7 +23663,8 @@ fn dragging_in_a_settings_field_sweeps_a_selection() {
 #[test]
 fn double_clicking_a_settings_field_selects_the_word() {
     use crate::components::manage::ManageTab;
-    use crate::components::settings::{SettingsField, WELL_PAD};
+    use crate::components::settings::SettingsField;
+    use crate::paint::WELL_PAD;
     let mut app = App::new_for_test();
     app.update(Action::OpenManage {
         tab: Some(ManageTab::Settings),

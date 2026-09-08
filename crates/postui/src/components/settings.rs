@@ -14,15 +14,17 @@ use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::KeyEvent;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::text::Line;
 
 use crate::action::{Action, ConfigFile};
 use crate::components::line_input::LineInput;
 use crate::config::{JqTab, UiSettings};
-use crate::glyph;
 use crate::hit::{Hit, HitMap};
-use crate::paint::{ListRow, RowHighlight, fill, text};
+use crate::paint::{
+    ButtonKind, ControlSlot, ControlState, PROPERTY_MAX_W, Pill, PropertyRow, Toggle, TrailingPill,
+    WELL_PAD, Well, fill, label_column, pill_min_width, text,
+};
 use crate::theme::Theme;
 
 /// Which control a row carries.
@@ -262,6 +264,14 @@ impl SettingsTab {
         self.input.cursor()
     }
 
+    /// The live edit's content line, windowed to `width` columns with
+    /// its caret shown — what the well paints while this field is under
+    /// edit. `LineInput::draw_line_windowed` styles the caret and the
+    /// selection from the theme, so it needs one.
+    pub fn input_line(&self, theme: &Theme, width: u16) -> Line<'static> {
+        self.input.draw_line_windowed(true, theme, width)
+    }
+
     /// Places the caret for a click inside the live edit's well.
     ///
     /// `col` is the column *within the well's content area* and
@@ -323,18 +333,6 @@ pub fn parse_osc52_limit(text: &str) -> Result<usize, String> {
         .map_err(|_| "expected a size in bytes, e.g. 65536".to_string())
 }
 
-/// The label column's width: every control starts here, so the rows read
-/// as one list rather than as ragged label/control pairs.
-const LABEL_W: u16 = 28;
-/// The widest a settings row is painted, however wide the body is: a
-/// text field stretched across a 200-column terminal is unreadable.
-const MAX_W: u16 = 76;
-/// Padding either side of a text well's content. The well paints its
-/// value at `rect.x + WELL_PAD` across `width - 2 * WELL_PAD` columns,
-/// and the mouse maps a click back through the same two numbers — so
-/// this constant is what keeps the caret under the pointer.
-pub const WELL_PAD: u16 = 1;
-
 /// Paints the tab: the seven settings, then the Files section's two
 /// Edit…/Reset rows. Every row registers `Hit::SettingsRow`, and every
 /// control its own hit on top of it, so the mouse reaches exactly what
@@ -367,8 +365,12 @@ pub fn draw_settings(
         return;
     }
     let x0 = body.x + 2;
-    let row_w = (body.width - 2).min(MAX_W);
-    let cx = x0 + LABEL_W;
+    // Two columns of inset each side, the same shape the Variables and
+    // Environments panes use -- so a row's label starts exactly under
+    // its section heading and the three panes line up with each other.
+    let row_w = body.width.saturating_sub(4).clamp(1, PROPERTY_MAX_W);
+    let labels: Vec<&str> = SettingsTab::rows().iter().map(|r| r.label()).collect();
+    let label_w = label_column(&labels);
     let bottom = body.y + body.height;
     let mut y = body.y + 1;
     let mut files_started = false;
@@ -397,57 +399,58 @@ pub fn draw_settings(
             return;
         }
         let rect = Rect {
-            x: body.x + 1,
+            x: x0,
             y,
             width: row_w,
             height: 1,
         };
         // File rows are not governed by `editable` at all: Edit… and
-        // Reset are the two ways *out* of a broken config.toml (Task
-        // 14's `ForceResetConfigFile` exists precisely for this case),
-        // so they stay exactly as live as always. Only a setting row —
-        // whose write genuinely would be refused by `Config::edit` — is
+        // Reset are the two ways *out* of a broken config.toml, so they
+        // stay exactly as live as always. Only a setting row — whose
+        // write genuinely would be refused by `Config::edit` — is
         // disabled.
         let row_disabled = !editable && matches!(row, SettingsRow::Setting(_));
-        // A live edit is its own "you are here", so the row band steps
-        // back to let the field carry the focus. A disabled setting row
-        // never highlights: there is nothing for the cursor or the
-        // pointer to land on.
-        let highlight = if row_disabled {
-            RowHighlight::None
-        } else if tab.cursor == i && tab.editing.is_none() {
-            RowHighlight::Selected
-        } else if hovered == Some(&Hit::SettingsRow(i)) {
-            RowHighlight::Hover
-        } else {
-            RowHighlight::None
-        };
-        ListRow {
-            highlight,
-            zebra: None,
-        }
-        .paint(buf, y, rect.x, rect.width, theme.page, 1.0, theme);
-        let bg = ListRow::resolve_fill(theme, highlight, theme.page, 1.0);
-        let label_fg = if row_disabled {
-            theme.text_disabled
-        } else {
-            theme.text
-        };
-        text(buf, x0, y, row.label(), label_fg, bg, false);
+        let hovered_row = hovered == Some(&Hit::SettingsRow(i));
         // A disabled setting row registers no hit at all: a control that
-        // looks live and silently refuses every write is the defect this
-        // banner exists to remove. A File row's own hit is unaffected.
+        // looks live and silently refuses every write is the defect the
+        // banner above exists to remove.
+        //
+        // Registered *before* the row is painted, because `HitMap`
+        // resolves the last registration containing the point: the row's
+        // trailing pills go down inside `PropertyRow::paint`, and a
+        // row-wide hit landing after them would swallow every click on
+        // Reset.
         if !row_disabled {
             hits.register(rect, Hit::SettingsRow(i));
         }
-
-        let right = rect.x + rect.width;
+        // Trailing pills: a File row's Reset sits at the right edge, and
+        // `PropertyRow` lays it out and registers it.
+        let trailing: Vec<TrailingPill> = match row {
+            SettingsRow::File(file) => vec![TrailingPill {
+                label: "Reset",
+                kind: ButtonKind::Secondary,
+                state: file_button_state(tab, i, 1, hovered, *file),
+                hit: Hit::SettingsFile {
+                    file: *file,
+                    reset: true,
+                },
+            }],
+            SettingsRow::Setting(_) => Vec::new(),
+        };
+        let slot = PropertyRow {
+            label: row.label(),
+            label_w,
+            hovered: hovered_row,
+            disabled: row_disabled,
+            trailing: &trailing,
+        }
+        .paint(buf, hits, rect, theme);
         match row {
             SettingsRow::Setting(field) => draw_setting_control(
-                buf, hits, hovered, theme, tab, ui, *field, cx, y, right, bg, editable,
+                buf, hits, hovered, theme, tab, ui, *field, &slot, i, editable,
             ),
             SettingsRow::File(file) => {
-                draw_file_buttons(buf, hits, hovered, theme, tab, i, *file, cx, y, right)
+                draw_file_edit_button(buf, hits, hovered, theme, tab, i, *file, &slot)
             }
         }
         y += 1;
@@ -491,22 +494,60 @@ fn heading(buf: &mut Buffer, x: u16, y: u16, label: &str, theme: &Theme) {
     text(buf, x, y, label, theme.accent, theme.page, true);
 }
 
-/// A one-row pill: the label in `face`, returning the width painted.
-fn pill(buf: &mut Buffer, x: u16, y: u16, label: &str, face: Color, fg: Color) -> u16 {
-    let padded = format!(" {label} ");
-    let w = padded.chars().count() as u16;
-    fill(
-        buf,
-        Rect {
-            x,
-            y,
-            width: w,
-            height: 1,
-        },
-        face,
-    );
-    text(buf, x, y, &padded, fg, face, false);
-    w
+/// The `(state)` a File row's button `which` (0 = Edit…, 1 = Reset)
+/// paints with: the aimed one lifts when the cursor is on this row.
+fn file_button_state(
+    tab: &SettingsTab,
+    row: usize,
+    which: usize,
+    hovered: Option<&Hit>,
+    file: ConfigFile,
+) -> ControlState {
+    let hit = Hit::SettingsFile {
+        file,
+        reset: which == 1,
+    };
+    if tab.cursor == row && tab.file_button == which {
+        ControlState::Focused
+    } else if hovered == Some(&hit) {
+        ControlState::Hover
+    } else {
+        ControlState::Normal
+    }
+}
+
+/// A File row's Edit… button. Never gated on `editable`: Edit… is
+/// always the way to fix `config.toml` by hand, and Reset (the row's
+/// trailing pill) stays live for the same reason -- `ForceResetConfigFile`
+/// exists precisely so Reset still works when the file will not parse.
+/// Disabling either would remove one of the two ways out.
+#[allow(clippy::too_many_arguments)]
+fn draw_file_edit_button(
+    buf: &mut Buffer,
+    hits: &mut HitMap,
+    hovered: Option<&Hit>,
+    theme: &Theme,
+    tab: &SettingsTab,
+    row: usize,
+    file: ConfigFile,
+    slot: &ControlSlot,
+) {
+    let label = "Edit\u{2026}";
+    let w = pill_min_width(label);
+    if w > slot.rect.width {
+        return;
+    }
+    let rect = Rect {
+        width: w,
+        ..slot.rect
+    };
+    Pill {
+        label,
+        kind: ButtonKind::Secondary,
+        state: file_button_state(tab, row, 0, hovered, file),
+    }
+    .paint(buf, rect, theme);
+    hits.register(rect, Hit::SettingsFile { file, reset: false });
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -518,53 +559,66 @@ fn draw_setting_control(
     tab: &SettingsTab,
     ui: &UiSettings,
     field: SettingsField,
-    cx: u16,
-    y: u16,
-    right: u16,
-    bg: Color,
+    slot: &ControlSlot,
+    row: usize,
     editable: bool,
 ) {
-    if cx + 6 > right {
+    if slot.rect.width < 4 {
         return;
     }
     let hit = Hit::SettingsControl(field);
-    let hot = editable && hovered == Some(&hit);
+    // The cursor is this control lifting its own fill — with no band,
+    // it is the only thing that says where the keyboard is. A live edit
+    // counts as focused too: it *is* the cursor.
+    let state = |own_hit: &Hit| {
+        if !editable {
+            ControlState::Disabled
+        } else if tab.cursor == row && tab.editing.is_none() {
+            ControlState::Focused
+        } else if hovered == Some(own_hit) {
+            ControlState::Hover
+        } else {
+            ControlState::Normal
+        }
+    };
 
     if field == SettingsField::JqTab {
-        let mut x = cx;
+        let mut x = slot.rect.x;
         for (label, mode) in JQ_SEGMENTS {
             let seg = Hit::SettingsJqTab(mode);
-            let face = if !editable {
-                theme.control
-            } else if ui.jq_tab == mode {
-                theme.accent
-            } else if hovered == Some(&seg) {
-                theme.control_hover
-            } else {
-                theme.control
-            };
-            let fg = if !editable {
-                theme.text_disabled
-            } else if ui.jq_tab == mode {
-                theme.on_accent
-            } else {
-                theme.text
-            };
-            let w = label.chars().count() as u16 + 2;
-            if x + w > right {
+            let w = pill_min_width(label);
+            if x + w > slot.rect.x + slot.rect.width {
                 return;
             }
-            pill(buf, x, y, label, face, fg);
+            // The active segment is Primary; the cursor still lifts
+            // whichever segment the pointer or keyboard is on.
+            let kind = if ui.jq_tab == mode {
+                ButtonKind::Primary
+            } else {
+                ButtonKind::Secondary
+            };
+            let seg_state = if !editable {
+                ControlState::Disabled
+            } else if hovered == Some(&seg) {
+                ControlState::Hover
+            } else if tab.cursor == row && ui.jq_tab == mode {
+                ControlState::Focused
+            } else {
+                ControlState::Normal
+            };
+            let rect = Rect {
+                x,
+                width: w,
+                ..slot.rect
+            };
+            Pill {
+                label,
+                kind,
+                state: seg_state,
+            }
+            .paint(buf, rect, theme);
             if editable {
-                hits.register(
-                    Rect {
-                        x,
-                        y,
-                        width: w,
-                        height: 1,
-                    },
-                    seg,
-                );
+                hits.register(rect, seg);
             }
             x += w + 1;
         }
@@ -572,27 +626,15 @@ fn draw_setting_control(
     }
 
     if let Some(on) = field.checkbox(ui) {
-        let glyph = if on {
-            glyph::CHECKBOX
-        } else {
-            glyph::CHECKBOX_OFF
-        };
-        let fg = if !editable {
-            theme.text_disabled
-        } else if on {
-            theme.accent
-        } else {
-            theme.text_muted
-        };
-        let face = if hot { theme.control_hover } else { bg };
         let rect = Rect {
-            x: cx,
-            y,
-            width: 3,
-            height: 1,
+            width: crate::paint::TOGGLE_W,
+            ..slot.rect
         };
-        fill(buf, rect, face);
-        text(buf, cx + 1, y, glyph, fg, face, false);
+        Toggle {
+            on,
+            state: state(&hit),
+        }
+        .paint(buf, rect, theme);
         if editable {
             hits.register(rect, hit);
         }
@@ -602,29 +644,23 @@ fn draw_setting_control(
     // The three text rows: a one-row well holding the live `LineInput`
     // while this field is under edit, else the value on disk.
     let editing = tab.editing == Some(field);
-    let width = right.saturating_sub(cx).min(40);
+    let width = slot.rect.width.min(40);
     if width < 6 {
         return;
     }
-    let rect = Rect {
-        x: cx,
-        y,
-        width,
-        height: 1,
-    };
-    let face = if !editable {
-        theme.control
-    } else if editing {
-        theme.control_pressed
-    } else if hot {
-        theme.control_hover
+    let rect = Rect { width, ..slot.rect };
+    let well_state = if !editable {
+        ControlState::Disabled
+    } else if editing || (tab.cursor == row && tab.editing.is_none()) {
+        ControlState::Focused
+    } else if hovered == Some(&hit) {
+        ControlState::Hover
     } else {
-        theme.control
+        ControlState::Normal
     };
-    fill(buf, rect, face);
     let inner = width.saturating_sub(WELL_PAD * 2);
-    let line: Line<'static> = if editing {
-        tab.input.draw_line_windowed(true, theme, inner)
+    let content: Line<'static> = if editing {
+        tab.input_line(theme, inner)
     } else {
         match field.text_value(ui).unwrap_or_default() {
             v if v.is_empty() => Line::styled(
@@ -635,73 +671,16 @@ fn draw_setting_control(
                     theme.text_disabled
                 }),
             ),
-            v => Line::styled(
-                v,
-                Style::default().fg(if editable {
-                    theme.text
-                } else {
-                    theme.text_disabled
-                }),
-            ),
+            v => Line::raw(v),
         }
     };
-    buf.set_line(rect.x + WELL_PAD, y, &line, inner);
+    Well {
+        content,
+        state: well_state,
+    }
+    .paint(buf, rect, theme);
     if editable {
         hits.register(rect, hit);
-    }
-}
-
-/// A File row's Edit… and Reset are never gated on `editable`: Edit… is
-/// always the way to fix `config.toml` by hand, and `ForceResetConfigFile`
-/// (Task 14) exists precisely so Reset still works when `config.toml`
-/// will not parse -- the confirm it raises already warns, in that
-/// branch, that the project list will be lost. Disabling either would
-/// remove one of the two ways out.
-#[allow(clippy::too_many_arguments)]
-fn draw_file_buttons(
-    buf: &mut Buffer,
-    hits: &mut HitMap,
-    hovered: Option<&Hit>,
-    theme: &Theme,
-    tab: &SettingsTab,
-    index: usize,
-    file: ConfigFile,
-    cx: u16,
-    y: u16,
-    right: u16,
-) {
-    let mut x = cx;
-    for (slot, label) in [(0usize, "Edit…"), (1, "Reset")] {
-        let hit = Hit::SettingsFile {
-            file,
-            reset: slot == 1,
-        };
-        // The keyboard's chosen button reads exactly like the hovered
-        // one: left/right are how a File row is aimed.
-        let chosen = tab.cursor == index && tab.file_button == slot;
-        let face = if chosen {
-            theme.accent
-        } else if hovered == Some(&hit) {
-            theme.control_hover
-        } else {
-            theme.control
-        };
-        let fg = if chosen { theme.on_accent } else { theme.text };
-        let w = label.chars().count() as u16 + 2;
-        if x + w > right {
-            return;
-        }
-        pill(buf, x, y, label, face, fg);
-        hits.register(
-            Rect {
-                x,
-                y,
-                width: w,
-                height: 1,
-            },
-            hit,
-        );
-        x += w + 1;
     }
 }
 
@@ -890,6 +869,99 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    /// The tab's rows are properties, not list items, so none of them
+    /// may paint the list band. This is the assertion that keeps the
+    /// band meaning "selected item in a list" everywhere else.
+    #[test]
+    fn no_settings_row_paints_the_list_band() {
+        use crate::hit::HitMap;
+        let theme = Theme::dark();
+        let ui = UiSettings::default();
+        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        let tab = SettingsTab {
+            cursor: 3,
+            ..Default::default()
+        };
+        let mut hits = HitMap::default();
+        term.draw(|f| {
+            let body = Rect::new(0, 0, 100, 30);
+            draw_settings(f, body, &theme, &tab, &ui, None, &mut hits, None);
+        })
+        .unwrap();
+        let buf = term.backend().buffer();
+        for y in 0..30 {
+            for x in 0..100 {
+                let cell = buf.cell((x, y)).unwrap();
+                assert_ne!(cell.bg, theme.selection, "band at {x},{y}");
+                assert_ne!(cell.symbol(), "▌", "accent bar at {x},{y}");
+            }
+        }
+    }
+
+    /// The cursor is the control lifting its own fill. With the band
+    /// gone this is the *only* thing that says where the keyboard is,
+    /// so it has to be unmistakably brighter than a resting control.
+    #[test]
+    fn the_cursor_row_lifts_its_own_control() {
+        use crate::hit::HitMap;
+        let theme = Theme::dark();
+        let ui = UiSettings::default();
+        let ai_row = SettingsTab::rows()
+            .iter()
+            .position(|r| *r == SettingsRow::Setting(SettingsField::AiCmd))
+            .unwrap();
+        let mut hits = HitMap::default();
+        let tab = SettingsTab {
+            cursor: ai_row,
+            ..Default::default()
+        };
+        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        term.draw(|f| {
+            draw_settings(
+                f,
+                Rect::new(0, 0, 100, 30),
+                &theme,
+                &tab,
+                &ui,
+                None,
+                &mut hits,
+                None,
+            );
+        })
+        .unwrap();
+        let well = hits
+            .rect_of(&Hit::SettingsControl(SettingsField::AiCmd))
+            .unwrap();
+        let painted = term.backend().buffer().cell((well.x, well.y)).unwrap().bg;
+        assert_eq!(
+            painted,
+            crate::theme::lift_color(theme.control, 0.12),
+            "the cursor's control is lifted, not merely hovered"
+        );
+        assert_ne!(painted, theme.control_hover);
+    }
+
+    /// A File row registers its own row hit *and* the Reset pill sitting
+    /// on it. `HitMap` resolves the last registration to contain the
+    /// point, so if the row-wide hit were registered after the pill,
+    /// Reset would stop being clickable -- the button still painted, and
+    /// a click on it landing on the row behind. `rect_of` cannot catch
+    /// that (both registrations exist); only the point lookup can.
+    #[test]
+    fn a_file_rows_reset_button_wins_the_click_over_the_row_behind_it() {
+        let hits = render(&SettingsTab::default(), &UiSettings::default());
+        for file in [ConfigFile::Config, ConfigFile::Keys] {
+            let reset = Hit::SettingsFile { file, reset: true };
+            let rect = hits.rect_of(&reset).expect("Reset is painted");
+            let landed = hits.hit_at(rect.x + rect.width / 2, rect.y);
+            assert_eq!(
+                landed,
+                Some(&reset),
+                "{file:?}: a click inside Reset must reach Reset, not the row behind it"
+            );
         }
     }
 }
