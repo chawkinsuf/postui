@@ -469,6 +469,16 @@ pub enum Modal {
     ConfigStartup {
         error: String,
     },
+    /// Raised when the Edit… round-trip's `$EDITOR` text does not
+    /// validate (see `main::edit_config_externally`). Like
+    /// `ConfigStartup`, `Esc` and click-away do not close it: `path` is a
+    /// temp file holding the user's unsaved work, and a stray dismissal
+    /// must not silently drop it. Only Keep editing or Discard do.
+    ConfigEditInvalid {
+        file: crate::action::ConfigFile,
+        path: std::path::PathBuf,
+        error: String,
+    },
     /// A choice prompt: each option in `choices` is `(key, label, actions)` —
     /// pressing `key` (case-insensitive) dispatches `actions` and closes the
     /// modal; `Esc` closes with no actions.
@@ -742,11 +752,16 @@ impl ModalStack {
     /// own answers -- consulted by both `Esc` (`handle_key`'s `_ => None`
     /// arms swallow it already for these) and a click outside the modal
     /// (`Hit::ModalOutside` in `app/mouse.rs`), so the two paths can't
-    /// drift apart. Only `Modal::ConfigStartup` says no: it blocks
-    /// startup until one of its four choices is made (see its doc
-    /// comment) -- every other modal stays dismissable.
+    /// drift apart. Only `Modal::ConfigStartup` and `Modal::ConfigEditInvalid`
+    /// say no: the first blocks startup until one of its four choices is
+    /// made, the second holds a temp file with unsaved work until Keep
+    /// editing or Discard answers it (see each's doc comment) -- every
+    /// other modal stays dismissable.
     pub fn top_is_dismissable(&self) -> bool {
-        !matches!(self.top(), Some(Modal::ConfigStartup { .. }))
+        !matches!(
+            self.top(),
+            Some(Modal::ConfigStartup { .. } | Modal::ConfigEditInvalid { .. })
+        )
     }
 
     /// The scope the value popup's "\u{2715} remove" would clear, when that
@@ -839,6 +854,10 @@ impl ModalStack {
                     ("c", "continue unsaved", None),
                     ("q", "quit", None),
                 ]
+            }
+            // No "esc/cancel" chip either: see the variant's doc comment.
+            Modal::ConfigEditInvalid { .. } => {
+                vec![("k", "keep editing", None), ("d", "discard", None)]
             }
             // Handled above — its chips are the runtime answer keys.
             Modal::Confirm { .. } => unreachable!("Confirm returned early"),
@@ -937,6 +956,19 @@ impl ModalStack {
                         close: false,
                         ..Default::default()
                     }),
+                _ => None, // swallowed: modals capture all input
+            },
+            // No `Esc` arm here either -- same reasoning as `ConfigStartup`.
+            // `k` (Keep editing) is intercepted in `App::handle_key_inner`
+            // before this is even reached, because it needs `App` to stash
+            // `resumed_config_edit`; only `d` (Discard) is answerable from
+            // here, since `Action::ConfigEditDiscard` needs nothing else.
+            Modal::ConfigEditInvalid { path, .. } => match key.code {
+                KeyCode::Char(c) if c.eq_ignore_ascii_case(&'d') => Some(ModalResult {
+                    actions: vec![Action::ConfigEditDiscard { path: path.clone() }],
+                    close: false, // the action's own arm pops
+                    ..Default::default()
+                }),
                 _ => None, // swallowed: modals capture all input
             },
             Modal::Message { .. } => match key.code {
@@ -1580,6 +1612,71 @@ impl ModalStack {
                     }
                     .paint(frame.buffer_mut(), btn_area, theme);
                     hits.register(btn_area, hit);
+                    x += w + 2;
+                }
+            }
+            Modal::ConfigEditInvalid { file, error, .. } => {
+                let area = centered_rect(screen, 76.min(screen.width), 16.min(screen.height));
+                hits.register(area, crate::hit::Hit::ModalBody);
+                paint::floating_panel_settling(frame.buffer_mut(), area, screen, theme, t);
+                if t < 1.0 {
+                    return;
+                }
+
+                let title_y = area.y + 1;
+                paint::text(
+                    frame.buffer_mut(),
+                    area.x + 2,
+                    title_y,
+                    &format!("{} did not validate", file.name()),
+                    theme.text,
+                    theme.panel,
+                    true,
+                );
+
+                let choices: [(&str, crate::hit::Hit); 2] = [
+                    ("Keep editing", crate::hit::Hit::ConfigEditKeepEditing),
+                    ("Discard", crate::hit::Hit::ConfigEditDiscard),
+                ];
+                let labels: Vec<&str> = choices.iter().map(|(l, _)| *l).collect();
+                let btn_row_w = button_row_width(&labels);
+                let buttons_y = area.y + area.height.saturating_sub(1 + BUTTON_HEIGHT);
+                let body_area = Rect {
+                    x: area.x + 2,
+                    y: title_y + 2,
+                    width: area.width.saturating_sub(4),
+                    height: buttons_y.saturating_sub(title_y + 2).saturating_sub(1),
+                };
+                frame.render_widget(
+                    Paragraph::new(error.as_str())
+                        .style(Style::default().fg(theme.text).bg(theme.panel))
+                        .wrap(Wrap { trim: false }),
+                    body_area,
+                );
+
+                // Each choice is its own clickable painted button; there is
+                // deliberately no Cancel -- see the variant's doc comment.
+                let mut x = area.x + area.width.saturating_sub(2 + btn_row_w);
+                for (label, hit) in choices.iter() {
+                    let w = paint::button_min_width(label);
+                    let btn_area = Rect {
+                        x,
+                        y: buttons_y,
+                        width: w,
+                        height: BUTTON_HEIGHT,
+                    };
+                    let choice_state = if hovered == Some(hit) {
+                        ControlState::Hover
+                    } else {
+                        ControlState::Normal
+                    };
+                    Button {
+                        label,
+                        kind: ButtonKind::Secondary,
+                        state: choice_state,
+                    }
+                    .paint(frame.buffer_mut(), btn_area, theme);
+                    hits.register(btn_area, hit.clone());
                     x += w + 2;
                 }
             }

@@ -306,6 +306,7 @@ async fn run(
             match pending {
                 Action::OpenBodyInEditor => edit_body_externally(terminal, &mut app)?,
                 Action::OpenResponseInEditor => view_response_externally(terminal, &mut app)?,
+                Action::EditConfigFile(file) => edit_config_externally(terminal, &mut app, file)?,
                 other => debug_assert!(false, "not a terminal action: {other:?}"),
             }
             redraw = true;
@@ -432,4 +433,70 @@ fn run_editor(
             Ok(None)
         }
     }
+}
+
+/// Hands a config file to `$EDITOR` as a temp *copy*, then applies it
+/// only if it validates. Editing a copy rather than the live file is the
+/// point: a broken save can never leave the app's real config unusable,
+/// and `Config::write_validated`'s parse-refusal can never fire
+/// spuriously.
+///
+/// A resume ("keep editing") reuses the temp file already on disk, so
+/// the user's work is still there; it can loop indefinitely, and only
+/// Discard or a valid save ends it.
+fn edit_config_externally(
+    terminal: &mut ratatui::DefaultTerminal,
+    app: &mut App,
+    file: postui::action::ConfigFile,
+) -> anyhow::Result<()> {
+    use postui::action::ConfigFile;
+
+    let path = match app.take_resumed_config_edit(file) {
+        Some(existing) => existing,
+        None => {
+            // Seed an absent file so the editor never opens empty.
+            let current = match app.config.read(file.name()) {
+                Ok(Some(text)) => text,
+                Ok(None) => match file {
+                    ConfigFile::Config => postui::config::config_seed(),
+                    ConfigFile::Keys => postui::keys::keys_seed(&app.keymap),
+                },
+                Err(e) => {
+                    app.update(Action::ShowToast(e, ToastKind::Error));
+                    return Ok(());
+                }
+            };
+            postui::hostfs::editor_tempfile("postui-config-", ".toml", &current)?
+        }
+    };
+
+    let Some(text) = run_editor(terminal, app, &path)? else {
+        postui::hostfs::remove_tempfile(&path);
+        return Ok(());
+    };
+
+    let invalid = match file {
+        ConfigFile::Config => toml::from_str::<toml::Value>(&text)
+            .err()
+            .map(|e| e.to_string()),
+        ConfigFile::Keys => postui::keys::Keymap::try_from_overrides(&text).err(),
+    };
+
+    if let Some(error) = invalid {
+        app.update(Action::ConfigEditInvalid { file, path, error });
+        return Ok(());
+    }
+
+    if let Err(e) = app.config.write_validated(file.name(), &text) {
+        app.update(Action::ShowToast(e, ToastKind::Error));
+        return Ok(());
+    }
+    postui::hostfs::remove_tempfile(&path);
+    // Apply through the same path alt+r uses, so a tab edit and a
+    // hand-edit converge on one code path. `Action::ReloadFromDisk`
+    // already surfaces `keymap.caret_warnings` itself (it compares the
+    // freshly-read keymap against the live one), so a keys.toml apply's
+    // caret warnings show up without any extra code here.
+    app.update(Action::ReloadFromDisk);
+    Ok(())
 }

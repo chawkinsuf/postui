@@ -22638,3 +22638,77 @@ fn the_startup_config_modal_ignores_click_away() {
         "an actual answer still closes it"
     );
 }
+
+/// Edit… hands the editor a copy. Whatever happens to that copy, the
+/// live file is untouched until its text validates.
+#[test]
+fn an_invalid_edit_leaves_the_live_config_alone_and_offers_to_resume() {
+    let dir = tempfile::tempdir().unwrap();
+    let live = dir.path().join("config.toml");
+    std::fs::write(&live, "animations = false\n").unwrap();
+    let mut app = App::new_for_test();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+
+    let temp = dir.path().join("scratch.toml");
+    std::fs::write(&temp, "not = [toml").unwrap();
+    app.update(Action::ConfigEditInvalid {
+        file: crate::action::ConfigFile::Config,
+        path: temp.clone(),
+        error: "expected `]`".into(),
+    });
+
+    assert!(
+        app.modals.top().is_some(),
+        "invalid text must raise the modal"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&live).unwrap(),
+        "animations = false\n",
+        "the live file must not be touched by an invalid edit"
+    );
+    assert!(
+        temp.exists(),
+        "the temp file survives so editing can resume"
+    );
+
+    app.update(Action::ConfigEditDiscard { path: temp.clone() });
+    assert!(!temp.exists(), "discard removes the temp file");
+    assert_eq!(
+        std::fs::read_to_string(&live).unwrap(),
+        "animations = false\n",
+        "discard still leaves the live file alone"
+    );
+}
+
+/// Same rule `the_startup_config_modal_ignores_click_away` proves for the
+/// startup gate, for the invalid-edit modal: a stray click outside must
+/// not silently drop the user's in-progress edit.
+#[test]
+fn the_config_edit_invalid_modal_ignores_click_away() {
+    let dir = tempfile::tempdir().unwrap();
+    let temp = dir.path().join("scratch.toml");
+    std::fs::write(&temp, "not = [toml").unwrap();
+    let mut app = App::new_for_test();
+    app.update(Action::ConfigEditInvalid {
+        file: crate::action::ConfigFile::Config,
+        path: temp.clone(),
+        error: "expected `]`".into(),
+    });
+
+    click_hit(&mut app, Hit::ModalOutside);
+    assert!(
+        app.modals.top().is_some(),
+        "click-away must not dismiss the invalid-edit modal"
+    );
+    assert!(
+        temp.exists(),
+        "click-away must not drop the temp file either"
+    );
+
+    app.update(Action::ConfigEditDiscard { path: temp.clone() });
+    assert!(
+        app.modals.top().is_none(),
+        "an actual answer still closes it"
+    );
+    assert!(!temp.exists(), "discard removes the temp file");
+}

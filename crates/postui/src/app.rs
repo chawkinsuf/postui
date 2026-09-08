@@ -159,8 +159,12 @@ pub struct App {
     /// The XDG config files (`config.toml`, `keys.toml`, `ui.toml`,
     /// `themes/*.toml`) — the sole owner of every config file read and
     /// write. `Config::none()` in tests, so test runs never touch the
-    /// user's real config.
-    config: crate::config::Config,
+    /// user's real config. `pub` so `main::edit_config_externally` (the
+    /// terminal-suspending boundary, like `pending_terminal_action`) can
+    /// reach `Config::read` / `Config::write_validated` directly — those
+    /// two methods stay the sole entry points, this just lets the one
+    /// legitimate outside caller use them.
+    pub config: crate::config::Config,
     /// The tiered clipboard (external command / OS clipboard / OSC 52),
     /// configured from `ui_settings`.
     pub clipboard: crate::clipboard::Clipboard,
@@ -229,6 +233,12 @@ pub struct App {
     /// here by `update` for the main loop to take and run. Keeps `update`
     /// itself terminal-free (and therefore testable without a TTY).
     pub pending_terminal_action: Option<Action>,
+    /// The temp file a "keep editing" answer left behind, so the resumed
+    /// editor opens the user's work rather than a fresh copy. Set by
+    /// `App::keep_editing_config_edit` before it dispatches
+    /// `Action::EditConfigFile`; taken (and cleared) by
+    /// `App::take_resumed_config_edit`.
+    resumed_config_edit: Option<(crate::action::ConfigFile, std::path::PathBuf)>,
     /// Rebuilt every frame by `ui::draw`: maps screen regions to typed
     /// [`Hit`]s for mouse routing.
     pub hits: HitMap,
@@ -665,6 +675,40 @@ impl App {
             return;
         };
         self.modals.push(Modal::ConfigStartup { error });
+    }
+
+    /// `Modal::ConfigEditInvalid`'s "Keep editing" answer: stashes `path`
+    /// (read back by `take_resumed_config_edit`) so the resumed editor
+    /// reopens the user's own work rather than a fresh copy, pops the
+    /// modal, and hands `file` to the main loop via `Action::EditConfigFile`.
+    fn keep_editing_config_edit(
+        &mut self,
+        file: crate::action::ConfigFile,
+        path: std::path::PathBuf,
+    ) -> bool {
+        self.resumed_config_edit = Some((file, path));
+        self.modals.pop();
+        // Closing (to reopen the editor right after) is always instant,
+        // same as every other modal-pop path.
+        self.anims.snap(AnimKey::ModalOpen, 1.0);
+        self.update(Action::EditConfigFile(file))
+    }
+
+    /// The temp file a "keep editing" answer left behind, so the resumed
+    /// editor opens the user's work rather than a fresh copy. `None` when
+    /// there is nothing to resume, or when a stashed path belongs to the
+    /// *other* config file (left untouched, for its own resume later).
+    pub fn take_resumed_config_edit(
+        &mut self,
+        file: crate::action::ConfigFile,
+    ) -> Option<std::path::PathBuf> {
+        match self.resumed_config_edit.take() {
+            Some((f, path)) if f == file => Some(path),
+            other => {
+                self.resumed_config_edit = other;
+                None
+            }
+        }
     }
 
     /// Persists the registry to `config.toml`, telling the user when it
@@ -1343,6 +1387,7 @@ impl App {
             ai_task: None,
             ai_request: 0,
             pending_terminal_action: None,
+            resumed_config_edit: None,
             hits: HitMap::default(),
             hovered: None,
             shift_enter_send: false,
@@ -2050,15 +2095,22 @@ impl App {
                     C::Quit => self.update(Action::Quit),
                 }
             }
-            // Stubbed until Task 7 (Edit…) and Task 14 (Reset) land the
-            // real behaviour.
             Action::EditConfigFile(file) => {
-                self.toasts.push(
-                    format!("editing {} is not implemented yet", file.name()),
-                    ToastKind::Info,
-                );
+                // Only the main loop may suspend the terminal.
+                self.pending_terminal_action = Some(Action::EditConfigFile(file));
                 true
             }
+            Action::ConfigEditInvalid { file, path, error } => {
+                self.modals
+                    .push(Modal::ConfigEditInvalid { file, path, error });
+                true
+            }
+            Action::ConfigEditDiscard { path } => {
+                crate::hostfs::remove_tempfile(&path);
+                self.modals.pop();
+                true
+            }
+            // Stubbed until Task 14 lands the real reset.
             Action::ResetConfigFile(file) => {
                 self.toasts.push(
                     format!("resetting {} is not implemented yet", file.name()),
@@ -9059,6 +9111,20 @@ impl App {
                 self.remove_from_value_popup();
                 return true; // swallowed even when inert — never typed
             }
+            // `Modal::ConfigEditInvalid`'s "Keep editing" needs App (it
+            // stashes the temp path so the resumed editor reopens the
+            // user's own work), so — like the value popup's remove chord
+            // above — it can't live in the modal's own key handler.
+            // Discard needs nothing extra and is handled there instead.
+            if let KeyCode::Char(c) = ev.code
+                && c.eq_ignore_ascii_case(&'k')
+                && let Some(crate::components::modal::Modal::ConfigEditInvalid {
+                    file, path, ..
+                }) = self.modals.top()
+            {
+                let (file, path) = (*file, path.clone());
+                return self.keep_editing_config_edit(file, path);
+            }
             let Some(res) = self.modals.handle_key(ev) else {
                 self.sync_theme_preview();
                 return true; // typed into modal
@@ -9930,6 +9996,7 @@ fn screen_escape_whitelist(action: &Action) -> bool {
             | Action::OpenManage { .. }
             | Action::CloseScreen
             | Action::ReloadFromDisk
+            | Action::EditConfigFile(_)
             | Action::Quit
             | Action::Undo
             | Action::Redo

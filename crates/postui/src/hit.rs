@@ -232,6 +232,12 @@ pub enum Hit {
     /// One of `Modal::ConfigStartup`'s four buttons (Edit…/Reset/Continue
     /// without saving settings/Quit).
     ConfigStartupChoice(crate::action::ConfigStartupChoice),
+    /// `Modal::ConfigEditInvalid`'s "Keep editing" button: resumes the
+    /// editor on the same temp file, with the user's work intact.
+    ConfigEditKeepEditing,
+    /// `Modal::ConfigEditInvalid`'s "Discard" button: drops the temp file
+    /// and changes nothing.
+    ConfigEditDiscard,
     /// The top modal's painted Cancel button (Message has none; Prompt and
     /// NewProject each have one). Click parity with `Esc`: the app-side
     /// handler synthesizes an `Esc` key event into `ModalStack::handle_key`

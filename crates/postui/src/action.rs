@@ -113,9 +113,22 @@ pub enum Action {
     ShowAbout,
     /// Answers the broken-`config.toml` startup modal.
     ConfigStartupChoice(ConfigStartupChoice),
-    /// Hands `file` to `$EDITOR` for a round trip. Stubbed until Task 7
-    /// lands the real editor round-trip.
+    /// Hand a config file to `$EDITOR` as a temp copy. Deferred into
+    /// `App::pending_terminal_action` like the body editor, because
+    /// applying it means suspending the terminal.
     EditConfigFile(ConfigFile),
+    /// The editor exited and its text did not validate: raises the
+    /// keep-editing/discard modal. `path` is the temp file, still on
+    /// disk, so "keep editing" resumes with the user's work intact.
+    ConfigEditInvalid {
+        file: ConfigFile,
+        path: std::path::PathBuf,
+        error: String,
+    },
+    /// Discard the temp file at `path` and change nothing.
+    ConfigEditDiscard {
+        path: std::path::PathBuf,
+    },
     /// Resets `file`'s user-editable keys to their defaults. Stubbed
     /// until Task 14 lands the real reset.
     ResetConfigFile(ConfigFile),

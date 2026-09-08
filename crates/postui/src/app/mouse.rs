@@ -1648,6 +1648,20 @@ impl App {
                 }
             }
             Hit::ConfigStartupChoice(choice) => self.update(Action::ConfigStartupChoice(choice)),
+            Hit::ConfigEditKeepEditing => {
+                let Some(Modal::ConfigEditInvalid { file, path, .. }) = self.modals.top() else {
+                    return false;
+                };
+                let (file, path) = (*file, path.clone());
+                self.keep_editing_config_edit(file, path)
+            }
+            Hit::ConfigEditDiscard => {
+                let Some(Modal::ConfigEditInvalid { path, .. }) = self.modals.top() else {
+                    return false;
+                };
+                let path = path.clone();
+                self.update(Action::ConfigEditDiscard { path })
+            }
             Hit::ConfirmChoice(c) => {
                 let Some(Modal::Confirm { choices, .. }) = self.modals.top() else {
                     return false;
