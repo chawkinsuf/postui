@@ -735,6 +735,19 @@ impl App {
         self.config.write_validated(name, text)
     }
 
+    /// Whether `config.toml` as it stands on disk right now would still
+    /// hand back its `[projects]` table -- used to word the Reset confirm
+    /// honestly and to decide, once confirmed, whether the reset can
+    /// remove just the UI keys or must replace the whole file. A missing
+    /// file parses as empty (nothing to preserve, but nothing lost
+    /// either), so it counts as recovering.
+    fn config_toml_recovers_projects(&mut self) -> bool {
+        match self.read_config_file(crate::config::CONFIG_TOML) {
+            Ok(text) => toml::from_str::<toml::Value>(&text.unwrap_or_default()).is_ok(),
+            Err(_) => false,
+        }
+    }
+
     /// The Edit… round-trip's validate-then-write decision, factored out
     /// of `main::edit_config_externally` so it's testable without a
     /// terminal. Validates `text` for `file` (a `toml` parse for
@@ -2169,13 +2182,74 @@ impl App {
                 self.modals.pop();
                 true
             }
-            // Stubbed until Task 14 lands the real reset.
+            // Config changes are outside the undo system, so this confirm
+            // is the only guard against a reset -- there is no undo path
+            // to fall back on.
             Action::ResetConfigFile(file) => {
-                self.toasts.push(
-                    format!("resetting {} is not implemented yet", file.name()),
-                    ToastKind::Info,
-                );
+                use crate::action::ConfigFile;
+                let (title, body) = match file {
+                    ConfigFile::Config => {
+                        let body = if self.config_toml_recovers_projects() {
+                            "Resets theme, animations, hover hints, jq tab, the AI \
+                             command, clipboard command, and OSC 52 limit to their \
+                             defaults. Your project list is preserved."
+                        } else {
+                            "config.toml has a syntax error broad enough that its \
+                             [projects] table can't be recovered, so resetting \
+                             replaces the whole file -- your project list will be \
+                             lost."
+                        };
+                        ("Reset config.toml?".to_string(), body.to_string())
+                    }
+                    ConfigFile::Keys => (
+                        "Reset keys.toml?".to_string(),
+                        "Replaces keys.toml with the default, fully commented keymap.".to_string(),
+                    ),
+                };
+                self.push_modal(Modal::Confirm {
+                    title,
+                    body,
+                    choices: vec![(
+                        'r',
+                        "Reset".into(),
+                        vec![Action::ForceResetConfigFile(file)],
+                    )],
+                });
                 true
+            }
+            Action::ForceResetConfigFile(file) => {
+                use crate::action::ConfigFile;
+                let result = match file {
+                    // `reset_ui_settings` refuses (leaving the file
+                    // untouched) when config.toml does not parse -- exactly
+                    // the case the confirm just warned about, so the
+                    // explicit, user-approved fallback here replaces the
+                    // whole file rather than leaving Reset unable to get
+                    // the user unstuck.
+                    ConfigFile::Config if self.config_toml_recovers_projects() => {
+                        self.config.reset_ui_settings()
+                    }
+                    ConfigFile::Config => {
+                        self.config.write_validated(crate::config::CONFIG_TOML, "")
+                    }
+                    // With no keys.toml on disk this writes the seed, so
+                    // the outcome is the same file either way rather than
+                    // a no-op.
+                    ConfigFile::Keys => self.config.write_validated(
+                        crate::config::KEYS_TOML,
+                        &crate::keys::keys_seed(&crate::keys::Keymap::default_bindings()),
+                    ),
+                };
+                match result {
+                    Ok(()) => self.update(Action::ReloadFromDisk),
+                    Err(e) => {
+                        self.toasts.push(
+                            format!("could not reset {}: {e}", file.name()),
+                            ToastKind::Error,
+                        );
+                        true
+                    }
+                }
             }
             Action::SetUiFlag { key, value } => {
                 let saved = self.config.save_ui_flag(key, value);

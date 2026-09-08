@@ -22933,6 +22933,127 @@ fn clearing_a_command_field_removes_the_key_rather_than_emptying_it() {
     assert!(!text.contains("clipboard_cmd"), "{text:?}");
 }
 
+/// A parseable config.toml's Reset confirm promises the project list is
+/// safe, and confirming it keeps that promise: `[projects]` survives
+/// while the UI keys are gone.
+#[test]
+fn resetting_a_parseable_config_confirm_promises_and_keeps_the_project_list() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("config.toml"),
+        "animations = false\n\n[projects]\nknown = [\"/tmp/a\"]\nlast = \"/tmp/a\"\n",
+    )
+    .unwrap();
+    let mut app = App::new_for_test();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+
+    app.update(Action::ResetConfigFile(crate::action::ConfigFile::Config));
+    let Some(crate::components::modal::Modal::Confirm { body, choices, .. }) = app.modals.top()
+    else {
+        panic!("Reset raises a confirm");
+    };
+    assert!(
+        body.contains("preserved"),
+        "a parseable file promises the project list is kept: {body:?}"
+    );
+    assert!(
+        !body.contains("lost"),
+        "must not also warn of loss: {body:?}"
+    );
+    let confirm = choices[0].2.clone();
+    app.modals.pop();
+    for action in confirm {
+        app.update(action);
+    }
+
+    let text = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+    assert!(!text.contains("animations"), "the UI key is gone: {text:?}");
+    let (registry, _) = crate::config::ProjectsRegistry::parse(&text);
+    assert_eq!(
+        registry.known,
+        vec![std::path::PathBuf::from("/tmp/a")],
+        "the project list survived, as promised"
+    );
+}
+
+/// A config.toml broken badly enough to lose `[projects]` gets an honest
+/// confirm instead: the wording warns of loss, and confirming it really
+/// does replace the whole file rather than silently failing and leaving
+/// Reset unable to get the user unstuck.
+#[test]
+fn resetting_an_unparseable_config_confirm_warns_and_replaces_the_file() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("config.toml"), "not = [toml").unwrap();
+    let mut app = App::new_for_test();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+
+    app.update(Action::ResetConfigFile(crate::action::ConfigFile::Config));
+    let Some(crate::components::modal::Modal::Confirm { body, choices, .. }) = app.modals.top()
+    else {
+        panic!("Reset raises a confirm");
+    };
+    assert!(
+        body.contains("lost"),
+        "an unparseable file warns the project list will be lost: {body:?}"
+    );
+    assert!(
+        !body.contains("preserved"),
+        "must not also promise safety: {body:?}"
+    );
+    let confirm = choices[0].2.clone();
+    app.modals.pop();
+    for action in confirm {
+        app.update(action);
+    }
+
+    let text = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+    assert!(text.is_empty(), "the broken file was replaced: {text:?}");
+}
+
+/// Resetting keys.toml always writes the commented seed, whether or not
+/// a file was there to begin with -- the outcome is the same file either
+/// way, never a no-op.
+#[test]
+fn resetting_keys_writes_the_seed_with_or_without_an_existing_file() {
+    let seed = crate::keys::keys_seed(&crate::keys::Keymap::default_bindings());
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = App::new_for_test();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+    assert!(!dir.path().join("keys.toml").exists(), "starts absent");
+
+    app.update(Action::ResetConfigFile(crate::action::ConfigFile::Keys));
+    let Some(crate::components::modal::Modal::Confirm { choices, .. }) = app.modals.top() else {
+        panic!("Reset raises a confirm");
+    };
+    let confirm = choices[0].2.clone();
+    app.modals.pop();
+    for action in confirm {
+        app.update(action);
+    }
+    let text = std::fs::read_to_string(dir.path().join("keys.toml")).unwrap();
+    assert_eq!(text, seed, "an absent file resets to the seed");
+
+    // Now reset again with the seed already present, plus an override,
+    // to confirm the same outcome either way.
+    std::fs::write(
+        dir.path().join("keys.toml"),
+        format!("{seed}\nquit = \"ctrl+q\"\n"),
+    )
+    .unwrap();
+    app.update(Action::ResetConfigFile(crate::action::ConfigFile::Keys));
+    let Some(crate::components::modal::Modal::Confirm { choices, .. }) = app.modals.top() else {
+        panic!("Reset raises a confirm");
+    };
+    let confirm = choices[0].2.clone();
+    app.modals.pop();
+    for action in confirm {
+        app.update(action);
+    }
+    let text = std::fs::read_to_string(dir.path().join("keys.toml")).unwrap();
+    assert_eq!(text, seed, "a present file resets to the same seed");
+}
+
 /// A Files row is aimed with left/right and run with enter -- the same
 /// two keys every other row uses, so the section is not mouse-only.
 #[test]
@@ -22960,13 +23081,14 @@ fn a_files_row_runs_edit_or_reset_from_the_keyboard() {
     app.handle_key(KeyEvent::from(KeyCode::Right));
     assert_eq!(app.settings.file_button, 1);
     app.handle_key(KeyEvent::from(KeyCode::Enter));
+    let raised_confirm = matches!(
+        app.modals.top(),
+        Some(crate::components::modal::Modal::Confirm { body, .. })
+            if body.contains("config.toml") || body.contains("project list")
+    );
     assert!(
-        app.toasts
-            .messages()
-            .iter()
-            .any(|m| m.contains("config.toml")),
-        "Reset is the right button (stubbed until Task 14): {:?}",
-        app.toasts.messages()
+        raised_confirm,
+        "Reset is the right button and raises the reset confirm"
     );
 }
 

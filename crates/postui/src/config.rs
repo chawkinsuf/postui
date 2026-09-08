@@ -820,6 +820,32 @@ impl Config {
         self.edit(CONFIG_TOML, |doc| doc[key] = toml_edit::value(value as i64))
     }
 
+    /// Clears the UI settings from `config.toml` by *removing* their
+    /// keys, so the file stays minimal and every unrelated key survives
+    /// byte-for-byte -- the pattern `ProjectsRegistry::write_into`
+    /// already uses for `root` and `last`.
+    ///
+    /// `[projects]` is deliberately untouched: wiping `known`/`last`
+    /// would silently destroy the user's project list, which has nothing
+    /// to do with resetting preferences.
+    pub fn reset_ui_settings(&mut self) -> Result<(), String> {
+        self.edit(CONFIG_TOML, |doc| {
+            for key in [
+                "theme",
+                "animations",
+                "hover_hints",
+                "jq_tab",
+                "ai_cmd",
+                "ai_confirmed",
+                "clipboard_cmd",
+                "osc52_limit",
+            ] {
+                doc.remove(key);
+            }
+            doc.remove("animation_ms");
+        })
+    }
+
     /// Persists the palette usage stats to `ui.toml`.
     pub fn save_usage(&mut self, usage: &crate::usage::UsageStore) -> Result<(), String> {
         self.edit(UI_TOML, |doc| usage.write_into(doc))
@@ -1259,6 +1285,35 @@ mod tests {
         cfg.save_ui_theme("light").unwrap();
         let text = std::fs::read_to_string(dir.path().join("sub").join("config.toml")).unwrap();
         assert_eq!(UiSettings::parse(&text).0.theme, "light");
+    }
+
+    /// Reset clears preferences, not the project list: `[projects]` lives in
+    /// the same file, and wiping `known`/`last` would silently destroy the
+    /// user's projects.
+    #[test]
+    fn resetting_settings_spares_the_projects_table() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "animations = false\nai_confirmed = true\n\n[projects]\nknown = [\"/tmp/a\"]\nlast = \"/tmp/a\"\n",
+        )
+        .unwrap();
+        let mut cfg = Config::at(dir.path().to_path_buf());
+        cfg.reset_ui_settings().unwrap();
+
+        let text = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+        let (settings, _) = UiSettings::parse(&text);
+        assert_eq!(
+            settings,
+            UiSettings::default(),
+            "preferences are back to default"
+        );
+        assert!(settings.animations, "removed, so the default applies");
+        assert!(!settings.ai_confirmed, "consent returns; that is correct");
+
+        let (registry, _) = ProjectsRegistry::parse(&text);
+        assert_eq!(registry.known, vec![std::path::PathBuf::from("/tmp/a")]);
+        assert_eq!(registry.last, Some(std::path::PathBuf::from("/tmp/a")));
     }
 
     /// The editor round-trip has already validated the text and must

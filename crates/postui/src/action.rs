@@ -129,9 +129,16 @@ pub enum Action {
     ConfigEditDiscard {
         path: std::path::PathBuf,
     },
-    /// Resets `file`'s user-editable keys to their defaults. Stubbed
-    /// until Task 14 lands the real reset.
+    /// User asked to reset `file`'s user-editable settings: raises the
+    /// confirm (see `App::apply`). Config changes are outside the undo
+    /// system, so that confirm is the only guard.
     ResetConfigFile(ConfigFile),
+    /// Confirmed; resets `file`'s user-editable keys and reloads. For
+    /// `Config`, removes just the UI keys and so preserves `[projects]`
+    /// -- unless `config.toml` does not parse far enough to recover that
+    /// table, in which case the confirm has already warned that the whole
+    /// file, project list included, is about to be replaced.
+    ForceResetConfigFile(ConfigFile),
     /// Persist and apply one boolean setting. There is no save step on
     /// the Settings tab: each of these three writes `config.toml`
     /// through `Config::edit` and applies the result immediately.
