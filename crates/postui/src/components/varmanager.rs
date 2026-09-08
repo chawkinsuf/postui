@@ -17,13 +17,14 @@ use crate::components::line_input::LineInput;
 use crate::hit::{Hit, HitMap, ScrollbarSpec};
 use crate::layout::PaneId;
 use crate::paint::{
-    BUTTON_HEIGHT, Button, ButtonKind, ControlState, FIELD_HEIGHT, ListRow, RowHighlight,
-    TextField, button_min_width, fill, text,
+    BUTTON_HEIGHT, Button, ButtonKind, ControlSlot, ControlState, ListRow, PROPERTY_MAX_W, Pill,
+    PropertyRow, RowHighlight, Toggle, TrailingPill, Well, button_min_width, fill, label_column,
+    pill_min_width, text,
 };
-use postui_core::project::Project;
 use crate::theme::Theme;
 use indexmap::IndexMap;
 use postui_core::model::HttpRequest;
+use postui_core::project::Project;
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
@@ -1811,8 +1812,8 @@ impl VarManager {
 
     /// The right pane for `VmDetail::Var(name)` (spec §3.4): a title row
     /// (`name  󰌾?  [Rename] [Delete]`), then description/default/env-value
-    /// fields as label + `TextField` rows (`Default` omitted for a secret —
-    /// it can never hold one), the secret on/off toggle, the Promote
+    /// fields as one property row each (`Default` omitted for a secret —
+    /// it can never hold one), the secret toggle, the Promote
     /// button where [`promote_action`] applies, and a dim `used by:`
     /// line. `name` is guaranteed declared by the caller.
     #[allow(clippy::too_many_arguments)]
@@ -1840,22 +1841,27 @@ impl VarManager {
         };
 
         let x0 = right.x + 2;
-        let field_w = right.width.saturating_sub(4).max(1);
+        let row_w = right.width.saturating_sub(4).clamp(1, PROPERTY_MAX_W);
+        let value_label = match ctx.active_env() {
+            Some(env) => format!("Value in {}", ctx.env_name(env)),
+            None => "(no environment)".to_string(),
+        };
+        let labels = ["Description", "Default", "Secret", value_label.as_str()];
+        let label_w = label_column(&labels);
         let bottom = right.y + right.height;
         let mut y = right.y + 1;
 
         // --- title row: name, lock badge, Rename/Delete ---------------
-        if y + BUTTON_HEIGHT <= bottom {
-            let mid = y + 1;
+        if y < bottom {
             let label = if secret {
                 format!("{name}  {GLYPH_LOCK}")
             } else {
                 name.to_string()
             };
-            text(buf, x0, mid, &label, theme.text, theme.page, true);
+            text(buf, x0, y, &label, theme.text, theme.page, true);
             let mut bx = right.x + right.width;
             for (lbl, hit) in [("Delete", Hit::VmDelete), ("Rename", Hit::VmRename)] {
-                let w = button_min_width(lbl);
+                let w = pill_min_width(lbl);
                 if bx < x0 + label.chars().count() as u16 + w + 3 {
                     break;
                 }
@@ -1864,9 +1870,9 @@ impl VarManager {
                     x: bx,
                     y,
                     width: w,
-                    height: BUTTON_HEIGHT,
+                    height: 1,
                 };
-                Button {
+                Pill {
                     label: lbl,
                     kind: ButtonKind::Secondary,
                     state: state_of(&hit),
@@ -1874,21 +1880,23 @@ impl VarManager {
                 .paint(buf, rect, theme);
                 hits.register(rect, hit);
             }
-            y += BUTTON_HEIGHT + 1;
+            y += 2;
         }
 
         // --- Description ------------------------------------------------
-        y = self.draw_labeled_field(
+        y = self.draw_field_row(
             buf,
             hits,
             hovered,
             theme,
             x0,
-            field_w,
+            row_w,
+            label_w,
             bottom,
             y,
             "Description",
             VmField::Description,
+            &[],
             ctx,
             name,
             false,
@@ -1896,17 +1904,19 @@ impl VarManager {
 
         // --- Default (never for a secret: it can't hold one) -------------
         if !secret {
-            y = self.draw_labeled_field(
+            y = self.draw_field_row(
                 buf,
                 hits,
                 hovered,
                 theme,
                 x0,
-                field_w,
+                row_w,
+                label_w,
                 bottom,
                 y,
                 "Default",
                 VmField::Default,
+                &[],
                 ctx,
                 name,
                 false,
@@ -1915,112 +1925,106 @@ impl VarManager {
 
         // --- secret on/off toggle -----------------------------------------
         if y < bottom {
-            text(buf, x0, y, "Secret", theme.text_muted, theme.page, false);
-            let toggle_label = if secret { "[on]" } else { "[off]" };
-            let hit = Hit::VmSecretToggle;
-            let hovered_toggle = hovered == Some(&hit);
-            let style = if hovered_toggle {
-                Style::default().bg(theme.accent).fg(theme.on_accent)
-            } else {
-                Style::default().fg(theme.accent)
+            let slot = PropertyRow {
+                label: "Secret",
+                label_w,
+                hovered: hovered == Some(&Hit::VmSecretToggle),
+                disabled: false,
+                trailing: &[],
+            }
+            .paint(buf, hits, Rect::new(x0, y, row_w, 1), theme);
+            let rect = Rect {
+                width: crate::paint::TOGGLE_W,
+                ..slot.rect
             };
-            let tw = toggle_label.chars().count() as u16;
-            let tx = (x0 + field_w).saturating_sub(tw);
-            buf.set_string(tx, y, toggle_label, style);
-            hits.register(Rect::new(tx, y, tw, 1), hit);
-            y += 2;
+            Toggle {
+                on: secret,
+                state: if hovered == Some(&Hit::VmSecretToggle) {
+                    ControlState::Hover
+                } else {
+                    ControlState::Normal
+                },
+            }
+            .paint(buf, rect, theme);
+            hits.register(rect, Hit::VmSecretToggle);
+            y += 2; // blank row: the declaration block ends here
         }
 
         // --- Value in <env> (masked + reveal for a secret) -----------------
-        let value_label = match ctx.active_env() {
-            Some(env) => format!("Value in {}", ctx.env_name(env)),
-            None => "(no environment)".to_string(),
+        // The same wording the response pane's secret toggle uses
+        // (`editor.rs`), so the one gesture reads the same in both places.
+        let reveal_label = if self.form.revealed {
+            format!("{} hide", crate::glyph::EYE_OFF)
+        } else {
+            format!("{} reveal", crate::glyph::EYE)
         };
-        if y < bottom {
-            text(
-                buf,
-                x0,
-                y,
-                &value_label,
-                theme.text_muted,
-                theme.page,
-                false,
-            );
-            // Small accent-colored inline controls, laid right-to-left
-            // from the label row's right edge.
-            let mut right = x0 + field_w;
-            let mut inline_control =
-                |buf: &mut Buffer, hits: &mut HitMap, label: &str, hit: Hit| {
-                    let style = if hovered == Some(&hit) {
-                        Style::default().bg(theme.accent).fg(theme.on_accent)
-                    } else {
-                        Style::default().fg(theme.accent)
-                    };
-                    let w = label.chars().count() as u16;
-                    let x = right.saturating_sub(w);
-                    buf.set_string(x, y, label, style);
-                    hits.register(Rect::new(x, y, w, 1), hit);
-                    right = x.saturating_sub(2);
-                };
-            if secret {
-                let reveal_label = if self.form.revealed {
-                    format!("{} hide", crate::glyph::EYE_OFF)
+        let mut trailing: Vec<TrailingPill> = Vec::new();
+        if secret {
+            trailing.push(TrailingPill {
+                label: &reveal_label,
+                kind: ButtonKind::Secondary,
+                state: if hovered == Some(&Hit::VmRevealToggle) {
+                    ControlState::Hover
                 } else {
-                    format!("{} reveal", crate::glyph::EYE)
-                };
-                inline_control(buf, hits, &reveal_label, Hit::VmRevealToggle);
-            }
-            // The explicit way to un-set the stored value (the value
-            // popup's Remove button's twin) — only offered while the
-            // environment actually stores one; a bare default shows
-            // "(not set)" and has nothing here to remove.
-            if env_stores(ctx, name) {
-                inline_control(buf, hits, "\u{2715} remove", Hit::VmRemoveEnvValue);
-            }
-            y += 1;
+                    ControlState::Normal
+                },
+                hit: Hit::VmRevealToggle,
+            });
         }
-        if y + FIELD_HEIGHT <= bottom {
-            let masked = secret && !self.form.revealed;
-            let area = Rect {
-                x: x0,
-                y,
-                width: field_w,
-                height: FIELD_HEIGHT,
-            };
-            self.draw_form_field(
-                buf,
-                hits,
-                area,
-                theme,
-                hovered,
-                VmField::EnvValue,
-                ctx,
-                name,
-                masked,
-            );
-            y += FIELD_HEIGHT + 1;
+        // The explicit way to un-set the stored value — only while the
+        // environment actually stores one; a bare default shows
+        // "(not set)" and has nothing here to remove.
+        if env_stores(ctx, name) {
+            trailing.push(TrailingPill {
+                label: "\u{2715} remove",
+                kind: ButtonKind::Secondary,
+                state: if hovered == Some(&Hit::VmRemoveEnvValue) {
+                    ControlState::Hover
+                } else {
+                    ControlState::Normal
+                },
+                hit: Hit::VmRemoveEnvValue,
+            });
         }
+        y = self.draw_field_row(
+            buf,
+            hits,
+            hovered,
+            theme,
+            x0,
+            row_w,
+            label_w,
+            bottom,
+            y,
+            &value_label,
+            VmField::EnvValue,
+            &trailing,
+            ctx,
+            name,
+            secret && !self.form.revealed,
+        );
+        y += 1; // blank row: the env-value block ends here
 
         // --- promote ---------------------------------------------------
         if let Some((label, _)) = promote_action(ctx, open_request, name)
-            && y + BUTTON_HEIGHT <= bottom
+            && y < bottom
         {
-            let w = button_min_width(label).min(field_w);
+            let w = pill_min_width(label).min(row_w);
             let rect = Rect {
                 x: x0,
                 y,
                 width: w,
-                height: BUTTON_HEIGHT,
+                height: 1,
             };
             let hit = Hit::VmPromoteBtn;
-            Button {
+            Pill {
                 label,
                 kind: ButtonKind::Secondary,
                 state: state_of(&hit),
             }
             .paint(buf, rect, theme);
             hits.register(rect, hit);
-            y += BUTTON_HEIGHT + 1;
+            y += 2;
         }
 
         // --- used by -----------------------------------------------------
@@ -2035,7 +2039,7 @@ impl VarManager {
                 buf,
                 x0,
                 y,
-                super::chooser::clip(&line, field_w),
+                super::chooser::clip(&line, row_w),
                 theme.text_muted,
                 theme.page,
                 false,
@@ -2043,23 +2047,22 @@ impl VarManager {
         }
     }
 
-    /// One label + `TextField` row: the label on its own line, the field
-    /// [`FIELD_HEIGHT`] rows below. Returns the next `y` past the field
-    /// (unchanged, i.e. no gap consumed, when there isn't room to draw it —
-    /// so a caller past the pane's bottom just stops drawing further rows).
+    /// One property row carrying a field's well. Returns the next `y`.
     #[allow(clippy::too_many_arguments)]
-    fn draw_labeled_field(
+    fn draw_field_row(
         &self,
         buf: &mut Buffer,
         hits: &mut HitMap,
         hovered: Option<&Hit>,
         theme: &Theme,
         x0: u16,
-        field_w: u16,
+        row_w: u16,
+        label_w: u16,
         bottom: u16,
         y: u16,
         label: &str,
         field: VmField,
+        trailing: &[TrailingPill],
         ctx: &Project,
         name: &str,
         masked: bool,
@@ -2067,32 +2070,29 @@ impl VarManager {
         if y >= bottom {
             return y;
         }
-        text(buf, x0, y, label, theme.text_muted, theme.page, false);
-        let field_y = y + 1;
-        if field_y + FIELD_HEIGHT > bottom {
-            return field_y;
+        let slot = PropertyRow {
+            label,
+            label_w,
+            hovered: hovered == Some(&Hit::VmFormField(field)),
+            disabled: false,
+            trailing,
         }
-        let area = Rect {
-            x: x0,
-            y: field_y,
-            width: field_w,
-            height: FIELD_HEIGHT,
-        };
-        self.draw_form_field(buf, hits, area, theme, hovered, field, ctx, name, masked);
-        field_y + FIELD_HEIGHT + 1
+        .paint(buf, hits, Rect::new(x0, y, row_w, 1), theme);
+        self.draw_form_field(buf, hits, &slot, theme, hovered, field, ctx, name, masked);
+        y + 1
     }
 
-    /// Paints one field's `TextField`: the live `LineInput` (windowed,
+    /// Paints one field's [`Well`]: the live `LineInput` (windowed,
     /// masked when `masked`) while it's under edit, else the resting text
     /// `field_seed_text` reads from `ctx` (masked to dots when `masked`, a
     /// muted "(not set)" when empty). Registers `Hit::VmFormField(field)`
-    /// over the whole painted area.
+    /// over the whole painted well.
     #[allow(clippy::too_many_arguments)]
     fn draw_form_field(
         &self,
         buf: &mut Buffer,
         hits: &mut HitMap,
-        area: Rect,
+        slot: &ControlSlot,
         theme: &Theme,
         hovered: Option<&Hit>,
         field: VmField,
@@ -2114,7 +2114,7 @@ impl VarManager {
         } else {
             ControlState::Normal
         };
-        let inner_w = area.width.saturating_sub(2);
+        let inner_w = slot.rect.width.saturating_sub(crate::paint::WELL_PAD * 2);
         let content = if let Some((_, input)) = editing {
             if masked {
                 input.draw_line_windowed_masked(true, theme, inner_w)
@@ -2131,8 +2131,12 @@ impl VarManager {
                 Line::raw(text_value)
             }
         };
-        TextField { content, state }.paint(buf, area, theme);
-        hits.register(area, hit);
+        let rect = Rect {
+            width: slot.rect.width.min(crate::paint::PROPERTY_MAX_W),
+            ..slot.rect
+        };
+        Well { content, state }.paint(buf, rect, theme);
+        hits.register(rect, hit);
     }
 
     fn draw_left(
@@ -2919,6 +2923,37 @@ fields = ["user_id", "customer_id"]
         assert!(hits.rect_of(&Hit::VmFormField(VmField::Default)).is_some());
         assert!(hits.rect_of(&Hit::VmFormField(VmField::EnvValue)).is_some());
         assert!(content.contains("used by:"), "{content}");
+    }
+
+    /// The form's fields are properties of one variable, not a list, so
+    /// the pane's *form* paints no band — while the left list beside it
+    /// keeps its own, because that genuinely is a list of items.
+    #[test]
+    fn the_var_form_paints_no_band_and_fits_its_fields_on_one_row_each() {
+        let (_dir, ctx) = fixture();
+        let mut vm = VarManager::default();
+        select_var(&mut vm, &ctx, "base_url");
+        let (buf, hits) = render_buf(&mut vm, &ctx);
+        let theme = Theme::dark();
+
+        for y in buf.area.top()..buf.area.bottom() {
+            for x in LEFT_W..buf.area.right() {
+                assert_ne!(
+                    buf.cell((x, y)).unwrap().bg,
+                    theme.selection,
+                    "band in the detail pane at {x},{y}"
+                );
+            }
+        }
+
+        // Each field is one row now, not a label row plus a three-row
+        // field plus a gap.
+        for field in [VmField::Description, VmField::Default, VmField::EnvValue] {
+            let r = hits
+                .rect_of(&Hit::VmFormField(field))
+                .unwrap_or_else(|| panic!("{field:?} has no well"));
+            assert_eq!(r.height, 1, "{field:?} is a one-row well");
+        }
     }
 
     #[test]

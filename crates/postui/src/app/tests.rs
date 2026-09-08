@@ -13234,7 +13234,7 @@ fn clicking_the_env_value_field_typing_and_clicking_away_writes_the_env_file() {
     // Click at the field's right edge: a click places the caret at the
     // pointer, and these assertions want it at the end of the text.
     let r = field_rect(&mut app, VmField::EnvValue);
-    app.handle_mouse(left_down(r.x + r.width - 2, r.y + 1));
+    app.handle_mouse(left_down(r.x + r.width - 2, r.y));
     assert!(app.varmanager.form.editing.is_some(), "the field is live");
 
     for c in "9".chars() {
@@ -13273,7 +13273,7 @@ fn enter_commits_a_field_edit_and_esc_reverts_it() {
     // throughout: a click places the caret at the pointer, and the
     // assertions want the typed char at the end of the text.)
     let r = field_rect(&mut app, VmField::Description);
-    app.handle_mouse(left_down(r.x + r.width - 2, r.y + 1));
+    app.handle_mouse(left_down(r.x + r.width - 2, r.y));
     app.handle_key(plain('!'));
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(app.varmanager.form.editing.is_none());
@@ -13287,7 +13287,7 @@ fn enter_commits_a_field_edit_and_esc_reverts_it() {
 
     // Enter commits.
     let r = field_rect(&mut app, VmField::Description);
-    app.handle_mouse(left_down(r.x + r.width - 2, r.y + 1));
+    app.handle_mouse(left_down(r.x + r.width - 2, r.y));
     app.handle_key(plain('!'));
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.varmanager.form.editing.is_none());
@@ -13316,14 +13316,14 @@ fn clicking_directly_from_one_field_into_another_commits_the_first() {
     // Right-edge click: the caret follows the pointer, and the '!' must
     // land at the end of the text.
     let r = field_rect(&mut app, VmField::Description);
-    app.handle_mouse(left_down(r.x + r.width - 2, r.y + 1));
+    app.handle_mouse(left_down(r.x + r.width - 2, r.y));
     for c in "!".chars() {
         app.handle_key(plain(c));
     }
 
     // Straight into the env-value field — no click-away in between.
     let r = field_rect(&mut app, VmField::EnvValue);
-    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    app.handle_mouse(left_down(r.x + 1, r.y));
 
     assert_eq!(
         app.proj().variables().vars["base_url"]
@@ -13354,7 +13354,7 @@ fn clicking_into_another_field_after_a_failed_commit_keeps_the_original_edit_liv
     });
 
     let r = field_rect(&mut app, VmField::EnvValue);
-    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    app.handle_mouse(left_down(r.x + 1, r.y));
     for c in "sk-typed-secret".chars() {
         app.handle_key(plain(c));
     }
@@ -13363,7 +13363,7 @@ fn clicking_into_another_field_after_a_failed_commit_keeps_the_original_edit_liv
     // first (a secret has no active env to target and can't hold a
     // default), so this must not switch away from it.
     let r = field_rect(&mut app, VmField::Description);
-    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    app.handle_mouse(left_down(r.x + 1, r.y));
 
     assert_eq!(
         app.varmanager.form.editing.as_ref().map(|(f, _)| *f),
@@ -13401,7 +13401,7 @@ fn clicking_a_different_left_row_after_a_failed_commit_keeps_the_original_edit_l
     rendered_text_tall(&mut app);
 
     let r = field_rect(&mut app, VmField::EnvValue);
-    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    app.handle_mouse(left_down(r.x + 1, r.y));
     for c in "sk-typed-secret".chars() {
         app.handle_key(plain(c));
     }
@@ -13451,7 +13451,7 @@ fn a_write_failure_keeps_the_typed_text_and_toasts_without_the_secret_value() {
     });
 
     let r = field_rect(&mut app, VmField::EnvValue);
-    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    app.handle_mouse(left_down(r.x + 1, r.y));
     for c in "sk-typed-secret".chars() {
         app.handle_key(plain(c));
     }
@@ -13516,7 +13516,7 @@ fn the_rename_button_opens_the_same_prompt_as_the_e_key() {
     });
     rendered_text_tall(&mut app);
     let r = app.hits.rect_of(&crate::hit::Hit::VmRename).unwrap();
-    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    app.handle_mouse(left_down(r.x + 1, r.y));
     assert!(matches!(
         app.modals.top(),
         Some(Modal::Prompt {
@@ -13544,7 +13544,7 @@ fn the_delete_button_opens_the_confirm_with_the_usage_list() {
     });
     rendered_text_tall(&mut app);
     let r = app.hits.rect_of(&crate::hit::Hit::VmDelete).unwrap();
-    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    app.handle_mouse(left_down(r.x + 1, r.y));
     assert!(app.modals.is_empty(), "delete is undoable, no confirm");
     assert!(!app.proj().variables().vars.contains_key("base_url"));
     assert!(
@@ -13584,7 +13584,7 @@ fn the_promote_button_promotes_the_requests_override_up_into_the_project() {
     assert!(content.contains("Promote"), "{content}");
 
     let r = app.hits.rect_of(&crate::hit::Hit::VmPromoteBtn).unwrap();
-    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    app.handle_mouse(left_down(r.x + 1, r.y));
     assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
     // Confirm "Default value".
     app.handle_key(plain('d'));
@@ -14105,31 +14105,32 @@ fn form_field_double_click_selects_the_word_and_drag_sweeps() {
         r == &crate::components::varmanager::VmRow::Var("base_url".into())
     });
 
-    // Text starts 2 columns into the field ("API root"); a double click on
-    // its first cell selects the word under it.
+    // Text starts `WELL_PAD` columns into the field ("API root"); a double
+    // click on its first cell selects the word under it.
+    use crate::paint::WELL_PAD;
     let r = field_rect(&mut app, VmField::Description);
-    app.handle_mouse(left_down(r.x + 2, r.y + 1));
-    app.handle_mouse(left_down(r.x + 2, r.y + 1)); // within 400ms => clicks == 2
+    app.handle_mouse(left_down(r.x + WELL_PAD, r.y));
+    app.handle_mouse(left_down(r.x + WELL_PAD, r.y)); // within 400ms => clicks == 2
     let (_, input) = app.varmanager.form.editing.as_ref().expect("editing");
     assert_eq!(input.selected_text().as_deref(), Some("API"));
 
     // Dragging on from the double click extends the selection word by
     // word — onto "root" grows it to the whole phrase, back onto the
     // anchored word shrinks it again (the body editor's word sweep).
-    assert!(app.handle_mouse(dragged(r.x + 2 + 6, r.y + 1)));
+    assert!(app.handle_mouse(dragged(r.x + WELL_PAD + 6, r.y)));
     let (_, input) = app.varmanager.form.editing.as_ref().unwrap();
     assert_eq!(input.selected_text().as_deref(), Some("API root"));
-    assert!(app.handle_mouse(dragged(r.x + 2 + 1, r.y + 1)));
+    assert!(app.handle_mouse(dragged(r.x + WELL_PAD + 1, r.y)));
     let (_, input) = app.varmanager.form.editing.as_ref().unwrap();
     assert_eq!(input.selected_text().as_deref(), Some("API"));
-    app.handle_mouse(left_up(r.x + 2 + 1, r.y + 1));
+    app.handle_mouse(left_up(r.x + WELL_PAD + 1, r.y));
 
     // A fresh click collapses the selection; a drag sweeps a new one.
     app.last_click = None;
-    app.handle_mouse(left_down(r.x + 2, r.y + 1));
+    app.handle_mouse(left_down(r.x + WELL_PAD, r.y));
     let (_, input) = app.varmanager.form.editing.as_ref().unwrap();
     assert_eq!(input.selection(), None);
-    assert!(app.handle_mouse(dragged(r.x + 2 + 8, r.y + 1)));
+    assert!(app.handle_mouse(dragged(r.x + WELL_PAD + 8, r.y)));
     let (_, input) = app.varmanager.form.editing.as_ref().unwrap();
     assert_eq!(input.selected_text().as_deref(), Some("API root"));
 }
@@ -14783,7 +14784,7 @@ fn right_clicking_commits_a_live_form_field() {
     // Right-edge click: the caret follows the pointer, and the '9' must
     // land at the end of the text.
     let r = field_rect(&mut app, VmField::EnvValue);
-    app.handle_mouse(left_down(r.x + r.width - 2, r.y + 1));
+    app.handle_mouse(left_down(r.x + r.width - 2, r.y));
     app.handle_key(plain('9'));
 
     let row = app.varmanager.left_cursor;
@@ -16760,7 +16761,7 @@ mod undo_tests {
         // Right-edge click: the caret follows the pointer, and the '9'
         // must land at the end of the text.
         let r = field_rect(&mut app, VmField::EnvValue);
-        app.handle_mouse(left_down(r.x + r.width - 2, r.y + 1));
+        app.handle_mouse(left_down(r.x + r.width - 2, r.y));
         app.handle_key(plain('9'));
         // Click away commits (Task 8's commit-first rule).
         let row = app.varmanager.left_cursor;

@@ -841,21 +841,22 @@ impl App {
     }
 
     /// Like [`Self::modal_input_drag_to`], for the variable form's field
-    /// under edit — the same `TextField` geometry (text starts 2 columns
-    /// in, windowed to `width - 2`).
+    /// under edit — the form's one-row `Well` geometry (text starts
+    /// [`WELL_PAD`] columns in, windowed to `width - WELL_PAD * 2`).
     fn vm_field_drag_to(&mut self, column: u16) -> bool {
+        use crate::paint::WELL_PAD;
         let Some((field, input)) = self.varmanager.form.editing.as_mut() else {
             return false;
         };
         let Some(area) = self.hits.rect_of(&Hit::VmFormField(*field)) else {
             return false;
         };
-        let inner_w = area.width.saturating_sub(2);
+        let inner_w = area.width.saturating_sub(WELL_PAD * 2);
         if inner_w == 0 {
             return false;
         }
         let start = input.window_start(true, inner_w);
-        let text_x = area.x + 2;
+        let text_x = area.x + WELL_PAD;
         let col = usize::from(column.clamp(text_x, text_x + inner_w - 1) - text_x);
         input.extend_mouse_selection_to(start + col);
         true
@@ -1957,11 +1958,12 @@ impl App {
                         varmanager.start_field_edit(p, field);
                     }
                 }
-                // Map the click through the field's `TextField` geometry
-                // (text 2 columns in, windowed to `width - 2` — the drawn
-                // window starts at 0 unless the field was already under
-                // edit): caret at the clicked column, anchor a possible
-                // drag sweep, word select on double click.
+                // Map the click through the field's one-row `Well`
+                // geometry (text `WELL_PAD` columns in, windowed to
+                // `width - WELL_PAD * 2` — the drawn window starts at 0
+                // unless the field was already under edit): caret at the
+                // clicked column, anchor a possible drag sweep, word
+                // select on double click.
                 if let Some(area) = self.hits.rect_of(&Hit::VmFormField(field))
                     && let Some((_, input)) = self
                         .varmanager
@@ -1970,9 +1972,10 @@ impl App {
                         .as_mut()
                         .filter(|(f, _)| *f == field)
                 {
-                    let inner_w = area.width.saturating_sub(2).max(1);
+                    use crate::paint::WELL_PAD;
+                    let inner_w = area.width.saturating_sub(WELL_PAD * 2).max(1);
                     let start = input.window_start(already_editing, inner_w);
-                    let col = usize::from(m.column.saturating_sub(area.x + 2));
+                    let col = usize::from(m.column.saturating_sub(area.x + WELL_PAD));
                     let idx = start + col;
                     if clicks == 2 {
                         input.select_word_at(idx);
