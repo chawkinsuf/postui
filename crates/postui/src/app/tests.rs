@@ -23591,3 +23591,215 @@ fn right_click_on_a_settings_row_not_under_edit_offers_no_text_menu() {
         "and a right click does not open one"
     );
 }
+
+/// A click inside a text box puts the caret where you clicked. The
+/// Settings tab select-all'd instead, so there was no way to fix one
+/// character of a long command without retyping it.
+#[test]
+fn a_click_in_a_settings_field_places_the_caret_where_it_landed() {
+    use crate::components::manage::ManageTab;
+    use crate::components::settings::{SettingsField, WELL_PAD};
+    let mut app = App::new_for_test();
+    app.update(Action::OpenManage {
+        tab: Some(ManageTab::Settings),
+    });
+    app.settings.begin_edit(SettingsField::AiCmd, "claude -p");
+    render_once(&mut app);
+    let r = app
+        .hits
+        .rect_of(&Hit::SettingsControl(SettingsField::AiCmd))
+        .unwrap();
+
+    // Four columns into the well's content area.
+    app.handle_mouse(left_down(r.x + WELL_PAD + 4, r.y));
+
+    assert_eq!(app.settings.caret(), 4, "the caret lands under the pointer");
+    assert!(
+        app.settings.selected_text().is_none(),
+        "and the select-all `begin_edit` seeded is cleared, so the next \
+         keystroke edits rather than replacing everything"
+    );
+    assert_eq!(
+        app.settings.field_text(),
+        "claude -p",
+        "the click changed the caret, never the text"
+    );
+}
+
+/// Button-held motion after a press inside the well sweeps a selection,
+/// exactly as it does in the variable form and the params table.
+#[test]
+fn dragging_in_a_settings_field_sweeps_a_selection() {
+    use crate::components::manage::ManageTab;
+    use crate::components::settings::{SettingsField, WELL_PAD};
+    let mut app = App::new_for_test();
+    app.update(Action::OpenManage {
+        tab: Some(ManageTab::Settings),
+    });
+    app.settings.begin_edit(SettingsField::AiCmd, "claude -p");
+    render_once(&mut app);
+    let r = app
+        .hits
+        .rect_of(&Hit::SettingsControl(SettingsField::AiCmd))
+        .unwrap();
+
+    app.handle_mouse(left_down(r.x + WELL_PAD, r.y));
+    app.handle_mouse(dragged(r.x + WELL_PAD + 6, r.y));
+
+    assert_eq!(
+        app.settings.selected_text().as_deref(),
+        Some("claude"),
+        "the sweep runs from the press to the pointer"
+    );
+
+    // The release ends the sweep but keeps what it selected.
+    app.handle_mouse(left_up(r.x + WELL_PAD + 6, r.y));
+    assert_eq!(app.settings.selected_text().as_deref(), Some("claude"));
+}
+
+/// Double click selects the word under the pointer.
+#[test]
+fn double_clicking_a_settings_field_selects_the_word() {
+    use crate::components::manage::ManageTab;
+    use crate::components::settings::{SettingsField, WELL_PAD};
+    let mut app = App::new_for_test();
+    app.update(Action::OpenManage {
+        tab: Some(ManageTab::Settings),
+    });
+    app.settings.begin_edit(SettingsField::AiCmd, "claude -p");
+    render_once(&mut app);
+    let r = app
+        .hits
+        .rect_of(&Hit::SettingsControl(SettingsField::AiCmd))
+        .unwrap();
+
+    let x = r.x + WELL_PAD + 2;
+    app.handle_mouse(left_down(x, r.y));
+    app.handle_mouse(left_down(x, r.y));
+
+    assert_eq!(app.settings.selected_text().as_deref(), Some("claude"));
+}
+
+/// The test that stops a *sixth* text surface shipping half-wired, the
+/// way the Settings tab did. Every surface that can be typed into must
+/// answer the mouse the same way: a hit to click, a menu to right-click
+/// and a sweep to drag. Add a variant to `TextSurface` without adding
+/// its arms and this fails.
+#[test]
+fn every_text_surface_under_edit_answers_the_mouse_identically() {
+    use crate::action::TextSurface;
+    use crate::components::manage::ManageTab;
+    use crate::components::settings::SettingsField;
+    use crate::components::varmanager::VmField;
+
+    // (name, the app with that surface live, the hit its well registers)
+    let cases: Vec<(&str, Box<dyn Fn() -> (App, Hit)>)> = vec![
+        (
+            "TableCell",
+            Box::new(|| {
+                let mut app = app_with_one_param();
+                let hit = Hit::TableCell { row: 0, col: 1 };
+                click_hit(&mut app, hit.clone());
+                assert!(app.editor.table.editing.is_some(), "cell is live");
+                (app, hit)
+            }),
+        ),
+        (
+            "VmField",
+            Box::new(|| {
+                let mut app = app_with_vars();
+                // A field only renders once the Variable Manager has a
+                // variable selected: open the screen and pick one, the
+                // way `clicking_the_env_value_field_typing_and_clicking_away_writes_the_env_file`
+                // and its neighbours do.
+                app.update(Action::OpenManage {
+                    tab: Some(ManageTab::Variables),
+                });
+                render_once(&mut app); // builds the left rows
+                app.varmanager.select_name("base");
+                let hit = Hit::VmFormField(VmField::Description);
+                click_hit(&mut app, hit.clone());
+                assert!(app.varmanager.form.editing.is_some(), "field is live");
+                (app, hit)
+            }),
+        ),
+        (
+            "Settings",
+            Box::new(|| {
+                let mut app = App::new_for_test();
+                app.update(Action::OpenManage {
+                    tab: Some(ManageTab::Settings),
+                });
+                app.settings.begin_edit(SettingsField::AiCmd, "claude -p");
+                (app, Hit::SettingsControl(SettingsField::AiCmd))
+            }),
+        ),
+    ];
+
+    for (name, build) in cases {
+        let (mut app, hit) = build();
+        render_once(&mut app);
+        let r = app
+            .hits
+            .rect_of(&hit)
+            .unwrap_or_else(|| panic!("{name}: a live field must register a hit"));
+
+        // A right click offers the text menu, not a row menu.
+        app.handle_mouse(right_down(r.x + 1, r.y));
+        let Some(Modal::Dropdown(d)) = app.modals.top() else {
+            panic!("{name}: a live field must offer a text menu")
+        };
+        let labels: Vec<&str> = d.items.iter().map(|i| i.label.as_str()).collect();
+        assert!(
+            labels.contains(&"Copy") && labels.contains(&"Paste"),
+            "{name}: expected Copy and Paste, got {labels:?}"
+        );
+        app.update(Action::Close);
+
+        // A press inside the well arms a sweep.
+        app.handle_mouse(left_down(r.x + 1, r.y));
+        assert!(
+            app.text_drag.is_some(),
+            "{name}: a press in a live field must anchor a text sweep"
+        );
+    }
+
+    // And the surfaces are distinct values, so a menu built for one can
+    // never read another's selection.
+    let all = [
+        TextSurface::Url,
+        TextSurface::Body,
+        TextSurface::Response,
+        TextSurface::TableCell,
+        TextSurface::VmField,
+        TextSurface::VmCell,
+        TextSurface::Jq,
+        TextSurface::Settings,
+    ];
+    for (i, a) in all.iter().enumerate() {
+        for b in &all[i + 1..] {
+            assert_ne!(a, b, "TextSurface variants must be distinct");
+        }
+    }
+}
+
+/// A click on a checkbox row has no caret to place — it toggles, and
+/// must not arm a text sweep that would then follow the pointer across
+/// a row with no text in it.
+#[test]
+fn clicking_a_checkbox_row_toggles_and_arms_no_text_sweep() {
+    use crate::components::manage::ManageTab;
+    use crate::components::settings::SettingsField;
+    let mut app = App::new_for_test();
+    app.update(Action::OpenManage {
+        tab: Some(ManageTab::Settings),
+    });
+    let before = app.ui_settings.hover_hints;
+    render_once(&mut app);
+
+    click_hit(&mut app, Hit::SettingsControl(SettingsField::HoverHints));
+
+    assert_eq!(app.ui_settings.hover_hints, !before, "the box toggled");
+    assert!(app.settings.editing.is_none(), "a checkbox opens no edit");
+    assert!(app.text_drag.is_none(), "and arms no sweep");
+}

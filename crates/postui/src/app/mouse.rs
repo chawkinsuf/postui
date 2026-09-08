@@ -157,6 +157,7 @@ impl App {
                         Some(TextDrag::TableCell) => self.table_cell_drag_to(m.column),
                         Some(TextDrag::VmField) => self.vm_field_drag_to(m.column),
                         Some(TextDrag::VmCell) => self.vm_cell_drag_to(m.column),
+                        Some(TextDrag::Settings) => self.settings_field_drag_to(m.column),
                         None => unreachable!(),
                     };
                 }
@@ -860,6 +861,26 @@ impl App {
         true
     }
 
+    /// Like [`Self::vm_field_drag_to`], for the Settings tab's field
+    /// under edit — a one-row well, so only the column maps.
+    fn settings_field_drag_to(&mut self, column: u16) -> bool {
+        use crate::components::settings::WELL_PAD;
+        let Some(field) = self.settings.editing else {
+            return false;
+        };
+        let Some(area) = self.hits.rect_of(&Hit::SettingsControl(field)) else {
+            return false;
+        };
+        let inner_w = area.width.saturating_sub(WELL_PAD * 2);
+        if inner_w == 0 {
+            return false;
+        }
+        let text_x = area.x + WELL_PAD;
+        let col = usize::from(column.clamp(text_x, text_x + inner_w - 1) - text_x);
+        self.settings.drag_caret_to(col, inner_w);
+        true
+    }
+
     /// Like [`Self::url_drag_to`], for the selector-grid cell under edit
     /// (drawn windowed at the hit rect's own left edge).
     fn vm_cell_drag_to(&mut self, column: u16) -> bool {
@@ -1156,18 +1177,42 @@ impl App {
                 self.settings.cursor = i;
                 self.update(Action::Render)
             }
-            // Clicking the well of the field you are already editing is
-            // not a commit: committing and immediately reopening would
-            // select-all over a rejected value and replace it with the
-            // stored one, and there would be no way to click inside a
-            // live field at all. The edit simply stands.
-            Hit::SettingsControl(field) if self.settings.editing == Some(field) => true,
+            // A click on a control: commit whatever other field was live
+            // (a commit the field *refuses* swallows the click and keeps
+            // the typed text), then open this one and put the caret
+            // where the pointer is.
+            //
+            // Clicking the well of the field you are *already* editing
+            // commits nothing: committing and reopening would select-all
+            // over a rejected value and hand back the stored one. It
+            // only moves the caret, which is what a click in a live text
+            // box means everywhere else in the app.
             Hit::SettingsControl(field) => {
-                if !self.commit_settings_edit_for_click() {
-                    return true;
+                use crate::components::settings::WELL_PAD;
+                let already_editing = self.settings.editing == Some(field);
+                let mut changed = false;
+                if !already_editing {
+                    if !self.commit_settings_edit_for_click() {
+                        return true;
+                    }
+                    self.settings.focus_field(field);
+                    changed |= self.activate_settings_row();
                 }
-                self.settings.focus_field(field);
-                self.activate_settings_row()
+                // Only a text row has a well and a caret to place. A
+                // checkbox or a jq segment was toggled by
+                // `activate_settings_row` above, opens no edit, and must
+                // arm no sweep — one would then follow the pointer
+                // across a row holding no text.
+                if self.settings.editing == Some(field)
+                    && let Some(area) = self.hits.rect_of(&Hit::SettingsControl(field))
+                {
+                    let inner_w = area.width.saturating_sub(WELL_PAD * 2).max(1);
+                    let col = usize::from(m.column.saturating_sub(area.x + WELL_PAD));
+                    self.settings
+                        .click_caret(col, inner_w, already_editing, clicks == 2);
+                    self.text_drag = Some(TextDrag::Settings);
+                }
+                self.update(Action::Render) || changed
             }
             Hit::SettingsJqTab(mode) => {
                 use crate::components::settings::{SettingsField, jq_tab_spelling};

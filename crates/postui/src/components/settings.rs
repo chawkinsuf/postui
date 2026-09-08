@@ -257,6 +257,41 @@ impl SettingsTab {
         self.field_text = self.input.text().to_string();
     }
 
+    /// Where the live edit's caret sits, as a character index.
+    pub fn caret(&self) -> usize {
+        self.input.cursor()
+    }
+
+    /// Places the caret for a click inside the live edit's well.
+    ///
+    /// `col` is the column *within the well's content area* and
+    /// `inner_w` that area's width, so the caller maps through
+    /// [`WELL_PAD`] once and this maps through the input's own scroll
+    /// window. `already_editing` says whether the well was live before
+    /// this click: a freshly opened one draws its window from 0, so the
+    /// two cases resolve different indices for the same column.
+    /// `double` selects the word instead of placing a bare caret.
+    ///
+    /// Neither path changes the text, so `field_text` stays in sync
+    /// with `input` without being rewritten.
+    pub fn click_caret(&mut self, col: usize, inner_w: u16, already_editing: bool, double: bool) {
+        let idx = self.input.window_start(already_editing, inner_w) + col;
+        if double {
+            self.input.select_word_at(idx);
+        } else {
+            self.input.set_cursor(idx);
+            self.input.begin_mouse_selection();
+        }
+    }
+
+    /// Extends the live edit's mouse selection to `col` within a well
+    /// content area of width `inner_w`. The sweep's other end was
+    /// anchored by [`Self::click_caret`].
+    pub fn drag_caret_to(&mut self, col: usize, inner_w: u16) {
+        let idx = self.input.window_start(true, inner_w) + col;
+        self.input.extend_mouse_selection_to(idx);
+    }
+
     /// The live edit's selected text, for ctrl+c.
     pub fn selected_text(&self) -> Option<String> {
         self.editing.and(self.input.selected_text())

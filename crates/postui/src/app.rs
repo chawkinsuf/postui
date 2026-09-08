@@ -78,6 +78,9 @@ pub enum TextDrag {
     /// A sweep inside the selector-grid cell under edit
     /// (`OptionGridState::editing` names which one).
     VmCell,
+    /// A sweep inside the Settings tab's field under edit
+    /// (`SettingsTab::editing` names which one).
+    Settings,
 }
 
 /// Whether `n` can't be a new declaration's name: one of the reserved
