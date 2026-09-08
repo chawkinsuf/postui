@@ -1216,8 +1216,12 @@ impl Response {
                 }
             }
             // Not JSON after all: the Tree tab disappears, exactly as it
-            // never appears for a small non-JSON body.
-            None => view.set_mode(ViewMode::Raw),
+            // never appears for a small non-JSON body — and with it the
+            // jq bar a filter typed against the spinner had focused.
+            None => {
+                view.set_mode(ViewMode::Raw);
+                self.jq.blur();
+            }
         }
         true
     }
@@ -1305,8 +1309,17 @@ impl Response {
 
     /// Whether the bar is showing: focused, holding a switched-on filter,
     /// or waiting on a run or an AI reply. Closed means the filter is off.
+    ///
+    /// Only ever on the `Pretty` tab. jq filters the tree, so `Raw` and
+    /// `Headers` show neither the bar nor the toolbar's filter icon; the
+    /// filter itself is kept, and comes back with the tab.
     pub fn jq_open(&self) -> bool {
-        self.jq.is_open()
+        self.jq.is_open() && self.on_jq_tab()
+    }
+
+    /// Whether the open tab is the one jq filters (`Pretty`).
+    fn on_jq_tab(&self) -> bool {
+        self.view.as_ref().is_some_and(|v| v.mode == ViewMode::Pretty)
     }
 
     /// Opens the bar: switches the filter on (an edit, when that changes
@@ -1453,10 +1466,23 @@ impl Response {
         self.jq.completion.pending = None;
     }
 
-    /// Whether jq has anything to run against: a ready view with a parsed
-    /// (or still-parsing) JSON body.
+    /// Whether jq can run right now: a ready view with a parsed (or
+    /// still-parsing) JSON body, showing the tab jq filters.
     pub fn jq_available(&self) -> bool {
-        self.view.as_ref().is_some_and(|v| v.has_tree_view())
+        self.jq_blocked_reason().is_none()
+    }
+
+    /// Why jq can't run right now, in the words the keyboard routes toast
+    /// — `None` while it can. The tab rule gets its own line: on `Raw` or
+    /// `Headers` the response may well be JSON, it just isn't the view a
+    /// filter applies to.
+    pub fn jq_blocked_reason(&self) -> Option<&'static str> {
+        match self.view.as_ref() {
+            Some(v) if !v.has_tree_view() => Some("The response is not JSON"),
+            Some(v) if v.mode != ViewMode::Pretty => Some("jq filters the Pretty tab"),
+            Some(_) => None,
+            None => Some("The response is not JSON"),
+        }
     }
 
     /// Pastes into the jq bar (the bracketed-paste/ctrl+v path). `false`
@@ -1942,6 +1968,11 @@ impl Response {
             return;
         }
         view.set_mode(mode);
+        // The bar goes with the tab, so the caret can't stay in it — but
+        // the filter stays switched on, ready for the way back.
+        if mode != ViewMode::Pretty {
+            self.jq.blur();
+        }
     }
 
     /// Opens the in-pane search, exactly as `/` does (the search button).
@@ -2514,8 +2545,11 @@ impl Component for Response {
         // is pending, or a background run is outstanding — so the bar
         // stays up through a run that outlives the keystroke that started
         // it, and a bad filter's error row (the second `jq_rows` line)
-        // stays visible after the bar itself loses focus.
-        let jq_open = self.jq.is_open();
+        // stays visible after the bar itself loses focus. On `Raw` and
+        // `Headers` there is nothing for a filter to do, so the bar goes
+        // with the tab (`Response::jq_open`, spelled out here because
+        // `view` already holds the borrow it would need).
+        let jq_open = self.jq.is_open() && view.mode == ViewMode::Pretty;
         let jq_rows = if jq_open {
             1 + u16::from(
                 self.jq.error.is_some() || self.jq.note.is_some() || self.jq.menu_row().is_some(),
@@ -2783,7 +2817,7 @@ fn draw_header_strip(
 
     // Row 2 (left): the icon actions, on the stretch of the underline row
     // the tabs' rule doesn't reach.
-    let jq_available = view.has_tree_view();
+    let jq_available = view.has_tree_view() && view.mode == ViewMode::Pretty;
     let jq_on = jq_available && bar.enabled && !bar.input.text().is_empty();
     draw_header_actions(frame, hits, area, jq_available, jq_on, ctx);
 
@@ -5370,6 +5404,63 @@ mod tests {
             let (out, _) = render_hovered(&mut r, Some(&hit));
             assert!(!out.contains(name), "no tooltip for {hit:?}: {out}");
         }
+    }
+
+    /// jq only ever filters the tree, so the toolbar's filter icon, the
+    /// bar, and the caret in it all belong to the `Pretty` tab. Switching
+    /// away takes the three of them; switching back brings them, and the
+    /// filter they were holding, straight back.
+    #[test]
+    fn the_jq_button_and_bar_belong_to_the_pretty_tab() {
+        let mut r = ready(r#"{"a": 1}"#);
+        assert!(r.open_jq(), "the tree tab has jq");
+        r.set_jq_text(".a");
+        assert!(r.jq_focused() && r.jq_open());
+        let hits = render_hits(&mut r);
+        assert!(hits.rect_of(&crate::hit::Hit::ResponseJqButton).is_some());
+        assert!(hits.rect_of(&crate::hit::Hit::ResponseJqBar).is_some());
+
+        for mode in [ViewMode::Raw, ViewMode::Headers] {
+            r.set_view_mode(mode);
+            assert!(!r.jq_available(), "{mode:?} has nothing for jq to filter");
+            assert!(!r.jq_open(), "{mode:?} hides the bar");
+            assert!(!r.jq_focused(), "{mode:?} takes the caret out of it");
+            assert!(r.jq_enabled(), "{mode:?} keeps the filter switched on");
+            let hits = render_hits(&mut r);
+            assert!(
+                hits.rect_of(&crate::hit::Hit::ResponseJqButton).is_none(),
+                "no filter icon on {mode:?}"
+            );
+            assert!(
+                hits.rect_of(&crate::hit::Hit::ResponseJqBar).is_none(),
+                "no filter bar on {mode:?}"
+            );
+            assert!(!r.open_jq(), "and no way to open one from {mode:?}");
+        }
+
+        r.set_view_mode(ViewMode::Pretty);
+        assert!(r.jq_available() && r.jq_open(), "the bar comes back");
+        assert_eq!(r.jq_text(), ".a", "still holding the filter it had");
+        let hits = render_hits(&mut r);
+        assert!(hits.rect_of(&crate::hit::Hit::ResponseJqButton).is_some());
+    }
+
+    /// The refusal has to say the right thing: on `Raw`/`Headers` the body
+    /// may well be JSON, it just isn't the view a filter applies to.
+    #[test]
+    fn the_blocked_reason_tells_a_wrong_tab_from_a_non_json_body() {
+        let mut r = ready(r#"{"a": 1}"#);
+        assert_eq!(r.jq_blocked_reason(), None);
+        r.set_view_mode(ViewMode::Raw);
+        assert_eq!(r.jq_blocked_reason(), Some("jq filters the Pretty tab"));
+
+        let r = ready("<html>hi</html>");
+        assert_eq!(r.jq_blocked_reason(), Some("The response is not JSON"));
+        assert_eq!(
+            Response::default().jq_blocked_reason(),
+            Some("The response is not JSON"),
+            "no response at all reads as nothing to filter"
+        );
     }
 
     #[test]
