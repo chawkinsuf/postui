@@ -22073,6 +22073,88 @@ fn a_config_broken_after_startup_banners_and_disables_the_rows() {
     );
 }
 
+/// A broken config.toml disables the seven setting rows, but the
+/// config.toml file row's Edit… and Reset are the two ways *out* of that
+/// state (`Action::ForceResetConfigFile`, Task 14, exists precisely for
+/// a config.toml that won't parse) -- so both stay live, register hits,
+/// and still activate from the keyboard, exactly as when the file is
+/// fine.
+#[test]
+fn a_broken_config_leaves_the_way_out_live() {
+    use crate::components::manage::ManageTab;
+    use crate::components::settings::{SettingsField, SettingsRow, SettingsTab};
+
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("config.toml"), "not = [toml").unwrap();
+    let mut app = App::new_for_test();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+    app.update(Action::ReloadFromDisk);
+    assert!(app.config_error.is_some());
+    app.update(Action::OpenManage {
+        tab: Some(ManageTab::Settings),
+    });
+
+    // Mouse: every setting row registers no hit at all -- nothing that
+    // looks live and silently refuses a write.
+    render_once(&mut app);
+    for field in [
+        SettingsField::Animations,
+        SettingsField::HoverHints,
+        SettingsField::JqTab,
+        SettingsField::AiCmd,
+        SettingsField::AiConfirmed,
+        SettingsField::ClipboardCmd,
+        SettingsField::Osc52Limit,
+    ] {
+        assert!(
+            app.hits.rect_of(&Hit::SettingsControl(field)).is_none(),
+            "{field:?} must not be clickable while config.toml won't parse"
+        );
+    }
+    let config_row = SettingsTab::rows()
+        .iter()
+        .position(|r| *r == SettingsRow::File(crate::action::ConfigFile::Config))
+        .unwrap();
+    assert!(app.hits.rect_of(&Hit::SettingsRow(config_row)).is_some());
+    assert!(
+        app.hits
+            .rect_of(&Hit::SettingsFile {
+                file: crate::action::ConfigFile::Config,
+                reset: false,
+            })
+            .is_some(),
+        "Edit… is one of the two ways out"
+    );
+    assert!(
+        app.hits
+            .rect_of(&Hit::SettingsFile {
+                file: crate::action::ConfigFile::Config,
+                reset: true,
+            })
+            .is_some(),
+        "Reset is the other -- ForceResetConfigFile handles the unparseable case"
+    );
+
+    // Keyboard: Edit… still opens the editor, Reset still activates
+    // (through the confirm every Reset goes behind).
+    app.settings.cursor = config_row;
+    app.settings.file_button = 0;
+    assert!(app.activate_settings_row());
+    assert_eq!(
+        app.pending_terminal_action,
+        Some(Action::EditConfigFile(crate::action::ConfigFile::Config)),
+        "Edit… still opens the file from the keyboard"
+    );
+    app.pending_terminal_action = None;
+
+    app.settings.file_button = 1;
+    assert!(app.activate_settings_row());
+    assert!(
+        matches!(app.modals.top(), Some(Modal::Confirm { .. })),
+        "Reset still raises its confirm from the keyboard"
+    );
+}
+
 /// Reload re-reads what is on disk around unsaved work; it does not
 /// discard it. The editor buffer already works this way, and a half-typed
 /// ai_cmd is no different.

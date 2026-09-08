@@ -4439,7 +4439,14 @@ impl App {
                 // half-typed field even though it replaces `ui_settings`
                 // wholesale. A reload re-reads what is on disk *around*
                 // unsaved work rather than discarding it, the same rule
-                // the request editor's buffer already follows.
+                // the request editor's buffer already follows. If
+                // `SettingsTab` ever grows a cached copy of a value this
+                // reload touches, that copy needs the same guard the
+                // request editor's buffer has -- skip the field currently
+                // under `self.settings.editing` -- or this comment's
+                // premise breaks and
+                // `a_reload_does_not_stomp_a_live_settings_edit` starts
+                // failing for real.
                 if let Some(ui) = ui {
                     self.reapply_ui_settings(ui);
                 }
@@ -9540,10 +9547,13 @@ impl App {
         }
     }
 
-    /// Whether the Settings tab's rows accept input. False while
-    /// `config.toml` will not parse: `Config::edit` refuses to write over
-    /// it, so every change would be rejected. Edit… stays enabled
-    /// regardless -- it is the way out.
+    /// Whether the Settings tab's *setting* rows accept input. False
+    /// while `config.toml` will not parse: `Config::edit` refuses to
+    /// write over it, so every change would be rejected. The file rows
+    /// are not governed by this at all -- Edit… and Reset are the two
+    /// ways out of a broken `config.toml` (Reset through
+    /// `Action::ForceResetConfigFile`, Task 14), so both stay live
+    /// regardless; see `activate_settings_row`.
     pub(crate) fn ui_settings_are_editable(&self) -> bool {
         self.config_error.is_none()
     }
@@ -9551,18 +9561,17 @@ impl App {
     /// Enter/space on the focused Settings row: a checkbox toggles, the
     /// two-state control advances, a text row opens its edit, and a
     /// Files row runs whichever of its two buttons is aimed at. A File
-    /// row's Edit… is always live; every other row is a no-op while
-    /// `config.toml` will not parse.
+    /// row's Edit… and Reset are always live -- they are the two ways
+    /// out of a broken `config.toml`; every other row is a no-op while
+    /// it will not parse.
     pub(crate) fn activate_settings_row(&mut self) -> bool {
         use crate::components::settings::{SettingsField, SettingsRow, jq_tab_spelling};
         match self.settings.row() {
             SettingsRow::File(file) => {
                 let action = if self.settings.file_button == 0 {
                     Action::EditConfigFile(file)
-                } else if self.ui_settings_are_editable() {
-                    Action::ResetConfigFile(file)
                 } else {
-                    return true;
+                    Action::ResetConfigFile(file)
                 };
                 self.update(action)
             }

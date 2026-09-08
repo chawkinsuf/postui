@@ -329,11 +329,18 @@ pub fn draw_settings(
             width: row_w,
             height: 1,
         };
+        // File rows are not governed by `editable` at all: Edit… and
+        // Reset are the two ways *out* of a broken config.toml (Task
+        // 14's `ForceResetConfigFile` exists precisely for this case),
+        // so they stay exactly as live as always. Only a setting row —
+        // whose write genuinely would be refused by `Config::edit` — is
+        // disabled.
+        let row_disabled = !editable && matches!(row, SettingsRow::Setting(_));
         // A live edit is its own "you are here", so the row band steps
-        // back to let the field carry the focus. Disabled rows never
-        // highlight: there is nothing for the cursor or the pointer to
-        // land on.
-        let highlight = if !editable {
+        // back to let the field carry the focus. A disabled setting row
+        // never highlights: there is nothing for the cursor or the
+        // pointer to land on.
+        let highlight = if row_disabled {
             RowHighlight::None
         } else if tab.cursor == i && tab.editing.is_none() {
             RowHighlight::Selected
@@ -348,18 +355,16 @@ pub fn draw_settings(
         }
         .paint(buf, y, rect.x, rect.width, theme.page, 1.0, theme);
         let bg = ListRow::resolve_fill(theme, highlight, theme.page, 1.0);
-        let label_fg = if editable {
-            theme.text
-        } else {
+        let label_fg = if row_disabled {
             theme.text_disabled
+        } else {
+            theme.text
         };
         text(buf, x0, y, row.label(), label_fg, bg, false);
         // A disabled setting row registers no hit at all: a control that
         // looks live and silently refuses every write is the defect this
-        // banner exists to remove. A disabled File row keeps its row hit
-        // (moving the cursor there is harmless) but its Reset button
-        // loses its own hit below.
-        if editable || matches!(row, SettingsRow::File(_)) {
+        // banner exists to remove. A File row's own hit is unaffected.
+        if !row_disabled {
             hits.register(rect, Hit::SettingsRow(i));
         }
 
@@ -368,9 +373,9 @@ pub fn draw_settings(
             SettingsRow::Setting(field) => draw_setting_control(
                 buf, hits, hovered, theme, tab, ui, *field, cx, y, right, bg, editable,
             ),
-            SettingsRow::File(file) => draw_file_buttons(
-                buf, hits, hovered, theme, tab, i, *file, cx, y, right, editable,
-            ),
+            SettingsRow::File(file) => {
+                draw_file_buttons(buf, hits, hovered, theme, tab, i, *file, cx, y, right)
+            }
         }
         y += 1;
     }
@@ -570,6 +575,12 @@ fn draw_setting_control(
     }
 }
 
+/// A File row's Edit… and Reset are never gated on `editable`: Edit… is
+/// always the way to fix `config.toml` by hand, and `ForceResetConfigFile`
+/// (Task 14) exists precisely so Reset still works when `config.toml`
+/// will not parse -- the confirm it raises already warns, in that
+/// branch, that the project list will be lost. Disabling either would
+/// remove one of the two ways out.
 #[allow(clippy::too_many_arguments)]
 fn draw_file_buttons(
     buf: &mut Buffer,
@@ -582,14 +593,9 @@ fn draw_file_buttons(
     cx: u16,
     y: u16,
     right: u16,
-    editable: bool,
 ) {
     let mut x = cx;
     for (slot, label) in [(0usize, "Edit…"), (1, "Reset")] {
-        // Edit… is always the way out, even while `config.toml` won't
-        // parse; Reset would be refused the same as every setting write,
-        // so it is disabled right alongside them.
-        let live = slot == 0 || editable;
         let hit = Hit::SettingsFile {
             file,
             reset: slot == 1,
@@ -597,38 +603,28 @@ fn draw_file_buttons(
         // The keyboard's chosen button reads exactly like the hovered
         // one: left/right are how a File row is aimed.
         let chosen = tab.cursor == index && tab.file_button == slot;
-        let face = if !live {
-            theme.control
-        } else if chosen {
+        let face = if chosen {
             theme.accent
         } else if hovered == Some(&hit) {
             theme.control_hover
         } else {
             theme.control
         };
-        let fg = if !live {
-            theme.text_disabled
-        } else if chosen {
-            theme.on_accent
-        } else {
-            theme.text
-        };
+        let fg = if chosen { theme.on_accent } else { theme.text };
         let w = label.chars().count() as u16 + 2;
         if x + w > right {
             return;
         }
         pill(buf, x, y, label, face, fg);
-        if live {
-            hits.register(
-                Rect {
-                    x,
-                    y,
-                    width: w,
-                    height: 1,
-                },
-                hit,
-            );
-        }
+        hits.register(
+            Rect {
+                x,
+                y,
+                width: w,
+                height: 1,
+            },
+            hit,
+        );
         x += w + 1;
     }
 }
