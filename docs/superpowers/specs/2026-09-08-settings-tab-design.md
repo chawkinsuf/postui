@@ -1,15 +1,24 @@
 # Settings Tab (Manage screen) Design
 
-The global settings in `config.toml` reach the GUI as a fourth Manage
-tab, right-anchored in the tab strip so it reads as distinct from the
-three project tabs. To free the room for it, the Manage bar's right
-cluster empties: `Close` is deleted outright and `Reload All` moves up
-into the header bar's save/discard slot, which is unoccupied whenever
-the Manage screen is open.
+The global settings in `config.toml`, and `keys.toml` alongside them,
+reach the GUI as a fourth Manage tab, right-anchored in the tab strip so
+it reads as distinct from the three project tabs. To free the room for
+it, the Manage bar's right cluster empties: `Close` is deleted outright
+and `Reload All` moves up into the header bar's save/discard slot, which
+is unoccupied whenever the Manage screen is open.
+
+Landing it also closes a hole the tab would otherwise put on display:
+`config.toml` is the last file in the app that silently defaults when it
+will not parse. See "Startup never defaults".
 
 ## Scope
 
-One branch. User-visible changes: the Manage bar loses two buttons, the
+One branch, with "Startup never defaults" landing first as its own
+commit — the Settings tab is what makes that hole visible, and fixing it
+first lets the tab assume a parsed file.
+
+User-visible changes: startup refuses a broken `config.toml` instead of
+silently running on defaults, the Manage bar loses two buttons, the
 header gains one on the Manage screen only, and a new tab exposes the
 settings listed under "Settings body" plus per-file Edit… and Reset
 buttons for `config.toml` and `keys.toml`. No change to what
@@ -20,6 +29,56 @@ Explicitly out of scope: splitting reload into project and config
 halves (considered and rejected — see "Reload stays whole"), a
 structured keybinding editor (Edit… hands `keys.toml` to `$EDITOR`
 instead), and a theme authoring UI.
+
+## Startup never defaults
+
+Lands first, as its own commit: the Settings tab would otherwise render
+a screenful of values that are not the user's.
+
+Today `Config::load_from` answers every read failure the same way — *"run
+on the defaults and say so"* — and there are two failure tiers behind
+that one answer:
+
+- **A syntax error** (`toml::from_str` fails) discards the *whole file*:
+  `UiSettings::default()` **and** `ProjectsRegistry::default()`. Since
+  `registry.last` is what picks the project at startup
+  (`app.rs:461-470`), a stray bracket does not merely reset preferences
+  — it can silently open a different project, or none at all.
+- **A mistyped key** (`animations = "yes"`) parses, `as_bool()` returns
+  `None`, and that key alone falls back to its default — for most keys
+  **with no warning at all**. Only `jq_tab` and `[animation_ms]` warn.
+
+This contradicts the rule already applied to project files: a file that
+exists but will not parse is fatal and reported, never defaulted or
+overwritten (`ProjectContext::open` is fallible; a refused project gives
+an empty state with the error shown). `config.toml` is the last file
+still defaulting.
+
+**A syntax error now blocks startup** with a modal that cannot be
+dismissed into a normal session, showing the parse error and the file
+path, offering:
+
+- **Edit…** — the same round-trip described below, on the real file's
+  text. On a valid save, startup continues normally.
+- **Reset** — the settings reset described below, behind its own
+  confirm. `[projects]` is preserved if and only if the file parses far
+  enough to recover it; when it does not, the confirm says the project
+  list will be lost.
+- **Continue without saving settings** — runs on defaults for this
+  session. Named for what it does, not "Use defaults": `Config::edit`
+  refuses to write an unparseable file, so nothing persists in this mode
+  — no settings changes, no newly-registered projects. The modal says
+  so.
+- **Quit**.
+
+**A mistyped key warns.** Every key that falls back because its value
+had the wrong type produces a warning naming the key and the expected
+type, matching what `jq_tab` and `[animation_ms]` already do. Silent
+per-key defaulting is how a customised app quietly becomes a default
+one.
+
+Reload is unchanged: it already refuses a broken file and keeps the
+settings in memory. Only startup changes.
 
 ## Reload stays whole
 
@@ -58,8 +117,11 @@ buttons and becomes nothing but the tab strip across the full bar width.
   forward.
 - **`Reload All` moves to the header** (below).
 
-With both gone the strip no longer competes for width, so its current
-"strip has priority, buttons drop rather than overlap" logic goes too.
+With both gone the strip no longer competes with buttons for width, so
+the current "strip has priority, buttons drop rather than overlap" logic
+goes too. Width competition does not disappear, though — it moves
+*inside* the strip, between the three left tabs and the right-anchored
+Settings. See "Narrow bars".
 
 ## Header bar
 
@@ -109,6 +171,21 @@ the session. That is current behaviour and stays as-is.
   and width already animate as separate keys, `AnimKey::TabUnderline`
   and `AnimKey::TabUnderlineWidth`).
 
+### Narrow bars
+
+Settings keeps a **minimum 2-column gap** after Spaces. Because
+`TabStrip`'s inter-tab gap is also 2, the layout degrades with no
+fallback branch and no visual jump: as the bar narrows, Settings slides
+leftward until it sits exactly 2 columns after Spaces, at which point
+the right-anchored strip *is* a contiguous strip.
+
+The floor is **50 columns** — `Variables` 11 + gap 2 + `Environments`
+14 + gap 2 + `Spaces` 8 = 37, plus the 2-column minimum gap, plus
+`Settings` at 10, plus the 1-column left edge. Below that the strip
+clips at the right edge rather than dropping a tab, as the header's
+Manage chip already does; every tab stays reachable by `alt+←/→`
+regardless.
+
 ## No project open
 
 Today `draw_manage_without_a_project` (`ui.rs:668-685`) replaces the
@@ -121,12 +198,17 @@ project, so that blanket rule becomes tab-conditional.
   better than a dead tab does.
 - Settings renders normally.
 - **Opening the Manage screen with no project auto-selects Settings**,
-  so the screen lands on something usable instead of an apology. This
+  so the screen lands on something usable instead of an apology. It
   applies only to `Action::OpenManage { tab: None }`; an explicit
   `tab: Some(..)` request (such as `app.rs:3566`'s jump to Environments)
   is honoured as asked and shows the message. The auto-selection sets
   `manage.tab` for real; it is not a display-only override, and the tab
   stays where it landed once a project opens.
+- **It fires only on the opening path.** `OpenManage { tab: None }` is
+  both the open *and* the close half of the toggle
+  (`app.rs:4394-4397`): with the screen already up it closes. The
+  auto-selection must be evaluated only when `screen != Screen::Manage`,
+  or pressing `alt+v` to close would reopen on Settings instead.
 
 ## Settings body
 
@@ -158,7 +240,49 @@ Files
 | `ai_cmd` | `TextField` |
 | `ai_confirmed` | Checkbox, worded as consent and inverted: "Ask before sending response shape to the AI command". This flag is set once by the "Always send" choice and is currently unrevocable without hand-editing TOML; exposing it is a privacy requirement, not a convenience |
 | `clipboard_cmd` | `TextField` |
-| `osc52_limit` | Numeric field, in bytes |
+| `osc52_limit` | Numeric field, in bytes — see "Validation" |
+
+### Keyboard
+
+The tab is fully operable without a mouse, like every other surface.
+Following the established idiom rather than a Tab ring over every
+control:
+
+- Up/down move a single cursor through **every** row in order, the two
+  Files rows included.
+- Enter or space activates the focused row: a checkbox toggles, the
+  two-state control advances, a `TextField` enters edit mode, a Files
+  row's buttons activate.
+- A Files row holds two buttons; left/right choose between Edit… and
+  Reset, and enter activates the chosen one.
+- In a live `TextField` edit, enter commits and esc cancels — the same
+  pair the Manage grid already advertises.
+- The footer advertises the focused row's keys, as every other focused
+  area does. The Settings tab supplies its own chip set through the
+  same path the other tabs use (`ui.rs:273-275`); it must not inherit
+  whatever the previously open tab left behind.
+
+### Validation
+
+`osc52_limit` is the one field whose text is not free-form. On commit,
+input that is not a non-negative integer within `usize` is **rejected**:
+the previous value stands, and a toast says what was expected. It is
+never silently coerced or zeroed.
+
+`ai_cmd` and `clipboard_cmd` are free-form shell commands and are not
+validated here — only the first word is ever looked up on `PATH`, and
+that gating already exists.
+
+### While `config.toml` is broken on disk
+
+Startup can no longer begin in this state, but a reload can *enter* it:
+the file goes bad while the app runs, reload refuses it, and the
+settings in memory stay as loaded. The tab must not pretend otherwise.
+A banner across the top says the file has a syntax error and that the
+values shown are the ones the session started with, and every row is
+disabled — writes would be refused anyway, since `Config::edit` will not
+write over a file it cannot parse. **Edit… stays enabled**: it is the
+way out.
 
 **`theme` is deliberately absent** — the header's Theme chip is present
 on every screen, and a second control for it would be redundant.
@@ -226,19 +350,39 @@ One mechanism serves both files, differing only in which validator runs.
 3. On exit, validate the temp file's text — `toml::from_str` plus
    `UiSettings::from_value` for `config.toml`,
    `Keymap::try_from_overrides` for `keys.toml`.
-   - **Valid** → write the text back atomically, apply live, discard the
-     temp file. For `keys.toml`, also surface `Keymap::caret_warnings`
-     as toasts, so a rebind that costs a macOS caret gesture says so
-     rather than applying silently.
+   - **Valid** → write the text back atomically through `Config`, apply
+     live, discard the temp file. For `keys.toml`, also surface
+     `Keymap::caret_warnings` as toasts, so a rebind that costs a macOS
+     caret gesture says so rather than applying silently.
    - **Invalid** → a modal showing the parse error, offering **Keep
      editing** (reopens `$EDITOR` on the *same* temp file, so the user's
      work is still there) and **Discard** (removes the temp file; the
      live file is untouched).
 
-**`run_editor_and_restore` must stop removing the file unconditionally.**
-It does so today (`main.rs:361`), which would destroy the temp file
-between "invalid" and "Keep editing". Removal moves to the caller, once
-the outcome is settled.
+**`Config` gains a raw-text write.** Config files are `Config`'s to own
+(a `fs_lint` test enforces that only `disk.rs` and `hostfs.rs` may name
+`std::fs`), but `Config::edit` is the wrong door here: it operates on a
+parsed `toml_edit::DocumentMut` and refuses input that will not parse.
+The round-trip has *already* validated the text and must preserve it
+byte-for-byte, comments and all. So `Config` gains a method that writes
+validated text verbatim and atomically — distinct from `edit`, and
+documented as being for text that a validator has just accepted.
+
+**`run_editor_and_restore` needs two changes**, not one:
+
+- It removes the file unconditionally today (`main.rs:361`), which would
+  destroy the temp file between "invalid" and "Keep editing". Removal
+  moves to the caller, once the outcome is settled.
+- Its `read_back: bool` is hardwired to feed the edited text into the
+  *request body*. That coupling breaks: the parameter becomes the edited
+  text handed back to the caller (or nothing, for the view-only case),
+  and each caller decides what it means. `OpenBodyInEditor` and
+  `OpenResponseInEditor` keep their current behaviour through it.
+
+**Keep editing is a loop.** Re-entering the editor means parking the
+action in `App::pending_terminal_action` again, since only the main loop
+may suspend the terminal. It can repeat indefinitely; each pass reuses
+the same temp file, and only Discard or a valid save ends it.
 
 ## Seeding
 
@@ -282,7 +426,8 @@ the undo system, so the modal is the only guard.
 - **Key bindings reset** truncates `keys.toml` back to the commented
   seed, restoring `Keymap::default_bindings()`. Truncating rather than
   deleting avoids needing a file-removal capability that `Config` does
-  not have.
+  not have. With no `keys.toml` on disk it writes the seed, so the
+  outcome is the same file either way rather than a no-op.
 
 Resetting settings clears `ai_confirmed` to `false`, so the AI consent
 prompt returns on the next use. That is correct, not a side effect to
@@ -330,7 +475,26 @@ the reloaded values.
   intact; Discard removes the temp file. A `keys.toml` apply that trips
   a caret conflict toasts the warning.
 - Settings reset removes the `UiSettings` keys and leaves the
-  `[projects]` table intact; keys reset restores the default bindings.
+  `[projects]` table intact; keys reset restores the default bindings,
+  and writes the seed when no `keys.toml` exists.
+- Startup with a syntax error in `config.toml` raises the blocking modal
+  and does **not** reach a normal session; "Continue without saving
+  settings" runs on defaults and every subsequent settings write is
+  refused. Startup with a *valid* file is unaffected.
+- A mistyped key (`animations = "yes"`) warns, naming the key and the
+  expected type, and does not silently default.
+- The strip right-anchors Settings at 80 columns, degrades to exactly
+  contiguous at 50, and clips rather than dropping a tab below it.
+- `alt+v` with the Manage screen already open **closes** it and does not
+  reopen on Settings, with and without a project.
+- The Settings tab publishes its own footer chips and never shows the
+  previously open tab's.
+- Up/down reach every row including the two Files rows; left/right
+  choose between Edit… and Reset within a Files row.
+- `osc52_limit` rejects non-numeric and out-of-range input, keeps the
+  previous value, and toasts.
+- With `config.toml` broken on disk after a reload, the tab shows the
+  banner, disables its rows, and leaves Edit… enabled.
 
 ## Deferred
 
