@@ -22969,3 +22969,69 @@ fn a_files_row_runs_edit_or_reset_from_the_keyboard() {
         app.toasts.messages()
     );
 }
+
+/// A field edit left live behind a tab switch would go on owning ctrl+v
+/// and ctrl+c from a tab that does not show it -- and its Enter would
+/// write config whenever Settings came back. Leaving the tab ends it.
+#[test]
+fn leaving_the_settings_tab_ends_a_live_field_edit() {
+    use crate::components::manage::ManageTab;
+    use crate::components::settings::SettingsField;
+    use crate::components::varmanager::VmField;
+    let mut app = App::new_for_test();
+    app.screen = Screen::Manage;
+    app.manage.tab = ManageTab::Settings;
+    app.settings.begin_edit(SettingsField::AiCmd, "claude -p");
+
+    // The Variables tab, with its own form field under edit -- the field
+    // ctrl+v must reach.
+    app.update(Action::SelectManageTab(ManageTab::Variables));
+    assert!(
+        app.settings.editing.is_none(),
+        "the edit does not survive the tab switch"
+    );
+    app.varmanager.form.editing = Some((VmField::Description, LineInput::new("")));
+
+    app.paste_text("pasted");
+
+    assert_eq!(
+        app.varmanager.form.editing.as_ref().unwrap().1.text(),
+        "pasted",
+        "ctrl+v belongs to the tab that is up"
+    );
+    assert_eq!(app.settings.field_text(), "");
+
+    // …and the same on the way off the screen entirely.
+    app.update(Action::SelectManageTab(ManageTab::Settings));
+    app.settings.begin_edit(SettingsField::AiCmd, "claude -p");
+    app.update(Action::CloseScreen);
+    assert!(app.settings.editing.is_none());
+}
+
+/// The belt to that braces: even a stale edit that somehow stayed live
+/// must not take the caret from another tab.
+#[test]
+fn a_stale_settings_edit_cannot_steal_the_caret_from_another_tab() {
+    use crate::components::manage::ManageTab;
+    use crate::components::settings::SettingsField;
+    use crate::components::varmanager::VmField;
+    let mut app = App::new_for_test();
+    app.screen = Screen::Manage;
+    app.manage.tab = ManageTab::Variables;
+    app.varmanager.form.editing = Some((VmField::Description, LineInput::new("")));
+    // Set by hand: no route leaves an edit live off-tab any more, which
+    // is exactly why this guard has to be tested directly.
+    app.settings.begin_edit(SettingsField::AiCmd, "hidden");
+
+    app.paste_text("pasted");
+
+    assert_eq!(
+        app.varmanager.form.editing.as_ref().unwrap().1.text(),
+        "pasted"
+    );
+    assert_eq!(app.settings.field_text(), "hidden", "untouched");
+    assert!(
+        app.active_selection_text().is_none(),
+        "and ctrl+c does not copy out of the hidden field"
+    );
+}

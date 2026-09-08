@@ -2183,7 +2183,11 @@ impl App {
                     "animations" => ui.animations = value,
                     "hover_hints" => ui.hover_hints = value,
                     "ai_confirmed" => ui.ai_confirmed = value,
-                    _ => {}
+                    // A key that writes to disk but applies to nothing is
+                    // the "state that never landed" defect wearing the
+                    // other shoe. Keys are `&'static str` from
+                    // `SettingsField::key`, so this can only be a typo.
+                    other => debug_assert!(false, "no boolean setting named {other:?}"),
                 })
             }
             Action::SetUiString { key, value } => {
@@ -2208,15 +2212,14 @@ impl App {
                             crate::config::JqTab::Cycle
                         }
                     }
-                    _ => {}
+                    other => debug_assert!(false, "no string setting named {other:?}"),
                 })
             }
             Action::SetUiInt { key, value } => {
                 let saved = self.config.save_ui_int(key, value);
-                self.apply_ui_write(saved, |ui| {
-                    if key == "osc52_limit" {
-                        ui.osc52_limit = value
-                    }
+                self.apply_ui_write(saved, |ui| match key {
+                    "osc52_limit" => ui.osc52_limit = value,
+                    other => debug_assert!(false, "no integer setting named {other:?}"),
                 })
             }
             Action::Quit | Action::ForceQuit => {
@@ -4617,6 +4620,7 @@ impl App {
                 }
                 if self.manage.tab != target {
                     self.manage.list.reset();
+                    self.settings.end_edit();
                 }
                 let prev = self.manage.tab;
                 self.manage.tab = target;
@@ -4644,6 +4648,10 @@ impl App {
                 // edit) carried across would point at the wrong item.
                 if self.manage.tab != tab {
                     self.manage.list.reset();
+                    // The Settings tab's field edit goes with it, for the
+                    // same reason the list's own name edit does: it points
+                    // at something this tab does not show.
+                    self.settings.end_edit();
                     let prev = self.manage.tab;
                     self.manage.tab = tab;
                     self.retarget_manage_tab_underline(prev);
@@ -4654,6 +4662,10 @@ impl App {
                 // Leaving the screen mid-drag cancels it — there is no
                 // list left to drop onto.
                 self.finish_manage_drag(false);
+                // A field edit left live off-screen would go on owning
+                // ctrl+v and ctrl+c, and its Enter would write config
+                // whenever the tab came back.
+                self.settings.end_edit();
                 self.screen = Screen::Main;
                 self.focus = self.prior_focus;
                 true
@@ -8562,7 +8574,11 @@ impl App {
             return false;
         }
         if self.screen == Screen::Manage {
-            if self.settings.editing.is_some() {
+            // Tab-gated as well as edit-gated: a stale edit must never be
+            // able to take the caret from the tab that is actually up.
+            if self.manage.tab == crate::components::manage::ManageTab::Settings
+                && self.settings.editing.is_some()
+            {
                 self.settings.paste(text);
                 return self.update(Action::Render);
             }
@@ -8641,7 +8657,9 @@ impl App {
             return input.selected_text();
         }
         if self.screen == Screen::Manage {
-            if let Some(text) = self.settings.selected_text() {
+            if self.manage.tab == crate::components::manage::ManageTab::Settings
+                && let Some(text) = self.settings.selected_text()
+            {
                 return Some(text);
             }
             if let Some((_, input)) = self.varmanager.form.editing.as_ref() {
@@ -9490,7 +9508,7 @@ impl App {
         let Some(field) = self.settings.editing else {
             return false;
         };
-        let text = self.settings.field_text.clone();
+        let text = self.settings.field_text().to_string();
         if field == SettingsField::Osc52Limit {
             return match parse_osc52_limit(&text) {
                 Ok(value) => {

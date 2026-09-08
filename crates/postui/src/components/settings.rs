@@ -116,12 +116,14 @@ pub struct SettingsTab {
     pub editing: Option<SettingsField>,
     /// Which of a File row's two buttons is chosen: 0 = Edit…, 1 = Reset.
     pub file_button: usize,
-    /// What the live edit holds. The buffer is kept here rather than
-    /// only inside `input` because everything outside this module reads
-    /// the text (the commit, and the reload that must not stomp it)
-    /// while the caret, selection and word-nav stay `LineInput`'s job.
-    /// [`SettingsTab::type_key`] is the one place the two are synced.
-    pub field_text: String,
+    /// What the live edit holds, and the `LineInput` that owns its
+    /// caret, selection and word-nav. Both are private and always
+    /// written together — [`SettingsTab::set_field_text`],
+    /// [`SettingsTab::type_key`] and [`SettingsTab::paste`] are the only
+    /// writers — because the commit reads the buffer while the paint
+    /// reads the input: a caller that set one alone would commit text
+    /// the user never saw, or see text the commit never reads.
+    field_text: String,
     input: LineInput,
 }
 
@@ -154,9 +156,28 @@ impl SettingsTab {
         ]
     }
 
+    /// Steps the cursor by `delta`, clamped at both ends -- the list
+    /// does not wrap, so holding a key never rolls off one end onto the
+    /// other.
     pub fn move_cursor(&mut self, delta: i32) {
         let n = Self::rows().len() as i32;
         self.cursor = (self.cursor as i32 + delta).clamp(0, n - 1) as usize;
+        // Aim resets to Edit… on every row change: Reset is destructive,
+        // and inheriting the previous row's aim would fire it on a file
+        // the user never pointed at.
+        self.file_button = 0;
+    }
+
+    /// What the live edit holds. The commit reads this.
+    pub fn field_text(&self) -> &str {
+        &self.field_text
+    }
+
+    /// Replaces the live edit's text, re-seeding the `LineInput` with it
+    /// so the caret and the buffer cannot drift apart.
+    pub fn set_field_text(&mut self, text: &str) {
+        self.field_text = text.to_string();
+        self.input = LineInput::new(text);
     }
 
     /// The row the cursor is on.
@@ -179,28 +200,28 @@ impl SettingsTab {
     pub fn begin_edit(&mut self, field: SettingsField, text: &str) {
         self.focus_field(field);
         self.editing = Some(field);
-        self.field_text = text.to_string();
-        self.input = LineInput::new(text);
+        self.set_field_text(text);
         self.input.select_all();
     }
 
     /// Drops the live edit, keeping nothing: the row goes back to
-    /// painting the value on disk.
+    /// painting the value on disk. Called on every way out of the tab
+    /// too — a field left live behind a tab switch would go on owning
+    /// ctrl+v and ctrl+c from a screen that no longer shows it.
     pub fn end_edit(&mut self) {
         self.editing = None;
-        self.field_text.clear();
-        self.input = LineInput::default();
+        self.set_field_text("");
     }
 
-    /// Forwards one key to the live edit's `LineInput` and re-syncs
-    /// [`Self::field_text`] from it.
+    /// Forwards one key to the live edit's `LineInput` and re-syncs the
+    /// buffer from it.
     pub fn type_key(&mut self, ev: KeyEvent) -> bool {
         let changed = self.input.handle_key(ev);
         self.field_text = self.input.text().to_string();
         changed
     }
 
-    /// Pastes into the live edit, re-syncing [`Self::field_text`].
+    /// Pastes into the live edit, re-syncing the buffer from it.
     pub fn paste(&mut self, text: &str) {
         self.input.paste(text);
         self.field_text = self.input.text().to_string();
@@ -514,7 +535,11 @@ mod tests {
         for _ in 0..n * 2 {
             tab.move_cursor(1);
         }
-        assert!(tab.cursor < n, "the cursor stays in range");
+        assert_eq!(tab.cursor, n - 1, "the cursor clamps at the bottom");
+        for _ in 0..n * 2 {
+            tab.move_cursor(-1);
+        }
+        assert_eq!(tab.cursor, 0, "and at the top -- the list never wraps");
         tab.cursor = n - 1;
         assert!(
             matches!(SettingsTab::rows()[tab.cursor], SettingsRow::File(_)),
@@ -541,6 +566,11 @@ mod tests {
         let chips = SettingsTab::default().footer_chips();
         assert!(!chips.is_empty(), "a focused area advertises its keys");
         assert!(chips.iter().any(|(k, _, _)| *k == "enter"));
+        // The focused row is a settings row, so exactly the two row keys
+        // are advertised: not the Files pair, and not a list tab's
+        // new/rename/delete set carried over.
+        let keys: Vec<_> = chips.iter().map(|(k, l, _)| (*k, *l)).collect();
+        assert_eq!(keys, vec![("↑↓", "move"), ("enter", "change")]);
     }
 
     /// A live edit owns the keyboard, so the chips advertise its keys
@@ -566,6 +596,19 @@ mod tests {
         assert!(tab.footer_chips().iter().any(|(k, _, _)| *k == "←→"));
     }
 
+    /// Reset is destructive, so aiming it on one file must not arm it on
+    /// the next: moving off a Files row re-aims at Edit….
+    #[test]
+    fn moving_off_a_file_row_re_aims_at_edit() {
+        let mut tab = SettingsTab {
+            cursor: SettingsTab::rows().len() - 2,
+            file_button: 1,
+            ..Default::default()
+        };
+        tab.move_cursor(1);
+        assert_eq!(tab.file_button, 0, "the next file row starts on Edit…");
+    }
+
     /// The live edit's buffer and its `LineInput` never disagree: the
     /// commit reads `field_text`, so a key that only reached the input
     /// would be silently dropped.
@@ -577,11 +620,11 @@ mod tests {
         for c in "llm -p".chars() {
             tab.type_key(KeyEvent::from(KeyCode::Char(c)));
         }
-        assert_eq!(tab.field_text, "llm -p");
+        assert_eq!(tab.field_text(), "llm -p");
         tab.paste(" --json");
-        assert_eq!(tab.field_text, "llm -p --json");
+        assert_eq!(tab.field_text(), "llm -p --json");
         tab.end_edit();
-        assert_eq!(tab.field_text, "");
+        assert_eq!(tab.field_text(), "");
     }
 
     fn render(tab: &SettingsTab, ui: &UiSettings) -> HitMap {
