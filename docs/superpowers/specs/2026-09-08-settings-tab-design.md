@@ -11,13 +11,15 @@ the Manage screen is open.
 
 One branch. User-visible changes: the Manage bar loses two buttons, the
 header gains one on the Manage screen only, and a new tab exposes the
-settings listed under "Settings body". No change to what
+settings listed under "Settings body" plus per-file Edit… and Reset
+buttons for `config.toml` and `keys.toml`. No change to what
 `Action::ReloadFromDisk` does — only where its button lives and what it
 is called.
 
 Explicitly out of scope: splitting reload into project and config
 halves (considered and rejected — see "Reload stays whole"), a
-keybinding editor, and a theme authoring UI.
+structured keybinding editor (Edit… hands `keys.toml` to `$EDITOR`
+instead), and a theme authoring UI.
 
 ## Reload stays whole
 
@@ -128,29 +130,50 @@ project, so that blanket rule becomes tab-conditional.
 
 ## Settings body
 
-A single-column list of labelled rows, following `ManageList`'s
-keyboard idiom: up/down move the cursor, enter/space activates the
-focused row's control. Every row is also directly clickable.
+Two sections. A single-column list of labelled rows, following
+`ManageList`'s keyboard idiom — up/down move the cursor, enter/space
+activates the focused row's control — then a Files section of per-file
+buttons. Every row and button is also directly clickable.
 
-Primary rows, in order:
+```
+Settings
+  Animations                    [✓]
+  Hover hints                   [✓]
+  jq Tab behavior         [Menu|Ghost]
+  AI command        [ claude -p        ]
+  Ask before sending to AI       [ ]
+  Clipboard command [                  ]
+  OSC 52 limit      [ 65536            ]
+
+Files
+  Settings (config.toml)     [Edit…] [Reset]
+  Key bindings (keys.toml)   [Edit…] [Reset]
+```
 
 | Setting | Control |
 |---|---|
-| `theme` | Row dispatches `Action::OpenThemeChooser` — the existing chooser, with its live-preview hook, is reused rather than a new dropdown built |
 | `animations` | Checkbox |
 | `hover_hints` | Checkbox |
-| `jq_tab` | Two-state control: `Menu` / `Cycle` |
+| `jq_tab` | Two-state control, `Menu` / `Ghost` |
 | `ai_cmd` | `TextField` |
 | `ai_confirmed` | Checkbox, worded as consent and inverted: "Ask before sending response shape to the AI command". This flag is set once by the "Always send" choice and is currently unrevocable without hand-editing TOML; exposing it is a privacy requirement, not a convenience |
-| `projects.root` | Path plus a Browse… button opening the existing `Modal::FilePicker` |
-
-Behind an "Advanced" disclosure, collapsed by default:
-
-| Setting | Control |
-|---|---|
 | `clipboard_cmd` | `TextField` |
 | `osc52_limit` | Numeric field, in bytes |
-| `[animation_ms]` | The nine duration fields, shown dimmed and not editable while `animations` is off |
+
+**`theme` is deliberately absent** — the header's Theme chip is present
+on every screen, and a second control for it would be redundant.
+**`projects.root` is also absent**: it lives in the `[projects]` table,
+which Reset deliberately does not touch (see "Reset"), so a row for it
+would sit inconsistently among rows that Reset does cover. It stays
+reachable through Edit…; a home for it near project creation is a
+separate question.
+
+**`jq_tab` gains a `"ghost"` spelling.** `JqTab::Cycle`'s behaviour is
+ghosting the best candidate after the caret, so `Ghost` is the label.
+`"ghost"` becomes the value written going forward; `"cycle"` is parsed
+forever as its older name, exactly as `"accept"` is already kept as the
+older name for `"menu"`. The invalid-value warning in
+`UiSettings::from_value` is updated to name all accepted spellings.
 
 **New glyphs.** No checkbox icon exists in `glyph.rs`. Two are added
 through the `icons!` macro — `nf-md-checkbox-marked` and
@@ -160,6 +183,20 @@ existing `every_icon_is_one_cell_wide` test then holds them to the
 one-cell rule.
 
 ## Writing settings
+
+There is no save/discard step and no undo integration. Changes apply and
+persist immediately, as the Theme chip already does today.
+
+Save/discard is unavailable anyway — the header slot it would occupy now
+holds `Reload` on this screen — and undo is project-scoped
+(`StepKind`, the journal, `History`), so folding config changes into it
+would interleave "undo my hover-hints change" with "undo my request
+edit" in one stack, which cannot honour the *undo restores exactly*
+rule. Neither is needed: a checkbox toggled by accident is undone by
+clicking it again, and text fields commit on enter and cancel on esc,
+the same live-edit idiom the Manage grid already uses. That leaves the
+two Reset buttons as the only hard-to-reverse actions, and both are
+behind confirms.
 
 Each change writes through `Config::edit`, which preserves every
 unrelated key byte-for-byte and **refuses to write a `config.toml` that
@@ -173,6 +210,83 @@ After a successful write the in-memory settings are applied through the
 same path `ReloadFromDisk` uses (`reapply_ui_settings`), so a change
 made in the tab and a hand-edit picked up by `alt+r` converge on one
 code path.
+
+## Edit… — the external editor round-trip
+
+One mechanism serves both files, differing only in which validator runs.
+
+1. Seed the file if it does not exist (see "Seeding"), then copy its
+   text verbatim into a temp file via `hostfs::editor_tempfile`. Editing
+   a copy rather than the live file means a broken save can never leave
+   the app's real config unusable, and `Config::edit`'s parse-refusal can
+   never fire spuriously.
+2. Run `$EDITOR` through the existing `run_editor_and_restore`
+   machinery: `vi` fallback, whitespace-split so `code -w` works, full
+   TUI teardown and rebuild.
+3. On exit, validate the temp file's text — `toml::from_str` plus
+   `UiSettings::from_value` for `config.toml`,
+   `Keymap::try_from_overrides` for `keys.toml`.
+   - **Valid** → write the text back atomically, apply live, discard the
+     temp file. For `keys.toml`, also surface `Keymap::caret_warnings`
+     as toasts, so a rebind that costs a macOS caret gesture says so
+     rather than applying silently.
+   - **Invalid** → a modal showing the parse error, offering **Keep
+     editing** (reopens `$EDITOR` on the *same* temp file, so the user's
+     work is still there) and **Discard** (removes the temp file; the
+     live file is untouched).
+
+**`run_editor_and_restore` must stop removing the file unconditionally.**
+It does so today (`main.rs:361`), which would destroy the temp file
+between "invalid" and "Keep editing". Removal moves to the caller, once
+the outcome is settled.
+
+## Seeding
+
+Both files are seeded on first Edit… when absent, so the editor never
+opens an empty buffer.
+
+- `config.toml` is seeded with every setting **commented out** at its
+  default value.
+- `keys.toml` is seeded with every entry from `named_actions()`,
+  **commented out**, at its current binding.
+
+Commented rather than live, in both files, and for the same reason:
+`keys.toml` is an overrides file, and a fully uncommented seed would pin
+every binding forever — ship a changed default later and anyone who
+seeded would never receive it. Commented, the file documents everything,
+uncommenting one line overrides exactly that line, and defaults keep
+flowing for the rest.
+
+**The seeder needs a plural accessor.** `Keymap::combo_for`
+(`keys.rs:517`) returns a *single* combo, but an action can hold several
+— the vim-key aliases share actions with the arrow keys — and
+`apply_overrides` does `bindings.retain(|_, a| *a != action)` before
+binding, replacing *all* of an action's combos. Seeding from the
+singular accessor would emit `# scroll_down = ["down"]`, and a user
+uncommenting that line would silently lose `j`. A `combos_for` listing
+every combo bound to an action is required, so each seeded line is
+faithful to what is actually bound.
+
+## Reset
+
+One Reset per file, each behind a confirm. Config changes are outside
+the undo system, so the modal is the only guard.
+
+- **Settings reset** clears the `UiSettings` keys from `config.toml` by
+  **removing** them rather than writing default values, so the file
+  stays minimal and unrelated keys survive byte-for-byte — the pattern
+  `ProjectsRegistry::write_into` already uses for `root` and `last`.
+  It **does not touch the `[projects]` table**: wiping `known`/`root`/
+  `last` would silently destroy the user's project list, which has
+  nothing to do with resetting preferences. The confirm says so.
+- **Key bindings reset** truncates `keys.toml` back to the commented
+  seed, restoring `Keymap::default_bindings()`. Truncating rather than
+  deleting avoids needing a file-removal capability that `Config` does
+  not have.
+
+Resetting settings clears `ai_confirmed` to `false`, so the AI consent
+prompt returns on the next use. That is correct, not a side effect to
+design around.
 
 ## Reload while the Settings tab is open
 
@@ -204,15 +318,30 @@ the reloaded values.
   untouched; a write against an unparseable `config.toml` is refused,
   toasts, and leaves the control showing the on-disk value.
 - Every new glyph passes `every_icon_is_one_cell_wide`.
+- `jq_tab = "ghost"` and `jq_tab = "cycle"` both parse to `JqTab::Cycle`;
+  a write from the tab emits `"ghost"`; an unrecognised value still
+  warns, naming every accepted spelling.
+- The seeded `keys.toml` round-trips: uncommenting a seeded line
+  reproduces the binding it names, including every alias, so no combo is
+  lost. This is the regression test for the `combos_for` requirement.
+- The editor round-trip: valid text is written back and applied; invalid
+  text leaves the live file untouched and offers Keep editing / Discard;
+  Keep editing reopens the *same* temp file with the user's edits
+  intact; Discard removes the temp file. A `keys.toml` apply that trips
+  a caret conflict toasts the warning.
+- Settings reset removes the `UiSettings` keys and leaves the
+  `[projects]` table intact; keys reset restores the default bindings.
 
 ## Deferred
 
-- Keybinding editing (`keys.toml`) and theme authoring
-  (`themes/*.toml`) stay text-editor jobs; the tab may point at them but
-  does not edit them.
+- Theme authoring (`themes/*.toml`) stays a text-editor job.
+- A structured keybinding editor. Edit… on `keys.toml` covers the need
+  for now.
 - `projects.known` / `projects.last` stay out: registry state, already
   managed by the Projects chooser, and a second editing surface invites
-  drift.
+  drift. `projects.root` is out of the row list for the same reason
+  (Reset does not cover `[projects]`), but wants a home near project
+  creation eventually.
 - The drift confirm that `reload_held_requests` can raise on an
-  unrelated request during a theme-only reload is a real annoyance, but
+  unrelated request during a config-only reload is a real annoyance, but
   it is a question of when that confirm fires, not of this tab.
