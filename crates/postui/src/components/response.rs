@@ -2866,6 +2866,7 @@ fn draw_header_strip(
         focused: false,
         underline,
         disabled: None,
+        right_anchored: 0,
     }
     .paint(buf, tabstrip_area, t.panel, t);
     for (rect, mode) in rects.into_iter().zip(modes) {

@@ -192,6 +192,7 @@ pub fn draw_manage_bar(
         focused: false,
         underline: (ul_x, ul_w),
         disabled: None,
+        right_anchored: 0,
     }
     .paint(buf, strip_area, theme.panel, theme);
     // Belt and braces: the buttons now yield to the strip's full width,

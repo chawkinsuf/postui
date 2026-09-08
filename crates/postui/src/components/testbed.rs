@@ -217,6 +217,7 @@ pub fn draw_testbed(frame: &mut Frame, area: Rect, ctx: &DrawCtx) {
         focused: false,
         underline: (spans[0].0 as f32, spans[0].1 as f32),
         disabled: None,
+        right_anchored: 0,
     }
     .paint(
         buf,
@@ -253,6 +254,7 @@ pub fn draw_testbed(frame: &mut Frame, area: Rect, ctx: &DrawCtx) {
         focused: false,
         underline: (mid_left, spans[0].1 as f32),
         disabled: None,
+        right_anchored: 0,
     }
     .paint(
         buf,
@@ -402,6 +404,7 @@ fn draw_motion_section(buf: &mut Buffer, area: Rect, x0: u16, y: &mut u16, ctx: 
                 lerp(spans[0].0, spans[1].0, t),
                 lerp(spans[0].1, spans[1].1, t),
             ),
+            right_anchored: 0,
         }
         .paint(
             buf,
