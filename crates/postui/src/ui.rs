@@ -355,17 +355,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         // The hovered button's hint — the footer stands in for a tooltip.
         app.hovered
             .as_ref()
-            .and_then(|h| {
-                crate::hint::hint_for(
-                    h,
-                    &app.keymap,
-                    &crate::hint::HintCtx {
-                        sending: app.editor.sending,
-                        remove_scope: app.modals.value_popup_remove_scope(),
-                        manage_open: app.screen == crate::app::Screen::Manage,
-                    },
-                )
-            })
+            .and_then(|h| crate::hint::hint_for(h, &app.keymap, &app.hint_ctx(h)))
             .as_deref(),
         &mut hits,
         app.hovered.as_ref(),

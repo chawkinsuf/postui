@@ -18,23 +18,42 @@ use crate::hit::Hit;
 use crate::keys::Keymap;
 use crate::split::SplitStop;
 
-/// The app state a hint needs to say what its button would do *now*. A
-/// control whose label changes with state (Send becomes Cancel in flight)
-/// must have a hint that changes with it, or the footer contradicts the
-/// button the pointer is sitting on. Kept to exactly the controls with
-/// that problem — everything else is a pure `Hit` → line lookup.
+/// The app state a hint needs to say what its button would do *now*.
+/// Most controls under the pointer are two-state — send/cancel, open/close,
+/// enable/disable, show/hide — and a hint that names both ("Enable or
+/// disable this row") makes the reader work out which a click would do.
+/// So the hint names one, and this says which.
+///
+/// [`crate::app::App::hint_ctx`] fills it for the hovered hit alone: one
+/// place reads the app, and `hint_for` stays a table of wording. The two
+/// must agree on what a control's second state is — [`tests`] walks the
+/// two-state hits to keep them honest.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct HintCtx {
-    /// The open request is in flight, so the Send button is a Cancel
-    /// button (`components::editor` swaps its label on hover).
-    pub sending: bool,
+    /// The hovered control is in the second of its two states: sending,
+    /// not idle; open, not closed; enabled, not disabled; shown, not
+    /// hidden; removed, not present. `false` for controls with no second
+    /// state (nothing reads it there).
+    pub on: bool,
     /// The scope the open value popup's "✕ remove" would clear, from
     /// `ModalStack::value_popup_remove_scope`.
     pub remove_scope: Option<ExtractDestination>,
-    /// The Manage screen is up, so its header chip closes rather than
-    /// opens (the chip holds the pressed fill to say so, but the fill
-    /// alone doesn't name the direction).
-    pub manage_open: bool,
+    /// The Manage screen's open tab, naming what its buttons act on: a
+    /// space on the Spaces tab, an environment on the Environments tab.
+    pub manage_tab: Option<crate::components::manage::ManageTab>,
+}
+
+/// What the Manage screen's buttons act on, from the open tab. "item" is
+/// unreachable in practice — those buttons only paint on the two list
+/// tabs — but keeps the wording sane if that ever changes.
+fn manage_noun(tab: Option<crate::components::manage::ManageTab>) -> &'static str {
+    use crate::components::manage::ManageTab;
+    match tab {
+        Some(ManageTab::Spaces) => "space",
+        Some(ManageTab::Environments) => "environment",
+        Some(ManageTab::Variables) => "variable",
+        None => "item",
+    }
 }
 
 /// What the footer should say while `hit` is hovered, or `None` for a hit
@@ -142,7 +161,8 @@ fn fallback_description(action: &Action) -> Option<String> {
         Action::Quit => "Quit postui".to_string(),
         Action::OpenPalette => "Open the command palette".to_string(),
         Action::CancelSend => "Cancel the request in flight".to_string(),
-        Action::ToggleTableRow(_) => "Enable or disable this row".to_string(),
+        Action::CycleSplit => "Step the editor/response split".to_string(),
+        Action::CycleSplitBack => "Step the split back".to_string(),
         Action::DeleteTableRow(_) => "Delete this row".to_string(),
         Action::CancelJqEdit => "Undo the edits to this filter".to_string(),
         Action::ToggleJqBar => "Turn the jq filter off".to_string(),
@@ -197,18 +217,35 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         Hit::HeaderSpaceCycle => text("Switch to the next space"),
         Hit::HeaderEnv => of(Action::OpenEnvChooser),
         Hit::HeaderEnvCycle => of(Action::CycleEnv(1)),
-        Hit::HeaderManage => text(if ctx.manage_open {
+        Hit::HeaderManage => text(if ctx.on {
             "Close the Manage screen"
         } else {
             "Open the Manage screen"
         }),
         Hit::HeaderTheme => of(Action::OpenThemeChooser),
+        // The row toggle's chip drives the same two-state control as the
+        // row's own checkbox, so it says the same thing. Handled here
+        // rather than through `describe_action`, which has no `ctx`.
+        Hit::FooterChip(Action::ToggleTableRow(_)) => text(if ctx.on {
+            "Disable this row"
+        } else {
+            "Enable this row"
+        }),
         Hit::FooterChip(action) => of(action.clone()),
 
         // -- Manage screen --
-        Hit::ManageNew => text("Create a new space or environment"),
-        Hit::ManageRename => text("Rename the selected row"),
-        Hit::ManageDelete => text("Delete the selected row"),
+        Hit::ManageNew => Some(Source::Text(format!(
+            "Create a new {}",
+            manage_noun(ctx.manage_tab)
+        ))),
+        Hit::ManageRename => Some(Source::Text(format!(
+            "Rename this {}",
+            manage_noun(ctx.manage_tab)
+        ))),
+        Hit::ManageDelete => Some(Source::Text(format!(
+            "Delete this {}",
+            manage_noun(ctx.manage_tab)
+        ))),
         Hit::ManageMoveAll => text("Move all requests to another space"),
         Hit::ManageEnvTls(None) => text("Let each request decide on TLS checks"),
         Hit::ManageEnvTls(Some(postui_core::project::TlsPolicy::Verify)) => {
@@ -220,18 +257,26 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
 
         // -- Sidebar --
         Hit::SidebarNewRequest => of(Action::PromptNewRequest),
-        Hit::SidebarFolderArrow(_) => text("Expand or collapse this folder"),
+        Hit::SidebarFolderArrow(_) => text(if ctx.on {
+            "Collapse this folder"
+        } else {
+            "Expand this folder"
+        }),
 
         // -- Editor --
         // The button itself flips to "Cancel" on hover while a send is in
         // flight (`components::editor`); its hint flips with it, rather
         // than naming both actions and leaving the reader to work out
         // which one a click would do.
-        Hit::SendButton if ctx.sending => of(Action::CancelSend),
+        Hit::SendButton if ctx.on => of(Action::CancelSend),
         Hit::SendButton => of(Action::Send),
         Hit::MethodSelector => of(Action::OpenMethodDropdown),
         Hit::CopyUrl => of(Action::CopyToClipboard(CopyTarget::Url)),
-        Hit::TableCheckbox(_) => text("Enable or disable this row"),
+        Hit::TableCheckbox(_) => text(if ctx.on {
+            "Disable this row"
+        } else {
+            "Enable this row"
+        }),
         Hit::TableDelete(_) => text("Delete this row"),
         Hit::SplitStop(stop) => text(match stop {
             SplitStop::EditorFull => "Editor full size",
@@ -246,7 +291,11 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
             "Give the editor more room"
         }),
         Hit::AutoHeaderCopy(_) => text("Copy this header's value"),
-        Hit::AutoHeaderReveal => text("Show or hide the computed secrets"),
+        Hit::AutoHeaderReveal => text(if ctx.on {
+            "Hide the computed secrets"
+        } else {
+            "Show the computed secrets"
+        }),
 
         // -- Response --
         Hit::CopyBodyButton => of(Action::CopyToClipboard(CopyTarget::ResponseBody)),
@@ -260,9 +309,21 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         Hit::ResponseJqAiButton => of(Action::OpenJqDescribe),
 
         // -- Choosers, pickers, modals --
-        Hit::ChooserToggle => text("Filter the list to dark or light themes"),
-        Hit::PickerPrimary => text("Confirm the typed name or shown folder"),
-        Hit::PickerHidden => text("Show or hide hidden files"),
+        Hit::ChooserToggle => text(if ctx.on {
+            "Show the light themes instead"
+        } else {
+            "Show the dark themes instead"
+        }),
+        Hit::PickerPrimary => text(if ctx.on {
+            "Save under the typed name"
+        } else {
+            "Open the shown folder"
+        }),
+        Hit::PickerHidden => text(if ctx.on {
+            "Hide the hidden files again"
+        } else {
+            "Show the hidden files too"
+        }),
         Hit::NewProjectBrowse => text("Browse for the project folder"),
         Hit::ConfirmChoice(_) => text("Answer with this choice"),
         Hit::ModalCancel => text("Close without changes \u{b7} esc"),
@@ -272,7 +333,11 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         } else {
             "Go to the previous choice"
         }),
-        Hit::ModalRowToggle(_) => text("Remove this field, or bring it back"),
+        Hit::ModalRowToggle(_) => text(if ctx.on {
+            "Bring this field back"
+        } else {
+            "Remove this field"
+        }),
         Hit::ModalAddRow => text("Add another field"),
         Hit::ModalSharedToggle => text("Use the same options in every environment"),
         // Names the scope the chosen Write-to row would clear, the way
@@ -284,13 +349,25 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
             _ => "Remove the project default value",
         }),
         Hit::TipCopy(_) => text("Copy this variable's real value"),
-        Hit::TipReveal(_) => text("Show or hide this secret's value"),
+        Hit::TipReveal(_) => text(if ctx.on {
+            "Hide this secret's value"
+        } else {
+            "Show this secret's value"
+        }),
 
         // -- Variable Manager --
         Hit::VmNewVar => of(Action::PromptNewVar),
         Hit::VmNewSelector => of(Action::PromptNewSelector),
-        Hit::VmSecretToggle => text("Mark this variable as a secret"),
-        Hit::VmRevealToggle => text("Show or hide this secret's value"),
+        Hit::VmSecretToggle => text(if ctx.on {
+            "Stop treating this as a secret"
+        } else {
+            "Mark this variable as a secret"
+        }),
+        Hit::VmRevealToggle => text(if ctx.on {
+            "Hide this secret's value"
+        } else {
+            "Show this secret's value"
+        }),
         Hit::VmRemoveEnvValue => text("Remove this environment's value"),
         Hit::VmRename => text("Rename this variable"),
         Hit::VmDelete => text("Delete this variable"),
@@ -350,7 +427,7 @@ mod tests {
                 &Hit::HeaderManage,
                 &keymap,
                 &HintCtx {
-                    manage_open: true,
+                    on: true,
                     ..ctx()
                 }
             )
@@ -394,14 +471,71 @@ mod tests {
     }
 
     /// A chip action the palette doesn't list still gets real words, not
-    /// the `Debug` last resort.
+    /// the `Debug` last resort — including the `alt+w` split pill, which
+    /// is a `FooterChip` hit painted on the editor's tab strip.
     #[test]
     fn chip_actions_outside_the_palette_use_the_fallback_wording() {
         let keymap = Keymap::default_bindings();
         assert_eq!(
-            hint_for(&Hit::FooterChip(Action::ToggleTableRow(3)), &keymap, &ctx()).unwrap(),
-            "Enable or disable this row"
+            hint_for(&Hit::FooterChip(Action::CycleSplit), &keymap, &ctx()).unwrap(),
+            "Step the editor/response split"
         );
+        assert_eq!(
+            hint_for(&Hit::FooterChip(Action::DeleteTableRow(3)), &keymap, &ctx()).unwrap(),
+            "Delete this row"
+        );
+    }
+
+    /// No control falls through to the `{action:?}` last resort: every
+    /// action the footer paints as a chip, in every pane and state, has
+    /// real words. (`alt+w` read "CycleSplit" before this test existed.)
+    #[test]
+    fn no_chip_falls_through_to_the_debug_name() {
+        use crate::components::footer::{JqBarState, footer_chips};
+        use crate::layout::PaneId;
+        let keymap = Keymap::default_bindings();
+        for focus in [PaneId::Sidebar, PaneId::Editor, PaneId::Response] {
+            for sending in [false, true] {
+                for url_focused in [false, true] {
+                    for row in [None, Some((0, true))] {
+                        for jq in [
+                            JqBarState::Closed,
+                            JqBarState::Open,
+                            JqBarState::Focused,
+                            JqBarState::Menu,
+                            JqBarState::Completing { cycle: true },
+                            JqBarState::Completing { cycle: false },
+                        ] {
+                            let chips = footer_chips(
+                                focus,
+                                false,
+                                sending,
+                                Some("add param"),
+                                url_focused,
+                                row,
+                                jq,
+                            );
+                            for (_, _, action) in chips {
+                                let Some(action) = action else { continue };
+                                let hit = Hit::FooterChip(action.clone());
+                                let h = hint_for(&hit, &keymap, &ctx()).unwrap();
+                                assert_ne!(
+                                    h,
+                                    format!("{action:?}"),
+                                    "{action:?} has no wording of its own"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // The split pill and the always-present right-hand pair, which
+        // `footer_chips` doesn't list.
+        for action in [Action::CycleSplit, Action::CycleSplitBack, Action::OpenPalette, Action::Quit] {
+            let h = hint_for(&Hit::FooterChip(action.clone()), &keymap, &ctx()).unwrap();
+            assert_ne!(h, format!("{action:?}"), "{action:?} has no wording");
+        }
     }
 
     /// The Send button's label flips to Cancel in flight; so does its hint.
@@ -414,7 +548,7 @@ mod tests {
             &Hit::SendButton,
             &keymap,
             &HintCtx {
-                sending: true,
+                on: true,
                 ..ctx()
             },
         )
@@ -452,6 +586,37 @@ mod tests {
         );
     }
 
+    /// Every two-state control says one thing, and a different thing in
+    /// its other state — never "X or Y", which leaves the reader to work
+    /// out which a click would do. `App::hint_ctx` is the other half of
+    /// this: it decides which state each of these is in.
+    #[test]
+    fn two_state_controls_name_one_action_each_way() {
+        let keymap = Keymap::default_bindings();
+        for hit in [
+            Hit::SendButton,
+            Hit::HeaderManage,
+            Hit::TableCheckbox(0),
+            Hit::FooterChip(Action::ToggleTableRow(0)),
+            Hit::SidebarFolderArrow(0),
+            Hit::AutoHeaderReveal,
+            Hit::ChooserToggle,
+            Hit::PickerPrimary,
+            Hit::PickerHidden,
+            Hit::ModalRowToggle(0),
+            Hit::TipReveal("tok".into()),
+            Hit::VmRevealToggle,
+            Hit::VmSecretToggle,
+        ] {
+            let off = hint_for(&hit, &keymap, &ctx()).unwrap();
+            let on = hint_for(&hit, &keymap, &HintCtx { on: true, ..ctx() }).unwrap();
+            assert_ne!(off, on, "{hit:?} reads the same in both states");
+            for h in [&off, &on] {
+                assert!(!h.contains(" or "), "{hit:?} names both: {h:?}");
+            }
+        }
+    }
+
     /// Hints read as one voice: an imperative phrase, one clause, no
     /// trailing stop, and short enough to sit beside the chips whole.
     #[test]
@@ -460,6 +625,15 @@ mod tests {
         for hit in [
             Hit::ManageNew,
             Hit::ManageRename,
+            Hit::ManageDelete,
+            Hit::SidebarFolderArrow(0),
+            Hit::TableCheckbox(0),
+            Hit::AutoHeaderReveal,
+            Hit::ChooserToggle,
+            Hit::PickerPrimary,
+            Hit::PickerHidden,
+            Hit::VmSecretToggle,
+            Hit::FooterChip(Action::CycleSplit),
             Hit::ManageMoveAll,
             Hit::ManageEnvTls(Some(postui_core::project::TlsPolicy::Insecure)),
             Hit::AutoHeaderReveal,

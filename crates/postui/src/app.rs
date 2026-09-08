@@ -889,6 +889,54 @@ impl App {
         }
     }
 
+    /// The state the hovered control's hint needs (see [`crate::hint::HintCtx`]).
+    /// Reading the app happens here, once, for the hovered hit alone, so
+    /// `hint::hint_for` stays a table of wording. A control listed here and
+    /// there must agree on which of its two states is the second one.
+    pub fn hint_ctx(&self, hit: &Hit) -> crate::hint::HintCtx {
+        use crate::components::file_picker::PickerMode;
+        use crate::components::modal::Modal;
+        use crate::components::sidebar::Row;
+        use crate::components::varmanager::VmDetail;
+        let picker = |f: &dyn Fn(&crate::components::file_picker::FilePickerState) -> bool| {
+            matches!(self.modals.top(), Some(Modal::FilePicker(s)) if f(s))
+        };
+        let on = match hit {
+            Hit::SendButton => self.editor.sending,
+            Hit::HeaderManage => self.screen == Screen::Manage,
+            Hit::TableCheckbox(i) | Hit::FooterChip(Action::ToggleTableRow(i)) => {
+                self.editor.table_row_enabled(*i)
+            }
+            Hit::SidebarFolderArrow(i) => matches!(
+                self.sidebar.rows.get(*i),
+                Some(Row::Folder { expanded: true, .. })
+            ),
+            Hit::AutoHeaderReveal => self.editor.computed.revealed,
+            Hit::TipReveal(name) => self.tip_revealed.as_ref().is_some_and(|(n, _)| n == name),
+            Hit::VmRevealToggle => self.varmanager.form.revealed,
+            Hit::VmSecretToggle => match (&self.varmanager.detail, self.project()) {
+                (VmDetail::Var(name), Some(p)) => {
+                    p.variables().vars.get(name).is_some_and(|d| d.secret)
+                }
+                _ => false,
+            },
+            Hit::PickerHidden => picker(&|s| s.show_hidden()),
+            Hit::PickerPrimary => picker(&|s| s.mode() == PickerMode::SaveFile),
+            Hit::ChooserToggle => self.theme_picker_dark,
+            Hit::ModalRowToggle(i) => matches!(
+                self.modals.top(),
+                Some(Modal::FieldsEditor(s)) if s.rows.get(*i).is_some_and(|r| r.removed)
+            ),
+            // Every other control has one state; nothing reads `on` there.
+            _ => false,
+        };
+        crate::hint::HintCtx {
+            on,
+            remove_scope: self.modals.value_popup_remove_scope(),
+            manage_tab: (self.screen == Screen::Manage).then_some(self.manage.tab),
+        }
+    }
+
     /// The open project, or `None` when none is.
     pub fn project(&self) -> Option<&Project> {
         self.project.as_ref()
