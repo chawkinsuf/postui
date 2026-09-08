@@ -32,8 +32,9 @@ use crate::split::SplitStop;
 pub struct HintCtx {
     /// The hovered control is in the second of its two states: sending,
     /// not idle; open, not closed; enabled, not disabled; shown, not
-    /// hidden; removed, not present. `false` for controls with no second
-    /// state (nothing reads it there).
+    /// hidden; removed, not present; acting on the response's headers,
+    /// not its body. `false` for controls with no second state (nothing
+    /// reads it there).
     pub on: bool,
     /// The scope the open value popup's "✕ remove" would clear, from
     /// `ModalStack::value_popup_remove_scope`.
@@ -133,14 +134,11 @@ fn describe_action(action: &Action, keymap: &Keymap, with_key: bool) -> String {
 /// footer's gap are restated here.
 fn short_description(action: &Action) -> Option<&'static str> {
     Some(match action {
-        Action::OpenJqDescribe => "Write a jq filter from a sentence",
-        Action::OpenResponseInEditor => "Open the response in your editor",
+        Action::OpenJqDescribe => "Write a jq filter with AI",
         Action::CopyToClipboard(CopyTarget::Url) => "Copy the resolved URL",
-        Action::CopyToClipboard(CopyTarget::ResponseBody) => "Copy the response body",
         Action::OpenJqBar => "Filter the JSON with jq",
         Action::OpenResponseSearch => "Search the response body",
         Action::PromptNewRequest => "Create a request in this folder",
-        Action::PromptSaveBody => "Save the response body to a file",
         // "Open" over "Switch to", matching the ^O the hint carries; the
         // space and env choosers keep "Switch to", since neither is a
         // thing you open.
@@ -298,9 +296,26 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         }),
 
         // -- Response --
-        Hit::CopyBodyButton => of(Action::CopyToClipboard(CopyTarget::ResponseBody)),
-        Hit::SaveBodyButton => of(Action::PromptSaveBody),
-        Hit::ResponseEditorButton => of(Action::OpenResponseInEditor),
+        // The toolbar's three buttons act on the tab that is up, not on
+        // the body: they dispatch `CopyTarget::ResponseView` and
+        // `PromptSaveView`, where the palette's own copy/save commands
+        // always take the body. So they say what the open tab holds
+        // rather than borrowing those palette lines.
+        Hit::CopyBodyButton => text(if ctx.on {
+            "Copy the response headers"
+        } else {
+            "Copy the response body"
+        }),
+        Hit::SaveBodyButton => text(if ctx.on {
+            "Save the headers to a file"
+        } else {
+            "Save the response body to a file"
+        }),
+        Hit::ResponseEditorButton => text(if ctx.on {
+            "Open the headers in your editor"
+        } else {
+            "Open the response body in your editor"
+        }),
         Hit::ResponseSearchButton => of(Action::OpenResponseSearch),
         Hit::ResponseSearchNext => text("Go to the next match"),
         Hit::ResponseSearchPrev => text("Go to the previous match"),
@@ -348,7 +363,7 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
             Some(ExtractDestination::ActiveEnv) => "Remove this environment's value",
             _ => "Remove the project default value",
         }),
-        Hit::TipCopy(_) => text("Copy this variable's real value"),
+        Hit::TipCopy(_) => text("Copy this variable's value"),
         Hit::TipReveal(_) => text(if ctx.on {
             "Hide this secret's value"
         } else {
@@ -607,6 +622,9 @@ mod tests {
             Hit::TipReveal("tok".into()),
             Hit::VmRevealToggle,
             Hit::VmSecretToggle,
+            Hit::CopyBodyButton,
+            Hit::SaveBodyButton,
+            Hit::ResponseEditorButton,
         ] {
             let off = hint_for(&hit, &keymap, &ctx()).unwrap();
             let on = hint_for(&hit, &keymap, &HintCtx { on: true, ..ctx() }).unwrap();
@@ -654,6 +672,8 @@ mod tests {
             Hit::FooterChip(Action::CloseScreen),
             Hit::ResponseJqAiButton,
             Hit::ResponseEditorButton,
+            Hit::CopyBodyButton,
+            Hit::SaveBodyButton,
             Hit::CopyUrl,
             Hit::SidebarNewRequest,
             Hit::MethodSelector,

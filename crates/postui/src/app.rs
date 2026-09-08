@@ -912,6 +912,15 @@ impl App {
                 Some(Row::Folder { expanded: true, .. })
             ),
             Hit::AutoHeaderReveal => self.editor.computed.revealed,
+            // The response toolbar acts on the tab that is up. Read from
+            // the same view the copy/save actions read, so the hint can't
+            // disagree with what a click lands on.
+            Hit::CopyBodyButton | Hit::SaveBodyButton | Hit::ResponseEditorButton => {
+                self.session
+                    .response
+                    .view()
+                    .is_some_and(|v| v.mode == crate::components::response::ViewMode::Headers)
+            }
             Hit::TipReveal(name) => self.tip_revealed.as_ref().is_some_and(|(n, _)| n == name),
             Hit::VmRevealToggle => self.varmanager.form.revealed,
             Hit::VmSecretToggle => match (&self.varmanager.detail, self.project()) {

@@ -22327,6 +22327,50 @@ fn footer_hint_ellipsizes_above_the_lower_bound_and_is_left_out_below_it() {
     );
 }
 
+/// The response toolbar acts on the tab that is up, so its hints follow
+/// the tab rather than always saying "body" (the buttons dispatch
+/// `CopyTarget::ResponseView` / `PromptSaveView`, not the palette's
+/// body-only commands).
+#[test]
+fn the_response_toolbar_hints_follow_the_open_tab() {
+    use crate::components::response::{ResponseState, ViewMode};
+    let mut app = App::new_for_test();
+    app.session.response.set_state(
+        ResponseState::Ready(Box::new(crate::http::ResponseData {
+            status: 200,
+            url: "https://x.test/a".into(),
+            headers: vec![("content-type".into(), "application/json".into())],
+            body: r#"{"a": 1}"#.into(),
+            ttfb: std::time::Duration::from_millis(5),
+            elapsed: std::time::Duration::from_millis(5),
+            size: 8,
+            content_type: None,
+        })),
+        0,
+    );
+    render_once(&mut app);
+    let hint = |app: &App, hit: &Hit| crate::hint::hint_for(hit, &app.keymap, &app.hint_ctx(hit));
+    assert_eq!(
+        hint(&app, &Hit::CopyBodyButton).unwrap(),
+        "Copy the response body"
+    );
+
+    app.update(crate::action::Action::ResponseViewMode(ViewMode::Headers));
+    render_once(&mut app);
+    assert_eq!(
+        hint(&app, &Hit::CopyBodyButton).unwrap(),
+        "Copy the response headers"
+    );
+    assert_eq!(
+        hint(&app, &Hit::SaveBodyButton).unwrap(),
+        "Save the headers to a file"
+    );
+    assert_eq!(
+        hint(&app, &Hit::ResponseEditorButton).unwrap(),
+        "Open the headers in your editor"
+    );
+}
+
 /// `hover_hints = false` switches them off wholesale, leaving the chip
 /// row exactly as it reads with nothing hovered.
 #[test]
