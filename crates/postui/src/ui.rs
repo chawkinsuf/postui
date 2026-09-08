@@ -353,8 +353,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         globals_live,
         plain_q_quits,
         // The hovered button's hint — the footer stands in for a tooltip.
-        app.hovered
-            .as_ref()
+        // Switched off wholesale by `hover_hints = false` in config.toml,
+        // which leaves the chip row untouched under the pointer.
+        app.ui_settings
+            .hover_hints
+            .then_some(app.hovered.as_ref())
+            .flatten()
             .and_then(|h| crate::hint::hint_for(h, &app.keymap, &app.hint_ctx(h)))
             .as_deref(),
         &mut hits,

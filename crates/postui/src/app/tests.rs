@@ -22327,6 +22327,18 @@ fn footer_hint_ellipsizes_above_the_lower_bound_and_is_left_out_below_it() {
     );
 }
 
+/// `hover_hints = false` switches them off wholesale, leaving the chip
+/// row exactly as it reads with nothing hovered.
+#[test]
+fn hover_hints_can_be_turned_off_in_config() {
+    let mut app = App::new_for_test();
+    app.ui_settings.hover_hints = false;
+    hover_manage(&mut app);
+    let row = rendered_row(&mut app, 160, FOOTER_ROW);
+    assert!(!row.contains(MANAGE_HINT), "no hint: {row:?}");
+    assert!(row.contains("reorder"), "chips unchanged: {row:?}");
+}
+
 /// The ellipsized hint keeps two blank columns before the commands chip:
 /// the chip's leading pad is painted in the pill's own fill, so a hint
 /// butted against it reads as touching the button.
