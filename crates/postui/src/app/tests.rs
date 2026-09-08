@@ -22073,6 +22073,38 @@ fn a_config_broken_after_startup_banners_and_disables_the_rows() {
     );
 }
 
+/// Reload re-reads what is on disk around unsaved work; it does not
+/// discard it. The editor buffer already works this way, and a half-typed
+/// ai_cmd is no different.
+#[test]
+fn a_reload_does_not_stomp_a_live_settings_edit() {
+    use crate::components::manage::ManageTab;
+    use crate::components::settings::SettingsField;
+
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("config.toml"), "ai_cmd = \"claude -p\"\n").unwrap();
+    let mut app = App::new_for_test();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+    app.screen = Screen::Manage;
+    app.manage.tab = ManageTab::Settings;
+
+    app.settings.editing = Some(SettingsField::AiCmd);
+    app.settings.set_field_text("my-half-typed-comm");
+
+    app.update(Action::ReloadFromDisk);
+
+    assert_eq!(
+        app.settings.editing,
+        Some(SettingsField::AiCmd),
+        "the edit survives the reload"
+    );
+    assert_eq!(
+        app.settings.field_text(),
+        "my-half-typed-comm",
+        "and so does what was typed into it"
+    );
+}
+
 #[test]
 fn reload_from_disk_applies_a_new_keys_toml_end_to_end() {
     let mut app = App::new_for_test();

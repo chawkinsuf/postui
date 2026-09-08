@@ -4431,6 +4431,15 @@ impl App {
                 // `UiSettings`-derived field (clipboard tier, animations,
                 // the jq tab) follows the file too — but without replacing
                 // the clipboard handle or the in-flight animations.
+                // `self.settings` (the Settings tab's own cursor and live
+                // field edit) is deliberately untouched here: it never
+                // caches a copy of `UiSettings` -- every row paints
+                // straight from `self.ui_settings`, read fresh each
+                // frame -- so `reapply_ui_settings` below cannot stomp a
+                // half-typed field even though it replaces `ui_settings`
+                // wholesale. A reload re-reads what is on disk *around*
+                // unsaved work rather than discarding it, the same rule
+                // the request editor's buffer already follows.
                 if let Some(ui) = ui {
                     self.reapply_ui_settings(ui);
                 }
