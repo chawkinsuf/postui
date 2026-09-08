@@ -156,8 +156,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             // Recorded so `App::retarget_manage_tab_underline` (run from
             // `update`, off the draw path) can lay the strip out with the
             // same right-anchored geometry `draw_manage_bar` below will
-            // actually paint.
-            app.manage_bar_width = bar.width;
+            // actually paint. Both read it from `manage::strip_area`, so
+            // "the strip's width" has exactly one definition.
+            app.manage_strip_width = crate::components::manage::strip_area(bar).width;
             let body = Rect {
                 y: layout.body.y + bar.height,
                 height: layout.body.height - bar.height,

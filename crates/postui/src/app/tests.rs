@@ -1667,6 +1667,47 @@ fn switching_editor_tabs_retargets_the_underline_slide() {
 /// tab (by click, alt+arrows, or `Action::SelectManageTab`) retargets the
 /// `StripId::ManageTabs` edges from the previous tab's span toward the new
 /// one's; opening the screen from Main snaps straight to the active tab.
+/// The underline glides to where the label actually *paints*. The strip
+/// is right-anchored, and `manage_strip_width` (the width the underline
+/// is computed at) must be the width `draw_manage_bar` lays the strip out
+/// at -- when it was the whole bar's width instead, the underline settled
+/// roughly a tab's width right of the Settings label.
+#[test]
+fn the_manage_underline_lands_under_the_label_it_targets() {
+    use crate::components::manage::ManageTab;
+    use crate::hit::Hit;
+    let mut app = App::new_for_test_with_anims(true);
+    let left_key = AnimKey::TabUnderline(StripId::ManageTabs);
+    let right_key = AnimKey::TabUnderlineWidth(StripId::ManageTabs);
+    app.update(Action::OpenManage { tab: None });
+    render_once(&mut app);
+
+    app.update(Action::SelectManageTab(ManageTab::Settings));
+    render_once(&mut app);
+    let rect = app
+        .hits
+        .rect_of(&Hit::ManageTab(ManageTab::Settings.index()))
+        .expect("the Settings tab paints a hit rect");
+    let strip_x = crate::components::manage::strip_area(ratatui::layout::Rect {
+        x: 0,
+        y: 0,
+        width: 120,
+        height: 3,
+    })
+    .x;
+    let done_at = Instant::now() + app.ui_settings.anim_ms.tab_slide + Duration::from_millis(5);
+    let left = app.anims.value(left_key, done_at).unwrap();
+    let right = app.anims.value(right_key, done_at).unwrap();
+    // The underline is relative to the strip's origin; the hit rect is
+    // absolute.
+    assert_eq!(
+        strip_x + left as u16,
+        rect.x,
+        "underline settles under the painted Settings label"
+    );
+    assert_eq!((right - left) as u16, rect.width);
+}
+
 #[test]
 fn switching_manage_tabs_retargets_the_underline_slide() {
     use crate::components::manage::ManageTab;
@@ -1686,7 +1727,7 @@ fn switching_manage_tabs_retargets_the_underline_slide() {
         app.anims.active(now),
         "the underline is easing after the switch"
     );
-    let spans = ManageTab::strip_spans(app.manage_bar_width);
+    let spans = ManageTab::strip_spans(app.manage_strip_width);
     let (x, w) = spans[ManageTab::Spaces.index()];
     let done_at = now + app.ui_settings.anim_ms.tab_slide + Duration::from_millis(5);
     assert_eq!(app.anims.value(left_key, done_at), Some(x as f32));

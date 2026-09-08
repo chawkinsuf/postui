@@ -245,13 +245,15 @@ pub struct App {
     /// Rebuilt every frame by `ui::draw`: maps screen regions to typed
     /// [`Hit`]s for mouse routing.
     pub hits: HitMap,
-    /// The Manage screen's tab bar width from the last draw, set by
-    /// `ui::draw` alongside `hits`. `retarget_manage_tab_underline` reads
-    /// it to compute the right-anchored Settings tab's target span — the
-    /// only reason the strip's geometry now depends on width at all. `0`
-    /// before the first draw degrades to the same contiguous position the
-    /// floor case does (see `TabStrip::spans_in`), never a stale target.
-    pub manage_bar_width: u16,
+    /// The Manage screen's *tab strip* width from the last draw, set by
+    /// `ui::draw` alongside `hits` from `manage::strip_area` — the same
+    /// function `draw_manage_bar` lays the strip out with, so the two can
+    /// not drift. `retarget_manage_tab_underline` reads it to compute the
+    /// right-anchored Settings tab's target span — the only reason the
+    /// strip's geometry depends on width at all. `0` before the first
+    /// draw degrades to the same contiguous position the floor case does
+    /// (see `TabStrip::spans_in`), never a stale target.
+    pub manage_strip_width: u16,
     /// The `Hit` currently under the pointer, if any, updated by
     /// `handle_mouse` on `Moved`. Read by `ui::draw` to style hovered
     /// buttons/chips. `Hit::VarToken` overlays are deliberately skipped
@@ -1454,7 +1456,7 @@ impl App {
             pending_terminal_action: None,
             resumed_config_edit: None,
             hits: HitMap::default(),
-            manage_bar_width: 0,
+            manage_strip_width: 0,
             hovered: None,
             shift_enter_send: false,
             hovered_token: None,
@@ -9949,7 +9951,7 @@ impl App {
     /// it switches tabs on an already-open screen, after `manage.tab` has
     /// moved; `prev` is where the glide starts.
     fn retarget_manage_tab_underline(&mut self, prev: crate::components::manage::ManageTab) {
-        let spans = crate::components::manage::ManageTab::strip_spans(self.manage_bar_width);
+        let spans = crate::components::manage::ManageTab::strip_spans(self.manage_strip_width);
         let now = Instant::now();
         let left_key = AnimKey::TabUnderline(StripId::ManageTabs);
         let right_key = AnimKey::TabUnderlineWidth(StripId::ManageTabs);

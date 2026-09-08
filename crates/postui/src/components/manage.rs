@@ -93,6 +93,27 @@ pub struct Manage {
 /// and the tab strip needs two rows (label + underline) inside that.
 pub const BAR_HEIGHT: u16 = BUTTON_HEIGHT;
 
+/// The tab strip's rect inside the Manage `bar` — the *one* place the
+/// strip's geometry is decided.
+///
+/// Three callers need it and they must agree exactly: `draw_manage_bar`
+/// lays the strip out here, `ui.rs` records this width on the app, and
+/// `App::retarget_manage_tab_underline` glides the underline along
+/// `ManageTab::strip_spans` at that same width. Computing it three ways
+/// is how the right-anchored Settings tab ended up painting contiguously
+/// while the underline aimed at the bar's right edge.
+///
+/// Nothing else shares the bar, so the strip gets the bar's full width
+/// less its two-column left inset, running out to the bar's right edge.
+pub fn strip_area(bar: Rect) -> Rect {
+    Rect {
+        x: bar.x + 2,
+        y: bar.y + BUTTON_HEIGHT / 2,
+        width: bar.width.saturating_sub(2),
+        height: 2,
+    }
+}
+
 /// Paints the top bar: nothing but the tab strip, registering
 /// `Hit::ManageTab(i)` for each tab. `underline` is the accent segment's
 /// `(left, width)` in fractional columns relative to the strip's origin —
@@ -120,34 +141,20 @@ pub fn draw_manage_bar(
         return;
     }
 
-    let left_edge = bar.x + 1;
-
     let tabs: Vec<(String, Option<(&'static str, ratatui::style::Color)>)> = ManageTab::ALL
         .iter()
         .map(|t| (t.label().to_string(), None))
         .collect();
-    let spans = TabStrip::spans(&tabs);
-    let strip_w = spans
-        .last()
-        .map_or(0, |(x, w)| x + w)
-        .min(bar.width.saturating_sub(2));
 
     // Tab strip: label row on the bar's middle row, underline below it.
-    // Nothing else shares the bar, so it gets the full width.
     let hovered_tab = ManageTab::ALL
         .iter()
         .enumerate()
         .find(|(i, _)| hovered == Some(&Hit::ManageTab(*i)))
         .map(|(i, _)| i);
-    let strip_area = Rect {
-        x: left_edge + 1,
-        y: bar.y + BUTTON_HEIGHT / 2,
-        width: strip_w.min((bar.x + bar.width).saturating_sub(left_edge + 1)),
-        height: 2,
-    };
+    let strip_area = strip_area(bar);
     // The static fallback must agree with what `TabStrip::paint` below
-    // will actually lay out (including the right-anchored Settings tab),
-    // not the plain contiguous `spans` used only to size `strip_w` above
+    // will actually lay out (including the right-anchored Settings tab)
     // — otherwise an untracked underline would land under the contiguous
     // position while the labels themselves sit right-anchored.
     let (ul_x, ul_w) = underline.unwrap_or_else(|| {
@@ -230,6 +237,49 @@ mod tests {
                 .is_some(),
             "Settings stays reachable even clipped"
         );
+    }
+
+    /// The Settings tab is right-anchored, and the whole point of that
+    /// is that it sits at the strip's right edge -- not contiguously
+    /// after Spaces. The strip is laid out at `strip_area(bar).width`,
+    /// so its right edge is that rect's right edge.
+    ///
+    /// This is the seam that shipped inert: the strip used to be sized
+    /// to its own *contiguous* total, which made the anchored start and
+    /// the contiguous floor identical and the shift always zero.
+    #[test]
+    fn the_settings_tab_paints_at_the_strips_right_edge() {
+        for width in [80u16, 100, 120] {
+            let bar = Rect {
+                x: 0,
+                y: 0,
+                width,
+                height: 3,
+            };
+            let strip = strip_area(bar);
+            // The strip is entitled to the whole bar, so its right edge
+            // is the bar's -- asserted here rather than folded into the
+            // next assertion, which would otherwise pass with the strip
+            // sized to its own contiguous total (both sides shrinking
+            // together, which is exactly the bug).
+            assert_eq!(strip.x + strip.width, bar.x + bar.width);
+            let (_, hits) = render_at(ManageTab::Variables, width);
+            let settings = hits
+                .rect_of(&Hit::ManageTab(ManageTab::Settings.index()))
+                .expect("Settings registers a hit");
+            assert_eq!(
+                settings.x + settings.width,
+                strip.x + strip.width,
+                "Settings is flush with the strip's right edge at bar width {width}"
+            );
+            let spaces = hits
+                .rect_of(&Hit::ManageTab(ManageTab::Spaces.index()))
+                .expect("Spaces registers a hit");
+            assert!(
+                settings.x > spaces.x + spaces.width,
+                "and it is pushed clear of the contiguous left group at width {width}"
+            );
+        }
     }
 
     #[test]
