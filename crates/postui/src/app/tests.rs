@@ -23515,3 +23515,79 @@ fn a_stale_settings_edit_cannot_steal_the_caret_from_another_tab() {
         "and ctrl+c does not copy out of the hidden field"
     );
 }
+
+/// The Settings tab is the app's fifth text surface, and it shipped
+/// without joining the plumbing the other four use: a right click in a
+/// live field found no `text_surface_menu` arm and fell through to the
+/// row menu (which, for a settings row, is nothing at all). Copy and
+/// Paste are the whole point of a right click in a text box.
+#[test]
+fn right_click_in_a_live_settings_field_offers_copy_and_paste() {
+    use crate::action::TextSurface;
+    use crate::components::manage::ManageTab;
+    use crate::components::settings::SettingsField;
+    let mut app = App::new_for_test();
+    app.update(Action::OpenManage {
+        tab: Some(ManageTab::Settings),
+    });
+    app.settings.begin_edit(SettingsField::AiCmd, "claude -p");
+    render_once(&mut app);
+    let r = app
+        .hits
+        .rect_of(&Hit::SettingsControl(SettingsField::AiCmd))
+        .unwrap();
+
+    app.handle_mouse(right_down(r.x + 1, r.y));
+
+    let Some(Modal::Dropdown(d)) = app.modals.top() else {
+        panic!("a live text field offers a text menu")
+    };
+    let labels: Vec<&str> = d.items.iter().map(|i| i.label.as_str()).collect();
+    assert_eq!(
+        labels,
+        ["Copy", "Paste"],
+        "no 'Extract to variable' on a settings value: it is not request \
+         text, and the Settings tab works with no project open at all"
+    );
+    assert_eq!(
+        d.items[0].action,
+        Some(Action::CopySelection(TextSurface::Settings)),
+        "Copy reads the settings surface, not some other field's selection"
+    );
+    // `begin_edit` select-alls, so there is a selection and Copy is live.
+    assert_eq!(
+        app.settings.selected_text().as_deref(),
+        Some("claude -p"),
+        "and that is the text Copy would put on the clipboard"
+    );
+}
+
+/// The split rule every in-place surface follows: only the field
+/// *currently under edit* offers the text menu. A settings row that is
+/// merely under the pointer is not a text surface and must not claim
+/// one.
+#[test]
+fn right_click_on_a_settings_row_not_under_edit_offers_no_text_menu() {
+    use crate::components::manage::ManageTab;
+    use crate::components::settings::SettingsField;
+    let mut app = App::new_for_test();
+    app.update(Action::OpenManage {
+        tab: Some(ManageTab::Settings),
+    });
+    render_once(&mut app);
+    let r = app
+        .hits
+        .rect_of(&Hit::SettingsControl(SettingsField::AiCmd))
+        .unwrap();
+
+    app.handle_mouse(right_down(r.x + 1, r.y));
+
+    assert!(
+        app.modals.top().is_none(),
+        "nothing is under edit, so there is no selection to copy"
+    );
+    assert!(
+        app.settings.editing.is_none(),
+        "and a right click does not open one"
+    );
+}

@@ -6548,9 +6548,12 @@ impl App {
                 }
             }
             TextSurface::Response => {}
-            // Never offered on the Variable Manager's own surfaces, nor
-            // the jq bar.
-            TextSurface::VmField | TextSurface::VmCell | TextSurface::Jq => {}
+            // Never offered on the Variable Manager's own surfaces, the jq
+            // bar, or the Settings tab.
+            TextSurface::VmField
+            | TextSurface::VmCell
+            | TextSurface::Jq
+            | TextSurface::Settings => {}
         }
     }
 
@@ -8234,6 +8237,17 @@ impl App {
                 }
                 (TextSurface::VmCell, true)
             }
+            Hit::SettingsControl(field) => {
+                // The same split every in-place surface follows: only the
+                // field under edit is a text surface. A settings row that
+                // is not being typed into keeps whatever menu it has.
+                if self.settings.editing != Some(*field) {
+                    return None;
+                }
+                // No focus claim: the Settings tab has no pane focus to
+                // take, and the edit already owns the keyboard.
+                (TextSurface::Settings, true)
+            }
             _ => return None,
         };
         let has_selection = self.selection_text_of(surface).is_some();
@@ -8251,9 +8265,12 @@ impl App {
         // variable, there being nothing to rewrite); never on the Variable
         // Manager's surfaces, which already *are* variables, nor on the jq
         // bar, whose text is a filter rather than a value.
+        // ... nor on the Settings tab, whose values are app preferences
+        // rather than request text — and whose tab is reachable with no
+        // project open, so there would be nowhere to put the variable.
         if !matches!(
             surface,
-            TextSurface::VmField | TextSurface::VmCell | TextSurface::Jq
+            TextSurface::VmField | TextSurface::VmCell | TextSurface::Jq | TextSurface::Settings
         ) {
             items.push(if has_selection {
                 MenuItem::new(
@@ -8396,6 +8413,7 @@ impl App {
             TextSurface::VmField => self.varmanager.form.editing.as_ref()?.1.selected_text(),
             TextSurface::VmCell => self.varmanager.grid.editing.as_ref()?.input.selected_text(),
             TextSurface::Jq => self.session.response.jq_bar().input.selected_text(),
+            TextSurface::Settings => self.settings.selected_text(),
         }
     }
 

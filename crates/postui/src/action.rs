@@ -42,6 +42,8 @@ pub enum TextSurface {
     VmCell,
     /// The response pane's jq filter bar.
     Jq,
+    /// The Settings tab's field under edit (`SettingsTab::editing`).
+    Settings,
 }
 
 /// What [`Action::CopyToClipboard`] copies: the ready response body, one of

@@ -294,6 +294,11 @@ const LABEL_W: u16 = 28;
 /// The widest a settings row is painted, however wide the body is: a
 /// text field stretched across a 200-column terminal is unreadable.
 const MAX_W: u16 = 76;
+/// Padding either side of a text well's content. The well paints its
+/// value at `rect.x + WELL_PAD` across `width - 2 * WELL_PAD` columns,
+/// and the mouse maps a click back through the same two numbers — so
+/// this constant is what keeps the caret under the pointer.
+pub const WELL_PAD: u16 = 1;
 
 /// Paints the tab: the seven settings, then the Files section's two
 /// Edit…/Reset rows. Every row registers `Hit::SettingsRow`, and every
@@ -582,7 +587,7 @@ fn draw_setting_control(
         theme.control
     };
     fill(buf, rect, face);
-    let inner = width.saturating_sub(2);
+    let inner = width.saturating_sub(WELL_PAD * 2);
     let line: Line<'static> = if editing {
         tab.input.draw_line_windowed(true, theme, inner)
     } else {
@@ -605,7 +610,7 @@ fn draw_setting_control(
             ),
         }
     };
-    buf.set_line(rect.x + 1, y, &line, inner);
+    buf.set_line(rect.x + WELL_PAD, y, &line, inner);
     if editable {
         hits.register(rect, hit);
     }
