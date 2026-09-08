@@ -14,9 +14,15 @@ plumbing every other editable field in the app already uses.
 
 ## Scope
 
-One branch. Three commits' worth of work, in this order: the primitive
-and its tests, the text-surface plumbing (which is a bug fix and stands
-alone), then the three tabs' conversion.
+One branch, three commits, in this order:
+
+1. **The text-surface plumbing.** A bug fix that depends on no repaint —
+   the Settings fields become reachable by the mouse while still painted
+   exactly as they are today. First, so it is reviewable and revertable
+   on its own.
+2. **The primitive** and its tests, plus its `testbed.rs` entry. Adds
+   `paint/property.rs`; changes nothing on screen yet.
+3. **The three tabs' conversion** onto it.
 
 User-visible changes: the Settings tab loses its row bands; the Variables
 detail pane and the Environments/Spaces detail panes shrink to one row per
@@ -25,25 +31,34 @@ double-click word select and a right-click Copy/Paste menu.
 
 Explicitly out of scope: the Manage screen's **left columns** (their `+
 New` buttons stay three-row `Button`s and their item lists keep the
-`Selected` band — see "The band means draggable"), the Variables tab's
+`Selected` band — they are lists, see "The band belongs to lists, not to
+controls"), the Variables tab's
 **entry grid**, and every **dialog surface** in the app (modals, chooser,
 palette, file picker, var picker), which keep the three-row `TextField`
 and `Button`. The app deliberately ends with two registers: compact
 inline properties inside a pane, full-size controls in a dialog.
 
-## The band means draggable
+## The band belongs to lists, not to controls
 
 `RowHighlight::Selected` paints `blend(bg, accent, 0.35)` plus a `▌`
-accent bar down the row's left edge (`paint/rows.rs`). That is the paint
-the sidebar's request rows and the Manage screen's left item lists use,
-and those rows *are* draggable — request reordering and the Environments/
-Spaces row drag both live on them.
+accent bar down the row's left edge (`paint/rows.rs`). Every surface that
+uses it is a **list of items**: the sidebar, the Manage screen's left
+columns, the chooser, the palette, the file and variable pickers, the
+dropdown, the request editor's table. That is what the vocabulary means —
+*this is the selected item*. And because a list of items is so often
+reorderable — the sidebar's requests and the Environments/Spaces rows
+both drag today — the band carries an expectation of drag with it,
+whether or not the particular list happens to offer one.
 
-The Settings tab borrowed the same paint for rows that cannot be dragged
-and never will be. The band is therefore not merely too loud; it is a
-false affordance, and it is the reason the tab invites a drag that does
-not exist. Removing it from non-draggable rows is what makes the band
-informative again everywhere else.
+The Settings tab borrowed that paint for **rows of controls**. A property
+row is not a list row: there is no item, no selection, nothing to
+reorder. Painting it in the list vocabulary promises list behaviour the
+row can never have, which is why the tab invites a drag that does not
+exist. The band is not merely too loud — it is the wrong vocabulary.
+
+So the rule is about vocabulary, not about drag: lists keep the band,
+control rows never get it. The Manage screen's left columns therefore
+keep theirs, correctly, whether or not a given one drags.
 
 **No property row paints a full-width band, ever.** The keyboard cursor
 is shown by the row's *control* lifting its own fill — the same
@@ -92,6 +107,11 @@ pub const LABEL_W_MAX: u16 = 32;
 
 /// The widest a property row is painted, however wide the pane is: a
 /// text well stretched across a 200-column terminal is unreadable.
+///
+/// Applies to all three panes, so the control column does not jump as
+/// the tab strip switches between them. This is a change for Variables
+/// and Environments, which today size their fields to the pane
+/// (`field_w = right.width - 4`) and so stretch without limit.
 pub const MAX_W: u16 = 76;
 
 /// How far a hovered property row's fill blends from `page` toward
@@ -149,6 +169,19 @@ enters the theme.
 
 All four are added to `components/testbed.rs` beside the primitives it
 already showcases, so the register is inspectable in one place.
+
+## Rhythm
+
+Property rows are **adjacent within a group and separated by one blank
+row between groups**. No row-to-row gaps: the compactness is the point,
+and a blank line between every property gives back most of what the
+conversion buys.
+
+The groups are the panes' existing structure, not a new one. Settings
+already groups by heading (`Settings`, `Files`). The Variables pane
+groups as the declaration (`Description`, `Default`, `Secret`), then the
+environment value (`Value in <env>` with its trailing pills), then the
+`used by:` line. Environments groups as the file path, then `TLS`.
 
 ## What each tab becomes
 
@@ -228,6 +261,17 @@ Everything else about the editing model stays: Enter commits, Esc
 cancels, a click away commits, and a commit the field *refuses* swallows
 the click and keeps the typed text (`commit_settings_edit_for_click`).
 
+**Parity, defined.** The bar is what every other text surface does, no
+more and no less: click places the caret, drag sweeps, double click
+selects a word, right click offers Copy/Paste, ctrl+c/ctrl+v copy and
+paste, and the full `LineInput` keyboard (word nav, shift+arrows,
+Home/End) applies. Two behaviours are deliberately *not* on the list
+because no surface in the app has them — triple-click select-all
+(`mouse.rs:277` resets the counter at two, so a third click is a fresh
+single) and shift+click extend (`SHIFT` appears nowhere in `mouse.rs`).
+Both are recorded under "Open follow-ups"; adding them here would widen
+this branch from the Manage panes into the shared click dispatcher.
+
 Because `Well` is one primitive, the same geometry serves every compact
 field, so the Variables pane's converted fields keep the mouse behaviour
 they have today by construction rather than by a second implementation.
@@ -238,9 +282,11 @@ they have today by construction rather than by a second implementation.
   outshines `Hover`; a hovered `PropertyRow` paints `HOVER_WASH` and
   **no** `▌` bar and no `selection` fill; a disabled row's content blends
   by `DISABLED_LABEL_MIX`.
-- **A regression test for the false affordance**: no Manage detail pane
-  paints `theme.selection` anywhere. This is the assertion that keeps the
-  band meaning "draggable".
+- **A regression test for the vocabulary**: no `PropertyRow` paints
+  `theme.selection` or a `▌` bar, in any state, and the three converted
+  panes paint neither. The lists beside them — the left columns, the
+  entry grid — are untouched and keep theirs, so the test must be scoped
+  to property rows rather than to a pane's whole rect.
 - **A parity test across text surfaces**: for each of `TableCell`,
   `VmFormField`, `VmEntryCell` and `Settings`, the field under edit
   registers a hit, offers a `text_surface_menu`, and anchors a
@@ -249,9 +295,18 @@ they have today by construction rather than by a second implementation.
 - **Behaviour tests for the new Settings mouse paths**: click places the
   caret at the clicked column; drag extends the selection; double click
   selects a word; right-click on the live field opens Copy/Paste.
-- Existing Settings, varmanager and manage_list tests updated for the new
-  geometry. The disabled-config-row tests and the drop-a-colliding-button
-  test must survive unchanged in intent.
+- Existing tests updated for the new geometry. The affected modules hold
+  70 tests today (`settings.rs` 10, `varmanager.rs` 56, `manage_list.rs`
+  4); most are behavioural and should not move, and only the ones
+  asserting on painted rows and rects will. **Every one of them must
+  survive with its intent unchanged** — in particular the
+  disabled-config-row tests, the drop-a-colliding-button test, and the
+  write-failure-keeps-the-typed-text tests. A test that has to be
+  *deleted* to make this land is a signal that the conversion changed
+  behaviour it was not supposed to.
+
+Baseline before any change, on `manage-property-rows`: 1776 lib + 454
+core + integration tests, all green.
 
 ## Open follow-ups (not this branch)
 
@@ -260,3 +315,8 @@ they have today by construction rather than by a second implementation.
   living with it.
 - Whether the compact register should reach the request editor's params
   and headers tables. Not evaluated here.
+- **Triple-click select-all and shift+click extend**, missing from every
+  text surface in the app rather than from Settings alone. Both live in
+  the shared click dispatcher (`mouse.rs:265-284`) and each surface's
+  click arm; `LineInput::set_cursor_extending` already exists for the
+  shift+click half. Their own branch, and their own review.
