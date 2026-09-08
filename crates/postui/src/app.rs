@@ -3781,9 +3781,8 @@ impl App {
                 true
             }
             Action::ToggleJqBar => {
-                if !self.session.response.jq_available() {
-                    self.toasts
-                        .push("The response is not JSON", ToastKind::Info);
+                if let Some(why) = self.session.response.jq_blocked_reason() {
+                    self.toasts.push(why, ToastKind::Info);
                     return true;
                 }
                 // Open ⇄ closed, regardless of focus: an open bar closes
@@ -3803,9 +3802,8 @@ impl App {
                 true // sync_jq lands the restored filter in the editor
             }
             Action::OpenJqBar => {
-                if !self.session.response.jq_available() {
-                    self.toasts
-                        .push("The response is not JSON", ToastKind::Info);
+                if let Some(why) = self.session.response.jq_blocked_reason() {
+                    self.toasts.push(why, ToastKind::Info);
                     return true;
                 }
                 self.dispatch(Action::FocusPane(PaneId::Response));
@@ -3859,9 +3857,8 @@ impl App {
                 true
             }
             Action::OpenJqDescribe => {
-                if !self.session.response.jq_available() {
-                    self.toasts
-                        .push("The response is not JSON", ToastKind::Info);
+                if let Some(why) = self.session.response.jq_blocked_reason() {
+                    self.toasts.push(why, ToastKind::Info);
                     return true;
                 }
                 if !crate::ai::program_available(&self.ui_settings.ai_cmd) {
