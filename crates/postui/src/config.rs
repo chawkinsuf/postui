@@ -16,8 +16,8 @@ pub struct ProjectsRegistry {
 
 /// The file name every `config.toml` message names, so a warning still
 /// tells the user which file to go and fix.
-const CONFIG_TOML: &str = "config.toml";
-const KEYS_TOML: &str = "keys.toml";
+pub const CONFIG_TOML: &str = "config.toml";
+pub const KEYS_TOML: &str = "keys.toml";
 const UI_TOML: &str = "ui.toml";
 const THEMES_DIR: &str = "themes";
 
@@ -690,7 +690,7 @@ impl Config {
     /// permission or I/O error, invalid UTF-8). The two are kept apart on
     /// purpose — an unreadable file is not an absent one, and only the
     /// caller knows whether "absent" is a safe thing to substitute.
-    fn read(&mut self, name: &str) -> Result<Option<String>, String> {
+    pub fn read(&mut self, name: &str) -> Result<Option<String>, String> {
         let Some(disk) = self.disk.as_mut() else {
             return Ok(None);
         };
@@ -733,6 +733,21 @@ impl Config {
     /// Persists the top-level `theme` key of `config.toml`.
     pub fn save_ui_theme(&mut self, name: &str) -> Result<(), String> {
         self.edit(CONFIG_TOML, |doc| doc["theme"] = toml_edit::value(name))
+    }
+
+    /// Writes `text` to `name` verbatim and atomically, replacing whatever
+    /// is there. The deliberate counterpart to [`Self::edit`]: `edit`
+    /// parses first and refuses a file it cannot read, which is right for
+    /// a structured key change but wrong here, where a validator has
+    /// already accepted `text` and the user's own comments and spacing
+    /// must survive byte-for-byte. Only for text that has just been
+    /// validated by its own parser — never for unchecked input.
+    pub fn write_validated(&mut self, name: &str, text: &str) -> Result<(), String> {
+        let Some(disk) = self.disk.as_mut() else {
+            return Ok(());
+        };
+        let rel = postui_core::disk::RelPath::new(name).map_err(|e| e.to_string())?;
+        disk.write(&rel, text).map_err(|e| e.to_string())
     }
 
     /// Persists one top-level boolean of `config.toml` (the `ai_confirmed`
@@ -1180,6 +1195,46 @@ mod tests {
         cfg.save_ui_theme("light").unwrap();
         let text = std::fs::read_to_string(dir.path().join("sub").join("config.toml")).unwrap();
         assert_eq!(UiSettings::parse(&text).0.theme, "light");
+    }
+
+    /// The editor round-trip has already validated the text and must
+    /// preserve it exactly -- comments included, which `edit`'s
+    /// parse-and-reserialise would not guarantee.
+    #[test]
+    fn write_validated_preserves_text_byte_for_byte() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = Config::at(dir.path().to_path_buf());
+        let text = "# my settings\n\nanimations = false  # off on purpose\n";
+        cfg.write_validated(CONFIG_TOML, text).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("config.toml")).unwrap(),
+            text,
+            "comments and spacing must survive"
+        );
+    }
+
+    /// Unlike `edit`, it does not re-parse: the caller's validator is the
+    /// gate, and refusing here would make a deliberate rewrite impossible.
+    #[test]
+    fn write_validated_overwrites_a_file_that_did_not_parse() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.toml"), "not = [toml").unwrap();
+        let mut cfg = Config::at(dir.path().to_path_buf());
+        cfg.write_validated(CONFIG_TOML, "animations = true\n")
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("config.toml")).unwrap(),
+            "animations = true\n"
+        );
+    }
+
+    #[test]
+    fn write_validated_without_a_config_dir_is_a_silent_ok() {
+        let mut cfg = Config::none();
+        assert!(
+            cfg.write_validated(CONFIG_TOML, "animations = true\n")
+                .is_ok()
+        );
     }
 
     #[test]
