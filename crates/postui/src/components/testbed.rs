@@ -13,8 +13,9 @@ use ratatui::{Frame, buffer::Buffer, layout::Rect, text::Line};
 use crate::anim::{AnimKey, ListId};
 use crate::components::DrawCtx;
 use crate::paint::{
-    self, BUTTON_HEIGHT, Button, ButtonKind, Chip, ControlState, FIELD_HEIGHT, ListRow,
-    RowHighlight, TabStrip, TextField, floating_panel, frac_vspan,
+    self, BUTTON_HEIGHT, Button, ButtonKind, Chip, ControlState, FIELD_HEIGHT, ListRow, Pill,
+    PropertyRow, RowHighlight, TabStrip, TextField, Toggle, Well, floating_panel, frac_vspan,
+    label_column, pill_min_width,
 };
 
 /// One column each side of `area`, and a left column reserved for the
@@ -151,6 +152,59 @@ pub fn draw_testbed(frame: &mut Frame, area: Rect, ctx: &DrawCtx) {
         .paint(buf, rect, theme);
     }
     y += FIELD_HEIGHT + 1;
+
+    // --- property rows: the Manage detail panes' compact register ------
+    let mut hits = crate::hit::HitMap::default();
+    let labels = ["Text well", "Checkbox", "Segmented"];
+    let label_w = label_column(&labels);
+    for (i, label) in labels.iter().enumerate() {
+        if !fits(area, y, 1) {
+            return;
+        }
+        let slot = PropertyRow {
+            label,
+            label_w,
+            hovered: i == 0,
+            disabled: false,
+            trailing: &[],
+        }
+        .paint(
+            buf,
+            &mut hits,
+            Rect::new(x0, y, FIELD_COL.saturating_sub(2), 1),
+            theme,
+        );
+        match i {
+            0 => Well {
+                content: Line::raw("hover washes the row"),
+                state: ControlState::Focused,
+            }
+            .paint(buf, slot.rect, theme),
+            1 => Toggle {
+                on: true,
+                state: ControlState::Normal,
+            }
+            .paint(buf, slot.rect, theme),
+            _ => {
+                let mut px = slot.rect.x;
+                for (seg, kind) in [("On", ButtonKind::Primary), ("Off", ButtonKind::Secondary)] {
+                    let w = pill_min_width(seg);
+                    if px + w > slot.rect.x + slot.rect.width {
+                        break;
+                    }
+                    Pill {
+                        label: seg,
+                        kind,
+                        state: ControlState::Normal,
+                    }
+                    .paint(buf, Rect::new(px, y, w, 1), theme);
+                    px += w + 1;
+                }
+            }
+        }
+        y += 1;
+    }
+    y += 1;
 
     // --- List rows: zebra on/off, mid hover blend, selected --------------
     if !section_label(buf, area, x0, &mut y, "LIST ROWS (dense)", theme) {
