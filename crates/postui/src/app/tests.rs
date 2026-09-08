@@ -22609,3 +22609,32 @@ fn a_broken_config_blocks_startup_until_answered() {
     ));
     assert!(app.modals.top().is_none(), "the choice dismisses the modal");
 }
+
+/// The same block Esc already gets: a stray click outside the modal must
+/// not be a back door out of it. Only an actual answer dismisses it.
+#[test]
+fn the_startup_config_modal_ignores_click_away() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("config.toml"), "not = [toml").unwrap();
+    let mut app = App::new_for_test();
+    let (_cfg, loaded, _warnings) = crate::config::Config::load_from(
+        crate::config::Config::at(dir.path().to_path_buf()),
+        false,
+    );
+    app.config_error = loaded.config_error;
+    app.apply_startup_config_gate();
+
+    click_hit(&mut app, Hit::ModalOutside);
+    assert!(
+        app.modals.top().is_some(),
+        "click-away must not dismiss the startup config modal"
+    );
+
+    app.update(Action::ConfigStartupChoice(
+        crate::action::ConfigStartupChoice::ContinueUnsaved,
+    ));
+    assert!(
+        app.modals.top().is_none(),
+        "an actual answer still closes it"
+    );
+}

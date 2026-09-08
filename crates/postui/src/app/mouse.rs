@@ -1391,6 +1391,12 @@ impl App {
                 self.update(action)
             }
             Hit::ModalOutside => {
+                if !self.modals.top_is_dismissable() {
+                    // `Modal::ConfigStartup` blocks until answered --
+                    // same rule `ModalStack::handle_key` already applies
+                    // to `Esc` for it.
+                    return false;
+                }
                 // The option Edit prompt is an editing surface, not a
                 // question: clicking off it SAVES, like the grid's
                 // commit-on-click-away. Routed through the same path Enter

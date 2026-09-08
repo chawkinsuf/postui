@@ -738,6 +738,17 @@ impl ModalStack {
         self.stack.last()
     }
 
+    /// Whether the top modal may be dismissed without choosing one of its
+    /// own answers -- consulted by both `Esc` (`handle_key`'s `_ => None`
+    /// arms swallow it already for these) and a click outside the modal
+    /// (`Hit::ModalOutside` in `app/mouse.rs`), so the two paths can't
+    /// drift apart. Only `Modal::ConfigStartup` says no: it blocks
+    /// startup until one of its four choices is made (see its doc
+    /// comment) -- every other modal stays dismissable.
+    pub fn top_is_dismissable(&self) -> bool {
+        !matches!(self.top(), Some(Modal::ConfigStartup { .. }))
+    }
+
     /// The scope the value popup's "\u{2715} remove" would clear, when that
     /// control is painted at all (the chosen Write-to scope stores
     /// something). `None` for every other modal, and for a chosen scope
