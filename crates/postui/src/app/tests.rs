@@ -8839,6 +8839,58 @@ fn copy_body_with_no_response_toasts_nothing_to_copy_and_leaves_clipboard_untouc
     assert!(rendered_text(&mut app).contains("nothing to copy — send a request first"));
 }
 
+/// The URL well is a composite control: the lock, the copy chip and any
+/// `{{token}}` inside it register their own hits on top of `Hit::UrlBar`.
+/// Its fade must restart on *entry* only, or the well would dip back to its
+/// resting fill every time the pointer crossed one of its own chips.
+#[test]
+fn crossing_a_chip_inside_the_url_well_does_not_restart_the_wells_fade() {
+    use crate::anim::AnimKey;
+
+    let mut app = App::new_for_test();
+    app.editor.url = crate::components::line_input::LineInput::new("https://example.com/x");
+    render_once(&mut app);
+    let well = app.editor.last_url_area.expect("the well was drawn");
+    let chip = app.hits.rect_of(&Hit::CopyUrl).expect("the chip was drawn");
+
+    // Enter the well from outside: the fade restarts from 0.
+    app.handle_mouse(moved(well.x, well.y + 1));
+    assert!(app.url_well_hovered, "the pointer is on the well");
+    // Sampled a hair after the retarget, so it has eased a sliver off 0
+    // rather than sitting exactly on it.
+    let t = app
+        .anims
+        .value_or(AnimKey::UrlWellHover, Instant::now(), 1.0);
+    assert!(t < 0.5, "entering the well starts its fade over: {t}");
+
+    // Settle it, then cross onto the copy chip *inside* the well. The hit
+    // under the pointer changes (the chip wins over `UrlBar`), so the
+    // shared hover fade restarts — the well's own must not.
+    app.anims.snap(AnimKey::UrlWellHover, 1.0);
+    app.handle_mouse(moved(chip.x, chip.y));
+    assert_eq!(app.hovered, Some(Hit::CopyUrl), "the chip took the hover");
+    assert!(app.url_well_hovered, "but the pointer is still on the well");
+    assert_eq!(
+        app.anims
+            .value_or(AnimKey::UrlWellHover, Instant::now(), 1.0),
+        1.0,
+        "the well's fade holds while the pointer crosses its own chip"
+    );
+
+    // Leaving the well and coming back does restart it.
+    app.handle_mouse(moved(well.x.saturating_sub(1), well.y + 1));
+    assert!(!app.url_well_hovered, "left the well");
+    app.anims.snap(AnimKey::UrlWellHover, 1.0);
+    app.handle_mouse(moved(well.x, well.y + 1));
+    let t = app
+        .anims
+        .value_or(AnimKey::UrlWellHover, Instant::now(), 1.0);
+    assert!(
+        t < 0.5,
+        "re-entering the well starts its fade over again: {t}"
+    );
+}
+
 #[test]
 fn address_bar_copy_chip_is_clickable_and_copies_url() {
     let dir = tempfile::tempdir().unwrap();

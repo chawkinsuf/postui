@@ -145,7 +145,10 @@ fn has_lifted_url_fill(term: &Terminal<TestBackend>, app: &App, pane: PaneId) ->
         PaneId::Editor => layout.editor,
         PaneId::Response => layout.response,
     };
-    let lifted = postui::theme::lift_color(app.theme.control, 0.12);
+    let lifted = postui::theme::lift_color(
+        app.theme.control,
+        postui::components::editor::URL_FOCUS_LIFT,
+    );
     let buf = term.backend().buffer();
     for y in r.y..r.y + r.height {
         for x in r.x..r.x + r.width {

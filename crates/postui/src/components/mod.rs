@@ -34,6 +34,14 @@ pub struct DrawCtx<'a> {
     pub theme: &'a Theme,
     pub focused: bool,
     pub hovered: Option<&'a crate::hit::Hit>,
+    /// Where the pointer last was, in terminal cells (`App::pointer`).
+    /// `hovered` answers "which control is under the pointer" — one hit,
+    /// the topmost — which is the wrong question for a composite control
+    /// that holds smaller ones: the URL well stays hovered while the
+    /// pointer is on the lock or copy chip inside it, and only a rect test
+    /// can say so. Reach for `hovered` first; this is for the containment
+    /// cases it can't express. `None` when no mouse event has arrived yet.
+    pub pointer: Option<(u16, u16)>,
     /// True while this pane's scrollbar thumb is being dragged, so the thumb
     /// keeps its active styling even when the pointer leaves the column.
     pub dragging: bool,
@@ -55,6 +63,15 @@ impl DrawCtx<'_> {
     /// still gets its full hover fill rather than none.
     pub fn hover_t(&self) -> f32 {
         self.anims.value_or(AnimKey::Hover, self.now, 1.0)
+    }
+
+    /// The 0→1 eased progress of the URL well's own hover fade
+    /// ([`AnimKey::UrlWellHover`]), which — unlike [`DrawCtx::hover_t`] —
+    /// restarts only when the pointer enters the well, not every time it
+    /// crosses onto one of the chips inside it. Same `1.0` default as the
+    /// shared fade.
+    pub fn url_well_hover_t(&self) -> f32 {
+        self.anims.value_or(AnimKey::UrlWellHover, self.now, 1.0)
     }
 
     /// The 0→1 eased progress of the current focus fade: 0 the instant a

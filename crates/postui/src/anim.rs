@@ -77,6 +77,15 @@ pub enum AnimKey {
     TabUnderlineWidth(StripId),
     ListTravel(ListId),
     Hover,
+    /// The address bar's URL well hover fade, kept apart from the shared
+    /// [`AnimKey::Hover`] because the well is a *composite* control: the
+    /// lock, the copy chip and the URL's `{{token}}`s all sit inside it and
+    /// register their own hits, so the shared key — which restarts on every
+    /// hit change — would dip the well's fill back to rest each time the
+    /// pointer crossed onto one of them. This one restarts only when the
+    /// pointer enters the well's rect from outside it
+    /// (`App::begin_hover_fade`).
+    UrlWellHover,
     FocusFade,
     ModalOpen,
     DropdownOpen,

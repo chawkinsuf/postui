@@ -196,6 +196,12 @@ pub struct Editor {
     /// left padding); consumed by the click handler that focuses the URL
     /// line and places the caret at the clicked column.
     pub last_url_text_area: Option<Rect>,
+    /// The whole URL well's screen area (caps included), recorded on every
+    /// draw. Read by `App::begin_hover_fade` to tell the pointer *entering*
+    /// the well from the pointer merely crossing between the lock, the copy
+    /// chip and the text inside it — a containment question the hit map
+    /// can't answer, since those chips register on top of `Hit::UrlBar`.
+    pub last_url_area: Option<Rect>,
     /// When the in-flight send belonging to this editor started, mirrored
     /// from `Session::InFlight::started` by `App::update` alongside
     /// `sending`. Draw-only: `elapsed()` off this wall-clock instant drives
@@ -283,6 +289,7 @@ impl Default for Editor {
             sending: false,
             last_method_area: None,
             last_url_text_area: None,
+            last_url_area: None,
             send_started: None,
             table_collapsed: false,
             split: crate::split::SplitState::default(),
@@ -1752,6 +1759,16 @@ const COPY_CHIP_WIDTH: u16 = 3;
 /// well's left edge (`" 󰌾 "` — a single-cell Nerd Font glyph plus one
 /// padding column each side, the copy chip's anatomy).
 const LOCK_CHIP_WIDTH: u16 = 3;
+/// Lightness lift of the URL well's fill (and so its caps) while the
+/// pointer is over it: a slight step — smaller than the focus lift below,
+/// and on the same ramp — so pointing at the bar answers before the click
+/// without ever being mistaken for "typing lands here".
+pub const URL_HOVER_LIFT: f32 = 0.05;
+/// Lightness lift of the URL well's fill while it holds keyboard focus.
+/// Still clears `control_hover` (focus outshines hover on every control),
+/// but a softer step than the method badge's ±0.12 colored-face delta,
+/// which reads as a hard jump on the large neutral well.
+pub const URL_FOCUS_LIFT: f32 = 0.09;
 /// Height of the tab bar row — the second row of that split.
 pub const TAB_BAR_HEIGHT: u16 = 2;
 /// Height of the toolbar chip row holding the Body tab's
@@ -1900,21 +1917,44 @@ impl Editor {
         });
 
         // --- URL segment -------------------------------------------------
-        // Focus lifts the fill two hover-steps up — a stronger step than
-        // `control_hover`, because the URL well is large and dark and a
-        // single step is nearly invisible (same lift `TextField`'s Focused
-        // state uses). The bevel follows the lifted fill, but at the
-        // softer ±0.08 delta `TextField` uses around its own fill —
-        // ±0.12 (the method badge's colored-face delta) reads as a hard
-        // black line on the already-dark neutral control fill.
-        let url_lifted = lift_color(theme.control, 0.12);
-        let url_fill = if url_focused {
-            mix(theme.control, url_lifted, ctx.focus_t())
+        // Hover and focus are two steps on one ramp off the resting fill
+        // (`URL_HOVER_LIFT` < `URL_FOCUS_LIFT`), both ending clear of
+        // `control_hover` at the top: the well is large and dark, so a
+        // single step is nearly invisible, while the method badge's full
+        // ±0.12 reads as a hard jump across that much area. Focus wins
+        // when the pointer is over a focused well — the stronger state
+        // must never be dimmed by hovering it. Both ease in through the
+        // shared fade timers, same as the badge above.
+        let url_hover_fill = lift_color(theme.control, URL_HOVER_LIFT);
+        let url_focus_fill = lift_color(theme.control, URL_FOCUS_LIFT);
+        // Hovered by geometry, not by hit: the lock, the copy chip and any
+        // `{{token}}` in the URL all register on top of `UrlBar`, so
+        // `ctx.hovered` stops naming the well the moment the pointer
+        // crosses onto one of them. The well *contains* them — it stays
+        // lit while the pointer is anywhere inside it, and each chip draws
+        // its own hover on top of the lit fill.
+        let url_hovered = ctx
+            .pointer
+            .is_some_and(|(x, y)| url_area.contains(ratatui::layout::Position { x, y }));
+        // The surface the focus lift climbs from — the hover fill when the
+        // pointer is on the well. Easing up from `theme.control` instead
+        // would drop a lit well back to rest for the first frame of the
+        // fade and climb from there: a visible dip under every click,
+        // because a click always lands on a well the pointer is already
+        // hovering.
+        let url_base = if url_hovered {
+            mix(theme.control, url_hover_fill, ctx.url_well_hover_t())
         } else {
             theme.control
         };
+        let url_fill = if url_focused {
+            mix(url_base, url_focus_fill, ctx.focus_t())
+        } else {
+            url_base
+        };
         cap::capped(buf, url_area, url_fill, bar_surface);
         hits.register(url_area, crate::hit::Hit::UrlBar);
+        self.last_url_area = Some(url_area);
         // The copy-URL chip claims a fixed slice at the well's right edge;
         // the text window is narrowed to leave room for it so the two never
         // overlap.
@@ -2567,6 +2607,7 @@ impl Editor {
                     theme,
                     focused,
                     hovered: ctx.hovered,
+                    pointer: ctx.pointer,
                     dragging: ctx.dragging,
                     anims: ctx.anims,
                     now: ctx.now,
@@ -2611,6 +2652,7 @@ impl Editor {
                     theme,
                     focused,
                     hovered: ctx.hovered,
+                    pointer: ctx.pointer,
                     dragging: ctx.dragging,
                     anims: ctx.anims,
                     now: ctx.now,
@@ -2673,6 +2715,7 @@ impl Editor {
                     theme,
                     focused,
                     hovered: ctx.hovered,
+                    pointer: ctx.pointer,
                     dragging: ctx.dragging,
                     anims: ctx.anims,
                     now: ctx.now,
@@ -3391,6 +3434,7 @@ mod tests {
             theme: &theme,
             focused: true,
             hovered: None,
+            pointer: None,
             dragging: false,
             anims: test_anims(),
             now: std::time::Instant::now(),
@@ -3432,6 +3476,7 @@ mod tests {
                 theme: &theme,
                 focused: true,
                 hovered: None,
+                pointer: None,
                 dragging: false,
                 anims: test_anims(),
                 now: std::time::Instant::now(),
@@ -3544,6 +3589,7 @@ mod tests {
                 theme: &theme,
                 focused: true,
                 hovered: None,
+                pointer: None,
                 dragging: false,
                 anims: test_anims(),
                 now: std::time::Instant::now(),
@@ -3988,6 +4034,7 @@ mod tests {
             theme: &theme,
             focused: true,
             hovered: None,
+            pointer: None,
             dragging: false,
             anims: test_anims(),
             now: std::time::Instant::now(),
@@ -4009,6 +4056,7 @@ mod tests {
                 theme: &theme,
                 focused: true,
                 hovered: None,
+                pointer: None,
                 dragging: false,
                 anims: test_anims(),
                 now: std::time::Instant::now(),
@@ -4116,6 +4164,7 @@ mod tests {
             theme: &theme,
             focused: true,
             hovered: None,
+            pointer: None,
             dragging: false,
             anims: test_anims(),
             now: std::time::Instant::now(),
@@ -4143,6 +4192,7 @@ mod tests {
             theme: &theme,
             focused: true,
             hovered: None,
+            pointer: None,
             dragging: false,
             anims: test_anims(),
             now: std::time::Instant::now(),
@@ -4485,6 +4535,7 @@ mod tests {
                 theme: &theme,
                 focused: true,
                 hovered: None,
+                pointer: None,
                 dragging: false,
                 anims: test_anims(),
                 now: std::time::Instant::now(),
@@ -4555,6 +4606,7 @@ x-a = "1"
             theme: &theme,
             focused: true,
             hovered: None,
+            pointer: None,
             dragging: false,
             anims: test_anims(),
             now: std::time::Instant::now(),
@@ -4599,6 +4651,7 @@ x-a = "1"
             theme: &theme,
             focused: true,
             hovered: None,
+            pointer: None,
             dragging: false,
             anims: test_anims(),
             now: std::time::Instant::now(),
@@ -4642,6 +4695,7 @@ x-a = "1"
                 theme: &theme,
                 focused: pane_focused,
                 hovered: None,
+                pointer: None,
                 dragging: false,
                 anims: test_anims(),
                 now: std::time::Instant::now(),
@@ -4707,6 +4761,7 @@ url = "https://api.example.com/users""#,
             theme: &theme,
             focused: true,
             hovered: None,
+            pointer: None,
             dragging: false,
             anims: test_anims(),
             now: std::time::Instant::now(),
@@ -4740,6 +4795,7 @@ url = "https://api.example.com/users""#,
             theme: &theme,
             focused: true,
             hovered: None,
+            pointer: None,
             dragging: false,
             anims: test_anims(),
             now: std::time::Instant::now(),
@@ -4874,11 +4930,24 @@ url = "https://api.example.com/users""#,
         anims: &crate::anim::Anims,
         now: std::time::Instant,
     ) -> (Terminal<TestBackend>, crate::hit::HitMap) {
+        draw_for_bar_test_pointing(e, hovered, None, anims, now)
+    }
+
+    /// `draw_for_bar_test_at` plus an explicit pointer position, for the
+    /// controls that read containment rather than the hit under it.
+    fn draw_for_bar_test_pointing(
+        e: &mut Editor,
+        hovered: Option<&crate::hit::Hit>,
+        pointer: Option<(u16, u16)>,
+        anims: &crate::anim::Anims,
+        now: std::time::Instant,
+    ) -> (Terminal<TestBackend>, crate::hit::HitMap) {
         let theme = Theme::dark();
         let ctx = DrawCtx {
             theme: &theme,
             focused: true,
             hovered,
+            pointer,
             dragging: false,
             anims,
             now,
@@ -4955,7 +5024,7 @@ url = "https://api.example.com/users""#,
         );
         e.sub_focus = SubFocus::Url;
         let theme = Theme::dark();
-        let focused_fill = crate::theme::lift_color(theme.control, 0.12);
+        let focused_fill = crate::theme::lift_color(theme.control, URL_FOCUS_LIFT);
 
         let mut anims = crate::anim::Anims::new(true);
         let t0 = std::time::Instant::now();
@@ -5058,6 +5127,7 @@ url = "https://api.example.com/users""#,
             theme: &theme,
             focused: true,
             hovered: Some(&crate::hit::Hit::SendButton),
+            pointer: None,
             dragging: false,
             anims: test_anims(),
             now: std::time::Instant::now(),
@@ -5102,6 +5172,183 @@ url = "https://api.example.com/users""#,
         assert!(found_non_bold, "disabled Send label must not be bold");
     }
 
+    /// Loads a request, draws the bar once to find the URL well, and hands
+    /// back the editor plus the well's rect — every pointer-driven bar test
+    /// needs the geometry before it can point at anything.
+    fn editor_with_url_well() -> (Editor, Rect) {
+        let mut e = Editor::default();
+        e.load(
+            Some("a".into()),
+            HttpRequest::from_toml_str(r#"url = "https://example.com/a""#).unwrap(),
+        );
+        let (_, hits) = draw_for_bar_test(&mut e);
+        let url_area = hits.rect_of(&crate::hit::Hit::UrlBar).unwrap();
+        (e, url_area)
+    }
+
+    #[test]
+    fn hovering_the_url_well_lifts_it_a_step_short_of_focus() {
+        let (mut e, url_area) = editor_with_url_well();
+        // Not focused: the hover lift is the well's whole story here.
+        e.sub_focus = SubFocus::Method;
+        let theme = Theme::dark();
+        let anims = crate::anim::Anims::new(false);
+        let text_y = url_area.y + 1;
+        let (terminal, _) = draw_for_bar_test_pointing(
+            &mut e,
+            Some(&crate::hit::Hit::UrlBar),
+            Some((url_area.x, text_y)),
+            &anims,
+            std::time::Instant::now(),
+        );
+        let buf = terminal.backend().buffer();
+        let hovered = crate::theme::lift_color(theme.control, URL_HOVER_LIFT);
+        let focused = crate::theme::lift_color(theme.control, URL_FOCUS_LIFT);
+        let well = buf.cell((url_area.x, text_y)).unwrap();
+        assert_eq!(well.bg, hovered, "the hovered URL well lifts: {well:?}");
+        assert_ne!(hovered, theme.control, "hover must be visible at all");
+        assert_ne!(hovered, focused, "hover must stay short of focus");
+        // The caps follow the fill, so the whole segment lifts as one.
+        let cap = buf.cell((url_area.x, url_area.y)).unwrap();
+        assert_eq!(cap.fg, hovered, "the cap carries the hover fill: {cap:?}");
+    }
+
+    #[test]
+    fn the_url_well_stays_lit_while_the_pointer_is_on_a_chip_inside_it() {
+        let (mut e, url_area) = editor_with_url_well();
+        e.sub_focus = SubFocus::Method;
+        let theme = Theme::dark();
+        let anims = crate::anim::Anims::new(false);
+        let text_y = url_area.y + 1;
+        // The copy chip sits just inside the lock at the well's right edge,
+        // and registers its own hit on top of `UrlBar`.
+        let chip_x = url_area.x + url_area.width - LOCK_CHIP_WIDTH - COPY_CHIP_WIDTH + 1;
+        let (terminal, hits) = draw_for_bar_test_pointing(
+            &mut e,
+            Some(&crate::hit::Hit::CopyUrl),
+            Some((chip_x, text_y)),
+            &anims,
+            std::time::Instant::now(),
+        );
+        assert!(
+            hits.rect_of(&crate::hit::Hit::CopyUrl)
+                .is_some_and(|r| r.contains(ratatui::layout::Position {
+                    x: chip_x,
+                    y: text_y
+                })),
+            "the test must be pointing at the copy chip itself"
+        );
+        // Away from the chip, the well's own fill is still the hover lift.
+        let well = terminal
+            .backend()
+            .buffer()
+            .cell((url_area.x, text_y))
+            .unwrap();
+        assert_eq!(
+            well.bg,
+            crate::theme::lift_color(theme.control, URL_HOVER_LIFT),
+            "a chip inside the well must not unlight the well: {well:?}"
+        );
+    }
+
+    #[test]
+    fn the_pointer_outside_the_well_leaves_it_at_rest() {
+        let (mut e, url_area) = editor_with_url_well();
+        e.sub_focus = SubFocus::Method;
+        let theme = Theme::dark();
+        let anims = crate::anim::Anims::new(false);
+        let text_y = url_area.y + 1;
+        let (terminal, _) = draw_for_bar_test_pointing(
+            &mut e,
+            Some(&crate::hit::Hit::MethodSelector),
+            Some((url_area.x - 1, text_y)),
+            &anims,
+            std::time::Instant::now(),
+        );
+        let well = terminal
+            .backend()
+            .buffer()
+            .cell((url_area.x, text_y))
+            .unwrap();
+        assert_eq!(well.bg, theme.control, "unhovered well rests: {well:?}");
+    }
+
+    #[test]
+    fn clicking_a_hovered_url_well_climbs_from_the_hover_fill_never_dipping() {
+        use crate::anim::AnimKey;
+        use std::time::Duration;
+
+        let (mut e, url_area) = editor_with_url_well();
+        // What a click leaves behind: focus taken, focus fade just started,
+        // pointer still on the well.
+        e.sub_focus = SubFocus::Url;
+        let theme = Theme::dark();
+        let text_y = url_area.y + 1;
+        let hover_fill = crate::theme::lift_color(theme.control, URL_HOVER_LIFT);
+        let focus_fill = crate::theme::lift_color(theme.control, URL_FOCUS_LIFT);
+
+        let mut anims = crate::anim::Anims::new(true);
+        let t0 = std::time::Instant::now();
+        anims.snap(AnimKey::FocusFade, 0.0);
+        anims.retarget(AnimKey::FocusFade, 1.0, Duration::from_millis(90), t0);
+        let pointer = Some((url_area.x, text_y));
+
+        // First frame of the fade: still exactly the hover fill it was at,
+        // not a drop back to the resting control fill.
+        let (terminal, _) =
+            draw_for_bar_test_pointing(&mut e, Some(&crate::hit::Hit::UrlBar), pointer, &anims, t0);
+        let well = terminal
+            .backend()
+            .buffer()
+            .cell((url_area.x, text_y))
+            .unwrap();
+        assert_eq!(
+            well.bg, hover_fill,
+            "the click must not dip below the fill it was already at: {well:?}"
+        );
+
+        // And it lands on the focus fill when the fade completes.
+        let (terminal, _) = draw_for_bar_test_pointing(
+            &mut e,
+            Some(&crate::hit::Hit::UrlBar),
+            pointer,
+            &anims,
+            t0 + Duration::from_millis(90),
+        );
+        let well = terminal
+            .backend()
+            .buffer()
+            .cell((url_area.x, text_y))
+            .unwrap();
+        assert_eq!(well.bg, focus_fill, "settles on the focus lift: {well:?}");
+    }
+
+    #[test]
+    fn a_focused_url_well_is_not_dimmed_by_hovering_it() {
+        let (mut e, url_area) = editor_with_url_well();
+        e.sub_focus = SubFocus::Url;
+        let theme = Theme::dark();
+        let anims = crate::anim::Anims::new(false);
+        let text_y = url_area.y + 1;
+        let (terminal, _) = draw_for_bar_test_pointing(
+            &mut e,
+            Some(&crate::hit::Hit::UrlBar),
+            Some((url_area.x, text_y)),
+            &anims,
+            std::time::Instant::now(),
+        );
+        let well = terminal
+            .backend()
+            .buffer()
+            .cell((url_area.x, text_y))
+            .unwrap();
+        assert_eq!(
+            well.bg,
+            crate::theme::lift_color(theme.control, URL_FOCUS_LIFT),
+            "focus wins over hover: {well:?}"
+        );
+    }
+
     #[test]
     fn focused_url_lifts_the_url_fill_and_caps() {
         let mut e = Editor::default();
@@ -5116,7 +5363,7 @@ url = "https://api.example.com/users""#,
         let buf = terminal.backend().buffer();
         let text_y = method_area.y + 1;
         let url_x = method_area.x + method_area.width;
-        let lifted = crate::theme::lift_color(theme.control, 0.12);
+        let lifted = crate::theme::lift_color(theme.control, URL_FOCUS_LIFT);
         let well = buf.cell((url_x, text_y)).unwrap();
         assert_eq!(
             well.bg, lifted,
@@ -5190,6 +5437,7 @@ url = "https://api.example.com/users""#,
             theme: &theme,
             focused: true,
             hovered: None,
+            pointer: None,
             dragging: false,
             anims: test_anims(),
             now: std::time::Instant::now(),
@@ -5319,6 +5567,7 @@ url = "https://api.example.com/users""#,
             theme: &theme,
             focused: true,
             hovered: None,
+            pointer: None,
             dragging: false,
             anims: test_anims(),
             now: std::time::Instant::now(),
@@ -5375,6 +5624,7 @@ url = "https://api.example.com/users""#,
             theme: &theme,
             focused: true,
             hovered: None,
+            pointer: None,
             dragging: false,
             anims: test_anims(),
             now: std::time::Instant::now(),
@@ -5431,6 +5681,7 @@ url = "https://api.example.com/users""#,
             theme: &theme,
             focused: true,
             hovered: None,
+            pointer: None,
             dragging: false,
             anims: test_anims(),
             now: std::time::Instant::now(),
@@ -5492,6 +5743,7 @@ url = "https://api.example.com/users""#,
             theme: &theme,
             focused: true,
             hovered: None,
+            pointer: None,
             dragging: false,
             anims: test_anims(),
             now: std::time::Instant::now(),
@@ -5566,6 +5818,7 @@ url = "https://api.example.com/users""#,
             theme: &theme,
             focused: true,
             hovered: None,
+            pointer: None,
             dragging: false,
             anims: test_anims(),
             now: std::time::Instant::now(),
@@ -5613,6 +5866,7 @@ url = "https://api.example.com/users""#,
             theme: &theme,
             focused: true,
             hovered: None,
+            pointer: None,
             dragging: false,
             anims: test_anims(),
             now: std::time::Instant::now(),

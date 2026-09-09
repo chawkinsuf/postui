@@ -108,6 +108,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             }
             app.editor.env_tls = app.env_tls();
             let hovered = app.hovered.as_ref();
+            let pointer = app.pointer;
             let dragged_pane = app.drag.as_ref().map(|d| d.pane);
             let modal_open = app.modals.top().is_some();
             // Destructured so each component can be borrowed mutably
@@ -125,6 +126,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 theme,
                 focused: focus == pane,
                 hovered,
+                pointer,
                 dragging: dragged_pane == Some(pane),
                 anims,
                 now,
@@ -259,6 +261,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 theme: &app.theme,
                 focused: false,
                 hovered: app.hovered.as_ref(),
+                pointer: app.pointer,
                 dragging: false,
                 anims: &app.anims,
                 now,

@@ -310,6 +310,10 @@ pub struct App {
     /// Where the pointer last was, so the tooltip can be re-resolved every
     /// frame rather than trusting a rect captured at motion time.
     pub(crate) pointer: Option<(u16, u16)>,
+    /// Whether the pointer was inside the URL well as of the last hover
+    /// change, so `begin_hover_fade` can restart the well's own fade on
+    /// entry alone and hold it through moves between the well's own chips.
+    url_well_hovered: bool,
     /// The token the keyboard caret is resting in, and when it started
     /// resting there. The tooltip appears once it's been resting
     /// [`CARET_TIP_DWELL`], so a caret merely passing through a token on
@@ -1537,6 +1541,7 @@ impl App {
             modal_handoff: false,
             last_pointer_shape: PointerShape::Default,
             pointer: None,
+            url_well_hovered: false,
             caret_token: None,
             caret_token_since: None,
             caret_tip_shown: false,
@@ -9005,6 +9010,33 @@ impl App {
         self.anims.snap(AnimKey::Hover, 0.0);
         self.anims
             .retarget(AnimKey::Hover, 1.0, self.ui_settings.anim_ms.hover, now);
+        // The URL well runs its own fade off the same call. Its hover is a
+        // containment question — the pointer is "on the well" while it is
+        // on the lock or the copy chip inside it — so restarting on every
+        // hit change (which is what the shared key above does) would dip
+        // the well's fill back to rest every time the pointer crossed one
+        // of its own chips. It restarts only on entry from outside.
+        let inside = self.url_well_hovered_now();
+        if inside && !self.url_well_hovered {
+            self.anims.snap(AnimKey::UrlWellHover, 0.0);
+            self.anims.retarget(
+                AnimKey::UrlWellHover,
+                1.0,
+                self.ui_settings.anim_ms.hover,
+                now,
+            );
+        }
+        self.url_well_hovered = inside;
+    }
+
+    /// Whether the pointer is inside the address bar's URL well as of the
+    /// last frame's geometry. `None` pointer (no mouse event yet) or a well
+    /// never drawn both read as "outside".
+    fn url_well_hovered_now(&self) -> bool {
+        let (Some((x, y)), Some(well)) = (self.pointer, self.editor.last_url_area) else {
+            return false;
+        };
+        well.contains(ratatui::layout::Position { x, y })
     }
 
     /// Starts the focus fade over from 0: snaps `AnimKey::FocusFade` to 0
