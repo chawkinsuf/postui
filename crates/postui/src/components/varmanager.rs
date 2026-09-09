@@ -1933,11 +1933,10 @@ impl VarManager {
                 trailing: &[],
             }
             .paint(buf, hits, Rect::new(x0, y, row_w, 1), theme);
-            let rect = Rect {
-                width: crate::paint::TOGGLE_W,
-                ..slot.rect
-            };
-            Toggle {
+            // The toggle clamps itself to the slot and returns what it
+            // painted; registering that keeps the hit inside the row
+            // however narrow the pane has become.
+            let rect = Toggle {
                 on: secret,
                 state: if hovered == Some(&Hit::VmSecretToggle) {
                     ControlState::Hover
@@ -1945,7 +1944,7 @@ impl VarManager {
                     ControlState::Normal
                 },
             }
-            .paint(buf, rect, theme);
+            .paint(buf, slot.rect, theme);
             hits.register(rect, Hit::VmSecretToggle);
             y += 2; // blank row: the declaration block ends here
         }
@@ -2131,12 +2130,10 @@ impl VarManager {
                 Line::raw(text_value)
             }
         };
-        let rect = Rect {
-            width: slot.rect.width.min(crate::paint::PROPERTY_MAX_W),
-            ..slot.rect
-        };
-        Well { content, state }.paint(buf, rect, theme);
-        hits.register(rect, hit);
+        // The row is already clamped to `PROPERTY_MAX_W` before the slot
+        // is measured, so the well takes the slot as it stands.
+        Well { content, state }.paint(buf, slot.rect, theme);
+        hits.register(slot.rect, hit);
     }
 
     fn draw_left(

@@ -180,11 +180,13 @@ pub fn draw_testbed(frame: &mut Frame, area: Rect, ctx: &DrawCtx) {
                 state: ControlState::Focused,
             }
             .paint(buf, slot.rect, theme),
-            1 => Toggle {
-                on: true,
-                state: ControlState::Normal,
+            1 => {
+                Toggle {
+                    on: true,
+                    state: ControlState::Normal,
+                }
+                .paint(buf, slot.rect, theme);
             }
-            .paint(buf, slot.rect, theme),
             _ => {
                 let mut px = slot.rect.x;
                 for (seg, kind) in [("On", ButtonKind::Primary), ("Off", ButtonKind::Secondary)] {

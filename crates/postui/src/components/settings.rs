@@ -410,7 +410,18 @@ pub fn draw_settings(
         // write genuinely would be refused by `Config::edit` — is
         // disabled.
         let row_disabled = !editable && matches!(row, SettingsRow::Setting(_));
-        let hovered_row = hovered == Some(&Hit::SettingsRow(i));
+        // A row washes when the pointer is over anything that row will
+        // respond to (see `paint::property`'s module doc). This row
+        // activates from its label half *and* from its control, so the
+        // wash has to follow both: washing only for the label would say
+        // the pointer had left a row it is still going to act on.
+        let hovered_row = match hovered {
+            Some(Hit::SettingsRow(h)) => *h == i,
+            Some(Hit::SettingsControl(f)) => *row == SettingsRow::Setting(*f),
+            Some(Hit::SettingsJqTab(_)) => *row == SettingsRow::Setting(SettingsField::JqTab),
+            Some(Hit::SettingsFile { file, .. }) => *row == SettingsRow::File(*file),
+            _ => false,
+        };
         // A disabled setting row registers no hit at all: a control that
         // looks live and silently refuses every write is the defect the
         // banner above exists to remove.
@@ -570,12 +581,12 @@ fn draw_setting_control(
     // The cursor is this control lifting its own fill — with no band,
     // it is the only thing that says where the keyboard is. A live edit
     // counts as focused too: it *is* the cursor.
-    let state = |own_hit: &Hit| {
+    let state = || {
         if !editable {
             ControlState::Disabled
         } else if tab.cursor == row && tab.editing.is_none() {
             ControlState::Focused
-        } else if hovered == Some(own_hit) {
+        } else if hovered == Some(&hit) {
             ControlState::Hover
         } else {
             ControlState::Normal
@@ -597,12 +608,16 @@ fn draw_setting_control(
             } else {
                 ButtonKind::Secondary
             };
+            // Focused before Hover, like every other ladder on this
+            // screen: with the band gone the cursor is the only thing
+            // saying where the keyboard is, and it must not vanish
+            // under the pointer that happens to be resting on it.
             let seg_state = if !editable {
                 ControlState::Disabled
-            } else if hovered == Some(&seg) {
-                ControlState::Hover
             } else if tab.cursor == row && ui.jq_tab == mode {
                 ControlState::Focused
+            } else if hovered == Some(&seg) {
+                ControlState::Hover
             } else {
                 ControlState::Normal
             };
@@ -626,15 +641,10 @@ fn draw_setting_control(
     }
 
     if let Some(on) = field.checkbox(ui) {
-        let rect = Rect {
-            width: crate::paint::TOGGLE_W,
-            ..slot.rect
-        };
-        Toggle {
-            on,
-            state: state(&hit),
-        }
-        .paint(buf, rect, theme);
+        // The toggle clamps itself to the slot and hands back what it
+        // painted: the hit goes over that, never over a width this row
+        // may not have.
+        let rect = Toggle { on, state: state() }.paint(buf, slot.rect, theme);
         if editable {
             hits.register(rect, hit);
         }
@@ -663,14 +673,11 @@ fn draw_setting_control(
         tab.input_line(theme, inner)
     } else {
         match field.text_value(ui).unwrap_or_default() {
-            v if v.is_empty() => Line::styled(
-                "(not set)",
-                Style::default().fg(if editable {
-                    theme.text_muted
-                } else {
-                    theme.text_disabled
-                }),
-            ),
+            // Muted unconditionally: a disabled well is
+            // `ControlState::Disabled`, and `Well::paint` recolors every
+            // span it is handed, so a second disabled colour here would
+            // never reach the screen.
+            v if v.is_empty() => Line::styled("(not set)", Style::default().fg(theme.text_muted)),
             v => Line::raw(v),
         }
     };
@@ -942,6 +949,141 @@ mod tests {
             "the cursor's control is lifted, not merely hovered"
         );
         assert_ne!(painted, theme.control_hover);
+    }
+
+    /// Focused beats Hover on the jq row too. The active segment is the
+    /// one place the cursor rides a `Primary` face, and it used to lose
+    /// to the pointer resting on it -- the keyboard cursor vanishing on
+    /// exactly one row of the app.
+    #[test]
+    fn the_jq_segments_cursor_outlives_the_pointer_resting_on_it() {
+        use crate::hit::HitMap;
+        let theme = Theme::dark();
+        let ui = UiSettings::default();
+        let jq_row = SettingsTab::rows()
+            .iter()
+            .position(|r| *r == SettingsRow::Setting(SettingsField::JqTab))
+            .unwrap();
+        let tab = SettingsTab {
+            cursor: jq_row,
+            ..Default::default()
+        };
+        // The pointer is on the very segment the keyboard is on.
+        let active = Hit::SettingsJqTab(ui.jq_tab);
+        let mut hits = HitMap::default();
+        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        term.draw(|f| {
+            draw_settings(
+                f,
+                Rect::new(0, 0, 100, 30),
+                &theme,
+                &tab,
+                &ui,
+                None,
+                &mut hits,
+                Some(&active),
+            );
+        })
+        .unwrap();
+        let seg = hits
+            .rect_of(&active)
+            .expect("the active segment is painted");
+        let painted = term.backend().buffer().cell((seg.x, seg.y)).unwrap().bg;
+        assert_eq!(
+            painted,
+            crate::theme::lift_color(theme.accent, 0.20),
+            "the cursor still lifts the active segment"
+        );
+        assert_ne!(
+            painted, theme.accent_edge_light,
+            "the pointer must not paint over the cursor"
+        );
+    }
+
+    /// The same ordering in the one ladder that is a plain function: the
+    /// aimed file button stays Focused with the pointer on it, and the
+    /// button beside it still shows Hover.
+    #[test]
+    fn the_aimed_file_button_stays_focused_under_the_pointer() {
+        let row = SettingsTab::rows()
+            .iter()
+            .position(|r| matches!(r, SettingsRow::File(_)))
+            .unwrap();
+        let SettingsRow::File(file) = SettingsTab::rows()[row] else {
+            unreachable!("the row we just found is a file row")
+        };
+        let tab = SettingsTab {
+            cursor: row,
+            file_button: 1,
+            ..Default::default()
+        };
+        let reset = Hit::SettingsFile { file, reset: true };
+        let edit = Hit::SettingsFile { file, reset: false };
+        assert_eq!(
+            file_button_state(&tab, row, 1, Some(&reset), file),
+            ControlState::Focused,
+            "the aimed button keeps its cursor under the pointer"
+        );
+        assert_eq!(
+            file_button_state(&tab, row, 0, Some(&edit), file),
+            ControlState::Hover,
+            "and the one beside it still answers the mouse"
+        );
+    }
+
+    /// The hover wash follows the rule `paint::property` states: a row
+    /// washes when the pointer is over anything it will respond to. This
+    /// row activates from its label *and* from its control, so both must
+    /// wash -- and a row the pointer is nowhere near must not.
+    #[test]
+    fn a_settings_row_washes_from_its_control_as_well_as_its_label() {
+        use crate::hit::HitMap;
+        let theme = Theme::dark();
+        let ui = UiSettings::default();
+        let ai_row = SettingsTab::rows()
+            .iter()
+            .position(|r| *r == SettingsRow::Setting(SettingsField::AiCmd))
+            .unwrap();
+        let wash = crate::theme::mix(theme.page, theme.control, crate::paint::HOVER_WASH);
+        let label_bg = |hovered: Option<&Hit>| {
+            let mut hits = HitMap::default();
+            let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+            term.draw(|f| {
+                draw_settings(
+                    f,
+                    Rect::new(0, 0, 100, 30),
+                    &theme,
+                    &SettingsTab::default(),
+                    &ui,
+                    None,
+                    &mut hits,
+                    hovered,
+                );
+            })
+            .unwrap();
+            let row = hits
+                .rect_of(&Hit::SettingsRow(ai_row))
+                .expect("the row is clickable");
+            // A column in the label half, clear of every control.
+            (
+                term.backend().buffer().cell((row.x, row.y)).unwrap().bg,
+                row,
+            )
+        };
+        let (resting, _) = label_bg(None);
+        assert_eq!(resting, theme.page, "a row nobody points at stays flat");
+        let (from_label, _) = label_bg(Some(&Hit::SettingsRow(ai_row)));
+        assert_eq!(from_label, wash, "the label half washes the row");
+        let (from_control, _) = label_bg(Some(&Hit::SettingsControl(SettingsField::AiCmd)));
+        assert_eq!(
+            from_control, wash,
+            "and so does the control -- the click activates the same row either way"
+        );
+        let (other_row, _) = label_bg(Some(&Hit::SettingsControl(SettingsField::HoverHints)));
+        assert_eq!(
+            other_row, theme.page,
+            "a different row's control washes that row, not this one"
+        );
     }
 
     /// A File row registers its own row hit *and* the Reset pill sitting

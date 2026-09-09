@@ -23687,8 +23687,11 @@ fn double_clicking_a_settings_field_selects_the_word() {
 /// The test that stops a *sixth* text surface shipping half-wired, the
 /// way the Settings tab did. Every surface that can be typed into must
 /// answer the mouse the same way: a hit to click, a menu to right-click
-/// and a sweep to drag. Add a variant to `TextSurface` without adding
-/// its arms and this fails.
+/// and a sweep to drag. Add a variant to `TextSurface` and
+/// `in_place_hit` below stops compiling until a decision is recorded
+/// for it — either the hit its well registers, which this test then
+/// demands a case for, or `None` with the reason it is not one of
+/// these.
 #[test]
 fn every_text_surface_under_edit_answers_the_mouse_identically() {
     use crate::action::TextSurface;
@@ -23696,10 +23699,34 @@ fn every_text_surface_under_edit_answers_the_mouse_identically() {
     use crate::components::settings::SettingsField;
     use crate::components::varmanager::VmField;
 
-    // (name, the app with that surface live, the hit its well registers)
-    let cases: Vec<(&str, Box<dyn Fn() -> (App, Hit)>)> = vec![
+    /// The hit a surface's field registers over itself, or `None` for a
+    /// surface that is not an in-place field at all.
+    ///
+    /// This match is the exhaustiveness guard: it has no wildcard arm,
+    /// so a new `TextSurface` variant is a compile error here until
+    /// somebody says which of the two it is.
+    fn in_place_hit(surface: TextSurface) -> Option<Hit> {
+        use crate::components::settings::SettingsField;
+        use crate::components::varmanager::VmField;
+        match surface {
+            // Not in-place fields: each of these owns a whole pane or
+            // bar and is reached through that pane's own geometry — the
+            // URL bar, the body editor, the response pane's own text
+            // and the jq filter bar. They answer the mouse, but not as
+            // a one-row well registering a `Hit` over itself, so
+            // forcing them into this shape would test nothing.
+            TextSurface::Url | TextSurface::Body | TextSurface::Response | TextSurface::Jq => None,
+            TextSurface::TableCell => Some(Hit::TableCell { row: 0, col: 1 }),
+            TextSurface::VmField => Some(Hit::VmFormField(VmField::Description)),
+            TextSurface::VmCell => Some(Hit::VmEntryCell { row: 0, col: 1 }),
+            TextSurface::Settings => Some(Hit::SettingsControl(SettingsField::AiCmd)),
+        }
+    }
+
+    // (the surface, the app with it live, the hit its well registers)
+    let cases: Vec<(TextSurface, Box<dyn Fn() -> (App, Hit)>)> = vec![
         (
-            "TableCell",
+            TextSurface::TableCell,
             Box::new(|| {
                 let mut app = app_with_one_param();
                 let hit = Hit::TableCell { row: 0, col: 1 };
@@ -23709,7 +23736,7 @@ fn every_text_surface_under_edit_answers_the_mouse_identically() {
             }),
         ),
         (
-            "VmField",
+            TextSurface::VmField,
             Box::new(|| {
                 let mut app = app_with_vars();
                 // A field only renders once the Variable Manager has a
@@ -23728,7 +23755,28 @@ fn every_text_surface_under_edit_answers_the_mouse_identically() {
             }),
         ),
         (
-            "Settings",
+            TextSurface::VmCell,
+            Box::new(|| {
+                // A selector's grid cell. The fixture project is the one
+                // the grid tests already use -- its `user` selector has
+                // two options in the qa environment, so row 0 col 1 is
+                // alice's value for the group's single field. The temp
+                // dir rides along in the app, exactly as
+                // `App::new_for_test` keeps its own.
+                let dir = tempfile::tempdir().unwrap();
+                var_project(dir.path());
+                let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                let mut app = App::with_root(tx, dir.path().to_path_buf());
+                app._test_rx = Some(rx);
+                app._test_dir = Some(dir);
+                goto_group(&mut app, "user");
+                app.vm_start_cell_edit(0, 1);
+                assert!(app.varmanager.grid.editing.is_some(), "cell is live");
+                (app, Hit::VmEntryCell { row: 0, col: 1 })
+            }),
+        ),
+        (
+            TextSurface::Settings,
             Box::new(|| {
                 let mut app = App::new_for_test();
                 app.update(Action::OpenManage {
@@ -23740,8 +23788,15 @@ fn every_text_surface_under_edit_answers_the_mouse_identically() {
         ),
     ];
 
-    for (name, build) in cases {
+    let covered: Vec<TextSurface> = cases.iter().map(|(s, _)| *s).collect();
+    for (surface, build) in &cases {
+        let name = format!("{surface:?}");
         let (mut app, hit) = build();
+        assert_eq!(
+            in_place_hit(*surface),
+            Some(hit.clone()),
+            "{name}: the case and the decision recorded for it must agree"
+        );
         render_once(&mut app);
         let r = app
             .hits
@@ -23768,9 +23823,12 @@ fn every_text_surface_under_edit_answers_the_mouse_identically() {
         );
     }
 
-    // And the surfaces are distinct values, so a menu built for one can
-    // never read another's selection.
-    let all = [
+    // And every surface `in_place_hit` calls a field must have a case
+    // above. A decision recorded with no case behind it would leave that
+    // surface untested, which is exactly how the Settings tab shipped
+    // half-wired — the arms are added in `in_place_hit`, which the
+    // compiler forces, and this is what makes an arm mean something.
+    for surface in [
         TextSurface::Url,
         TextSurface::Body,
         TextSurface::Response,
@@ -23779,10 +23837,12 @@ fn every_text_surface_under_edit_answers_the_mouse_identically() {
         TextSurface::VmCell,
         TextSurface::Jq,
         TextSurface::Settings,
-    ];
-    for (i, a) in all.iter().enumerate() {
-        for b in &all[i + 1..] {
-            assert_ne!(a, b, "TextSurface variants must be distinct");
+    ] {
+        if in_place_hit(surface).is_some() {
+            assert!(
+                covered.contains(&surface),
+                "{surface:?} registers a field hit but no case exercises it"
+            );
         }
     }
 }

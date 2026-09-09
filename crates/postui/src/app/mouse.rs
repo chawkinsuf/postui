@@ -1191,13 +1191,15 @@ impl App {
             Hit::SettingsControl(field) => {
                 use crate::paint::WELL_PAD;
                 let already_editing = self.settings.editing == Some(field);
-                let mut changed = false;
                 if !already_editing {
                     if !self.commit_settings_edit_for_click() {
                         return true;
                     }
                     self.settings.focus_field(field);
-                    changed |= self.activate_settings_row();
+                    // Called for the effect, not the answer: this is
+                    // what ticks the checkbox, switches the jq segment
+                    // or opens the text field's edit.
+                    self.activate_settings_row();
                 }
                 // Only a text row has a well and a caret to place. A
                 // checkbox or a jq segment was toggled by
@@ -1213,7 +1215,7 @@ impl App {
                         .click_caret(col, inner_w, already_editing, clicks == 2);
                     self.text_drag = Some(TextDrag::Settings);
                 }
-                self.update(Action::Render) || changed
+                self.update(Action::Render)
             }
             Hit::SettingsJqTab(mode) => {
                 use crate::components::settings::{SettingsField, jq_tab_spelling};

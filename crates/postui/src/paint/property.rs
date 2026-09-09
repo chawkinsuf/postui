@@ -18,6 +18,14 @@
 //! bevelled, while dialogs keep their bevels — so the split reads as
 //! "inline property" versus "dialog control" rather than as an
 //! accident.
+//!
+//! One rule governs the hover wash, and every pane converted to these
+//! rows follows it: **a row washes when the pointer is over something
+//! that row will respond to** — its label half, its control, or any
+//! pill it carries. A row that registers no hit of its own is not a
+//! click target and never washes, however it is laid out; a row that
+//! activates from either half must wash from either half, or the wash
+//! becomes a lie about where the click will land.
 
 use ratatui::{
     buffer::Buffer,
@@ -193,7 +201,11 @@ impl PropertyRow<'_> {
             right = right.saturating_sub(1);
         }
 
-        let x = area.x + self.label_w;
+        // Clamped to where the pills stopped: a pane too narrow for its
+        // own label column would otherwise hand back a slot starting
+        // past the row's right edge, and a control painted from there
+        // lands outside the row entirely.
+        let x = (area.x + self.label_w).min(right);
         ControlSlot {
             rect: Rect {
                 x,
@@ -262,13 +274,25 @@ pub struct Toggle {
 }
 
 impl Toggle {
-    pub fn paint(&self, buf: &mut Buffer, area: Rect, theme: &Theme) {
+    /// Paints into the left [`TOGGLE_W`] columns of `area` — or fewer,
+    /// if `area` is narrower — and returns the rect it actually
+    /// painted, which is the rect a caller must register its hit over.
+    /// The clamp lives here rather than in the callers: a caller that
+    /// builds its own `TOGGLE_W`-wide rect from a slot narrower than
+    /// that registers a click target past the row's right edge.
+    pub fn paint(&self, buf: &mut Buffer, area: Rect, theme: &Theme) -> Rect {
         let (face, _) = control_face(theme, ButtonKind::Secondary, self.state);
         let rect = Rect {
             width: area.width.min(TOGGLE_W),
             ..area
         };
         fill(buf, rect, face);
+        // The glyph sits one column in, so a face narrower than two
+        // columns has nowhere to put it: painting anyway would land it
+        // past the rect this returns, outside the row.
+        if rect.width < 2 {
+            return rect;
+        }
         let glyph = if self.on {
             crate::glyph::CHECKBOX
         } else {
@@ -280,6 +304,7 @@ impl Toggle {
             _ => theme.text_muted,
         };
         text(buf, rect.x + 1, rect.y, glyph, fg, face, false);
+        rect
     }
 }
 
@@ -477,6 +502,68 @@ mod tests {
             buf_cell(&term, 1, 0).fg,
             crate::theme::mix(theme.control, theme.text_muted, DISABLED_LABEL_MIX)
         );
+    }
+
+    /// A pane too narrow for its label column hands out a slot of one
+    /// or zero columns. Neither control may paint or register a single
+    /// cell outside the row it was given: a hit registered past the
+    /// right edge is a click target the row does not own.
+    #[test]
+    fn a_starved_slot_keeps_both_controls_inside_the_row() {
+        let theme = Theme::dark();
+        // label_w 16 leaves two columns; label_w 20 leaves none at all.
+        for (label_w, area) in [(16, Rect::new(4, 1, 18, 1)), (20, Rect::new(4, 1, 18, 1))] {
+            let mut term = Terminal::new(TestBackend::new(40, 3)).unwrap();
+            let mut hits = HitMap::default();
+            let mut toggle_rect = None;
+            term.draw(|f| {
+                let slot = PropertyRow {
+                    label: "Secret",
+                    label_w,
+                    hovered: false,
+                    disabled: false,
+                    trailing: &[],
+                }
+                .paint(f.buffer_mut(), &mut hits, area, &theme);
+                assert!(
+                    slot.rect.width <= 2,
+                    "label_w {label_w}: this test is about a starved slot, got {:?}",
+                    slot.rect
+                );
+                Well {
+                    content: ratatui::text::Line::raw("a value far wider than the slot"),
+                    state: ControlState::Normal,
+                }
+                .paint(f.buffer_mut(), slot.rect, &theme);
+                let r = Toggle {
+                    on: true,
+                    state: ControlState::Normal,
+                }
+                .paint(f.buffer_mut(), slot.rect, &theme);
+                hits.register(r, Hit::VmSecretToggle);
+                toggle_rect = Some(r);
+            })
+            .unwrap();
+
+            let toggle = toggle_rect.unwrap();
+            assert!(
+                toggle.x >= area.x && toggle.x + toggle.width <= area.x + area.width,
+                "label_w {label_w}: the toggle registered {toggle:?}, outside {area:?}"
+            );
+            let blank = ratatui::buffer::Cell::default();
+            for y in 0..3 {
+                for x in 0..40 {
+                    if y == area.y && x >= area.x && x < area.x + area.width {
+                        continue;
+                    }
+                    assert_eq!(
+                        buf_cell(&term, x, y),
+                        &blank,
+                        "label_w {label_w}: painted outside the row at {x},{y}"
+                    );
+                }
+            }
+        }
     }
 
     /// A toggle is one cell of glyph in a three-cell face — the icon
