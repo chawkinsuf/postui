@@ -16,8 +16,8 @@ pub struct ProjectsRegistry {
 
 /// The file name every `config.toml` message names, so a warning still
 /// tells the user which file to go and fix.
-const CONFIG_TOML: &str = "config.toml";
-const KEYS_TOML: &str = "keys.toml";
+pub const CONFIG_TOML: &str = "config.toml";
+pub const KEYS_TOML: &str = "keys.toml";
 const UI_TOML: &str = "ui.toml";
 const THEMES_DIR: &str = "themes";
 
@@ -25,7 +25,7 @@ const THEMES_DIR: &str = "themes";
 /// What was *done* about it differs by caller — startup drops to the
 /// defaults, a reload keeps what it has — so each caller appends its own
 /// clause rather than the sentence being written out again.
-fn config_parse_error(e: &toml::de::Error) -> String {
+pub fn config_parse_error(e: &toml::de::Error) -> String {
     format!("could not parse {CONFIG_TOML}: {e}")
 }
 
@@ -211,7 +211,8 @@ impl Default for AnimDurations {
 /// is showing (`jq_tab` in `config.toml`): list the candidates under the
 /// bar and step through them, shell-style (`menu`, the default; `accept`
 /// is accepted as an older name for it), or ghost the best one after the
-/// caret and step through the rest in place (`cycle`).
+/// caret and step through the rest in place (`ghost`; `cycle` is
+/// accepted as its older name).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum JqTab {
     Cycle,
@@ -289,7 +290,10 @@ impl UiSettings {
             Ok(value) => Self::from_value(&value),
             Err(e) => (
                 UiSettings::default(),
-                vec![format!("{}; using default settings", config_parse_error(&e))],
+                vec![format!(
+                    "{}; using default settings",
+                    config_parse_error(&e)
+                )],
             ),
         }
     }
@@ -300,38 +304,79 @@ impl UiSettings {
         let mut settings = UiSettings::default();
         let mut warnings = Vec::new();
 
-        if let Some(cmd) = value.get("clipboard_cmd").and_then(|v| v.as_str()) {
-            settings.clipboard_cmd = Some(cmd.to_string());
+        // A key that is present but of the wrong type falls back to its
+        // default *and says so*: silent per-key defaulting is how a
+        // customised app quietly becomes a default one.
+        let mut wrong_type = |key: &str, expected: &str| {
+            warnings.push(format!(
+                "invalid value for {key:?} in config.toml (expected {expected}); using default"
+            ));
+        };
+
+        match value.get("clipboard_cmd") {
+            None => {}
+            Some(v) => match v.as_str() {
+                Some(cmd) => settings.clipboard_cmd = Some(cmd.to_string()),
+                None => wrong_type("clipboard_cmd", "a string"),
+            },
         }
-        if let Some(limit) = value.get("osc52_limit").and_then(|v| v.as_integer())
-            && let Ok(limit) = usize::try_from(limit)
-        {
-            settings.osc52_limit = limit;
+        match value.get("osc52_limit") {
+            None => {}
+            Some(v) => match v.as_integer().and_then(|n| usize::try_from(n).ok()) {
+                Some(limit) => settings.osc52_limit = limit,
+                None => wrong_type("osc52_limit", "a non-negative integer"),
+            },
         }
-        if let Some(raw) = value.get("theme").and_then(|v| v.as_str()) {
-            settings.theme = raw.to_string();
+        match value.get("theme") {
+            None => {}
+            Some(v) => match v.as_str() {
+                Some(raw) => settings.theme = raw.to_string(),
+                None => wrong_type("theme", "a string"),
+            },
         }
-        if let Some(b) = value.get("animations").and_then(|v| v.as_bool()) {
-            settings.animations = b;
+        match value.get("animations") {
+            None => {}
+            Some(v) => match v.as_bool() {
+                Some(b) => settings.animations = b,
+                None => wrong_type("animations", "a boolean"),
+            },
         }
-        if let Some(b) = value.get("hover_hints").and_then(|v| v.as_bool()) {
-            settings.hover_hints = b;
+        match value.get("hover_hints") {
+            None => {}
+            Some(v) => match v.as_bool() {
+                Some(b) => settings.hover_hints = b,
+                None => wrong_type("hover_hints", "a boolean"),
+            },
         }
-        if let Some(cmd) = value.get("ai_cmd").and_then(|v| v.as_str()) {
-            settings.ai_cmd = cmd.to_string();
+        match value.get("ai_cmd") {
+            None => {}
+            Some(v) => match v.as_str() {
+                Some(cmd) => settings.ai_cmd = cmd.to_string(),
+                None => wrong_type("ai_cmd", "a string"),
+            },
         }
-        if let Some(b) = value.get("ai_confirmed").and_then(|v| v.as_bool()) {
-            settings.ai_confirmed = b;
+        match value.get("ai_confirmed") {
+            None => {}
+            Some(v) => match v.as_bool() {
+                Some(b) => settings.ai_confirmed = b,
+                None => wrong_type("ai_confirmed", "a boolean"),
+            },
         }
-        if let Some(raw) = value.get("jq_tab").and_then(|v| v.as_str()) {
-            match raw {
-                "cycle" => settings.jq_tab = JqTab::Cycle,
-                "menu" | "accept" => settings.jq_tab = JqTab::Menu,
-                other => warnings.push(format!(
+        match value.get("jq_tab") {
+            None => {}
+            Some(v) => match v.as_str() {
+                // "ghost" is the written spelling; "cycle" is its older name
+                // and stays parseable forever, exactly as "accept" is kept as
+                // the older name for "menu".
+                Some("ghost" | "cycle") => settings.jq_tab = JqTab::Cycle,
+                Some("menu" | "accept") => settings.jq_tab = JqTab::Menu,
+                Some(other) => warnings.push(format!(
                     "invalid value {other:?} for jq_tab in config.toml \
-                     (expected \"menu\" or \"cycle\"); using \"menu\""
+                     (expected \"menu\" or \"ghost\", or the older name \"cycle\"); \
+                     using \"menu\""
                 )),
-            }
+                None => wrong_type("jq_tab", "a string"),
+            },
         }
 
         if let Some(table) = value.get("animation_ms").and_then(|v| v.as_table()) {
@@ -381,6 +426,48 @@ impl UiSettings {
     }
 }
 
+/// A fully commented `config.toml`, written when Edit… finds no file, so
+/// the editor opens something self-documenting rather than an empty
+/// buffer. Commented rather than live: a seed that *set* every value
+/// would pin choices the user never made and starve them of any default
+/// that ships later.
+pub fn config_seed() -> String {
+    let d = UiSettings::default();
+    format!(
+        "\
+# postui settings. Uncomment a line to override its default.
+# Anything not listed here keeps the app's default.
+
+# The theme's name: a built-in, or the file stem of a themes/*.toml.
+# theme = {:?}
+
+# Whether eased transitions play at all (tab underline, hover, modals).
+# animations = {}
+
+# Whether a hovered control explains itself on the footer row.
+# hover_hints = {}
+
+# What Tab does in the jq bar while a completion is showing:
+#   \"menu\"  - list the candidates below the bar, shell-style
+#   \"ghost\" - ghost the best one after the caret and step in place
+# jq_tab = \"menu\"
+
+# The shell command \"Describe a filter…\" pipes its prompt into.
+# ai_cmd = {:?}
+
+# Set once by the AI prompt's \"Always send\" choice. false asks again.
+# ai_confirmed = {}
+
+# An external clipboard command, when the built-in tiers do not suit.
+# clipboard_cmd = \"xclip -selection clipboard\"
+
+# The size in bytes above which OSC 52 copying is not attempted.
+# osc52_limit = {}
+",
+        d.theme, d.animations, d.hover_hints, d.ai_cmd, d.ai_confirmed, d.osc52_limit,
+    )
+}
+
 /// Everything [`Config::load`] read at startup: the parsed contents of
 /// every config file, each already degraded to its defaults where the
 /// file was missing or unusable (the warnings say which).
@@ -390,6 +477,11 @@ pub struct Loaded {
     pub keymap: crate::keys::Keymap,
     pub themes: crate::theme::ThemeRegistry,
     pub usage: crate::usage::UsageStore,
+    /// `Some` when `config.toml` exists but will not parse. Startup
+    /// blocks on this rather than running on defaults: `[projects]`
+    /// lives in the same file, so defaulting loses the project list and
+    /// `registry.last`, which is what picks the project to open.
+    pub config_error: Option<String>,
 }
 
 /// What one pass of [`Config::read_all`] got off disk. Each field is a
@@ -415,6 +507,11 @@ struct ReadAll {
 pub struct Reloaded {
     /// `config.toml`'s registry and UI settings — one file, one outcome.
     pub config: Option<(ProjectsRegistry, UiSettings)>,
+    /// The bare parse error when `config` is `None` because the file
+    /// exists but will not parse — the same text [`Loaded::config_error`]
+    /// carries at startup, so the Settings tab's banner can show it
+    /// without hunting through `warnings` for the right sentence.
+    pub config_error: Option<String>,
     pub keymap: Option<crate::keys::Keymap>,
     /// `None` when `themes/` could not be listed at all; the app then
     /// keeps the registry it has.
@@ -460,9 +557,11 @@ impl Config {
         // defaults and say so. (A reload's answer is the opposite — see
         // [`Self::reload`] — which is exactly why `read_all` reports the
         // bare error and leaves the consequence to us.)
+        let mut config_error = None;
         let (registry, ui) = match read.config {
             Ok(pair) => pair,
             Err(e) => {
+                config_error = Some(e.clone());
                 warnings.push(format!("{e}; using default settings"));
                 (ProjectsRegistry::default(), UiSettings::default())
             }
@@ -507,6 +606,7 @@ impl Config {
                 keymap,
                 themes,
                 usage,
+                config_error,
             },
             warnings,
         )
@@ -599,10 +699,12 @@ impl Config {
     ) -> (Reloaded, Vec<String>) {
         let (read, mut warnings) = self.read_all();
 
+        let mut config_error = None;
         let config = match read.config {
             Ok(pair) => Some(pair),
             Err(e) => {
                 warnings.push(format!("{e}; keeping the current settings"));
+                config_error = Some(e);
                 None
             }
         };
@@ -625,6 +727,7 @@ impl Config {
         (
             Reloaded {
                 config,
+                config_error,
                 keymap,
                 themes,
             },
@@ -637,7 +740,7 @@ impl Config {
     /// permission or I/O error, invalid UTF-8). The two are kept apart on
     /// purpose — an unreadable file is not an absent one, and only the
     /// caller knows whether "absent" is a safe thing to substitute.
-    fn read(&mut self, name: &str) -> Result<Option<String>, String> {
+    pub fn read(&mut self, name: &str) -> Result<Option<String>, String> {
         let Some(disk) = self.disk.as_mut() else {
             return Ok(None);
         };
@@ -682,10 +785,73 @@ impl Config {
         self.edit(CONFIG_TOML, |doc| doc["theme"] = toml_edit::value(name))
     }
 
+    /// Writes `text` to `name` verbatim and atomically, replacing whatever
+    /// is there. The deliberate counterpart to [`Self::edit`]: `edit`
+    /// parses first and refuses a file it cannot read, which is right for
+    /// a structured key change but wrong here, where a validator has
+    /// already accepted `text` and the user's own comments and spacing
+    /// must survive byte-for-byte. Only for text that has just been
+    /// validated by its own parser — never for unchecked input.
+    pub fn write_validated(&mut self, name: &str, text: &str) -> Result<(), String> {
+        let Some(disk) = self.disk.as_mut() else {
+            return Ok(());
+        };
+        let rel = postui_core::disk::RelPath::new(name).map_err(|e| e.to_string())?;
+        disk.write(&rel, text).map_err(|e| e.to_string())
+    }
+
     /// Persists one top-level boolean of `config.toml` (the `ai_confirmed`
     /// "don't ask again" flag).
     pub fn save_ui_flag(&mut self, key: &str, value: bool) -> Result<(), String> {
         self.edit(CONFIG_TOML, |doc| doc[key] = toml_edit::value(value))
+    }
+
+    /// Persists one top-level string of `config.toml`. An empty `value`
+    /// *removes* the key instead of writing `""`: the two string
+    /// settings the Settings tab exposes are shell commands, and an
+    /// empty one is not a command but a request to fall back to the
+    /// default — an empty `clipboard_cmd` would otherwise run `sh -c ""`
+    /// and swallow every copy in silence. Removing rather than writing a
+    /// default is the same shape [`ProjectsRegistry::write_into`] uses.
+    pub fn save_ui_string(&mut self, key: &str, value: &str) -> Result<(), String> {
+        self.edit(CONFIG_TOML, |doc| {
+            if value.is_empty() {
+                doc.remove(key);
+            } else {
+                doc[key] = toml_edit::value(value)
+            }
+        })
+    }
+
+    /// Persists one top-level integer of `config.toml`.
+    pub fn save_ui_int(&mut self, key: &str, value: usize) -> Result<(), String> {
+        self.edit(CONFIG_TOML, |doc| doc[key] = toml_edit::value(value as i64))
+    }
+
+    /// Clears the UI settings from `config.toml` by *removing* their
+    /// keys, so the file stays minimal and every unrelated key survives
+    /// byte-for-byte -- the pattern `ProjectsRegistry::write_into`
+    /// already uses for `root` and `last`.
+    ///
+    /// `[projects]` is deliberately untouched: wiping `known`/`last`
+    /// would silently destroy the user's project list, which has nothing
+    /// to do with resetting preferences.
+    pub fn reset_ui_settings(&mut self) -> Result<(), String> {
+        self.edit(CONFIG_TOML, |doc| {
+            for key in [
+                "theme",
+                "animations",
+                "hover_hints",
+                "jq_tab",
+                "ai_cmd",
+                "ai_confirmed",
+                "clipboard_cmd",
+                "osc52_limit",
+            ] {
+                doc.remove(key);
+            }
+            doc.remove("animation_ms");
+        })
     }
 
     /// Persists the palette usage stats to `ui.toml`.
@@ -793,6 +959,33 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use tempfile::tempdir;
+
+    /// Startup must not silently swallow a broken config: the parse error
+    /// travels out so the app can block on it. `[projects]` is in the same
+    /// file, so defaulting here also loses the project list.
+    #[test]
+    fn startup_reports_a_config_that_will_not_parse() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.toml"), "not = [toml").unwrap();
+        let (_cfg, loaded, _warnings) =
+            Config::load_from(Config::at(dir.path().to_path_buf()), false);
+        let err = loaded
+            .config_error
+            .expect("a config that will not parse must be reported, not defaulted");
+        assert!(err.contains("config.toml"), "{err}");
+    }
+
+    #[test]
+    fn startup_reports_nothing_for_a_valid_or_absent_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_cfg, loaded, _) = Config::load_from(Config::at(dir.path().to_path_buf()), false);
+        assert!(loaded.config_error.is_none(), "absent is not broken");
+
+        std::fs::write(dir.path().join("config.toml"), "animations = false\n").unwrap();
+        let (_cfg, loaded, _) = Config::load_from(Config::at(dir.path().to_path_buf()), false);
+        assert!(loaded.config_error.is_none(), "valid is not broken");
+        assert!(!loaded.ui.animations);
+    }
 
     #[test]
     fn parse_empty_is_default_and_a_mistyped_table_degrades_silently() {
@@ -1102,6 +1295,109 @@ mod tests {
         assert_eq!(UiSettings::parse(&text).0.theme, "light");
     }
 
+    /// Reset clears preferences, not the project list: `[projects]` lives in
+    /// the same file, and wiping `known`/`last` would silently destroy the
+    /// user's projects.
+    #[test]
+    fn resetting_settings_spares_the_projects_table() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "animations = false\nai_confirmed = true\n\n[projects]\nknown = [\"/tmp/a\"]\nlast = \"/tmp/a\"\n",
+        )
+        .unwrap();
+        let mut cfg = Config::at(dir.path().to_path_buf());
+        cfg.reset_ui_settings().unwrap();
+
+        let text = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+        let (settings, _) = UiSettings::parse(&text);
+        assert_eq!(
+            settings,
+            UiSettings::default(),
+            "preferences are back to default"
+        );
+        assert!(settings.animations, "removed, so the default applies");
+        assert!(!settings.ai_confirmed, "consent returns; that is correct");
+
+        let (registry, _) = ProjectsRegistry::parse(&text);
+        assert_eq!(registry.known, vec![std::path::PathBuf::from("/tmp/a")]);
+        assert_eq!(registry.last, Some(std::path::PathBuf::from("/tmp/a")));
+    }
+
+    /// The editor round-trip has already validated the text and must
+    /// preserve it exactly -- comments included, which `edit`'s
+    /// parse-and-reserialise would not guarantee.
+    #[test]
+    fn write_validated_preserves_text_byte_for_byte() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = Config::at(dir.path().to_path_buf());
+        let text = "# my settings\n\nanimations = false  # off on purpose\n";
+        cfg.write_validated(CONFIG_TOML, text).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("config.toml")).unwrap(),
+            text,
+            "comments and spacing must survive"
+        );
+    }
+
+    /// Unlike `edit`, it does not re-parse: the caller's validator is the
+    /// gate, and refusing here would make a deliberate rewrite impossible.
+    #[test]
+    fn write_validated_overwrites_a_file_that_did_not_parse() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.toml"), "not = [toml").unwrap();
+        let mut cfg = Config::at(dir.path().to_path_buf());
+        cfg.write_validated(CONFIG_TOML, "animations = true\n")
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("config.toml")).unwrap(),
+            "animations = true\n"
+        );
+    }
+
+    #[test]
+    fn write_validated_without_a_config_dir_is_a_silent_ok() {
+        let mut cfg = Config::none();
+        assert!(
+            cfg.write_validated(CONFIG_TOML, "animations = true\n")
+                .is_ok()
+        );
+    }
+
+    /// The seed documents every setting without setting any of them: an
+    /// uncommented seed would pin values the user never chose.
+    #[test]
+    fn the_config_seed_is_entirely_commented_and_parses_as_empty() {
+        let seed = config_seed();
+        for line in seed.lines() {
+            let line = line.trim();
+            assert!(
+                line.is_empty() || line.starts_with('#'),
+                "seed line is live, not commented: {line:?}"
+            );
+        }
+        let (settings, warnings) = UiSettings::parse(&seed);
+        assert_eq!(settings, UiSettings::default(), "a seed changes nothing");
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    #[test]
+    fn the_config_seed_names_every_setting() {
+        let seed = config_seed();
+        for key in [
+            "animations",
+            "hover_hints",
+            "jq_tab",
+            "ai_cmd",
+            "ai_confirmed",
+            "clipboard_cmd",
+            "osc52_limit",
+            "theme",
+        ] {
+            assert!(seed.contains(key), "{key} missing from the seed");
+        }
+    }
+
     #[test]
     fn ai_settings_default_and_parse() {
         let (s, _) = UiSettings::parse("");
@@ -1130,6 +1426,78 @@ mod tests {
         assert_eq!(s.jq_tab, JqTab::Menu, "a bad value falls back");
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("jq_tab"), "{warnings:?}");
+    }
+
+    #[test]
+    fn a_mistyped_key_warns_instead_of_silently_defaulting() {
+        let (settings, warnings) = UiSettings::parse("animations = \"yes\"\n");
+        assert!(settings.animations, "falls back to the default");
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("animations") && w.contains("boolean")),
+            "the fallback must name the key and the expected type: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn every_wrong_typed_key_warns() {
+        let text = "\
+clipboard_cmd = 1
+osc52_limit = \"big\"
+theme = true
+animations = \"yes\"
+hover_hints = 3
+ai_cmd = []
+ai_confirmed = \"yes\"
+";
+        let (_, warnings) = UiSettings::parse(text);
+        for key in [
+            "clipboard_cmd",
+            "osc52_limit",
+            "theme",
+            "animations",
+            "hover_hints",
+            "ai_cmd",
+            "ai_confirmed",
+        ] {
+            assert!(
+                warnings.iter().any(|w| w.contains(key)),
+                "{key} defaulted with no warning: {warnings:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn ghost_and_cycle_are_the_same_mode() {
+        let (ghost, w1) = UiSettings::parse("jq_tab = \"ghost\"\n");
+        let (cycle, w2) = UiSettings::parse("jq_tab = \"cycle\"\n");
+        assert_eq!(ghost.jq_tab, JqTab::Cycle);
+        assert_eq!(cycle.jq_tab, JqTab::Cycle);
+        assert!(w1.is_empty() && w2.is_empty(), "{w1:?} {w2:?}");
+    }
+
+    #[test]
+    fn an_unknown_jq_tab_names_every_accepted_spelling() {
+        let (settings, warnings) = UiSettings::parse("jq_tab = \"nope\"\n");
+        assert_eq!(settings.jq_tab, JqTab::Menu);
+        let w = warnings.join(" ");
+        for spelling in ["menu", "ghost", "cycle"] {
+            assert!(w.contains(spelling), "{spelling} not named: {w}");
+        }
+    }
+
+    #[test]
+    fn a_valid_file_produces_no_warnings() {
+        let text = "\
+animations = false
+hover_hints = false
+jq_tab = \"ghost\"
+ai_cmd = \"claude -p\"
+osc52_limit = 1024
+";
+        let (_, warnings) = UiSettings::parse(text);
+        assert!(warnings.is_empty(), "{warnings:?}");
     }
 
     #[test]
@@ -1464,8 +1832,14 @@ mod tests {
         assert_eq!(loaded.ui, UiSettings::default());
         assert_eq!(loaded.registry, ProjectsRegistry::default());
         assert_eq!(warnings.len(), 1, "{warnings:?}");
-        assert!(warnings[0].starts_with("could not parse config.toml: "), "{warnings:?}");
-        assert!(warnings[0].ends_with("; using default settings"), "{warnings:?}");
+        assert!(
+            warnings[0].starts_with("could not parse config.toml: "),
+            "{warnings:?}"
+        );
+        assert!(
+            warnings[0].ends_with("; using default settings"),
+            "{warnings:?}"
+        );
     }
 
     /// An unreadable config.toml gets the same treatment as an unparsable
@@ -1491,7 +1865,10 @@ mod tests {
         assert_eq!(loaded.ui, UiSettings::default());
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         assert!(warnings[0].contains("config.toml"), "{warnings:?}");
-        assert!(warnings[0].ends_with("; using default settings"), "{warnings:?}");
+        assert!(
+            warnings[0].ends_with("; using default settings"),
+            "{warnings:?}"
+        );
     }
 
     #[test]
@@ -1501,7 +1878,10 @@ mod tests {
         let (_cfg, loaded, warnings) =
             Config::load_from(Config::at(dir.path().to_path_buf()), false);
 
-        assert!(warnings.is_empty(), "a missing file is not a problem: {warnings:?}");
+        assert!(
+            warnings.is_empty(),
+            "a missing file is not a problem: {warnings:?}"
+        );
         assert_eq!(loaded.ui, UiSettings::default());
         assert_eq!(loaded.registry, ProjectsRegistry::default());
         assert_eq!(loaded.keymap, crate::keys::Keymap::default_bindings());

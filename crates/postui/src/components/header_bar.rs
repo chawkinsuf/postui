@@ -29,6 +29,12 @@ const DISCARD_LABEL: &str = " Discard ";
 const SAVE_GROUP_W: u16 =
     (DISCARD_LABEL.len() + " alt+d ".len() + 2 + SAVE_LABEL.len() + " ^S ".len()) as u16;
 
+/// Padded like its slot-mates `SAVE_LABEL`/`DISCARD_LABEL` -- they share
+/// one slot, and an unpadded label butts straight against its keycap.
+const RELOAD_LABEL: &str = " Reload ";
+/// The Manage screen's Reload chip: ` alt+r  Reload `.
+const RELOAD_W: u16 = (RELOAD_LABEL.len() + " alt+r ".len()) as u16;
+
 /// Paints the app bar: a flat `theme.panel` fill across all 3 rows and the
 /// project/env/space selectors as single-row `theme.control`-filled chips
 /// (lifting to `theme.control_hover` while hovered), the env and space
@@ -80,6 +86,10 @@ pub fn draw_header(
     // while the open request has unsaved edits (a clean request needs
     // neither button) on the Main screen with no modal capturing keys.
     dirty: bool,
+    // Shows the Reload chip in the same slot the save/discard group uses.
+    // Only ever true on the Manage screen, and `dirty` requires
+    // `Screen::Main`, so the two can never both be true.
+    show_reload: bool,
     hits: &mut HitMap,
     hovered: Option<&Hit>,
 ) {
@@ -149,11 +159,16 @@ pub fn draw_header(
     };
     let theme_w = theme_label.chars().count() as u16 + theme_pill.width();
     // What the right cluster needs at minimum, margin included: the bare
-    // Manage name, plus the save group and its wider gap while dirty.
+    // Manage name, plus whichever of the save group (dirty) or the
+    // Reload chip (Manage screen) occupies the slot beside it, with its
+    // wider gap. `dirty` and `show_reload` are mutually exclusive by
+    // construction, so at most one of these ever adds to the budget.
     let right_essential = 3
         + manage_label_w
         + if dirty {
             SAVE_GROUP_W + SAVE_GROUP_GAP
+        } else if show_reload {
+            RELOAD_W + SAVE_GROUP_GAP
         } else {
             0
         };
@@ -321,6 +336,49 @@ pub fn draw_header(
         Hit::HeaderManage,
     );
 
+    // Reload takes the save/discard slot on the Manage screen. The two
+    // are mutually exclusive by construction -- save/discard requires
+    // Screen::Main -- so no arbitration is needed. Same keycap-then-name
+    // idiom as its neighbours, and the same anchor, so it inherits the
+    // slot's narrow-bar behaviour: dropped rather than overlapping the
+    // selectors.
+    if show_reload {
+        use crate::action::Action;
+        let hit = Hit::FooterChip(Action::ReloadFromDisk);
+        let w = RELOAD_W;
+        let x = manage_x.saturating_sub(SAVE_GROUP_GAP).saturating_sub(w);
+        if x > left_end {
+            let pill_on = if hovered == Some(&hit) {
+                theme.control_hover
+            } else {
+                theme.control
+            };
+            let key_w = crate::paint::Chip {
+                label: "alt+r",
+                color: theme.text_muted,
+            }
+            .paint(buf, x, mid_y, pill_on, theme);
+            text(
+                buf,
+                x + key_w,
+                mid_y,
+                RELOAD_LABEL,
+                theme.text,
+                theme.panel,
+                false,
+            );
+            hits.register(
+                Rect {
+                    x,
+                    y: mid_y,
+                    width: w,
+                    height: 1,
+                },
+                hit,
+            );
+        }
+    }
+
     // The save/discard group, in the bar's same keycap-then-name idiom,
     // a wide gap left of the Manage chip — up here near the data being
     // saved rather than down in the footer. Present only while there is
@@ -448,6 +506,7 @@ mod tests {
                     env,
                     manage_active,
                     false,
+                    false,
                     &mut hits,
                     hovered,
                 )
@@ -471,6 +530,39 @@ mod tests {
                     "qa",
                     false,
                     true,
+                    false,
+                    &mut hits,
+                    None,
+                )
+            })
+            .unwrap();
+        (terminal, hits)
+    }
+
+    /// Mirrors `render_dirty`, but for the Manage-screen slot: sets
+    /// `manage_active` and `show_reload` instead of `dirty`, since the two
+    /// groups that live in this slot are mutually exclusive.
+    fn render_manage(
+        theme: &Theme,
+        manage_active: bool,
+        show_reload: bool,
+        width: u16,
+    ) -> (Terminal<TestBackend>, HitMap) {
+        let backend = TestBackend::new(width, HEADER_HEIGHT);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = HitMap::default();
+        terminal
+            .draw(|f: &mut Frame| {
+                draw_header(
+                    f,
+                    f.area(),
+                    theme,
+                    "alpha",
+                    "main",
+                    "qa",
+                    manage_active,
+                    false,
+                    show_reload,
                     &mut hits,
                     None,
                 )
@@ -487,6 +579,40 @@ mod tests {
 
     fn cell(term: &Terminal<TestBackend>, x: u16, y: u16) -> ratatui::buffer::Cell {
         term.backend().buffer().cell((x, y)).unwrap().clone()
+    }
+
+    /// Reload takes the save/discard slot, which is free on this screen:
+    /// that group requires Screen::Main, so the two can never collide.
+    #[test]
+    fn reload_occupies_the_save_slot_on_the_manage_screen() {
+        let theme = Theme::dark();
+        let (term, hits) = render_manage(&theme, true, true, 150);
+        let content = format!("{:?}", term.backend().buffer());
+        assert!(content.contains("Reload"), "{content}");
+        let hit = hits
+            .rect_of(&Hit::FooterChip(crate::action::Action::ReloadFromDisk))
+            .expect("the chip routes through footer-chip dispatch");
+        let manage = hits.rect_of(&Hit::HeaderManage).unwrap();
+        assert!(
+            hit.x + hit.width <= manage.x,
+            "it sits left of the Manage chip"
+        );
+    }
+
+    #[test]
+    fn reload_is_absent_on_the_main_screen_and_never_shares_with_save() {
+        let theme = Theme::dark();
+        let (term, hits) = render_dirty(&theme, 180);
+        let content = format!("{:?}", term.backend().buffer());
+        assert!(!content.contains("Reload"), "{content}");
+        assert!(
+            content.contains("Save"),
+            "save still shows when dirty: {content}"
+        );
+        assert!(
+            hits.rect_of(&Hit::FooterChip(crate::action::Action::ReloadFromDisk))
+                .is_none()
+        );
     }
 
     /// A bar too narrow for the right-aligned chip drops it rather than
@@ -506,6 +632,7 @@ mod tests {
                     "a-rather-long-project",
                     "main",
                     "qa",
+                    false,
                     false,
                     false,
                     &mut hits,
@@ -1012,6 +1139,7 @@ mod tests {
                     "alpha",
                     "main",
                     "qa",
+                    false,
                     false,
                     false,
                     &mut hits,

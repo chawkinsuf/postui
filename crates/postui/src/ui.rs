@@ -79,6 +79,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         (app.editor.is_dirty() || app.editor.table.editing.is_some())
             && screen == Screen::Main
             && app.modals.top().is_none(),
+        // Reload takes the same slot whenever the Manage screen is up —
+        // the save/discard group above requires Screen::Main, so the two
+        // never both show.
+        screen == Screen::Manage,
         &mut hits,
         app.hovered.as_ref(),
     );
@@ -149,6 +153,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 height: crate::components::manage::BAR_HEIGHT.min(layout.body.height),
                 ..layout.body
             };
+            // Recorded so `App::retarget_manage_tab_underline` (run from
+            // `update`, off the draw path) can lay the strip out with the
+            // same right-anchored geometry `draw_manage_bar` below will
+            // actually paint. Both read it from `manage::strip_area`, so
+            // "the strip's width" has exactly one definition.
+            app.manage_strip_width = crate::components::manage::strip_area(bar).width;
             let body = Rect {
                 y: layout.body.y + bar.height,
                 height: layout.body.height - bar.height,
@@ -202,6 +212,22 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                         ),
                         None => draw_manage_without_a_project(frame, body, theme),
                     }
+                }
+                crate::components::manage::ManageTab::Settings => {
+                    // The one tab that isn't about the open project: it
+                    // renders regardless, which is why it is a match arm
+                    // of its own rather than a branch of the no-project
+                    // message the other three share.
+                    crate::components::settings::draw_settings(
+                        frame,
+                        body,
+                        &app.theme,
+                        &app.settings,
+                        &app.ui_settings,
+                        app.config_error.as_deref(),
+                        &mut hits,
+                        app.hovered.as_ref(),
+                    );
                 }
                 tab => {
                     let requests = app.sidebar.space_requests();
@@ -265,13 +291,31 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             && (matches!(focus, PaneId::Sidebar | PaneId::Response)
                 || focus == PaneId::Editor && !app.editor.plain_keys_type())
             // The manager binds plain q to quit in every focus stop; only
-            // a live edit types it.
+            // a live edit types it — the Variables tab's form and grid
+            // cells, and the Settings tab's field rows.
             || app.screen == Screen::Manage
-                && (app.manage.tab != crate::components::manage::ManageTab::Variables
-                    || app.varmanager.form.editing.is_none()
-                        && app.varmanager.grid.editing.is_none()));
+                && match app.manage.tab {
+                    crate::components::manage::ManageTab::Variables => {
+                        app.varmanager.form.editing.is_none()
+                            && app.varmanager.grid.editing.is_none()
+                    }
+                    crate::components::manage::ManageTab::Settings => {
+                        app.settings.editing.is_none()
+                    }
+                    _ => true,
+                });
     let vm_chips = modal_chips.or_else(|| {
         (app.screen == Screen::Manage).then(|| {
+            // Settings publishes its own chips and works with no project
+            // open, so it is answered before the project-scoped tabs.
+            if app.manage.tab == crate::components::manage::ManageTab::Settings {
+                return app
+                    .settings
+                    .footer_chips()
+                    .into_iter()
+                    .map(|(k, l, a)| (k.to_string(), l.to_string(), a))
+                    .collect();
+            }
             if app.manage.tab != crate::components::manage::ManageTab::Variables {
                 return app
                     .project()
@@ -665,12 +709,14 @@ fn focus_bar(
     }
 }
 
-/// The Manage screen's body with no project open. Both tabs are built
-/// around `&Project`, so there is nothing to list — but the screen is
-/// reachable (`Action::OpenManage` is not gated), and an unpainted body
-/// would show raw terminal default where the themed page belongs. Paints
-/// the page and says why it is empty, in the same words the write gate
-/// uses.
+/// The Manage screen's body with no project open, for the project-scoped
+/// tabs — Variables, Environments and Spaces are all built around
+/// `&Project`, so there is nothing to list.
+/// Settings is exempt: it renders its own body regardless (see the
+/// `ManageTab::Settings` match arm above), which is also why the screen is
+/// reachable with no project at all (`Action::OpenManage` is not gated).
+/// Paints the page and says why it is empty, in the same words the write
+/// gate uses.
 fn draw_manage_without_a_project(
     frame: &mut ratatui::Frame,
     body: ratatui::layout::Rect,
@@ -681,7 +727,15 @@ fn draw_manage_without_a_project(
     const MSG: &str = "no project is open \u{2014} open or create one first";
     let x = body.x + body.width.saturating_sub(MSG.chars().count() as u16) / 2;
     let y = body.y + body.height / 3;
-    text(frame.buffer_mut(), x, y, MSG, theme.text_muted, theme.page, false);
+    text(
+        frame.buffer_mut(),
+        x,
+        y,
+        MSG,
+        theme.text_muted,
+        theme.page,
+        false,
+    );
 }
 
 #[cfg(test)]
@@ -713,6 +767,35 @@ mod tests {
         assert!(content.contains("Params")); // editor tab bar
         assert!(content.contains("Headers")); // editor tab bar
         assert!(content.contains("Body")); // editor tab bar
+    }
+
+    /// The Settings tab paints both sections and its own footer chips —
+    /// never the previously open tab's, whose keys do nothing here.
+    #[test]
+    fn the_settings_tab_paints_its_sections_and_its_own_chips() {
+        let mut app = App::new_for_test();
+        app.screen = Screen::Manage;
+        app.manage.tab = crate::components::manage::ManageTab::Settings;
+        let content = render(&mut app);
+        for label in [
+            "Settings",
+            "Animations",
+            "Hover hints",
+            "jq Tab behavior",
+            "AI command",
+            "Clipboard command",
+            "OSC 52 limit",
+            "Files",
+            "Edit",
+            "Reset",
+        ] {
+            assert!(content.contains(label), "missing {label:?}");
+        }
+        assert!(content.contains("move"), "the row chips are advertised");
+        assert!(
+            !content.contains("rename"),
+            "the list tabs' chips must not leak in: {content}"
+        );
     }
 
     /// Panes carry no border or title of their own anymore: no `│` pane

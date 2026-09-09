@@ -306,6 +306,7 @@ async fn run(
             match pending {
                 Action::OpenBodyInEditor => edit_body_externally(terminal, &mut app)?,
                 Action::OpenResponseInEditor => view_response_externally(terminal, &mut app)?,
+                Action::EditConfigFile(file) => edit_config_externally(terminal, &mut app, file)?,
                 other => debug_assert!(false, "not a terminal action: {other:?}"),
             }
             redraw = true;
@@ -330,7 +331,17 @@ fn edit_body_externally(
     app: &mut App,
 ) -> anyhow::Result<()> {
     let path = postui::hostfs::editor_tempfile("postui-body-", ".json", &app.editor.body_text())?;
-    run_editor_and_restore(terminal, app, &path, true)
+    let edited = run_editor(terminal, app, &path)?;
+    postui::hostfs::remove_tempfile(&path);
+    if let Some(text) = edited {
+        // Editors conventionally leave a trailing newline; keeping it
+        // would add a phantom blank line and a spurious dirty flag on
+        // every round-trip.
+        let text = text.strip_suffix('\n').unwrap_or(&text);
+        let text = text.strip_suffix('\r').unwrap_or(text);
+        app.editor.set_body_text(text);
+    }
+    Ok(())
 }
 
 /// Hands the response pane's active tab's text to `$EDITOR`, view-only:
@@ -352,18 +363,52 @@ fn view_response_externally(
         );
     let suffix = if is_json_body { ".json" } else { ".txt" };
     let path = postui::hostfs::editor_tempfile("postui-response-", suffix, &view.view_text())?;
-    run_editor_and_restore(terminal, app, &path, false)
+    spawn_editor(terminal, app, &path)?; // view-only: nothing is read back
+    postui::hostfs::remove_tempfile(&path);
+    Ok(())
 }
 
 /// Tears the TUI down, runs `$EDITOR` (falling back to `vi`) on `path`,
-/// rebuilds the TUI, then — only when `read_back` — feeds the edited text
-/// back into the request body. The temp file is removed either way.
-fn run_editor_and_restore(
+/// rebuilds the TUI, and returns the file's text on a clean exit.
+///
+/// Deliberately does two things less than it used to. It does not remove
+/// `path`: the config round-trip keeps its temp file alive across a
+/// "Keep editing" answer, so removal belongs to whoever knows the
+/// outcome. And it does not know what the text is *for* -- feeding the
+/// request body was one caller's business, not this function's.
+///
+/// `None` means the editor could not be run or exited non-zero. Callers
+/// treat that as "change nothing", because silently discarding a
+/// half-written file is the worst available outcome.
+fn run_editor(
     terminal: &mut ratatui::DefaultTerminal,
     app: &mut App,
     path: &std::path::Path,
-    read_back: bool,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Option<String>> {
+    if !spawn_editor(terminal, app, path)? {
+        return Ok(None);
+    }
+    match postui::hostfs::read_tempfile(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(e) => {
+            app.update(Action::ShowToast(
+                format!("could not read back the edited file: {e}"),
+                ToastKind::Error,
+            ));
+            Ok(None)
+        }
+    }
+}
+
+/// Runs `$EDITOR` on `path` around a TUI teardown/rebuild, reporting
+/// whether it exited cleanly. The half of [`run_editor`] that does not
+/// care what is in the file: the view-only caller would otherwise read
+/// the whole response back off disk only to drop it.
+fn spawn_editor(
+    terminal: &mut ratatui::DefaultTerminal,
+    app: &mut App,
+    path: &std::path::Path,
+) -> anyhow::Result<bool> {
     let command = std::env::var("EDITOR").unwrap_or_default();
     let command = if command.trim().is_empty() {
         "vi".to_string()
@@ -396,42 +441,87 @@ fn run_editor_and_restore(
     terminal.clear()?;
 
     match status {
-        Ok(s) if s.success() => {
-            if read_back {
-                match postui::hostfs::read_tempfile(path) {
-                    // Editors conventionally leave a trailing newline;
-                    // keeping it would add a phantom blank line and a
-                    // spurious dirty flag on every round-trip.
-                    Ok(text) => {
-                        let text = text.strip_suffix('\n').unwrap_or(&text);
-                        let text = text.strip_suffix('\r').unwrap_or(text);
-                        app.editor.set_body_text(text);
-                    }
-                    Err(e) => {
-                        app.update(Action::ShowToast(
-                            format!("could not read back the edited body: {e}"),
-                            ToastKind::Error,
-                        ));
-                    }
-                }
-            }
-        }
+        Ok(s) if s.success() => Ok(true),
         Ok(s) => {
             app.update(Action::ShowToast(
-                format!(
-                    "{program} exited with {s}{}",
-                    if read_back { "; body unchanged" } else { "" }
-                ),
+                format!("{program} exited with {s}"),
                 ToastKind::Error,
             ));
+            Ok(false)
         }
         Err(e) => {
             app.update(Action::ShowToast(
                 format!("could not run {program}: {e}"),
                 ToastKind::Error,
             ));
+            Ok(false)
         }
     }
-    postui::hostfs::remove_tempfile(path);
+}
+
+/// Hands a config file to `$EDITOR` as a temp *copy*, then applies it
+/// only if it validates. Editing a copy rather than the live file is the
+/// point: a broken save can never leave the app's real config unusable,
+/// and `Config::write_validated`'s parse-refusal can never fire
+/// spuriously.
+///
+/// A resume ("keep editing") reuses the temp file already on disk, so
+/// the user's work is still there; it can loop indefinitely, and only
+/// Discard or a valid save ends it.
+fn edit_config_externally(
+    terminal: &mut ratatui::DefaultTerminal,
+    app: &mut App,
+    file: postui::action::ConfigFile,
+) -> anyhow::Result<()> {
+    use postui::action::ConfigFile;
+
+    let resumed = app.take_resumed_config_edit(file);
+    let resuming = resumed.is_some();
+    let path = match resumed {
+        Some(existing) => existing,
+        None => {
+            // Seed an absent file so the editor never opens empty.
+            let current = match app.read_config_file(file.name()) {
+                Ok(Some(text)) => text,
+                Ok(None) => match file {
+                    ConfigFile::Config => postui::config::config_seed(),
+                    ConfigFile::Keys => postui::keys::keys_seed(&app.keymap),
+                },
+                Err(e) => {
+                    app.update(Action::ShowToast(e, ToastKind::Error));
+                    return Ok(());
+                }
+            };
+            postui::hostfs::editor_tempfile("postui-config-", ".toml", &current)?
+        }
+    };
+
+    let Some(text) = run_editor(terminal, app, &path)? else {
+        // The editor could not be run, exited non-zero (`:cq`), or its
+        // text could not be read back. Whether the temp copy may be
+        // dropped is `App`'s decision (testable without a terminal), for
+        // the same reason the validate-then-write one below is.
+        if app.abandon_config_edit(file, path.clone(), resuming) {
+            postui::hostfs::remove_tempfile(&path);
+        }
+        return Ok(());
+    };
+
+    // The validate-then-write decision lives on `App` (testable without a
+    // terminal); a message back means the text didn't parse, or it
+    // parsed but the write failed -- either way `Action::ConfigEditInvalid`
+    // keeps `path` alive so Keep editing still reaches that work instead
+    // of stranding it in a temp file with no way back.
+    if let Some(error) = app.validate_and_write_config_edit(file, &text) {
+        app.update(Action::ConfigEditInvalid { file, path, error });
+        return Ok(());
+    }
+    postui::hostfs::remove_tempfile(&path);
+    // Apply through the same path alt+r uses, so a tab edit and a
+    // hand-edit converge on one code path. `Action::ReloadFromDisk`
+    // already surfaces `keymap.caret_warnings` itself (it compares the
+    // freshly-read keymap against the live one), so a keys.toml apply's
+    // caret warnings show up without any extra code here.
+    app.update(Action::ReloadFromDisk);
     Ok(())
 }

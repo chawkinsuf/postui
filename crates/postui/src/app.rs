@@ -78,6 +78,9 @@ pub enum TextDrag {
     /// A sweep inside the selector-grid cell under edit
     /// (`OptionGridState::editing` names which one).
     VmCell,
+    /// A sweep inside the Settings tab's field under edit
+    /// (`SettingsTab::editing` names which one).
+    Settings,
 }
 
 /// Whether `n` can't be a new declaration's name: one of the reserved
@@ -144,6 +147,9 @@ pub struct App {
     pub manage: crate::components::manage::Manage,
     /// The Variables tab's own state — the list, detail pane and edits.
     pub varmanager: VarManager,
+    /// The Settings tab's own state — the row cursor, the live field
+    /// edit and which of a Files row's two buttons is aimed at.
+    pub settings: crate::components::settings::SettingsTab,
     /// The request session: the open request's on-screen response, the
     /// per-request response cache, and the in-flight send.
     pub session: crate::session::Session,
@@ -159,7 +165,11 @@ pub struct App {
     /// The XDG config files (`config.toml`, `keys.toml`, `ui.toml`,
     /// `themes/*.toml`) — the sole owner of every config file read and
     /// write. `Config::none()` in tests, so test runs never touch the
-    /// user's real config.
+    /// user's real config. Kept private: `main::edit_config_externally`
+    /// (the terminal-suspending boundary, like `pending_terminal_action`)
+    /// reaches it only through `read_config_file` / `write_config_file`
+    /// below, not the whole `Config` surface (`save_registry`,
+    /// `save_ui_theme`, `edit`, …).
     config: crate::config::Config,
     /// The tiered clipboard (external command / OS clipboard / OSC 52),
     /// configured from `ui_settings`.
@@ -229,9 +239,24 @@ pub struct App {
     /// here by `update` for the main loop to take and run. Keeps `update`
     /// itself terminal-free (and therefore testable without a TTY).
     pub pending_terminal_action: Option<Action>,
+    /// The temp file a "keep editing" answer left behind, so the resumed
+    /// editor opens the user's work rather than a fresh copy. Set by
+    /// `App::keep_editing_config_edit` before it dispatches
+    /// `Action::EditConfigFile`; taken (and cleared) by
+    /// `App::take_resumed_config_edit`.
+    resumed_config_edit: Option<(crate::action::ConfigFile, std::path::PathBuf)>,
     /// Rebuilt every frame by `ui::draw`: maps screen regions to typed
     /// [`Hit`]s for mouse routing.
     pub hits: HitMap,
+    /// The Manage screen's *tab strip* width from the last draw, set by
+    /// `ui::draw` alongside `hits` from `manage::strip_area` — the same
+    /// function `draw_manage_bar` lays the strip out with, so the two can
+    /// not drift. `retarget_manage_tab_underline` reads it to compute the
+    /// right-anchored Settings tab's target span — the only reason the
+    /// strip's geometry depends on width at all. `0` before the first
+    /// draw degrades to the same contiguous position the floor case does
+    /// (see `TabStrip::spans_in`), never a stale target.
+    pub manage_strip_width: u16,
     /// The `Hit` currently under the pointer, if any, updated by
     /// `handle_mouse` on `Moved`. Read by `ui::draw` to style hovered
     /// buttons/chips. `Hit::VarToken` overlays are deliberately skipped
@@ -367,6 +392,19 @@ pub struct App {
     /// shown where the request list would be, and only opening another
     /// project (or fixing the file and relaunching) leaves this state.
     pub open_error: Option<OpenError>,
+    /// `Some` when `config.toml` exists on disk but would not parse at
+    /// startup (see `config::Loaded::config_error`). Blocks a normal
+    /// session behind `Modal::ConfigStartup` until the user answers —
+    /// running on defaults would also mean an empty `[projects]`.
+    pub config_error: Option<String>,
+    /// Whether the startup gate (`Modal::ConfigStartup`) is still
+    /// unanswered. Set when the gate is first raised and cleared only by
+    /// the two answers that resolve it -- Continue unsaved and Quit --
+    /// so that Edit and Reset, both of which have escape routes that
+    /// leave `config.toml` exactly as broken, put the question back
+    /// rather than dropping the gate (see
+    /// `Self::reraise_startup_config_gate`).
+    startup_config_gate: bool,
     /// Keeps the test-only channel's receiver alive so `tx` doesn't become
     /// a dangling sender in `App::new_for_test()`. Always `None` outside
     /// of tests.
@@ -521,6 +559,7 @@ impl App {
             keymap,
             themes,
             usage,
+            config_error,
         } = loaded;
         let terminal_colors = {
             use crate::theme::TerminalPalette;
@@ -557,6 +596,7 @@ impl App {
             app.apply_ui_settings(ui_settings, theme_name, theme);
             app.usage = usage;
             app.keymap = keymap;
+            app.config_error = config_error;
             for w in warnings {
                 app.toasts.push(w, ToastKind::Warning);
             }
@@ -564,6 +604,7 @@ impl App {
                 "could not determine a project directory for this platform",
                 ToastKind::Error,
             );
+            app.apply_startup_config_gate();
             if testbed {
                 app.screen = Screen::Testbed;
             }
@@ -578,6 +619,7 @@ impl App {
         app.apply_ui_settings(ui_settings, theme_name, theme);
         app.usage = usage;
         app.keymap = keymap;
+        app.config_error = config_error;
         for w in warnings {
             app.toasts.push(w, ToastKind::Warning);
         }
@@ -595,6 +637,7 @@ impl App {
         if app.open_error.is_some() {
             // The project refused to open: the app runs empty until the
             // user opens another one, so none of the dispositions apply.
+            app.apply_startup_config_gate();
             if testbed {
                 app.screen = Screen::Testbed;
             }
@@ -636,11 +679,169 @@ impl App {
             }
         }
 
+        app.apply_startup_config_gate();
+
         if testbed {
             app.screen = Screen::Testbed;
         }
 
         app
+    }
+
+    /// Raises the blocking modal when `config.toml` exists but will not
+    /// parse. Startup does not reach a normal session until it is
+    /// answered: running on defaults would also mean an empty
+    /// `[projects]`, and `registry.last` is what picks the project to
+    /// open -- so a stray bracket would silently open something else.
+    pub(crate) fn apply_startup_config_gate(&mut self) {
+        let Some(error) = self.config_error.clone() else {
+            return;
+        };
+        self.startup_config_gate = true;
+        self.modals.push(Modal::ConfigStartup { error });
+    }
+
+    /// The startup gate is sticky. `Action::ConfigStartupChoice` pops it
+    /// to run Edit or Reset, and both have escape routes that leave
+    /// `config.toml` exactly as broken as it was: Esc on the Reset
+    /// confirm, or an `$EDITOR` that will not launch. Dropping the gate
+    /// there would contradict [`Self::apply_startup_config_gate`]'s
+    /// promise that startup does not reach a normal session until the
+    /// question is answered -- so every time the app comes to rest with
+    /// the error still unanswered, the question goes back up.
+    ///
+    /// "At rest" means no modal is up (the Reset confirm and
+    /// `ConfigEditInvalid` are the gate's own continuations, not an
+    /// escape) and no terminal handover is pending (the editor is about
+    /// to take the screen). Continue unsaved and Quit are the two
+    /// answers that genuinely resolve the gate; they clear the flag.
+    fn reraise_startup_config_gate(&mut self) -> bool {
+        if !self.startup_config_gate || self.pending_terminal_action.is_some() {
+            return false;
+        }
+        let Some(error) = self.config_error.clone() else {
+            self.startup_config_gate = false;
+            return false;
+        };
+        if !self.modals.is_empty() {
+            return false;
+        }
+        self.modals.push(Modal::ConfigStartup { error });
+        true
+    }
+
+    /// `Modal::ConfigEditInvalid`'s "Keep editing" answer: stashes `path`
+    /// (read back by `take_resumed_config_edit`) so the resumed editor
+    /// reopens the user's own work rather than a fresh copy, pops the
+    /// modal, and hands `file` to the main loop via `Action::EditConfigFile`.
+    fn keep_editing_config_edit(
+        &mut self,
+        file: crate::action::ConfigFile,
+        path: std::path::PathBuf,
+    ) -> bool {
+        self.resumed_config_edit = Some((file, path));
+        self.modals.pop();
+        // Closing (to reopen the editor right after) is always instant,
+        // same as every other modal-pop path.
+        self.anims.snap(AnimKey::ModalOpen, 1.0);
+        self.update(Action::EditConfigFile(file))
+    }
+
+    /// The temp file a "keep editing" answer left behind, so the resumed
+    /// editor opens the user's work rather than a fresh copy. `None` when
+    /// there is nothing to resume, or when a stashed path belongs to the
+    /// *other* config file (left untouched, for its own resume later).
+    pub fn take_resumed_config_edit(
+        &mut self,
+        file: crate::action::ConfigFile,
+    ) -> Option<std::path::PathBuf> {
+        match self.resumed_config_edit.take() {
+            Some((f, path)) if f == file => Some(path),
+            other => {
+                self.resumed_config_edit = other;
+                None
+            }
+        }
+    }
+
+    /// `main::run_editor` came back with nothing -- the editor would not
+    /// launch, exited non-zero (`vim :cq`), or its text could not be read
+    /// back. Returns whether the caller may remove the temp copy.
+    ///
+    /// On a *resumed* round-trip (`resumed`, which the caller knows from
+    /// [`Self::take_resumed_config_edit`]) it may not: that file is the user's
+    /// in-progress work and the only copy of it, which is precisely what
+    /// "Keep editing" was holding on to. `Modal::ConfigEditInvalid` goes
+    /// back up instead, so Keep editing still reaches the work and
+    /// Discard stays the one deliberate way to throw it away. A first
+    /// pass has nothing in the copy the live file does not already have,
+    /// so that one is dropped.
+    pub fn abandon_config_edit(
+        &mut self,
+        file: crate::action::ConfigFile,
+        path: std::path::PathBuf,
+        resumed: bool,
+    ) -> bool {
+        if !resumed {
+            return true;
+        }
+        self.update(Action::ConfigEditInvalid {
+            file,
+            path,
+            error: "the editor exited without saving -- your edits are still in the copy"
+                .to_string(),
+        });
+        false
+    }
+
+    /// Reads `name` (`config.toml` or `keys.toml`) through the app's
+    /// `Config` -- the sole owner of that file, per-repo rule. The only
+    /// slice of `Config`'s surface `main::edit_config_externally` needs,
+    /// so the field itself stays private.
+    pub fn read_config_file(&mut self, name: &str) -> Result<Option<String>, String> {
+        self.config.read(name)
+    }
+
+    /// Writes `text` to `name` verbatim and atomically, provided the
+    /// caller has already validated it -- see `Config::write_validated`.
+    pub fn write_config_file(&mut self, name: &str, text: &str) -> Result<(), String> {
+        self.config.write_validated(name, text)
+    }
+
+    /// Whether `config.toml` as it stands on disk right now would still
+    /// hand back its `[projects]` table -- used to word the Reset confirm
+    /// honestly and to decide, once confirmed, whether the reset can
+    /// remove just the UI keys or must replace the whole file. A missing
+    /// file parses as empty (nothing to preserve, but nothing lost
+    /// either), so it counts as recovering.
+    fn config_toml_recovers_projects(&mut self) -> bool {
+        match self.read_config_file(crate::config::CONFIG_TOML) {
+            Ok(text) => toml::from_str::<toml::Value>(&text.unwrap_or_default()).is_ok(),
+            Err(_) => false,
+        }
+    }
+
+    /// The Edit… round-trip's validate-then-write decision, factored out
+    /// of `main::edit_config_externally` so it's testable without a
+    /// terminal. Validates `text` for `file` (a `toml` parse for
+    /// `Config`, `Keymap::try_from_overrides` for `Keys`) and, only if
+    /// that's clean, writes it. Returns the message to raise as
+    /// `Action::ConfigEditInvalid` on either kind of failure -- a syntax
+    /// error or, once past that, an I/O one -- and `None` once the write
+    /// has actually landed on disk.
+    pub fn validate_and_write_config_edit(
+        &mut self,
+        file: crate::action::ConfigFile,
+        text: &str,
+    ) -> Option<String> {
+        use crate::action::ConfigFile;
+        let invalid = match file {
+            ConfigFile::Config => toml::from_str::<toml::Value>(text)
+                .err()
+                .map(|e| crate::config::config_parse_error(&e)),
+            ConfigFile::Keys => crate::keys::Keymap::try_from_overrides(text).err(),
+        };
+        invalid.or_else(|| self.write_config_file(file.name(), text).err())
     }
 
     /// Persists the registry to `config.toml`, telling the user when it
@@ -898,9 +1099,7 @@ impl App {
         use crate::components::modal::Modal;
         use crate::components::sidebar::Row;
         use crate::components::varmanager::VmDetail;
-        let picker = |f: &dyn Fn(&crate::components::file_picker::FilePickerState) -> bool| {
-            matches!(self.modals.top(), Some(Modal::FilePicker(s)) if f(s))
-        };
+        let picker = |f: &dyn Fn(&crate::components::file_picker::FilePickerState) -> bool| matches!(self.modals.top(), Some(Modal::FilePicker(s)) if f(s));
         let on = match hit {
             Hit::SendButton => self.editor.sending,
             Hit::HeaderManage => self.screen == Screen::Manage,
@@ -919,12 +1118,11 @@ impl App {
             Hit::CopyBodyButton
             | Hit::SaveBodyButton
             | Hit::ResponseEditorButton
-            | Hit::ResponseSearchButton => {
-                self.session
-                    .response
-                    .view()
-                    .is_some_and(|v| v.mode == crate::components::response::ViewMode::Headers)
-            }
+            | Hit::ResponseSearchButton => self
+                .session
+                .response
+                .view()
+                .is_some_and(|v| v.mode == crate::components::response::ViewMode::Headers),
             Hit::TipReveal(name) => self.tip_revealed.as_ref().is_some_and(|(n, _)| n == name),
             Hit::VmRevealToggle => self.varmanager.form.revealed,
             Hit::VmSecretToggle => match (&self.varmanager.detail, self.project()) {
@@ -933,6 +1131,10 @@ impl App {
                 }
                 _ => false,
             },
+            // The Settings tab's checkbox rows. `SettingsField::checkbox`
+            // is the one place `ai_confirmed`'s inversion lives, so the
+            // hint reads the tick the user sees.
+            Hit::SettingsControl(f) => f.checkbox(&self.ui_settings).unwrap_or(false),
             Hit::PickerHidden => picker(&|s| s.show_hidden()),
             Hit::PickerPrimary => picker(&|s| s.mode() == PickerMode::SaveFile),
             Hit::ChooserToggle => self.theme_picker_dark,
@@ -1017,7 +1219,9 @@ impl App {
             .map_or_else(|| EMPTY.get_or_init(Default::default), |p| p.resolved())
     }
 
-    pub(crate) fn secrets(&self) -> &indexmap::IndexMap<String, indexmap::IndexMap<String, String>> {
+    pub(crate) fn secrets(
+        &self,
+    ) -> &indexmap::IndexMap<String, indexmap::IndexMap<String, String>> {
         static EMPTY: std::sync::OnceLock<
             indexmap::IndexMap<String, indexmap::IndexMap<String, String>>,
         > = std::sync::OnceLock::new();
@@ -1171,7 +1375,10 @@ impl App {
     }
 
     /// The name the Manage screen's `tab` list has selected.
-    pub(crate) fn manage_selected(&self, tab: crate::components::manage::ManageTab) -> Option<String> {
+    pub(crate) fn manage_selected(
+        &self,
+        tab: crate::components::manage::ManageTab,
+    ) -> Option<String> {
         self.project()
             .and_then(|p| self.manage.list.selected(tab, p))
             .map(str::to_string)
@@ -1295,6 +1502,7 @@ impl App {
             editor: Editor::default(),
             manage: crate::components::manage::Manage::default(),
             varmanager: VarManager::default(),
+            settings: crate::components::settings::SettingsTab::default(),
             session: crate::session::Session::default(),
             toasts,
             modals: ModalStack::default(),
@@ -1317,7 +1525,9 @@ impl App {
             ai_task: None,
             ai_request: 0,
             pending_terminal_action: None,
+            resumed_config_edit: None,
             hits: HitMap::default(),
+            manage_strip_width: 0,
             hovered: None,
             shift_enter_send: false,
             hovered_token: None,
@@ -1346,6 +1556,8 @@ impl App {
             last_spaces_warning: None,
             last_environments_warning: None,
             open_error,
+            config_error: None,
+            startup_config_gate: false,
             _test_rx: None,
             _test_dir: None,
             history: crate::undo::History::new(),
@@ -1484,7 +1696,11 @@ impl App {
     pub fn update(&mut self, action: Action) -> bool {
         let changed = self.dispatch(action);
         self.sync_jq();
-        changed
+        // Last, so it sees where the dispatch actually left the app --
+        // including a nested dispatch that pushed the gate's own
+        // continuation, or one that finally fixed `config.toml`.
+        let regated = self.reraise_startup_config_gate();
+        changed || regated
     }
 
     /// Keeps the response pane's jq bar and the editor's `jq` field in
@@ -2001,6 +2217,172 @@ impl App {
                     );
                 }
                 true
+            }
+            Action::ConfigStartupChoice(choice) => {
+                use crate::action::ConfigStartupChoice as C;
+                self.modals.pop();
+                match choice {
+                    C::Edit => {
+                        self.update(Action::EditConfigFile(crate::action::ConfigFile::Config))
+                    }
+                    C::Reset => {
+                        self.update(Action::ResetConfigFile(crate::action::ConfigFile::Config))
+                    }
+                    C::ContinueUnsaved => {
+                        // The two answers that resolve the gate for good;
+                        // Edit and Reset leave it armed so an abandoned
+                        // one puts the question back.
+                        self.startup_config_gate = false;
+                        self.toasts.push(
+                            "running on default settings — changes will not be saved \
+                             until config.toml parses",
+                            ToastKind::Warning,
+                        );
+                        true
+                    }
+                    C::Quit => {
+                        self.startup_config_gate = false;
+                        self.update(Action::Quit)
+                    }
+                }
+            }
+            Action::EditConfigFile(file) => {
+                // Only the main loop may suspend the terminal.
+                self.pending_terminal_action = Some(Action::EditConfigFile(file));
+                true
+            }
+            Action::ConfigEditInvalid { file, path, error } => {
+                self.modals
+                    .push(Modal::ConfigEditInvalid { file, path, error });
+                true
+            }
+            Action::ConfigEditDiscard { path } => {
+                // Only ever answers `Modal::ConfigEditInvalid`: popping
+                // whatever happens to be on top would close an unrelated
+                // modal if this ever raced with one.
+                let Some(Modal::ConfigEditInvalid { .. }) = self.modals.top() else {
+                    return false;
+                };
+                crate::hostfs::remove_tempfile(&path);
+                self.modals.pop();
+                true
+            }
+            // Config changes are outside the undo system, so this confirm
+            // is the only guard against a reset -- there is no undo path
+            // to fall back on.
+            Action::ResetConfigFile(file) => {
+                use crate::action::ConfigFile;
+                let (title, body) = match file {
+                    ConfigFile::Config => {
+                        // Every key `Config::reset_ui_settings` removes
+                        // is named: a destructive action behind a confirm
+                        // must say exactly what it destroys.
+                        let body = if self.config_toml_recovers_projects() {
+                            "Resets theme, animations, animation speeds, hover hints, \
+                             jq tab, the AI command, the AI confirmation, clipboard \
+                             command, and OSC 52 limit to their defaults. Your project \
+                             list is preserved."
+                        } else {
+                            "config.toml could not be read far enough to recover its \
+                             [projects] table, so resetting replaces the whole file -- \
+                             your project list will be lost."
+                        };
+                        ("Reset config.toml?".to_string(), body.to_string())
+                    }
+                    ConfigFile::Keys => (
+                        "Reset keys.toml?".to_string(),
+                        "Replaces keys.toml with the default, fully commented keymap.".to_string(),
+                    ),
+                };
+                self.push_modal(Modal::Confirm {
+                    title,
+                    body,
+                    choices: vec![(
+                        'r',
+                        "Reset".into(),
+                        vec![Action::ForceResetConfigFile(file)],
+                    )],
+                });
+                true
+            }
+            Action::ForceResetConfigFile(file) => {
+                use crate::action::ConfigFile;
+                let result = match file {
+                    // `reset_ui_settings` refuses (leaving the file
+                    // untouched) when config.toml does not parse -- exactly
+                    // the case the confirm just warned about, so the
+                    // explicit, user-approved fallback here replaces the
+                    // whole file rather than leaving Reset unable to get
+                    // the user unstuck.
+                    ConfigFile::Config if self.config_toml_recovers_projects() => {
+                        self.config.reset_ui_settings()
+                    }
+                    ConfigFile::Config => {
+                        self.config.write_validated(crate::config::CONFIG_TOML, "")
+                    }
+                    // With no keys.toml on disk this writes the seed, so
+                    // the outcome is the same file either way rather than
+                    // a no-op.
+                    ConfigFile::Keys => self.config.write_validated(
+                        crate::config::KEYS_TOML,
+                        &crate::keys::keys_seed(&crate::keys::Keymap::default_bindings()),
+                    ),
+                };
+                match result {
+                    Ok(()) => self.update(Action::ReloadFromDisk),
+                    Err(e) => {
+                        self.toasts.push(
+                            format!("could not reset {}: {e}", file.name()),
+                            ToastKind::Error,
+                        );
+                        true
+                    }
+                }
+            }
+            Action::SetUiFlag { key, value } => {
+                let saved = self.config.save_ui_flag(key, value);
+                self.apply_ui_write(saved, |ui| match key {
+                    "animations" => ui.animations = value,
+                    "hover_hints" => ui.hover_hints = value,
+                    "ai_confirmed" => ui.ai_confirmed = value,
+                    // A key that writes to disk but applies to nothing is
+                    // the "state that never landed" defect wearing the
+                    // other shoe. Keys are `&'static str` from
+                    // `SettingsField::key`, so this can only be a typo.
+                    other => debug_assert!(false, "no boolean setting named {other:?}"),
+                })
+            }
+            Action::SetUiString { key, value } => {
+                let saved = self.config.save_ui_string(key, &value);
+                // An empty commit removed the key (see
+                // `Config::save_ui_string`), so what applies is the
+                // default, not an empty command.
+                let default = crate::config::UiSettings::default();
+                self.apply_ui_write(saved, move |ui| match key {
+                    "ai_cmd" => {
+                        ui.ai_cmd = if value.is_empty() {
+                            default.ai_cmd
+                        } else {
+                            value
+                        }
+                    }
+                    "clipboard_cmd" => ui.clipboard_cmd = (!value.is_empty()).then_some(value),
+                    "jq_tab" => {
+                        ui.jq_tab = if value == "menu" {
+                            crate::config::JqTab::Menu
+                        } else {
+                            crate::config::JqTab::Cycle
+                        }
+                    }
+                    other => debug_assert!(false, "no string setting named {other:?}"),
+                })
+            }
+            Action::SetUiInt { key, value } => {
+                let saved = self.config.save_ui_int(key, value);
+                self.apply_ui_write(saved, |ui| match key {
+                    "osc52_limit" => ui.osc52_limit = value,
+                    other => debug_assert!(false, "no integer setting named {other:?}"),
+                })
             }
             Action::Quit | Action::ForceQuit => {
                 let slug = self.editor.slug.clone();
@@ -2882,11 +3264,7 @@ impl App {
                 use postui_core::project::Error;
                 // The typed name is relative to the active space, same as
                 // a create.
-                let to = format!(
-                    "{}/{}",
-                    self.active_space(),
-                    to.trim_start_matches('/')
-                );
+                let to = format!("{}/{}", self.active_space(), to.trim_start_matches('/'));
                 let Some(p) = self.project.as_mut() else {
                     return true;
                 };
@@ -3554,10 +3932,7 @@ impl App {
                     .environments()
                     .iter()
                     .map(|slug| {
-                        MenuItem::new(
-                            self.env_name(slug),
-                            Action::SwitchEnv(Some(slug.clone())),
-                        )
+                        MenuItem::new(self.env_name(slug), Action::SwitchEnv(Some(slug.clone())))
                     })
                     .collect();
                 items.push(MenuItem::new("new environment…", Action::OpenNewEnvPrompt));
@@ -4096,6 +4471,12 @@ impl App {
                 if let Some(themes) = reloaded.themes {
                     self.themes = themes;
                 }
+                // A reload that refuses `config.toml` leaves the in-memory
+                // settings exactly as they were, so the Settings tab must
+                // say so too: `config_error` records why, and
+                // `ui_settings_are_editable` is what the tab's paint and
+                // its keyboard/mouse guard both consult.
+                self.config_error = reloaded.config_error.clone();
                 let ui = match reloaded.config {
                     Some((registry, ui)) => {
                         self.registry = registry;
@@ -4138,6 +4519,22 @@ impl App {
                 // `UiSettings`-derived field (clipboard tier, animations,
                 // the jq tab) follows the file too — but without replacing
                 // the clipboard handle or the in-flight animations.
+                // `self.settings` (the Settings tab's own cursor and live
+                // field edit) is deliberately untouched here: it never
+                // caches a copy of `UiSettings` -- every row paints
+                // straight from `self.ui_settings`, read fresh each
+                // frame -- so `reapply_ui_settings` below cannot stomp a
+                // half-typed field even though it replaces `ui_settings`
+                // wholesale. A reload re-reads what is on disk *around*
+                // unsaved work rather than discarding it, the same rule
+                // the request editor's buffer already follows. If
+                // `SettingsTab` ever grows a cached copy of a value this
+                // reload touches, that copy needs the same guard the
+                // request editor's buffer has -- skip the field currently
+                // under `self.settings.editing` -- or this comment's
+                // premise breaks and
+                // `a_reload_does_not_stomp_a_live_settings_edit` starts
+                // failing for real.
                 if let Some(ui) = ui {
                     self.reapply_ui_settings(ui);
                 }
@@ -4182,9 +4579,9 @@ impl App {
                 if !completing
                     && let Some((text, cursor)) =
                         self.focused_field_text().map(|(t, c)| (t.to_string(), c))
-                    && let Some((name, selector)) =
-                        self.project()
-                            .and_then(|p| Self::selection_picker_target(p, &text, cursor))
+                    && let Some((name, selector)) = self
+                        .project()
+                        .and_then(|p| Self::selection_picker_target(p, &text, cursor))
                 {
                     return self.open_select_picker(name, selector);
                 }
@@ -4198,7 +4595,8 @@ impl App {
                         return self.open_select_picker(name, selector);
                     }
                     Some(VarMeta::NeedsSelection) => {
-                        let Some(selector) = self.variables()
+                        let Some(selector) = self
+                            .variables()
                             .selectors
                             .iter()
                             .find(|(_, s)| s.fields.contains(&name))
@@ -4296,8 +4694,7 @@ impl App {
                             }
                             return true;
                         }
-                        match self.edit_env(&env, |doc| varedit::set_env_value(doc, &name, None))
-                        {
+                        match self.edit_env(&env, |doc| varedit::set_env_value(doc, &name, None)) {
                             Ok(()) => {
                                 self.record_project_step();
                                 self.toasts.push(
@@ -4312,8 +4709,7 @@ impl App {
                         }
                     }
                     ExtractDestination::ProjectDefault => {
-                        match self.edit_variables(|doc| varedit::clear_default(doc, &name))
-                        {
+                        match self.edit_variables(|doc| varedit::clear_default(doc, &name)) {
                             Ok(()) => {
                                 self.record_project_step();
                                 self.toasts
@@ -4389,6 +4785,16 @@ impl App {
                 // live Manage-list row drag on the floor with its press
                 // still armed: cancel it first, as `SelectManageTab` does.
                 self.finish_manage_drag(false);
+                // With no project open, land on the one tab that works
+                // rather than on an apology. Only on the *opening* path:
+                // `tab: None` is also the close half of the toggle below,
+                // and applying this there would reopen instead of closing.
+                let tab =
+                    if tab.is_none() && self.project.is_none() && self.screen != Screen::Manage {
+                        Some(crate::components::manage::ManageTab::Settings)
+                    } else {
+                        tab
+                    };
                 // A toggle: alt+v (and the header Manage chip) close the
                 // screen they opened. A request for the tab that's already
                 // up toggles too; a request for a different tab switches.
@@ -4398,9 +4804,17 @@ impl App {
                 }
                 if self.manage.tab != target {
                     self.manage.list.reset();
+                    self.settings.end_edit();
                 }
                 let prev = self.manage.tab;
                 self.manage.tab = target;
+                self.settings.clamp_to_live(self.ui_settings_are_editable());
+                // The Settings tab holds the keyboard cursor exactly
+                // while it is the tab on screen: arriving hands it over
+                // (so the first paint already shows where the keyboard
+                // is), and leaving takes it back, so a control is never
+                // left lifted on a tab nobody is looking at.
+                self.settings.focused = target == crate::components::manage::ManageTab::Settings;
                 if self.screen != Screen::Manage {
                     self.prior_focus = self.focus;
                     self.screen = Screen::Manage;
@@ -4425,8 +4839,16 @@ impl App {
                 // edit) carried across would point at the wrong item.
                 if self.manage.tab != tab {
                     self.manage.list.reset();
+                    // The Settings tab's field edit goes with it, for the
+                    // same reason the list's own name edit does: it points
+                    // at something this tab does not show.
+                    self.settings.end_edit();
                     let prev = self.manage.tab;
                     self.manage.tab = tab;
+                    self.settings.clamp_to_live(self.ui_settings_are_editable());
+                    // As in `OpenManage`: the cursor belongs to the
+                    // Settings tab only while it is the one on screen.
+                    self.settings.focused = tab == crate::components::manage::ManageTab::Settings;
                     self.retarget_manage_tab_underline(prev);
                 }
                 true
@@ -4435,6 +4857,10 @@ impl App {
                 // Leaving the screen mid-drag cancels it — there is no
                 // list left to drop onto.
                 self.finish_manage_drag(false);
+                // A field edit left live off-screen would go on owning
+                // ctrl+v and ctrl+c, and its Enter would write config
+                // whenever the tab came back.
+                self.settings.end_edit();
                 self.screen = Screen::Main;
                 self.focus = self.prior_focus;
                 true
@@ -4480,7 +4906,8 @@ impl App {
                 true
             }
             Action::AddSelectorField { selector, field } => {
-                let current = self.variables()
+                let current = self
+                    .variables()
                     .selectors
                     .get(&selector)
                     .map(|g| g.fields.clone())
@@ -4505,7 +4932,8 @@ impl App {
                 // Env files first: variables.toml's validation runs against
                 // the active env, whose options must no longer carry the
                 // field by the time the selector's field list changes.
-                let Some(fields) = self.variables()
+                let Some(fields) = self
+                    .variables()
                     .selectors
                     .get(&selector)
                     .map(|g| g.fields.clone())
@@ -4570,7 +4998,10 @@ impl App {
                 // those requests (references keep the old name until
                 // someone edits them), but the user should still know the
                 // name isn't as free-standing as it looks.
-                let usage = self.project().map(|p| p.scan_usage(&from)).unwrap_or_default();
+                let usage = self
+                    .project()
+                    .map(|p| p.scan_usage(&from))
+                    .unwrap_or_default();
                 let title = if usage.is_empty() {
                     format!("Rename {from}")
                 } else {
@@ -4599,7 +5030,10 @@ impl App {
                 true
             }
             Action::DeleteVar { name } => {
-                let usage = self.project().map(|p| p.scan_usage(&name)).unwrap_or_default();
+                let usage = self
+                    .project()
+                    .map(|p| p.scan_usage(&name))
+                    .unwrap_or_default();
                 self.apply(Action::VarStruct(VarStructOp::Delete {
                     name: name.clone(),
                 }));
@@ -4729,7 +5163,8 @@ impl App {
             // -- Task 16: the selector options grid (spec §3.4) --
             Action::PromptGroupFields { selector } => {
                 use crate::components::modal::FieldsEditorState;
-                let current = self.variables()
+                let current = self
+                    .variables()
                     .selectors
                     .get(&selector)
                     .map(|g| g.fields.clone())
@@ -4782,12 +5217,9 @@ impl App {
                 }
                 // The ghost row *is* the new-option affordance: put the
                 // cursor in its name cell and start typing.
-                let row = postui_core::varmodel::options_of(
-                    self.variables(),
-                    self.env_data(),
-                    &selector,
-                )
-                .map_or(0, indexmap::IndexMap::len);
+                let row =
+                    postui_core::varmodel::options_of(self.variables(), self.env_data(), &selector)
+                        .map_or(0, indexmap::IndexMap::len);
                 self.vm_start_cell_edit(row, 0);
                 true
             }
@@ -4801,7 +5233,8 @@ impl App {
                 // "Value". No description field: the quick-create flow
                 // stays lean; a description can be added later through
                 // the option's edit prompt in the Manager.
-                let selector_fields = self.variables()
+                let selector_fields = self
+                    .variables()
                     .selectors
                     .get(&owner)
                     .map(|g| g.fields.clone())
@@ -4893,12 +5326,8 @@ impl App {
                 // Create means create: writing over an existing option of
                 // the same name from the add prompt would silently clobber
                 // its values.
-                if postui_core::varmodel::options_of(
-                    self.variables(),
-                    self.env_data(),
-                    &owner,
-                )
-                .is_some_and(|options| options.contains_key(&key))
+                if postui_core::varmodel::options_of(self.variables(), self.env_data(), &owner)
+                    .is_some_and(|options| options.contains_key(&key))
                 {
                     self.toasts.push(
                         format!("option \"{key}\" already exists on {owner}"),
@@ -4912,7 +5341,8 @@ impl App {
                 // per field, and any field it didn't know about (a caller
                 // passing a partial map) starts empty for the Manager.
                 let mut values = values;
-                let fields = self.variables()
+                let fields = self
+                    .variables()
                     .selectors
                     .get(&owner)
                     .map(|g| g.fields.clone())
@@ -5083,11 +5513,7 @@ impl App {
                 }
             }
             Action::JumpSpace(n) => {
-                match n
-                    .checked_sub(1)
-                    .and_then(|i| self.spaces().get(i))
-                    .cloned()
-                {
+                match n.checked_sub(1).and_then(|i| self.spaces().get(i)).cloned() {
                     Some(name) => self.apply(Action::SwitchSpace(name)),
                     None => true,
                 }
@@ -5108,7 +5534,8 @@ impl App {
             Action::OpenSpaceChooser => {
                 self.apply(Action::ReloadProjectFiles);
                 use crate::components::modal::{DropdownState, MenuItem};
-                let mut items: Vec<MenuItem> = self.spaces()
+                let mut items: Vec<MenuItem> = self
+                    .spaces()
                     .iter()
                     .enumerate()
                     .map(|(i, slug)| {
@@ -5125,9 +5552,7 @@ impl App {
                         tab: Some(crate::components::manage::ManageTab::Spaces),
                     },
                 ));
-                let current = self.spaces()
-                    .iter()
-                    .position(|s| *s == self.active_space());
+                let current = self.spaces().iter().position(|s| *s == self.active_space());
                 let anchor = self
                     .hits
                     .rect_of(&Hit::HeaderSpace)
@@ -5213,9 +5638,7 @@ impl App {
             Action::PromptRenameEnv(name) => {
                 self.push_modal(Modal::Prompt {
                     title: "Rename environment".into(),
-                    input: crate::components::line_input::LineInput::new(
-                        &self.env_name(&name),
-                    ),
+                    input: crate::components::line_input::LineInput::new(&self.env_name(&name)),
                     kind: PromptKind::RenameEnvironment { from: name },
                     revealed: false,
                 });
@@ -5333,9 +5756,7 @@ impl App {
             Action::PromptRenameSpace(name) => {
                 self.push_modal(Modal::Prompt {
                     title: "Rename space".into(),
-                    input: crate::components::line_input::LineInput::new(
-                        &self.space_name(&name),
-                    ),
+                    input: crate::components::line_input::LineInput::new(&self.space_name(&name)),
                     kind: PromptKind::RenameSpace { from: name },
                     revealed: false,
                 });
@@ -5695,7 +6116,8 @@ impl App {
         match ctx.resolved().meta.get(&token.name) {
             Some(VarMeta::SelectorMember { selector, .. }) => Some((token.name, selector.clone())),
             Some(VarMeta::NeedsSelection) => {
-                let selector = ctx.variables()
+                let selector = ctx
+                    .variables()
                     .selectors
                     .iter()
                     .find(|(_, g)| g.fields.contains(&token.name))
@@ -6138,9 +6560,12 @@ impl App {
                 }
             }
             TextSurface::Response => {}
-            // Never offered on the Variable Manager's own surfaces, nor
-            // the jq bar.
-            TextSurface::VmField | TextSurface::VmCell | TextSurface::Jq => {}
+            // Never offered on the Variable Manager's own surfaces, the jq
+            // bar, or the Settings tab.
+            TextSurface::VmField
+            | TextSurface::VmCell
+            | TextSurface::Jq
+            | TextSurface::Settings => {}
         }
     }
 
@@ -6222,7 +6647,8 @@ impl App {
         // What each destination currently stores (`None` = nothing), so
         // cycling the scope can reseed the value field, and the Remove
         // button knows whether there is anything to delete there.
-        let default_value = self.variables()
+        let default_value = self
+            .variables()
             .vars
             .get(name)
             .and_then(|d| d.default.clone());
@@ -6260,9 +6686,7 @@ impl App {
         let selected_key = if self.selector_is_shared(&selector) {
             self.shared_selections().get(&selector).cloned()
         } else {
-            self.selections_for(&env_key)
-                .get(&selector)
-                .cloned()
+            self.selections_for(&env_key).get(&selector).cloned()
         };
         let options: Vec<SelectOption> =
             varmodel::options_of(self.variables(), self.env_data(), &selector)
@@ -6638,7 +7062,8 @@ impl App {
         use postui_core::varedit;
         use postui_core::vars::is_valid_var_name;
 
-        let Some(current) = self.variables()
+        let Some(current) = self
+            .variables()
             .selectors
             .get(&selector)
             .map(|g| g.fields.clone())
@@ -6804,14 +7229,12 @@ impl App {
         if value == edit.original {
             return;
         }
-        let options: Vec<String> = postui_core::varmodel::options_of(
-            self.variables(),
-            self.env_data(),
-            &selector,
-        )
-        .map(|e| e.keys().cloned().collect())
-        .unwrap_or_default();
-        let fields = self.variables()
+        let options: Vec<String> =
+            postui_core::varmodel::options_of(self.variables(), self.env_data(), &selector)
+                .map(|e| e.keys().cloned().collect())
+                .unwrap_or_default();
+        let fields = self
+            .variables()
             .selectors
             .get(&selector)
             .map(|g| g.fields.clone())
@@ -7039,8 +7462,12 @@ impl App {
         // only the first of those is permission to write. An un-held slug
         // is re-seeded from disk first (`open_request` stamps honestly),
         // so the check below is always answering the first question.
-        if self.project().is_some_and(|p| p.held_request(&slug).is_none())
-            && let Some(Err(e)) = self.project_mut().map(|p| p.open_request(&slug).map(|_| ()))
+        if self
+            .project()
+            .is_some_and(|p| p.held_request(&slug).is_none())
+            && let Some(Err(e)) = self
+                .project_mut()
+                .map(|p| p.open_request(&slug).map(|_| ()))
         {
             self.toasts
                 .push(format!("could not read {slug}: {e}"), ToastKind::Error);
@@ -7185,7 +7612,11 @@ impl App {
         self.marked_entry = top;
         let Some(id) = top else { return };
         self.history.record_no_coalesce(crate::undo::Step {
-            kind: crate::undo::StepKind::Project { id, slug: slug.clone(), noun },
+            kind: crate::undo::StepKind::Project {
+                id,
+                slug: slug.clone(),
+                noun,
+            },
             context: crate::undo::Context {
                 slug,
                 cursor_before: crate::undo::CursorPos::None,
@@ -7196,17 +7627,14 @@ impl App {
 
     /// The id of the entry `Project::undo` would replay next.
     fn journal_top(&self) -> Option<postui_core::journal::EntryId> {
-        self.project().and_then(|p| p.last_entry()).map(|(id, _)| id)
+        self.project()
+            .and_then(|p| p.last_entry())
+            .map(|(id, _)| id)
     }
 
     /// Whether `id` is the entry `p` would replay next in `redo`'s
     /// direction.
-    fn entry_on_top(
-        &self,
-        p: &Project,
-        id: postui_core::journal::EntryId,
-        redo: bool,
-    ) -> bool {
+    fn entry_on_top(&self, p: &Project, id: postui_core::journal::EntryId, redo: bool) -> bool {
         let top = if redo {
             p.next_redo()
         } else {
@@ -7821,6 +8249,17 @@ impl App {
                 }
                 (TextSurface::VmCell, true)
             }
+            Hit::SettingsControl(field) => {
+                // The same split every in-place surface follows: only the
+                // field under edit is a text surface. A settings row that
+                // is not being typed into keeps whatever menu it has.
+                if self.settings.editing != Some(*field) {
+                    return None;
+                }
+                // No focus claim: the Settings tab has no pane focus to
+                // take, and the edit already owns the keyboard.
+                (TextSurface::Settings, true)
+            }
             _ => return None,
         };
         let has_selection = self.selection_text_of(surface).is_some();
@@ -7838,9 +8277,12 @@ impl App {
         // variable, there being nothing to rewrite); never on the Variable
         // Manager's surfaces, which already *are* variables, nor on the jq
         // bar, whose text is a filter rather than a value.
+        // ... nor on the Settings tab, whose values are app preferences
+        // rather than request text — and whose tab is reachable with no
+        // project open, so there would be nowhere to put the variable.
         if !matches!(
             surface,
-            TextSurface::VmField | TextSurface::VmCell | TextSurface::Jq
+            TextSurface::VmField | TextSurface::VmCell | TextSurface::Jq | TextSurface::Settings
         ) {
             items.push(if has_selection {
                 MenuItem::new(
@@ -7983,6 +8425,7 @@ impl App {
             TextSurface::VmField => self.varmanager.form.editing.as_ref()?.1.selected_text(),
             TextSurface::VmCell => self.varmanager.grid.editing.as_ref()?.input.selected_text(),
             TextSurface::Jq => self.session.response.jq_bar().input.selected_text(),
+            TextSurface::Settings => self.settings.selected_text(),
         }
     }
 
@@ -8200,11 +8643,7 @@ impl App {
         use postui_core::project::Error;
         // Every new request lands inside the active space — the name the
         // user typed is relative to it.
-        let name = format!(
-            "{}/{}",
-            self.active_space(),
-            name.trim_start_matches('/')
-        );
+        let name = format!("{}/{}", self.active_space(), name.trim_start_matches('/'));
         let name = name.as_str();
         let req = build(name);
         let Some(p) = self.project.as_mut() else {
@@ -8218,7 +8657,11 @@ impl App {
             Ok((slug, leaf)) => {
                 // Hold the created request so the editor gets exactly
                 // what was written (display name included).
-                let saved = match self.project.as_mut().expect("checked above").open_request(&slug)
+                let saved = match self
+                    .project
+                    .as_mut()
+                    .expect("checked above")
+                    .open_request(&slug)
                 {
                     Ok(r) => r.clone(),
                     Err(e) => {
@@ -8344,6 +8787,14 @@ impl App {
             return false;
         }
         if self.screen == Screen::Manage {
+            // Tab-gated as well as edit-gated: a stale edit must never be
+            // able to take the caret from the tab that is actually up.
+            if self.manage.tab == crate::components::manage::ManageTab::Settings
+                && self.settings.editing.is_some()
+            {
+                self.settings.paste(text);
+                return self.update(Action::Render);
+            }
             if let Some((_, input)) = self.varmanager.form.editing.as_mut() {
                 input.paste(text);
                 return self.update(Action::Render);
@@ -8419,6 +8870,11 @@ impl App {
             return input.selected_text();
         }
         if self.screen == Screen::Manage {
+            if self.manage.tab == crate::components::manage::ManageTab::Settings
+                && let Some(text) = self.settings.selected_text()
+            {
+                return Some(text);
+            }
             if let Some((_, input)) = self.varmanager.form.editing.as_ref() {
                 return input.selected_text();
             }
@@ -8904,7 +9360,10 @@ impl App {
     pub fn handle_key(&mut self, ev: KeyEvent) -> bool {
         let changed = self.handle_key_inner(ev);
         self.arm_pending_toasts();
-        changed
+        // Not every key reaches `update` -- Esc on a modal just pops it
+        // -- so the gate is re-checked at the event boundary too.
+        let regated = self.reraise_startup_config_gate();
+        changed || regated
     }
 
     fn handle_key_inner(&mut self, ev: KeyEvent) -> bool {
@@ -9004,6 +9463,20 @@ impl App {
                 self.remove_from_value_popup();
                 return true; // swallowed even when inert — never typed
             }
+            // `Modal::ConfigEditInvalid`'s "Keep editing" needs App (it
+            // stashes the temp path so the resumed editor reopens the
+            // user's own work), so — like the value popup's remove chord
+            // above — it can't live in the modal's own key handler.
+            // Discard needs nothing extra and is handled there instead.
+            if let KeyCode::Char(c) = ev.code
+                && c.eq_ignore_ascii_case(&'k')
+                && let Some(crate::components::modal::Modal::ConfigEditInvalid {
+                    file, path, ..
+                }) = self.modals.top()
+            {
+                let (file, path) = (*file, path.clone());
+                return self.keep_editing_config_edit(file, path);
+            }
             let Some(res) = self.modals.handle_key(ev) else {
                 self.sync_theme_preview();
                 return true; // typed into modal
@@ -9043,6 +9516,14 @@ impl App {
             {
                 let delta = if ev.code == KeyCode::Right { 1 } else { -1 };
                 return self.update(Action::SelectManageTab(self.manage.tab.cycle(delta)));
+            }
+            // The Settings tab owns its own row cursor and live field
+            // edit, and — unlike the two list tabs below — runs with no
+            // project open.
+            if self.screen == Screen::Manage
+                && self.manage.tab == crate::components::manage::ManageTab::Settings
+            {
+                return self.handle_settings_key(ev);
             }
             // The Environments and Spaces tabs: the list's own keys run
             // and anything they don't claim is swallowed like on any other
@@ -9140,6 +9621,194 @@ impl App {
         false
     }
 
+    /// Keys on the Settings tab. A live field edit owns the keyboard —
+    /// `Enter` commits, `Esc` cancels, everything else types — exactly
+    /// as the Manage grid's cell edit does; otherwise up/down walk the
+    /// rows, left/right aim a Files row's two buttons, and enter/space
+    /// activates whatever the cursor is on. Always reports a redraw:
+    /// like every other non-`Main` screen, keys it doesn't claim are
+    /// swallowed rather than falling through to the global keymap.
+    fn handle_settings_key(&mut self, ev: KeyEvent) -> bool {
+        use crate::components::settings::SettingsRow;
+        // A key on this tab is the keyboard asking for the cursor back:
+        // a click away dropped it (see `App::on_hit`), and the very next
+        // arrow has to move something the user can see.
+        self.settings.focused = true;
+        if self.settings.editing.is_some() {
+            return match ev.code {
+                KeyCode::Esc => {
+                    self.settings.end_edit();
+                    true
+                }
+                KeyCode::Enter => self.commit_settings_edit(),
+                _ => {
+                    self.settings.type_key(ev);
+                    true
+                }
+            };
+        }
+        match ev.code {
+            KeyCode::Esc => self.update(Action::CloseScreen),
+            KeyCode::Char('q') => self.update(Action::Quit),
+            KeyCode::Up => {
+                self.settings
+                    .move_cursor(-1, self.ui_settings_are_editable());
+                true
+            }
+            KeyCode::Down => {
+                self.settings
+                    .move_cursor(1, self.ui_settings_are_editable());
+                true
+            }
+            // Only a Files row has two buttons to choose between; on a
+            // settings row the arrows have nothing to aim at.
+            KeyCode::Left | KeyCode::Right
+                if matches!(self.settings.row(), SettingsRow::File(_)) =>
+            {
+                self.settings.file_button = usize::from(ev.code == KeyCode::Right);
+                true
+            }
+            KeyCode::Enter | KeyCode::Char(' ') => self.activate_settings_row(),
+            _ => true,
+        }
+    }
+
+    /// Whether the Settings tab's *setting* rows accept input. False
+    /// while `config.toml` will not parse: `Config::edit` refuses to
+    /// write over it, so every change would be rejected. The file rows
+    /// are not governed by this at all -- Edit… and Reset are the two
+    /// ways out of a broken `config.toml` (Reset through
+    /// `Action::ForceResetConfigFile`, Task 14), so both stay live
+    /// regardless; see `activate_settings_row`.
+    pub(crate) fn ui_settings_are_editable(&self) -> bool {
+        self.config_error.is_none()
+    }
+
+    /// Enter/space on the focused Settings row: a checkbox toggles, the
+    /// two-state control advances, a text row opens its edit, and a
+    /// Files row runs whichever of its two buttons is aimed at. A File
+    /// row's Edit… and Reset are always live -- they are the two ways
+    /// out of a broken `config.toml`; every other row is a no-op while
+    /// it will not parse.
+    pub(crate) fn activate_settings_row(&mut self) -> bool {
+        use crate::components::settings::{SettingsField, SettingsRow, jq_tab_spelling};
+        match self.settings.row() {
+            SettingsRow::File(file) => {
+                let action = if self.settings.file_button == 0 {
+                    Action::EditConfigFile(file)
+                } else {
+                    Action::ResetConfigFile(file)
+                };
+                self.update(action)
+            }
+            _ if !self.ui_settings_are_editable() => true,
+            SettingsRow::Setting(SettingsField::JqTab) => {
+                let next = match self.ui_settings.jq_tab {
+                    crate::config::JqTab::Menu => crate::config::JqTab::Cycle,
+                    crate::config::JqTab::Cycle => crate::config::JqTab::Menu,
+                };
+                self.update(Action::SetUiString {
+                    key: SettingsField::JqTab.key(),
+                    value: jq_tab_spelling(next).to_string(),
+                })
+            }
+            SettingsRow::Setting(field) => {
+                if let Some(on) = field.checkbox(&self.ui_settings) {
+                    // The tick is what the user sees, so the tick is what
+                    // flips; `ai_confirmed` is stored inverted from it
+                    // (the row asks the consent question) and
+                    // `SettingsField::checkbox` is the one place that
+                    // inversion lives.
+                    let ticked = !on;
+                    let value = match field {
+                        SettingsField::AiConfirmed => !ticked,
+                        _ => ticked,
+                    };
+                    return self.update(Action::SetUiFlag {
+                        key: field.key(),
+                        value,
+                    });
+                }
+                let seed = field.text_value(&self.ui_settings).unwrap_or_default();
+                self.settings.begin_edit(field, &seed);
+                true
+            }
+        }
+    }
+
+    /// Enter in a live Settings field edit. `osc52_limit` is validated
+    /// here and *rejected* rather than coerced: the edit stays open with
+    /// what was typed, the stored value stands, and a toast says what
+    /// was expected.
+    pub(crate) fn commit_settings_edit(&mut self) -> bool {
+        use crate::components::settings::{SettingsField, parse_osc52_limit};
+        let Some(field) = self.settings.editing else {
+            return false;
+        };
+        let text = self.settings.field_text().to_string();
+        if field == SettingsField::Osc52Limit {
+            return match parse_osc52_limit(&text) {
+                Ok(value) => {
+                    self.settings.end_edit();
+                    self.update(Action::SetUiInt {
+                        key: field.key(),
+                        value,
+                    })
+                }
+                Err(why) => {
+                    self.toasts.push(
+                        format!("{}: {why}", SettingsField::Osc52Limit.label()),
+                        ToastKind::Error,
+                    );
+                    true
+                }
+            };
+        }
+        self.settings.end_edit();
+        self.update(Action::SetUiString {
+            key: field.key(),
+            value: text,
+        })
+    }
+
+    /// [`Self::commit_settings_edit`] for a click that is about to land
+    /// somewhere else, reporting whether that click may proceed.
+    ///
+    /// A rejected `osc52_limit` keeps its edit open, so the click has to
+    /// stop: moving `settings.cursor` out from under a still-live edit
+    /// would leave the painted well on a row the cursor has left, with
+    /// `editing` and `cursor` naming different rows. The toast the
+    /// refusal raised is the answer to the click, and the typed text is
+    /// still there to fix.
+    pub(crate) fn commit_settings_edit_for_click(&mut self) -> bool {
+        self.commit_settings_edit();
+        self.settings.editing.is_none()
+    }
+
+    /// The tail every Settings-tab write shares. `Config::edit` refuses
+    /// a `config.toml` that will not parse, so a refused write says so
+    /// and changes nothing — the control keeps painting the value on
+    /// disk rather than one that never landed. A write that did land is
+    /// applied through the same `reapply_ui_settings` path
+    /// `ReloadFromDisk` uses, so the tab and a hand-edit converge.
+    fn apply_ui_write(
+        &mut self,
+        saved: Result<(), String>,
+        apply: impl FnOnce(&mut crate::config::UiSettings),
+    ) -> bool {
+        if let Err(e) = saved {
+            self.toasts.push(
+                format!("could not save {}: {e}", crate::config::CONFIG_TOML),
+                ToastKind::Error,
+            );
+            return true;
+        }
+        let mut ui = self.ui_settings.clone();
+        apply(&mut ui);
+        self.reapply_ui_settings(ui);
+        true
+    }
+
     /// Keys while a variable-form field owns the keyboard (Task 8's model,
     /// exactly): `Esc` reverts (drops the edit with nothing written —
     /// there's nothing to restore since the form only ever reads its
@@ -9212,16 +9881,14 @@ impl App {
         let VmDetail::Group(selector) = self.varmanager.detail.clone() else {
             return;
         };
-        let ncols = 1 + self.variables()
+        let ncols = 1 + self
+            .variables()
             .selectors
             .get(&selector)
             .map_or(0, |g| g.fields.len());
-        let last_row = postui_core::varmodel::options_of(
-            self.variables(),
-            self.env_data(),
-            &selector,
-        )
-        .map_or(0, indexmap::IndexMap::len);
+        let last_row =
+            postui_core::varmodel::options_of(self.variables(), self.env_data(), &selector)
+                .map_or(0, indexmap::IndexMap::len);
         let flat = (row * ncols + col) as i32 + dir;
         let (next_row, next_col) = match flat {
             // Off either end of the grid: the walk stops rather than
@@ -9422,7 +10089,7 @@ impl App {
     /// it switches tabs on an already-open screen, after `manage.tab` has
     /// moved; `prev` is where the glide starts.
     fn retarget_manage_tab_underline(&mut self, prev: crate::components::manage::ManageTab) {
-        let spans = crate::components::manage::ManageTab::strip_spans();
+        let spans = crate::components::manage::ManageTab::strip_spans(self.manage_strip_width);
         let now = Instant::now();
         let left_key = AnimKey::TabUnderline(StripId::ManageTabs);
         let right_key = AnimKey::TabUnderlineWidth(StripId::ManageTabs);
@@ -9745,8 +10412,7 @@ impl App {
                             ProjectNoun::Reorder => {
                                 let what = match slug {
                                     Some(slug) => {
-                                        if let Some(space) =
-                                            postui_core::storage::space_of(slug)
+                                        if let Some(space) = postui_core::storage::space_of(slug)
                                             && space == self.active_space()
                                         {
                                             self.sidebar.select_slug(slug);
@@ -9878,6 +10544,7 @@ fn screen_escape_whitelist(action: &Action) -> bool {
             | Action::OpenManage { .. }
             | Action::CloseScreen
             | Action::ReloadFromDisk
+            | Action::EditConfigFile(_)
             | Action::Quit
             | Action::Undo
             | Action::Redo

@@ -525,6 +525,28 @@ impl Keymap {
             .map(|(combo, _)| format_combo(combo))
             .min()
     }
+
+    /// Every combo bound to `action_id`, in `keys.toml`'s input grammar
+    /// (via [`format_combo_config`], not the footer's `format_combo`
+    /// keycap), sorted so a seeded `keys.toml` is byte-stable across runs.
+    ///
+    /// The plural matters: `apply_overrides` removes *all* of an action's
+    /// existing combos before binding the ones it is given, so a seed
+    /// listing only one would silently unbind the rest the moment a user
+    /// uncommented it -- taking the vim-key aliases with it.
+    pub fn combos_for(&self, action_id: &str) -> Vec<String> {
+        let Some((_, action)) = named_actions().into_iter().find(|(n, _)| n == &action_id) else {
+            return Vec::new();
+        };
+        let mut combos: Vec<String> = self
+            .bindings
+            .iter()
+            .filter(|(_, a)| **a == action)
+            .map(|(combo, _)| format_combo_config(combo))
+            .collect();
+        combos.sort();
+        combos
+    }
 }
 
 /// Formats a `KeyCombo` the way the footer displays a combo: `ctrl` as
@@ -572,6 +594,79 @@ fn format_combo(combo: &KeyCombo) -> String {
     };
     parts.push(key);
     parts.join("+")
+}
+
+/// The inverse of [`KeyCombo::parse`]: renders a `KeyCombo` in the exact
+/// grammar `keys.toml` accepts as input (`ctrl+p`, `alt+shift+m`, `f9`,
+/// `shift+tab`). Deliberately not [`format_combo`], which renders the
+/// footer's caret keycap (`^P`) — a display convention `parse` does not
+/// understand, and which is spelled with `alt_label()`'s platform text
+/// ("opt" on macOS) rather than the literal `alt+` the parser requires.
+/// Used wherever a combo is written into a `keys.toml` a user will
+/// hand-edit or uncomment (see [`Keymap::combos_for`]), so what lands
+/// there is always exactly what `parse` will read back.
+fn format_combo_config(combo: &KeyCombo) -> String {
+    let mut parts = Vec::new();
+    if combo.modifiers.contains(KeyModifiers::CONTROL) {
+        parts.push("ctrl".to_string());
+    }
+    if combo.modifiers.contains(KeyModifiers::ALT) {
+        parts.push("alt".to_string());
+    }
+    let (implicit_shift, key) = match combo.code {
+        KeyCode::Char(c) if c.is_ascii_uppercase() => (true, c.to_ascii_lowercase().to_string()),
+        KeyCode::Char(c) => (false, c.to_string()),
+        KeyCode::BackTab => (true, "tab".to_string()),
+        KeyCode::Esc => (false, "esc".to_string()),
+        KeyCode::Enter => (false, "enter".to_string()),
+        KeyCode::Tab => (false, "tab".to_string()),
+        KeyCode::Backspace => (false, "backspace".to_string()),
+        KeyCode::Up => (false, "up".to_string()),
+        KeyCode::Down => (false, "down".to_string()),
+        KeyCode::Left => (false, "left".to_string()),
+        KeyCode::Right => (false, "right".to_string()),
+        KeyCode::F(n) => (false, format!("f{n}")),
+        other => (false, format!("{other:?}").to_lowercase()),
+    };
+    if implicit_shift || combo.modifiers.contains(KeyModifiers::SHIFT) {
+        parts.push("shift".to_string());
+    }
+    parts.push(key);
+    parts.join("+")
+}
+
+/// A fully commented `keys.toml` listing every bindable action at its
+/// current binding. Commented for the same reason `config_seed` is, and
+/// more urgently: `keys.toml` is an overrides file, so an uncommented
+/// seed would pin every binding forever and no future default would ever
+/// reach the user.
+///
+/// Each line lists *every* combo bound to its action (see `combos_for`),
+/// because `apply_overrides` replaces all of them -- a line naming one
+/// would unbind the rest when uncommented.
+pub fn keys_seed(map: &Keymap) -> String {
+    let mut out = String::from(
+        "\
+# postui key bindings. Uncomment a line to rebind its action.
+# Each line lists every combo currently bound to that action; the list
+# replaces them all, so keep the ones you want to keep.
+# ctrl+c is reserved for quit and cannot be rebound.
+
+",
+    );
+    for (name, _) in named_actions() {
+        let combos = map.combos_for(name);
+        if combos.is_empty() {
+            continue;
+        }
+        let list = combos
+            .iter()
+            .map(|c| format!("{c:?}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        out.push_str(&format!("# {name} = [{list}]\n"));
+    }
+    out
 }
 
 #[cfg(test)]
@@ -1084,6 +1179,60 @@ mod tests {
         assert_eq!(m.combo_for("quit"), Some("^C".to_string()));
     }
 
+    /// Seeding keys.toml from the singular accessor would drop aliases, and
+    /// `apply_overrides` replaces *all* of an action's combos -- so
+    /// uncommenting a seeded line would silently unbind the others.
+    #[test]
+    fn combos_for_lists_every_alias_not_just_one() {
+        let map = Keymap::default_bindings();
+        let mut found_multi = false;
+        for (name, _) in named_actions() {
+            let combos = map.combos_for(name);
+            if let Some(one) = map.combo_for(name) {
+                let as_keycaps: Vec<String> = combos
+                    .iter()
+                    .map(|c| {
+                        format_combo(
+                            &KeyCombo::parse(c).expect("combos_for must emit parseable combos"),
+                        )
+                    })
+                    .collect();
+                assert!(
+                    as_keycaps.contains(&one),
+                    "{name}: combos_for must include what combo_for returns"
+                );
+            }
+            if combos.len() > 1 {
+                found_multi = true;
+            }
+        }
+        assert!(
+            found_multi,
+            "the default map has aliased actions; combos_for must expose them"
+        );
+    }
+
+    #[test]
+    fn combos_for_is_stable_across_calls() {
+        let map = Keymap::default_bindings();
+        for (name, _) in named_actions() {
+            assert_eq!(
+                map.combos_for(name),
+                map.combos_for(name),
+                "{name}: a seed built twice must be identical"
+            );
+        }
+    }
+
+    #[test]
+    fn combos_for_an_unknown_action_is_empty() {
+        assert!(
+            Keymap::default_bindings()
+                .combos_for("no_such_action")
+                .is_empty()
+        );
+    }
+
     #[test]
     fn format_combo_renders_shifted_and_named_keys() {
         assert_eq!(format_combo(&KeyCombo::parse("ctrl+p").unwrap()), "^P");
@@ -1113,5 +1262,45 @@ mod tests {
         let c = KeyCombo::from_event(&ev);
         assert_eq!(c.code, KeyCode::BackTab);
         assert_eq!(c.modifiers, KeyModifiers::NONE);
+    }
+
+    /// The load-bearing test for `combos_for`: uncommenting any seeded line
+    /// must reproduce exactly the bindings that line names, aliases and all.
+    #[test]
+    fn uncommenting_any_seeded_line_changes_nothing() {
+        let defaults = Keymap::default_bindings();
+        let seed = keys_seed(&defaults);
+        let live: String = seed
+            .lines()
+            .filter_map(|l| l.strip_prefix("# "))
+            .filter(|l| l.contains(" = ["))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let applied = Keymap::try_from_overrides(&live)
+            .expect("an uncommented seed must be a valid overrides file");
+        for (name, _) in named_actions() {
+            assert_eq!(
+                applied.combos_for(name),
+                defaults.combos_for(name),
+                "{name} changed when its seeded line was uncommented"
+            );
+        }
+    }
+
+    #[test]
+    fn the_keys_seed_is_entirely_commented_and_is_a_no_op() {
+        let defaults = Keymap::default_bindings();
+        let seed = keys_seed(&defaults);
+        for line in seed.lines() {
+            let line = line.trim();
+            assert!(
+                line.is_empty() || line.starts_with('#'),
+                "seed line is live: {line:?}"
+            );
+        }
+        let applied = Keymap::try_from_overrides(&seed).unwrap();
+        for (name, _) in named_actions() {
+            assert_eq!(applied.combos_for(name), defaults.combos_for(name));
+        }
     }
 }

@@ -42,6 +42,8 @@ pub enum TextSurface {
     VmCell,
     /// The response pane's jq filter bar.
     Jq,
+    /// The Settings tab's field under edit (`SettingsTab::editing`).
+    Settings,
 }
 
 /// What [`Action::CopyToClipboard`] copies: the ready response body, one of
@@ -60,6 +62,41 @@ pub enum CopyTarget {
     ComputedHeader(usize),
 }
 
+/// Which user-editable config file an Edit…/Reset button targets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigFile {
+    Config,
+    Keys,
+}
+
+impl ConfigFile {
+    pub fn name(self) -> &'static str {
+        match self {
+            ConfigFile::Config => "config.toml",
+            ConfigFile::Keys => "keys.toml",
+        }
+    }
+}
+
+/// The answer to the startup modal raised when `config.toml` exists but
+/// will not parse. Startup does not continue into a normal session until
+/// one of these is chosen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigStartupChoice {
+    /// Hand `config.toml` to `$EDITOR` (Task 7's round-trip). A valid
+    /// save resumes startup; an invalid one returns to this modal.
+    Edit,
+    /// Reset the `UiSettings` keys (Task 14). `[projects]` survives only
+    /// if the file parses far enough to recover it; the confirm says so
+    /// when it does not.
+    Reset,
+    /// Run on defaults for this session. Every settings write stays
+    /// refused, because `Config::edit` will not write an unparseable
+    /// file — so nothing persists, including newly-registered projects.
+    ContinueUnsaved,
+    Quit,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     Quit,
@@ -76,6 +113,53 @@ pub enum Action {
     Close,
     ShowToast(String, ToastKind),
     ShowAbout,
+    /// Answers the broken-`config.toml` startup modal.
+    ConfigStartupChoice(ConfigStartupChoice),
+    /// Hand a config file to `$EDITOR` as a temp copy. Deferred into
+    /// `App::pending_terminal_action` like the body editor, because
+    /// applying it means suspending the terminal.
+    EditConfigFile(ConfigFile),
+    /// The editor exited and its text did not validate: raises the
+    /// keep-editing/discard modal. `path` is the temp file, still on
+    /// disk, so "keep editing" resumes with the user's work intact.
+    ConfigEditInvalid {
+        file: ConfigFile,
+        path: std::path::PathBuf,
+        error: String,
+    },
+    /// Discard the temp file at `path` and change nothing.
+    ConfigEditDiscard {
+        path: std::path::PathBuf,
+    },
+    /// User asked to reset `file`'s user-editable settings: raises the
+    /// confirm (see `App::apply`). Config changes are outside the undo
+    /// system, so that confirm is the only guard.
+    ResetConfigFile(ConfigFile),
+    /// Confirmed; resets `file`'s user-editable keys and reloads. For
+    /// `Config`, removes just the UI keys and so preserves `[projects]`
+    /// -- unless `config.toml` does not parse far enough to recover that
+    /// table, in which case the confirm has already warned that the whole
+    /// file, project list included, is about to be replaced.
+    ForceResetConfigFile(ConfigFile),
+    /// Persist and apply one boolean setting. There is no save step on
+    /// the Settings tab: each of these three writes `config.toml`
+    /// through `Config::edit` and applies the result immediately.
+    SetUiFlag {
+        key: &'static str,
+        value: bool,
+    },
+    /// Persist and apply one string setting. An empty `value` clears the
+    /// key back to its default rather than writing an empty string — an
+    /// empty `clipboard_cmd` would otherwise swallow every copy.
+    SetUiString {
+        key: &'static str,
+        value: String,
+    },
+    /// Persist and apply one integer setting.
+    SetUiInt {
+        key: &'static str,
+        value: usize,
+    },
     EditorTabSelect(usize),
     EditorTabCycle(i8),
     CycleMethod,

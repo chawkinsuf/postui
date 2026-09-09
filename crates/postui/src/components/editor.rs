@@ -2344,6 +2344,7 @@ impl Editor {
                     disabled: self
                         .body_tab_disabled()
                         .then(|| EditorTab::Body.draw_position()),
+                    right_anchored: 0,
                 }
                 .paint(buf, strip_area, theme.page, theme)
             };

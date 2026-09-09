@@ -156,7 +156,9 @@ fn resolve_startup_returns_none_when_nothing_available() {
 #[test]
 fn init_project_here_creates_project_toml_at_current_root() {
     let mut app = App::new_for_test();
-    assert!(!postui_core::project::Project::is_project(app.proj().root()));
+    assert!(!postui_core::project::Project::is_project(
+        app.proj().root()
+    ));
     app.update(Action::InitProjectHere);
     assert!(postui_core::project::Project::is_project(app.proj().root()));
     assert_eq!(
@@ -1665,6 +1667,47 @@ fn switching_editor_tabs_retargets_the_underline_slide() {
 /// tab (by click, alt+arrows, or `Action::SelectManageTab`) retargets the
 /// `StripId::ManageTabs` edges from the previous tab's span toward the new
 /// one's; opening the screen from Main snaps straight to the active tab.
+/// The underline glides to where the label actually *paints*. The strip
+/// is right-anchored, and `manage_strip_width` (the width the underline
+/// is computed at) must be the width `draw_manage_bar` lays the strip out
+/// at -- when it was the whole bar's width instead, the underline settled
+/// roughly a tab's width right of the Settings label.
+#[test]
+fn the_manage_underline_lands_under_the_label_it_targets() {
+    use crate::components::manage::ManageTab;
+    use crate::hit::Hit;
+    let mut app = App::new_for_test_with_anims(true);
+    let left_key = AnimKey::TabUnderline(StripId::ManageTabs);
+    let right_key = AnimKey::TabUnderlineWidth(StripId::ManageTabs);
+    app.update(Action::OpenManage { tab: None });
+    render_once(&mut app);
+
+    app.update(Action::SelectManageTab(ManageTab::Settings));
+    render_once(&mut app);
+    let rect = app
+        .hits
+        .rect_of(&Hit::ManageTab(ManageTab::Settings.index()))
+        .expect("the Settings tab paints a hit rect");
+    let strip_x = crate::components::manage::strip_area(ratatui::layout::Rect {
+        x: 0,
+        y: 0,
+        width: 120,
+        height: 3,
+    })
+    .x;
+    let done_at = Instant::now() + app.ui_settings.anim_ms.tab_slide + Duration::from_millis(5);
+    let left = app.anims.value(left_key, done_at).unwrap();
+    let right = app.anims.value(right_key, done_at).unwrap();
+    // The underline is relative to the strip's origin; the hit rect is
+    // absolute.
+    assert_eq!(
+        strip_x + left as u16,
+        rect.x,
+        "underline settles under the painted Settings label"
+    );
+    assert_eq!((right - left) as u16, rect.width);
+}
+
 #[test]
 fn switching_manage_tabs_retargets_the_underline_slide() {
     use crate::components::manage::ManageTab;
@@ -1684,7 +1727,7 @@ fn switching_manage_tabs_retargets_the_underline_slide() {
         app.anims.active(now),
         "the underline is easing after the switch"
     );
-    let spans = ManageTab::strip_spans();
+    let spans = ManageTab::strip_spans(app.manage_strip_width);
     let (x, w) = spans[ManageTab::Spaces.index()];
     let done_at = now + app.ui_settings.anim_ms.tab_slide + Duration::from_millis(5);
     assert_eq!(app.anims.value(left_key, done_at), Some(x as f32));
@@ -1702,6 +1745,62 @@ fn switching_manage_tabs_retargets_the_underline_slide() {
         tab: Some(ManageTab::Variables),
     });
     assert!(app.anims.value(left_key, Instant::now()).is_none());
+}
+
+/// With no project the screen lands on the one tab that works, instead
+/// of an apology -- but only when it is *opening*: OpenManage{tab:None}
+/// is also the close half of the toggle.
+#[test]
+fn no_project_opens_on_settings_but_alt_v_still_closes() {
+    use crate::components::manage::ManageTab;
+    let mut app = App::new_for_test();
+    app.project = None;
+
+    app.update(Action::OpenManage { tab: None });
+    assert_eq!(app.screen, Screen::Manage);
+    assert_eq!(app.manage.tab, ManageTab::Settings);
+
+    // The close half must not re-open on Settings.
+    app.update(Action::OpenManage { tab: None });
+    assert_ne!(
+        app.screen,
+        Screen::Manage,
+        "alt+v closes the screen it opened"
+    );
+
+    // The scenario above alone doesn't pin the opening-path-only guard:
+    // once `manage.tab` is already `Settings`, the pre-existing
+    // `self.manage.tab == target` toggle disjunct closes the screen on
+    // its own, even with the guard's `self.screen != Screen::Manage`
+    // clause deleted. Opening on a *different* tab first, so `target`
+    // (Settings, from the guard) would differ from the current tab
+    // (Environments), is what actually exercises that clause: dropping
+    // it would make `OpenManage{tab:None}` re-target to Settings and
+    // stay open, instead of closing.
+    app.update(Action::OpenManage {
+        tab: Some(ManageTab::Environments),
+    });
+    assert_eq!(app.screen, Screen::Manage);
+    assert_eq!(app.manage.tab, ManageTab::Environments);
+
+    app.update(Action::OpenManage { tab: None });
+    assert_ne!(
+        app.screen,
+        Screen::Manage,
+        "alt+v closes; it does not re-target the tab"
+    );
+}
+
+/// An explicit request is honoured as asked, message and all.
+#[test]
+fn no_project_honours_an_explicit_tab_request() {
+    use crate::components::manage::ManageTab;
+    let mut app = App::new_for_test();
+    app.project = None;
+    app.update(Action::OpenManage {
+        tab: Some(ManageTab::Environments),
+    });
+    assert_eq!(app.manage.tab, ManageTab::Environments);
 }
 
 #[test]
@@ -2087,7 +2186,9 @@ fn duplicating_a_variable_copies_its_description_and_default() {
     app.update(Action::DuplicateVar {
         name: "base_url".into(),
     });
-    let copy = app.proj().variables()
+    let copy = app
+        .proj()
+        .variables()
         .vars
         .get("base_url-copy")
         .expect("copy declared");
@@ -2849,7 +2950,8 @@ fn startup_restores_open_request_inside_a_collapsed_folder() {
     // `auth` is a folder *inside* the active space, not a space: the point
     // of this test is the ancestor-folder expansion, which only happens for
     // a slug nested under the space root.
-    postui_core::fixtures::save_request(dir.path(), "main/auth/login", &req("https://x/l")).unwrap();
+    postui_core::fixtures::save_request(dir.path(), "main/auth/login", &req("https://x/l"))
+        .unwrap();
     postui_core::fixtures::save_local_state(
         dir.path(),
         &postui_core::project::LocalState {
@@ -2894,7 +2996,8 @@ fn force_open_request_selects_its_sidebar_row() {
     postui_core::fixtures::ensure_project(dir.path()).unwrap();
     // `auth` is a folder inside the active space, so opening `login`
     // really does have an ancestor folder to expand.
-    postui_core::fixtures::save_request(dir.path(), "main/auth/login", &req("https://x/l")).unwrap();
+    postui_core::fixtures::save_request(dir.path(), "main/auth/login", &req("https://x/l"))
+        .unwrap();
     postui_core::fixtures::save_request(dir.path(), "main/ping", &req("https://x/ping")).unwrap();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
 
@@ -3089,7 +3192,11 @@ fn switching_spaces_goes_through_the_dirty_gate() {
     );
     assert_eq!(app.proj().local().active_space, "main", "not switched yet");
     app.update(Action::Close);
-    assert_eq!(app.proj().local().active_space, "main", "cancel keeps the space");
+    assert_eq!(
+        app.proj().local().active_space,
+        "main",
+        "cancel keeps the space"
+    );
 }
 
 #[test]
@@ -3098,7 +3205,11 @@ fn jump_and_cycle_resolve_by_position_and_wrap() {
     app.update(Action::JumpSpace(2));
     assert_eq!(app.proj().local().active_space, "auth");
     app.update(Action::JumpSpace(9));
-    assert_eq!(app.proj().local().active_space, "auth", "out of range is a no-op");
+    assert_eq!(
+        app.proj().local().active_space,
+        "auth",
+        "out of range is a no-op"
+    );
     app.update(Action::CycleSpace(1));
     assert_eq!(app.proj().local().active_space, "main", "wraps");
     app.update(Action::CycleSpace(-1));
@@ -3588,7 +3699,8 @@ fn delete_space_confirms_with_the_count_then_trashes_and_undoes() {
     assert!(!dir.path().join("requests/main").exists());
     assert_eq!(app.proj().spaces(), ["auth"]);
     assert_eq!(
-        app.proj().local().active_space, "auth",
+        app.proj().local().active_space,
+        "auth",
         "switched away before deleting"
     );
     assert_eq!(app.editor.slug.as_deref(), Some("auth/login"));
@@ -3664,7 +3776,8 @@ fn move_space_reorders_and_persists() {
     );
     app.update(Action::JumpSpace(1));
     assert_eq!(
-        app.proj().local().active_space, "auth",
+        app.proj().local().active_space,
+        "auth",
         "alt+1 follows the new order"
     );
 }
@@ -4098,7 +4211,10 @@ fn a_keyboard_reorder_that_returns_to_the_start_leaves_no_step_and_undo_reaches_
         delta: -1,
     });
     assert_eq!(
-        app.proj().last_entry().map(|(_, l)| l.to_string()).as_deref(),
+        app.proj()
+            .last_entry()
+            .map(|(_, l)| l.to_string())
+            .as_deref(),
         Some("create request"),
         "the burst netted to nothing: no order entry remains"
     );
@@ -4145,7 +4261,10 @@ fn a_dissolved_burst_with_an_edit_between_its_halves_records_no_second_marker() 
         delta: -1,
     });
     assert_eq!(
-        app.proj().last_entry().map(|(_, l)| l.to_string()).as_deref(),
+        app.proj()
+            .last_entry()
+            .map(|(_, l)| l.to_string())
+            .as_deref(),
         Some("create request"),
         "the burst netted to nothing: no order entry remains"
     );
@@ -4162,7 +4281,10 @@ fn a_dissolved_burst_with_an_edit_between_its_halves_records_no_second_marker() 
         "undo applied the editor delta, not the create beneath it"
     );
     assert_eq!(
-        app.proj().last_entry().map(|(_, l)| l.to_string()).as_deref(),
+        app.proj()
+            .last_entry()
+            .map(|(_, l)| l.to_string())
+            .as_deref(),
         Some("create request"),
         "the journal did not move: no project entry was replayed"
     );
@@ -4517,8 +4639,13 @@ fn move_all_requests_holding_a_dirty_open_request_gates_first() {
 fn ordered_app() -> (App, tempfile::TempDir) {
     // main: alpha, beta (listed as beta, alpha); auth: login
     let (mut app, dir) = spaced_app();
-    postui_core::fixtures::set_level_order(dir.path(), "main", "", &["beta".into(), "alpha".into()])
-        .unwrap();
+    postui_core::fixtures::set_level_order(
+        dir.path(),
+        "main",
+        "",
+        &["beta".into(), "alpha".into()],
+    )
+    .unwrap();
     app.reload_project_documents();
     app.update(Action::RefreshSidebar);
     (app, dir)
@@ -5452,7 +5579,8 @@ fn rename_flow_speaks_display_names_and_regenerates_the_slug() {
     assert_eq!(app.editor.slug.as_deref(), Some("main/get-user-v2"));
     assert_eq!(app.editor.name.as_deref(), Some("Get User v2"));
     assert_eq!(app.sidebar.open_slug.as_deref(), Some("main/get-user-v2"));
-    let loaded = postui_core::fixtures::load_request(app.proj().root(), "main/get-user-v2").unwrap();
+    let loaded =
+        postui_core::fixtures::load_request(app.proj().root(), "main/get-user-v2").unwrap();
     assert_eq!(loaded.name.as_deref(), Some("Get User v2"));
 }
 
@@ -6732,11 +6860,7 @@ fn padlock_shows_the_effective_tls_state_under_an_environment_force() {
 #[test]
 fn cycle_env_wraps_and_skips_no_env() {
     let (mut app, dir) = app_with_envs();
-    assert_eq!(
-        app.env_label(),
-        "prod",
-        "an open lands in the first env"
-    );
+    assert_eq!(app.env_label(), "prod", "an open lands in the first env");
     app.update(Action::CycleEnv(1));
     assert_eq!(app.env_label(), "qa");
     app.update(Action::CycleEnv(1));
@@ -6803,7 +6927,8 @@ fn rename_env_moves_the_file_rekeys_secrets_and_follows_the_active_env() {
     assert!(dir.path().join("environments/qa.toml").is_file());
     assert_eq!(app.env_label(), "qa");
     assert_eq!(
-        app.proj().secrets()["qa"]["tok"], "s3cret",
+        app.proj().secrets()["qa"]["tok"],
+        "s3cret",
         "secrets re-keyed back"
     );
     assert_eq!(
@@ -6883,7 +7008,8 @@ fn delete_env_confirms_trashes_clears_the_active_env_and_undoes() {
         "s3cret"
     );
     assert_eq!(
-        app.proj().secrets()["qa"]["tok"], "s3cret",
+        app.proj().secrets()["qa"]["tok"],
+        "s3cret",
         "the restored secrets file is re-read into memory, not just to disk"
     );
     assert_eq!(
@@ -8842,8 +8968,8 @@ fn manager_screen_replaces_the_three_panes_but_keeps_header_and_footer() {
     let content = rendered_text(&mut app);
     assert!(content.contains("Project:"), "header chips stay");
     assert!(
-        content.contains("esc"),
-        "footer hint stays / manager hint shows"
+        content.contains("quit"),
+        "footer stays / manager's own chips show"
     );
     assert!(
         !content.contains("New request"),
@@ -9102,7 +9228,8 @@ fn var_edit_set_env_value_on_a_non_active_env_does_not_disturb_the_active_resolu
     let on_disk = std::fs::read_to_string(dir.path().join("environments/dev.toml")).unwrap();
     assert!(on_disk.contains("http://dev.local"), "{on_disk}");
     assert_eq!(
-        app.proj().resolved().values["base_url"], "https://qa.example.com",
+        app.proj().resolved().values["base_url"],
+        "https://qa.example.com",
         "qa is still active; its own resolution must be untouched"
     );
 }
@@ -9575,7 +9702,10 @@ fn add_and_remove_selector_field_reshape_a_shared_selectors_options() {
         field: "fmt".into(),
     });
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
-    assert_eq!(app.proj().variables().options["locale"]["en"].values["fmt"], "");
+    assert_eq!(
+        app.proj().variables().options["locale"]["en"].values["fmt"],
+        ""
+    );
 
     app.update(Action::RemoveSelectorField {
         selector: "locale".into(),
@@ -9766,7 +9896,9 @@ fn var_struct_new_group_creates_group_with_members() {
     }));
 
     assert!(app.toasts.is_empty());
-    let g = app.proj().variables()
+    let g = app
+        .proj()
+        .variables()
         .selectors
         .get("creds")
         .expect("group created");
@@ -10555,6 +10687,103 @@ fn the_context_menu_delete_matches_the_d_key() {
     assert!(!app.proj().variables().vars.contains_key("base_url"));
 }
 
+/// Every `TallPill` on the Manage screen lands on the same three rows,
+/// in both columns and on all four tabs.
+///
+/// The block straddles its label row, so a caller that lays it out from
+/// the row it *wants the label on* is one row low -- which is exactly
+/// what the selector pane did, inherited from the bevelled `Button` it
+/// replaced (that one put its label on `y + 1`). One pane a row off is
+/// invisible until two of them are on screen together, and in the
+/// Variables tab they always are.
+#[test]
+fn every_manage_button_lands_on_the_same_rows_in_both_columns() {
+    use crate::components::manage::ManageTab;
+    use crate::hit::Hit;
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+
+    // Every tab, and both of the Variables tab's detail panes -- the
+    // variable form and the selector grid, which is the one that drifted.
+    let cases: [(ManageTab, Option<&str>, &[Hit]); 4] = [
+        (
+            ManageTab::Variables,
+            Some("base_url"),
+            &[
+                Hit::VmNewVar,
+                Hit::VmNewSelector,
+                Hit::VmRename,
+                Hit::VmDelete,
+            ],
+        ),
+        (
+            ManageTab::Variables,
+            Some("user"),
+            &[
+                Hit::VmNewVar,
+                Hit::VmNewSelector,
+                Hit::VmNewOption,
+                Hit::VmEditFields,
+                Hit::VmRename,
+                Hit::VmDelete,
+            ],
+        ),
+        (
+            ManageTab::Environments,
+            None,
+            &[Hit::ManageNew, Hit::ManageRename, Hit::ManageDelete],
+        ),
+        (
+            ManageTab::Spaces,
+            None,
+            &[
+                Hit::ManageNew,
+                Hit::ManageRename,
+                Hit::ManageDelete,
+                Hit::ManageMoveAll,
+            ],
+        ),
+    ];
+
+    for (tab, select, buttons) in cases {
+        // Closed first: `OpenManage` for the tab already on screen is a
+        // toggle, so the second Variables case would shut the screen.
+        app.update(Action::CloseScreen);
+        app.update(Action::OpenManage { tab: Some(tab) });
+        // `left_rows` is built during the draw, so the selection needs a
+        // frame under it before it can name a row.
+        rendered_text_wide_tall(&mut app);
+        if let Some(name) = select {
+            app.varmanager.select_name(name);
+        }
+        rendered_text_wide_tall(&mut app);
+        let rects: Vec<(String, ratatui::layout::Rect)> = buttons
+            .iter()
+            .map(|h| {
+                (
+                    format!("{h:?}"),
+                    app.hits
+                        .rect_of(h)
+                        .unwrap_or_else(|| panic!("{tab:?}/{select:?}: {h:?} is not painted")),
+                )
+            })
+            .collect();
+        let (first_name, first) = &rects[0];
+        for (name, r) in &rects[1..] {
+            assert_eq!(
+                (r.y, r.height),
+                (first.y, first.height),
+                "{tab:?}/{select:?}: {name} sits at row {} but {first_name} sits at row {} \
+                 -- every button on the screen shares one three-row block",
+                r.y,
+                first.y
+            );
+        }
+    }
+}
+
 #[test]
 fn clicking_the_new_variable_button_opens_the_new_variable_prompt() {
     let dir = tempfile::tempdir().unwrap();
@@ -10618,7 +10847,9 @@ fn prompt_new_selector_takes_a_name_and_defaults_its_field() {
     // Creating the selector is the whole gesture: no follow-up prompt
     // opens, the new declaration is simply selected in the manager.
     assert!(app.modals.is_empty());
-    let g = app.proj().variables()
+    let g = app
+        .proj()
+        .variables()
         .selectors
         .get("creds")
         .expect("selector created");
@@ -10650,7 +10881,12 @@ fn add_and_remove_group_members_one_at_a_time() {
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     }
     assert_eq!(
-        app.proj().variables().selectors.get("creds").unwrap().fields,
+        app.proj()
+            .variables()
+            .selectors
+            .get("creds")
+            .unwrap()
+            .fields,
         vec!["user_id".to_string(), "customer_id".to_string()]
     );
 
@@ -10665,7 +10901,8 @@ fn add_and_remove_group_members_one_at_a_time() {
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.toasts.messages().len() > toasts_before);
     assert_eq!(
-        app.proj().variables()
+        app.proj()
+            .variables()
             .selectors
             .get("creds")
             .unwrap()
@@ -10684,7 +10921,12 @@ fn add_and_remove_group_members_one_at_a_time() {
     });
     assert!(app.modals.is_empty(), "removal is undoable, no confirm");
     assert_eq!(
-        app.proj().variables().selectors.get("creds").unwrap().fields,
+        app.proj()
+            .variables()
+            .selectors
+            .get("creds")
+            .unwrap()
+            .fields,
         vec!["customer_id".to_string()]
     );
 }
@@ -10910,7 +11152,8 @@ fn confirming_the_value_popup_writes_the_env_scope_and_re_resolves() {
         "{on_disk}"
     );
     assert_eq!(
-        app.proj().resolved().values["base_url"], "https://qa2.example.com",
+        app.proj().resolved().values["base_url"],
+        "https://qa2.example.com",
         "linked tokens re-resolve immediately"
     );
 }
@@ -11310,7 +11553,8 @@ fn remove_is_pending_until_confirm_and_cancel_puts_nothing_on_disk() {
     let vars_on_disk = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
     assert!(vars_on_disk.contains("default"), "{vars_on_disk}");
     assert_eq!(
-        app.proj().resolved().values["base_url"], "https://qa.example.com",
+        app.proj().resolved().values["base_url"],
+        "https://qa.example.com",
         "the env value still supplies"
     );
     // Reopening starts clean: the env value is back on offer to remove.
@@ -11334,7 +11578,8 @@ fn confirming_applies_the_pending_removal_and_the_default_shows_through() {
     let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     assert!(!on_disk.contains("base_url"), "{on_disk}");
     assert_eq!(
-        app.proj().resolved().values["base_url"], "http://localhost:8080",
+        app.proj().resolved().values["base_url"],
+        "http://localhost:8080",
         "the default shows through once the env value is gone"
     );
 }
@@ -12661,7 +12906,10 @@ fn declining_the_migration_leaves_the_files_alone_and_the_project_open() {
         "declining must not touch a single file"
     );
     assert!(!dir.path().join("variables.toml.bak").exists());
-    assert!(app.proj().variables().vars.is_empty(), "variables stay inert");
+    assert!(
+        app.proj().variables().vars.is_empty(),
+        "variables stay inert"
+    );
     assert!(app.proj().resolved().values.is_empty());
 
     // The project itself is still perfectly usable, and the prompt does
@@ -12760,7 +13008,8 @@ fn a_legacy_projects_saved_selections_survive_the_prompt_and_resolve_after_apply
 
     assert_eq!(app.proj().selections_for("qa")["tier"], "gold");
     assert_eq!(
-        app.proj().resolved().values["tier"], "g-qa",
+        app.proj().resolved().values["tier"],
+        "g-qa",
         "the carried-over selection resolves: {:?}",
         app.proj().resolved().values
     );
@@ -13082,7 +13331,7 @@ fn clicking_the_env_value_field_typing_and_clicking_away_writes_the_env_file() {
     // Click at the field's right edge: a click places the caret at the
     // pointer, and these assertions want it at the end of the text.
     let r = field_rect(&mut app, VmField::EnvValue);
-    app.handle_mouse(left_down(r.x + r.width - 2, r.y + 1));
+    app.handle_mouse(left_down(r.x + r.width - 2, r.y));
     assert!(app.varmanager.form.editing.is_some(), "the field is live");
 
     for c in "9".chars() {
@@ -13121,24 +13370,28 @@ fn enter_commits_a_field_edit_and_esc_reverts_it() {
     // throughout: a click places the caret at the pointer, and the
     // assertions want the typed char at the end of the text.)
     let r = field_rect(&mut app, VmField::Description);
-    app.handle_mouse(left_down(r.x + r.width - 2, r.y + 1));
+    app.handle_mouse(left_down(r.x + r.width - 2, r.y));
     app.handle_key(plain('!'));
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(app.varmanager.form.editing.is_none());
     assert_eq!(
-        app.proj().variables().vars["base_url"].description.as_deref(),
+        app.proj().variables().vars["base_url"]
+            .description
+            .as_deref(),
         Some("API root"),
         "Esc must not write anything"
     );
 
     // Enter commits.
     let r = field_rect(&mut app, VmField::Description);
-    app.handle_mouse(left_down(r.x + r.width - 2, r.y + 1));
+    app.handle_mouse(left_down(r.x + r.width - 2, r.y));
     app.handle_key(plain('!'));
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.varmanager.form.editing.is_none());
     assert_eq!(
-        app.proj().variables().vars["base_url"].description.as_deref(),
+        app.proj().variables().vars["base_url"]
+            .description
+            .as_deref(),
         Some("API root!")
     );
 }
@@ -13160,17 +13413,19 @@ fn clicking_directly_from_one_field_into_another_commits_the_first() {
     // Right-edge click: the caret follows the pointer, and the '!' must
     // land at the end of the text.
     let r = field_rect(&mut app, VmField::Description);
-    app.handle_mouse(left_down(r.x + r.width - 2, r.y + 1));
+    app.handle_mouse(left_down(r.x + r.width - 2, r.y));
     for c in "!".chars() {
         app.handle_key(plain(c));
     }
 
     // Straight into the env-value field — no click-away in between.
     let r = field_rect(&mut app, VmField::EnvValue);
-    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    app.handle_mouse(left_down(r.x + 1, r.y));
 
     assert_eq!(
-        app.proj().variables().vars["base_url"].description.as_deref(),
+        app.proj().variables().vars["base_url"]
+            .description
+            .as_deref(),
         Some("API root!"),
         "the description field must have committed, not been discarded"
     );
@@ -13196,7 +13451,7 @@ fn clicking_into_another_field_after_a_failed_commit_keeps_the_original_edit_liv
     });
 
     let r = field_rect(&mut app, VmField::EnvValue);
-    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    app.handle_mouse(left_down(r.x + 1, r.y));
     for c in "sk-typed-secret".chars() {
         app.handle_key(plain(c));
     }
@@ -13205,7 +13460,7 @@ fn clicking_into_another_field_after_a_failed_commit_keeps_the_original_edit_liv
     // first (a secret has no active env to target and can't hold a
     // default), so this must not switch away from it.
     let r = field_rect(&mut app, VmField::Description);
-    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    app.handle_mouse(left_down(r.x + 1, r.y));
 
     assert_eq!(
         app.varmanager.form.editing.as_ref().map(|(f, _)| *f),
@@ -13243,7 +13498,7 @@ fn clicking_a_different_left_row_after_a_failed_commit_keeps_the_original_edit_l
     rendered_text_tall(&mut app);
 
     let r = field_rect(&mut app, VmField::EnvValue);
-    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    app.handle_mouse(left_down(r.x + 1, r.y));
     for c in "sk-typed-secret".chars() {
         app.handle_key(plain(c));
     }
@@ -13293,7 +13548,7 @@ fn a_write_failure_keeps_the_typed_text_and_toasts_without_the_secret_value() {
     });
 
     let r = field_rect(&mut app, VmField::EnvValue);
-    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    app.handle_mouse(left_down(r.x + 1, r.y));
     for c in "sk-typed-secret".chars() {
         app.handle_key(plain(c));
     }
@@ -13358,7 +13613,7 @@ fn the_rename_button_opens_the_same_prompt_as_the_e_key() {
     });
     rendered_text_tall(&mut app);
     let r = app.hits.rect_of(&crate::hit::Hit::VmRename).unwrap();
-    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    app.handle_mouse(left_down(r.x + 1, r.y));
     assert!(matches!(
         app.modals.top(),
         Some(Modal::Prompt {
@@ -13386,7 +13641,7 @@ fn the_delete_button_opens_the_confirm_with_the_usage_list() {
     });
     rendered_text_tall(&mut app);
     let r = app.hits.rect_of(&crate::hit::Hit::VmDelete).unwrap();
-    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    app.handle_mouse(left_down(r.x + 1, r.y));
     assert!(app.modals.is_empty(), "delete is undoable, no confirm");
     assert!(!app.proj().variables().vars.contains_key("base_url"));
     assert!(
@@ -13426,7 +13681,7 @@ fn the_promote_button_promotes_the_requests_override_up_into_the_project() {
     assert!(content.contains("Promote"), "{content}");
 
     let r = app.hits.rect_of(&crate::hit::Hit::VmPromoteBtn).unwrap();
-    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    app.handle_mouse(left_down(r.x + 1, r.y));
     assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
     // Confirm "Default value".
     app.handle_key(plain('d'));
@@ -13558,7 +13813,10 @@ fn fields_editor_remove_button_marks_the_row_and_confirm_deletes_the_field() {
     app.handle_mouse(left_down(r.x, r.y));
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.modals.is_empty(), "removal is undoable, no confirm");
-    assert_eq!(app.proj().variables().selectors["creds"].fields, vec!["user_id"]);
+    assert_eq!(
+        app.proj().variables().selectors["creds"].fields,
+        vec!["user_id"]
+    );
 }
 
 #[test]
@@ -13660,7 +13918,10 @@ fn fields_editor_alt_d_toggles_removal_of_the_focused_row() {
     app.handle_key(alt('d'));
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.modals.is_empty(), "removal is undoable, no confirm");
-    assert_eq!(app.proj().variables().selectors["creds"].fields, vec!["user_id"]);
+    assert_eq!(
+        app.proj().variables().selectors["creds"].fields,
+        vec!["user_id"]
+    );
 }
 
 /// While the fields editor is open, the footer swaps to *its* context
@@ -13804,7 +14065,8 @@ fn clicking_an_entrys_radio_records_the_selection_and_re_resolves_every_field() 
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
     assert_eq!(app.proj().selections_for("qa")["user"], "bob");
     assert_eq!(
-        app.proj().resolved().values["user"], "2002",
+        app.proj().resolved().values["user"],
+        "2002",
         "{{user}} now resolves through the selected entry"
     );
     let state = postui_core::fixtures::load_local_state(dir.path()).unwrap();
@@ -13940,31 +14202,32 @@ fn form_field_double_click_selects_the_word_and_drag_sweeps() {
         r == &crate::components::varmanager::VmRow::Var("base_url".into())
     });
 
-    // Text starts 2 columns into the field ("API root"); a double click on
-    // its first cell selects the word under it.
+    // Text starts `WELL_PAD` columns into the field ("API root"); a double
+    // click on its first cell selects the word under it.
+    use crate::paint::WELL_PAD;
     let r = field_rect(&mut app, VmField::Description);
-    app.handle_mouse(left_down(r.x + 2, r.y + 1));
-    app.handle_mouse(left_down(r.x + 2, r.y + 1)); // within 400ms => clicks == 2
+    app.handle_mouse(left_down(r.x + WELL_PAD, r.y));
+    app.handle_mouse(left_down(r.x + WELL_PAD, r.y)); // within 400ms => clicks == 2
     let (_, input) = app.varmanager.form.editing.as_ref().expect("editing");
     assert_eq!(input.selected_text().as_deref(), Some("API"));
 
     // Dragging on from the double click extends the selection word by
     // word — onto "root" grows it to the whole phrase, back onto the
     // anchored word shrinks it again (the body editor's word sweep).
-    assert!(app.handle_mouse(dragged(r.x + 2 + 6, r.y + 1)));
+    assert!(app.handle_mouse(dragged(r.x + WELL_PAD + 6, r.y)));
     let (_, input) = app.varmanager.form.editing.as_ref().unwrap();
     assert_eq!(input.selected_text().as_deref(), Some("API root"));
-    assert!(app.handle_mouse(dragged(r.x + 2 + 1, r.y + 1)));
+    assert!(app.handle_mouse(dragged(r.x + WELL_PAD + 1, r.y)));
     let (_, input) = app.varmanager.form.editing.as_ref().unwrap();
     assert_eq!(input.selected_text().as_deref(), Some("API"));
-    app.handle_mouse(left_up(r.x + 2 + 1, r.y + 1));
+    app.handle_mouse(left_up(r.x + WELL_PAD + 1, r.y));
 
     // A fresh click collapses the selection; a drag sweeps a new one.
     app.last_click = None;
-    app.handle_mouse(left_down(r.x + 2, r.y + 1));
+    app.handle_mouse(left_down(r.x + WELL_PAD, r.y));
     let (_, input) = app.varmanager.form.editing.as_ref().unwrap();
     assert_eq!(input.selection(), None);
-    assert!(app.handle_mouse(dragged(r.x + 2 + 8, r.y + 1)));
+    assert!(app.handle_mouse(dragged(r.x + WELL_PAD + 8, r.y)));
     let (_, input) = app.varmanager.form.editing.as_ref().unwrap();
     assert_eq!(input.selected_text().as_deref(), Some("API root"));
 }
@@ -14117,9 +14380,7 @@ fn form_focus_advertises_and_handles_the_field_verbs() {
         name: "base_url".into(),
     };
     let open_request = app.editor.current_request();
-    let chips = app
-        .varmanager
-        .footer_chips(app.proj(), Some(&open_request));
+    let chips = app.varmanager.footer_chips(app.proj(), Some(&open_request));
     assert!(
         chips
             .iter()
@@ -14402,7 +14663,10 @@ fn the_field_editor_renames_adds_and_removes_across_variables_and_every_env() {
         slots: vec!["user_id".into()],
     });
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
-    assert_eq!(app.proj().variables().selectors["user"].fields, vec!["user_id"]);
+    assert_eq!(
+        app.proj().variables().selectors["user"].fields,
+        vec!["user_id"]
+    );
     let qa = postui_core::fixtures::load_environment(dir.path(), "qa").unwrap();
     assert_eq!(qa.options["user"]["alice"].values["user_id"], "1001");
     let dev = postui_core::fixtures::load_environment(dir.path(), "dev").unwrap();
@@ -14433,7 +14697,10 @@ fn the_field_editor_renames_adds_and_removes_across_variables_and_every_env() {
         slots: vec!["user_id".into(), String::new()],
     });
     assert!(app.modals.is_empty(), "removal is undoable, no confirm");
-    assert_eq!(app.proj().variables().selectors["user"].fields, vec!["user_id"]);
+    assert_eq!(
+        app.proj().variables().selectors["user"].fields,
+        vec!["user_id"]
+    );
     let qa = postui_core::fixtures::load_environment(dir.path(), "qa").unwrap();
     assert!(
         !qa.options["user"]["alice"]
@@ -14614,7 +14881,7 @@ fn right_clicking_commits_a_live_form_field() {
     // Right-edge click: the caret follows the pointer, and the '9' must
     // land at the end of the text.
     let r = field_rect(&mut app, VmField::EnvValue);
-    app.handle_mouse(left_down(r.x + r.width - 2, r.y + 1));
+    app.handle_mouse(left_down(r.x + r.width - 2, r.y));
     app.handle_key(plain('9'));
 
     let row = app.varmanager.left_cursor;
@@ -14643,7 +14910,7 @@ fn the_keyboard_reaches_the_grid_selects_a_row_and_edits_the_focused_cell() {
     // rather than the left list's selection.
     app.handle_key(arrow(KeyCode::Right));
     assert_eq!(app.varmanager.focus, VmFocus::Grid);
-    app.handle_key(arrow(KeyCode::Down));
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     assert_eq!(app.varmanager.grid.cursor.0, 1);
     assert_eq!(
         app.varmanager.detail,
@@ -15418,8 +15685,8 @@ fn manage_opens_on_the_requested_tab_and_alt_arrows_cycle_tabs() {
     app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
     assert_eq!(
         app.manage.tab,
-        crate::components::manage::ManageTab::Variables,
-        "wraps"
+        crate::components::manage::ManageTab::Settings,
+        "Settings joins the cycle right after Spaces"
     );
     app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::ALT));
     assert_eq!(app.manage.tab, crate::components::manage::ManageTab::Spaces);
@@ -16591,7 +16858,7 @@ mod undo_tests {
         // Right-edge click: the caret follows the pointer, and the '9'
         // must land at the end of the text.
         let r = field_rect(&mut app, VmField::EnvValue);
-        app.handle_mouse(left_down(r.x + r.width - 2, r.y + 1));
+        app.handle_mouse(left_down(r.x + r.width - 2, r.y));
         app.handle_key(plain('9'));
         // Click away commits (Task 8's commit-first rule).
         let row = app.varmanager.left_cursor;
@@ -16634,7 +16901,8 @@ mod undo_tests {
         let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
         assert!(!on_disk.contains("base_url"), "pair removed: {on_disk}");
         assert_eq!(
-            app.proj().resolved().values["base_url"], "http://localhost:8080",
+            app.proj().resolved().values["base_url"],
+            "http://localhost:8080",
             "resolution falls back to the declaration default"
         );
 
@@ -16709,7 +16977,10 @@ mod undo_tests {
         app.handle_mouse(left_down(r.x, r.y));
 
         assert_eq!(
-            app.proj().secrets().get("qa").and_then(|m| m.get("api_key")),
+            app.proj()
+                .secrets()
+                .get("qa")
+                .and_then(|m| m.get("api_key")),
             None,
             "the stored secret is gone"
         );
@@ -16740,7 +17011,10 @@ mod undo_tests {
         });
         app.capture_undo();
         assert_eq!(
-            app.proj().secrets().get("qa").and_then(|m| m.get("api_key")),
+            app.proj()
+                .secrets()
+                .get("qa")
+                .and_then(|m| m.get("api_key")),
             None,
             "the stored secret is gone"
         );
@@ -16757,7 +17031,10 @@ mod undo_tests {
         );
         app.update(Action::Redo);
         assert_eq!(
-            app.proj().secrets().get("qa").and_then(|m| m.get("api_key")),
+            app.proj()
+                .secrets()
+                .get("qa")
+                .and_then(|m| m.get("api_key")),
             None,
             "redo removes it again"
         );
@@ -17934,7 +18211,8 @@ fn extract_selector_from_a_url_selection_creates_the_selector_its_option_and_sel
     assert!(env.contains("[options.region.us-east]"), "{env}");
     assert!(env.contains("region = \"east\""), "{env}");
     assert_eq!(
-        app.proj().selections_for("qa")
+        app.proj()
+            .selections_for("qa")
             .get("region")
             .map(String::as_str),
         Some("us-east"),
@@ -17985,7 +18263,9 @@ fn extract_selector_shared_puts_the_option_in_variables_toml() {
     let env = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     assert!(!env.contains("api_version"), "{env}");
     assert_eq!(
-        app.proj().local().shared_selections
+        app.proj()
+            .local()
+            .shared_selections
             .get("api_version")
             .map(String::as_str),
         Some("v2")
@@ -20015,8 +20295,12 @@ fn escape_disarms_the_press_so_motion_cannot_restart_the_drag() {
 fn dragging_at_the_list_edge_scrolls_on_tick() {
     let (mut app, dir) = spaced_app();
     for i in 0..60 {
-        postui_core::fixtures::save_request(dir.path(), &format!("main/r{i:02}"), &req("https://x"))
-            .unwrap();
+        postui_core::fixtures::save_request(
+            dir.path(),
+            &format!("main/r{i:02}"),
+            &req("https://x"),
+        )
+        .unwrap();
     }
     app.update(Action::RefreshSidebar);
     let r0 = row_rect(&mut app, 0);
@@ -21258,7 +21542,8 @@ fn undo_of_a_space_delete_restores_the_space_its_request_and_its_memory() {
     app.update(Action::Undo);
     assert_eq!(app.proj().spaces(), ["main", "auth"]);
     assert_eq!(
-        app.proj().local().active_space, "main",
+        app.proj().local().active_space,
+        "main",
         "undo returns to the deleted space"
     );
     // Exactly one space switch: restoring `.local/state.toml` must not
@@ -21360,7 +21645,10 @@ fn saving_over_an_outside_edit_asks_first_and_writes_nothing() {
         choices.iter().any(|(c, _, _)| *c == 'r'),
         "a file that still exists can be reloaded"
     );
-    assert!(app.editor.is_dirty(), "nothing was saved, so nothing is clean");
+    assert!(
+        app.editor.is_dirty(),
+        "nothing was saved, so nothing is clean"
+    );
 }
 
 #[test]
@@ -21552,7 +21840,10 @@ fn saving_a_slug_the_project_no_longer_holds_re_seeds_before_deciding() {
 
     dirty_the_editor(&mut app);
     app.handle_key(ctrl('s'));
-    assert!(app.modals.is_empty(), "the file had not moved, so no question");
+    assert!(
+        app.modals.is_empty(),
+        "the file had not moved, so no question"
+    );
     assert!(
         app.proj().held_request("main/ping").is_some(),
         "the save re-seeded the held entry rather than writing blind"
@@ -21572,7 +21863,10 @@ fn saving_a_slug_the_project_no_longer_holds_re_seeds_before_deciding() {
         matches!(app.modals.top(), Some(Modal::Confirm { .. })),
         "the drift check is live again"
     );
-    assert_eq!(on_disk_ping_url(&app), "https://x/ping-edited-outside-the-app");
+    assert_eq!(
+        on_disk_ping_url(&app),
+        "https://x/ping-edited-outside-the-app"
+    );
 }
 
 #[test]
@@ -21592,9 +21886,15 @@ fn saving_a_slug_that_is_neither_held_nor_readable_toasts_and_fails_the_gate() {
 
     app.update(Action::Quit);
     press(&mut app, 's');
-    assert!(!app.should_quit, "a save that could not even be checked stops the quit");
     assert!(
-        app.toasts.messages().iter().any(|m| m.contains("main/ping")),
+        !app.should_quit,
+        "a save that could not even be checked stops the quit"
+    );
+    assert!(
+        app.toasts
+            .messages()
+            .iter()
+            .any(|m| m.contains("main/ping")),
         "the real error is reported: {:?}",
         app.toasts.messages()
     );
@@ -21630,7 +21930,9 @@ fn undo_of_a_move_all_does_not_launder_an_outside_edit_into_a_clean_save() {
         "the outside edit the undo carried back is still unseen by the editor"
     );
     assert_eq!(
-        postui_core::fixtures::load_request(dir.path(), "main/alpha").unwrap().url,
+        postui_core::fixtures::load_request(dir.path(), "main/alpha")
+            .unwrap()
+            .url,
         "https://x/edited-outside-the-app",
         "and nothing was written"
     );
@@ -21649,9 +21951,14 @@ fn undo_of_a_move_all_without_an_outside_edit_saves_without_asking() {
     dirty_the_editor(&mut app);
     let mine = app.editor.url.text().to_string();
     app.handle_key(ctrl('s'));
-    assert!(app.modals.is_empty(), "the app's own replay is not an outside edit");
+    assert!(
+        app.modals.is_empty(),
+        "the app's own replay is not an outside edit"
+    );
     assert_eq!(
-        postui_core::fixtures::load_request(dir.path(), "main/alpha").unwrap().url,
+        postui_core::fixtures::load_request(dir.path(), "main/alpha")
+            .unwrap()
+            .url,
         mine
     );
 }
@@ -21698,7 +22005,9 @@ fn promote_refuses_when_the_open_request_changed_outside_the_app() {
         "the variable half never ran"
     );
     assert_eq!(
-        postui_core::fixtures::load_request(dir.path(), "main/ping").unwrap().url,
+        postui_core::fixtures::load_request(dir.path(), "main/ping")
+            .unwrap()
+            .url,
         "https://x/ping-edited-outside-the-app",
         "and the request file is untouched"
     );
@@ -21737,12 +22046,17 @@ fn extract_to_request_over_an_outside_edit_asks_instead_of_overwriting() {
         "the ordinary drift confirm handles it"
     );
     assert_eq!(
-        postui_core::fixtures::load_request(dir.path(), "main/ping").unwrap().url,
+        postui_core::fixtures::load_request(dir.path(), "main/ping")
+            .unwrap()
+            .url,
         "https://x/ping-edited-outside-the-app",
         "nothing is written until the user chooses"
     );
     assert!(
-        !app.toasts.messages().iter().any(|m| m.starts_with("extracted to")),
+        !app.toasts
+            .messages()
+            .iter()
+            .any(|m| m.starts_with("extracted to")),
         "nothing was written, so nothing is claimed: {:?}",
         app.toasts.messages()
     );
@@ -21761,7 +22075,10 @@ fn a_reload_from_disk_is_its_own_undo_step_and_says_so() {
     app.capture_undo();
     app.handle_key(ctrl('s'));
     press(&mut app, 'r');
-    assert_eq!(app.editor.url.text(), "https://x/ping-edited-outside-the-app");
+    assert_eq!(
+        app.editor.url.text(),
+        "https://x/ping-edited-outside-the-app"
+    );
     assert!(
         rendered_text(&mut app).contains("^Z undoes"),
         "the toast advertises the escape hatch, as Discard's does"
@@ -21868,6 +22185,145 @@ fn reload_from_disk_keeps_the_current_settings_when_config_toml_will_not_parse()
         .filter(|m| m.contains("config.toml"))
         .collect();
     assert_eq!(named.len(), 1, "{warnings:?}");
+}
+
+/// A file that breaks after startup must not make the tab lie: the rows
+/// show what the session loaded with, and every write would be refused
+/// anyway, so they are disabled -- except Edit…, which is the way out.
+#[test]
+fn a_config_broken_after_startup_banners_and_disables_the_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("config.toml"), "animations = false\n").unwrap();
+    let mut app = App::new_for_test();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+    app.update(Action::ReloadFromDisk);
+    assert!(app.config_error.is_none());
+
+    std::fs::write(dir.path().join("config.toml"), "not = [toml").unwrap();
+    app.update(Action::ReloadFromDisk);
+
+    assert!(
+        app.config_error.is_some(),
+        "a reload that refuses the file must record why"
+    );
+    assert!(
+        !app.ui_settings_are_editable(),
+        "rows are disabled while writes would be refused"
+    );
+}
+
+/// A broken config.toml disables the seven setting rows, but the
+/// config.toml file row's Edit… and Reset are the two ways *out* of that
+/// state (`Action::ForceResetConfigFile`, Task 14, exists precisely for
+/// a config.toml that won't parse) -- so both stay live, register hits,
+/// and still activate from the keyboard, exactly as when the file is
+/// fine.
+#[test]
+fn a_broken_config_leaves_the_way_out_live() {
+    use crate::components::manage::ManageTab;
+    use crate::components::settings::{SettingsField, SettingsRow, SettingsTab};
+
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("config.toml"), "not = [toml").unwrap();
+    let mut app = App::new_for_test();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+    app.update(Action::ReloadFromDisk);
+    assert!(app.config_error.is_some());
+    app.update(Action::OpenManage {
+        tab: Some(ManageTab::Settings),
+    });
+
+    // Mouse: every setting row registers no hit at all -- nothing that
+    // looks live and silently refuses a write.
+    render_once(&mut app);
+    for field in [
+        SettingsField::Animations,
+        SettingsField::HoverHints,
+        SettingsField::JqTab,
+        SettingsField::AiCmd,
+        SettingsField::AiConfirmed,
+        SettingsField::ClipboardCmd,
+        SettingsField::Osc52Limit,
+    ] {
+        assert!(
+            app.hits.rect_of(&Hit::SettingsControl(field)).is_none(),
+            "{field:?} must not be clickable while config.toml won't parse"
+        );
+    }
+    let config_row = SettingsTab::rows()
+        .iter()
+        .position(|r| *r == SettingsRow::File(crate::action::ConfigFile::Config))
+        .unwrap();
+    assert!(app.hits.rect_of(&Hit::SettingsRow(config_row)).is_some());
+    assert!(
+        app.hits
+            .rect_of(&Hit::SettingsFile {
+                file: crate::action::ConfigFile::Config,
+                reset: false,
+            })
+            .is_some(),
+        "Edit… is one of the two ways out"
+    );
+    assert!(
+        app.hits
+            .rect_of(&Hit::SettingsFile {
+                file: crate::action::ConfigFile::Config,
+                reset: true,
+            })
+            .is_some(),
+        "Reset is the other -- ForceResetConfigFile handles the unparseable case"
+    );
+
+    // Keyboard: Edit… still opens the editor, Reset still activates
+    // (through the confirm every Reset goes behind).
+    app.settings.cursor = config_row;
+    app.settings.file_button = 0;
+    assert!(app.activate_settings_row());
+    assert_eq!(
+        app.pending_terminal_action,
+        Some(Action::EditConfigFile(crate::action::ConfigFile::Config)),
+        "Edit… still opens the file from the keyboard"
+    );
+    app.pending_terminal_action = None;
+
+    app.settings.file_button = 1;
+    assert!(app.activate_settings_row());
+    assert!(
+        matches!(app.modals.top(), Some(Modal::Confirm { .. })),
+        "Reset still raises its confirm from the keyboard"
+    );
+}
+
+/// Reload re-reads what is on disk around unsaved work; it does not
+/// discard it. The editor buffer already works this way, and a half-typed
+/// ai_cmd is no different.
+#[test]
+fn a_reload_does_not_stomp_a_live_settings_edit() {
+    use crate::components::manage::ManageTab;
+    use crate::components::settings::SettingsField;
+
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("config.toml"), "ai_cmd = \"claude -p\"\n").unwrap();
+    let mut app = App::new_for_test();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+    app.screen = Screen::Manage;
+    app.manage.tab = ManageTab::Settings;
+
+    app.settings.editing = Some(SettingsField::AiCmd);
+    app.settings.set_field_text("my-half-typed-comm");
+
+    app.update(Action::ReloadFromDisk);
+
+    assert_eq!(
+        app.settings.editing,
+        Some(SettingsField::AiCmd),
+        "the edit survives the reload"
+    );
+    assert_eq!(
+        app.settings.field_text(),
+        "my-half-typed-comm",
+        "and so does what was typed into it"
+    );
 }
 
 #[test]
@@ -22172,8 +22628,10 @@ fn reload_from_disk_resyncs_the_variable_manager_while_manage_is_open() {
     );
 }
 
+/// The header's Reload chip -- Reload's new home now that it has left the
+/// Manage bar -- runs the same reload a click always did.
 #[test]
-fn the_manage_bar_reload_button_runs_the_reload() {
+fn the_header_reload_chip_runs_the_reload() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -22458,4 +22916,1116 @@ fn footer_chip_hints_describe_the_action() {
     app.handle_mouse(moved(del.x, del.y));
     let row = rendered_row(&mut app, 160, FOOTER_ROW);
     assert!(row.contains("Delete this row"), "{row:?}");
+}
+
+/// A syntax error in config.toml must block startup rather than drop the
+/// user into a session running on defaults -- with, silently, no project
+/// list either.
+#[test]
+fn a_broken_config_blocks_startup_until_answered() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("config.toml"), "not = [toml").unwrap();
+    let mut app = App::new_for_test();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+    let (_cfg, loaded, _warnings) = crate::config::Config::load_from(
+        crate::config::Config::at(dir.path().to_path_buf()),
+        false,
+    );
+    app.config_error = loaded.config_error;
+    app.apply_startup_config_gate();
+
+    assert!(
+        app.modals.top().is_some(),
+        "a broken config must raise a blocking modal"
+    );
+    // Continue-without-saving is the only path that reaches a session,
+    // and it is honest about what it costs.
+    app.update(Action::ConfigStartupChoice(
+        crate::action::ConfigStartupChoice::ContinueUnsaved,
+    ));
+    assert!(app.modals.top().is_none(), "the choice dismisses the modal");
+}
+
+/// An editor that comes back with nothing (`vim :cq`, a crash, an
+/// unreadable file) must not take the user's in-progress config edit
+/// with it. On a resumed round-trip the temp copy is the only copy of
+/// that work, so it stays on disk and the modal goes back up.
+#[test]
+fn an_abandoned_resumed_config_edit_keeps_its_temp_copy() {
+    use crate::action::ConfigFile;
+    let dir = tempfile::tempdir().unwrap();
+    let temp = dir.path().join("postui-config-abc.toml");
+    std::fs::write(&temp, "half = written").unwrap();
+    let mut app = App::new_for_test();
+
+    let remove = app.abandon_config_edit(ConfigFile::Config, temp.clone(), true);
+
+    assert!(!remove, "a resumed edit's copy is never dropped");
+    assert!(temp.exists());
+    let Some(Modal::ConfigEditInvalid { path, .. }) = app.modals.top() else {
+        panic!("Keep editing must still reach the work");
+    };
+    assert_eq!(path, &temp);
+
+    // A first pass has nothing the live file does not already have, so
+    // its copy is the caller's to remove.
+    let mut app = App::new_for_test();
+    assert!(app.abandon_config_edit(ConfigFile::Config, temp.clone(), false));
+    assert!(app.modals.top().is_none());
+}
+
+/// Reset raises a confirm, and Esc on that confirm resets nothing --
+/// `config.toml` is exactly as broken as it was, so the gate goes back
+/// up rather than letting the session run on defaults with an empty
+/// `[projects]`.
+#[test]
+fn escaping_the_reset_confirm_puts_the_startup_gate_back() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("config.toml"), "not = [toml").unwrap();
+    let mut app = App::new_for_test();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+    let (_cfg, loaded, _warnings) = crate::config::Config::load_from(
+        crate::config::Config::at(dir.path().to_path_buf()),
+        false,
+    );
+    app.config_error = loaded.config_error;
+    app.apply_startup_config_gate();
+
+    app.update(Action::ConfigStartupChoice(
+        crate::action::ConfigStartupChoice::Reset,
+    ));
+    assert!(
+        matches!(app.modals.top(), Some(Modal::Confirm { .. })),
+        "Reset asks first"
+    );
+
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(
+        matches!(app.modals.top(), Some(Modal::ConfigStartup { .. })),
+        "a cancelled reset leaves the question unanswered, so it is asked again"
+    );
+
+    // And the answer that does resolve it still works from there.
+    app.update(Action::ConfigStartupChoice(
+        crate::action::ConfigStartupChoice::ContinueUnsaved,
+    ));
+    assert!(app.modals.top().is_none());
+}
+
+/// The other escape route: Edit... hands the file to `$EDITOR`, and an
+/// editor that will not launch comes back with nothing but a toast. The
+/// config is still broken, so the gate returns.
+#[test]
+fn an_editor_that_never_ran_puts_the_startup_gate_back() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("config.toml"), "not = [toml").unwrap();
+    let mut app = App::new_for_test();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+    let (_cfg, loaded, _warnings) = crate::config::Config::load_from(
+        crate::config::Config::at(dir.path().to_path_buf()),
+        false,
+    );
+    app.config_error = loaded.config_error;
+    app.apply_startup_config_gate();
+
+    app.update(Action::ConfigStartupChoice(
+        crate::action::ConfigStartupChoice::Edit,
+    ));
+    assert!(
+        app.modals.top().is_none(),
+        "the editor is about to take the screen, so nothing is up"
+    );
+    assert!(
+        app.pending_terminal_action.take().is_some(),
+        "the main loop was handed the editor run"
+    );
+
+    // What `main::run_editor` does when the editor could not be run: a
+    // toast, and nothing else.
+    app.update(Action::ShowToast(
+        "could not run nosuchditor: no such file".into(),
+        ToastKind::Error,
+    ));
+    assert!(
+        matches!(app.modals.top(), Some(Modal::ConfigStartup { .. })),
+        "the config is still broken, so the question comes back"
+    );
+}
+
+/// The same block Esc already gets: a stray click outside the modal must
+/// not be a back door out of it. Only an actual answer dismisses it.
+#[test]
+fn the_startup_config_modal_ignores_click_away() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("config.toml"), "not = [toml").unwrap();
+    let mut app = App::new_for_test();
+    let (_cfg, loaded, _warnings) = crate::config::Config::load_from(
+        crate::config::Config::at(dir.path().to_path_buf()),
+        false,
+    );
+    app.config_error = loaded.config_error;
+    app.apply_startup_config_gate();
+
+    click_hit(&mut app, Hit::ModalOutside);
+    assert!(
+        app.modals.top().is_some(),
+        "click-away must not dismiss the startup config modal"
+    );
+
+    app.update(Action::ConfigStartupChoice(
+        crate::action::ConfigStartupChoice::ContinueUnsaved,
+    ));
+    assert!(
+        app.modals.top().is_none(),
+        "an actual answer still closes it"
+    );
+}
+
+/// Edit… hands the editor a copy. Whatever happens to that copy, the
+/// live file is untouched until its text validates.
+#[test]
+fn an_invalid_edit_leaves_the_live_config_alone_and_offers_to_resume() {
+    let dir = tempfile::tempdir().unwrap();
+    let live = dir.path().join("config.toml");
+    std::fs::write(&live, "animations = false\n").unwrap();
+    let mut app = App::new_for_test();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+
+    let temp = dir.path().join("scratch.toml");
+    std::fs::write(&temp, "not = [toml").unwrap();
+    app.update(Action::ConfigEditInvalid {
+        file: crate::action::ConfigFile::Config,
+        path: temp.clone(),
+        error: "expected `]`".into(),
+    });
+
+    assert!(
+        app.modals.top().is_some(),
+        "invalid text must raise the modal"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&live).unwrap(),
+        "animations = false\n",
+        "the live file must not be touched by an invalid edit"
+    );
+    assert!(
+        temp.exists(),
+        "the temp file survives so editing can resume"
+    );
+
+    app.update(Action::ConfigEditDiscard { path: temp.clone() });
+    assert!(!temp.exists(), "discard removes the temp file");
+    assert_eq!(
+        std::fs::read_to_string(&live).unwrap(),
+        "animations = false\n",
+        "discard still leaves the live file alone"
+    );
+}
+
+/// Same rule `the_startup_config_modal_ignores_click_away` proves for the
+/// startup gate, for the invalid-edit modal: a stray click outside must
+/// not silently drop the user's in-progress edit.
+#[test]
+fn the_config_edit_invalid_modal_ignores_click_away() {
+    let dir = tempfile::tempdir().unwrap();
+    let temp = dir.path().join("scratch.toml");
+    std::fs::write(&temp, "not = [toml").unwrap();
+    let mut app = App::new_for_test();
+    app.update(Action::ConfigEditInvalid {
+        file: crate::action::ConfigFile::Config,
+        path: temp.clone(),
+        error: "expected `]`".into(),
+    });
+
+    click_hit(&mut app, Hit::ModalOutside);
+    assert!(
+        app.modals.top().is_some(),
+        "click-away must not dismiss the invalid-edit modal"
+    );
+    assert!(
+        temp.exists(),
+        "click-away must not drop the temp file either"
+    );
+
+    app.update(Action::ConfigEditDiscard { path: temp.clone() });
+    assert!(
+        app.modals.top().is_none(),
+        "an actual answer still closes it"
+    );
+    assert!(!temp.exists(), "discard removes the temp file");
+}
+
+/// `Action::ConfigEditDiscard` must answer only `Modal::ConfigEditInvalid`
+/// -- never pop (or touch the temp file of) whatever else happens to be
+/// on top, or nothing at all.
+#[test]
+fn config_edit_discard_only_answers_its_own_modal() {
+    let dir = tempfile::tempdir().unwrap();
+    let temp = dir.path().join("scratch.toml");
+    std::fs::write(&temp, "not = [toml").unwrap();
+    let mut app = App::new_for_test();
+
+    assert!(
+        !app.update(Action::ConfigEditDiscard { path: temp.clone() }),
+        "nothing to answer -> no-op"
+    );
+    assert!(
+        temp.exists(),
+        "a stray discard must not remove an unrelated temp file"
+    );
+
+    app.modals.push(Modal::Message {
+        title: "Unrelated".into(),
+        body: "some other modal".into(),
+    });
+    assert!(
+        !app.update(Action::ConfigEditDiscard { path: temp.clone() }),
+        "the top modal isn't ConfigEditInvalid -> no-op"
+    );
+    assert!(
+        app.modals.top().is_some(),
+        "an unrelated modal must not be popped by a discard meant for another"
+    );
+    assert!(temp.exists());
+}
+
+/// A write failure past validation is not silently accepted -- the
+/// caller still has to raise `Action::ConfigEditInvalid` with it, the
+/// same as a syntax error, so the user's already-validated edit isn't
+/// stranded with no way back.
+#[test]
+fn a_write_failure_is_reported_not_swallowed() {
+    let dir = tempfile::tempdir().unwrap();
+    // A directory in the way of the write turns `write_validated` into a
+    // reliable, portable I/O failure.
+    std::fs::create_dir(dir.path().join("config.toml")).unwrap();
+    let mut app = App::new_for_test();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+
+    let error = app
+        .validate_and_write_config_edit(crate::action::ConfigFile::Config, "animations = true\n");
+    assert!(
+        error.is_some(),
+        "a write failure must be reported, not silently swallowed"
+    );
+}
+
+/// The Settings tab is fully operable from the keyboard: the cursor
+/// reaches a row, enter activates its control, and the change is on disk
+/// before the key is released -- there is no save step.
+#[test]
+fn enter_on_a_settings_row_writes_the_change_straight_to_config_toml() {
+    use crate::components::manage::ManageTab;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("config.toml"), "animations = true\n").unwrap();
+    let mut app = App::new_for_test();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+    app.screen = Screen::Manage;
+    app.manage.tab = ManageTab::Settings;
+    app.ui_settings.animations = true;
+
+    // Row 0 is Animations; enter toggles it.
+    app.handle_key(ratatui::crossterm::event::KeyEvent::from(KeyCode::Enter));
+
+    assert!(!app.ui_settings.animations, "the toggle applied in memory");
+    let text = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+    assert!(
+        text.contains("animations = false"),
+        "the change must be on disk with no save step: {text:?}"
+    );
+}
+
+/// `Config::edit` refuses a `config.toml` that will not parse. The
+/// control must not go on showing a state that never landed -- the write
+/// says so and the value on disk stands.
+#[test]
+fn a_refused_settings_write_toasts_and_leaves_the_value_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("config.toml"), "not = [toml").unwrap();
+    let mut app = App::new_for_test();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+    app.ui_settings.hover_hints = true;
+
+    app.update(Action::SetUiFlag {
+        key: "hover_hints",
+        value: false,
+    });
+
+    assert!(
+        app.ui_settings.hover_hints,
+        "a refused write must leave the control showing the on-disk value"
+    );
+    let said = app.toasts.messages();
+    assert!(
+        said.iter().any(|m| m.contains("config.toml")),
+        "a refused write names the file: {said:?}"
+    );
+}
+
+/// osc52_limit is rejected, never coerced: a silent 0 would disable OSC
+/// 52 copying without ever saying so. The edit stays open on what was
+/// typed so it can be fixed.
+#[test]
+fn a_bad_osc52_limit_is_rejected_and_the_stored_value_stands() {
+    use crate::components::settings::SettingsField;
+    let mut app = App::new_for_test();
+    app.ui_settings.osc52_limit = 65536;
+    app.settings.begin_edit(SettingsField::Osc52Limit, "abc");
+
+    app.commit_settings_edit();
+
+    assert_eq!(app.ui_settings.osc52_limit, 65536, "the old value stands");
+    assert_eq!(
+        app.settings.editing,
+        Some(SettingsField::Osc52Limit),
+        "the edit stays open on what was typed"
+    );
+    assert!(
+        app.toasts.messages().iter().any(|m| m.contains("65536")),
+        "the toast says what was expected: {:?}",
+        app.toasts.messages()
+    );
+
+    app.settings.begin_edit(SettingsField::Osc52Limit, "1024");
+    app.commit_settings_edit();
+    assert_eq!(app.ui_settings.osc52_limit, 1024);
+    assert!(app.settings.editing.is_none());
+}
+
+/// A refused `osc52_limit` keeps its edit open, so a click landing on
+/// another row must not move the cursor out from under it -- `editing`
+/// and `cursor` would then name different rows and the painted well
+/// would sit where the cursor no longer is. The click is swallowed; the
+/// refusal's toast is the answer.
+#[test]
+fn a_click_during_a_refused_settings_edit_is_swallowed() {
+    use crate::components::manage::ManageTab;
+    use crate::components::settings::{SettingsField, SettingsRow, SettingsTab};
+    let mut app = App::new_for_test();
+    app.update(Action::OpenManage {
+        tab: Some(ManageTab::Settings),
+    });
+    let row_of = |field| {
+        SettingsTab::rows()
+            .iter()
+            .position(|r| *r == SettingsRow::Setting(field))
+            .unwrap()
+    };
+    let osc_row = row_of(SettingsField::Osc52Limit);
+    app.settings.cursor = osc_row;
+    app.settings.begin_edit(SettingsField::Osc52Limit, "abc");
+
+    click_hit(&mut app, Hit::SettingsRow(row_of(SettingsField::AiCmd)));
+
+    assert_eq!(
+        app.settings.editing,
+        Some(SettingsField::Osc52Limit),
+        "the refused edit stays open"
+    );
+    assert_eq!(
+        app.settings.cursor, osc_row,
+        "and the cursor stays on the row the well is painted under"
+    );
+
+    // A commit that *succeeds* lets the very same click through.
+    app.settings.begin_edit(SettingsField::Osc52Limit, "1024");
+    click_hit(&mut app, Hit::SettingsRow(row_of(SettingsField::AiCmd)));
+    assert!(app.settings.editing.is_none());
+    assert_eq!(app.settings.cursor, row_of(SettingsField::AiCmd));
+}
+
+/// A live Settings field does not survive a click that lands anywhere
+/// else on the page -- bare background included. The typed text commits
+/// (typing is never silently thrown away) and the keyboard cursor goes
+/// with it: on a tab with no selection band the cursor *is* a control
+/// lifting its own fill, so one left behind after the click has landed
+/// elsewhere says "type here" about a row that will no longer answer.
+#[test]
+fn clicking_off_a_settings_field_commits_it_and_drops_the_cursor() {
+    use crate::components::manage::ManageTab;
+    use crate::components::settings::SettingsField;
+    let mut app = App::new_for_test();
+    app.update(Action::OpenManage {
+        tab: Some(ManageTab::Settings),
+    });
+    assert!(
+        app.settings.focused,
+        "opening the tab hands it the cursor to begin with"
+    );
+    app.settings.begin_edit(SettingsField::AiCmd, "llm --pipe");
+
+    // A point on the tab that registers no hit at all -- the pane's own
+    // background below the last row is the easiest one to find.
+    render_once(&mut app);
+    let (x, y) = (0..40u16)
+        .rev()
+        .flat_map(|y| (0..120u16).map(move |x| (x, y)))
+        .find(|(x, y)| app.hits.hit_at(*x, *y).is_none())
+        .expect("the tab has some bare background");
+    app.handle_mouse(left_down(x, y));
+
+    assert!(app.settings.editing.is_none(), "the edit ended");
+    assert_eq!(
+        app.ui_settings.ai_cmd, "llm --pipe",
+        "and committed rather than being thrown away"
+    );
+    assert!(!app.settings.focused, "the cursor went with it");
+
+    // The keyboard asks for it back, and the very next arrow moves
+    // something the user can see.
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert!(app.settings.focused);
+}
+
+/// The same rule for a click on a *hit* outside the tab's own controls:
+/// the Manage tab strip sits right above the rows, and clicking it must
+/// not leave a control lifted on the tab it just left.
+#[test]
+fn clicking_the_tab_strip_drops_the_settings_cursor_too() {
+    use crate::components::manage::ManageTab;
+    let mut app = App::new_for_test();
+    app.update(Action::OpenManage {
+        tab: Some(ManageTab::Settings),
+    });
+    assert!(app.settings.focused);
+    click_hit(&mut app, Hit::ManageTab(0));
+    assert!(
+        !app.settings.focused,
+        "a click on the strip is a click away from the tab's controls"
+    );
+}
+
+/// Clicking the well of the field already under edit leaves it exactly
+/// as it is. Committing and reopening would select-all over a rejected
+/// value and hand back the stored one -- silently destroying the typed
+/// text the refusal asked the user to fix.
+#[test]
+fn clicking_the_live_field_does_not_commit_and_reopen_it() {
+    use crate::components::manage::ManageTab;
+    use crate::components::settings::SettingsField;
+    let mut app = App::new_for_test();
+    app.update(Action::OpenManage {
+        tab: Some(ManageTab::Settings),
+    });
+    app.ui_settings.osc52_limit = 65536;
+    app.settings.begin_edit(SettingsField::Osc52Limit, "abc");
+
+    click_hit(&mut app, Hit::SettingsControl(SettingsField::Osc52Limit));
+
+    assert_eq!(app.settings.editing, Some(SettingsField::Osc52Limit));
+    assert_eq!(
+        app.settings.field_text(),
+        "abc",
+        "the rejected text survives the click"
+    );
+    assert!(
+        app.toasts.messages().is_empty(),
+        "and nothing was committed, so nothing was refused: {:?}",
+        app.toasts.messages()
+    );
+}
+
+/// An empty command field clears the key rather than writing `""`: an
+/// empty `clipboard_cmd` is `sh -c ""`, which would swallow every copy
+/// in silence.
+#[test]
+fn clearing_a_command_field_removes_the_key_rather_than_emptying_it() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("config.toml"),
+        "clipboard_cmd = \"pbcopy\"\n",
+    )
+    .unwrap();
+    let mut app = App::new_for_test();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+    app.ui_settings.clipboard_cmd = Some("pbcopy".into());
+
+    app.update(Action::SetUiString {
+        key: "clipboard_cmd",
+        value: String::new(),
+    });
+
+    assert_eq!(app.ui_settings.clipboard_cmd, None);
+    let text = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+    assert!(!text.contains("clipboard_cmd"), "{text:?}");
+}
+
+/// A parseable config.toml's Reset confirm promises the project list is
+/// safe, and confirming it keeps that promise: `[projects]` survives
+/// while the UI keys are gone.
+#[test]
+fn resetting_a_parseable_config_confirm_promises_and_keeps_the_project_list() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("config.toml"),
+        "animations = false\n\n[projects]\nknown = [\"/tmp/a\"]\nlast = \"/tmp/a\"\n",
+    )
+    .unwrap();
+    let mut app = App::new_for_test();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+
+    app.update(Action::ResetConfigFile(crate::action::ConfigFile::Config));
+    let Some(crate::components::modal::Modal::Confirm { body, choices, .. }) = app.modals.top()
+    else {
+        panic!("Reset raises a confirm");
+    };
+    assert!(
+        body.contains("preserved"),
+        "a parseable file promises the project list is kept: {body:?}"
+    );
+    assert!(
+        !body.contains("lost"),
+        "must not also warn of loss: {body:?}"
+    );
+    let confirm = choices[0].2.clone();
+    app.modals.pop();
+    for action in confirm {
+        app.update(action);
+    }
+
+    let text = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+    assert!(!text.contains("animations"), "the UI key is gone: {text:?}");
+    let (registry, _) = crate::config::ProjectsRegistry::parse(&text);
+    assert_eq!(
+        registry.known,
+        vec![std::path::PathBuf::from("/tmp/a")],
+        "the project list survived, as promised"
+    );
+}
+
+/// A config.toml broken badly enough to lose `[projects]` gets an honest
+/// confirm instead: the wording warns of loss, and confirming it really
+/// does replace the whole file rather than silently failing and leaving
+/// Reset unable to get the user unstuck.
+#[test]
+fn resetting_an_unparseable_config_confirm_warns_and_replaces_the_file() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("config.toml"), "not = [toml").unwrap();
+    let mut app = App::new_for_test();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+
+    app.update(Action::ResetConfigFile(crate::action::ConfigFile::Config));
+    let Some(crate::components::modal::Modal::Confirm { body, choices, .. }) = app.modals.top()
+    else {
+        panic!("Reset raises a confirm");
+    };
+    assert!(
+        body.contains("lost"),
+        "an unparseable file warns the project list will be lost: {body:?}"
+    );
+    assert!(
+        !body.contains("preserved"),
+        "must not also promise safety: {body:?}"
+    );
+    let confirm = choices[0].2.clone();
+    app.modals.pop();
+    for action in confirm {
+        app.update(action);
+    }
+
+    let text = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+    assert!(text.is_empty(), "the broken file was replaced: {text:?}");
+}
+
+/// Resetting keys.toml always writes the commented seed, whether or not
+/// a file was there to begin with -- the outcome is the same file either
+/// way, never a no-op.
+#[test]
+fn resetting_keys_writes_the_seed_with_or_without_an_existing_file() {
+    let seed = crate::keys::keys_seed(&crate::keys::Keymap::default_bindings());
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = App::new_for_test();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+    assert!(!dir.path().join("keys.toml").exists(), "starts absent");
+
+    app.update(Action::ResetConfigFile(crate::action::ConfigFile::Keys));
+    let Some(crate::components::modal::Modal::Confirm { choices, .. }) = app.modals.top() else {
+        panic!("Reset raises a confirm");
+    };
+    let confirm = choices[0].2.clone();
+    app.modals.pop();
+    for action in confirm {
+        app.update(action);
+    }
+    let text = std::fs::read_to_string(dir.path().join("keys.toml")).unwrap();
+    assert_eq!(text, seed, "an absent file resets to the seed");
+
+    // Now reset again with the seed already present, plus an override,
+    // to confirm the same outcome either way.
+    std::fs::write(
+        dir.path().join("keys.toml"),
+        format!("{seed}\nquit = \"ctrl+q\"\n"),
+    )
+    .unwrap();
+    app.update(Action::ResetConfigFile(crate::action::ConfigFile::Keys));
+    let Some(crate::components::modal::Modal::Confirm { choices, .. }) = app.modals.top() else {
+        panic!("Reset raises a confirm");
+    };
+    let confirm = choices[0].2.clone();
+    app.modals.pop();
+    for action in confirm {
+        app.update(action);
+    }
+    let text = std::fs::read_to_string(dir.path().join("keys.toml")).unwrap();
+    assert_eq!(text, seed, "a present file resets to the same seed");
+}
+
+/// A Files row is aimed with left/right and run with enter -- the same
+/// two keys every other row uses, so the section is not mouse-only.
+#[test]
+fn a_files_row_runs_edit_or_reset_from_the_keyboard() {
+    use crate::components::manage::ManageTab;
+    use crate::components::settings::{SettingsRow, SettingsTab};
+    use ratatui::crossterm::event::KeyEvent;
+    let mut app = App::new_for_test();
+    app.screen = Screen::Manage;
+    app.manage.tab = ManageTab::Settings;
+    let first_file = SettingsTab::rows()
+        .iter()
+        .position(|r| matches!(r, SettingsRow::File(_)))
+        .unwrap();
+    app.settings.cursor = first_file;
+
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(
+        app.pending_terminal_action,
+        Some(Action::EditConfigFile(crate::action::ConfigFile::Config)),
+        "Edit… is the left button"
+    );
+    app.pending_terminal_action = None;
+
+    app.handle_key(KeyEvent::from(KeyCode::Right));
+    assert_eq!(app.settings.file_button, 1);
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    let raised_confirm = matches!(
+        app.modals.top(),
+        Some(crate::components::modal::Modal::Confirm { body, .. })
+            if body.contains("config.toml") || body.contains("project list")
+    );
+    assert!(
+        raised_confirm,
+        "Reset is the right button and raises the reset confirm"
+    );
+}
+
+/// A field edit left live behind a tab switch would go on owning ctrl+v
+/// and ctrl+c from a tab that does not show it -- and its Enter would
+/// write config whenever Settings came back. Leaving the tab ends it.
+#[test]
+fn leaving_the_settings_tab_ends_a_live_field_edit() {
+    use crate::components::manage::ManageTab;
+    use crate::components::settings::SettingsField;
+    use crate::components::varmanager::VmField;
+    let mut app = App::new_for_test();
+    app.screen = Screen::Manage;
+    app.manage.tab = ManageTab::Settings;
+    app.settings.begin_edit(SettingsField::AiCmd, "claude -p");
+
+    // The Variables tab, with its own form field under edit -- the field
+    // ctrl+v must reach.
+    app.update(Action::SelectManageTab(ManageTab::Variables));
+    assert!(
+        app.settings.editing.is_none(),
+        "the edit does not survive the tab switch"
+    );
+    app.varmanager.form.editing = Some((VmField::Description, LineInput::new("")));
+
+    app.paste_text("pasted");
+
+    assert_eq!(
+        app.varmanager.form.editing.as_ref().unwrap().1.text(),
+        "pasted",
+        "ctrl+v belongs to the tab that is up"
+    );
+    assert_eq!(app.settings.field_text(), "");
+
+    // …and the same on the way off the screen entirely.
+    app.update(Action::SelectManageTab(ManageTab::Settings));
+    app.settings.begin_edit(SettingsField::AiCmd, "claude -p");
+    app.update(Action::CloseScreen);
+    assert!(app.settings.editing.is_none());
+}
+
+/// The belt to that braces: even a stale edit that somehow stayed live
+/// must not take the caret from another tab.
+#[test]
+fn a_stale_settings_edit_cannot_steal_the_caret_from_another_tab() {
+    use crate::components::manage::ManageTab;
+    use crate::components::settings::SettingsField;
+    use crate::components::varmanager::VmField;
+    let mut app = App::new_for_test();
+    app.screen = Screen::Manage;
+    app.manage.tab = ManageTab::Variables;
+    app.varmanager.form.editing = Some((VmField::Description, LineInput::new("")));
+    // Set by hand: no route leaves an edit live off-tab any more, which
+    // is exactly why this guard has to be tested directly.
+    app.settings.begin_edit(SettingsField::AiCmd, "hidden");
+
+    app.paste_text("pasted");
+
+    assert_eq!(
+        app.varmanager.form.editing.as_ref().unwrap().1.text(),
+        "pasted"
+    );
+    assert_eq!(app.settings.field_text(), "hidden", "untouched");
+    assert!(
+        app.active_selection_text().is_none(),
+        "and ctrl+c does not copy out of the hidden field"
+    );
+}
+
+/// The Settings tab is the app's fifth text surface, and it shipped
+/// without joining the plumbing the other four use: a right click in a
+/// live field found no `text_surface_menu` arm and fell through to the
+/// row menu (which, for a settings row, is nothing at all). Copy and
+/// Paste are the whole point of a right click in a text box.
+#[test]
+fn right_click_in_a_live_settings_field_offers_copy_and_paste() {
+    use crate::action::TextSurface;
+    use crate::components::manage::ManageTab;
+    use crate::components::settings::SettingsField;
+    let mut app = App::new_for_test();
+    app.update(Action::OpenManage {
+        tab: Some(ManageTab::Settings),
+    });
+    app.settings.begin_edit(SettingsField::AiCmd, "claude -p");
+    render_once(&mut app);
+    let r = app
+        .hits
+        .rect_of(&Hit::SettingsControl(SettingsField::AiCmd))
+        .unwrap();
+
+    app.handle_mouse(right_down(r.x + 1, r.y));
+
+    let Some(Modal::Dropdown(d)) = app.modals.top() else {
+        panic!("a live text field offers a text menu")
+    };
+    let labels: Vec<&str> = d.items.iter().map(|i| i.label.as_str()).collect();
+    assert_eq!(
+        labels,
+        ["Copy", "Paste"],
+        "no 'Extract to variable' on a settings value: it is not request \
+         text, and the Settings tab works with no project open at all"
+    );
+    assert_eq!(
+        d.items[0].action,
+        Some(Action::CopySelection(TextSurface::Settings)),
+        "Copy reads the settings surface, not some other field's selection"
+    );
+    // `begin_edit` select-alls, so there is a selection and Copy is live.
+    assert_eq!(
+        app.settings.selected_text().as_deref(),
+        Some("claude -p"),
+        "and that is the text Copy would put on the clipboard"
+    );
+}
+
+/// The split rule every in-place surface follows: only the field
+/// *currently under edit* offers the text menu. A settings row that is
+/// merely under the pointer is not a text surface and must not claim
+/// one.
+#[test]
+fn right_click_on_a_settings_row_not_under_edit_offers_no_text_menu() {
+    use crate::components::manage::ManageTab;
+    use crate::components::settings::SettingsField;
+    let mut app = App::new_for_test();
+    app.update(Action::OpenManage {
+        tab: Some(ManageTab::Settings),
+    });
+    render_once(&mut app);
+    let r = app
+        .hits
+        .rect_of(&Hit::SettingsControl(SettingsField::AiCmd))
+        .unwrap();
+
+    app.handle_mouse(right_down(r.x + 1, r.y));
+
+    assert!(
+        app.modals.top().is_none(),
+        "nothing is under edit, so there is no selection to copy"
+    );
+    assert!(
+        app.settings.editing.is_none(),
+        "and a right click does not open one"
+    );
+}
+
+/// A click inside a text box puts the caret where you clicked. The
+/// Settings tab select-all'd instead, so there was no way to fix one
+/// character of a long command without retyping it.
+#[test]
+fn a_click_in_a_settings_field_places_the_caret_where_it_landed() {
+    use crate::components::manage::ManageTab;
+    use crate::components::settings::SettingsField;
+    use crate::paint::WELL_PAD;
+    let mut app = App::new_for_test();
+    app.update(Action::OpenManage {
+        tab: Some(ManageTab::Settings),
+    });
+    app.settings.begin_edit(SettingsField::AiCmd, "claude -p");
+    render_once(&mut app);
+    let r = app
+        .hits
+        .rect_of(&Hit::SettingsControl(SettingsField::AiCmd))
+        .unwrap();
+
+    // Four columns into the well's content area.
+    app.handle_mouse(left_down(r.x + WELL_PAD + 4, r.y));
+
+    assert_eq!(app.settings.caret(), 4, "the caret lands under the pointer");
+    assert!(
+        app.settings.selected_text().is_none(),
+        "and the select-all `begin_edit` seeded is cleared, so the next \
+         keystroke edits rather than replacing everything"
+    );
+    assert_eq!(
+        app.settings.field_text(),
+        "claude -p",
+        "the click changed the caret, never the text"
+    );
+}
+
+/// Button-held motion after a press inside the well sweeps a selection,
+/// exactly as it does in the variable form and the params table.
+#[test]
+fn dragging_in_a_settings_field_sweeps_a_selection() {
+    use crate::components::manage::ManageTab;
+    use crate::components::settings::SettingsField;
+    use crate::paint::WELL_PAD;
+    let mut app = App::new_for_test();
+    app.update(Action::OpenManage {
+        tab: Some(ManageTab::Settings),
+    });
+    app.settings.begin_edit(SettingsField::AiCmd, "claude -p");
+    render_once(&mut app);
+    let r = app
+        .hits
+        .rect_of(&Hit::SettingsControl(SettingsField::AiCmd))
+        .unwrap();
+
+    app.handle_mouse(left_down(r.x + WELL_PAD, r.y));
+    app.handle_mouse(dragged(r.x + WELL_PAD + 6, r.y));
+
+    assert_eq!(
+        app.settings.selected_text().as_deref(),
+        Some("claude"),
+        "the sweep runs from the press to the pointer"
+    );
+
+    // The release ends the sweep but keeps what it selected.
+    app.handle_mouse(left_up(r.x + WELL_PAD + 6, r.y));
+    assert_eq!(app.settings.selected_text().as_deref(), Some("claude"));
+}
+
+/// Double click selects the word under the pointer.
+#[test]
+fn double_clicking_a_settings_field_selects_the_word() {
+    use crate::components::manage::ManageTab;
+    use crate::components::settings::SettingsField;
+    use crate::paint::WELL_PAD;
+    let mut app = App::new_for_test();
+    app.update(Action::OpenManage {
+        tab: Some(ManageTab::Settings),
+    });
+    app.settings.begin_edit(SettingsField::AiCmd, "claude -p");
+    render_once(&mut app);
+    let r = app
+        .hits
+        .rect_of(&Hit::SettingsControl(SettingsField::AiCmd))
+        .unwrap();
+
+    let x = r.x + WELL_PAD + 2;
+    app.handle_mouse(left_down(x, r.y));
+    app.handle_mouse(left_down(x, r.y));
+
+    assert_eq!(app.settings.selected_text().as_deref(), Some("claude"));
+}
+
+/// One case in the text-surface parity sweep below: the surface, and a
+/// builder that returns an app with that surface live plus the hit its
+/// well registers.
+type SurfaceCase = (crate::action::TextSurface, Box<dyn Fn() -> (App, Hit)>);
+
+/// The test that stops a *sixth* text surface shipping half-wired, the
+/// way the Settings tab did. Every surface that can be typed into must
+/// answer the mouse the same way: a hit to click, a menu to right-click
+/// and a sweep to drag. Add a variant to `TextSurface` and
+/// `in_place_hit` below stops compiling until a decision is recorded
+/// for it — either the hit its well registers, which this test then
+/// demands a case for, or `None` with the reason it is not one of
+/// these.
+#[test]
+fn every_text_surface_under_edit_answers_the_mouse_identically() {
+    use crate::action::TextSurface;
+    use crate::components::manage::ManageTab;
+    use crate::components::settings::SettingsField;
+    use crate::components::varmanager::VmField;
+
+    /// The hit a surface's field registers over itself, or `None` for a
+    /// surface that is not an in-place field at all.
+    ///
+    /// This match is the exhaustiveness guard: it has no wildcard arm,
+    /// so a new `TextSurface` variant is a compile error here until
+    /// somebody says which of the two it is.
+    fn in_place_hit(surface: TextSurface) -> Option<Hit> {
+        use crate::components::settings::SettingsField;
+        use crate::components::varmanager::VmField;
+        match surface {
+            // Not in-place fields: each of these owns a whole pane or
+            // bar and is reached through that pane's own geometry — the
+            // URL bar, the body editor, the response pane's own text
+            // and the jq filter bar. They answer the mouse, but not as
+            // a one-row well registering a `Hit` over itself, so
+            // forcing them into this shape would test nothing.
+            TextSurface::Url | TextSurface::Body | TextSurface::Response | TextSurface::Jq => None,
+            TextSurface::TableCell => Some(Hit::TableCell { row: 0, col: 1 }),
+            TextSurface::VmField => Some(Hit::VmFormField(VmField::Description)),
+            TextSurface::VmCell => Some(Hit::VmEntryCell { row: 0, col: 1 }),
+            TextSurface::Settings => Some(Hit::SettingsControl(SettingsField::AiCmd)),
+        }
+    }
+
+    let cases: Vec<SurfaceCase> = vec![
+        (
+            TextSurface::TableCell,
+            Box::new(|| {
+                let mut app = app_with_one_param();
+                let hit = Hit::TableCell { row: 0, col: 1 };
+                click_hit(&mut app, hit.clone());
+                assert!(app.editor.table.editing.is_some(), "cell is live");
+                (app, hit)
+            }),
+        ),
+        (
+            TextSurface::VmField,
+            Box::new(|| {
+                let mut app = app_with_vars();
+                // A field only renders once the Variable Manager has a
+                // variable selected: open the screen and pick one, the
+                // way `clicking_the_env_value_field_typing_and_clicking_away_writes_the_env_file`
+                // and its neighbours do.
+                app.update(Action::OpenManage {
+                    tab: Some(ManageTab::Variables),
+                });
+                render_once(&mut app); // builds the left rows
+                app.varmanager.select_name("base");
+                let hit = Hit::VmFormField(VmField::Description);
+                click_hit(&mut app, hit.clone());
+                assert!(app.varmanager.form.editing.is_some(), "field is live");
+                (app, hit)
+            }),
+        ),
+        (
+            TextSurface::VmCell,
+            Box::new(|| {
+                // A selector's grid cell. The fixture project is the one
+                // the grid tests already use -- its `user` selector has
+                // two options in the qa environment, so row 0 col 1 is
+                // alice's value for the group's single field. The temp
+                // dir rides along in the app, exactly as
+                // `App::new_for_test` keeps its own.
+                let dir = tempfile::tempdir().unwrap();
+                var_project(dir.path());
+                let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                let mut app = App::with_root(tx, dir.path().to_path_buf());
+                app._test_rx = Some(rx);
+                app._test_dir = Some(dir);
+                goto_group(&mut app, "user");
+                app.vm_start_cell_edit(0, 1);
+                assert!(app.varmanager.grid.editing.is_some(), "cell is live");
+                (app, Hit::VmEntryCell { row: 0, col: 1 })
+            }),
+        ),
+        (
+            TextSurface::Settings,
+            Box::new(|| {
+                let mut app = App::new_for_test();
+                app.update(Action::OpenManage {
+                    tab: Some(ManageTab::Settings),
+                });
+                app.settings.begin_edit(SettingsField::AiCmd, "claude -p");
+                (app, Hit::SettingsControl(SettingsField::AiCmd))
+            }),
+        ),
+    ];
+
+    let covered: Vec<TextSurface> = cases.iter().map(|(s, _)| *s).collect();
+    for (surface, build) in &cases {
+        let name = format!("{surface:?}");
+        let (mut app, hit) = build();
+        assert_eq!(
+            in_place_hit(*surface),
+            Some(hit.clone()),
+            "{name}: the case and the decision recorded for it must agree"
+        );
+        render_once(&mut app);
+        let r = app
+            .hits
+            .rect_of(&hit)
+            .unwrap_or_else(|| panic!("{name}: a live field must register a hit"));
+
+        // A right click offers the text menu, not a row menu.
+        app.handle_mouse(right_down(r.x + 1, r.y));
+        let Some(Modal::Dropdown(d)) = app.modals.top() else {
+            panic!("{name}: a live field must offer a text menu")
+        };
+        let labels: Vec<&str> = d.items.iter().map(|i| i.label.as_str()).collect();
+        assert!(
+            labels.contains(&"Copy") && labels.contains(&"Paste"),
+            "{name}: expected Copy and Paste, got {labels:?}"
+        );
+        app.update(Action::Close);
+
+        // A press inside the well arms a sweep.
+        app.handle_mouse(left_down(r.x + 1, r.y));
+        assert!(
+            app.text_drag.is_some(),
+            "{name}: a press in a live field must anchor a text sweep"
+        );
+    }
+
+    // And every surface `in_place_hit` calls a field must have a case
+    // above. A decision recorded with no case behind it would leave that
+    // surface untested, which is exactly how the Settings tab shipped
+    // half-wired — the arms are added in `in_place_hit`, which the
+    // compiler forces, and this is what makes an arm mean something.
+    for surface in [
+        TextSurface::Url,
+        TextSurface::Body,
+        TextSurface::Response,
+        TextSurface::TableCell,
+        TextSurface::VmField,
+        TextSurface::VmCell,
+        TextSurface::Jq,
+        TextSurface::Settings,
+    ] {
+        if in_place_hit(surface).is_some() {
+            assert!(
+                covered.contains(&surface),
+                "{surface:?} registers a field hit but no case exercises it"
+            );
+        }
+    }
+}
+
+/// A click on a checkbox row has no caret to place — it toggles, and
+/// must not arm a text sweep that would then follow the pointer across
+/// a row with no text in it.
+#[test]
+fn clicking_a_checkbox_row_toggles_and_arms_no_text_sweep() {
+    use crate::components::manage::ManageTab;
+    use crate::components::settings::SettingsField;
+    let mut app = App::new_for_test();
+    app.update(Action::OpenManage {
+        tab: Some(ManageTab::Settings),
+    });
+    let before = app.ui_settings.hover_hints;
+    render_once(&mut app);
+
+    click_hit(&mut app, Hit::SettingsControl(SettingsField::HoverHints));
+
+    assert_eq!(app.ui_settings.hover_hints, !before, "the box toggled");
+    assert!(app.settings.editing.is_none(), "a checkbox opens no edit");
+    assert!(app.text_drag.is_none(), "and arms no sweep");
 }

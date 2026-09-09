@@ -46,6 +46,21 @@ pub enum Hit {
     /// One segment of the Environments tab's `TLS` control: sets the
     /// selected environment's force to this policy (`None` = per request).
     ManageEnvTls(Option<postui_core::project::TlsPolicy>),
+    /// One row of the Settings tab, by index into
+    /// [`crate::components::settings::SettingsTab::rows`]: click puts
+    /// the cursor on it. A surface, like `ManageRow` — the row's own
+    /// control is registered on top of it.
+    SettingsRow(usize),
+    /// One setting's control: the checkbox on a boolean row, the text
+    /// well on a string row. Click toggles it / opens the edit.
+    SettingsControl(crate::components::settings::SettingsField),
+    /// One segment of the Settings tab's `jq Tab behavior` control.
+    SettingsJqTab(crate::config::JqTab),
+    /// A Files row's button: `reset` false is Edit…, true is Reset.
+    SettingsFile {
+        file: crate::action::ConfigFile,
+        reset: bool,
+    },
     /// The right-aligned "theme" chip on the app bar: opens the theme
     /// picker.
     HeaderTheme,
@@ -229,6 +244,15 @@ pub enum Hit {
     TipReveal(String),
     /// A clickable `[y] Label` chip in a Confirm modal.
     ConfirmChoice(char),
+    /// One of `Modal::ConfigStartup`'s four buttons
+    /// (Edit…/Reset/Ignore/Quit).
+    ConfigStartupChoice(crate::action::ConfigStartupChoice),
+    /// `Modal::ConfigEditInvalid`'s "Keep editing" button: resumes the
+    /// editor on the same temp file, with the user's work intact.
+    ConfigEditKeepEditing,
+    /// `Modal::ConfigEditInvalid`'s "Discard" button: drops the temp file
+    /// and changes nothing.
+    ConfigEditDiscard,
     /// The top modal's painted Cancel button (Message has none; Prompt and
     /// NewProject each have one). Click parity with `Esc`: the app-side
     /// handler synthesizes an `Esc` key event into `ModalStack::handle_key`

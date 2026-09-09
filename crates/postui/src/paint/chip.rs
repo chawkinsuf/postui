@@ -77,6 +77,9 @@ pub struct TabStrip<'a> {
     /// is GET/HEAD): label and badge paint in `theme.text_disabled` and
     /// hover has no effect on it.
     pub disabled: Option<usize>,
+    /// How many trailing tabs are pushed to the strip's right edge. `0`
+    /// (the default) is today's contiguous behaviour.
+    pub right_anchored: usize,
 }
 
 impl TabStrip<'_> {
@@ -97,6 +100,47 @@ impl TabStrip<'_> {
         spans
     }
 
+    /// Like [`Self::spans`], but the last `right_anchored` tabs are pushed
+    /// to `width`'s right edge, keeping a minimum 2-column gap after the
+    /// left group.
+    ///
+    /// The gap floor is the same 2 columns that separates any two tabs, so
+    /// the layout degrades with no fallback branch: as `width` shrinks the
+    /// tail slides left and arrives exactly where a contiguous strip would
+    /// have put it. Below that the tail's `x` simply stays pinned at the
+    /// floor rather than sliding further left -- it never drops a tab, but
+    /// this function does not clip anything itself; a strip too narrow
+    /// even for the floor is truncated downstream, by `paint`/the caller's
+    /// own area, the same as any other overflowing content.
+    pub fn spans_in(
+        tabs: &[(String, Option<(&'static str, Color)>)],
+        right_anchored: usize,
+        width: u16,
+    ) -> Vec<(u16, u16)> {
+        let mut spans = Self::spans(tabs);
+        // `right_anchored >= tabs.len()` would leave no left group at all,
+        // underflowing `split - 1` below -- degrade to the plain
+        // contiguous spans instead, same as `right_anchored == 0`.
+        if right_anchored == 0 || right_anchored >= tabs.len() {
+            return spans;
+        }
+        let split = tabs.len() - right_anchored;
+        let tail_start = spans[split].0;
+        let (last_x, last_w) = spans[tabs.len() - 1];
+        let tail_width = (last_x + last_w) - tail_start;
+
+        let anchored_start = width.saturating_sub(tail_width);
+        // Never closer than the ordinary inter-tab gap.
+        let floor = spans[split - 1].0 + spans[split - 1].1 + 2;
+        let new_start = anchored_start.max(floor);
+
+        let shift = new_start.saturating_sub(tail_start);
+        for span in spans.iter_mut().skip(split) {
+            span.0 += shift;
+        }
+        spans
+    }
+
     /// Paints into the top 2 rows of `area` on top of surface `on`: row 0
     /// is flat labels (no fills), row 1 is a full-width hairline rule with
     /// the accent underline segment on top. Returns each tab's 2-row hit
@@ -105,7 +149,7 @@ impl TabStrip<'_> {
     pub fn paint(&self, buf: &mut Buffer, area: Rect, on: Color, theme: &Theme) -> Vec<Rect> {
         let labels_y = area.y;
         let rule_y = area.y + 1;
-        let spans = Self::spans(self.tabs);
+        let spans = Self::spans_in(self.tabs, self.right_anchored, area.width);
         let mut rects = Vec::with_capacity(self.tabs.len());
 
         for (i, ((label, badge), (offset, width))) in self.tabs.iter().zip(&spans).enumerate() {
@@ -336,6 +380,50 @@ mod tests {
         assert!(c.modifier.contains(Modifier::BOLD));
     }
 
+    /// The right-anchored tail slides left as the strip narrows and simply
+    /// *arrives* at the contiguous position -- TabStrip's own inter-tab gap
+    /// is 2, and the minimum group gap is 2, so there is no fallback branch
+    /// and no visual jump.
+    #[test]
+    fn a_right_anchored_tail_degrades_to_contiguous() {
+        let tabs: Vec<(String, Option<(&'static str, ratatui::style::Color)>)> =
+            ["Variables", "Environments", "Spaces", "Settings"]
+                .iter()
+                .map(|s| (s.to_string(), None))
+                .collect();
+
+        let wide = TabStrip::spans_in(&tabs, 1, 120);
+        let (settings_x, settings_w) = wide[3];
+        assert_eq!(settings_x + settings_w, 120, "right-anchored at the edge");
+
+        let (spaces_x, spaces_w) = wide[2];
+        assert!(settings_x > spaces_x + spaces_w + 2, "a visible gap at 120");
+
+        // Derive the contiguous floor width from `spans` itself rather
+        // than hardcoding the column arithmetic -- it depends on exactly
+        // these four labels' widths.
+        let contiguous_spans = TabStrip::spans(&tabs);
+        let (last_x, last_w) = contiguous_spans[3];
+        let floor_width = last_x + last_w;
+
+        let tight = TabStrip::spans_in(&tabs, 1, floor_width);
+        let (sx, _) = tight[3];
+        let (px, pw) = tight[2];
+        assert_eq!(sx, px + pw + 2, "at the floor it is exactly contiguous");
+
+        let contiguous = TabStrip::spans_in(&tabs, 0, floor_width);
+        assert_eq!(tight, contiguous, "the floor and contiguous agree exactly");
+    }
+
+    #[test]
+    fn zero_right_anchored_is_unchanged() {
+        let tabs: Vec<(String, Option<(&'static str, ratatui::style::Color)>)> = ["A", "BB", "CCC"]
+            .iter()
+            .map(|s| (s.to_string(), None))
+            .collect();
+        assert_eq!(TabStrip::spans_in(&tabs, 0, 80), TabStrip::spans(&tabs));
+    }
+
     #[test]
     fn tabstrip_paints_flat_labels_with_accent_underline_under_active() {
         let theme = Theme::dark();
@@ -351,6 +439,7 @@ mod tests {
                 focused: false,
                 underline: (spans[0].0 as f32, spans[0].1 as f32),
                 disabled: None,
+                right_anchored: 0,
             }
             .paint(f.buffer_mut(), Rect::new(0, 0, 40, 2), theme.panel, &theme);
         })
@@ -388,6 +477,7 @@ mod tests {
                 focused: true,
                 underline: (spans[0].0 as f32, spans[0].1 as f32),
                 disabled: None,
+                right_anchored: 0,
             }
             .paint(f.buffer_mut(), Rect::new(0, 0, 40, 2), theme.panel, &theme);
         })
@@ -414,6 +504,7 @@ mod tests {
                     focused: false,
                     underline: (left0 as f32 + 3.0, width0 as f32),
                     disabled: None,
+                    right_anchored: 0,
                 }
                 .paint(f.buffer_mut(), Rect::new(0, 0, 40, 2), theme.panel, &theme);
             })
@@ -463,6 +554,7 @@ mod tests {
                 // boundaries land mid-cell.
                 underline: (2.5, 4.0),
                 disabled: None,
+                right_anchored: 0,
             }
             .paint(f.buffer_mut(), Rect::new(0, 0, 40, 2), theme.panel, &theme);
         })
@@ -508,6 +600,7 @@ mod tests {
                 focused: false,
                 underline: (spans[0].0 as f32, spans[0].1 as f32),
                 disabled: None,
+                right_anchored: 0,
             }
             .paint(f.buffer_mut(), Rect::new(0, 0, 40, 2), theme.panel, &theme);
         })
@@ -534,6 +627,7 @@ mod tests {
                 focused: false,
                 underline: (spans[0].0 as f32, spans[0].1 as f32),
                 disabled: None,
+                right_anchored: 0,
             }
             .paint(f.buffer_mut(), Rect::new(0, 0, 40, 2), theme.panel, &theme);
         })

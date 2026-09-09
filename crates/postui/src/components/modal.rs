@@ -1,5 +1,5 @@
 use super::line_input::LineInput;
-use crate::action::{Action, ExtractDestination};
+use crate::action::{Action, ConfigStartupChoice, ExtractDestination};
 use crate::components::varmanager::VarStructOp;
 use crate::paint::{
     self, BUTTON_HEIGHT, Button, ButtonKind, ControlState, FIELD_HEIGHT, TextField,
@@ -461,6 +461,27 @@ pub enum Modal {
         title: String,
         body: String,
     },
+    /// The blocking startup modal raised when `config.toml` exists but
+    /// will not parse (see `App::apply_startup_config_gate`). Unlike
+    /// every other modal here, `Esc` does not close it — running on
+    /// defaults is a choice (`ConfigStartupChoice::ContinueUnsaved`), not
+    /// a dismissal, because `[projects]` lives in the same file.
+    ConfigStartup {
+        error: String,
+    },
+    /// Raised when the Edit… round-trip's `$EDITOR` text could not be
+    /// applied (see `main::edit_config_externally`) -- either it didn't
+    /// parse, or it parsed but the write to disk failed; `error` says
+    /// which happened. Like `ConfigStartup`, `Esc` and click-away do not
+    /// close it: `path` is a temp file holding the user's unsaved (and,
+    /// in the write-failure case, already-validated) work, and a stray
+    /// dismissal must not silently drop it. Only Keep editing or Discard
+    /// do.
+    ConfigEditInvalid {
+        file: crate::action::ConfigFile,
+        path: std::path::PathBuf,
+        error: String,
+    },
     /// A choice prompt: each option in `choices` is `(key, label, actions)` —
     /// pressing `key` (case-insensitive) dispatches `actions` and closes the
     /// modal; `Esc` closes with no actions.
@@ -606,6 +627,22 @@ pub struct ModalResult {
     pub usage: Option<String>,
 }
 
+/// `Modal::ConfigStartup`'s four buttons: the keyboard chord, the painted
+/// label, and the choice it dispatches. The third is "Ignore" -- start
+/// anyway, leaving the broken file alone. What that costs ("nothing will
+/// be saved": `Config::edit` refuses to write an unparseable file) is the
+/// button's hover hint rather than its label; a label that spelled it out
+/// ran wider than the panel on a narrow terminal, and this modal is
+/// raised before the user can do anything about their window size.
+fn config_startup_choices() -> [(char, &'static str, ConfigStartupChoice); 4] {
+    [
+        ('e', "Edit…", ConfigStartupChoice::Edit),
+        ('r', "Reset", ConfigStartupChoice::Reset),
+        ('i', "Ignore", ConfigStartupChoice::ContinueUnsaved),
+        ('q', "Quit", ConfigStartupChoice::Quit),
+    ]
+}
+
 #[derive(Default)]
 pub struct ModalStack {
     stack: Vec<Modal>,
@@ -713,6 +750,22 @@ impl ModalStack {
         self.stack.last()
     }
 
+    /// Whether the top modal may be dismissed without choosing one of its
+    /// own answers -- consulted by both `Esc` (`handle_key`'s `_ => None`
+    /// arms swallow it already for these) and a click outside the modal
+    /// (`Hit::ModalOutside` in `app/mouse.rs`), so the two paths can't
+    /// drift apart. Only `Modal::ConfigStartup` and `Modal::ConfigEditInvalid`
+    /// say no: the first blocks startup until one of its four choices is
+    /// made, the second holds a temp file with unsaved work until Keep
+    /// editing or Discard answers it (see each's doc comment) -- every
+    /// other modal stays dismissable.
+    pub fn top_is_dismissable(&self) -> bool {
+        !matches!(
+            self.top(),
+            Some(Modal::ConfigStartup { .. } | Modal::ConfigEditInvalid { .. })
+        )
+    }
+
     /// The scope the value popup's "\u{2715} remove" would clear, when that
     /// control is painted at all (the chosen Write-to scope stores
     /// something). `None` for every other modal, and for a chosen scope
@@ -795,6 +848,19 @@ impl ModalStack {
                 chips
             }
             Modal::Message { .. } => vec![("enter", "close", None)],
+            // No "esc/cancel" chip: this modal blocks until answered.
+            Modal::ConfigStartup { .. } => {
+                vec![
+                    ("e", "edit…", None),
+                    ("r", "reset", None),
+                    ("c", "continue unsaved", None),
+                    ("q", "quit", None),
+                ]
+            }
+            // No "esc/cancel" chip either: see the variant's doc comment.
+            Modal::ConfigEditInvalid { .. } => {
+                vec![("k", "keep editing", None), ("d", "discard", None)]
+            }
             // Handled above — its chips are the runtime answer keys.
             Modal::Confirm { .. } => unreachable!("Confirm returned early"),
             // The new-selector prompt's toggle row is a focus stop, so
@@ -879,6 +945,34 @@ impl ModalStack {
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<ModalResult> {
         let top = self.stack.last_mut()?;
         match top {
+            // No `Esc` arm: this modal blocks until one of its four
+            // choices is made, so the answering action itself pops it
+            // (see `App::update`'s `Action::ConfigStartupChoice` arm) --
+            // `close: false` here would double-pop.
+            Modal::ConfigStartup { .. } => match key.code {
+                KeyCode::Char(c) => config_startup_choices()
+                    .into_iter()
+                    .find(|(choice_key, _, _)| choice_key.eq_ignore_ascii_case(&c))
+                    .map(|(_, _, choice)| ModalResult {
+                        actions: vec![Action::ConfigStartupChoice(choice)],
+                        close: false,
+                        ..Default::default()
+                    }),
+                _ => None, // swallowed: modals capture all input
+            },
+            // No `Esc` arm here either -- same reasoning as `ConfigStartup`.
+            // `k` (Keep editing) is intercepted in `App::handle_key_inner`
+            // before this is even reached, because it needs `App` to stash
+            // `resumed_config_edit`; only `d` (Discard) is answerable from
+            // here, since `Action::ConfigEditDiscard` needs nothing else.
+            Modal::ConfigEditInvalid { path, .. } => match key.code {
+                KeyCode::Char(c) if c.eq_ignore_ascii_case(&'d') => Some(ModalResult {
+                    actions: vec![Action::ConfigEditDiscard { path: path.clone() }],
+                    close: false, // the action's own arm pops
+                    ..Default::default()
+                }),
+                _ => None, // swallowed: modals capture all input
+            },
             Modal::Message { .. } => match key.code {
                 KeyCode::Esc | KeyCode::Enter => Some(ModalResult {
                     actions: vec![],
@@ -1456,6 +1550,144 @@ impl ModalStack {
         // Esc — live for every variant, not just Dropdown.
         hits.register(backdrop, crate::hit::Hit::ModalOutside);
         match top {
+            Modal::ConfigStartup { error } => {
+                let area = centered_rect(screen, 76.min(screen.width), 16.min(screen.height));
+                hits.register(area, crate::hit::Hit::ModalBody);
+                paint::floating_panel_settling(frame.buffer_mut(), area, screen, theme, t);
+                if t < 1.0 {
+                    return;
+                }
+
+                let title_y = area.y + 1;
+                paint::text(
+                    frame.buffer_mut(),
+                    area.x + 2,
+                    title_y,
+                    // Not "will not parse": `config_error` is also set
+                    // for a file that could not be *read*. The error
+                    // itself, in the body below, says which.
+                    &format!(
+                        "{} could not be loaded",
+                        crate::action::ConfigFile::Config.name()
+                    ),
+                    theme.text,
+                    theme.panel,
+                    true,
+                );
+
+                let choices = config_startup_choices();
+                let labels: Vec<&str> = choices.iter().map(|(_, l, _)| *l).collect();
+                let btn_row_w = button_row_width(&labels);
+                let buttons_y = area.y + area.height.saturating_sub(1 + BUTTON_HEIGHT);
+                let body_area = Rect {
+                    x: area.x + 2,
+                    y: title_y + 2,
+                    width: area.width.saturating_sub(4),
+                    height: buttons_y.saturating_sub(title_y + 2).saturating_sub(1),
+                };
+                frame.render_widget(
+                    Paragraph::new(error.as_str())
+                        .style(Style::default().fg(theme.text).bg(theme.panel))
+                        .wrap(Wrap { trim: false }),
+                    body_area,
+                );
+
+                // Each choice is its own clickable painted button
+                // (`Hit::ConfigStartupChoice`); there is deliberately no
+                // Cancel -- see the `Modal::ConfigStartup` doc comment.
+                let mut x = area.x + area.width.saturating_sub(2 + btn_row_w);
+                for (_, label, choice) in choices.iter() {
+                    let w = paint::button_min_width(label);
+                    let btn_area = Rect {
+                        x,
+                        y: buttons_y,
+                        width: w,
+                        height: BUTTON_HEIGHT,
+                    };
+                    let hit = crate::hit::Hit::ConfigStartupChoice(*choice);
+                    let choice_state = if hovered == Some(&hit) {
+                        ControlState::Hover
+                    } else {
+                        ControlState::Normal
+                    };
+                    Button {
+                        label,
+                        kind: ButtonKind::Secondary,
+                        state: choice_state,
+                    }
+                    .paint(frame.buffer_mut(), btn_area, theme);
+                    hits.register(btn_area, hit);
+                    x += w + 2;
+                }
+            }
+            Modal::ConfigEditInvalid { file, error, .. } => {
+                let area = centered_rect(screen, 76.min(screen.width), 16.min(screen.height));
+                hits.register(area, crate::hit::Hit::ModalBody);
+                paint::floating_panel_settling(frame.buffer_mut(), area, screen, theme, t);
+                if t < 1.0 {
+                    return;
+                }
+
+                let title_y = area.y + 1;
+                paint::text(
+                    frame.buffer_mut(),
+                    area.x + 2,
+                    title_y,
+                    // Covers both ways this modal gets raised: the text
+                    // didn't parse, or it parsed but the write to disk
+                    // failed -- `error` (below) says which.
+                    &format!("{} could not be applied", file.name()),
+                    theme.text,
+                    theme.panel,
+                    true,
+                );
+
+                let choices: [(&str, crate::hit::Hit); 2] = [
+                    ("Keep editing", crate::hit::Hit::ConfigEditKeepEditing),
+                    ("Discard", crate::hit::Hit::ConfigEditDiscard),
+                ];
+                let labels: Vec<&str> = choices.iter().map(|(l, _)| *l).collect();
+                let btn_row_w = button_row_width(&labels);
+                let buttons_y = area.y + area.height.saturating_sub(1 + BUTTON_HEIGHT);
+                let body_area = Rect {
+                    x: area.x + 2,
+                    y: title_y + 2,
+                    width: area.width.saturating_sub(4),
+                    height: buttons_y.saturating_sub(title_y + 2).saturating_sub(1),
+                };
+                frame.render_widget(
+                    Paragraph::new(error.as_str())
+                        .style(Style::default().fg(theme.text).bg(theme.panel))
+                        .wrap(Wrap { trim: false }),
+                    body_area,
+                );
+
+                // Each choice is its own clickable painted button; there is
+                // deliberately no Cancel -- see the variant's doc comment.
+                let mut x = area.x + area.width.saturating_sub(2 + btn_row_w);
+                for (label, hit) in choices.iter() {
+                    let w = paint::button_min_width(label);
+                    let btn_area = Rect {
+                        x,
+                        y: buttons_y,
+                        width: w,
+                        height: BUTTON_HEIGHT,
+                    };
+                    let choice_state = if hovered == Some(hit) {
+                        ControlState::Hover
+                    } else {
+                        ControlState::Normal
+                    };
+                    Button {
+                        label,
+                        kind: ButtonKind::Secondary,
+                        state: choice_state,
+                    }
+                    .paint(frame.buffer_mut(), btn_area, theme);
+                    hits.register(btn_area, hit.clone());
+                    x += w + 2;
+                }
+            }
             Modal::Message { title, body } => {
                 let area = centered_rect(screen, 60.min(screen.width), 13.min(screen.height));
                 hits.register(area, crate::hit::Hit::ModalBody);

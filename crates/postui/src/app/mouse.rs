@@ -23,7 +23,11 @@ impl App {
     pub fn handle_mouse(&mut self, m: ratatui::crossterm::event::MouseEvent) -> bool {
         let changed = self.handle_mouse_inner(m);
         self.arm_pending_toasts();
-        changed
+        // Same reason as `handle_key`: a click that only pops a modal
+        // never reaches `update`, and an unanswered startup gate must
+        // not be left down.
+        let regated = self.reraise_startup_config_gate();
+        changed || regated
     }
 
     fn handle_mouse_inner(&mut self, m: ratatui::crossterm::event::MouseEvent) -> bool {
@@ -114,11 +118,7 @@ impl App {
                     && matches!(self.hits.hit_at(m.column, m.row), Some(Hit::ManageRow(_)))
                 {
                     let tab = self.manage.tab;
-                    match self
-                        .manage_items(tab)
-                        .iter()
-                        .position(|n| *n == pressed)
-                    {
+                    match self.manage_items(tab).iter().position(|n| *n == pressed) {
                         None => self.manage_press = None,
                         Some(i) if self.manage.list.row_at_y(m.row) != i => {
                             let Self {
@@ -157,6 +157,7 @@ impl App {
                         Some(TextDrag::TableCell) => self.table_cell_drag_to(m.column),
                         Some(TextDrag::VmField) => self.vm_field_drag_to(m.column),
                         Some(TextDrag::VmCell) => self.vm_cell_drag_to(m.column),
+                        Some(TextDrag::Settings) => self.settings_field_drag_to(m.column),
                         None => unreachable!(),
                     };
                 }
@@ -241,13 +242,24 @@ impl App {
                     // as landing on a control (`on_hit`'s commit-first
                     // rule). Without this the typed text just hangs there
                     // with no way to tell it isn't saved.
+                    //
+                    // The Settings tab has the same bare background --
+                    // below the last row, right of the label column --
+                    // and the same rule: the edit commits, and the
+                    // keyboard cursor goes with it, so no control is
+                    // left lifted on a tab the pointer has walked off.
                     let live = self.varmanager.form.editing.is_some()
-                        || self.varmanager.grid.editing.is_some();
+                        || self.varmanager.grid.editing.is_some()
+                        || self.settings.editing.is_some()
+                        || self.settings.focused;
                     if !live {
                         return jq_blurred;
                     }
                     self.commit_var_form();
                     self.commit_grid_edit();
+                    if self.settings.editing.is_none() || self.commit_settings_edit_for_click() {
+                        self.settings.focused = false;
+                    }
                     return self.update(Action::Render);
                 };
                 // The testbed is a dead end for the mouse exactly like it is
@@ -840,23 +852,44 @@ impl App {
     }
 
     /// Like [`Self::modal_input_drag_to`], for the variable form's field
-    /// under edit — the same `TextField` geometry (text starts 2 columns
-    /// in, windowed to `width - 2`).
+    /// under edit — the form's one-row `Well` geometry (text starts
+    /// [`WELL_PAD`] columns in, windowed to `width - WELL_PAD * 2`).
     fn vm_field_drag_to(&mut self, column: u16) -> bool {
+        use crate::paint::WELL_PAD;
         let Some((field, input)) = self.varmanager.form.editing.as_mut() else {
             return false;
         };
         let Some(area) = self.hits.rect_of(&Hit::VmFormField(*field)) else {
             return false;
         };
-        let inner_w = area.width.saturating_sub(2);
+        let inner_w = area.width.saturating_sub(WELL_PAD * 2);
         if inner_w == 0 {
             return false;
         }
         let start = input.window_start(true, inner_w);
-        let text_x = area.x + 2;
+        let text_x = area.x + WELL_PAD;
         let col = usize::from(column.clamp(text_x, text_x + inner_w - 1) - text_x);
         input.extend_mouse_selection_to(start + col);
+        true
+    }
+
+    /// Like [`Self::vm_field_drag_to`], for the Settings tab's field
+    /// under edit — a one-row well, so only the column maps.
+    fn settings_field_drag_to(&mut self, column: u16) -> bool {
+        use crate::paint::WELL_PAD;
+        let Some(field) = self.settings.editing else {
+            return false;
+        };
+        let Some(area) = self.hits.rect_of(&Hit::SettingsControl(field)) else {
+            return false;
+        };
+        let inner_w = area.width.saturating_sub(WELL_PAD * 2);
+        if inner_w == 0 {
+            return false;
+        }
+        let text_x = area.x + WELL_PAD;
+        let col = usize::from(column.clamp(text_x, text_x + inner_w - 1) - text_x);
+        self.settings.drag_caret_to(col, inner_w);
         true
     }
 
@@ -1066,6 +1099,33 @@ impl App {
         if !editing_this_cell {
             self.commit_grid_edit();
         }
+        // …and the Settings tab's field and cursor, likewise. Any click
+        // that isn't on one of the tab's own controls commits whatever
+        // was being typed *and* drops the keyboard cursor: with no
+        // selection band, the cursor is a control lifting its own fill,
+        // and one left lifted after the click has landed elsewhere says
+        // "type here" about a row that will no longer answer. A commit
+        // the field refuses swallows the click and keeps both, exactly
+        // as it does on the tab's own hits.
+        //
+        // Overlays are exempt, like every other click-away rule here: a
+        // modal, a dropdown or a scrollbar drawn over the tab must not
+        // pull the caret out from under what is being typed.
+        // `keeps_table_selection` is already that exemption set.
+        let keeps_settings_focus = keeps_table_selection
+            || matches!(
+                hit,
+                Hit::SettingsRow(_)
+                    | Hit::SettingsControl(_)
+                    | Hit::SettingsJqTab(_)
+                    | Hit::SettingsFile { .. }
+            );
+        if !keeps_settings_focus {
+            if self.settings.editing.is_some() && !self.commit_settings_edit_for_click() {
+                return true;
+            }
+            self.settings.focused = false;
+        }
         // Likewise, clicking away blurs whichever editor input is active
         // (URL line / table / body). Hits that themselves place the
         // sub-focus (UrlBar, BodyEditor, the table hits) re-set it right
@@ -1143,18 +1203,93 @@ impl App {
                     None => false,
                 }
             }
-            Hit::ManageEnvTls(policy) => {
-                match self.manage_selected(ManageTab::Environments) {
-                    Some(env) => self.update(Action::SetEnvTls { env, policy }),
-                    None => false,
+            // -- Settings tab --
+            // A click anywhere on the tab commits whatever field was
+            // under edit first: typing is never silently thrown away,
+            // the same rule the params/headers table follows. A commit
+            // the field *refuses* swallows the click instead -- see
+            // `commit_settings_edit_for_click`.
+            Hit::SettingsRow(i) => {
+                if !self.commit_settings_edit_for_click() {
+                    return true;
                 }
+                self.settings.focused = true;
+                self.settings.set_cursor(i);
+                self.update(Action::Render)
             }
-            Hit::ManageMoveAll => {
-                match self.manage_selected(ManageTab::Spaces) {
-                    Some(from) => self.update(Action::PromptMoveAllRequests(from)),
-                    None => false,
+            // A click on a control: commit whatever other field was live
+            // (a commit the field *refuses* swallows the click and keeps
+            // the typed text), then open this one and put the caret
+            // where the pointer is.
+            //
+            // Clicking the well of the field you are *already* editing
+            // commits nothing: committing and reopening would select-all
+            // over a rejected value and hand back the stored one. It
+            // only moves the caret, which is what a click in a live text
+            // box means everywhere else in the app.
+            Hit::SettingsControl(field) => {
+                use crate::paint::WELL_PAD;
+                let already_editing = self.settings.editing == Some(field);
+                if !already_editing {
+                    if !self.commit_settings_edit_for_click() {
+                        return true;
+                    }
+                    self.settings.focus_field(field);
+                    // Called for the effect, not the answer: this is
+                    // what ticks the checkbox, switches the jq segment
+                    // or opens the text field's edit.
+                    self.activate_settings_row();
                 }
+                // Only a text row has a well and a caret to place. A
+                // checkbox or a jq segment was toggled by
+                // `activate_settings_row` above, opens no edit, and must
+                // arm no sweep — one would then follow the pointer
+                // across a row holding no text.
+                if self.settings.editing == Some(field)
+                    && let Some(area) = self.hits.rect_of(&Hit::SettingsControl(field))
+                {
+                    let inner_w = area.width.saturating_sub(WELL_PAD * 2).max(1);
+                    let col = usize::from(m.column.saturating_sub(area.x + WELL_PAD));
+                    self.settings
+                        .click_caret(col, inner_w, already_editing, clicks == 2);
+                    self.text_drag = Some(TextDrag::Settings);
+                }
+                self.update(Action::Render)
             }
+            Hit::SettingsJqTab(mode) => {
+                use crate::components::settings::{SettingsField, jq_tab_spelling};
+                if !self.commit_settings_edit_for_click() {
+                    return true;
+                }
+                self.settings.focus_field(SettingsField::JqTab);
+                self.update(Action::SetUiString {
+                    key: SettingsField::JqTab.key(),
+                    value: jq_tab_spelling(mode).to_string(),
+                })
+            }
+            Hit::SettingsFile { file, reset } => {
+                use crate::components::settings::{SettingsRow, SettingsTab};
+                if !self.commit_settings_edit_for_click() {
+                    return true;
+                }
+                self.settings.focused = true;
+                if let Some(i) = SettingsTab::rows()
+                    .iter()
+                    .position(|r| *r == SettingsRow::File(file))
+                {
+                    self.settings.set_cursor(i);
+                }
+                self.settings.file_button = usize::from(reset);
+                self.activate_settings_row()
+            }
+            Hit::ManageEnvTls(policy) => match self.manage_selected(ManageTab::Environments) {
+                Some(env) => self.update(Action::SetEnvTls { env, policy }),
+                None => false,
+            },
+            Hit::ManageMoveAll => match self.manage_selected(ManageTab::Spaces) {
+                Some(from) => self.update(Action::PromptMoveAllRequests(from)),
+                None => false,
+            },
             Hit::FooterChip(action) => {
                 // Chips that live inside the request panel (the Body
                 // toolbar row, the address bar's TLS lock, the split
@@ -1399,6 +1534,12 @@ impl App {
                 self.update(action)
             }
             Hit::ModalOutside => {
+                if !self.modals.top_is_dismissable() {
+                    // `Modal::ConfigStartup` blocks until answered --
+                    // same rule `ModalStack::handle_key` already applies
+                    // to `Esc` for it.
+                    return false;
+                }
                 // The option Edit prompt is an editing surface, not a
                 // question: clicking off it SAVES, like the grid's
                 // commit-on-click-away. Routed through the same path Enter
@@ -1649,6 +1790,21 @@ impl App {
                     self.update(Action::Render)
                 }
             }
+            Hit::ConfigStartupChoice(choice) => self.update(Action::ConfigStartupChoice(choice)),
+            Hit::ConfigEditKeepEditing => {
+                let Some(Modal::ConfigEditInvalid { file, path, .. }) = self.modals.top() else {
+                    return false;
+                };
+                let (file, path) = (*file, path.clone());
+                self.keep_editing_config_edit(file, path)
+            }
+            Hit::ConfigEditDiscard => {
+                let Some(Modal::ConfigEditInvalid { path, .. }) = self.modals.top() else {
+                    return false;
+                };
+                let path = path.clone();
+                self.update(Action::ConfigEditDiscard { path })
+            }
             Hit::ConfirmChoice(c) => {
                 let Some(Modal::Confirm { choices, .. }) = self.modals.top() else {
                     return false;
@@ -1844,11 +2000,12 @@ impl App {
                         varmanager.start_field_edit(p, field);
                     }
                 }
-                // Map the click through the field's `TextField` geometry
-                // (text 2 columns in, windowed to `width - 2` — the drawn
-                // window starts at 0 unless the field was already under
-                // edit): caret at the clicked column, anchor a possible
-                // drag sweep, word select on double click.
+                // Map the click through the field's one-row `Well`
+                // geometry (text `WELL_PAD` columns in, windowed to
+                // `width - WELL_PAD * 2` — the drawn window starts at 0
+                // unless the field was already under edit): caret at the
+                // clicked column, anchor a possible drag sweep, word
+                // select on double click.
                 if let Some(area) = self.hits.rect_of(&Hit::VmFormField(field))
                     && let Some((_, input)) = self
                         .varmanager
@@ -1857,9 +2014,10 @@ impl App {
                         .as_mut()
                         .filter(|(f, _)| *f == field)
                 {
-                    let inner_w = area.width.saturating_sub(2).max(1);
+                    use crate::paint::WELL_PAD;
+                    let inner_w = area.width.saturating_sub(WELL_PAD * 2).max(1);
                     let start = input.window_start(already_editing, inner_w);
-                    let col = usize::from(m.column.saturating_sub(area.x + 2));
+                    let col = usize::from(m.column.saturating_sub(area.x + WELL_PAD));
                     let idx = start + col;
                     if clicks == 2 {
                         input.select_word_at(idx);
@@ -2024,11 +2182,7 @@ impl App {
                     .is_some()
                     .then(|| self.editor.current_request());
                 let Some((_, action)) = self.project().and_then(|p| {
-                    crate::components::varmanager::promote_action(
-                        p,
-                        open_request.as_ref(),
-                        &name,
-                    )
+                    crate::components::varmanager::promote_action(p, open_request.as_ref(), &name)
                 }) else {
                     return false;
                 };
