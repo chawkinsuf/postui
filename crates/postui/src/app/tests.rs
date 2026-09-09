@@ -23684,6 +23684,11 @@ fn double_clicking_a_settings_field_selects_the_word() {
     assert_eq!(app.settings.selected_text().as_deref(), Some("claude"));
 }
 
+/// One case in the text-surface parity sweep below: the surface, and a
+/// builder that returns an app with that surface live plus the hit its
+/// well registers.
+type SurfaceCase = (crate::action::TextSurface, Box<dyn Fn() -> (App, Hit)>);
+
 /// The test that stops a *sixth* text surface shipping half-wired, the
 /// way the Settings tab did. Every surface that can be typed into must
 /// answer the mouse the same way: a hit to click, a menu to right-click
@@ -23723,8 +23728,7 @@ fn every_text_surface_under_edit_answers_the_mouse_identically() {
         }
     }
 
-    // (the surface, the app with it live, the hit its well registers)
-    let cases: Vec<(TextSurface, Box<dyn Fn() -> (App, Hit)>)> = vec![
+    let cases: Vec<SurfaceCase> = vec![
         (
             TextSurface::TableCell,
             Box::new(|| {
