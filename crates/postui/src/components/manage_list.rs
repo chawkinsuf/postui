@@ -9,8 +9,8 @@ use crate::action::Action;
 use crate::components::manage::ManageTab;
 use crate::hit::{Hit, HitMap};
 use crate::paint::{
-    BUTTON_HEIGHT, Button, ButtonKind, ControlState, ListRow, RowHighlight, button_min_width, fill,
-    text,
+    BUTTON_HEIGHT, Button, ButtonKind, ControlState, ListRow, PROPERTY_MAX_W, Pill, PropertyRow,
+    RowHighlight, fill, label_column, pill_min_width, text,
 };
 use postui_core::project::Project;
 use crate::theme::Theme;
@@ -369,55 +369,60 @@ impl ManageList {
     fn draw_tls_control(
         &self,
         buf: &mut ratatui::buffer::Buffer,
+        hits: &mut HitMap,
+        hovered: Option<&Hit>,
+        theme: &Theme,
         x0: u16,
         y: u16,
         bottom: u16,
-        right: Rect,
-        theme: &Theme,
+        row_w: u16,
+        label_w: u16,
         ctx: &Project,
         name: &str,
-        hits: &mut HitMap,
-        hovered: Option<&Hit>,
     ) {
         use postui_core::project::{TlsPolicy, env_tls};
-        if y + BUTTON_HEIGHT > bottom {
+        if y >= bottom {
             return;
         }
         let current = env_tls(ctx.meta(), name);
-        let label = "TLS";
-        text(buf, x0, y + 1, label, theme.text_muted, theme.page, false);
-        let mut x = x0 + label.chars().count() as u16 + 2;
-        let segments: [(&str, Option<TlsPolicy>); 3] = [
+        let slot = PropertyRow {
+            label: "TLS",
+            label_w,
+            hovered: false,
+            disabled: false,
+            trailing: &[],
+        }
+        .paint(buf, hits, Rect::new(x0, y, row_w, 1), theme);
+        let mut x = slot.rect.x;
+        for (seg, policy) in [
             ("Per request", None),
             ("Verify", Some(TlsPolicy::Verify)),
             ("Insecure", Some(TlsPolicy::Insecure)),
-        ];
-        for (seg, policy) in segments {
-            let w = button_min_width(seg);
-            if x + w > right.x + right.width {
+        ] {
+            let w = pill_min_width(seg);
+            // A segment that would run past the row is dropped rather
+            // than clipped; it stays reachable by key.
+            if x + w > slot.rect.x + slot.rect.width {
                 break;
             }
+            let hit = Hit::ManageEnvTls(policy);
             let rect = Rect {
                 x,
-                y,
                 width: w,
-                height: BUTTON_HEIGHT,
+                ..slot.rect
             };
-            let hit = Hit::ManageEnvTls(policy);
-            let state = if hovered == Some(&hit) {
-                ControlState::Hover
-            } else {
-                ControlState::Normal
-            };
-            let kind = if policy == current {
-                ButtonKind::Primary
-            } else {
-                ButtonKind::Secondary
-            };
-            Button {
+            Pill {
                 label: seg,
-                kind,
-                state,
+                kind: if policy == current {
+                    ButtonKind::Primary
+                } else {
+                    ButtonKind::Secondary
+                },
+                state: if hovered == Some(&hit) {
+                    ControlState::Hover
+                } else {
+                    ControlState::Normal
+                },
             }
             .paint(buf, rect, theme);
             hits.register(rect, hit);
@@ -578,21 +583,23 @@ impl ManageList {
             return;
         }
         let x0 = right.x + 2;
+        let row_w = right.width.saturating_sub(4).clamp(1, PROPERTY_MAX_W);
+        let label_w = label_column(&["File", "TLS", "Requests"]);
         let bottom = right.y + right.height;
         let mut y = right.y + 1;
 
         // --- title row: name + the pane's buttons, right-aligned --------
         // The Variables pane's layout exactly: the title at the left, the
-        // buttons laid out from the pane's right edge inward in
+        // pills laid out from the pane's right edge inward in
         // keep-priority order (Delete outermost, like the selector grid),
-        // a button that would run into the title dropped rather than
-        // painted over it. Dropped buttons stay reachable by key.
-        if y + BUTTON_HEIGHT <= bottom {
+        // a pill that would run into the title dropped rather than
+        // painted over it. Dropped pills stay reachable by key.
+        if y < bottom {
             let title = match tab {
                 ManageTab::Spaces => format!("Space: {}", ctx.space_name(name)),
                 _ => format!("Environment: {}", ctx.env_name(name)),
             };
-            text(buf, x0, y + 1, &title, theme.text, theme.page, true);
+            text(buf, x0, y, &title, theme.text, theme.page, true);
             let mut buttons: Vec<(&str, Hit)> =
                 vec![("Delete", Hit::ManageDelete), ("Rename", Hit::ManageRename)];
             if tab == ManageTab::Spaces {
@@ -600,7 +607,7 @@ impl ManageList {
             }
             let mut bx = right.x + right.width;
             for (label, hit) in buttons {
-                let w = button_min_width(label);
+                let w = pill_min_width(label);
                 if bx < x0 + title.chars().count() as u16 + w + 3 {
                     break;
                 }
@@ -609,14 +616,14 @@ impl ManageList {
                     x: bx,
                     y,
                     width: w,
-                    height: BUTTON_HEIGHT,
+                    height: 1,
                 };
                 let state = if hovered == Some(&hit) {
                     ControlState::Hover
                 } else {
                     ControlState::Normal
                 };
-                Button {
+                Pill {
                     label,
                     kind: ButtonKind::Secondary,
                     state,
@@ -624,11 +631,10 @@ impl ManageList {
                 .paint(buf, rect, theme);
                 hits.register(rect, hit);
             }
-            y += BUTTON_HEIGHT + 1;
+            y += 2;
         }
 
         // --- detail block ---------------------------------------------
-        let clip_w = right.width.saturating_sub(4);
         match tab {
             ManageTab::Spaces => {
                 // The space's requests by name — the pane has the room, and
@@ -638,13 +644,21 @@ impl ManageList {
                 if y >= bottom {
                     return;
                 }
-                let heading = if names.is_empty() {
-                    "No requests"
-                } else {
-                    "Requests"
-                };
-                text(buf, x0, y, heading, theme.text_muted, theme.page, false);
-                y += 1;
+                let slot = PropertyRow {
+                    label: "Requests",
+                    label_w,
+                    hovered: false,
+                    disabled: false,
+                    trailing: &[],
+                }
+                .paint(buf, hits, Rect::new(x0, y, row_w, 1), theme);
+                let list_x = slot.rect.x;
+                if names.is_empty() {
+                    text(buf, list_x, y, "(none)", theme.text_muted, slot.bg, false);
+                    return;
+                }
+                // The first name shares the label's row; the rest stack
+                // under it in the same column.
                 let room = (bottom - y) as usize;
                 let shown = if names.len() > room {
                     room.saturating_sub(1)
@@ -654,35 +668,45 @@ impl ManageList {
                 for n in &names[..shown] {
                     text(
                         buf,
-                        x0,
+                        list_x,
                         y,
-                        super::chooser::clip(n, clip_w),
+                        super::chooser::clip(n, slot.rect.width),
                         theme.text,
-                        theme.page,
+                        slot.bg,
                         false,
                     );
                     y += 1;
                 }
                 if shown < names.len() && y < bottom {
                     let more = format!("+ {} more", names.len() - shown);
-                    text(buf, x0, y, &more, theme.text_muted, theme.page, false);
+                    text(buf, list_x, y, &more, theme.text_muted, slot.bg, false);
                 }
             }
             _ => {
                 let path = format!("environments/{name}.toml");
                 if y < bottom {
+                    let slot = PropertyRow {
+                        label: "File",
+                        label_w,
+                        hovered: false,
+                        disabled: false,
+                        trailing: &[],
+                    }
+                    .paint(buf, hits, Rect::new(x0, y, row_w, 1), theme);
                     text(
                         buf,
-                        x0,
+                        slot.rect.x,
                         y,
-                        super::chooser::clip(&path, clip_w),
+                        super::chooser::clip(&path, slot.rect.width),
                         theme.text_muted,
-                        theme.page,
+                        slot.bg,
                         false,
                     );
                     y += 2;
                 }
-                self.draw_tls_control(buf, x0, y, bottom, right, theme, ctx, name, hits, hovered);
+                self.draw_tls_control(
+                    buf, hits, hovered, theme, x0, y, bottom, row_w, label_w, ctx, name,
+                );
             }
         }
     }
@@ -802,5 +826,165 @@ mod tests {
             x: dragged.x,
             y: dragged.y
         }));
+    }
+
+    /// The env detail pane is properties of one environment, so no band
+    /// — and its TLS segments are one row now, like every other Manage
+    /// control.
+    #[test]
+    fn the_env_detail_pane_paints_property_rows_not_a_band() {
+        use crate::hit::HitMap;
+        use postui_core::project::TlsPolicy;
+        let (project, _dir) = ctx();
+        let theme = Theme::dark();
+        let mut list = ManageList::default();
+        let mut hits = HitMap::default();
+        let requests: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 30)).unwrap();
+        term.draw(|f| {
+            list.draw(
+                f,
+                Rect::new(0, 0, 120, 30),
+                &theme,
+                ManageTab::Environments,
+                &project,
+                &requests,
+                &mut hits,
+                None,
+            );
+        })
+        .unwrap();
+
+        let buf = term.backend().buffer();
+        for y in 0..30 {
+            for x in LEFT_W..120 {
+                assert_ne!(
+                    buf.cell((x, y)).unwrap().bg,
+                    theme.selection,
+                    "band in the detail pane at {x},{y}"
+                );
+            }
+        }
+        let seg = hits
+            .rect_of(&Hit::ManageEnvTls(Some(TlsPolicy::Verify)))
+            .expect("the TLS segments are hittable");
+        assert_eq!(seg.height, 1, "one-row pills, not three-row buttons");
+    }
+
+    /// The Spaces detail pane paints its requests as one property row:
+    /// the first name shares the `Requests` label's row, the rest stack
+    /// under it in the same column, and the list fills every row it has
+    /// — the `+ n more` line lands on the pane's last row, not one short
+    /// of it.
+    #[test]
+    fn the_spaces_pane_lists_requests_from_the_label_row_and_fills_the_pane() {
+        use crate::hit::HitMap;
+        let (project, _dir) = ctx();
+        let theme = Theme::dark();
+        let mut list = ManageList::default();
+        let mut hits = HitMap::default();
+        // Ten names into a pane with room for seven rows of list.
+        let names: Vec<String> = (0..10).map(|i| format!("req{i}")).collect();
+        let mut requests: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        requests.insert("main".to_string(), names.clone());
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 10)).unwrap();
+        term.draw(|f| {
+            list.draw(
+                f,
+                Rect::new(0, 0, 120, 10),
+                &theme,
+                ManageTab::Spaces,
+                &project,
+                &requests,
+                &mut hits,
+                None,
+            );
+        })
+        .unwrap();
+
+        let row = |y: u16| {
+            let buf = term.backend().buffer();
+            (LEFT_W..120)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<String>()
+        };
+        // The label row: `Requests` at the pane's inset, the first name
+        // beside it in the label column — not a row below it.
+        let label_y = (0..10)
+            .find(|y| row(*y).trim_start().starts_with("Requests"))
+            .expect("the Requests label row");
+        let x0 = LEFT_W + 2;
+        let list_x = x0 + label_column(&["File", "TLS", "Requests"]);
+        let at = |x: u16, y: u16, len: usize| {
+            let buf = term.backend().buffer();
+            (x..x + len as u16)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<String>()
+        };
+        assert_eq!(at(x0, label_y, 8), "Requests");
+        assert_eq!(
+            at(list_x, label_y, 4),
+            "req0",
+            "the first name shares the row"
+        );
+        // The rest stack under it, aligned to the same column, and the
+        // `+ n more` line takes the pane's very last row: every row the
+        // pane had is used, none dropped to an off-by-one.
+        for (i, name) in names.iter().enumerate().take(6) {
+            assert_eq!(at(list_x, label_y + i as u16, 4), name.as_str(), "row {i}");
+        }
+        assert_eq!(
+            at(list_x, label_y + 6, 8),
+            "+ 4 more",
+            "the overflow line, in the request column"
+        );
+        assert_eq!(label_y + 6, 9, "and on the pane's last row");
+    }
+
+    /// A space with nothing in it says `(none)` in the control column,
+    /// so the row still reads as a property with an empty value rather
+    /// than as a heading that changed its wording.
+    #[test]
+    fn a_space_with_no_requests_paints_none_in_the_control_column() {
+        use crate::hit::HitMap;
+        let (project, _dir) = ctx();
+        let theme = Theme::dark();
+        let mut list = ManageList::default();
+        let mut hits = HitMap::default();
+        let requests: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 10)).unwrap();
+        term.draw(|f| {
+            list.draw(
+                f,
+                Rect::new(0, 0, 120, 10),
+                &theme,
+                ManageTab::Spaces,
+                &project,
+                &requests,
+                &mut hits,
+                None,
+            );
+        })
+        .unwrap();
+
+        let buf = term.backend().buffer();
+        let row = |y: u16| {
+            (LEFT_W..120)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<String>()
+        };
+        let label_y = (0..10)
+            .find(|y| row(*y).trim_start().starts_with("Requests"))
+            .expect("the Requests label row survives an empty space");
+        let list_x = LEFT_W + 2 + label_column(&["File", "TLS", "Requests"]);
+        let cell = |x: u16, len: usize| {
+            (x..x + len as u16)
+                .map(|x| buf[(x, label_y)].symbol())
+                .collect::<String>()
+        };
+        assert_eq!(cell(list_x, 6), "(none)");
+        for y in 0..10 {
+            assert!(!row(y).contains("No requests"), "the old heading is gone");
+        }
     }
 }
