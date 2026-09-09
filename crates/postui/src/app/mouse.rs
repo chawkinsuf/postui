@@ -1214,7 +1214,7 @@ impl App {
                     return true;
                 }
                 self.settings.focused = true;
-                self.settings.cursor = i;
+                self.settings.set_cursor(i);
                 self.update(Action::Render)
             }
             // A click on a control: commit whatever other field was live
@@ -1277,7 +1277,7 @@ impl App {
                     .iter()
                     .position(|r| *r == SettingsRow::File(file))
                 {
-                    self.settings.cursor = i;
+                    self.settings.set_cursor(i);
                 }
                 self.settings.file_button = usize::from(reset);
                 self.activate_settings_row()

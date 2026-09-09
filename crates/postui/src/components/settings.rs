@@ -226,6 +226,14 @@ impl SettingsTab {
         Self::rows()[self.cursor.min(Self::rows().len() - 1)]
     }
 
+    /// Puts the cursor on row `i`. Goes through the same aim reset
+    /// [`Self::move_cursor`] does, and for the same reason: a click that
+    /// lands on a row must not inherit the previous row's Reset aim.
+    pub fn set_cursor(&mut self, i: usize) {
+        self.cursor = i.min(Self::rows().len() - 1);
+        self.file_button = 0;
+    }
+
     /// Puts the cursor on `field`'s row, for a click that landed on a
     /// control rather than on the row behind it.
     pub fn focus_field(&mut self, field: SettingsField) {
@@ -234,7 +242,7 @@ impl SettingsTab {
             .iter()
             .position(|r| *r == SettingsRow::Setting(field))
         {
-            self.cursor = i;
+            self.set_cursor(i);
         }
     }
 
@@ -338,9 +346,18 @@ impl SettingsTab {
 /// `osc52_limit`'s validator. Rejected rather than coerced: a silent 0
 /// would disable OSC 52 copying without ever saying so.
 pub fn parse_osc52_limit(text: &str) -> Result<usize, String> {
-    text.trim()
+    let limit = text
+        .trim()
         .parse::<usize>()
-        .map_err(|_| "expected a size in bytes, e.g. 65536".to_string())
+        .map_err(|_| "expected a size in bytes, e.g. 65536".to_string())?;
+    // `config.toml` stores integers as TOML i64s. A value past that
+    // would be written back as a negative number, warn on the next
+    // load, and silently revert to the default -- so it is refused
+    // here, where the user can still see what they typed.
+    if i64::try_from(limit).is_err() {
+        return Err(format!("too large to store; the most is {}", i64::MAX));
+    }
+    Ok(limit)
 }
 
 /// Paints the tab: the seven settings, then the Files section's two
@@ -745,6 +762,15 @@ mod tests {
         assert!(parse_osc52_limit("-1").is_err());
         assert!(parse_osc52_limit("").is_err());
         assert!(parse_osc52_limit("99999999999999999999999999").is_err());
+        // config.toml holds TOML i64s: a value past that would be
+        // written back negative and revert to the default on the next
+        // load, so it is refused at the commit instead.
+        assert_eq!(
+            parse_osc52_limit(&i64::MAX.to_string()),
+            Ok(i64::MAX as usize)
+        );
+        assert!(parse_osc52_limit(&(i64::MAX as u64 + 1).to_string()).is_err());
+        assert!(parse_osc52_limit("18000000000000000000").is_err());
     }
 
     /// The tab publishes its own chips; inheriting the previous tab's would
@@ -829,6 +855,30 @@ mod tests {
         };
         tab.move_cursor(1, true);
         assert_eq!(tab.file_button, 0, "the next file row starts on Edit…");
+    }
+
+    /// The mouse takes the same door. A click that lands on a *row*
+    /// (rather than on a button) must not carry the previous row's aim
+    /// onto it: Reset is destructive, and the row it fires on has to be
+    /// the row the user pointed at.
+    #[test]
+    fn setting_the_cursor_re_aims_at_edit_too() {
+        let last = SettingsTab::rows().len() - 1;
+        let mut tab = SettingsTab {
+            cursor: last - 1,
+            file_button: 1,
+            ..Default::default()
+        };
+        tab.set_cursor(last);
+        assert_eq!(tab.cursor, last);
+        assert_eq!(tab.file_button, 0, "the clicked row starts on Edit…");
+
+        tab.file_button = 1;
+        tab.focus_field(SettingsField::Osc52Limit);
+        assert_eq!(tab.file_button, 0, "and so does a click on a control");
+
+        tab.set_cursor(last + 5);
+        assert_eq!(tab.cursor, last, "an out-of-range row clamps to the last");
     }
 
     /// The live edit's buffer and its `LineInput` never disagree: the

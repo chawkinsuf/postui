@@ -64,11 +64,14 @@ path, offering:
   confirm. `[projects]` is preserved if and only if the file parses far
   enough to recover it; when it does not, the confirm says the project
   list will be lost.
-- **Continue without saving settings** — runs on defaults for this
-  session. Named for what it does, not "Use defaults": `Config::edit`
-  refuses to write an unparseable file, so nothing persists in this mode
-  — no settings changes, no newly-registered projects. The modal says
-  so.
+- **Ignore** — starts anyway, on defaults for this session, leaving the
+  broken file alone. `Config::edit` refuses to write an unparseable
+  file, so nothing persists in this mode — no settings changes, no
+  newly-registered projects. That cost is the button's hover hint
+  ("Run this session on defaults; nothing will be saved") rather than
+  its label: a label that spelled it out ran the button row wider than
+  the panel on a narrow terminal, and this modal is raised before the
+  user can do anything about their window size.
 - **Quit**.
 
 **A mistyped key warns.** Every key that falls back because its value
@@ -478,9 +481,8 @@ the reloaded values.
   `[projects]` table intact; keys reset restores the default bindings,
   and writes the seed when no `keys.toml` exists.
 - Startup with a syntax error in `config.toml` raises the blocking modal
-  and does **not** reach a normal session; "Continue without saving
-  settings" runs on defaults and every subsequent settings write is
-  refused. Startup with a *valid* file is unaffected.
+  and does **not** reach a normal session; "Ignore" runs on defaults and
+  every subsequent settings write is refused. Startup with a *valid* file is unaffected.
 - A mistyped key (`animations = "yes"`) warns, naming the key and the
   expected type, and does not silently default.
 - The strip right-anchors Settings at 80 columns, degrades to exactly

@@ -244,8 +244,8 @@ pub enum Hit {
     TipReveal(String),
     /// A clickable `[y] Label` chip in a Confirm modal.
     ConfirmChoice(char),
-    /// One of `Modal::ConfigStartup`'s four buttons (Edit…/Reset/Continue
-    /// without saving settings/Quit).
+    /// One of `Modal::ConfigStartup`'s four buttons
+    /// (Edit…/Reset/Ignore/Quit).
     ConfigStartupChoice(crate::action::ConfigStartupChoice),
     /// `Modal::ConfigEditInvalid`'s "Keep editing" button: resumes the
     /// editor on the same temp file, with the user's work intact.

@@ -363,7 +363,7 @@ fn view_response_externally(
         );
     let suffix = if is_json_body { ".json" } else { ".txt" };
     let path = postui::hostfs::editor_tempfile("postui-response-", suffix, &view.view_text())?;
-    let _ = run_editor(terminal, app, &path)?; // view-only: nothing is read back
+    spawn_editor(terminal, app, &path)?; // view-only: nothing is read back
     postui::hostfs::remove_tempfile(&path);
     Ok(())
 }
@@ -385,6 +385,30 @@ fn run_editor(
     app: &mut App,
     path: &std::path::Path,
 ) -> anyhow::Result<Option<String>> {
+    if !spawn_editor(terminal, app, path)? {
+        return Ok(None);
+    }
+    match postui::hostfs::read_tempfile(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(e) => {
+            app.update(Action::ShowToast(
+                format!("could not read back the edited file: {e}"),
+                ToastKind::Error,
+            ));
+            Ok(None)
+        }
+    }
+}
+
+/// Runs `$EDITOR` on `path` around a TUI teardown/rebuild, reporting
+/// whether it exited cleanly. The half of [`run_editor`] that does not
+/// care what is in the file: the view-only caller would otherwise read
+/// the whole response back off disk only to drop it.
+fn spawn_editor(
+    terminal: &mut ratatui::DefaultTerminal,
+    app: &mut App,
+    path: &std::path::Path,
+) -> anyhow::Result<bool> {
     let command = std::env::var("EDITOR").unwrap_or_default();
     let command = if command.trim().is_empty() {
         "vi".to_string()
@@ -417,29 +441,20 @@ fn run_editor(
     terminal.clear()?;
 
     match status {
-        Ok(s) if s.success() => match postui::hostfs::read_tempfile(path) {
-            Ok(text) => Ok(Some(text)),
-            Err(e) => {
-                app.update(Action::ShowToast(
-                    format!("could not read back the edited file: {e}"),
-                    ToastKind::Error,
-                ));
-                Ok(None)
-            }
-        },
+        Ok(s) if s.success() => Ok(true),
         Ok(s) => {
             app.update(Action::ShowToast(
                 format!("{program} exited with {s}"),
                 ToastKind::Error,
             ));
-            Ok(None)
+            Ok(false)
         }
         Err(e) => {
             app.update(Action::ShowToast(
                 format!("could not run {program}: {e}"),
                 ToastKind::Error,
             ));
-            Ok(None)
+            Ok(false)
         }
     }
 }

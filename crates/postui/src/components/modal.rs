@@ -628,18 +628,17 @@ pub struct ModalResult {
 }
 
 /// `Modal::ConfigStartup`'s four buttons: the keyboard chord, the painted
-/// label, and the choice it dispatches. The third is labeled for what it
-/// does rather than "use defaults" -- `Config::edit` refuses to write an
-/// unparseable file, so nothing persists in that mode.
+/// label, and the choice it dispatches. The third is "Ignore" -- start
+/// anyway, leaving the broken file alone. What that costs ("nothing will
+/// be saved": `Config::edit` refuses to write an unparseable file) is the
+/// button's hover hint rather than its label; a label that spelled it out
+/// ran wider than the panel on a narrow terminal, and this modal is
+/// raised before the user can do anything about their window size.
 fn config_startup_choices() -> [(char, &'static str, ConfigStartupChoice); 4] {
     [
         ('e', "Edit…", ConfigStartupChoice::Edit),
         ('r', "Reset", ConfigStartupChoice::Reset),
-        (
-            'c',
-            "Continue without saving settings",
-            ConfigStartupChoice::ContinueUnsaved,
-        ),
+        ('i', "Ignore", ConfigStartupChoice::ContinueUnsaved),
         ('q', "Quit", ConfigStartupChoice::Quit),
     ]
 }
