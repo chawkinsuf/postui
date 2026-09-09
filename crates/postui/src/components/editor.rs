@@ -1709,7 +1709,7 @@ impl Component for Editor {
         let rows = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(ADDRESS_BAR_HEIGHT), // fused address bar + its ring margins
+                Constraint::Length(ADDRESS_BAR_HEIGHT), // the fused address bar's block
                 Constraint::Length(tab_bar_height),     // tab bar (+ right-aligned save/vars)
                 Constraint::Length(toolbar_height),     // Body-only tools chip row
                 content_constraint,                     // active tab content
@@ -1728,9 +1728,19 @@ const METHOD_SEGMENT_WIDTH: u16 = 10;
 /// Fixed width, in cells, of the address bar's Send cap.
 const SEND_SEGMENT_WIDTH: u16 = 24;
 
-/// Height of the fused address bar + its ring margins — the first row of
-/// `Editor::draw`'s vertical split.
-pub const ADDRESS_BAR_HEIGHT: u16 = 5;
+/// Height of the fused address bar — the first row of `Editor::draw`'s
+/// vertical split: the bar's own capped block, plus one row under it.
+///
+/// The bar used to reserve a blank row above it as well. That existed
+/// for a raised control that needed clear air around its bevel; a capped
+/// control carries its own margin, since three quarters of each cap row
+/// is already the page, so keeping it double-spaced the bar.
+///
+/// The row *below* is not margin and cannot go the same way: the split
+/// control on the tab strip paints its upper eave one row above itself
+/// (`SplitControl::paint`), which is this row. Without it the eave lands
+/// on the bar's bottom cap and erases twelve columns of it.
+pub const ADDRESS_BAR_HEIGHT: u16 = crate::paint::BUTTON_HEIGHT + 1;
 
 /// Columns of padding between the method segment and the URL text, so the
 /// text isn't flush against the method button.
@@ -1797,19 +1807,16 @@ impl Editor {
         let url_focused = ctx.focused && self.sub_focus == SubFocus::Url;
         let method_focused = ctx.focused && self.sub_focus == SubFocus::Method;
 
-        let margins = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(1), // breathing margin above
-                Constraint::Length(3), // the bar itself
-                Constraint::Length(1), // breathing margin below
-            ])
-            .split(area);
-        let bar_outer = margins[1];
+        // No margin above: the bar's block starts on `area`'s first row.
+        // The caps leave three quarters of the page showing in their own
+        // rows, so the bar reads as floating without a blank row over it.
+        // One column of inset each side stays -- the pane's focus bar
+        // lives in the leftmost column.
         let bar = Rect {
-            x: bar_outer.x + 1,
-            width: bar_outer.width.saturating_sub(2),
-            ..bar_outer
+            x: area.x + 1,
+            width: area.width.saturating_sub(2),
+            height: crate::paint::BUTTON_HEIGHT,
+            ..area
         };
         // The bar's anatomy is three rows (bevel, text, bevel); a pane too
         // short to hold them (a tiny terminal) draws no bar at all rather
