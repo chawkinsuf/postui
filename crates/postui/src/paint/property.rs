@@ -10,14 +10,16 @@
 //! A property row shows its keyboard cursor by lifting its *control's*
 //! own fill instead, the app's focus language everywhere else.
 //!
-//! Every painter here is exactly one row tall and flat. A one-row
-//! control has no spare rows for a bevel, so the Manage detail panes
-//! give up the raised-surface look that [`crate::paint::TextField`] and
-//! [`crate::paint::Button`] carry. That is the trade compactness buys,
-//! and it is drawn consistently: inside a Manage detail pane nothing is
-//! bevelled, while dialogs keep their bevels — so the split reads as
-//! "inline property" versus "dialog control" rather than as an
-//! accident.
+//! Every painter here is flat, and every one but [`TallPill`] is
+//! exactly one row tall. A one-row control has no spare rows for a
+//! bevel, so the Manage detail panes give up the raised-surface look
+//! that [`crate::paint::TextField`] and [`crate::paint::Button`] carry.
+//! That is the trade compactness buys, and it is drawn consistently:
+//! inside a Manage detail pane nothing is bevelled, while dialogs keep
+//! their bevels — so the split reads as "inline property" versus
+//! "dialog control" rather than as an accident. [`TallPill`] buys its
+//! separation with height instead, for the one control that needs to
+//! sit apart from the grid rather than in it.
 //!
 //! One rule governs the hover wash, and every pane converted to these
 //! rows follows it: **a row washes when the pointer is over something
@@ -267,6 +269,96 @@ impl Pill<'_> {
     }
 }
 
+/// The rows a [`TallPill`] spans: a quarter-row cap, the label row, a
+/// quarter-row cap. Deliberately the same as [`crate::paint::BUTTON_HEIGHT`],
+/// so a pane can swap one for the other without moving anything under it.
+pub const TALL_PILL_H: u16 = 3;
+
+/// The cap glyphs, in the two orientations described on [`TallPill`].
+const CAP_TOP: &str = "\u{2582}"; // ▂ lower one quarter block
+const CAP_BOTTOM: &str = "\u{2586}"; // ▆ lower three quarters block
+
+/// A header button: one and a half rows of face, centred in a
+/// [`TALL_PILL_H`]-row block.
+///
+/// The Manage detail panes' title-row buttons -- Rename, Delete, Edit
+/// fields, + Option, Move all requests… -- are the pane's only controls
+/// that are *not* property rows. They act on the item the pane is
+/// showing rather than on any one of its fields, so painting them at
+/// the property rows' one-row height files them under the grid, which
+/// is exactly the wrong reading. Height is what separates them.
+///
+/// Not a whole row taller, though: the extra half is split into a
+/// quarter above and a quarter below, leaving three quarters of page
+/// showing in each of the neighbouring rows. The button reads as
+/// something floating over the pane at its own size, rather than as a
+/// block the grid has grown by a row.
+///
+/// The caps are the same block-element trick the bevels use, in the two
+/// orientations Unicode allows: the row above draws `▂` (lower one
+/// quarter) in the face over the surface, and the row below draws `▆`
+/// (lower three quarters) *inverted* -- surface over the face -- since
+/// there is no upper-quarter block to draw the right way up. Both are
+/// single-cell glyphs from the run [`crate::paint::bevel_top`] and the
+/// scrollbar already rely on.
+pub struct TallPill<'a> {
+    pub label: &'a str,
+    pub kind: ButtonKind,
+    pub state: ControlState,
+    /// The colour of whatever the button is sitting on: the three
+    /// quarters of each cap row that are *not* button paint with it.
+    ///
+    /// A caller has to say, because these buttons sit on two different
+    /// surfaces -- `theme.page` in the detail panes, `theme.panel` in
+    /// the list column beside them -- and a cap that guessed wrong
+    /// would fringe the button with a wedge of the wrong colour, which
+    /// is precisely the artefact the caps exist to avoid.
+    pub surface: Color,
+}
+
+impl TallPill<'_> {
+    /// Paints into `area`, which must be [`TALL_PILL_H`] rows tall and
+    /// at least [`crate::paint::button_min_width`] wide; the label sits
+    /// centred on the middle row, so `area.y + 1` is the row the button
+    /// lines up with.
+    ///
+    /// Returns the rect a caller should register its hit over: the whole
+    /// block, caps included. The caps *are* the button, and the rows
+    /// they sit in are the pane's own padding -- there is nothing else
+    /// there for a click to have meant.
+    pub fn paint(&self, buf: &mut Buffer, area: Rect, theme: &Theme) -> Rect {
+        let (face, fg) = control_face(theme, self.kind, self.state);
+        let mid_y = area.y + 1;
+        let mid = Rect {
+            y: mid_y,
+            height: 1,
+            ..area
+        };
+        fill(buf, mid, face);
+        let width = self.label.chars().count() as u16;
+        let start_x = area.x + area.width.saturating_sub(width) / 2;
+        text(buf, start_x, mid_y, self.label, fg, face, true);
+
+        // fg/bg swap on the bottom cap: `▆` fills its lower three
+        // quarters with the foreground, so painting it surface-over-face
+        // leaves the top quarter -- the part touching the label row --
+        // showing the button.
+        for x in area.x..area.x + area.width {
+            if let Some(cell) = buf.cell_mut((x, area.y)) {
+                cell.set_symbol(CAP_TOP);
+                cell.set_fg(face);
+                cell.set_bg(self.surface);
+            }
+            if let Some(cell) = buf.cell_mut((x, mid_y + 1)) {
+                cell.set_symbol(CAP_BOTTOM);
+                cell.set_fg(self.surface);
+                cell.set_bg(face);
+            }
+        }
+        area
+    }
+}
+
 /// A checkbox on a [`Well`]-height face.
 pub struct Toggle {
     pub on: bool,
@@ -359,6 +451,78 @@ mod tests {
                 assert_ne!(cell.symbol(), "▌", "hovered={hovered}: nor its bar");
             }
         }
+    }
+
+    /// The whole point of `TallPill`: it is taller than a property row,
+    /// and by *half* a row rather than a whole one. That half is a
+    /// quarter cap above and a quarter cap below the label row, each
+    /// leaving three quarters of page showing -- so the button reads as
+    /// floating over the pane rather than as a row of the grid.
+    #[test]
+    fn a_tall_pill_caps_its_label_row_with_a_quarter_of_face_each_side() {
+        let theme = Theme::dark();
+        let mut term = Terminal::new(TestBackend::new(20, TALL_PILL_H)).unwrap();
+        let area = Rect::new(2, 0, 10, TALL_PILL_H);
+        term.draw(|f| {
+            TallPill {
+                label: "Rename",
+                kind: ButtonKind::Secondary,
+                state: ControlState::Normal,
+                surface: theme.page,
+            }
+            .paint(f.buffer_mut(), area, &theme);
+        })
+        .unwrap();
+        let (face, _) = control_face(&theme, ButtonKind::Secondary, ControlState::Normal);
+
+        for x in area.x..area.x + area.width {
+            // Above: `▂` fills its own lower quarter with the fg, so the
+            // face is the fg and the page shows through as the bg.
+            let top = buf_cell(&term, x, 0);
+            assert_eq!(top.symbol(), "\u{2582}", "the top cap is a quarter block");
+            assert_eq!(top.fg, face, "and the quarter it fills is the button");
+            assert_eq!(top.bg, theme.page, "the other three quarters are the pane");
+
+            // The label row is the button, edge to edge.
+            assert_eq!(buf_cell(&term, x, 1).bg, face);
+
+            // Below: `▆` fills its lower three quarters with the fg, so
+            // the colours swap -- page as fg, face as bg -- leaving the
+            // top quarter (the part touching the label row) as button.
+            let bottom = buf_cell(&term, x, 2);
+            assert_eq!(
+                bottom.symbol(),
+                "\u{2586}",
+                "the bottom cap is an inverted three-quarter block"
+            );
+            assert_eq!(bottom.fg, theme.page);
+            assert_eq!(bottom.bg, face);
+        }
+    }
+
+    /// The caps are part of the button, and the pane rows they sit in
+    /// are its own padding -- nothing else is there for a click to have
+    /// meant. So the rect handed back for the hit map is the whole
+    /// block, not just the label row.
+    #[test]
+    fn a_tall_pill_claims_its_caps_for_the_click() {
+        let theme = Theme::dark();
+        let mut term = Terminal::new(TestBackend::new(20, TALL_PILL_H)).unwrap();
+        let area = Rect::new(2, 0, 10, TALL_PILL_H);
+        let mut painted = None;
+        term.draw(|f| {
+            painted = Some(
+                TallPill {
+                    label: "Delete",
+                    kind: ButtonKind::Secondary,
+                    state: ControlState::Hover,
+                    surface: theme.page,
+                }
+                .paint(f.buffer_mut(), area, &theme),
+            );
+        })
+        .unwrap();
+        assert_eq!(painted, Some(area));
     }
 
     /// Hover is a wash, not a band: visibly present, and far below the

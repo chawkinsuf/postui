@@ -4809,6 +4809,12 @@ impl App {
                 let prev = self.manage.tab;
                 self.manage.tab = target;
                 self.settings.clamp_to_live(self.ui_settings_are_editable());
+                // The Settings tab holds the keyboard cursor exactly
+                // while it is the tab on screen: arriving hands it over
+                // (so the first paint already shows where the keyboard
+                // is), and leaving takes it back, so a control is never
+                // left lifted on a tab nobody is looking at.
+                self.settings.focused = target == crate::components::manage::ManageTab::Settings;
                 if self.screen != Screen::Manage {
                     self.prior_focus = self.focus;
                     self.screen = Screen::Manage;
@@ -4840,6 +4846,9 @@ impl App {
                     let prev = self.manage.tab;
                     self.manage.tab = tab;
                     self.settings.clamp_to_live(self.ui_settings_are_editable());
+                    // As in `OpenManage`: the cursor belongs to the
+                    // Settings tab only while it is the one on screen.
+                    self.settings.focused = tab == crate::components::manage::ManageTab::Settings;
                     self.retarget_manage_tab_underline(prev);
                 }
                 true
@@ -9621,6 +9630,10 @@ impl App {
     /// swallowed rather than falling through to the global keymap.
     fn handle_settings_key(&mut self, ev: KeyEvent) -> bool {
         use crate::components::settings::SettingsRow;
+        // A key on this tab is the keyboard asking for the cursor back:
+        // a click away dropped it (see `App::on_hit`), and the very next
+        // arrow has to move something the user can see.
+        self.settings.focused = true;
         if self.settings.editing.is_some() {
             return match ev.code {
                 KeyCode::Esc => {

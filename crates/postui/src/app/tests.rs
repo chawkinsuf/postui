@@ -10687,6 +10687,103 @@ fn the_context_menu_delete_matches_the_d_key() {
     assert!(!app.proj().variables().vars.contains_key("base_url"));
 }
 
+/// Every `TallPill` on the Manage screen lands on the same three rows,
+/// in both columns and on all four tabs.
+///
+/// The block straddles its label row, so a caller that lays it out from
+/// the row it *wants the label on* is one row low -- which is exactly
+/// what the selector pane did, inherited from the bevelled `Button` it
+/// replaced (that one put its label on `y + 1`). One pane a row off is
+/// invisible until two of them are on screen together, and in the
+/// Variables tab they always are.
+#[test]
+fn every_manage_button_lands_on_the_same_rows_in_both_columns() {
+    use crate::components::manage::ManageTab;
+    use crate::hit::Hit;
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+
+    // Every tab, and both of the Variables tab's detail panes -- the
+    // variable form and the selector grid, which is the one that drifted.
+    let cases: [(ManageTab, Option<&str>, &[Hit]); 4] = [
+        (
+            ManageTab::Variables,
+            Some("base_url"),
+            &[
+                Hit::VmNewVar,
+                Hit::VmNewSelector,
+                Hit::VmRename,
+                Hit::VmDelete,
+            ],
+        ),
+        (
+            ManageTab::Variables,
+            Some("user"),
+            &[
+                Hit::VmNewVar,
+                Hit::VmNewSelector,
+                Hit::VmNewOption,
+                Hit::VmEditFields,
+                Hit::VmRename,
+                Hit::VmDelete,
+            ],
+        ),
+        (
+            ManageTab::Environments,
+            None,
+            &[Hit::ManageNew, Hit::ManageRename, Hit::ManageDelete],
+        ),
+        (
+            ManageTab::Spaces,
+            None,
+            &[
+                Hit::ManageNew,
+                Hit::ManageRename,
+                Hit::ManageDelete,
+                Hit::ManageMoveAll,
+            ],
+        ),
+    ];
+
+    for (tab, select, buttons) in cases {
+        // Closed first: `OpenManage` for the tab already on screen is a
+        // toggle, so the second Variables case would shut the screen.
+        app.update(Action::CloseScreen);
+        app.update(Action::OpenManage { tab: Some(tab) });
+        // `left_rows` is built during the draw, so the selection needs a
+        // frame under it before it can name a row.
+        rendered_text_wide_tall(&mut app);
+        if let Some(name) = select {
+            app.varmanager.select_name(name);
+        }
+        rendered_text_wide_tall(&mut app);
+        let rects: Vec<(String, ratatui::layout::Rect)> = buttons
+            .iter()
+            .map(|h| {
+                (
+                    format!("{h:?}"),
+                    app.hits
+                        .rect_of(h)
+                        .unwrap_or_else(|| panic!("{tab:?}/{select:?}: {h:?} is not painted")),
+                )
+            })
+            .collect();
+        let (first_name, first) = &rects[0];
+        for (name, r) in &rects[1..] {
+            assert_eq!(
+                (r.y, r.height),
+                (first.y, first.height),
+                "{tab:?}/{select:?}: {name} sits at row {} but {first_name} sits at row {} \
+                 -- every button on the screen shares one three-row block",
+                r.y,
+                first.y
+            );
+        }
+    }
+}
+
 #[test]
 fn clicking_the_new_variable_button_opens_the_new_variable_prompt() {
     let dir = tempfile::tempdir().unwrap();
@@ -14813,7 +14910,7 @@ fn the_keyboard_reaches_the_grid_selects_a_row_and_edits_the_focused_cell() {
     // rather than the left list's selection.
     app.handle_key(arrow(KeyCode::Right));
     assert_eq!(app.varmanager.focus, VmFocus::Grid);
-    app.handle_key(arrow(KeyCode::Down));
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     assert_eq!(app.varmanager.grid.cursor.0, 1);
     assert_eq!(
         app.varmanager.detail,
@@ -23235,6 +23332,67 @@ fn a_click_during_a_refused_settings_edit_is_swallowed() {
     click_hit(&mut app, Hit::SettingsRow(row_of(SettingsField::AiCmd)));
     assert!(app.settings.editing.is_none());
     assert_eq!(app.settings.cursor, row_of(SettingsField::AiCmd));
+}
+
+/// A live Settings field does not survive a click that lands anywhere
+/// else on the page -- bare background included. The typed text commits
+/// (typing is never silently thrown away) and the keyboard cursor goes
+/// with it: on a tab with no selection band the cursor *is* a control
+/// lifting its own fill, so one left behind after the click has landed
+/// elsewhere says "type here" about a row that will no longer answer.
+#[test]
+fn clicking_off_a_settings_field_commits_it_and_drops_the_cursor() {
+    use crate::components::manage::ManageTab;
+    use crate::components::settings::SettingsField;
+    let mut app = App::new_for_test();
+    app.update(Action::OpenManage {
+        tab: Some(ManageTab::Settings),
+    });
+    assert!(
+        app.settings.focused,
+        "opening the tab hands it the cursor to begin with"
+    );
+    app.settings.begin_edit(SettingsField::AiCmd, "llm --pipe");
+
+    // A point on the tab that registers no hit at all -- the pane's own
+    // background below the last row is the easiest one to find.
+    render_once(&mut app);
+    let (x, y) = (0..40u16)
+        .rev()
+        .flat_map(|y| (0..120u16).map(move |x| (x, y)))
+        .find(|(x, y)| app.hits.hit_at(*x, *y).is_none())
+        .expect("the tab has some bare background");
+    app.handle_mouse(left_down(x, y));
+
+    assert!(app.settings.editing.is_none(), "the edit ended");
+    assert_eq!(
+        app.ui_settings.ai_cmd, "llm --pipe",
+        "and committed rather than being thrown away"
+    );
+    assert!(!app.settings.focused, "the cursor went with it");
+
+    // The keyboard asks for it back, and the very next arrow moves
+    // something the user can see.
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert!(app.settings.focused);
+}
+
+/// The same rule for a click on a *hit* outside the tab's own controls:
+/// the Manage tab strip sits right above the rows, and clicking it must
+/// not leave a control lifted on the tab it just left.
+#[test]
+fn clicking_the_tab_strip_drops_the_settings_cursor_too() {
+    use crate::components::manage::ManageTab;
+    let mut app = App::new_for_test();
+    app.update(Action::OpenManage {
+        tab: Some(ManageTab::Settings),
+    });
+    assert!(app.settings.focused);
+    click_hit(&mut app, Hit::ManageTab(0));
+    assert!(
+        !app.settings.focused,
+        "a click on the strip is a click away from the tab's controls"
+    );
 }
 
 /// Clicking the well of the field already under edit leaves it exactly

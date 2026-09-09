@@ -22,8 +22,8 @@ use crate::components::line_input::LineInput;
 use crate::config::{JqTab, UiSettings};
 use crate::hit::{Hit, HitMap};
 use crate::paint::{
-    ButtonKind, ControlSlot, ControlState, PROPERTY_MAX_W, Pill, PropertyRow, Toggle, TrailingPill,
-    WELL_PAD, Well, fill, label_column, pill_min_width, text,
+    ButtonKind, ControlSlot, ControlState, PROPERTY_MAX_W, Pill, PropertyRow, Toggle, WELL_PAD,
+    Well, fill, label_column, pill_min_width, text,
 };
 use crate::theme::Theme;
 
@@ -118,6 +118,15 @@ pub struct SettingsTab {
     pub editing: Option<SettingsField>,
     /// Which of a File row's two buttons is chosen: 0 = Edit…, 1 = Reset.
     pub file_button: usize,
+    /// Whether the keyboard cursor belongs to this tab right now.
+    ///
+    /// With no selection band on a property row, the cursor *is* the
+    /// control lifting its own fill -- so a control left lifted after
+    /// the user has clicked somewhere else says "type here" about a row
+    /// that will no longer answer. A click away clears this (see
+    /// `App::on_hit`); any click or key on the tab's own controls sets
+    /// it, as does the tab becoming visible.
+    pub focused: bool,
     /// What the live edit holds, and the `LineInput` that owns its
     /// caret, selection and word-nav. Both are private and always
     /// written together — [`SettingsTab::set_field_text`],
@@ -220,6 +229,7 @@ impl SettingsTab {
     /// Puts the cursor on `field`'s row, for a click that landed on a
     /// control rather than on the row behind it.
     pub fn focus_field(&mut self, field: SettingsField) {
+        self.focused = true;
         if let Some(i) = Self::rows()
             .iter()
             .position(|r| *r == SettingsRow::Setting(field))
@@ -344,9 +354,10 @@ pub fn parse_osc52_limit(text: &str) -> Result<usize, String> {
 /// while the tab is open. The values shown are then the ones the session
 /// started with -- not what is on disk, which no longer parses -- so
 /// every setting row is dimmed and registers no hit (a write would be
-/// refused by `Config::edit` anyway). The two file rows' Edit… stays
-/// live, since fixing the file is the way out; Reset does not, since it
-/// too would be refused.
+/// refused by `Config::edit` anyway). Both of a file row's buttons stay
+/// live: Edit… is the way to fix the file by hand, and Reset goes
+/// through `ForceResetConfigFile`, which is written for exactly this
+/// state. Dimming either would remove one of the two ways out.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_settings(
     frame: &mut Frame,
@@ -426,34 +437,24 @@ pub fn draw_settings(
         // looks live and silently refuses every write is the defect the
         // banner above exists to remove.
         //
-        // Registered *before* the row is painted, because `HitMap`
-        // resolves the last registration containing the point: the row's
-        // trailing pills go down inside `PropertyRow::paint`, and a
-        // row-wide hit landing after them would swallow every click on
-        // Reset.
+        // Registered *before* the row's control, because `HitMap`
+        // resolves the last registration containing the point: a
+        // row-wide hit landing after the pills would swallow every click
+        // on Edit… and Reset.
         if !row_disabled {
             hits.register(rect, Hit::SettingsRow(i));
         }
-        // Trailing pills: a File row's Reset sits at the right edge, and
-        // `PropertyRow` lays it out and registers it.
-        let trailing: Vec<TrailingPill> = match row {
-            SettingsRow::File(file) => vec![TrailingPill {
-                label: "Reset",
-                kind: ButtonKind::Secondary,
-                state: file_button_state(tab, i, 1, hovered, *file),
-                hit: Hit::SettingsFile {
-                    file: *file,
-                    reset: true,
-                },
-            }],
-            SettingsRow::Setting(_) => Vec::new(),
-        };
+        // No trailing pills on this tab: a File row's Edit… and Reset
+        // are one pair, and a pair split across the row -- one pill at
+        // the control column, its partner pinned to the right edge --
+        // reads as two unrelated buttons. They go in the control slot
+        // together, where every other row's control lives.
         let slot = PropertyRow {
             label: row.label(),
             label_w,
             hovered: hovered_row,
             disabled: row_disabled,
-            trailing: &trailing,
+            trailing: &[],
         }
         .paint(buf, hits, rect, theme);
         match row {
@@ -461,7 +462,7 @@ pub fn draw_settings(
                 buf, hits, hovered, theme, tab, ui, *field, &slot, i, editable,
             ),
             SettingsRow::File(file) => {
-                draw_file_edit_button(buf, hits, hovered, theme, tab, i, *file, &slot)
+                draw_file_buttons(buf, hits, hovered, theme, tab, i, *file, &slot)
             }
         }
         y += 1;
@@ -518,7 +519,7 @@ fn file_button_state(
         file,
         reset: which == 1,
     };
-    if tab.cursor == row && tab.file_button == which {
+    if tab.focused && tab.cursor == row && tab.file_button == which {
         ControlState::Focused
     } else if hovered == Some(&hit) {
         ControlState::Hover
@@ -527,13 +528,17 @@ fn file_button_state(
     }
 }
 
-/// A File row's Edit… button. Never gated on `editable`: Edit… is
-/// always the way to fix `config.toml` by hand, and Reset (the row's
-/// trailing pill) stays live for the same reason -- `ForceResetConfigFile`
-/// exists precisely so Reset still works when the file will not parse.
-/// Disabling either would remove one of the two ways out.
+/// A File row's Edit… and Reset, side by side from the control column.
+/// Neither is gated on `editable`: they are the two ways *out* of a
+/// broken `config.toml` -- Edit… fixes it by hand, and Reset works even
+/// then through `ForceResetConfigFile`. Disabling either would remove
+/// one of the two ways out.
+///
+/// A pill that will not fit is dropped rather than clipped or painted
+/// over its neighbour; it stays reachable by key, exactly as
+/// `PropertyRow` drops a trailing pill that would reach the label.
 #[allow(clippy::too_many_arguments)]
-fn draw_file_edit_button(
+fn draw_file_buttons(
     buf: &mut Buffer,
     hits: &mut HitMap,
     hovered: Option<&Hit>,
@@ -543,22 +548,33 @@ fn draw_file_edit_button(
     file: ConfigFile,
     slot: &ControlSlot,
 ) {
-    let label = "Edit\u{2026}";
-    let w = pill_min_width(label);
-    if w > slot.rect.width {
-        return;
+    let mut x = slot.rect.x;
+    let right = slot.rect.x + slot.rect.width;
+    for (which, label) in [(0usize, "Edit\u{2026}"), (1, "Reset")] {
+        let w = pill_min_width(label);
+        if x + w > right {
+            return;
+        }
+        let rect = Rect {
+            x,
+            width: w,
+            ..slot.rect
+        };
+        Pill {
+            label,
+            kind: ButtonKind::Secondary,
+            state: file_button_state(tab, row, which, hovered, file),
+        }
+        .paint(buf, rect, theme);
+        hits.register(
+            rect,
+            Hit::SettingsFile {
+                file,
+                reset: which == 1,
+            },
+        );
+        x += w + 1;
     }
-    let rect = Rect {
-        width: w,
-        ..slot.rect
-    };
-    Pill {
-        label,
-        kind: ButtonKind::Secondary,
-        state: file_button_state(tab, row, 0, hovered, file),
-    }
-    .paint(buf, rect, theme);
-    hits.register(rect, Hit::SettingsFile { file, reset: false });
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -584,7 +600,7 @@ fn draw_setting_control(
     let state = || {
         if !editable {
             ControlState::Disabled
-        } else if tab.cursor == row && tab.editing.is_none() {
+        } else if tab.focused && tab.cursor == row && tab.editing.is_none() {
             ControlState::Focused
         } else if hovered == Some(&hit) {
             ControlState::Hover
@@ -614,7 +630,7 @@ fn draw_setting_control(
             // under the pointer that happens to be resting on it.
             let seg_state = if !editable {
                 ControlState::Disabled
-            } else if tab.cursor == row && ui.jq_tab == mode {
+            } else if tab.focused && tab.cursor == row && ui.jq_tab == mode {
                 ControlState::Focused
             } else if hovered == Some(&seg) {
                 ControlState::Hover
@@ -661,7 +677,7 @@ fn draw_setting_control(
     let rect = Rect { width, ..slot.rect };
     let well_state = if !editable {
         ControlState::Disabled
-    } else if editing || (tab.cursor == row && tab.editing.is_none()) {
+    } else if editing || (tab.focused && tab.cursor == row && tab.editing.is_none()) {
         ControlState::Focused
     } else if hovered == Some(&hit) {
         ControlState::Hover
@@ -923,6 +939,7 @@ mod tests {
         let mut hits = HitMap::default();
         let tab = SettingsTab {
             cursor: ai_row,
+            focused: true,
             ..Default::default()
         };
         let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
@@ -966,6 +983,7 @@ mod tests {
             .unwrap();
         let tab = SettingsTab {
             cursor: jq_row,
+            focused: true,
             ..Default::default()
         };
         // The pointer is on the very segment the keyboard is on.
@@ -1015,6 +1033,7 @@ mod tests {
         let tab = SettingsTab {
             cursor: row,
             file_button: 1,
+            focused: true,
             ..Default::default()
         };
         let reset = Hit::SettingsFile { file, reset: true };
@@ -1083,6 +1102,85 @@ mod tests {
         assert_eq!(
             other_row, theme.page,
             "a different row's control washes that row, not this one"
+        );
+    }
+
+    /// Edit… and Reset are one pair, so they are painted as one: both in
+    /// the control column, side by side, Reset immediately after Edit….
+    /// Split across the row -- one at the label's edge, the other pinned
+    /// to the pane's right -- they read as two unrelated buttons, which
+    /// is the complaint this layout answers.
+    #[test]
+    fn a_file_rows_two_buttons_sit_together_in_the_control_column() {
+        let hits = render(&SettingsTab::default(), &UiSettings::default());
+        let labels: Vec<&str> = SettingsTab::rows().iter().map(|r| r.label()).collect();
+        // The pane insets by two, and the control column starts one label
+        // column in from there -- the same arithmetic `draw_settings` does.
+        let control_x = 2 + label_column(&labels);
+        for file in [ConfigFile::Config, ConfigFile::Keys] {
+            let edit = hits
+                .rect_of(&Hit::SettingsFile { file, reset: false })
+                .expect("Edit… is painted");
+            let reset = hits
+                .rect_of(&Hit::SettingsFile { file, reset: true })
+                .expect("Reset is painted");
+            assert_eq!(
+                edit.x, control_x,
+                "{file:?}: Edit… starts at the control column, like every other row's control"
+            );
+            assert_eq!(edit.y, reset.y, "{file:?}: one row, not two");
+            assert_eq!(
+                reset.x,
+                edit.x + edit.width + 1,
+                "{file:?}: Reset follows Edit… with a single column between them"
+            );
+        }
+    }
+
+    /// The keyboard cursor is a control lifting its own fill, so it has
+    /// to be droppable: after a click away (`SettingsTab::focused` goes
+    /// false) no control on the tab may still be painting Focused, or it
+    /// says "type here" about a row that will no longer answer.
+    #[test]
+    fn an_unfocused_tab_lifts_nothing_at_all() {
+        let theme = Theme::dark();
+        let ui = UiSettings::default();
+        let render_bgs = |focused: bool| -> Vec<ratatui::style::Color> {
+            let tab = SettingsTab {
+                cursor: 0,
+                focused,
+                ..Default::default()
+            };
+            let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+            let mut hits = HitMap::default();
+            terminal
+                .draw(|f| {
+                    let area = f.area();
+                    draw_settings(f, area, &theme, &tab, &ui, None, &mut hits, None);
+                })
+                .unwrap();
+            let buf = terminal.backend().buffer();
+            let mut bgs = Vec::new();
+            for row in 0..SettingsTab::rows().len() {
+                let r = hits.rect_of(&Hit::SettingsRow(row)).expect("row painted");
+                for x in r.x..r.x + r.width {
+                    bgs.push(buf[(x, r.y)].bg);
+                }
+            }
+            bgs
+        };
+        let focused = render_bgs(true);
+        let blurred = render_bgs(false);
+        // Something *did* lift while focused -- otherwise the assertion
+        // below would pass on an empty premise.
+        let lifted = crate::theme::lift_color(theme.control, 0.12);
+        assert!(
+            focused.contains(&lifted),
+            "the focused cursor lifts its control"
+        );
+        assert!(
+            !blurred.contains(&lifted),
+            "and nothing lifts once the tab has lost the cursor"
         );
     }
 

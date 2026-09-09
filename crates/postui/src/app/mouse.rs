@@ -242,13 +242,24 @@ impl App {
                     // as landing on a control (`on_hit`'s commit-first
                     // rule). Without this the typed text just hangs there
                     // with no way to tell it isn't saved.
+                    //
+                    // The Settings tab has the same bare background --
+                    // below the last row, right of the label column --
+                    // and the same rule: the edit commits, and the
+                    // keyboard cursor goes with it, so no control is
+                    // left lifted on a tab the pointer has walked off.
                     let live = self.varmanager.form.editing.is_some()
-                        || self.varmanager.grid.editing.is_some();
+                        || self.varmanager.grid.editing.is_some()
+                        || self.settings.editing.is_some()
+                        || self.settings.focused;
                     if !live {
                         return jq_blurred;
                     }
                     self.commit_var_form();
                     self.commit_grid_edit();
+                    if self.settings.editing.is_none() || self.commit_settings_edit_for_click() {
+                        self.settings.focused = false;
+                    }
                     return self.update(Action::Render);
                 };
                 // The testbed is a dead end for the mouse exactly like it is
@@ -1088,6 +1099,33 @@ impl App {
         if !editing_this_cell {
             self.commit_grid_edit();
         }
+        // …and the Settings tab's field and cursor, likewise. Any click
+        // that isn't on one of the tab's own controls commits whatever
+        // was being typed *and* drops the keyboard cursor: with no
+        // selection band, the cursor is a control lifting its own fill,
+        // and one left lifted after the click has landed elsewhere says
+        // "type here" about a row that will no longer answer. A commit
+        // the field refuses swallows the click and keeps both, exactly
+        // as it does on the tab's own hits.
+        //
+        // Overlays are exempt, like every other click-away rule here: a
+        // modal, a dropdown or a scrollbar drawn over the tab must not
+        // pull the caret out from under what is being typed.
+        // `keeps_table_selection` is already that exemption set.
+        let keeps_settings_focus = keeps_table_selection
+            || matches!(
+                hit,
+                Hit::SettingsRow(_)
+                    | Hit::SettingsControl(_)
+                    | Hit::SettingsJqTab(_)
+                    | Hit::SettingsFile { .. }
+            );
+        if !keeps_settings_focus {
+            if self.settings.editing.is_some() && !self.commit_settings_edit_for_click() {
+                return true;
+            }
+            self.settings.focused = false;
+        }
         // Likewise, clicking away blurs whichever editor input is active
         // (URL line / table / body). Hits that themselves place the
         // sub-focus (UrlBar, BodyEditor, the table hits) re-set it right
@@ -1175,6 +1213,7 @@ impl App {
                 if !self.commit_settings_edit_for_click() {
                     return true;
                 }
+                self.settings.focused = true;
                 self.settings.cursor = i;
                 self.update(Action::Render)
             }
@@ -1233,6 +1272,7 @@ impl App {
                 if !self.commit_settings_edit_for_click() {
                     return true;
                 }
+                self.settings.focused = true;
                 if let Some(i) = SettingsTab::rows()
                     .iter()
                     .position(|r| *r == SettingsRow::File(file))

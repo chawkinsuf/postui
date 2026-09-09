@@ -24,7 +24,8 @@ pub use frac::frac_vspan;
 pub use panel::{dim_backdrop, fade_to, floating_panel, floating_panel_settling};
 pub use property::{
     ControlSlot, HOVER_WASH, LABEL_W_MAX, LABEL_W_MIN, PILL_PAD, PROPERTY_MAX_W, Pill, PropertyRow,
-    TOGGLE_W, Toggle, TrailingPill, WELL_PAD, Well, label_column, pill_min_width,
+    TALL_PILL_H, TOGGLE_W, TallPill, Toggle, TrailingPill, WELL_PAD, Well, label_column,
+    pill_min_width,
 };
 pub use ring::ring;
 pub use rows::{ListRow, RowHighlight};

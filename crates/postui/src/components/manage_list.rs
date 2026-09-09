@@ -9,11 +9,11 @@ use crate::action::Action;
 use crate::components::manage::ManageTab;
 use crate::hit::{Hit, HitMap};
 use crate::paint::{
-    BUTTON_HEIGHT, Button, ButtonKind, ControlState, ListRow, PROPERTY_MAX_W, Pill, PropertyRow,
-    RowHighlight, fill, label_column, pill_min_width, text,
+    ButtonKind, ControlState, ListRow, PROPERTY_MAX_W, Pill, PropertyRow, RowHighlight,
+    TALL_PILL_H, TallPill, button_min_width, fill, label_column, pill_min_width, text,
 };
-use postui_core::project::Project;
 use crate::theme::Theme;
+use postui_core::project::Project;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
@@ -444,34 +444,42 @@ impl ManageList {
     ) {
         let buf = frame.buffer_mut();
         fill(buf, left, theme.panel);
-        if left.width <= 2 || left.height < BUTTON_HEIGHT + 2 {
+        if left.width <= 2 || left.height < TALL_PILL_H + 2 {
             self.visible_rows = 0;
             return;
         }
+        // `left.y`, not `left.y + 1`: the block straddles its label row,
+        // so starting a row down would put the label on `left.y + 2`
+        // while the detail pane beside it puts its title-row buttons'
+        // labels on `right.y + 1`.
         let button = Rect {
             x: left.x + 1,
-            y: left.y + 1,
+            y: left.y,
             width: left.width - 2,
-            height: BUTTON_HEIGHT,
+            height: TALL_PILL_H,
         };
         let state = if hovered == Some(&Hit::ManageNew) {
             ControlState::Hover
         } else {
             ControlState::Normal
         };
-        Button {
+        // `TallPill` on `theme.panel`: the column's surface, not the
+        // page -- the caps blend into whatever they sit on, and this
+        // button sits on the list column rather than in a detail pane.
+        let painted = TallPill {
             label: "+ New",
             kind: ButtonKind::Primary,
             state,
+            surface: theme.panel,
         }
         .paint(buf, button, theme);
-        hits.register(button, Hit::ManageNew);
+        hits.register(painted, Hit::ManageNew);
 
         let list = Rect {
             x: left.x + 1,
-            y: button.y + BUTTON_HEIGHT + 1,
+            y: button.y + TALL_PILL_H + 1,
             width: left.width - 2,
-            height: left.height.saturating_sub(BUTTON_HEIGHT + 2),
+            height: left.height.saturating_sub(TALL_PILL_H + 1),
         };
         self.visible_rows = list.height as usize;
         self.last_list = list;
@@ -590,11 +598,20 @@ impl ManageList {
 
         // --- title row: name + the pane's buttons, right-aligned --------
         // The Variables pane's layout exactly: the title at the left, the
-        // pills laid out from the pane's right edge inward in
+        // buttons laid out from the pane's right edge inward in
         // keep-priority order (Delete outermost, like the selector grid),
-        // a pill that would run into the title dropped rather than
-        // painted over it. Dropped pills stay reachable by key.
-        if y < bottom {
+        // one that would run into the title dropped rather than painted
+        // over it. Dropped buttons stay reachable by key.
+        //
+        // `TallPill`, not `Pill`: these act on the item the pane is
+        // showing, not on one of its fields, and at a property row's
+        // height they read as one more row of the grid below. They span
+        // the blank row above the title and the blank row below it, so
+        // nothing under them moves.
+        // The block is `y - 1 ..= y + 1`, so the pane needs one row of
+        // padding below the title -- which its own `height < 3` guard
+        // above already promises.
+        if y + 2 <= bottom {
             let title = match tab {
                 ManageTab::Spaces => format!("Space: {}", ctx.space_name(name)),
                 _ => format!("Environment: {}", ctx.env_name(name)),
@@ -607,29 +624,30 @@ impl ManageList {
             }
             let mut bx = right.x + right.width;
             for (label, hit) in buttons {
-                let w = pill_min_width(label);
+                let w = button_min_width(label);
                 if bx < x0 + title.chars().count() as u16 + w + 3 {
                     break;
                 }
                 bx -= w + 1;
                 let rect = Rect {
                     x: bx,
-                    y,
+                    y: y - 1,
                     width: w,
-                    height: 1,
+                    height: TALL_PILL_H,
                 };
                 let state = if hovered == Some(&hit) {
                     ControlState::Hover
                 } else {
                     ControlState::Normal
                 };
-                Pill {
+                let painted = TallPill {
                     label,
                     kind: ButtonKind::Secondary,
                     state,
+                    surface: theme.page,
                 }
                 .paint(buf, rect, theme);
-                hits.register(rect, hit);
+                hits.register(painted, hit);
             }
             y += 2;
         }

@@ -29,10 +29,9 @@ detail pane and the Environments/Spaces detail panes shrink to one row per
 control; Settings text fields gain click-to-place-caret, drag-to-select,
 double-click word select and a right-click Copy/Paste menu.
 
-Explicitly out of scope: the Manage screen's **left columns** (their `+
-New` buttons stay three-row `Button`s and their item lists keep the
-`Selected` band — they are lists, see "The band belongs to lists, not to
-controls"), the Variables tab's
+Explicitly out of scope: the Manage screen's **left column item lists**
+(they keep the `Selected` band — they are lists, see "The band belongs to
+lists, not to controls"), the Variables tab's
 **entry grid**, and every **dialog surface** in the app (modals, chooser,
 palette, file picker, var picker), which keep the three-row `TextField`
 and `Button`. The app deliberately ends with two registers: compact
@@ -83,7 +82,8 @@ checkbox is a poor target. The wash is what tells you so.
 
 ## The primitive: `paint/property.rs`
 
-One new module. Four painters, all exactly one row tall, all flat.
+One new module. Five painters, all flat; four of them exactly one row
+tall, and `TallPill` — the panes' title-row buttons — one and a half.
 
 **Flat is deliberate.** A one-row control has no spare rows for
 `bevel_top`/`bevel_bottom`, so the Manage detail panes give up the
@@ -92,6 +92,35 @@ trade the compactness buys, and it is drawn consistently: within a Manage
 detail pane, *nothing* is bevelled. Dialogs keep their bevels, so the
 distinction reads as "inline property" versus "dialog control" rather
 than as an inconsistency.
+
+**`TallPill` is the one exception to one row**, and to that rule's
+reasoning rather than against it. A title-row button (`Rename`,
+`Delete`, `Edit fields`, `+ Option`, `Move all requests…`) acts on the
+*item the pane is showing*, not on any one of its fields — so at a
+property row's height it files itself under the grid, which is exactly
+the wrong reading. It gets height instead of a bevel: a quarter-row cap
+above the label row and a quarter below, drawn with `▂` over the page
+and an inverted `▆`, leaving three quarters of page showing in each
+neighbouring row. Half a row taller, not a whole one, so it reads as a
+button floating over the pane rather than as a block the grid has grown.
+It occupies the same three-row block a `Button` did, which is what let
+the left columns' `+ New`, `+ Variable` and `+ Selector` join it. Those
+sit on
+`theme.panel` rather than `theme.page`, so `TallPill` takes the surface
+it is sitting on as a parameter: the three quarters of each cap row that
+are not button have to be the colour behind them, or the caps fringe the
+button with a wedge of the wrong surface. With those converted, the
+Manage screen paints no bevelled `Button` anywhere.
+
+**One geometry, and it is easy to get wrong.** The block straddles its
+label row (`y - 1 ..= y + 1`), so a caller that lays it out from the row
+it wants the label on ends up a row low. Two places did: the selector
+grid, which inherited `y + 1` from the `Button` it replaced, and the
+left columns, which started their block at `left.y + 1`. Both moved up a
+row, taking their content with them. With one control in both columns of
+every tab, a single row of difference is plainly visible, so
+`every_manage_button_lands_on_the_same_rows_in_both_columns` asserts the
+whole screen shares one block.
 
 ```rust
 /// The label column's width for a pane, from its own longest label:
@@ -210,7 +239,9 @@ today bare accent text with a hover inversion, join the register too:
 | `[on]` / `[off]` accent text (`Hit::VmSecretToggle`) | `PropertyRow` + `Toggle` |
 | `󰈈 reveal` / `hide` accent text (`Hit::VmRevealToggle`) | trailing `Pill` on the value row |
 | `✕ remove` accent text (`Hit::VmRemoveEnvValue`) | trailing `Pill` on the value row |
-| 3-row `Button` (`Rename`, `Delete`, promote) | `Pill` |
+| 3-row `Button` (`Rename`, `Delete`, `Edit fields`, `+ Option`) | `TallPill` |
+| 3-row `Button` (`+ Variable`, `+ Selector`, and the Environments/Spaces `+ New`) | `TallPill` on `theme.panel` |
+| 3-row `Button` (promote) | `Pill` |
 
 Masking, the reveal state, `(not set)`, `promote_action`'s conditional
 button and the `used by:` line all keep their current behaviour and
@@ -224,7 +255,7 @@ already were; it changes nothing about how they are reached.
 
 The TLS segmented control's three-row `Button`s become `Pill`s inside a
 `PropertyRow` labelled `TLS`; `Rename`, `Delete` and `Move all requests…`
-become `Pill`s on the title row; the environment file path and the space's
+become `TallPill`s on the title row; the environment file path and the space's
 request list align to the same label column. `draw_tls_control`'s
 keep-priority drop rule (a button that would collide with the title is
 dropped, not painted over it, and stays reachable by key) is preserved.
@@ -310,9 +341,6 @@ core + integration tests, all green.
 
 ## Open follow-ups (not this branch)
 
-- The left columns' `+ New` buttons stay three-row for now, deliberately,
-  to see how a compact detail pane looks beside them. Revisit after
-  living with it.
 - Whether the compact register should reach the request editor's params
   and headers tables. Not evaluated here.
 - **Triple-click select-all and shift+click extend**, missing from every

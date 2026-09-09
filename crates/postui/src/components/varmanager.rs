@@ -17,9 +17,9 @@ use crate::components::line_input::LineInput;
 use crate::hit::{Hit, HitMap, ScrollbarSpec};
 use crate::layout::PaneId;
 use crate::paint::{
-    BUTTON_HEIGHT, Button, ButtonKind, ControlSlot, ControlState, ListRow, PROPERTY_MAX_W, Pill,
-    PropertyRow, RowHighlight, Toggle, TrailingPill, Well, button_min_width, fill, label_column,
-    pill_min_width, text,
+    ButtonKind, ControlSlot, ControlState, ListRow, PROPERTY_MAX_W, Pill, PropertyRow,
+    RowHighlight, TALL_PILL_H, TallPill, Toggle, TrailingPill, Well, button_min_width, fill,
+    label_column, pill_min_width, text,
 };
 use crate::theme::Theme;
 use indexmap::IndexMap;
@@ -1527,9 +1527,21 @@ impl VarManager {
         let shared = is_shared(ctx, selector);
 
         // --- title row: name + the pane's four buttons ------------------
-        if y + BUTTON_HEIGHT <= bottom {
+        // `TallPill`, like the variable pane's title row: a Manage detail
+        // pane paints nothing bevelled (see `paint::property`'s module
+        // doc), and these four are the same kind of control as that
+        // pane's Rename/Delete -- they act on the selector, not on the
+        // grid below.
+        //
+        // The title sits on `y` and the block straddles it as `y - 1 ..=
+        // y + 1`, which is the variable and environment panes' geometry
+        // exactly. It used to sit a row lower here -- a leftover from the
+        // bevelled `Button`, which put its own label on `y + 1` -- and
+        // once all three panes drew the same control that row of
+        // difference was simply visible.
+        if y + TALL_PILL_H <= bottom {
             let label = format!("Selector: {selector}");
-            text(buf, x0, y + 1, &label, theme.text, theme.page, true);
+            text(buf, x0, y, &label, theme.text, theme.page, true);
             let mut bx = right.x + right.width;
             for (lbl, kind, hit) in [
                 ("Delete", ButtonKind::Secondary, Hit::VmDelete),
@@ -1544,20 +1556,21 @@ impl VarManager {
                 bx -= w + 1;
                 let rect = Rect {
                     x: bx,
-                    y,
+                    y: y - 1,
                     width: w,
-                    height: BUTTON_HEIGHT,
+                    height: TALL_PILL_H,
                 };
                 let state = state_of(&hit);
-                Button {
+                let painted = TallPill {
                     label: lbl,
                     kind,
                     state,
+                    surface: theme.page,
                 }
                 .paint(buf, rect, theme);
-                hits.register(rect, hit);
+                hits.register(painted, hit);
             }
-            y += BUTTON_HEIGHT + 1;
+            y += TALL_PILL_H;
             // The scope line goes in the blank row under the title rather
             // than beside it: the title row's remaining width belongs to
             // the buttons, and crowding a badge in there would push
@@ -1852,7 +1865,12 @@ impl VarManager {
         let mut y = right.y + 1;
 
         // --- title row: name, lock badge, Rename/Delete ---------------
-        if y < bottom {
+        // `TallPill`, not `Pill`: these act on the variable the pane is
+        // showing rather than on one of the fields below, and at a
+        // property row's height they read as one more row of that grid.
+        // The block spans the blank row above the title and the blank
+        // row below it, so nothing under it moves.
+        if y + 2 <= bottom {
             let label = if secret {
                 format!("{name}  {GLYPH_LOCK}")
             } else {
@@ -1861,24 +1879,25 @@ impl VarManager {
             text(buf, x0, y, &label, theme.text, theme.page, true);
             let mut bx = right.x + right.width;
             for (lbl, hit) in [("Delete", Hit::VmDelete), ("Rename", Hit::VmRename)] {
-                let w = pill_min_width(lbl);
+                let w = button_min_width(lbl);
                 if bx < x0 + label.chars().count() as u16 + w + 3 {
                     break;
                 }
                 bx -= w + 1;
                 let rect = Rect {
                     x: bx,
-                    y,
+                    y: y - 1,
                     width: w,
-                    height: 1,
+                    height: TALL_PILL_H,
                 };
-                Pill {
+                let painted = TallPill {
                     label: lbl,
                     kind: ButtonKind::Secondary,
                     state: state_of(&hit),
+                    surface: theme.page,
                 }
                 .paint(buf, rect, theme);
-                hits.register(rect, hit);
+                hits.register(painted, hit);
             }
             y += 2;
         }
@@ -2146,7 +2165,7 @@ impl VarManager {
         hovered: Option<&Hit>,
     ) {
         fill(frame.buffer_mut(), left, theme.panel);
-        if left.width <= 2 || left.height < BUTTON_HEIGHT + 2 {
+        if left.width <= 2 || left.height < TALL_PILL_H + 2 {
             self.visible_rows = 0;
             return;
         }
@@ -2166,7 +2185,12 @@ impl VarManager {
                 }
             };
             let mut bx = left.x + 1;
-            let by = left.y + 1;
+            // `left.y`, not `left.y + 1`: the block straddles its label
+            // row, so starting a row down would put the label on
+            // `left.y + 2` while the detail pane's title-row buttons put
+            // theirs on `right.y + 1`. The two columns are side by side
+            // and their buttons have to land on the same row.
+            let by = left.y;
             let right_edge = left.x + left.width - 1;
             for (label, kind, hit) in [
                 ("+ Variable", ButtonKind::Primary, Hit::VmNewVar),
@@ -2180,15 +2204,19 @@ impl VarManager {
                     x: bx,
                     y: by,
                     width: w,
-                    height: BUTTON_HEIGHT,
+                    height: TALL_PILL_H,
                 };
-                Button {
+                // `theme.panel`, not `theme.page`: the caps blend into
+                // whatever surface the button sits on, and this one sits
+                // on the list column rather than in a detail pane.
+                let painted = TallPill {
                     label,
                     kind,
                     state: state_of(&hit),
+                    surface: theme.panel,
                 }
                 .paint(buf, rect, theme);
-                hits.register(rect, hit);
+                hits.register(painted, hit);
                 bx += w + 1;
             }
         }
@@ -2197,9 +2225,9 @@ impl VarManager {
         // selected row's accent lane, the right one hosts the scrollbar.
         let list = Rect {
             x: left.x + 1,
-            y: left.y + 1 + BUTTON_HEIGHT + 1,
+            y: left.y + TALL_PILL_H + 1,
             width: left.width - 2,
-            height: left.height - (BUTTON_HEIGHT + 2),
+            height: left.height - (TALL_PILL_H + 1),
         };
         self.visible_rows = Self::rows_that_fit(list.height);
         if self.ensure_visible {
