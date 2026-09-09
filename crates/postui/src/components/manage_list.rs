@@ -9,8 +9,8 @@ use crate::action::Action;
 use crate::components::manage::ManageTab;
 use crate::hit::{Hit, HitMap};
 use crate::paint::{
-    ButtonKind, ControlState, ListRow, PROPERTY_MAX_W, Pill, PropertyRow, RowHighlight,
-    TALL_PILL_H, TallPill, button_min_width, fill, label_column, pill_min_width, text,
+    Button, ButtonKind, ControlState, ListRow, PROPERTY_MAX_W, Pill, PropertyRow, RowHighlight,
+    TALL_PILL_H, button_min_width, fill, label_column, pill_min_width, text,
 };
 use crate::theme::Theme;
 use postui_core::project::Project;
@@ -463,14 +463,13 @@ impl ManageList {
         } else {
             ControlState::Normal
         };
-        // `TallPill` on `theme.panel`: the column's surface, not the
-        // page -- the caps blend into whatever they sit on, and this
-        // button sits on the list column rather than in a detail pane.
-        let painted = TallPill {
+        // A full-size `Button`, the same one the dialogs use. Its caps
+        // take the list column's `panel` straight from the buffer, so
+        // sitting off the page needs no special handling here.
+        let painted = Button {
             label: "+ New",
             kind: ButtonKind::Primary,
             state,
-            surface: theme.panel,
         }
         .paint(buf, button, theme);
         hits.register(painted, Hit::ManageNew);
@@ -603,7 +602,7 @@ impl ManageList {
         // one that would run into the title dropped rather than painted
         // over it. Dropped buttons stay reachable by key.
         //
-        // `TallPill`, not `Pill`: these act on the item the pane is
+        // A full-size `Button`, not a `Pill`: these act on the item the pane is
         // showing, not on one of its fields, and at a property row's
         // height they read as one more row of the grid below. They span
         // the blank row above the title and the blank row below it, so
@@ -640,11 +639,10 @@ impl ManageList {
                 } else {
                     ControlState::Normal
                 };
-                let painted = TallPill {
+                let painted = Button {
                     label,
                     kind: ButtonKind::Secondary,
                     state,
-                    surface: theme.page,
                 }
                 .paint(buf, rect, theme);
                 hits.register(painted, hit);
@@ -887,6 +885,53 @@ mod tests {
             .rect_of(&Hit::ManageEnvTls(Some(TlsPolicy::Verify)))
             .expect("the TLS segments are hittable");
         assert_eq!(seg.height, 1, "one-row pills, not three-row buttons");
+    }
+
+    /// The `+ New` button sits in the left list column, which is painted
+    /// `panel` -- not the `page` the detail pane beside it uses. Its caps
+    /// take their surface from the buffer rather than from an argument,
+    /// so this is the test that catches a caller laying a button out
+    /// before the surface under it is painted: the cap would fringe the
+    /// button with a wedge of the wrong colour, or of `page`.
+    #[test]
+    fn the_column_button_caps_against_the_panel_it_sits_on() {
+        use crate::hit::HitMap;
+        let (project, _dir) = ctx();
+        let theme = Theme::dark();
+        let mut list = ManageList::default();
+        let mut hits = HitMap::default();
+        let requests: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 30)).unwrap();
+        term.draw(|f| {
+            list.draw(
+                f,
+                Rect::new(0, 0, 120, 30),
+                &theme,
+                ManageTab::Environments,
+                &project,
+                &requests,
+                &mut hits,
+                None,
+            );
+        })
+        .unwrap();
+
+        let btn = hits.rect_of(&Hit::ManageNew).expect("the + New button");
+        assert_eq!(btn.height, TALL_PILL_H, "a full-size button block");
+        let buf = term.backend().buffer();
+        assert_ne!(theme.panel, theme.page, "the test is vacuous otherwise");
+        for x in btn.x..btn.x + btn.width {
+            let top = buf.cell((x, btn.y)).unwrap();
+            assert_eq!(top.symbol(), crate::paint::cap::CAP_TOP, "top cap x={x}");
+            assert_eq!(top.bg, theme.panel, "top cap surface at x={x}");
+            let bottom = buf.cell((x, btn.y + 2)).unwrap();
+            assert_eq!(
+                bottom.symbol(),
+                crate::paint::cap::CAP_BOTTOM,
+                "bottom cap x={x}"
+            );
+            assert_eq!(bottom.fg, theme.panel, "bottom cap surface at x={x}");
+        }
     }
 
     /// The Spaces detail pane paints its requests as one property row:

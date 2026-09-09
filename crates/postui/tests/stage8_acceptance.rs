@@ -87,14 +87,20 @@ fn stage8_landmarks_render_walk() {
     seed(&mut app, &["a", "b", "c"]);
     let (t_panel, t_accent, t_hairline) = (app.theme.panel, app.theme.accent, app.theme.hairline);
 
-    // --- address bar: a "▔" bevel cap on the method/URL row -------------
+    // --- address bar: a "▂" quarter-row cap on the method/URL row ------
+    // The bar is flat: the cap is a quarter of the segment's own fill
+    // over the page, not a light/dark bevel edge straddling it.
     let buf = render(&mut app);
     let method = app.hits.rect_of(&Hit::MethodSelector).unwrap();
     let cap = buf.cell((method.x, method.y)).unwrap();
     assert_eq!(
         cap.symbol(),
-        "▔",
-        "address bar top row carries the bevel cap: {cap:?}"
+        "▂",
+        "address bar top row carries its quarter-row cap: {cap:?}"
+    );
+    assert_eq!(
+        cap.bg, app.theme.page,
+        "the rest of the cap row is the page the bar floats on: {cap:?}"
     );
 
     // --- tab strip: accent-colored "━" under the active tab, hairline

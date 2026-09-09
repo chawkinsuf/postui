@@ -698,9 +698,15 @@ impl Component for Sidebar {
             return;
         }
 
-        // One blank row above the button keeps it aligned with the other
-        // panes' top padding (the old REQUESTS header row, kept as space).
-        let button_top = (area.y + 1).min(area.y + area.height);
+        // The button starts on the pane's first row: it used to sit below
+        // a blank padding row, air a bevelled button needed to read as
+        // raised, and its top cap is that air now -- three quarters of
+        // the row above the label is already pane surface.
+        //
+        // The blank row *below* it stays, matching the one under the
+        // address bar, so the two controls that share the app's top band
+        // sit in the same rhythm.
+        let button_top = area.y;
         let button_height = BUTTON_HEIGHT.min(area.y + area.height - button_top);
         // A notice means nothing is loaded (the open was refused): there
         // is no project for a new request to land in, so the button is
@@ -730,7 +736,7 @@ impl Component for Sidebar {
             hits.register(button_area, Hit::SidebarNewRequest);
         }
 
-        // One blank spacer line below the button; the row list starts after it.
+        // One blank spacer row below the button; the list starts after it.
         // Rows share the button's 1-column inset each side, so column
         // `area.x` stays the pane focus bar's lane (no collision with the
         // selected row's accent marker) and the right margin column hosts
@@ -1468,13 +1474,13 @@ mod tests {
         assert_eq!(thumb.x, 29);
         let track = hits.track_of(PaneId::Sidebar).expect("track rect");
         assert_eq!(track.x, thumb.x);
-        // 12-row pane: pad(1) + button(3) + spacer(1) = 5 rows overhead,
-        // leaving 7 lines for the list -> 7 rows fit on the dense 1-line
-        // pitch.
-        let viewport = 7i16;
+        // 12-row pane: button(3) + spacer(1) = 4 rows overhead -- the top
+        // cap is the padding that used to be a blank row -- leaving 8
+        // lines for the list, so 8 rows fit on the dense 1-line pitch.
+        let viewport = 8i16;
         assert!(
             thumb.height < track.height,
-            "30 rows in a 7-row viewport is a short thumb"
+            "30 rows in an 8-row viewport is a short thumb"
         );
         assert!(
             hits.rect_of(&Hit::ScrollbarTrack(PaneId::Sidebar, viewport))
@@ -1556,21 +1562,28 @@ mod tests {
             }
         }
         assert_eq!(
-            button_rect.y, 1,
-            "button sits below the pane's blank top padding row"
+            button_rect.y, 0,
+            "the button starts on the pane's first row -- its top cap is \
+             the padding that used to be a blank row"
         );
         assert_eq!(button_rect.height, 3, "the paint-layer button is 3 rows");
         let buf = terminal.backend().buffer();
         assert_eq!(
             buf[(button_rect.x, button_rect.y + 2)].symbol(),
-            "\u{2581}",
-            "button's bottom row is its thin bevel edge"
+            crate::paint::cap::CAP_BOTTOM,
+            "button's bottom row is its cap"
+        );
+        assert_eq!(
+            buf[(button_rect.x, button_rect.y + 2)].fg,
+            theme.panel,
+            "the sidebar sits on `panel`, so its button must cap against \
+             `panel` -- a cap that guessed `page` would fringe the button"
         );
 
         // rows[0] = "top", rows[1] = folder "api" (expanded), rows[2] = "api/ping"
-        // list starts at y = pad(1) + button(3) + spacer(1) = 5.
+        // list starts at y = button(3) + spacer(1) = 4.
         let row0 = hits.rect_of(&Hit::SidebarRow(0)).expect("row 0 hit");
-        assert_eq!(row0.y, 5, "row 0 sits right at the list top, 1-line pitch");
+        assert_eq!(row0.y, 4, "row 0 sits right at the list top, 1-line pitch");
         let row1 = hits.rect_of(&Hit::SidebarRow(1)).expect("row 1 hit");
         let row2 = hits.rect_of(&Hit::SidebarRow(2)).expect("row 2 hit");
         assert_eq!(row1.y - row0.y, 1, "rows sit on a 1-line pitch");

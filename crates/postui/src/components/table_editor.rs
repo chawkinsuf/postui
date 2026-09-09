@@ -693,7 +693,7 @@ impl TableEditorState {
 
         // --- closing edge --------------------------------------------------
         if y < bottom {
-            crate::paint::bevel_top(
+            crate::paint::rule(
                 buf,
                 Rect::new(area.x, y, area.width, 1),
                 theme.edge_dark,

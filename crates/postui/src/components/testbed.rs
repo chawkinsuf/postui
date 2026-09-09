@@ -536,19 +536,11 @@ fn draw_motion_section(buf: &mut Buffer, area: Rect, x0: u16, y: &mut u16, ctx: 
         let breathe_t = ctx.anims.value_or(AnimKey::SendBreathe, ctx.now, 0.0);
         let fill = crate::theme::mix(theme.accent, theme.accent_edge_dark, breathe_t);
         let rect = Rect::new(x0 + MOTION_LABEL_COL, *y + 1, 16, BUTTON_HEIGHT);
-        paint::fill(buf, rect, fill);
-        let (light, dark) = paint::face_edges(fill, theme);
-        paint::bevel_top(buf, Rect::new(rect.x, rect.y, rect.width, 1), light, fill);
-        paint::bevel_bottom(
-            buf,
-            Rect::new(rect.x, rect.y + rect.height - 1, rect.width, 1),
-            dark,
-            fill,
-        );
+        let mid = paint::capped(buf, rect, fill, theme.page);
         let label = "Send";
         let lw = label.chars().count() as u16;
         let sx = rect.x + rect.width.saturating_sub(lw) / 2;
-        paint::text(buf, sx, rect.y + 1, label, theme.on_accent, fill, true);
+        paint::text(buf, sx, mid.y, label, theme.on_accent, fill, true);
     }
     *y += 1 + BUTTON_HEIGHT;
 

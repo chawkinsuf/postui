@@ -10687,7 +10687,7 @@ fn the_context_menu_delete_matches_the_d_key() {
     assert!(!app.proj().variables().vars.contains_key("base_url"));
 }
 
-/// Every `TallPill` on the Manage screen lands on the same three rows,
+/// Every title-row `Button` on the Manage screen lands on the same three rows,
 /// in both columns and on all four tabs.
 ///
 /// The block straddles its label row, so a caller that lays it out from
@@ -15218,7 +15218,7 @@ fn explicit_testbed_flag_enters_the_testbed_screen() {
 }
 
 #[test]
-fn testbed_renders_a_bevel_and_an_underline() {
+fn testbed_renders_flat_capped_controls_and_an_underline() {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
@@ -15230,7 +15230,19 @@ fn testbed_renders_a_bevel_and_an_underline() {
     terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
     let buf = terminal.backend().buffer();
     let content = format!("{buf:?}");
-    assert!(content.contains('▔'), "no bevel glyph found: {content}");
+    // The app has one control register and it is flat. The testbed shows
+    // every control it owns, so if a bevel glyph survives anywhere in the
+    // paint layer it shows up here -- which is what makes this the
+    // cheapest guard against a raised control creeping back in.
+    assert!(
+        !content.contains('▔') && !content.contains('▁'),
+        "a control painted a bevel glyph; the register is flat: {content}"
+    );
+    assert!(
+        content.contains(crate::paint::cap::CAP_TOP)
+            && content.contains(crate::paint::cap::CAP_BOTTOM),
+        "no capped control found: {content}"
+    );
     // The tab-strip underline segment shares its glyph (`━`, box-drawing
     // heavy horizontal) with the plain hairline rule under it — distinguished
     // only by color — so this checks for an accent-colored `━` cell, not
