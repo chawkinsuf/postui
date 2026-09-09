@@ -2204,9 +2204,6 @@ impl VarManager {
                     width: w,
                     height: TALL_PILL_H,
                 };
-                // `theme.panel`, not `theme.page`: the caps blend into
-                // whatever surface the button sits on, and this one sits
-                // on the list column rather than in a detail pane.
                 let painted = Button {
                     label,
                     kind,

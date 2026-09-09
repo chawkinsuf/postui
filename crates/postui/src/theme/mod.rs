@@ -68,7 +68,10 @@ pub struct Theme {
     pub control: Color,
     pub control_hover: Color,
     pub control_pressed: Color,
-    // bevel pair (relative to `control`; paint layer derives per-surface variants)
+    // Bevel pair (relative to `control`; paint layer derives per-surface
+    // variants). Only `edge_dark` has a consumer today, via `paint::rule` —
+    // the flat control register has no lit edges. `edge_light` is kept as
+    // its half of the pair, ready for whatever wants a raised edge next.
     pub edge_light: Color,
     pub edge_dark: Color,
     /// Alternate zebra-stripe fill for dense list rows: the ground surface

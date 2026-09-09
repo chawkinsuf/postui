@@ -45,13 +45,16 @@ impl Button<'_> {
     /// Returns the rect a caller should register its hit over: the whole
     /// block, caps included. The caps *are* the button, and the rows
     /// they sit in are the layout's own padding — there is nothing else
-    /// there for a click to have meant.
+    /// there for a click to have meant. An `area` too short for the
+    /// block paints nothing and hands back a zero-height rect, so a
+    /// caller that registers the return value cannot leave an
+    /// invisible control clickable.
     pub fn paint(&self, buf: &mut Buffer, area: Rect, theme: &Theme) -> Rect {
         let (face, label_fg) = control_face(theme, self.kind, self.state);
         let surface = cap::backdrop(buf, area, theme);
         let mid = cap::capped(buf, area, face, surface);
         if mid.height == 0 {
-            return area;
+            return Rect { height: 0, ..area };
         }
 
         let width = self.label.chars().count() as u16;
@@ -209,6 +212,30 @@ mod tests {
         })
         .unwrap();
         assert_eq!(painted, Some(area));
+    }
+
+    /// A pane too short for the block gets no button at all, and the
+    /// rect handed back says so: registering it must not leave a
+    /// control that is invisible but still clickable.
+    #[test]
+    fn a_refused_button_claims_nothing() {
+        let theme = Theme::dark();
+        let area = Rect::new(2, 1, 10, BUTTON_HEIGHT - 1);
+        let mut term = Terminal::new(TestBackend::new(20, 5)).unwrap();
+        let mut painted = None;
+        term.draw(|f| {
+            crate::paint::fill(f.buffer_mut(), Rect::new(0, 0, 20, 5), theme.page);
+            painted = Some(
+                Button {
+                    label: "Delete",
+                    kind: ButtonKind::Secondary,
+                    state: ControlState::Hover,
+                }
+                .paint(f.buffer_mut(), area, &theme),
+            );
+        })
+        .unwrap();
+        assert_eq!(painted.map(|r| r.height), Some(0));
     }
 
     /// The caps run the button's whole width — a cap that stopped short

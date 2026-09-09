@@ -1480,7 +1480,7 @@ mod tests {
         let viewport = 8i16;
         assert!(
             thumb.height < track.height,
-            "30 rows in a 7-row viewport is a short thumb"
+            "30 rows in an 8-row viewport is a short thumb"
         );
         assert!(
             hits.rect_of(&Hit::ScrollbarTrack(PaneId::Sidebar, viewport))

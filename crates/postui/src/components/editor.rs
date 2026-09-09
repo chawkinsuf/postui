@@ -1815,13 +1815,17 @@ impl Editor {
         let bar = Rect {
             x: area.x + 1,
             width: area.width.saturating_sub(2),
-            height: crate::paint::BUTTON_HEIGHT,
+            // Clamped to the pane: the bar is a fixed three rows, but a
+            // pane shorter than that must not hand the guard below a
+            // height it can never refuse.
+            height: crate::paint::BUTTON_HEIGHT.min(area.height),
             ..area
         };
         // The bar's anatomy is three rows (bevel, text, bevel); a pane too
         // short to hold them (a tiny terminal) draws no bar at all rather
-        // than writing rows past the buffer, which ratatui panics on.
-        if bar.height < 3 || bar.width == 0 {
+        // than writing rows past the buffer, which ratatui panics on, and
+        // rather than registering hits over the panes below it.
+        if bar.height < crate::paint::BUTTON_HEIGHT || bar.width == 0 {
             self.last_method_area = None;
             return;
         }
@@ -5268,6 +5272,26 @@ url = "https://api.example.com/users""#,
             cell.bg, app.theme.page,
             "editor pane's lower region must be page-filled, not left at the terminal default: {cell:?}"
         );
+    }
+
+    /// The address bar is a fixed three rows, but a terminal too short to
+    /// give the editor pane those rows must get no bar at all. Painting it
+    /// anyway put its hits over the response pane and the footer, so a
+    /// click on the footer copied the URL.
+    #[test]
+    fn a_terminal_too_short_for_the_address_bar_registers_none_of_its_hits() {
+        let mut app = App::new_for_test();
+        let backend = TestBackend::new(80, 4);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+
+        for hit in [Hit::UrlBar, Hit::MethodSelector, Hit::CopyUrl] {
+            assert!(
+                app.hits.rect_of(&hit).is_none(),
+                "{hit:?} registered on a terminal with no room for the bar: {:?}",
+                app.hits.rect_of(&hit)
+            );
+        }
     }
 
     #[test]
