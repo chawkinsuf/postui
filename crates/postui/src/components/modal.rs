@@ -3088,7 +3088,7 @@ mod tests {
     }
 
     #[test]
-    fn confirm_modal_paints_bevel_buttons_with_secondary_and_primary_faces() {
+    fn confirm_modal_paints_capped_buttons_on_the_panel_it_floats_in() {
         let mut m = ModalStack::default();
         m.push(Modal::Confirm {
             title: "Delete request?".into(),
@@ -3122,8 +3122,14 @@ mod tests {
         let cancel = hits.rect_of(&crate::hit::Hit::ConfirmChoice('n')).unwrap();
         assert_eq!(
             buffer[(cancel.x, cancel.y + 2)].symbol(),
-            "\u{2581}",
-            "the Cancel button's bottom row must be its thin bevel edge"
+            crate::paint::cap::CAP_BOTTOM,
+            "the Cancel button's bottom row must be its cap"
+        );
+        assert_eq!(
+            buffer[(cancel.x, cancel.y + 2)].fg,
+            theme.panel,
+            "a button inside a modal caps against the panel it sits on, \
+             not against the page behind the modal"
         );
         assert_eq!(
             buffer[(cancel.x + 1, cancel.y + 1)].bg,
@@ -3134,8 +3140,14 @@ mod tests {
         let confirm = hits.rect_of(&crate::hit::Hit::ConfirmChoice('y')).unwrap();
         assert_eq!(
             buffer[(confirm.x, confirm.y + 2)].symbol(),
-            "\u{2581}",
-            "the confirm button's bottom row must be its thin bevel edge"
+            crate::paint::cap::CAP_BOTTOM,
+            "the confirm button's bottom row must be its cap"
+        );
+        assert_eq!(
+            buffer[(confirm.x, confirm.y + 2)].bg,
+            theme.control,
+            "both choices are painted Secondary -- a confirm modal does not \
+             pick a default for you"
         );
     }
 

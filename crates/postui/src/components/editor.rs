@@ -1787,7 +1787,7 @@ impl Editor {
         ctx: &DrawCtx,
         hits: &mut crate::hit::HitMap,
     ) {
-        use crate::paint::{bevel_bottom, bevel_top, fill, text};
+        use crate::paint::{cap, fill, text};
         use crate::theme::{lift_color, mix};
 
         let theme = ctx.theme;
@@ -1830,14 +1830,18 @@ impl Editor {
         let method_area = cols[0];
         let url_area = cols[1];
         let send_area = cols[2];
-        // Thin bevel rows above and below the centered text row, all three
-        // on the control's own fill — the same 3-row solid anatomy `Button`
-        // and `TextField` use.
+        // The bar is three fused segments in one capped block: a quarter
+        // row of each segment's own fill above and below its text row,
+        // over the page. Fused, so the cap run reads as one bar rather
+        // than three buttons -- but it is the same `paint::cap` anatomy
+        // every other full-size control in the app is painted with.
         let text_y = bar.y + 1;
-        let top_row = |r: Rect| Rect::new(r.x, r.y, r.width, 1);
-        let bottom_row = |r: Rect| Rect::new(r.x, r.y + r.height - 1, r.width, 1);
 
         let buf = frame.buffer_mut();
+        // Sampled once, from the bar's own top-left, so all three
+        // segments cap against the same surface and the run has no seam
+        // where the segments meet.
+        let bar_surface = cap::backdrop(buf, bar, theme);
 
         // --- method segment --------------------------------------------
         // Focus reuses hover's lift color: the badge has no pressed state,
@@ -1859,13 +1863,9 @@ impl Editor {
         } else {
             method_face
         };
-        // The bevel follows the currently shown fill so the whole segment
-        // lifts on hover/focus, matching `Button`'s convention.
-        let m_light = lift_color(method_fill, 0.12);
-        let m_dark = lift_color(method_fill, -0.12);
-        fill(buf, method_area, method_fill);
-        bevel_top(buf, top_row(method_area), m_light, method_fill);
-        bevel_bottom(buf, bottom_row(method_area), m_dark, method_fill);
+        // The caps follow the currently shown fill, so the whole segment
+        // lifts on hover/focus rather than just its text row.
+        cap::capped(buf, method_area, method_fill, bar_surface);
         let method_label = format!("{} ▾", self.method.as_str());
         let label_w = method_label.chars().count() as u16;
         let start_x = method_area.x + method_area.width.saturating_sub(label_w) / 2;
@@ -1902,14 +1902,7 @@ impl Editor {
         } else {
             theme.control
         };
-        let (u_light, u_dark) = if url_focused {
-            (lift_color(url_fill, 0.08), lift_color(url_fill, -0.08))
-        } else {
-            (theme.edge_light, theme.edge_dark)
-        };
-        fill(buf, url_area, url_fill);
-        bevel_top(buf, top_row(url_area), u_light, url_fill);
-        bevel_bottom(buf, bottom_row(url_area), u_dark, url_fill);
+        cap::capped(buf, url_area, url_fill, bar_surface);
         hits.register(url_area, crate::hit::Hit::UrlBar);
         // The copy-URL chip claims a fixed slice at the well's right edge;
         // the text window is narrowed to leave room for it so the two never
@@ -2096,25 +2089,10 @@ impl Editor {
         } else {
             ("Send".to_string(), theme.accent, theme.on_accent, true)
         };
-        // The bevel follows the currently shown fill (matching `Button`'s
-        // convention: the whole control reacts to hover/pulse), at the
-        // accent delta `Button`'s Primary kind uses; disabled drops the
-        // bevel entirely (flat fill, no edges), same as a disabled `Button`.
-        fill(buf, send_area, send_fill);
-        if !disabled {
-            bevel_top(
-                buf,
-                top_row(send_area),
-                lift_color(send_fill, 0.12),
-                send_fill,
-            );
-            bevel_bottom(
-                buf,
-                bottom_row(send_area),
-                lift_color(send_fill, -0.12),
-                send_fill,
-            );
-        }
+        // Capped in every state, disabled included -- a disabled `Button`
+        // keeps its caps too, and dropping them here would make Send
+        // change shape rather than just colour when it greys out.
+        cap::capped(buf, send_area, send_fill, bar_surface);
         let send_label_w = label.chars().count() as u16;
         let send_start_x = send_area.x + send_area.width.saturating_sub(send_label_w) / 2;
         text(buf, send_start_x, text_y, &label, label_fg, send_fill, bold);
@@ -4778,7 +4756,7 @@ url = "https://api.example.com/users""#,
         let cell = buf.cell((method_area.x, method_area.y + 1)).unwrap();
         assert_eq!(
             cell.bg,
-            crate::paint::face_edges(method_face, &theme).0,
+            crate::theme::lift_color(method_face, 0.12),
             "the focused method badge lifts to hover's color, so a keyboard \
              user can see where Enter will land"
         );
@@ -4808,7 +4786,7 @@ url = "https://api.example.com/users""#,
     }
 
     #[test]
-    fn fused_bar_centers_text_between_shaded_bevel_edges() {
+    fn fused_bar_centers_text_between_quarter_row_caps() {
         let mut e = Editor::default();
         e.load(
             Some("a".into()),
@@ -4830,29 +4808,30 @@ url = "https://api.example.com/users""#,
             cell.bg, method_face,
             "method cell bg must be the GET method color"
         );
-        // Thin bevel rows above and below, on the segment's own fill: light
-        // "▔" on top, dark "▁" below, so the bar reads as a 3-row solid
-        // with a raised edge (the anatomy `Button`/`TextField` use).
-        let (m_light, m_dark) = crate::paint::face_edges(method_face, &theme);
+        // Quarter-row caps above and below, in the segment's own fill
+        // over the page -- the flat `paint::cap` anatomy every full-size
+        // control in the app shares, and nothing bevelled.
+        use crate::paint::cap::{CAP_BOTTOM, CAP_TOP};
         let top_cap = buf.cell((method_area.x, method_area.y)).unwrap();
-        assert_eq!(top_cap.symbol(), "▔", "method top cap: {top_cap:?}");
-        assert_eq!(top_cap.fg, m_light);
-        assert_eq!(
-            top_cap.bg, method_face,
-            "cap sits on the segment's own fill"
-        );
+        assert_eq!(top_cap.symbol(), CAP_TOP, "method top cap: {top_cap:?}");
+        assert_eq!(top_cap.fg, method_face, "the cap quarter is the segment");
+        assert_eq!(top_cap.bg, theme.page, "the rest of the row is the page");
         let bottom_cap = buf.cell((method_area.x, text_y + 1)).unwrap();
         assert_eq!(
             bottom_cap.symbol(),
-            "▁",
+            CAP_BOTTOM,
             "method bottom cap: {bottom_cap:?}"
         );
-        assert_eq!(bottom_cap.fg, m_dark);
+        assert_eq!(bottom_cap.fg, theme.page, "inverted: page over the face");
+        assert_eq!(bottom_cap.bg, method_face);
+        // The run continues across the URL segment without a seam: same
+        // glyph, same surface, only the segment's own fill changes.
         let url_cap = buf
             .cell((method_area.x + method_area.width + 2, text_y + 1))
             .unwrap();
-        assert_eq!(url_cap.symbol(), "▁", "url cap row: {url_cap:?}");
-        assert_eq!(url_cap.fg, theme.edge_dark);
+        assert_eq!(url_cap.symbol(), CAP_BOTTOM, "url cap row: {url_cap:?}");
+        assert_eq!(url_cap.fg, theme.page);
+        assert_eq!(url_cap.bg, theme.control);
 
         // The URL text is drawn on the same row as the method label -- the
         // bar is one fused control, not stacked rows.
@@ -5133,13 +5112,17 @@ url = "https://api.example.com/users""#,
             "the focused URL well brightens past control_hover: {well:?}"
         );
         assert_ne!(lifted, theme.control_hover, "focus must outshine hover");
-        // The bevel follows the lifted fill, at the softer ±0.08 delta
-        // `TextField`'s Focused state uses around its own fill (not the
-        // method badge's ±0.12) — the stronger delta reads as a hard line
-        // on the neutral control fill.
+        // The cap *is* the lifted fill -- a quarter row of the well
+        // itself over the page, so the whole segment lifts as one. There
+        // is no separate edge colour to keep in step any more.
         let cap = buf.cell((url_x, method_area.y)).unwrap();
-        assert_eq!(cap.symbol(), "▔", "url top cap: {cap:?}");
-        assert_eq!(cap.fg, crate::theme::lift_color(lifted, 0.08));
+        assert_eq!(
+            cap.symbol(),
+            crate::paint::cap::CAP_TOP,
+            "url top cap: {cap:?}"
+        );
+        assert_eq!(cap.fg, lifted, "the cap carries the lifted fill");
+        assert_eq!(cap.bg, theme.page, "over the page, not over an edge");
         // No ring: the bar's old top-left ring corner cell stays plain.
         let corner = buf
             .cell((

@@ -1563,8 +1563,14 @@ mod tests {
         let buf = terminal.backend().buffer();
         assert_eq!(
             buf[(button_rect.x, button_rect.y + 2)].symbol(),
-            "\u{2581}",
-            "button's bottom row is its thin bevel edge"
+            crate::paint::cap::CAP_BOTTOM,
+            "button's bottom row is its cap"
+        );
+        assert_eq!(
+            buf[(button_rect.x, button_rect.y + 2)].fg,
+            theme.panel,
+            "the sidebar sits on `panel`, so its button must cap against \
+             `panel` -- a cap that guessed `page` would fringe the button"
         );
 
         // rows[0] = "top", rows[1] = folder "api" (expanded), rows[2] = "api/ping"

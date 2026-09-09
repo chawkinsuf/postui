@@ -17,9 +17,9 @@ use crate::components::line_input::LineInput;
 use crate::hit::{Hit, HitMap, ScrollbarSpec};
 use crate::layout::PaneId;
 use crate::paint::{
-    ButtonKind, ControlSlot, ControlState, ListRow, PROPERTY_MAX_W, Pill, PropertyRow,
-    RowHighlight, TALL_PILL_H, TallPill, Toggle, TrailingPill, Well, button_min_width, fill,
-    label_column, pill_min_width, text,
+    Button, ButtonKind, ControlSlot, ControlState, ListRow, PROPERTY_MAX_W, Pill, PropertyRow,
+    RowHighlight, TALL_PILL_H, Toggle, TrailingPill, Well, button_min_width, fill, label_column,
+    pill_min_width, text,
 };
 use crate::theme::Theme;
 use indexmap::IndexMap;
@@ -1527,7 +1527,7 @@ impl VarManager {
         let shared = is_shared(ctx, selector);
 
         // --- title row: name + the pane's four buttons ------------------
-        // `TallPill`, like the variable pane's title row: a Manage detail
+        // A full-size `Button`, like the variable pane's title row: a Manage detail
         // pane paints nothing bevelled (see `paint::property`'s module
         // doc), and these four are the same kind of control as that
         // pane's Rename/Delete -- they act on the selector, not on the
@@ -1561,11 +1561,10 @@ impl VarManager {
                     height: TALL_PILL_H,
                 };
                 let state = state_of(&hit);
-                let painted = TallPill {
+                let painted = Button {
                     label: lbl,
                     kind,
                     state,
-                    surface: theme.page,
                 }
                 .paint(buf, rect, theme);
                 hits.register(painted, hit);
@@ -1865,7 +1864,7 @@ impl VarManager {
         let mut y = right.y + 1;
 
         // --- title row: name, lock badge, Rename/Delete ---------------
-        // `TallPill`, not `Pill`: these act on the variable the pane is
+        // A full-size `Button`, not a `Pill`: these act on the variable the pane is
         // showing rather than on one of the fields below, and at a
         // property row's height they read as one more row of that grid.
         // The block spans the blank row above the title and the blank
@@ -1890,11 +1889,10 @@ impl VarManager {
                     width: w,
                     height: TALL_PILL_H,
                 };
-                let painted = TallPill {
+                let painted = Button {
                     label: lbl,
                     kind: ButtonKind::Secondary,
                     state: state_of(&hit),
-                    surface: theme.page,
                 }
                 .paint(buf, rect, theme);
                 hits.register(painted, hit);
@@ -2209,11 +2207,10 @@ impl VarManager {
                 // `theme.panel`, not `theme.page`: the caps blend into
                 // whatever surface the button sits on, and this one sits
                 // on the list column rather than in a detail pane.
-                let painted = TallPill {
+                let painted = Button {
                     label,
                     kind,
                     state: state_of(&hit),
-                    surface: theme.panel,
                 }
                 .paint(buf, rect, theme);
                 hits.register(painted, hit);
