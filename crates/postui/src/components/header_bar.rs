@@ -73,47 +73,6 @@ const RELOAD_W: u16 = (RELOAD_LABEL.len() + " alt+r ".len()) as u16;
 /// working in every case, and their hints stay in the footer/palette. If
 /// even the bare Manage chip can't fit right-anchored beside the
 /// selectors, it follows them and clips at the bar's edge as before.
-/// Paints one composite app-bar button at `(x, y)`: a keycap pill and the
-/// name beside it. The two are a single hit, so they warm as one unit —
-/// the keycap through `paint::keycap_face`, the name's fill through
-/// `paint::hover_surface` off the panel — on the same `hover_t` clock.
-/// Returns the width painted. Manage keeps its own copy of this: its
-/// pressed state overrides hover entirely.
-#[allow(clippy::too_many_arguments)]
-fn paint_bar_button(
-    buf: &mut ratatui::buffer::Buffer,
-    area: Rect,
-    x: u16,
-    y: u16,
-    keycap: &str,
-    label: &str,
-    hovered: bool,
-    hover_t: f32,
-    theme: &Theme,
-) -> Rect {
-    let (color, on) = crate::paint::keycap_face(theme, hovered, hover_t);
-    let chip = crate::paint::Chip {
-        label: keycap,
-        color,
-    };
-    let key_w = chip.width();
-    let width = key_w + label.chars().count() as u16;
-    let label_bg = crate::paint::hover_surface(theme, theme.panel, hovered, hover_t);
-
-    // The whole span caps as one block, since the whole span is one hit.
-    // At rest the name's own fill IS the panel, so its slivers paint panel
-    // on panel and read as the bare bar they were; hovering fills the span
-    // and the slivers come with it.
-    let block = crate::paint::cap::chip_block(buf, area, y, x, width, label_bg, theme);
-    // Then the keycap's own fill over its share of the block, so the pill
-    // keeps its tint against the name beside it.
-    crate::paint::cap::chip_block(buf, area, y, x, key_w, theme.tint(color, on), theme);
-
-    chip.paint(buf, x, y, on, theme);
-    text(buf, x + key_w, y, label, theme.text, label_bg, false);
-    block
-}
-
 #[allow(clippy::too_many_arguments)]
 pub fn draw_header(
     frame: &mut Frame,
@@ -310,7 +269,7 @@ pub fn draw_header(
         // Theme is one button: the keycap and the word beside it share a
         // hit, so they warm on one clock rather than the keycap moving
         // alone and the button coming apart under the pointer.
-        let block = paint_bar_button(
+        let block = crate::paint::keycap_button(
             buf,
             area,
             theme_x,
@@ -393,7 +352,7 @@ pub fn draw_header(
         let w = RELOAD_W;
         let x = manage_x.saturating_sub(SAVE_GROUP_GAP).saturating_sub(w);
         if x > left_end {
-            let block = paint_bar_button(
+            let block = crate::paint::keycap_button(
                 buf,
                 area,
                 x,
@@ -430,7 +389,7 @@ pub fn draw_header(
         // Discard sits left of save so save keeps its anchored spot.
         let discard_x = save_x.saturating_sub(discard_w + 2);
         if save_x > left_end {
-            let block = paint_bar_button(
+            let block = crate::paint::keycap_button(
                 buf,
                 area,
                 save_x,
@@ -443,7 +402,7 @@ pub fn draw_header(
             );
             hits.register(block, save_hit);
             if discard_x > left_end {
-                let block = paint_bar_button(
+                let block = crate::paint::keycap_button(
                     buf,
                     area,
                     discard_x,

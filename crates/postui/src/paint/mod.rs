@@ -161,6 +161,53 @@ pub fn hover_surface(theme: &Theme, rest: Color, hovered: bool, hover_t: f32) ->
     crate::theme::mix(rest, target, hover_t)
 }
 
+/// Paints one composite keycap button at `(x, y)`: a keycap pill and the
+/// name beside it — the app bar's Theme/Manage/Save/Discard/Reload, and
+/// every clickable chip in the footer's shortcut row.
+///
+/// The two halves are a single hit, so they warm as one unit: the keycap
+/// through [`keycap_face`], the name's ground through [`hover_surface`] off
+/// the panel, both on the same `hover_t` clock. Lifting only the keycap
+/// makes the button visibly come apart under the pointer.
+///
+/// `bounds` is the strip the button sits in, for [`cap::chip_block`]'s cap
+/// room. The whole span caps as one block, since the whole span is one hit;
+/// at rest the name's ground *is* the panel, so its slivers paint panel on
+/// panel and read as the bare strip they were. The keycap's own fill then
+/// caps over its share, so the pill keeps its tint against the name.
+///
+/// Returns the block to register the hit over. Manage keeps its own copy of
+/// this shape rather than calling here: its pressed state overrides hover
+/// entirely, which this signature has no way to say.
+#[allow(clippy::too_many_arguments)]
+pub fn keycap_button(
+    buf: &mut Buffer,
+    bounds: Rect,
+    x: u16,
+    y: u16,
+    keycap: &str,
+    label: &str,
+    hovered: bool,
+    hover_t: f32,
+    theme: &Theme,
+) -> Rect {
+    let (color, on) = keycap_face(theme, hovered, hover_t);
+    let chip = Chip {
+        label: keycap,
+        color,
+    };
+    let key_w = chip.width();
+    let width = key_w + label.chars().count() as u16;
+    let label_bg = hover_surface(theme, theme.panel, hovered, hover_t);
+
+    let block = cap::chip_block(buf, bounds, y, x, width, label_bg, theme);
+    cap::chip_block(buf, bounds, y, x, key_w, theme.tint(color, on), theme);
+
+    chip.paint(buf, x, y, on, theme);
+    text(buf, x + key_w, y, label, theme.text, label_bg, false);
+    block
+}
+
 /// Fills every cell in `area` with a blank (" ") glyph on `bg`.
 pub fn fill(buf: &mut Buffer, area: Rect, bg: Color) {
     for y in area.top()..area.bottom() {

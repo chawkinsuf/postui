@@ -1,7 +1,7 @@
 use crate::action::Action;
 use crate::hit::{Hit, HitMap};
 use crate::layout::PaneId;
-use crate::paint::{Chip, fill, text};
+use crate::paint::{fill, text};
 use crate::theme::Theme;
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
@@ -452,43 +452,23 @@ pub fn paint_chip_row(
                 // A hovered chip warms up through the shared keycap funnel
                 // (`paint::keycap_face`): tint source toward `theme.text`,
                 // surface toward `control_hover`, both on `hover_t`.
-                let (color, on) = crate::paint::keycap_face(
-                    theme,
-                    hovered == Some(&Hit::FooterChip(a.clone())),
-                    hover_t,
-                );
-                let chip = Chip {
-                    label: key,
-                    color,
-                };
-                let pill_w = chip.width();
-                // The whole chip is one hit, so the whole chip is one block:
-                // the label's own ground is the panel, which caps invisibly,
-                // and the keycap's fill caps over its share of it. Same
-                // anatomy as the app bar's composite buttons, from the same
-                // `CHIP_CAPS` constant.
-                let block =
-                    crate::paint::cap::chip_block(buf, bounds, y, x, width, theme.panel, theme);
-                crate::paint::cap::chip_block(
+                // The very same composite button the app bar's Theme and
+                // Manage are, painted by the very same function: keycap and
+                // word under one hit, warming together. The `" label "`
+                // padding here is what makes the two agree on width —
+                // keycap + label + 4 either way.
+                let block = crate::paint::keycap_button(
                     buf,
                     bounds,
-                    y,
                     x,
-                    pill_w,
-                    theme.tint(color, on),
+                    y,
+                    key,
+                    &format!(" {label} "),
+                    hovered == Some(&Hit::FooterChip(a.clone())),
+                    hover_t,
                     theme,
                 );
-                chip.paint(buf, x, y, on, theme);
-                let label_text = format!(" {label} ");
-                text(
-                    buf,
-                    x + pill_w,
-                    y,
-                    &label_text,
-                    theme.text,
-                    theme.panel,
-                    false,
-                );
+                debug_assert_eq!(block.width, width, "layout and paint agree");
                 hits.register(block, Hit::FooterChip(a.clone()));
             }
             None => {
@@ -524,6 +504,54 @@ mod tests {
     /// is flipped or a cramped strip degrades a chip to one row.
     fn mid_of(r: &Rect) -> u16 {
         r.y + r.height / 2
+    }
+
+    /// A footer chip is the same composite button Theme and Manage are — a
+    /// keycap and a name under one hit — so it hovers the same way: the
+    /// name's ground lifts with the keycap, on one clock. Lifting only the
+    /// keycap made the button come apart under the pointer.
+    #[test]
+    fn a_hovered_footer_chip_lifts_its_word_with_its_keycap() {
+        let theme = Theme::for_terminal();
+        let hovered = Hit::FooterChip(Action::Send);
+        let mut terminal = Terminal::new(TestBackend::new(60, 3)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                crate::paint::fill(f.buffer_mut(), area, theme.panel);
+                paint_chip_row(
+                    f.buffer_mut(),
+                    area,
+                    1,
+                    0,
+                    60,
+                    &[("^R", "send", Some(Action::Send))],
+                    &theme,
+                    &mut hits,
+                    Some(&hovered),
+                    0.5,
+                );
+            })
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        let lifted = crate::paint::hover_surface(&theme, theme.panel, true, 0.5);
+        assert_ne!(lifted, theme.panel, "fixture: the lift is visible at all");
+
+        // " ^R " is the pill; the word " send " follows it.
+        let word_x = 4;
+        assert_eq!(buf[(word_x, 1)].symbol(), " ", "the pad before the word");
+        assert_eq!(
+            buf[(word_x + 1, 1)].symbol(),
+            "s",
+            "fixture: the word starts here"
+        );
+        assert_eq!(
+            buf[(word_x + 1, 1)].bg,
+            lifted,
+            "the word's ground lifts with the keycap, halfway at t=0.5"
+        );
     }
 
     /// The footer's chips are the same controls as the app bar's, so they
