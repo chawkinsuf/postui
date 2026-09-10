@@ -2405,9 +2405,25 @@ fn draw_dropdown(
     }
     x = x.max(screen.x);
 
-    let below_y = state.anchor.y + 1;
+    // Anchored on the anchor's *content row* — the row its label sits on —
+    // rather than on its block. An app-bar chip is a three-row capped block
+    // now (a sliver, the label row, a sliver), and hanging the menu off the
+    // block would drop it a row lower than it used to open; hanging it off
+    // the content row puts it back exactly where it was, its top edge on the
+    // chip's bottom sliver. A one-row anchor is its own content row, so the
+    // method dropdown is unaffected either way.
+    //
+    // Covering that sliver is deliberate, not a cost of the placement: a
+    // chip and its open menu are one object while the menu is up, and a
+    // cap is a chip's boundary against the bar. Where the menu attaches
+    // there is no boundary to draw, so the chip gives its bottom edge up
+    // for as long as the menu holds it. Dropping the popup a row to spare
+    // the sliver buys back an edge nobody misses and costs the join, which
+    // reads immediately as a menu floating loose of the chip that opened it.
+    let anchor_mid = state.anchor.y + state.anchor.height / 2;
+    let below_y = anchor_mid + 1;
     let y = if below_y + height > screen.y + screen.height {
-        state.anchor.y.saturating_sub(height)
+        anchor_mid.saturating_sub(height)
     } else {
         below_y
     };
@@ -2639,6 +2655,57 @@ mod tests {
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    /// The popup opens one row below the anchor's *content row* — the row
+    /// its label actually sits on — not below its whole block.
+    ///
+    /// A one-row anchor is its own content row, so the method dropdown is
+    /// unaffected. The app bar's chips are three-row capped blocks now, and
+    /// this keeps their menus exactly where they opened before the chips
+    /// grew: the popup's top edge lands on the chip's bottom sliver rather
+    /// than a row below it.
+    #[test]
+    fn a_dropdown_opens_one_row_below_its_anchors_content_row() {
+        let theme = Theme::dark();
+        let open_y = |anchor: Rect| {
+            let state = DropdownState {
+                anchor,
+                items: dropdown_items(),
+                selected: 0,
+                current: Some(0),
+            };
+            let mut terminal = Terminal::new(TestBackend::new(60, 30)).unwrap();
+            let mut hits = crate::hit::HitMap::default();
+            let anims = crate::anim::Anims::new(false);
+            terminal
+                .draw(|f| {
+                    draw_dropdown(
+                        f,
+                        f.area(),
+                        &theme,
+                        &mut hits,
+                        None,
+                        &state,
+                        &anims,
+                        std::time::Instant::now(),
+                    )
+                })
+                .unwrap();
+            hits.rect_of(&crate::hit::Hit::ModalBody).unwrap().y
+        };
+
+        assert_eq!(
+            open_y(Rect::new(10, 5, 8, 1)),
+            6,
+            "a one-row anchor is its own content row: the row under it"
+        );
+        assert_eq!(
+            open_y(Rect::new(10, 5, 8, 3)),
+            7,
+            "a three-row block opens under its middle row, not under the \
+             whole block — the same row a one-row chip there would have used"
+        );
     }
 
     /// User finding: the "(not set)" placeholder swallowed the caret, so a

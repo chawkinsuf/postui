@@ -1,7 +1,7 @@
 use crate::action::Action;
 use crate::hit::{Hit, HitMap};
 use crate::layout::PaneId;
-use crate::paint::{Chip, fill, text};
+use crate::paint::{fill, text};
 use crate::theme::Theme;
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
@@ -257,6 +257,9 @@ pub fn draw_footer(
     hint: Option<&str>,
     hits: &mut HitMap,
     hovered: Option<&Hit>,
+    // The shared hover fade's 0->1 progress, so a hovered chip's keycap
+    // pill warms up rather than snapping (`paint_chip_row`).
+    hover_t: f32,
 ) {
     let buf = frame.buffer_mut();
     fill(buf, area, theme.panel);
@@ -275,6 +278,7 @@ pub fn draw_footer(
     let quit_x = (area.x + area.width).saturating_sub(quit_w + 1);
     paint_chip_row(
         buf,
+        area,
         mid_y,
         quit_x,
         quit_x + quit_w,
@@ -282,6 +286,7 @@ pub fn draw_footer(
         theme,
         hits,
         hovered,
+        hover_t,
     );
 
     let right_limit = if globals_live {
@@ -290,6 +295,7 @@ pub fn draw_footer(
         let palette_x = quit_x.saturating_sub(palette_w + 1);
         paint_chip_row(
             buf,
+            area,
             mid_y,
             palette_x,
             quit_x,
@@ -297,6 +303,7 @@ pub fn draw_footer(
             theme,
             hits,
             hovered,
+            hover_t,
         );
 
         // Per-pane chips stop one column shy of the palette so the two
@@ -330,6 +337,7 @@ pub fn draw_footer(
     let start_x = area.x + 1;
     paint_chip_row(
         buf,
+        area,
         mid_y,
         start_x,
         right_limit,
@@ -337,6 +345,7 @@ pub fn draw_footer(
         theme,
         hits,
         hovered,
+        hover_t,
     );
     // The hint sits in the gap between the per-pane chips and the
     // commands/quit pair, and the chips never yield it more room. They
@@ -397,8 +406,11 @@ fn paint_hint(buf: &mut Buffer, y: u16, start_x: u16, end_x: u16, hint: &str, th
 /// `start_x` on row `y`, stopping before drawing one that would cross
 /// `right_limit`. Each chip with `Some(action)` emphasizes its label: the
 /// key combo sits in a small `Chip`-style pill tinted `theme.text_muted`
-/// on `theme.control` (lifting to `theme.control_hover` under the mouse per
-/// `hovered`), with the label following in prominent `theme.text` text
+/// on `theme.control`. Under the mouse (per `hovered`) the pill warms up —
+/// its tint source eases toward `theme.text` and its surface toward
+/// `theme.control_hover` — over `hover_t`, the shared `AnimKey::Hover` fade
+/// the list rows blend through. With the label following in prominent
+/// `theme.text` text
 /// beside it — the action is the content, the shortcut the affordance.
 /// Registers `Hit::FooterChip(action)` over the combined span. A `None`
 /// action renders as fully plain (unregistered) text: key muted, label
@@ -409,6 +421,10 @@ fn paint_hint(buf: &mut Buffer, y: u16, start_x: u16, end_x: u16, hint: &str, th
 #[allow(clippy::too_many_arguments)]
 pub fn paint_chip_row(
     buf: &mut Buffer,
+    // The strip the chips live in (the footer's own rows, the editor's
+    // toolbar row). `cap::chip_block` needs it to know whether there is
+    // room above and below `y` for the chips' caps.
+    bounds: Rect,
     y: u16,
     start_x: u16,
     right_limit: u16,
@@ -416,6 +432,9 @@ pub fn paint_chip_row(
     theme: &Theme,
     hits: &mut HitMap,
     hovered: Option<&Hit>,
+    // The 0->1 progress of the current hover fade (`DrawCtx::hover_t`).
+    // Only the hovered chip reads it; everything else rests regardless.
+    hover_t: f32,
 ) -> u16 {
     let mut x = start_x;
     for (key, label, action) in chips {
@@ -428,35 +447,29 @@ pub fn paint_chip_row(
         if x + width > right_limit {
             break;
         }
-        let chip_area = Rect {
-            x,
-            y,
-            width,
-            height: 1,
-        };
         match action {
             Some(a) => {
-                let on = if hovered == Some(&Hit::FooterChip(a.clone())) {
-                    theme.control_hover
-                } else {
-                    theme.control
-                };
-                let pill_w = Chip {
-                    label: key,
-                    color: theme.text_muted,
-                }
-                .paint(buf, x, y, on, theme);
-                let label_text = format!(" {label} ");
-                text(
+                // A hovered chip warms up through the shared keycap funnel
+                // (`paint::keycap_face`): tint source toward `theme.text`,
+                // surface toward `control_hover`, both on `hover_t`.
+                // The very same composite button the app bar's Theme and
+                // Manage are, painted by the very same function: keycap and
+                // word under one hit, warming together. The `" label "`
+                // padding here is what makes the two agree on width —
+                // keycap + label + 4 either way.
+                let block = crate::paint::keycap_button(
                     buf,
-                    x + pill_w,
+                    bounds,
+                    x,
                     y,
-                    &label_text,
-                    theme.text,
-                    theme.panel,
-                    false,
+                    key,
+                    &format!(" {label} "),
+                    hovered == Some(&Hit::FooterChip(a.clone())),
+                    hover_t,
+                    theme,
                 );
-                hits.register(chip_area, Hit::FooterChip(a.clone()));
+                debug_assert_eq!(block.width, width, "layout and paint agree");
+                hits.register(block, Hit::FooterChip(a.clone()));
             }
             None => {
                 let key_text = format!(" {key}");
@@ -483,6 +496,216 @@ mod tests {
     use super::*;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+
+    /// The content row of a chip's hit rect. A chip's hit is its whole
+    /// capped block (see `cap::CHIP_CAPS`), so the rect's own `y` is the
+    /// sliver above the chip, not the row its keycap and label sit on.
+    /// Derived from the block's height, so it stays right when the constant
+    /// is flipped or a cramped strip degrades a chip to one row.
+    fn mid_of(r: &Rect) -> u16 {
+        r.y + r.height / 2
+    }
+
+    /// A footer chip is the same composite button Theme and Manage are — a
+    /// keycap and a name under one hit — so it hovers the same way: the
+    /// name's ground lifts with the keycap, on one clock. Lifting only the
+    /// keycap made the button come apart under the pointer.
+    #[test]
+    fn a_hovered_footer_chip_lifts_its_word_with_its_keycap() {
+        let theme = Theme::for_terminal();
+        let hovered = Hit::FooterChip(Action::Send);
+        let mut terminal = Terminal::new(TestBackend::new(60, 3)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                crate::paint::fill(f.buffer_mut(), area, theme.panel);
+                paint_chip_row(
+                    f.buffer_mut(),
+                    area,
+                    1,
+                    0,
+                    60,
+                    &[("^R", "send", Some(Action::Send))],
+                    &theme,
+                    &mut hits,
+                    Some(&hovered),
+                    0.5,
+                );
+            })
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        let lifted = crate::paint::hover_surface(&theme, theme.panel, true, 0.5);
+        assert_ne!(lifted, theme.panel, "fixture: the lift is visible at all");
+
+        // " ^R " is the pill; the word " send " follows it.
+        let word_x = 4;
+        assert_eq!(buf[(word_x, 1)].symbol(), " ", "the pad before the word");
+        assert_eq!(
+            buf[(word_x + 1, 1)].symbol(),
+            "s",
+            "fixture: the word starts here"
+        );
+        assert_eq!(
+            buf[(word_x + 1, 1)].bg,
+            lifted,
+            "the word's ground lifts with the keycap, halfway at t=0.5"
+        );
+    }
+
+    /// The footer's chips are the same controls as the app bar's, so they
+    /// carry the same caps and register the same block — otherwise the bar
+    /// stands 1.25 rows and the footer reads as a thinner, lesser row of
+    /// the same buttons.
+    ///
+    /// Written against `CHIP_CAPS` rather than a literal height so it holds
+    /// whichever way the constant is set.
+    #[test]
+    fn a_footer_chip_stands_and_hits_as_tall_as_every_other_chip() {
+        use crate::paint::cap::{CHIP_CAPS, ChipCaps};
+        let theme = Theme::for_terminal();
+        let backend = TestBackend::new(120, FOOTER_HEIGHT);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| {
+                draw_footer(
+                    f,
+                    f.area(),
+                    &theme,
+                    PaneId::Sidebar,
+                    false,
+                    false,
+                    Some("add header"),
+                    false,
+                    None,
+                    JqBarState::Closed,
+                    None,
+                    true,
+                    true,
+                    None,
+                    &mut hits,
+                    None,
+                    1.0,
+                )
+            })
+            .unwrap();
+
+        let rect = hits
+            .rect_of(&Hit::FooterChip(Action::PromptNewRequest))
+            .expect("new-request chip hit");
+        assert_eq!(
+            rect.height,
+            CHIP_CAPS.height(),
+            "the footer chip's hit matches the app bar's chips"
+        );
+
+        let buf = terminal.backend().buffer();
+        let mid = rect.y + rect.height / 2;
+        let pill = theme.tint(theme.text_muted, theme.control);
+        assert_eq!(buf[(rect.x + 1, mid)].bg, pill, "the keycap fill");
+
+        if CHIP_CAPS == ChipCaps::Sliver {
+            let top = &buf[(rect.x + 1, rect.y)];
+            assert_eq!(top.symbol(), crate::paint::cap::SLIVER_TOP);
+            assert_eq!(top.fg, pill, "the sliver carries the keycap's own fill");
+            let bottom = &buf[(rect.x + 1, rect.y + 2)];
+            assert_eq!(bottom.symbol(), crate::paint::cap::SLIVER_BOTTOM);
+            assert_eq!(bottom.fg, pill);
+        }
+    }
+
+    /// A hovered chip's keycap pill warms up over the shared hover fade,
+    /// through the same `paint::keycap_face` funnel every other keycap in
+    /// the app uses. Tinting alone moves the fill by only ~2 RGB points --
+    /// `tint` blends just 22% of the surface in -- so the *tint source* has
+    /// to move for the hover to be visible at all.
+    #[test]
+    fn a_hovered_chips_pill_warms_through_the_shared_keycap_funnel() {
+        let theme = Theme::for_terminal();
+        assert_ne!(
+            theme.control, theme.control_hover,
+            "fixture: the two surfaces must differ for the blend to be visible"
+        );
+        let chips = [("^R", "send", Some(Action::Send))];
+        let hovered = Hit::FooterChip(Action::Send);
+
+        let pill_bg = |hover_t: f32| {
+            let mut terminal = Terminal::new(TestBackend::new(60, 1)).unwrap();
+            let mut hits = crate::hit::HitMap::default();
+            terminal
+                .draw(|f| {
+                    let area = f.area();
+                    paint_chip_row(
+                        f.buffer_mut(),
+                        area,
+                        0,
+                        0,
+                        60,
+                        &chips,
+                        &theme,
+                        &mut hits,
+                        Some(&hovered),
+                        hover_t,
+                    );
+                })
+                .unwrap();
+            terminal.backend().buffer()[(1, 0)].bg
+        };
+
+        let face = |t: f32| {
+            let (color, on) = crate::paint::keycap_face(&theme, true, t);
+            theme.tint(color, on)
+        };
+        assert_eq!(
+            pill_bg(0.0),
+            theme.tint(theme.text_muted, theme.control),
+            "the fade starts from the resting pill exactly"
+        );
+        assert_eq!(pill_bg(0.5), face(0.5), "mid-fade it is halfway warmed");
+        assert_eq!(pill_bg(1.0), face(1.0), "and it lands fully warmed");
+
+        // The point of the whole change: the landed hover must actually be
+        // visible. The old surface-only lift moved the fill by ~0.008.
+        let l = |c| crate::theme::oklab_l(crate::theme::rgb_of(c));
+        let delta = (l(pill_bg(1.0)) - l(pill_bg(0.0))).abs();
+        assert!(
+            delta > 0.05,
+            "a hovered pill must be visibly different, not {delta:.4} apart"
+        );
+    }
+
+    /// The fade belongs to the chip under the pointer. An unhovered chip
+    /// keeps its resting surface no matter where the fade has got to.
+    #[test]
+    fn an_unhovered_chip_ignores_the_hover_fade() {
+        let theme = Theme::for_terminal();
+        let mut terminal = Terminal::new(TestBackend::new(60, 1)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                paint_chip_row(
+                    f.buffer_mut(),
+                    area,
+                    0,
+                    0,
+                    60,
+                    &[("^R", "send", Some(Action::Send))],
+                    &theme,
+                    &mut hits,
+                    None,
+                    0.5,
+                );
+            })
+            .unwrap();
+        assert_eq!(
+            terminal.backend().buffer()[(1, 0)].bg,
+            theme.tint(theme.text_muted, theme.control),
+            "no hover, no lift"
+        );
+    }
 
     #[test]
     fn a_completion_ghost_advertises_tab_and_accept() {
@@ -544,6 +767,7 @@ mod tests {
                     None,
                     &mut hits,
                     None,
+                    1.0,
                 )
             })
             .unwrap();
@@ -825,6 +1049,7 @@ mod tests {
                     None,
                     &mut hits,
                     None,
+                    1.0,
                 )
             })
             .unwrap();
@@ -870,6 +1095,7 @@ mod tests {
                     None,
                     &mut hits,
                     None,
+                    1.0,
                 )
             })
             .unwrap();
@@ -918,6 +1144,7 @@ mod tests {
                     None,
                     &mut hits,
                     None,
+                    1.0,
                 )
             })
             .unwrap();
@@ -955,6 +1182,7 @@ mod tests {
                     None,
                     &mut hits,
                     None,
+                    1.0,
                 )
             })
             .unwrap();
@@ -968,7 +1196,7 @@ mod tests {
         // against that fill (checkpoint-2: `theme.text_muted` is itself light
         // enough that the tinted fill reads light too, so painting the
         // key in `theme.text_muted` unconditionally would be light-on-light).
-        let key_cell = buf.cell((rect.x + 1, rect.y)).unwrap();
+        let key_cell = buf.cell((rect.x + 1, mid_of(&rect))).unwrap();
         assert_eq!(key_cell.symbol(), "n");
         let fill = theme.tint(theme.text_muted, theme.control);
         assert_eq!(key_cell.bg, fill);
@@ -990,7 +1218,7 @@ mod tests {
         // The label follows one gap column after the pill (" n " is 3
         // cells, then the label's own leading space), prominent (text, not muted),
         // not bold, and sitting on the plain panel — no chip fill of its own.
-        let label_cell = buf.cell((rect.x + 4, rect.y)).unwrap();
+        let label_cell = buf.cell((rect.x + 4, mid_of(&rect))).unwrap();
         assert_eq!(label_cell.symbol(), "n"); // first letter of "new"
         assert_eq!(label_cell.fg, theme.text);
         assert_eq!(label_cell.bg, theme.panel);
@@ -1026,6 +1254,7 @@ mod tests {
                     None,
                     &mut hits,
                     None,
+                    1.0,
                 )
             })
             .unwrap();
@@ -1047,7 +1276,7 @@ mod tests {
         let rect = hits
             .rect_of(&Hit::FooterChip(Action::PromptNewRequest))
             .expect("new-request chip hit registered");
-        let chip_cell = buf.cell((rect.x + 1, rect.y)).unwrap();
+        let chip_cell = buf.cell((rect.x + 1, mid_of(&rect))).unwrap();
         assert_eq!(
             chip_cell.bg,
             theme.tint(theme.text_muted, theme.control),
@@ -1083,6 +1312,7 @@ mod tests {
                     None,
                     &mut hits,
                     None,
+                    1.0,
                 )
             })
             .unwrap();
@@ -1094,7 +1324,7 @@ mod tests {
             "quit chip is right-aligned: {rect:?}"
         );
         let buf = terminal.backend().buffer();
-        let cell = buf.cell((rect.x + 1, rect.y)).unwrap();
+        let cell = buf.cell((rect.x + 1, mid_of(&rect))).unwrap();
         assert_eq!(cell.symbol(), "q");
         assert_eq!(
             cell.bg,
@@ -1115,8 +1345,10 @@ mod tests {
         let mut hits = crate::hit::HitMap::default();
         terminal
             .draw(|f| {
+                let area = f.area();
                 paint_chip_row(
                     f.buffer_mut(),
+                    area,
                     0,
                     0,
                     60,
@@ -1124,6 +1356,7 @@ mod tests {
                     &theme,
                     &mut hits,
                     None,
+                    1.0,
                 );
             })
             .unwrap();
@@ -1179,6 +1412,7 @@ mod tests {
                     None,
                     &mut hits,
                     None,
+                    1.0,
                 )
             })
             .unwrap();

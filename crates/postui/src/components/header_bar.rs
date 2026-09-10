@@ -92,6 +92,10 @@ pub fn draw_header(
     show_reload: bool,
     hits: &mut HitMap,
     hovered: Option<&Hit>,
+    // The shared hover fade's 0->1 progress (`DrawCtx::hover_t`). Each
+    // button on the bar is its own hit, so the fade restarts as the
+    // pointer crosses between them and only one is ever warming.
+    hover_t: f32,
 ) {
     let buf = frame.buffer_mut();
     fill(buf, area, theme.panel);
@@ -206,40 +210,33 @@ pub fn draw_header(
         // follows the chip, so the pill keeps reading as this chip's —
         // not the previous chip's — shortcut.
         if show_cycle_pills {
-            let on = if hovered == Some(cycle_hit) {
-                theme.control_hover
-            } else {
-                theme.control
+            let (color, on) = crate::paint::keycap_face(theme, hovered == Some(cycle_hit), hover_t);
+            let chip = crate::paint::Chip {
+                label: pill.label,
+                color,
             };
-            let pill_w = pill.paint(buf, x, mid_y, on, theme);
-            hits.register(
-                Rect {
-                    x,
-                    y: mid_y,
-                    width: pill_w,
-                    height: 1,
-                },
-                cycle_hit.clone(),
+            // The slivers carry the pill's own tinted fill, so the cap is
+            // the same colour as the face it belongs to.
+            let block = crate::paint::cap::chip_block(
+                buf,
+                area,
+                mid_y,
+                x,
+                chip.width(),
+                theme.tint(color, on),
+                theme,
             );
+            let pill_w = chip.paint(buf, x, mid_y, on, theme);
+            hits.register(block, cycle_hit.clone());
             x += pill_w + 1;
         }
 
         // Then the chip that opens the picker.
         let w = label.chars().count() as u16;
-        let rect = Rect {
-            x,
-            y: mid_y,
-            width: w,
-            height: 1,
-        };
-        let bg = if hovered == Some(hit) {
-            theme.control_hover
-        } else {
-            theme.control
-        };
-        fill(buf, rect, bg);
-        text(buf, rect.x, mid_y, label, theme.text, bg, true);
-        hits.register(rect, hit.clone());
+        let bg = crate::paint::hover_surface(theme, theme.control, hovered == Some(hit), hover_t);
+        let block = crate::paint::cap::chip_block(buf, area, mid_y, x, w, bg, theme);
+        text(buf, x, mid_y, label, theme.text, bg, true);
+        hits.register(block, hit.clone());
         x += w;
         if i + 1 < chips.len() {
             x += if show_cycle_pills { CHIP_GROUP_GAP } else { 1 };
@@ -269,30 +266,21 @@ pub fn draw_header(
     let mut rx = right_edge;
     if theme_visible {
         let theme_x = rx - theme_w;
-        let pill_on = if hovered == Some(&Hit::HeaderTheme) {
-            theme.control_hover
-        } else {
-            theme.control
-        };
-        let key_w = theme_pill.paint(buf, theme_x, mid_y, pill_on, theme);
-        text(
+        // Theme is one button: the keycap and the word beside it share a
+        // hit, so they warm on one clock rather than the keycap moving
+        // alone and the button coming apart under the pointer.
+        let block = crate::paint::keycap_button(
             buf,
-            theme_x + key_w,
+            area,
+            theme_x,
             mid_y,
+            theme_pill.label,
             theme_label,
-            theme.text,
-            theme.panel,
-            false,
+            hovered == Some(&Hit::HeaderTheme),
+            hover_t,
+            theme,
         );
-        hits.register(
-            Rect {
-                x: theme_x,
-                y: mid_y,
-                width: theme_w,
-                height: 1,
-            },
-            Hit::HeaderTheme,
-        );
+        hits.register(block, Hit::HeaderTheme);
         // A group gap before Theme, so its `alt+t` pill reads as Theme's
         // key and not as a trailing key of Manage.
         rx = theme_x - CHIP_GROUP_GAP;
@@ -307,15 +295,39 @@ pub fn draw_header(
     // it: this chip is the only mouse path to the Manage screen); only
     // its keycap yields.
     let manage_x = rx.saturating_sub(manage_w).max(left_end + 1);
-    let (vm_pill_on, vm_label_bg) = if manage_active {
-        (theme.control_pressed, theme.control_pressed)
-    } else if hovered == Some(&Hit::HeaderManage) {
-        (theme.control_hover, theme.panel)
+    // Same one-button rule as Theme, with the pressed state still winning:
+    // while the Manage screen is open the whole chip holds `control_pressed`
+    // and hover has nothing to say.
+    let (vm_pill_color, vm_pill_on, vm_label_bg) = if manage_active {
+        (theme.text_muted, theme.control_pressed, theme.control_pressed)
     } else {
-        (theme.control, theme.panel)
+        let on_manage = hovered == Some(&Hit::HeaderManage);
+        let (color, pill_on) = crate::paint::keycap_face(theme, on_manage, hover_t);
+        (
+            color,
+            pill_on,
+            crate::paint::hover_surface(theme, theme.panel, on_manage, hover_t),
+        )
     };
+    // Caps across the whole span, keycap and name alike, exactly as
+    // `paint_bar_button` does for its neighbours — Manage keeps its own
+    // copy only because the pressed state overrides hover.
+    let manage_block = crate::paint::cap::chip_block(buf, area, mid_y, manage_x, manage_w, vm_label_bg, theme);
     if show_manage_pill {
-        manage_pill.paint(buf, manage_x, mid_y, vm_pill_on, theme);
+        crate::paint::cap::chip_block(
+            buf,
+            area,
+            mid_y,
+            manage_x,
+            manage_pill_w,
+            theme.tint(vm_pill_color, vm_pill_on),
+            theme,
+        );
+        crate::paint::Chip {
+            label: manage_pill.label,
+            color: vm_pill_color,
+        }
+        .paint(buf, manage_x, mid_y, vm_pill_on, theme);
     }
     text(
         buf,
@@ -326,15 +338,7 @@ pub fn draw_header(
         vm_label_bg,
         false,
     );
-    hits.register(
-        Rect {
-            x: manage_x,
-            y: mid_y,
-            width: manage_w,
-            height: 1,
-        },
-        Hit::HeaderManage,
-    );
+    hits.register(manage_block, Hit::HeaderManage);
 
     // Reload takes the save/discard slot on the Manage screen. The two
     // are mutually exclusive by construction -- save/discard requires
@@ -348,34 +352,18 @@ pub fn draw_header(
         let w = RELOAD_W;
         let x = manage_x.saturating_sub(SAVE_GROUP_GAP).saturating_sub(w);
         if x > left_end {
-            let pill_on = if hovered == Some(&hit) {
-                theme.control_hover
-            } else {
-                theme.control
-            };
-            let key_w = crate::paint::Chip {
-                label: "alt+r",
-                color: theme.text_muted,
-            }
-            .paint(buf, x, mid_y, pill_on, theme);
-            text(
+            let block = crate::paint::keycap_button(
                 buf,
-                x + key_w,
+                area,
+                x,
                 mid_y,
+                "alt+r",
                 RELOAD_LABEL,
-                theme.text,
-                theme.panel,
-                false,
+                hovered == Some(&hit),
+                hover_t,
+                theme,
             );
-            hits.register(
-                Rect {
-                    x,
-                    y: mid_y,
-                    width: w,
-                    height: 1,
-                },
-                hit,
-            );
+            hits.register(block, hit);
         }
     }
 
@@ -401,63 +389,31 @@ pub fn draw_header(
         // Discard sits left of save so save keeps its anchored spot.
         let discard_x = save_x.saturating_sub(discard_w + 2);
         if save_x > left_end {
-            let pill_on = if hovered == Some(&save_hit) {
-                theme.control_hover
-            } else {
-                theme.control
-            };
-            let key_w = crate::paint::Chip {
-                label: "^S",
-                color: theme.text_muted,
-            }
-            .paint(buf, save_x, mid_y, pill_on, theme);
-            text(
+            let block = crate::paint::keycap_button(
                 buf,
-                save_x + key_w,
+                area,
+                save_x,
                 mid_y,
+                "^S",
                 SAVE_LABEL,
-                theme.text,
-                theme.panel,
-                false,
+                hovered == Some(&save_hit),
+                hover_t,
+                theme,
             );
-            hits.register(
-                Rect {
-                    x: save_x,
-                    y: mid_y,
-                    width: save_w,
-                    height: 1,
-                },
-                save_hit,
-            );
+            hits.register(block, save_hit);
             if discard_x > left_end {
-                let pill_on = if hovered == Some(&discard_hit) {
-                    theme.control_hover
-                } else {
-                    theme.control
-                };
-                let key_w = crate::paint::Chip {
-                    label: "alt+d",
-                    color: theme.text_muted,
-                }
-                .paint(buf, discard_x, mid_y, pill_on, theme);
-                text(
+                let block = crate::paint::keycap_button(
                     buf,
-                    discard_x + key_w,
+                    area,
+                    discard_x,
                     mid_y,
+                    "alt+d",
                     DISCARD_LABEL,
-                    theme.text,
-                    theme.panel,
-                    false,
+                    hovered == Some(&discard_hit),
+                    hover_t,
+                    theme,
                 );
-                hits.register(
-                    Rect {
-                        x: discard_x,
-                        y: mid_y,
-                        width: discard_w,
-                        height: 1,
-                    },
-                    discard_hit,
-                );
+                hits.register(block, discard_hit);
             }
         }
     }
@@ -509,6 +465,7 @@ mod tests {
                     false,
                     &mut hits,
                     hovered,
+                    1.0,
                 )
             })
             .unwrap();
@@ -533,6 +490,7 @@ mod tests {
                     false,
                     &mut hits,
                     None,
+                    1.0,
                 )
             })
             .unwrap();
@@ -565,6 +523,7 @@ mod tests {
                     show_reload,
                     &mut hits,
                     None,
+                    1.0,
                 )
             })
             .unwrap();
@@ -573,12 +532,320 @@ mod tests {
 
     fn row_text(term: &Terminal<TestBackend>, rect: &Rect) -> String {
         (rect.x..rect.x + rect.width)
-            .map(|x| cell(term, x, rect.y).symbol().to_string())
+            .map(|x| cell(term, x, mid_of(rect)).symbol().to_string())
             .collect()
     }
 
     fn cell(term: &Terminal<TestBackend>, x: u16, y: u16) -> ratatui::buffer::Cell {
         term.backend().buffer().cell((x, y)).unwrap().clone()
+    }
+
+    /// The content row of a chip's hit rect. Hits are 1.25-row capped
+    /// blocks now, so a rect's own `y` is the sliver above the chip, not
+    /// the row its label and fill live on. Derived from the block's height
+    /// so it stays right if a narrow bar degrades a chip back to one row.
+    fn mid_of(r: &Rect) -> u16 {
+        r.y + r.height / 2
+    }
+
+    /// A hover-fade render at an arbitrary `hover_t`, with one hit hovered.
+    fn render_hovered(
+        theme: &Theme,
+        hovered: &Hit,
+        hover_t: f32,
+        width: u16,
+    ) -> (Terminal<TestBackend>, HitMap) {
+        let backend = TestBackend::new(width, HEADER_HEIGHT);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = HitMap::default();
+        terminal
+            .draw(|f: &mut Frame| {
+                draw_header(
+                    f,
+                    f.area(),
+                    theme,
+                    "alpha",
+                    "main",
+                    "qa",
+                    false,
+                    false,
+                    false,
+                    &mut hits,
+                    Some(hovered),
+                    hover_t,
+                )
+            })
+            .unwrap();
+        (terminal, hits)
+    }
+
+    /// The bar's chips are 1.25 rows now: the content row plus an eighth
+    /// of the blank panel row above and below. The hit grows with them —
+    /// per `cap.rs`, the caps ARE the control — so a click on the sliver
+    /// lands on the chip it belongs to.
+    #[test]
+    fn a_selector_chip_stands_in_the_apps_chip_anatomy() {
+        use crate::paint::cap::{CHIP_CAPS, ChipCaps};
+        let theme = Theme::dark();
+        let (term, hits) = render(&theme, "alpha", "qa", None);
+        let rect = hits.rect_of(&Hit::HeaderEnv).expect("env chip");
+
+        assert_eq!(
+            rect.height,
+            CHIP_CAPS.height(),
+            "the hit covers the whole control, caps included"
+        );
+        assert_eq!(
+            cell(&term, rect.x, mid_of(&rect)).bg,
+            theme.control,
+            "the content row is the chip's face"
+        );
+
+        if CHIP_CAPS == ChipCaps::Sliver {
+            let top = cell(&term, rect.x, rect.y);
+            assert_eq!(top.symbol(), crate::paint::cap::SLIVER_TOP);
+            assert_eq!(top.fg, theme.control, "an eighth of face...");
+            assert_eq!(top.bg, theme.panel, "...over the bar's own panel");
+            let bottom = cell(&term, rect.x, rect.y + 2);
+            assert_eq!(bottom.symbol(), crate::paint::cap::SLIVER_BOTTOM);
+            assert_eq!(bottom.fg, theme.control);
+            assert_eq!(bottom.bg, theme.panel);
+        }
+    }
+
+    /// The sliver is part of the button, so hovering it warms the chip
+    /// exactly as hovering the content row does — and the sliver itself
+    /// lifts with the face rather than staying at the resting fill.
+    #[test]
+    fn hovering_a_chip_lifts_its_slivers_with_its_face() {
+        let theme = Theme::dark();
+        use crate::paint::cap::{CHIP_CAPS, ChipCaps};
+        let (term, hits) = render(&theme, "alpha", "qa", Some(&Hit::HeaderEnv));
+        let rect = hits.rect_of(&Hit::HeaderEnv).expect("env chip");
+        let lifted = crate::paint::hover_surface(&theme, theme.control, true, 1.0);
+
+        assert_eq!(
+            cell(&term, rect.x, mid_of(&rect)).bg,
+            lifted,
+            "the face lifts"
+        );
+        if CHIP_CAPS == ChipCaps::Sliver {
+            assert_eq!(
+                cell(&term, rect.x, rect.y).fg,
+                lifted,
+                "and so does the sliver above it"
+            );
+            assert_eq!(
+                cell(&term, rect.x, rect.y + 2).fg,
+                lifted,
+                "and the one below"
+            );
+        }
+    }
+
+    /// A cycle pill is its own button, so it caps as its own block too.
+    #[test]
+    fn a_cycle_pill_is_capped_and_hit_as_its_own_block() {
+        use crate::paint::cap::{CHIP_CAPS, ChipCaps};
+        let theme = Theme::dark();
+        let (term, hits) = render(&theme, "alpha", "qa", None);
+        let pill = hits.rect_of(&Hit::HeaderEnvCycle).expect("env cycle");
+        assert_eq!(pill.height, CHIP_CAPS.height());
+        let face = theme.tint(theme.text_muted, theme.control);
+        assert_eq!(cell(&term, pill.x, mid_of(&pill)).bg, face);
+        if CHIP_CAPS == ChipCaps::Sliver {
+            assert_eq!(
+                cell(&term, pill.x, pill.y).fg,
+                face,
+                "the sliver carries the pill's own tinted fill"
+            );
+        }
+    }
+
+    /// A composite button caps as one block across keycap AND name: the
+    /// hit spans all three rows of the whole span, so a click on the
+    /// sliver above the word `Theme` opens the theme picker.
+    ///
+    /// At rest the name has no fill of its own — only the keycap does —
+    /// so only the keycap's slivers show. Hovering fills the whole span,
+    /// and the slivers follow that fill across the whole button.
+    #[test]
+    fn a_composite_button_caps_across_its_whole_span() {
+        use crate::paint::cap::{CHIP_CAPS, ChipCaps};
+        let theme = Theme::dark();
+        let (term, hits) = render_wide(&theme, "alpha", "qa", false, None, 150);
+        let rect = hits.rect_of(&Hit::HeaderTheme).expect("theme hit");
+        assert_eq!(
+            rect.height,
+            CHIP_CAPS.height(),
+            "the hit is the whole control, keycap and name together"
+        );
+
+        let key_w = " alt+t ".chars().count() as u16;
+        assert_eq!(
+            cell(&term, rect.x, mid_of(&rect)).bg,
+            theme.tint(theme.text_muted, theme.control),
+            "the keycap's own tinted fill"
+        );
+
+        if CHIP_CAPS != ChipCaps::Sliver {
+            return;
+        }
+        assert_eq!(
+            cell(&term, rect.x, rect.y).fg,
+            theme.tint(theme.text_muted, theme.control),
+            "at rest the keycap's sliver carries that same fill"
+        );
+        assert_eq!(
+            cell(&term, rect.x + key_w, rect.y).bg,
+            theme.panel,
+            "and the name, having no fill at rest, shows bare panel above it"
+        );
+
+        let (term, hits) =
+            render_wide(&theme, "alpha", "qa", false, Some(&Hit::HeaderTheme), 150);
+        let rect = hits.rect_of(&Hit::HeaderTheme).unwrap();
+        let lifted = crate::paint::hover_surface(&theme, theme.panel, true, 1.0);
+        assert_eq!(
+            cell(&term, rect.x + key_w, rect.y).fg,
+            lifted,
+            "hovered, the name's sliver carries the lifted fill too"
+        );
+        assert_eq!(
+            cell(&term, rect.x + key_w, rect.y + 2).fg,
+            lifted,
+            "top and bottom alike"
+        );
+    }
+
+    /// Theme is one button — an `alt+t` keycap and the word beside it,
+    /// under a single hit. Both halves must move on the same clock: at
+    /// half fade the keycap is half warmed AND its label's fill is half
+    /// lifted off the panel. Before this, only the keycap reacted, so the
+    /// button visibly came apart under the pointer.
+    #[test]
+    fn a_composite_button_warms_its_keycap_and_its_label_on_one_clock() {
+        let theme = Theme::dark();
+        let (term, hits) = render_hovered(&theme, &Hit::HeaderTheme, 0.5, 180);
+        let rect = hits.rect_of(&Hit::HeaderTheme).expect("theme hit");
+
+        let (color, on) = crate::paint::keycap_face(&theme, true, 0.5);
+        assert_eq!(
+            cell(&term, rect.x + 1, mid_of(&rect)).bg,
+            theme.tint(color, on),
+            "the keycap is half warmed"
+        );
+
+        // The label half: past the ` alt+t ` pill, still inside the hit.
+        let label_x = rect.x + crate::keys::display_keycap("alt+t").chars().count() as u16 + 2;
+        assert_eq!(
+            cell(&term, label_x, mid_of(&rect)).bg,
+            crate::paint::hover_surface(&theme, theme.panel, true, 0.5),
+            "the label half is lifted the same fraction off the panel"
+        );
+    }
+
+    /// The cycle pill and the selector chip it leads are two buttons, not
+    /// one: hovering the `alt+x` pill must warm the pill alone and leave
+    /// the Environment chip at its resting fill.
+    #[test]
+    fn a_cycle_pill_warms_without_the_selector_chip_it_leads() {
+        let theme = Theme::dark();
+        let (term, hits) = render_hovered(&theme, &Hit::HeaderEnvCycle, 1.0, 180);
+        let pill = hits.rect_of(&Hit::HeaderEnvCycle).expect("env cycle hit");
+        let chip = hits.rect_of(&Hit::HeaderEnv).expect("env chip hit");
+
+        let (color, on) = crate::paint::keycap_face(&theme, true, 1.0);
+        assert_eq!(
+            cell(&term, pill.x + 1, mid_of(&pill)).bg,
+            theme.tint(color, on),
+            "the pill is warmed"
+        );
+        assert_eq!(
+            cell(&term, chip.x + 1, mid_of(&chip)).bg,
+            theme.control,
+            "the chip it leads stays at rest"
+        );
+    }
+
+    /// The converse: hovering the dropdown chip eases its own solid fill
+    /// and leaves its cycle pill alone.
+    #[test]
+    fn a_selector_chip_eases_its_fill_without_its_cycle_pill() {
+        let theme = Theme::dark();
+        let (term, hits) = render_hovered(&theme, &Hit::HeaderEnv, 0.5, 180);
+        let pill = hits.rect_of(&Hit::HeaderEnvCycle).expect("env cycle hit");
+        let chip = hits.rect_of(&Hit::HeaderEnv).expect("env chip hit");
+
+        assert_eq!(
+            cell(&term, chip.x + 1, mid_of(&chip)).bg,
+            crate::paint::hover_surface(&theme, theme.control, true, 0.5),
+            "the chip's solid fill is halfway to the hover surface"
+        );
+        assert_eq!(
+            cell(&term, pill.x + 1, mid_of(&pill)).bg,
+            theme.tint(theme.text_muted, theme.control),
+            "its cycle pill stays at rest"
+        );
+    }
+
+    /// The dirty bar's Save is the same one-button idiom as Theme, so it
+    /// warms as a unit too — and its neighbour Discard, a separate hit,
+    /// stays entirely at rest.
+    #[test]
+    fn a_save_chip_warms_as_one_unit_leaving_discard_at_rest() {
+        use crate::action::Action;
+        let theme = Theme::dark();
+        let backend = TestBackend::new(180, HEADER_HEIGHT);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = HitMap::default();
+        let hovered = Hit::FooterChip(Action::SaveRequest);
+        terminal
+            .draw(|f: &mut Frame| {
+                draw_header(
+                    f,
+                    f.area(),
+                    &theme,
+                    "alpha",
+                    "main",
+                    "qa",
+                    false,
+                    true,
+                    false,
+                    &mut hits,
+                    Some(&hovered),
+                    0.5,
+                )
+            })
+            .unwrap();
+
+        let save = hits.rect_of(&hovered).expect("save hit");
+        let (color, on) = crate::paint::keycap_face(&theme, true, 0.5);
+        assert_eq!(
+            cell(&terminal, save.x + 1, mid_of(&save)).bg,
+            theme.tint(color, on),
+            "save's keycap is half warmed"
+        );
+        let label_x = save.x + " ^S ".chars().count() as u16;
+        assert_eq!(
+            cell(&terminal, label_x, mid_of(&save)).bg,
+            crate::paint::hover_surface(&theme, theme.panel, true, 0.5),
+            "and its label lifts on the same clock"
+        );
+
+        let discard = hits
+            .rect_of(&Hit::FooterChip(Action::DiscardChanges))
+            .expect("discard hit");
+        assert_eq!(
+            cell(&terminal, discard.x + 1, mid_of(&discard)).bg,
+            theme.tint(theme.text_muted, theme.control),
+            "discard's keycap is untouched"
+        );
+        assert_eq!(
+            cell(&terminal, discard.x + " alt+d ".chars().count() as u16, mid_of(&discard)).bg,
+            theme.panel,
+            "and so is its label"
+        );
     }
 
     /// Reload takes the save/discard slot, which is free on this screen:
@@ -637,6 +904,7 @@ mod tests {
                     false,
                     &mut hits,
                     None,
+                    1.0,
                 )
             })
             .unwrap();
@@ -656,7 +924,7 @@ mod tests {
         assert_eq!(pill.x, 3, "the project pill is the first thing on the bar");
         assert_eq!(rect.x, pill.x + pill.width + 1, "its chip follows");
         assert_eq!(row_text(&term, &rect), " Project: alpha ");
-        let c = cell(&term, rect.x + 1, rect.y);
+        let c = cell(&term, rect.x + 1, mid_of(&rect));
         assert_eq!(c.fg, theme.text);
         assert!(c.modifier.contains(Modifier::BOLD));
         let row = row_text(&term, &Rect::new(0, 1, 130, 1));
@@ -681,15 +949,40 @@ mod tests {
         );
     }
 
+    /// The bar's outer rows used to be flat panel end to end. They now
+    /// carry the chips' eighth-row slivers — that is what makes a chip
+    /// 1.25 rows tall — but nothing else may intrude on them: away from a
+    /// chip they are still bare panel, and where a sliver sits it is a
+    /// sliver glyph over panel, never a full block that would read as the
+    /// bar having grown.
     #[test]
-    fn top_and_bottom_rows_are_flat_panel_fill() {
+    fn the_outer_rows_carry_only_chip_slivers_over_panel() {
         let theme = Theme::dark();
-        let (term, _hits) = render(&theme, "alpha", "qa", None);
+        let (term, hits) = render(&theme, "alpha", "qa", None);
+        let buf_w = 120;
         for y in [0, 2] {
-            let c = cell(&term, 3, y);
-            assert_eq!(c.symbol(), " ");
-            assert_eq!(c.bg, theme.panel);
+            for x in 0..buf_w {
+                let c = cell(&term, x, y);
+                let sliver = c.symbol() == crate::paint::cap::SLIVER_TOP
+                    || c.symbol() == crate::paint::cap::SLIVER_BOTTOM;
+                assert!(
+                    c.symbol() == " " || sliver,
+                    "row {y} col {x}: only blanks and slivers belong here, got {:?}",
+                    c.symbol()
+                );
+                assert_eq!(
+                    c.bg, theme.panel,
+                    "row {y} col {x}: a sliver is face over the bar's panel"
+                );
+            }
         }
+
+        // And the gap between two chips really is bare: the column just
+        // before the project chip's own block.
+        let project = hits.rect_of(&Hit::HeaderProject).unwrap();
+        let gap = cell(&term, project.x - 1, 0);
+        assert_eq!(gap.symbol(), " ");
+        assert_eq!(gap.bg, theme.panel);
     }
 
     #[test]
@@ -699,7 +992,7 @@ mod tests {
         let rect = hits
             .rect_of(&Hit::HeaderProject)
             .expect("project hit registered");
-        let c = cell(&term, rect.x + 1, rect.y);
+        let c = cell(&term, rect.x + 1, mid_of(&rect));
         assert_eq!(c.bg, theme.control);
         assert_eq!(c.fg, theme.text);
         assert_eq!(c.symbol(), "P"); // "Project: alpha"
@@ -713,10 +1006,10 @@ mod tests {
         // Full label on every screen — the chip is the app's only env
         // control.
         let label: String = (rect.x..rect.x + rect.width)
-            .map(|x| cell(&term, x, rect.y).symbol().to_string())
+            .map(|x| cell(&term, x, mid_of(&rect)).symbol().to_string())
             .collect();
         assert_eq!(label, " Environment: qa \u{25be} ");
-        let c = cell(&term, rect.x + 1, rect.y);
+        let c = cell(&term, rect.x + 1, mid_of(&rect));
         assert_eq!(c.bg, theme.control);
         assert_eq!(c.fg, theme.text, "bright, not muted");
         assert!(c.modifier.contains(Modifier::BOLD));
@@ -764,11 +1057,11 @@ mod tests {
             "Manage is off in the right cluster, not the next chip along: {manage:?} vs {space:?}"
         );
         let label: String = (space.x..space.x + space.width)
-            .map(|x| cell(&term, x, space.y).symbol().to_string())
+            .map(|x| cell(&term, x, mid_of(&space)).symbol().to_string())
             .collect();
         assert_eq!(label, " Space: main \u{25be} ");
         let pill: String = (space_cycle.x..space_cycle.x + space_cycle.width)
-            .map(|x| cell(&term, x, space_cycle.y).symbol().to_string())
+            .map(|x| cell(&term, x, mid_of(&space_cycle)).symbol().to_string())
             .collect();
         assert!(pill.contains("alt+c"), "{pill:?}");
     }
@@ -860,16 +1153,16 @@ mod tests {
     }
 
     #[test]
-    fn hovered_chip_lifts_background_to_control_hover_and_leaves_the_other_alone() {
+    fn hovered_chip_lifts_its_background_and_leaves_the_other_alone() {
         let theme = Theme::dark();
         let (term, hits) = render(&theme, "alpha", "qa", Some(&Hit::HeaderProject));
         let project_rect = hits.rect_of(&Hit::HeaderProject).unwrap();
         let env_rect = hits.rect_of(&Hit::HeaderEnv).unwrap();
         assert_eq!(
-            cell(&term, project_rect.x, project_rect.y).bg,
-            theme.control_hover
+            cell(&term, project_rect.x, mid_of(&project_rect)).bg,
+            crate::paint::hover_surface(&theme, theme.control, true, 1.0)
         );
-        assert_eq!(cell(&term, env_rect.x, env_rect.y).bg, theme.control);
+        assert_eq!(cell(&term, env_rect.x, mid_of(&env_rect)).bg, theme.control);
     }
 
     #[test]
@@ -903,7 +1196,7 @@ mod tests {
             format!(" {}+x ", crate::keys::alt_label())
         );
         assert_eq!(
-            cell(&term, rect.x + 1, rect.y).bg,
+            cell(&term, rect.x + 1, mid_of(&rect)).bg,
             theme.tint(theme.text_muted, theme.control),
             "keycap pill tint matches the footer chips'"
         );
@@ -911,9 +1204,12 @@ mod tests {
         let (term, hits) = render(&theme, "alpha", "qa", Some(&Hit::HeaderEnvCycle));
         let rect = hits.rect_of(&Hit::HeaderEnvCycle).unwrap();
         assert_eq!(
-            cell(&term, rect.x + 1, rect.y).bg,
-            theme.tint(theme.text_muted, theme.control_hover),
-            "hover lifts the pill fill"
+            cell(&term, rect.x + 1, mid_of(&rect)).bg,
+            {
+                let (color, on) = crate::paint::keycap_face(&theme, true, 1.0);
+                theme.tint(color, on)
+            },
+            "hover warms the pill: tint source toward text, surface to hover"
         );
     }
 
@@ -938,12 +1234,12 @@ mod tests {
             row_text(&term, &rect),
             format!(" {}+v  Manage ", crate::keys::alt_label())
         );
-        let label_cell = cell(&term, rect.x + alt_pill_w() + 1, rect.y);
+        let label_cell = cell(&term, rect.x + alt_pill_w() + 1, mid_of(&rect));
         assert_eq!(label_cell.symbol(), "M");
         assert_eq!(label_cell.fg, theme.text, "prominent label, not muted");
         assert_eq!(label_cell.bg, theme.panel);
         assert_eq!(
-            cell(&term, rect.x + 1, rect.y).bg,
+            cell(&term, rect.x + 1, mid_of(&rect)).bg,
             theme.tint(theme.text_muted, theme.control),
             "leading keycap pill tint matches the footer chips'"
         );
@@ -962,12 +1258,12 @@ mod tests {
         let (term, hits) = render_wide(&theme, "alpha", "qa", true, None, 130);
         let rect = hits.rect_of(&Hit::HeaderManage).unwrap();
         assert_eq!(
-            cell(&term, rect.x + alt_pill_w() + 1, rect.y).bg,
+            cell(&term, rect.x + alt_pill_w() + 1, mid_of(&rect)).bg,
             theme.control_pressed,
             "label ground shows the pressed state"
         );
         assert_eq!(
-            cell(&term, rect.x + 1, rect.y).bg,
+            cell(&term, rect.x + 1, mid_of(&rect)).bg,
             theme.tint(theme.text_muted, theme.control_pressed),
             "keycap tint derives from the pressed fill"
         );
@@ -986,12 +1282,12 @@ mod tests {
             row_text(&term, &rect),
             format!(" {}+t  Theme ", crate::keys::alt_label())
         );
-        let label_cell = cell(&term, rect.x + alt_pill_w() + 1, rect.y);
+        let label_cell = cell(&term, rect.x + alt_pill_w() + 1, mid_of(&rect));
         assert_eq!(label_cell.symbol(), "T");
         assert_eq!(label_cell.fg, theme.text, "prominent label, not muted");
         assert_eq!(label_cell.bg, theme.panel);
         assert_eq!(
-            cell(&term, rect.x + 1, rect.y).bg,
+            cell(&term, rect.x + 1, mid_of(&rect)).bg,
             theme.tint(theme.text_muted, theme.control),
             "leading keycap pill tint matches the footer chips'"
         );
@@ -999,9 +1295,17 @@ mod tests {
         let (term, hits) = render_wide(&theme, "alpha", "qa", false, Some(&Hit::HeaderTheme), 150);
         let rect = hits.rect_of(&Hit::HeaderTheme).unwrap();
         assert_eq!(
-            cell(&term, rect.x + 1, rect.y).bg,
-            theme.tint(theme.text_muted, theme.control_hover),
-            "hover lifts the keycap pill fill"
+            cell(&term, rect.x + 1, mid_of(&rect)).bg,
+            {
+                let (color, on) = crate::paint::keycap_face(&theme, true, 1.0);
+                theme.tint(color, on)
+            },
+            "hover warms the keycap pill"
+        );
+        assert_eq!(
+            cell(&term, rect.x + " alt+t ".chars().count() as u16, mid_of(&rect)).bg,
+            crate::paint::hover_surface(&theme, theme.panel, true, 1.0),
+            "and the name beside it lifts with it -- Theme is one button"
         );
     }
 
@@ -1144,6 +1448,7 @@ mod tests {
                     false,
                     &mut hits,
                     None,
+                    1.0,
                 )
             })
             .unwrap();

@@ -2434,12 +2434,11 @@ impl Editor {
         // The control advertises its own shortcut in place — an `alt+w`
         // keycap pill one gap column to its left, itself a clickable
         // cycle button (the footer no longer carries a "split" chip).
+        // Its own hit, so it warms on its own — the staircase chips beside
+        // it never light up with it.
         let cycle_hit = crate::hit::Hit::FooterChip(Action::CycleSplit);
-        let pill_on = if ctx.hovered == Some(&cycle_hit) {
-            theme.control_hover
-        } else {
-            theme.control
-        };
+        let (pill_color, pill_on) =
+            crate::paint::keycap_face(theme, ctx.hovered == Some(&cycle_hit), ctx.hover_t());
         let pill_label = " alt+w ";
         let pill_w = pill_label.chars().count() as u16;
         let pill_x = control_x.saturating_sub(pill_w + 1);
@@ -2448,7 +2447,7 @@ impl Editor {
         if pill_x > strip_end {
             crate::paint::Chip {
                 label: "alt+w",
-                color: theme.text_muted,
+                color: pill_color,
             }
             .paint(buf, pill_x, area.y, pill_on, theme);
             hits.register(
@@ -2578,6 +2577,7 @@ impl Editor {
         let right_limit = area.x + area.width;
         crate::components::footer::paint_chip_row(
             buf,
+            area,
             area.y,
             area.x + 1,
             right_limit,
@@ -2585,6 +2585,7 @@ impl Editor {
             theme,
             hits,
             ctx.hovered,
+            ctx.hover_t(),
         );
     }
 
@@ -3999,6 +4000,53 @@ mod tests {
             hits.rect_of(&Hit::SplitStop(s))
                 .unwrap_or_else(|| panic!("{s:?} chip registered"))
         })
+    }
+
+    /// The `alt+w` keycap is its own button: hovering it warms that pill
+    /// alone and leaves the staircase chips beside it exactly as they were.
+    #[test]
+    fn the_split_keycap_warms_on_its_own_leaving_the_staircase_alone() {
+        let theme = Theme::dark();
+        let hit = Hit::FooterChip(Action::CycleSplit);
+        let draw = |hovered: Option<&Hit>| {
+            let ctx = DrawCtx {
+                theme: &theme,
+                focused: true,
+                hovered,
+                pointer: None,
+                dragging: false,
+                anims: test_anims(),
+                now: std::time::Instant::now(),
+            };
+            let mut e = Editor::default();
+            let mut terminal = Terminal::new(TestBackend::new(120, 14)).unwrap();
+            let mut hits = crate::hit::HitMap::default();
+            terminal
+                .draw(|f| e.draw(f, f.area(), &ctx, &mut hits))
+                .unwrap();
+            let pill = hits.rect_of(&hit).expect("split keycap pill");
+            let [first, ..] = control_rects(&hits);
+            let buf = terminal.backend().buffer();
+            (
+                buf.cell((pill.x + 1, pill.y)).unwrap().bg,
+                buf.cell((first.x, first.y)).unwrap().bg,
+            )
+        };
+
+        let (rest_pill, rest_chip) = draw(None);
+        let (hot_pill, chip_while_pill_hot) = draw(Some(&hit));
+
+        assert_eq!(
+            rest_pill,
+            theme.tint(theme.text_muted, theme.control),
+            "at rest it is an ordinary muted keycap"
+        );
+        let (color, on) = crate::paint::keycap_face(&theme, true, 1.0);
+        assert_eq!(hot_pill, theme.tint(color, on), "hovered, it warms");
+        assert_eq!(
+            chip_while_pill_hot, rest_chip,
+            "the staircase chip beside it is untouched"
+        );
     }
 
     /// The split control advertises its own shortcut in place: an `alt+w`

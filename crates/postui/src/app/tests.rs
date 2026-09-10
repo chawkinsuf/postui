@@ -15277,19 +15277,44 @@ fn testbed_renders_flat_capped_controls_and_an_underline() {
     let mut app = App::new_for_test_with_testbed(true);
     let accent = app.theme.accent;
     let focus_ring = app.theme.focus_ring;
+    // The lit half of the bevel pair. See the assertion below.
+    let lit_edge = app.theme.edge_light;
     let backend = TestBackend::new(160, 60);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
     let buf = terminal.backend().buffer();
     let content = format!("{buf:?}");
-    // The app has one control register and it is flat. The testbed shows
-    // every control it owns, so if a bevel glyph survives anywhere in the
-    // paint layer it shows up here -- which is what makes this the
-    // cheapest guard against a raised control creeping back in.
-    assert!(
-        !content.contains('▔') && !content.contains('▁'),
-        "a control painted a bevel glyph; the register is flat: {content}"
-    );
+    // The app has one control register and it is flat: a control separates
+    // itself from the surface by *height*, never by shading. The testbed
+    // shows every control the app owns, so this is the cheapest guard
+    // against a raised one creeping back in.
+    //
+    // What gives a bevel away is a LIT edge. Shading a surface to look
+    // raised needs both halves of the pair -- a light line above the fill
+    // and a dark one below -- and `Theme` records that the flat register
+    // has no lit edges at all: `edge_dark` has one consumer (`paint::rule`,
+    // which closes a region off) while `edge_light` has none. A divider
+    // only ever wants the dark half, so banning the lit one catches a bevel
+    // without touching the hairline.
+    //
+    // This replaces an older check that banned the glyphs `▔` and `▁`
+    // outright. Those are what the bevels were drawn with, but they are not
+    // exclusively bevels -- `▁` is the split control's editor-full chip and
+    // the first rung of `frac.rs`'s coverage ramp, `▔` is what `paint::rule`
+    // draws, and both are the app bar's chip caps. The glyph ban flagged
+    // those innocents while still missing a bevel drawn any other way (with
+    // half blocks, say, or a full-cell row). Banning the lit edge is at once
+    // narrower and stronger.
+    for y in 0..buf.area.height {
+        for x in 0..buf.area.width {
+            let cell = buf.cell((x, y)).unwrap();
+            assert!(
+                cell.fg != lit_edge && cell.bg != lit_edge,
+                "a lit edge at ({x},{y}) -- something is painting itself raised; \
+                 the control register is flat"
+            );
+        }
+    }
     assert!(
         content.contains(crate::paint::cap::CAP_TOP)
             && content.contains(crate::paint::cap::CAP_BOTTOM),
@@ -20145,6 +20170,42 @@ fn a_left_press_during_a_live_space_drag_selects_the_painted_row() {
         ["main", "auth", "billing"],
         "nothing written"
     );
+}
+
+/// A hover highlight is a statement about where the pointer is. Once the
+/// pointer has left the window the statement is false, and nothing else
+/// will correct it: the move handler only runs on motion *over* the
+/// terminal, so a control lit on the way out stays lit indefinitely.
+///
+/// Focus loss is the one moment the standard protocol reports, so the
+/// highlight is dropped there. (A pointer that leaves while the terminal
+/// keeps focus is not reported by any standard mouse mode; `on_focus_lost`
+/// carries a note on kitty's non-standard extension that would cover it,
+/// and why it has not been worth the cost.)
+#[test]
+fn losing_terminal_focus_drops_a_stale_hover_highlight() {
+    let (mut app, _dir) = three_row_app();
+    let r0 = row_rect(&mut app, 0);
+    app.handle_mouse(moved(r0.x + 2, r0.y));
+    assert!(
+        app.hovered.is_some(),
+        "fixture: the pointer is over a row and it is lit"
+    );
+
+    assert!(
+        app.on_focus_lost(),
+        "dropping the highlight is itself a reason to repaint -- without \
+         this the stale highlight stays on screen until something else \
+         happens to redraw"
+    );
+    assert!(app.hovered.is_none(), "the highlight goes with the pointer");
+    assert!(
+        app.pointer.is_none(),
+        "and the remembered position with it, so the post-frame resync \
+         cannot light it straight back up"
+    );
+
+    assert!(!app.on_focus_lost(), "nothing left to drop the second time");
 }
 
 #[test]

@@ -603,15 +603,62 @@ impl App {
 
     /// Terminal focus left the window. A button held at that moment is
     /// released elsewhere, so every drag ends here as a cancel; the rows
-    /// snap back and the keyboard is the user's again. Returns whether a
-    /// repaint is needed.
+    /// snap back and the keyboard is the user's again.
+    ///
+    /// The hover highlight goes too. It is a statement about where the
+    /// pointer is, and once the pointer has left the window that statement
+    /// is false with nothing to correct it: the move handler only hit-tests
+    /// on motion *over* the terminal, so a control lit on the way out stays
+    /// lit indefinitely. `pointer` is forgotten alongside it, or
+    /// [`Self::resync_hover`] would re-light the same control from the stale
+    /// position after the very next frame.
+    ///
+    /// This is the only leaving the terminal reports *portably*. A pointer
+    /// that crosses out while the window keeps focus (click-to-focus, a
+    /// second monitor) sends nothing under the standard protocol: xterm's
+    /// mouse modes (9, 1000-1006, 1015, 1016) have no leave event, and 1004
+    /// reports focus, not the pointer. So that case is unhandled here.
+    ///
+    /// It is not, however, impossible — should it ever be worth doing:
+    ///
+    /// kitty extends SGR-Pixel mouse reporting to cover it. A leave arrives
+    /// as an ordinary SGR pixel event with **bit 8 set on the first number**;
+    /// every other bit and both coordinates are meaningless and must be
+    /// ignored (`sw.kovidgoyal.net/kitty/misc-protocol/`). Three things make
+    /// it a bigger job than it sounds:
+    ///
+    /// 1. It rides on mode `?1016h`, which switches *all* mouse reporting to
+    ///    pixels. Every event would then need a pixel->cell conversion before
+    ///    reaching the (cell-based) hit map, using the terminal's cell size
+    ///    from `ws_xpixel`/`ws_ypixel` — which crossterm documents as
+    ///    possibly unimplemented or zero. Getting that wrong breaks every
+    ///    click in the app, not just this edge case.
+    /// 2. crossterm enables 1000/1002/1003/1015/1006 and parses none of
+    ///    1016, so the bytes would have to be read directly. There is
+    ///    precedent for that in this codebase — `theme::osc` already reads
+    ///    fd 0 behind crossterm's back for colour queries — but it is not
+    ///    free.
+    /// 3. Ghostty implements 1016 but its support for the *leave* extension
+    ///    is unverified. Test it against the real terminal before building
+    ///    anything on it, and keep a path for terminals without it.
+    ///
+    /// A weaker signal exists too: kitty and Ghostty report negative
+    /// coordinates for motion outside the window while a button is held
+    /// (xterm dropped those events in patch 404, and foot followed). That is
+    /// drag-only, so it says nothing about a hover.
+    ///
+    /// Returns whether a repaint is needed.
     pub fn on_focus_lost(&mut self) -> bool {
         let live = self.sidebar.drag.is_some()
             || self.manage.list.drag.is_some()
             || self.drag.is_some()
             || self.text_drag.is_some();
+        let lit = self.hovered.is_some() || self.hovered_token.is_some();
         self.cancel_stale_drags(None);
-        live
+        self.hovered = None;
+        self.hovered_token = None;
+        self.pointer = None;
+        live || lit
     }
 
     /// Re-resolves `hovered`/`hovered_token` from the last known pointer
