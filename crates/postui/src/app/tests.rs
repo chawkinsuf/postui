@@ -20172,6 +20172,41 @@ fn a_left_press_during_a_live_space_drag_selects_the_painted_row() {
     );
 }
 
+/// A hover highlight is a statement about where the pointer is. Once the
+/// pointer has left the window the statement is false, and nothing else
+/// will correct it: the move handler only runs on motion *over* the
+/// terminal, so a control lit on the way out stays lit indefinitely.
+///
+/// Focus loss is the one moment the terminal actually reports, so the
+/// highlight is dropped there. (A pointer that leaves while the terminal
+/// keeps focus is not reported at all -- the mouse protocol has no leave
+/// event -- so that case is out of reach.)
+#[test]
+fn losing_terminal_focus_drops_a_stale_hover_highlight() {
+    let (mut app, _dir) = three_row_app();
+    let r0 = row_rect(&mut app, 0);
+    app.handle_mouse(moved(r0.x + 2, r0.y));
+    assert!(
+        app.hovered.is_some(),
+        "fixture: the pointer is over a row and it is lit"
+    );
+
+    assert!(
+        app.on_focus_lost(),
+        "dropping the highlight is itself a reason to repaint -- without \
+         this the stale highlight stays on screen until something else \
+         happens to redraw"
+    );
+    assert!(app.hovered.is_none(), "the highlight goes with the pointer");
+    assert!(
+        app.pointer.is_none(),
+        "and the remembered position with it, so the post-frame resync \
+         cannot light it straight back up"
+    );
+
+    assert!(!app.on_focus_lost(), "nothing left to drop the second time");
+}
+
 #[test]
 fn losing_terminal_focus_cancels_a_live_drag() {
     // The release lands in another window and never arrives here; without

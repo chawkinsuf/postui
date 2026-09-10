@@ -603,15 +603,33 @@ impl App {
 
     /// Terminal focus left the window. A button held at that moment is
     /// released elsewhere, so every drag ends here as a cancel; the rows
-    /// snap back and the keyboard is the user's again. Returns whether a
-    /// repaint is needed.
+    /// snap back and the keyboard is the user's again.
+    ///
+    /// The hover highlight goes too. It is a statement about where the
+    /// pointer is, and once the pointer has left the window that statement
+    /// is false with nothing to correct it: the move handler only hit-tests
+    /// on motion *over* the terminal, so a control lit on the way out stays
+    /// lit indefinitely. `pointer` is forgotten alongside it, or
+    /// [`Self::resync_hover`] would re-light the same control from the stale
+    /// position after the very next frame.
+    ///
+    /// This is the only leaving the terminal actually reports. A pointer
+    /// that crosses out while the window keeps focus (click-to-focus, a
+    /// second monitor) sends nothing at all — the mouse protocol has no
+    /// leave event — so that case stays out of reach.
+    ///
+    /// Returns whether a repaint is needed.
     pub fn on_focus_lost(&mut self) -> bool {
         let live = self.sidebar.drag.is_some()
             || self.manage.list.drag.is_some()
             || self.drag.is_some()
             || self.text_drag.is_some();
+        let lit = self.hovered.is_some() || self.hovered_token.is_some();
         self.cancel_stale_drags(None);
-        live
+        self.hovered = None;
+        self.hovered_token = None;
+        self.pointer = None;
+        live || lit
     }
 
     /// Re-resolves `hovered`/`hovered_token` from the last known pointer
