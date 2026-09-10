@@ -1332,13 +1332,17 @@ fn two_fast_clicks_on_a_cell_leave_exactly_one_edit_session() {
     assert_eq!(edit.input.text(), "12", "the typing survives");
     assert_eq!(app.editor.params["page"].value, "1", "not committed yet");
 
-    // The first click expands the row, so the second click of a real
-    // double click often lands on one of the pad lines the expansion added
-    // (the row background) rather than the cell. That must be inert too.
+    // The second click of a real double click can miss the cell and land
+    // on the row's own background — the column divider between the two
+    // cells. That must be inert too.
     render_once(&mut app);
     let row = app.hits.rect_of(&Hit::TableRow(0)).unwrap();
-    assert_eq!(row.height, 3, "the edited row is expanded");
-    app.handle_mouse(left_down(row.x, row.y));
+    assert_eq!(row.height, 1, "the edited row edits in place");
+    let key = app
+        .hits
+        .rect_of(&Hit::TableCell { row: 0, col: 0 })
+        .unwrap();
+    app.handle_mouse(left_down(key.right(), row.y));
     let edit = app
         .editor
         .table

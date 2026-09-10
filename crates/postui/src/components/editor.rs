@@ -1662,7 +1662,7 @@ impl Component for Editor {
             _ if self.table_collapsed => Constraint::Length(0),
             EditorTab::Body => Constraint::Min(0),
             EditorTab::Params | EditorTab::Headers | EditorTab::Vars => {
-                let (rows, active, active_hint) = self.table_geometry();
+                let rows = self.table_len();
                 let (inherited, computed_extra) = match self.active_tab {
                     EditorTab::Headers => {
                         let auto_rows = self.computed_row_count();
@@ -1685,10 +1685,7 @@ impl Component for Editor {
                 // be squeezed to make room for a table that wants more
                 // height than the pane has.
                 let available = inner.height.saturating_sub(CHROME_HEIGHT);
-                Constraint::Length(
-                    (inherited + table_height(rows, active, active_hint) + computed_extra)
-                        .min(available),
-                )
+                Constraint::Length((inherited + table_height(rows) + computed_extra).min(available))
             }
         };
 
@@ -2192,7 +2189,13 @@ impl Editor {
         map.get_index(i).is_none_or(|(_, e)| e.enabled)
     }
 
-    /// How many rows the active tab's table has (the ghost row's index).
+    /// How many rows the active tab's table has (the ghost row's index) —
+    /// which is also the whole of the table's geometry, fed to
+    /// [`table_height`] by `draw`'s layout pass and `draw_tab_content`'s
+    /// actual paint. Every row is one line, cursor or no cursor, so
+    /// nothing about the selection or a live edit can change the table's
+    /// height; the ghost row is [`table_height`]'s own constant, not a row
+    /// counted here.
     pub fn table_len(&self) -> usize {
         match self.active_tab {
             EditorTab::Params => self.params.len(),
@@ -2266,40 +2269,6 @@ impl Editor {
             EditorTab::Vars => self.table.click_cell(row, col, &mut self.variables),
             EditorTab::Body => TableOutcome::default(),
         }
-    }
-
-    /// `(total row-lines, active-row presence, active row carries a shadow
-    /// hint)` for the active tab's table (Params/Headers/Vars), fed to
-    /// [`table_height`] both by `draw`'s layout pass and
-    /// `draw_tab_content`'s actual paint.
-    fn table_geometry(&self) -> (usize, Option<usize>, bool) {
-        let map = match self.active_tab {
-            EditorTab::Params => &self.params,
-            EditorTab::Headers => &self.headers,
-            EditorTab::Vars => &self.variables,
-            EditorTab::Body => return (0, None, false),
-        };
-        let map_len = map.len();
-        // The ghost row is always drawn (it is `table_height`'s constant
-        // `+ 1`); it only affects the geometry when it is the expanded row,
-        // i.e. while it is being typed into.
-        let rows = map_len;
-        let active = self
-            .table
-            .active_index(map_len)
-            .or_else(|| self.table.editing_ghost(map_len).then_some(map_len))
-            // The cursor resting on the ghost row expands it like any
-            // selected row (still showing its add label).
-            .or_else(|| (self.table.selected == Some(map_len)).then_some(map_len));
-        let active_hint = active.is_some_and(|_| {
-            self.active_tab == EditorTab::Vars
-                && self
-                    .table
-                    .active_index(map_len)
-                    .and_then(|i| map.get_index(i))
-                    .is_some_and(|(k, _)| self.shadowed.contains_key(k))
-        });
-        (rows, active, active_hint)
     }
 
     fn draw_tab_bar(
@@ -2648,8 +2617,8 @@ impl Editor {
                 // referenced list only gets what's left, clamped to what it
                 // asked for.
                 let refs = self.referenced_var_names();
-                let (rows, active, active_hint) = self.table_geometry();
-                let table_h = table_height(rows, active, active_hint).min(area.height);
+                let rows = self.table_len();
+                let table_h = table_height(rows).min(area.height);
                 let refs_h = if refs.is_empty() {
                     0
                 } else {
@@ -2711,8 +2680,8 @@ impl Editor {
                 // for; under real space pressure the auto section shrinks
                 // (or disappears) rather than eating into the table.
                 let auto_rows = self.computed_row_count();
-                let (rows, active, active_hint) = self.table_geometry();
-                let table_h = table_height(rows, active, active_hint).min(table_area.height);
+                let rows = self.table_len();
+                let table_h = table_height(rows).min(table_area.height);
                 let computed_h = if auto_rows == 0 {
                     0
                 } else {
@@ -5848,13 +5817,11 @@ url = "https://api.example.com/users""#,
         assert_eq!(e.variables.len(), 1);
         assert_eq!(e.variables["token"].value, "abc");
 
-        // Selecting the row expands it (feeds table_geometry / draws 3
-        // lines) exactly like Params/Headers.
+        // Selecting the row costs the table no height, exactly like
+        // Params/Headers: rows edit in place.
         e.table.selected = Some(0);
-        let (rows, active, hint) = e.table_geometry();
-        assert_eq!(rows, 1);
-        assert_eq!(active, Some(0));
-        assert!(!hint, "no shadow hint without a shadowed project var");
+        assert_eq!(e.table_len(), 1);
+        assert_eq!(table_height(e.table_len()), 4);
 
         // `d` requests a delete-confirm, same as Params/Headers.
         let action = e.handle_key(key(KeyCode::Char('d')));
@@ -5899,12 +5866,19 @@ url = "https://api.example.com/users""#,
         );
         let buf = terminal.backend().buffer();
         let row = hits.rect_of(&crate::hit::Hit::TableRow(0)).unwrap();
-        assert_eq!(row.height, 4, "hint adds one extra row to the expansion");
-        // The hint lines up under the key, in the key cell's own column.
-        let key = hits
-            .rect_of(&crate::hit::Hit::TableCell { row: 0, col: 0 })
+        assert_eq!(row.height, 1, "the hint costs the row no height");
+        // The hint trails the value on the row's own line, three columns
+        // past where "override" ends.
+        let value = hits
+            .rect_of(&crate::hit::Hit::TableCell { row: 0, col: 1 })
             .unwrap();
-        let hint_cell = buf.cell((key.x, row.y + 2)).unwrap();
+        let hint_x = value.x + "override".len() as u16 + 3;
+        let hint_cell = buf.cell((hint_x, row.y)).unwrap();
+        assert_eq!(
+            hint_cell.symbol(),
+            "o",
+            "the hint starts where it was measured to start"
+        );
         assert_eq!(
             hint_cell.fg, theme.text_muted,
             "the overrides hint is dim, not full text color"
@@ -5913,8 +5887,8 @@ url = "https://api.example.com/users""#,
 
     #[test]
     fn params_and_headers_tabs_never_show_a_shadow_hint() {
-        // `shadow` is only ever passed for Vars; Params/Headers keep their
-        // existing 3-line expansion regardless of `Editor::shadowed`.
+        // `shadow` is only ever passed for Vars, so a shadowed key on
+        // Params/Headers draws no hint at all.
         let mut e = Editor {
             active_tab: EditorTab::Params,
             ..Editor::default()
@@ -5944,8 +5918,11 @@ url = "https://api.example.com/users""#,
         terminal
             .draw(|f| e.draw(f, f.area(), &ctx, &mut hits))
             .unwrap();
-        let row = hits.rect_of(&crate::hit::Hit::TableRow(0)).unwrap();
-        assert_eq!(row.height, 3, "Params tab never grows a hint row");
+        let content = format!("{:?}", terminal.backend().buffer());
+        assert!(
+            !content.contains("overrides"),
+            "the Params tab shows no shadow hint: {content}"
+        );
     }
 
     #[test]

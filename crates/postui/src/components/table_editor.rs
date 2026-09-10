@@ -2,7 +2,7 @@ use super::DrawCtx;
 use super::line_input::LineInput;
 use super::var_tokens::{VarView, paint_var_tokens};
 use crate::hit::{Hit, HitMap};
-use crate::paint::{ListRow, RowHighlight, fill, text};
+use crate::paint::{fill, text};
 use crate::theme::Theme;
 use indexmap::IndexMap;
 use postui_core::model::Entry;
@@ -124,16 +124,14 @@ pub(crate) fn columns(x0: u16, width: u16) -> Columns {
     }
 }
 
-/// `1 (header) + rows + (2 if a row is expanded, 3 if it also carries a
-/// shadow hint line) + 1 (ghost row) + 1 (closing edge)`. `rows` is
-/// `map.len()`; the ghost row is the constant `+ 1`. `active` is `Some(_)`
-/// whenever exactly one row is drawn expanded — the selected/edited data
-/// row, or the ghost row while it is being typed. `active_hint` is whether
-/// that expanded row also shows a shadow hint (the Vars tab's "overrides
-/// <env>: <value>" line) — ignored when `active` is `None`.
-pub fn table_height(rows: usize, active: Option<usize>, active_hint: bool) -> u16 {
-    let expanded_extra = active.map_or(0, |_| if active_hint { 3 } else { 2 });
-    1 + rows as u16 + expanded_extra + 1 + 1
+/// `1 (header) + rows + 1 (ghost row) + 1 (closing edge)`. `rows` is
+/// `map.len()`; the ghost row is the constant `+ 1`.
+///
+/// Every row is one line, whatever the cursor is doing — rows edit in
+/// place — so the table's height depends on nothing but how many rows it
+/// has. Selecting or editing a row can never reflow the pane under it.
+pub fn table_height(rows: usize) -> u16 {
+    1 + rows as u16 + 1 + 1
 }
 
 /// The row a hit belongs to, for hover styling: every hit a table row
@@ -610,7 +608,6 @@ impl TableEditorState {
     ) {
         let theme = ctx.theme;
         let map_len = map.len();
-        let active = self.active_index(map_len);
         let ghost_editing = self.editing_ghost(map_len);
         let buf = frame.buffer_mut();
         let bottom = area.bottom();
@@ -657,57 +654,44 @@ impl TableEditorState {
             if y >= bottom {
                 break;
             }
-            if active == Some(i) {
-                let hint = shadow
-                    .and_then(|s| s.get(k))
-                    .map(|s| format!("overrides {s}"));
-                y = self.draw_active_row(
-                    buf,
-                    hits,
-                    area,
-                    y,
-                    bottom,
-                    i,
-                    k,
-                    e,
-                    true,
-                    ctx,
-                    hint.as_deref(),
-                    vars,
-                );
-            } else {
-                self.draw_plain_row(buf, hits, area, y, i, k, e, ctx, vars);
-                y += 1;
-            }
+            let hint = shadow
+                .and_then(|s| s.get(k))
+                .map(|s| format!("overrides {s}"));
+            self.draw_row(
+                buf,
+                hits,
+                area,
+                y,
+                i,
+                k,
+                e,
+                ctx,
+                hint.as_deref(),
+                vars,
+                true,
+                None,
+            );
+            y += 1;
         }
 
         // --- the ghost row -------------------------------------------------
         // Always present, one past the data rows: an empty row that becomes
-        // a real entry as soon as its key cell commits non-empty. While it
-        // is being typed it draws like any other active row; with the
-        // cursor merely resting on it, it expands like a selected row but
-        // keeps its add label — Enter is what starts the add.
+        // a real entry the moment its key cell commits non-empty. It draws
+        // like every other row — the add label stands in for its key until
+        // it is typed into, and it carries no toggle or actions, having
+        // nothing yet to toggle or delete.
         if y < bottom {
-            if !ghost_editing && self.selected == Some(map_len) {
-                y = self
-                    .draw_ghost_row_selected(buf, hits, area, y, bottom, map_len, add_label, ctx);
-            } else if ghost_editing {
-                let entry = Entry {
-                    // A value typed before the key shows while the key is
-                    // being typed, not just once the row commits.
-                    value: self.pending_ghost_value.clone().unwrap_or_default(),
-                    enabled: true,
-                };
-                y = self.draw_active_row(
-                    buf, hits, area, y, bottom, map_len, "", &entry, false,
-                    // a row that doesn't exist yet has nothing to delete
-                    ctx, None, // no shadow hint until the row has a real key
-                    vars,
-                );
-            } else {
-                self.draw_ghost_row(buf, hits, area, y, map_len, add_label, ctx);
-                y += 1;
-            }
+            let entry = Entry {
+                // A value typed before the key shows while the key is
+                // being typed, not just once the row commits.
+                value: self.pending_ghost_value.clone().unwrap_or_default(),
+                enabled: true,
+            };
+            let label = (!ghost_editing).then_some(add_label);
+            self.draw_row(
+                buf, hits, area, y, map_len, "", &entry, ctx, None, vars, false, label,
+            );
+            y += 1;
         }
 
         // --- closing edge --------------------------------------------------
@@ -719,87 +703,6 @@ impl TableEditorState {
                 theme.page,
             );
         }
-    }
-
-    /// The ghost row at rest: an empty row carrying the `+ Add …` label in
-    /// its name cell. Both its cells are clickable — clicking either starts
-    /// typing a new row.
-    #[allow(clippy::too_many_arguments)]
-    /// The ghost row with the keyboard cursor resting on it: the same
-    /// slivered 3-line block a selected data row gets, but still labelled
-    /// by `add_label` — nothing exists yet to show cells or buttons for.
-    /// Enter (or a click) is what actually opens the add edit.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_ghost_row_selected(
-        &self,
-        buf: &mut ratatui::buffer::Buffer,
-        hits: &mut HitMap,
-        area: Rect,
-        y: u16,
-        bottom: u16,
-        row: usize,
-        add_label: &str,
-        ctx: &DrawCtx,
-    ) -> u16 {
-        let theme = ctx.theme;
-        let text_row = y + 1;
-        let highlight = if ctx.focused {
-            RowHighlight::Selected
-        } else {
-            RowHighlight::Hover
-        };
-        let bg = ListRow::resolve_fill(theme, highlight, theme.control, ctx.hover_t());
-        let block = Rect::new(area.x, y, area.width, 3.min(bottom.saturating_sub(y)));
-        Self::paint_row_block(buf, block, bg, theme);
-        let cols = columns(area.x, area.width);
-        if text_row < bottom {
-            // The lit label reads as "the cursor is here"; unfocused it
-            // demotes to the plain ghost row's muted tone.
-            let fg = if ctx.focused {
-                theme.text
-            } else {
-                theme.text_muted
-            };
-            text(buf, cols.name_x, text_row, add_label, fg, bg, false);
-        }
-        hits.register(Rect::new(area.x, y, area.width, 3), Hit::TableRow(row));
-        Self::register_cells(hits, cols_span(&cols, area), text_row, row);
-        (y + 3).min(bottom)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn draw_ghost_row(
-        &self,
-        buf: &mut ratatui::buffer::Buffer,
-        hits: &mut HitMap,
-        area: Rect,
-        y: u16,
-        row: usize,
-        add_label: &str,
-        ctx: &DrawCtx,
-    ) {
-        let theme = ctx.theme;
-        let hovered = hovered_row(ctx) == Some(row);
-        // The keyboard cursor can rest here too; it shows with the same
-        // lift as hover, held. It's a pure cursor, so it only paints while
-        // the pane actually has the keyboard — an unfocused lift would say
-        // keys land here.
-        let cursor = ctx.focused && self.selected == Some(row);
-        let bg = if hovered || cursor {
-            theme.control_hover
-        } else {
-            theme.control
-        };
-        let fg = if hovered || cursor {
-            theme.text
-        } else {
-            theme.text_muted
-        };
-        let cols = columns(area.x, area.width);
-        fill(buf, Rect::new(area.x, y, area.width, 1), bg);
-        text(buf, cols.name_x, y, add_label, fg, bg, false);
-        hits.register(Rect::new(area.x, y, area.width, 1), Hit::TableRow(row));
-        Self::register_cells(hits, cols_span(&cols, area), y, row);
     }
 
     /// Scrubs the strikethrough off a button zone before its glyph lands
@@ -895,76 +798,6 @@ impl TableEditorState {
         }
     }
 
-    /// Draws row `i` at its compact 1-line height. Returns nothing; the
-    /// caller advances `y` itself by 1.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_plain_row(
-        &self,
-        buf: &mut ratatui::buffer::Buffer,
-        hits: &mut HitMap,
-        area: Rect,
-        y: u16,
-        i: usize,
-        key: &str,
-        entry: &Entry,
-        ctx: &DrawCtx,
-        vars: &VarView,
-    ) {
-        let theme = ctx.theme;
-        let hovered = hovered_row(ctx) == Some(i);
-        let cols = columns(area.x, area.width);
-        let bg = if hovered {
-            theme.control_hover
-        } else {
-            theme.control
-        };
-        fill(buf, Rect::new(area.x, y, area.width, 1), bg);
-        let fg = if entry.enabled {
-            theme.text
-        } else {
-            theme.text_muted
-        };
-        text(buf, cols.name_x, y, key, fg, bg, false);
-        text(buf, cols.value_x, y, &entry.value, fg, bg, false);
-        if !entry.enabled {
-            Self::strike_cells(buf, cols.name_x, y, key.chars().count() as u16);
-            Self::strike_cells(buf, cols.value_x, y, entry.value.chars().count() as u16);
-        }
-        if cols.divider_x < area.right() {
-            text(
-                buf,
-                cols.divider_x,
-                y,
-                "\u{258F}",
-                theme.edge_dark,
-                bg,
-                false,
-            );
-        }
-        hits.register(Rect::new(area.x, y, area.width, 1), Hit::TableRow(i));
-        Self::register_cells(hits, cols_span(&cols, area), y, i);
-        paint_cell_tokens(buf, hits, &cols, area, y, key, &entry.value, vars, theme);
-        // The toggle owns the left gutter on every row; the actions are
-        // hover-revealed. Both paint (and register) last so they win over
-        // the cells underneath.
-        if area.width >= TOGGLE_W {
-            Self::draw_row_toggle(
-                buf,
-                hits,
-                area.x,
-                y,
-                i,
-                entry.enabled,
-                bg,
-                ctx.hovered,
-                theme,
-            );
-        }
-        if hovered && area.width >= 10 {
-            Self::draw_row_actions(buf, hits, area.right(), y, i, bg, ctx.hovered, theme);
-        }
-    }
-
     /// Registers the key/value halves of one drawn row line. Called after
     /// the row's own background hit, so a click resolves to the cell.
     fn register_cells(hits: &mut HitMap, span: (u16, u16, u16, u16), y: u16, row: usize) {
@@ -989,134 +822,138 @@ impl TableEditorState {
         }
     }
 
-    /// Draws row `i` as a slivered control spanning 3 lines (cap/text/cap)
-    /// — 4 (cap/text/hint/cap) when `hint` is `Some`, adding a dim shadow
-    /// line ("overrides qa: 1001") right under the value row.
-    /// `show_delete` gates the delete affordance (the ghost row has
-    /// nothing to delete yet). Returns the next `y`.
+    /// Draws one row of the table on its own single line at `y`: a real
+    /// entry, or — with `real` false — the always-present ghost row,
+    /// whose key cell carries `ghost_label` until it is typed into.
     ///
-    /// The block persists when the pane loses focus (it feeds
-    /// `table_geometry`, so collapsing would shift the layout every focus
-    /// change, and its affordances stay mouse-usable) — but the cursor
-    /// styling demotes: `ListRow::resolve_fill` reads `Selected` while
-    /// focused and `Hover` otherwise, which, base and target both being
-    /// `theme.control`, paints as a flat `theme.control` regardless of
-    /// `hover_t`. There is no accent bar in either state: this row lifts
-    /// its own fill and stands an eighth of a row proud of the surface,
-    /// which is the whole of the app's focus language.
+    /// One painter, one row height. A row being edited draws its
+    /// `LineInput` in place, right where the text was, the way the
+    /// Variable Manager's grid edits its own cells: nothing opens up, and
+    /// no row below the cursor moves. `hint` is the Vars tab's
+    /// "overrides <env>: <value>" shadow, trailing the value dim.
     #[allow(clippy::too_many_arguments)]
-    fn draw_active_row(
+    fn draw_row(
         &self,
         buf: &mut ratatui::buffer::Buffer,
         hits: &mut HitMap,
         area: Rect,
         y: u16,
-        bottom: u16,
         i: usize,
         key: &str,
         entry: &Entry,
-        show_delete: bool,
         ctx: &DrawCtx,
         hint: Option<&str>,
         vars: &VarView,
-    ) -> u16 {
+        real: bool,
+        ghost_label: Option<&str>,
+    ) {
+        use super::chooser::clip;
         let theme = ctx.theme;
-        let text_row = y + 1;
-        let highlight = if ctx.focused {
-            RowHighlight::Selected
-        } else {
-            RowHighlight::Hover
-        };
-        let bg = ListRow::resolve_fill(theme, highlight, theme.control, ctx.hover_t());
-        let row_height = if hint.is_some() { 4 } else { 3 };
-        let block = Rect::new(
-            area.x,
-            y,
-            area.width,
-            row_height.min(bottom.saturating_sub(y)),
-        );
-        Self::paint_row_block(buf, block, bg, theme);
-        // The row's columns are the plain row's columns: an active row that
-        // indented its own content would jog the key sideways on every
-        // click.
         let cols = columns(area.x, area.width);
-        let fg = if entry.enabled {
-            theme.text
-        } else {
-            theme.text_muted
-        };
-
         let editing_col = self.editing.as_ref().filter(|e| e.row == i).map(|e| e.col);
-        // The toggle/delete buttons stay up for the whole active row, cell
-        // edits included, so a value edit's input must stop short of their
-        // `ACTIONS_W` zone instead of running under it. The ghost row has
-        // no buttons, so its input keeps the full width.
-        let show_buttons = show_delete && area.width >= 10;
-        let value_right = if show_buttons {
-            (area.x + area.width).saturating_sub(ACTIONS_W)
+        // The keyboard cursor lights its row only while the pane actually
+        // holds the keyboard — a lift on an unfocused pane would claim keys
+        // land here. A pointer resting on the row lights it either way.
+        let cursor = self.selected == Some(i) || editing_col.is_some();
+        let lit = hovered_row(ctx) == Some(i) || (cursor && ctx.focused);
+        let bg = if lit {
+            theme.control_hover
         } else {
-            area.x + area.width
+            theme.control
+        };
+        fill(buf, Rect::new(area.x, y, area.width, 1), bg);
+
+        // The actions crowd the value's right end, so the value — plain
+        // text or live input — stops short of them instead of running
+        // underneath. The ghost row has no actions, so it keeps the width.
+        let show_actions = real && (lit || cursor) && area.width >= 10;
+        let value_right = if show_actions {
+            area.right().saturating_sub(ACTIONS_W)
+        } else {
+            area.right()
+        };
+        let value_w = value_right.saturating_sub(cols.value_x);
+        let name_w = cols.divider_x.saturating_sub(cols.name_x);
+        let fg = match (real, entry.enabled, lit) {
+            (false, _, true) => theme.text,
+            (false, _, false) => theme.text_muted,
+            (true, true, _) => theme.text,
+            (true, false, _) => theme.text_muted,
         };
 
-        match editing_col {
-            Some(Col::Key) => {
-                let edit = self.editing.as_ref().expect("editing_col implies editing");
-                let mut line = edit.input.draw_line(true, theme);
-                line.style = Style::default().bg(bg).patch(line.style);
-                buf.set_line(
-                    cols.name_x,
-                    text_row,
-                    &line,
-                    cols.divider_x.saturating_sub(cols.name_x),
-                );
-                text(buf, cols.value_x, text_row, &entry.value, fg, bg, false);
-            }
-            Some(Col::Value) => {
-                text(buf, cols.name_x, text_row, key, fg, bg, false);
-                let edit = self.editing.as_ref().expect("editing_col implies editing");
-                let mut line = edit.input.draw_line(true, theme);
-                line.style = Style::default().bg(bg).patch(line.style);
-                let value_w = value_right.saturating_sub(cols.value_x);
-                buf.set_line(cols.value_x, text_row, &line, value_w);
-            }
-            None => {
-                text(buf, cols.name_x, text_row, key, fg, bg, false);
-                text(buf, cols.value_x, text_row, &entry.value, fg, bg, false);
+        if editing_col == Some(Col::Key) {
+            let edit = self.editing.as_ref().expect("editing_col implies editing");
+            Self::paint_cell_edit(buf, cols.name_x, y, name_w, &edit.input, bg, theme);
+        } else {
+            let shown = ghost_label.unwrap_or(key);
+            text(buf, cols.name_x, y, clip(shown, name_w), fg, bg, false);
+        }
+
+        if editing_col == Some(Col::Value) {
+            let edit = self.editing.as_ref().expect("editing_col implies editing");
+            Self::paint_cell_edit(buf, cols.value_x, y, value_w, &edit.input, bg, theme);
+        } else {
+            let shown = clip(&entry.value, value_w);
+            text(buf, cols.value_x, y, shown, fg, bg, false);
+            // The shadow hint trails the value on the same line, dim: it
+            // is a note about that value, so it reads where the value
+            // ends rather than on a row of its own.
+            if let Some(hint) = hint {
+                let used = shown.chars().count() as u16;
+                let hint_x = cols.value_x + used + 3;
+                let room = value_right.saturating_sub(hint_x);
+                if room > 0 {
+                    text(
+                        buf,
+                        hint_x,
+                        y,
+                        clip(hint, room),
+                        theme.text_muted,
+                        bg,
+                        false,
+                    );
+                }
             }
         }
-        if !entry.enabled {
+
+        if real && !entry.enabled {
             if editing_col != Some(Col::Key) {
-                Self::strike_cells(buf, cols.name_x, text_row, key.chars().count() as u16);
+                Self::strike_cells(buf, cols.name_x, y, key.chars().count() as u16);
             }
             if editing_col != Some(Col::Value) {
-                Self::strike_cells(
-                    buf,
-                    cols.value_x,
-                    text_row,
-                    entry.value.chars().count() as u16,
-                );
+                Self::strike_cells(buf, cols.value_x, y, entry.value.chars().count() as u16);
             }
         }
 
-        hits.register(
-            Rect::new(area.x, y, area.width, row_height),
-            Hit::TableRow(i),
-        );
-        Self::register_cells(hits, cols_span(&cols, area), text_row, i);
+        if cols.divider_x < area.right() {
+            text(
+                buf,
+                cols.divider_x,
+                y,
+                "\u{258F}",
+                theme.edge_dark,
+                bg,
+                false,
+            );
+        }
+
+        hits.register(Rect::new(area.x, y, area.width, 1), Hit::TableRow(i));
+        Self::register_cells(hits, cols_span(&cols, area), y, i);
         // Only the cells drawn as plain text get token treatment: a cell
         // under edit is showing a live `LineInput` (caret and all), and
         // registering a `VarToken` over it would turn the next click into a
-        // picker instead of a caret move.
+        // picker instead of a caret move. The ghost's add label is not a
+        // value, so it gets none either.
         paint_cell_tokens(
             buf,
             hits,
             &cols,
             area,
-            text_row,
-            if editing_col == Some(Col::Key) {
-                ""
-            } else {
+            y,
+            if real && editing_col != Some(Col::Key) {
                 key
+            } else {
+                ""
             },
             if editing_col == Some(Col::Value) {
                 ""
@@ -1126,72 +963,48 @@ impl TableEditorState {
             vars,
             theme,
         );
-        // The active row keeps its actions visible without hover — it is
-        // the active row — including while a cell edit is live (the value
-        // input was clipped to `value_right` above so they never collide).
-        // `show_delete` gates them, and the toggle with them: the ghost row
-        // has nothing to toggle or delete yet.
-        if show_buttons {
+        // The toggle owns the left gutter on every real row; the actions
+        // are revealed by hover or the cursor. Both paint (and register)
+        // last so they win over the cells underneath.
+        if real && area.width >= TOGGLE_W {
             Self::draw_row_toggle(
                 buf,
                 hits,
                 area.x,
-                text_row,
+                y,
                 i,
                 entry.enabled,
                 bg,
                 ctx.hovered,
                 theme,
             );
-            Self::draw_row_actions(
-                buf,
-                hits,
-                area.x + area.width,
-                text_row,
-                i,
-                bg,
-                ctx.hovered,
-                theme,
-            );
         }
-
-        // A shadow hint takes a second content row inside the same
-        // slivered block — a dim "overrides <env>: <value>" line under the
-        // value, aligned with the key above it. The block is one row taller
-        // overall (4 instead of 3); the caps are where they always are.
-        if let Some(hint) = hint {
-            let hint_row = text_row + 1;
-            if hint_row < bottom {
-                text(
-                    buf,
-                    cols.name_x,
-                    hint_row,
-                    hint,
-                    theme.text_muted,
-                    bg,
-                    false,
-                );
-            }
+        if show_actions {
+            Self::draw_row_actions(buf, hits, area.right(), y, i, bg, ctx.hovered, theme);
         }
-
-        (y + row_height).min(bottom)
     }
 
-    /// Paints an active row's face: a slivered control — eighth-row caps
-    /// over whatever surface is already behind them, its fill between — so
-    /// the row reads at its own 1.25-row size rather than as a slab the
-    /// table grew. A `block` too squeezed for the anatomy (a table clipped
-    /// by a short pane) paints flat rather than dropping the row.
-    fn paint_row_block(
+    /// Paints a live cell edit in place: the cell lifts one step above its
+    /// row — so the exact cell the keyboard sits in reads at a glance, the
+    /// Variable Manager grid's rule for its own in-place edits — and the
+    /// input draws into it, windowed to the cell's own width.
+    fn paint_cell_edit(
         buf: &mut ratatui::buffer::Buffer,
-        block: Rect,
-        bg: ratatui::style::Color,
+        x: u16,
+        y: u16,
+        w: u16,
+        input: &LineInput,
+        row_bg: ratatui::style::Color,
         theme: &Theme,
     ) {
-        let surface = crate::paint::cap::backdrop(buf, block, theme);
-        if crate::paint::cap::slivered(buf, block, bg, surface).height == 0 {
-            fill(buf, block, bg);
+        if w == 0 {
+            return;
         }
+        let bg = crate::theme::lift_color(row_bg, 0.06);
+        fill(buf, Rect::new(x, y, w, 1), bg);
+        let mut line = input.draw_line_windowed(true, theme, w);
+        line.style = Style::default().bg(bg).patch(line.style);
+        buf.set_line(x, y, &line, w);
     }
 }
 
@@ -1316,10 +1129,10 @@ mod tests {
         assert_eq!(map.len(), 1, "an untouched add edit saves nothing");
     }
 
-    /// With the cursor resting on it, the ghost row draws expanded — the
-    /// selected-row pill — but keeps its add label until Enter.
+    /// With the cursor resting on it, the ghost row lights like any other
+    /// cursor row and keeps its add label until Enter.
     #[test]
-    fn selected_ghost_row_draws_expanded_with_its_add_label() {
+    fn the_ghost_row_under_the_cursor_lights_and_keeps_its_add_label() {
         let theme = Theme::dark();
         let map = map_of(&[("page", "2")]);
         let t = TableEditorState {
@@ -1332,7 +1145,12 @@ mod tests {
         let row = hits
             .rect_of(&Hit::TableRow(1))
             .expect("the ghost row is registered");
-        assert_eq!(row.height, 3, "expanded to the 3-line pill");
+        let buf = terminal.backend().buffer();
+        assert_eq!(
+            buf.cell((row.x, row.y)).unwrap().bg,
+            theme.control_hover,
+            "the cursor row lifts its own fill"
+        );
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(
             content.contains("+ Add"),
@@ -1949,7 +1767,7 @@ mod tests {
     }
 
     #[test]
-    fn the_edited_row_expands_and_shows_its_input() {
+    fn the_edited_row_shows_its_input_on_its_own_line() {
         let theme = Theme::dark();
         let mut map = map_of(&[("a", "1"), ("b", "2"), ("c", "3")]);
         let mut t = TableEditorState::default();
@@ -1958,24 +1776,28 @@ mod tests {
         let mut hits = HitMap::default();
         let terminal = draw_to(&t, &map, &ctx(&theme, None), &mut hits);
         let row1 = hits.rect_of(&Hit::TableRow(1)).unwrap();
-        assert_eq!(row1, Rect::new(0, 2, 40, 3), "the edited row expands");
         assert_eq!(
-            hits.rect_of(&Hit::TableRow(2)).unwrap().height,
-            1,
-            "other rows stay compact"
+            row1,
+            Rect::new(0, 2, 40, 1),
+            "the edited row stays where and what it was"
+        );
+        assert_eq!(
+            hits.rect_of(&Hit::TableRow(2)).unwrap().y,
+            row1.y + 1,
+            "the row below is where it always was"
         );
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(content.contains("29"), "the live input text: {content}");
-        // The row's toggle/trash buttons stay up through a live cell edit
+        // The row's copy/trash buttons stay up through a live cell edit
         // (the input is clipped short of their zone).
         assert!(hits.rect_of(&Hit::TableDelete(1)).is_some());
-        // The expanded row's own cells are registered on its text line.
+        // The cells are registered on the row's one line.
         let k = hits.rect_of(&Hit::TableCell { row: 1, col: 0 }).unwrap();
-        assert_eq!(k.y, row1.y + 1);
+        assert_eq!(k.y, row1.y);
     }
 
     #[test]
-    fn the_ghost_row_expands_while_it_is_being_typed() {
+    fn the_ghost_row_takes_the_typed_key_in_place() {
         let theme = Theme::dark();
         let mut map = map_of(&[("a", "1")]);
         let mut t = TableEditorState::default();
@@ -1990,7 +1812,7 @@ mod tests {
             "the add label gives way to the row being typed: {content}"
         );
         let ghost = hits.rect_of(&Hit::TableRow(1)).unwrap();
-        assert_eq!(ghost.height, 3, "the ghost row expands under edit");
+        assert_eq!(ghost.height, 1, "the ghost row edits in place too");
         assert!(
             hits.rect_of(&Hit::TableDelete(1)).is_none(),
             "a row that doesn't exist yet has nothing to delete"
@@ -2059,70 +1881,13 @@ mod tests {
         );
     }
 
-    /// The active row is a slivered control, not a three-row block: the
-    /// pad rows above and below it carry the eighth-row cap glyphs, so the
-    /// row reads at its own 1.25-row size on the surface behind it rather
-    /// than as a slab the table grew.
+    /// Selecting a row must not move anything: rows edit in place on their
+    /// own single line, the way the Variable Manager's grid does, so no
+    /// row below the cursor ever shifts under it.
     #[test]
-    fn the_active_row_caps_itself_with_slivers_instead_of_solid_pads() {
+    fn selecting_a_row_keeps_every_row_one_line_and_moves_nothing_below_it() {
         let theme = Theme::dark();
-        let map = map_of(&[("a", "1")]);
-        let t = TableEditorState {
-            selected: Some(0),
-            ..TableEditorState::default()
-        };
-        let mut hits = HitMap::default();
-        let terminal = draw_to(&t, &map, &ctx(&theme, None), &mut hits);
-        let buf = terminal.backend().buffer();
-        let row = hits.rect_of(&Hit::TableRow(0)).unwrap();
-        assert_eq!(
-            buf.cell((row.x, row.y)).unwrap().symbol(),
-            crate::paint::cap::SLIVER_TOP,
-            "the row's top pad is a sliver cap"
-        );
-        assert_eq!(
-            buf.cell((row.x, row.bottom() - 1)).unwrap().symbol(),
-            crate::paint::cap::SLIVER_BOTTOM,
-            "the row's bottom pad is a sliver cap"
-        );
-    }
-
-    /// Activating a row must not move its text: the old active row indented
-    /// its columns one cell to clear an accent bar, so the key jumped
-    /// sideways on every click.
-    #[test]
-    fn selecting_a_row_never_shifts_its_text_sideways() {
-        let theme = Theme::dark();
-        let map = map_of(&[("a", "1")]);
-        let mut plain_hits = HitMap::default();
-        draw_to(
-            &TableEditorState::default(),
-            &map,
-            &ctx(&theme, None),
-            &mut plain_hits,
-        );
-        let plain = plain_hits
-            .rect_of(&Hit::TableCell { row: 0, col: 0 })
-            .unwrap();
-        let t = TableEditorState {
-            selected: Some(0),
-            ..TableEditorState::default()
-        };
-        let mut hits = HitMap::default();
-        draw_to(&t, &map, &ctx(&theme, None), &mut hits);
-        let active = hits.rect_of(&Hit::TableCell { row: 0, col: 0 }).unwrap();
-        assert_eq!(
-            active.x, plain.x,
-            "the key cell keeps its column when the row activates"
-        );
-    }
-
-    /// The ghost row is the same pill, so it caps the same way and holds
-    /// its label in the same column as the ghost row at rest.
-    #[test]
-    fn the_selected_ghost_row_is_slivered_and_keeps_its_label_column() {
-        let theme = Theme::dark();
-        let map = map_of(&[("a", "1")]);
+        let map = map_of(&[("a", "1"), ("b", "2")]);
         let mut resting = HitMap::default();
         draw_to(
             &TableEditorState::default(),
@@ -2130,30 +1895,61 @@ mod tests {
             &ctx(&theme, None),
             &mut resting,
         );
-        let at_rest = resting.rect_of(&Hit::TableCell { row: 1, col: 0 }).unwrap();
+        let before: Vec<_> = (0..3)
+            .map(|i| resting.rect_of(&Hit::TableRow(i)).unwrap())
+            .collect();
+
+        let t = TableEditorState {
+            selected: Some(0),
+            ..TableEditorState::default()
+        };
+        let mut hits = HitMap::default();
+        draw_to(&t, &map, &ctx(&theme, None), &mut hits);
+        let after: Vec<_> = (0..3)
+            .map(|i| hits.rect_of(&Hit::TableRow(i)).unwrap())
+            .collect();
+        assert_eq!(
+            after[0].height, 1,
+            "the selected row edits in place: still one line"
+        );
+        assert_eq!(before, after, "nothing moved when the row was selected");
+    }
+
+    /// The same holds for the ghost row: resting the cursor on it must not
+    /// grow it either.
+    #[test]
+    fn selecting_the_ghost_row_keeps_it_one_line() {
+        let theme = Theme::dark();
+        let map = map_of(&[("a", "1")]);
         let t = TableEditorState {
             selected: Some(1),
             ..TableEditorState::default()
         };
         let mut hits = HitMap::default();
         let terminal = draw_to(&t, &map, &ctx(&theme, None), &mut hits);
-        let buf = terminal.backend().buffer();
         let ghost = hits.rect_of(&Hit::TableRow(1)).unwrap();
-        assert_eq!(
-            buf.cell((ghost.x, ghost.y)).unwrap().symbol(),
-            crate::paint::cap::SLIVER_TOP,
-            "the ghost's top pad is a sliver cap"
+        assert_eq!(ghost.height, 1, "the ghost row stays one line");
+        let content = format!("{:?}", terminal.backend().buffer());
+        assert!(
+            content.contains("+ Add param"),
+            "and keeps its add label: {content}"
         );
-        assert_eq!(
-            buf.cell((ghost.x, ghost.bottom() - 1)).unwrap().symbol(),
-            crate::paint::cap::SLIVER_BOTTOM,
-            "the ghost's bottom pad is a sliver cap"
-        );
-        let selected = hits.rect_of(&Hit::TableCell { row: 1, col: 0 }).unwrap();
-        assert_eq!(
-            selected.x, at_rest.x,
-            "the add label keeps its column when the ghost is selected"
-        );
+    }
+
+    /// A cell edit draws its input on the row's own line, right where the
+    /// text was — no block opening under it.
+    #[test]
+    fn a_cell_edit_draws_in_place_on_the_rows_own_line() {
+        let theme = Theme::dark();
+        let mut map = map_of(&[("a", "1")]);
+        let mut t = TableEditorState::default();
+        t.click_cell(0, Col::Value, &mut map);
+        let mut hits = HitMap::default();
+        draw_to(&t, &map, &ctx(&theme, None), &mut hits);
+        let row = hits.rect_of(&Hit::TableRow(0)).unwrap();
+        assert_eq!(row.height, 1, "the edited row stays one line");
+        let value = hits.rect_of(&Hit::TableCell { row: 0, col: 1 }).unwrap();
+        assert_eq!(value.y, row.y, "the input sits on the row's own line");
     }
 
     /// The enable/disable toggle is state, not an action: it sits at the
@@ -2304,8 +2100,8 @@ mod tests {
             now: std::time::Instant::now(),
         };
 
-        // Selected data row: expansion persists (it feeds table_geometry),
-        // but the cursor styling demotes — no accent bar, resting fill.
+        // Selected data row: the cursor lift is the only thing the cursor
+        // paints, so an unfocused pane shows the resting fill.
         let t = TableEditorState {
             selected: Some(0),
             ..TableEditorState::default()
@@ -2314,21 +2110,18 @@ mod tests {
         let terminal = draw_to(&t, &map, &unfocused, &mut hits);
         let buf = terminal.backend().buffer();
         let row = hits.rect_of(&Hit::TableRow(0)).unwrap();
-        assert_eq!(row.height, 3, "expanded row survives losing pane focus");
         assert_ne!(
-            buf.cell((row.x, row.y + 1)).unwrap().fg,
+            buf.cell((row.x, row.y)).unwrap().fg,
             theme.accent,
             "no accent cursor bar unfocused"
         );
         assert_eq!(
-            buf.cell((row.x + 2, row.y + 1)).unwrap().bg,
+            buf.cell((row.x + 2, row.y)).unwrap().bg,
             theme.control,
             "resting fill, not the lift"
         );
 
-        // Ghost-row cursor: like the data rows, the expansion persists (it
-        // feeds table_geometry) while the styling demotes — resting fill,
-        // muted add label.
+        // Ghost-row cursor: same rule — resting fill, muted add label.
         let t = TableEditorState {
             selected: Some(map.len()),
             ..TableEditorState::default()
@@ -2336,16 +2129,16 @@ mod tests {
         let mut hits = HitMap::default();
         let terminal = draw_to(&t, &map, &unfocused, &mut hits);
         let buf = terminal.backend().buffer();
-        let ghost = hits.rect_of(&Hit::TableRow(1)).unwrap();
-        assert_eq!(ghost.height, 3, "expanded ghost survives losing focus");
         let label = hits.rect_of(&Hit::TableCell { row: 1, col: 0 }).unwrap();
         let cell = buf.cell((label.x, label.y)).unwrap();
         assert_eq!(cell.bg, theme.control, "ghost cursor lift hidden");
         assert_eq!(cell.fg, theme.text_muted, "ghost label stays muted");
     }
 
+    /// The cursor row carries its actions without hover — it is where the
+    /// keys land — and stays one line doing it.
     #[test]
-    fn selected_row_is_the_expanded_one_and_carries_the_delete_affordance() {
+    fn the_selected_row_carries_its_actions_without_growing() {
         let theme = Theme::dark();
         let map = map_of(&[("page", "2")]);
         let t = TableEditorState {
@@ -2354,7 +2147,8 @@ mod tests {
         };
         let mut hits = HitMap::default();
         draw_to(&t, &map, &ctx(&theme, None), &mut hits);
-        assert_eq!(hits.rect_of(&Hit::TableRow(0)).unwrap().height, 3);
+        assert_eq!(hits.rect_of(&Hit::TableRow(0)).unwrap().height, 1);
+        assert!(hits.rect_of(&Hit::TableCopy(0)).is_some());
         assert!(hits.rect_of(&Hit::TableDelete(0)).is_some());
         assert!(hits.rect_of(&Hit::TableCheckbox(0)).is_some());
     }
@@ -2378,15 +2172,11 @@ mod tests {
         assert!(t.editing_ghost(map.len()), "the ghost row is under edit");
     }
 
+    /// The table's height is its row count and nothing else: no selection,
+    /// edit or shadow hint can add a line.
     #[test]
-    fn table_height_accounts_for_header_ghost_edge_and_expansion() {
-        assert_eq!(table_height(0, None, false), 3); // header + 0 rows + ghost + edge
-        assert_eq!(table_height(3, None, false), 6);
-        assert_eq!(table_height(3, Some(1), false), 8); // + 2 for the expanded row
-        assert_eq!(
-            table_height(3, Some(1), true),
-            9,
-            "+ 3 for the expanded row plus its shadow hint line"
-        );
+    fn table_height_is_header_ghost_edge_and_one_line_per_row() {
+        assert_eq!(table_height(0), 3); // header + 0 rows + ghost + edge
+        assert_eq!(table_height(3), 6);
     }
 }
