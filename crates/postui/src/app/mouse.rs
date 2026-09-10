@@ -613,10 +613,39 @@ impl App {
     /// [`Self::resync_hover`] would re-light the same control from the stale
     /// position after the very next frame.
     ///
-    /// This is the only leaving the terminal actually reports. A pointer
+    /// This is the only leaving the terminal reports *portably*. A pointer
     /// that crosses out while the window keeps focus (click-to-focus, a
-    /// second monitor) sends nothing at all — the mouse protocol has no
-    /// leave event — so that case stays out of reach.
+    /// second monitor) sends nothing under the standard protocol: xterm's
+    /// mouse modes (9, 1000-1006, 1015, 1016) have no leave event, and 1004
+    /// reports focus, not the pointer. So that case is unhandled here.
+    ///
+    /// It is not, however, impossible — should it ever be worth doing:
+    ///
+    /// kitty extends SGR-Pixel mouse reporting to cover it. A leave arrives
+    /// as an ordinary SGR pixel event with **bit 8 set on the first number**;
+    /// every other bit and both coordinates are meaningless and must be
+    /// ignored (`sw.kovidgoyal.net/kitty/misc-protocol/`). Three things make
+    /// it a bigger job than it sounds:
+    ///
+    /// 1. It rides on mode `?1016h`, which switches *all* mouse reporting to
+    ///    pixels. Every event would then need a pixel->cell conversion before
+    ///    reaching the (cell-based) hit map, using the terminal's cell size
+    ///    from `ws_xpixel`/`ws_ypixel` — which crossterm documents as
+    ///    possibly unimplemented or zero. Getting that wrong breaks every
+    ///    click in the app, not just this edge case.
+    /// 2. crossterm enables 1000/1002/1003/1015/1006 and parses none of
+    ///    1016, so the bytes would have to be read directly. There is
+    ///    precedent for that in this codebase — `theme::osc` already reads
+    ///    fd 0 behind crossterm's back for colour queries — but it is not
+    ///    free.
+    /// 3. Ghostty implements 1016 but its support for the *leave* extension
+    ///    is unverified. Test it against the real terminal before building
+    ///    anything on it, and keep a path for terminals without it.
+    ///
+    /// A weaker signal exists too: kitty and Ghostty report negative
+    /// coordinates for motion outside the window while a button is held
+    /// (xterm dropped those events in patch 404, and foot followed). That is
+    /// drag-only, so it says nothing about a hover.
     ///
     /// Returns whether a repaint is needed.
     pub fn on_focus_lost(&mut self) -> bool {
