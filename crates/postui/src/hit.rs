@@ -89,7 +89,10 @@ pub enum Hit {
     /// lands in a cell (`TableCell`) rather than here.
     TableRow(usize),
     TableCheckbox(usize),
-    /// The `󰅖` delete affordance on the active (expanded) row.
+    /// The copy affordance on a table row: puts that row's value on the
+    /// clipboard, the way the computed-header rows' own copy pill does.
+    TableCopy(usize),
+    /// The `󰅖` delete affordance on the active row.
     TableDelete(usize),
     /// One editable cell of a key/value table: `col` 0 is the key, 1 the
     /// value. `row == map.len()` is the ghost row — the always-present

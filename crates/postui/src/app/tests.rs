@@ -1233,20 +1233,20 @@ fn alt_a_starts_a_new_row_on_the_active_table_tab() {
 }
 
 /// A control that appears under a stationary pointer (here: the row's
-/// hover-revealed toggle button) must pick up hover styling from the
+/// hover-revealed copy button) must pick up hover styling from the
 /// post-frame resync, without the mouse having to move again.
 #[test]
 fn hover_resyncs_to_controls_revealed_under_a_stationary_pointer() {
     let mut app = app_with_one_param();
     render_once(&mut app);
     let row = app.hits.rect_of(&Hit::TableRow(0)).unwrap();
-    // Land exactly where the toggle button will appear (3 cells starting 8
-    // from the row's right edge — see `draw_row_buttons`).
+    // Land exactly where the copy button will appear (3 cells starting 7
+    // from the row's right edge — see `draw_row_actions`).
     let x = row.right() - 7;
     app.handle_mouse(moved(x, row.y));
     assert_ne!(
         app.hovered,
-        Some(Hit::TableCheckbox(0)),
+        Some(Hit::TableCopy(0)),
         "frame N has no button registered yet"
     );
     render_once(&mut app); // frame N+1 draws + registers the buttons
@@ -1254,7 +1254,7 @@ fn hover_resyncs_to_controls_revealed_under_a_stationary_pointer() {
         app.resync_hover(),
         "the resync notices the new control under the pointer"
     );
-    assert_eq!(app.hovered, Some(Hit::TableCheckbox(0)));
+    assert_eq!(app.hovered, Some(Hit::TableCopy(0)));
     assert!(
         !app.resync_hover(),
         "a second resync with nothing changed is quiet"
@@ -1332,13 +1332,17 @@ fn two_fast_clicks_on_a_cell_leave_exactly_one_edit_session() {
     assert_eq!(edit.input.text(), "12", "the typing survives");
     assert_eq!(app.editor.params["page"].value, "1", "not committed yet");
 
-    // The first click expands the row, so the second click of a real
-    // double click often lands on one of the pad lines the expansion added
-    // (the row background) rather than the cell. That must be inert too.
+    // The second click of a real double click can miss the cell and land
+    // on the row's own background — the column divider between the two
+    // cells. That must be inert too.
     render_once(&mut app);
     let row = app.hits.rect_of(&Hit::TableRow(0)).unwrap();
-    assert_eq!(row.height, 3, "the edited row is expanded");
-    app.handle_mouse(left_down(row.x, row.y));
+    assert_eq!(row.height, 1, "the edited row edits in place");
+    let key = app
+        .hits
+        .rect_of(&Hit::TableCell { row: 0, col: 0 })
+        .unwrap();
+    app.handle_mouse(left_down(key.right(), row.y));
     let edit = app
         .editor
         .table
@@ -13156,6 +13160,197 @@ fn auto_header_copy_icon_puts_the_resolved_value_on_the_clipboard() {
     assert!(
         rendered_text(&mut app).contains("Copied Host"),
         "toast confirms the copy"
+    );
+}
+
+/// The row's copy button puts that row's value — as typed, tokens and all
+/// — on the clipboard, and says which row it took it from.
+#[test]
+fn the_table_rows_copy_button_puts_its_value_on_the_clipboard() {
+    let mut app = app_with_one_param();
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(
+        None, 65536, false,
+    ));
+    hover_row_then_click(&mut app, Hit::TableRow(0), Hit::TableCopy(0));
+    assert!(
+        rendered_text(&mut app).contains("Copied page"),
+        "the toast names the row it copied"
+    );
+}
+
+/// Copy is a read-only side action: taking a value off a row must not
+/// cost the row its selection, the way clicking away from the table does.
+#[test]
+fn copying_a_row_leaves_the_table_selection_where_it_was() {
+    let mut app = app_with_one_param();
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(
+        None, 65536, false,
+    ));
+    app.editor.table.selected = Some(0);
+    click_hit(&mut app, Hit::TableCopy(0));
+    assert_eq!(
+        app.editor.table.selected,
+        Some(0),
+        "the row stays selected through a copy"
+    );
+}
+
+/// A cell edit windows its text, so a value longer than its cell scrolls
+/// under the pointer. The click that places the caret has to add that
+/// window's start: clicking the leftmost visible character must land on
+/// that character, not on char 0 of the string.
+#[test]
+fn clicking_a_scrolled_cell_edit_puts_the_caret_under_the_pointer() {
+    let mut app = app_with_one_param();
+    let long: String = ('a'..='z').cycle().take(200).collect();
+    app.editor.params.get_index_mut(0).unwrap().1.value = long;
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+    app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+    render_once(&mut app);
+
+    let area = app
+        .hits
+        .rect_of(&Hit::TableCell { row: 0, col: 1 })
+        .unwrap();
+    let start = app
+        .editor
+        .table
+        .editing
+        .as_ref()
+        .unwrap()
+        .input
+        .window_start(true, area.width);
+    assert!(start > 0, "the caret at the end scrolled the window");
+
+    // The cell was just clicked open; without this the next click on it
+    // pairs into a double click and selects the word instead.
+    app.last_click = None;
+    app.handle_mouse(left_down(area.x, area.y));
+
+    assert_eq!(
+        app.editor.table.editing.as_ref().unwrap().input.cursor(),
+        start,
+        "the leftmost visible column is the window's first char"
+    );
+}
+
+/// And the sweep that follows that click reads the same window: dragging
+/// across a scrolled cell selects the characters under the pointer.
+#[test]
+fn dragging_across_a_scrolled_cell_edit_selects_what_is_under_the_pointer() {
+    let mut app = app_with_one_param();
+    let long: String = ('a'..='z').cycle().take(200).collect();
+    app.editor.params.get_index_mut(0).unwrap().1.value = long;
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+    app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+    render_once(&mut app);
+
+    let area = app
+        .hits
+        .rect_of(&Hit::TableCell { row: 0, col: 1 })
+        .unwrap();
+    app.last_click = None;
+    app.handle_mouse(left_down(area.x, area.y));
+    // The caret moved, so the cell redraws around it: the sweep reads the
+    // window the next frame actually shows.
+    render_once(&mut app);
+    let input = &app.editor.table.editing.as_ref().unwrap().input;
+    let anchor = input.cursor();
+    let win = input.window_start(true, area.width);
+    app.handle_mouse(dragged(area.x + 4, area.y));
+
+    assert!(win > 0, "the cell is still scrolled off its start");
+    assert_eq!(
+        app.editor
+            .table
+            .editing
+            .as_ref()
+            .unwrap()
+            .input
+            .selection()
+            .expect("the sweep selected something"),
+        (win + 4, anchor),
+        "the sweep covers the visible characters it crossed"
+    );
+}
+
+/// The value cell is registered at the width it was drawn at: on a row
+/// showing its actions the value stops short of them, and the caret
+/// arithmetic reads that width back off the hit rect.
+#[test]
+fn the_value_cells_hit_rect_stops_where_the_actions_begin() {
+    let mut app = app_with_one_param();
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+    render_once(&mut app);
+
+    let cell = app
+        .hits
+        .rect_of(&Hit::TableCell { row: 0, col: 1 })
+        .unwrap();
+    let copy = app
+        .hits
+        .rect_of(&Hit::TableCopy(0))
+        .expect("the row under edit shows its actions");
+    assert!(
+        cell.right() <= copy.x,
+        "value cell {cell:?} runs under the actions at {copy:?}"
+    );
+}
+
+/// The copy pill shows on the row being typed into, so it must take the
+/// value as typed — committing the live edit first — not the one the map
+/// still holds behind it.
+#[test]
+fn copying_the_row_under_edit_takes_the_typed_value() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.txt");
+    let cmd = format!("cat > {}", out.to_string_lossy());
+    let mut app = app_with_one_param();
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(
+        Some(cmd),
+        65536,
+        false,
+    ));
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+    type_chars(&mut app, "23");
+
+    click_hit(&mut app, Hit::TableCopy(0));
+
+    assert_eq!(
+        app.editor.params.get_index(0).unwrap().1.value,
+        "123",
+        "the copy committed the edit on its way through"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&out).unwrap(),
+        "123",
+        "the clipboard got what the screen was showing"
+    );
+}
+
+/// The copy button is part of its row: right-clicking it opens the row's
+/// own context menu, on that row, exactly as right-clicking the row does.
+#[test]
+fn right_clicking_the_copy_button_opens_the_rows_context_menu() {
+    let mut app = app_with_one_param();
+    render_once(&mut app);
+    let row = app.hits.rect_of(&Hit::TableRow(0)).unwrap();
+    app.handle_mouse(moved(row.x + 1, row.y));
+    render_once(&mut app);
+    let copy = app
+        .hits
+        .rect_of(&Hit::TableCopy(0))
+        .expect("hover reveals the copy button");
+    app.handle_mouse(right_down(copy.x + 1, copy.y));
+
+    assert_eq!(
+        app.editor.table.selected,
+        Some(0),
+        "the click lands the cursor on the row before its menu opens"
+    );
+    assert!(
+        matches!(app.modals.top(), Some(Modal::Dropdown(_))),
+        "the row's context menu opened"
     );
 }
 

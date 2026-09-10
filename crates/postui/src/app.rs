@@ -8940,6 +8940,10 @@ impl App {
                 _ => None,
             },
             CopyTarget::Url => Some((self.editor.url.text().to_string(), "Copied URL".to_string())),
+            CopyTarget::TableRow(i) => self
+                .editor
+                .table_row_at(*i)
+                .map(|(key, value)| (value.to_string(), format!("Copied {key}"))),
             CopyTarget::ComputedHeader(i) => self
                 .editor
                 .computed

@@ -348,6 +348,7 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         } else {
             "Enable this row"
         }),
+        Hit::TableCopy(_) => text("Copy this row's value"),
         Hit::TableDelete(_) => text("Delete this row"),
         Hit::SplitStop(stop) => text(match stop {
             SplitStop::EditorFull => "Editor full size",
@@ -557,6 +558,10 @@ mod tests {
         assert_eq!(hint_for(&Hit::UrlBar, &keymap, &ctx()), None);
         assert_eq!(hint_for(&Hit::SidebarRow(0), &keymap, &ctx()), None);
         assert!(hint_for(&Hit::TableDelete(0), &keymap, &ctx()).is_some());
+        assert_eq!(
+            hint_for(&Hit::TableCopy(0), &keymap, &ctx()).unwrap(),
+            "Copy this row's value"
+        );
         assert!(hint_for(&Hit::FooterChip(Action::Quit), &keymap, &ctx()).is_some());
     }
 

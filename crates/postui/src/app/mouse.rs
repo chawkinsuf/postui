@@ -435,6 +435,7 @@ impl App {
                     }
                     Hit::TableRow(i)
                     | Hit::TableCheckbox(i)
+                    | Hit::TableCopy(i)
                     | Hit::TableDelete(i)
                     | Hit::TableCell { row: i, .. } => {
                         let i = *i;
@@ -876,9 +877,9 @@ impl App {
         true
     }
 
-    /// Like [`Self::url_drag_to`], for the table cell under edit. The cell
-    /// draws its input unwindowed at the hit rect's left edge, so the
-    /// mapping is a plain column offset.
+    /// Like [`Self::url_drag_to`], for the table cell under edit (drawn
+    /// windowed at the hit rect's own left edge, as the selector grid's
+    /// cells are).
     fn table_cell_drag_to(&mut self, column: u16) -> bool {
         let Some(edit) = self.editor.table.editing.as_mut() else {
             return false;
@@ -893,8 +894,9 @@ impl App {
         if area.width == 0 {
             return false;
         }
+        let start = edit.input.window_start(true, area.width);
         let col = usize::from(column.clamp(area.x, area.x + area.width - 1) - area.x);
-        edit.input.extend_mouse_selection_to(col);
+        edit.input.extend_mouse_selection_to(start + col);
         true
     }
 
@@ -1084,6 +1086,7 @@ impl App {
             hit,
             Hit::TableRow(_)
                 | Hit::TableCheckbox(_)
+                | Hit::TableCopy(_)
                 | Hit::TableDelete(_)
                 | Hit::TableCell { .. }
                 | Hit::SplitStop(_)
@@ -1482,8 +1485,9 @@ impl App {
                         self.toasts.push(w, ToastKind::Warning);
                     }
                 }
-                // Place the caret at the clicked column (the cell draws its
-                // text unwindowed at the hit rect's left edge) and anchor a
+                // Place the caret at the clicked column (the cell draws
+                // windowed at the hit rect's own left edge, so a value
+                // longer than its cell may be scrolled) and anchor a
                 // possible drag sweep; a double click selects the word,
                 // exactly like the body editor. Skipped when a commit
                 // collapsed rows out from under the click — the edit then
@@ -1497,7 +1501,8 @@ impl App {
                         .as_mut()
                         .filter(|e| e.row == row && e.col == cell_col)
                 {
-                    let idx = usize::from(m.column.saturating_sub(area.x));
+                    let start = edit.input.window_start(already_editing, area.width.max(1));
+                    let idx = start + usize::from(m.column.saturating_sub(area.x));
                     if clicks == 2 {
                         edit.input.select_word_at(idx);
                     } else {
@@ -1509,6 +1514,16 @@ impl App {
                     self.text_drag = Some(TextDrag::TableCell);
                 }
                 self.update(Action::Render)
+            }
+            Hit::TableCopy(i) => {
+                // The copy pill shows on the row being typed into, so it
+                // has to commit that edit first — otherwise the clipboard
+                // gets the value the screen has already stopped showing —
+                // and re-resolve `i`, since the commit can collapse rows.
+                let Some(i) = self.resolve_table_row_across_commit(i) else {
+                    return self.update(Action::Render);
+                };
+                self.update(Action::CopyToClipboard(CopyTarget::TableRow(i)))
             }
             Hit::TableDelete(i) => {
                 self.update(Action::FocusPane(PaneId::Editor));
