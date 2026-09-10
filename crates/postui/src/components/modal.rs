@@ -2649,10 +2649,6 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
-    /// User finding: the "(not set)" placeholder swallowed the caret, so a
-    /// focused-but-empty value box gave no hint the input was selected.
-    /// Focused, the line leads with the same reversed-cell caret an empty
-    /// `LineInput` draws; unfocused it's just the muted placeholder.
     /// The popup opens one row below the anchor's *content row* — the row
     /// its label actually sits on — not below its whole block.
     ///
@@ -2704,6 +2700,10 @@ mod tests {
         );
     }
 
+    /// User finding: the "(not set)" placeholder swallowed the caret, so a
+    /// focused-but-empty value box gave no hint the input was selected.
+    /// Focused, the line leads with the same reversed-cell caret an empty
+    /// `LineInput` draws; unfocused it's just the muted placeholder.
     #[test]
     fn the_value_placeholder_shows_a_caret_when_focused() {
         let theme = Theme::dark();
