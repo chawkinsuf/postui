@@ -257,6 +257,9 @@ pub fn draw_footer(
     hint: Option<&str>,
     hits: &mut HitMap,
     hovered: Option<&Hit>,
+    // The shared hover fade's 0->1 progress, so a hovered chip's keycap
+    // pill warms up rather than snapping (`paint_chip_row`).
+    hover_t: f32,
 ) {
     let buf = frame.buffer_mut();
     fill(buf, area, theme.panel);
@@ -282,6 +285,7 @@ pub fn draw_footer(
         theme,
         hits,
         hovered,
+        hover_t,
     );
 
     let right_limit = if globals_live {
@@ -297,6 +301,7 @@ pub fn draw_footer(
             theme,
             hits,
             hovered,
+            hover_t,
         );
 
         // Per-pane chips stop one column shy of the palette so the two
@@ -337,6 +342,7 @@ pub fn draw_footer(
         theme,
         hits,
         hovered,
+        hover_t,
     );
     // The hint sits in the gap between the per-pane chips and the
     // commands/quit pair, and the chips never yield it more room. They
@@ -397,8 +403,11 @@ fn paint_hint(buf: &mut Buffer, y: u16, start_x: u16, end_x: u16, hint: &str, th
 /// `start_x` on row `y`, stopping before drawing one that would cross
 /// `right_limit`. Each chip with `Some(action)` emphasizes its label: the
 /// key combo sits in a small `Chip`-style pill tinted `theme.text_muted`
-/// on `theme.control` (lifting to `theme.control_hover` under the mouse per
-/// `hovered`), with the label following in prominent `theme.text` text
+/// on `theme.control`. Under the mouse (per `hovered`) the pill warms up —
+/// its tint source eases toward `theme.text` and its surface toward
+/// `theme.control_hover` — over `hover_t`, the shared `AnimKey::Hover` fade
+/// the list rows blend through. With the label following in prominent
+/// `theme.text` text
 /// beside it — the action is the content, the shortcut the affordance.
 /// Registers `Hit::FooterChip(action)` over the combined span. A `None`
 /// action renders as fully plain (unregistered) text: key muted, label
@@ -416,6 +425,9 @@ pub fn paint_chip_row(
     theme: &Theme,
     hits: &mut HitMap,
     hovered: Option<&Hit>,
+    // The 0->1 progress of the current hover fade (`DrawCtx::hover_t`).
+    // Only the hovered chip reads it; everything else rests regardless.
+    hover_t: f32,
 ) -> u16 {
     let mut x = start_x;
     for (key, label, action) in chips {
@@ -436,14 +448,17 @@ pub fn paint_chip_row(
         };
         match action {
             Some(a) => {
-                let on = if hovered == Some(&Hit::FooterChip(a.clone())) {
-                    theme.control_hover
-                } else {
-                    theme.control
-                };
+                // A hovered chip warms up through the shared keycap funnel
+                // (`paint::keycap_face`): tint source toward `theme.text`,
+                // surface toward `control_hover`, both on `hover_t`.
+                let (color, on) = crate::paint::keycap_face(
+                    theme,
+                    hovered == Some(&Hit::FooterChip(a.clone())),
+                    hover_t,
+                );
                 let pill_w = Chip {
                     label: key,
-                    color: theme.text_muted,
+                    color,
                 }
                 .paint(buf, x, y, on, theme);
                 let label_text = format!(" {label} ");
@@ -483,6 +498,93 @@ mod tests {
     use super::*;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+
+    /// A hovered chip's keycap pill warms up over the shared hover fade,
+    /// through the same `paint::keycap_face` funnel every other keycap in
+    /// the app uses. Tinting alone moves the fill by only ~2 RGB points --
+    /// `tint` blends just 22% of the surface in -- so the *tint source* has
+    /// to move for the hover to be visible at all.
+    #[test]
+    fn a_hovered_chips_pill_warms_through_the_shared_keycap_funnel() {
+        let theme = Theme::for_terminal();
+        assert_ne!(
+            theme.control, theme.control_hover,
+            "fixture: the two surfaces must differ for the blend to be visible"
+        );
+        let chips = [("^R", "send", Some(Action::Send))];
+        let hovered = Hit::FooterChip(Action::Send);
+
+        let pill_bg = |hover_t: f32| {
+            let mut terminal = Terminal::new(TestBackend::new(60, 1)).unwrap();
+            let mut hits = crate::hit::HitMap::default();
+            terminal
+                .draw(|f| {
+                    paint_chip_row(
+                        f.buffer_mut(),
+                        0,
+                        0,
+                        60,
+                        &chips,
+                        &theme,
+                        &mut hits,
+                        Some(&hovered),
+                        hover_t,
+                    );
+                })
+                .unwrap();
+            terminal.backend().buffer()[(1, 0)].bg
+        };
+
+        let face = |t: f32| {
+            let (color, on) = crate::paint::keycap_face(&theme, true, t);
+            theme.tint(color, on)
+        };
+        assert_eq!(
+            pill_bg(0.0),
+            theme.tint(theme.text_muted, theme.control),
+            "the fade starts from the resting pill exactly"
+        );
+        assert_eq!(pill_bg(0.5), face(0.5), "mid-fade it is halfway warmed");
+        assert_eq!(pill_bg(1.0), face(1.0), "and it lands fully warmed");
+
+        // The point of the whole change: the landed hover must actually be
+        // visible. The old surface-only lift moved the fill by ~0.008.
+        let l = |c| crate::theme::oklab_l(crate::theme::rgb_of(c));
+        let delta = (l(pill_bg(1.0)) - l(pill_bg(0.0))).abs();
+        assert!(
+            delta > 0.05,
+            "a hovered pill must be visibly different, not {delta:.4} apart"
+        );
+    }
+
+    /// The fade belongs to the chip under the pointer. An unhovered chip
+    /// keeps its resting surface no matter where the fade has got to.
+    #[test]
+    fn an_unhovered_chip_ignores_the_hover_fade() {
+        let theme = Theme::for_terminal();
+        let mut terminal = Terminal::new(TestBackend::new(60, 1)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| {
+                paint_chip_row(
+                    f.buffer_mut(),
+                    0,
+                    0,
+                    60,
+                    &[("^R", "send", Some(Action::Send))],
+                    &theme,
+                    &mut hits,
+                    None,
+                    0.5,
+                );
+            })
+            .unwrap();
+        assert_eq!(
+            terminal.backend().buffer()[(1, 0)].bg,
+            theme.tint(theme.text_muted, theme.control),
+            "no hover, no lift"
+        );
+    }
 
     #[test]
     fn a_completion_ghost_advertises_tab_and_accept() {
@@ -544,6 +646,7 @@ mod tests {
                     None,
                     &mut hits,
                     None,
+                    1.0,
                 )
             })
             .unwrap();
@@ -825,6 +928,7 @@ mod tests {
                     None,
                     &mut hits,
                     None,
+                    1.0,
                 )
             })
             .unwrap();
@@ -870,6 +974,7 @@ mod tests {
                     None,
                     &mut hits,
                     None,
+                    1.0,
                 )
             })
             .unwrap();
@@ -918,6 +1023,7 @@ mod tests {
                     None,
                     &mut hits,
                     None,
+                    1.0,
                 )
             })
             .unwrap();
@@ -955,6 +1061,7 @@ mod tests {
                     None,
                     &mut hits,
                     None,
+                    1.0,
                 )
             })
             .unwrap();
@@ -1026,6 +1133,7 @@ mod tests {
                     None,
                     &mut hits,
                     None,
+                    1.0,
                 )
             })
             .unwrap();
@@ -1083,6 +1191,7 @@ mod tests {
                     None,
                     &mut hits,
                     None,
+                    1.0,
                 )
             })
             .unwrap();
@@ -1124,6 +1233,7 @@ mod tests {
                     &theme,
                     &mut hits,
                     None,
+                    1.0,
                 );
             })
             .unwrap();
@@ -1179,6 +1289,7 @@ mod tests {
                     None,
                     &mut hits,
                     None,
+                    1.0,
                 )
             })
             .unwrap();

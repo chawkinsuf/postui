@@ -52,6 +52,20 @@ pub const CAP_TOP: &str = "\u{2582}";
 /// that shows the control.
 pub const CAP_BOTTOM: &str = "\u{2586}";
 
+/// The rows a slivered control spans: an eighth-row cap, the content row,
+/// an eighth-row cap. Same three rows as [`CAP_H`] — the control is
+/// smaller within them, not the block.
+pub const SLIVER_H: u16 = 3;
+
+/// Lower one eighth block — a sliver cap's top row, face over surface.
+pub const SLIVER_TOP: &str = "\u{2581}";
+
+/// Upper one eighth block — a sliver cap's bottom row. Unlike
+/// [`CAP_BOTTOM`] this paints the right way up: Unicode has an upper
+/// one-eighth block, so the sliver needs none of the quarter cap's
+/// inversion trick.
+pub const SLIVER_BOTTOM: &str = "\u{2594}";
+
 /// The surface a control about to paint into `area` is sitting on, read
 /// from the cell at the block's top-left — the first cell its top cap
 /// will cover, and so by definition part of the surface behind it.
@@ -107,6 +121,41 @@ pub fn capped(buf: &mut Buffer, area: Rect, face: Color, surface: Color) -> Rect
     content
 }
 
+/// Paints a flat `face` with an eighth-row sliver above and below it,
+/// returning the content row for the caller to draw into.
+///
+/// The 1.25-row sibling of [`capped`]: same three-row block, a quarter as
+/// much of it spent on the caps. This is the anatomy for the app bar's
+/// one-row chips, which sit in a 3-row bar with a blank panel row above
+/// and below the content row — enough for a sliver, not for a quarter cap
+/// without the chips touching the bar's edges.
+///
+/// Refuses the same way [`capped`] does: an `area` too short paints
+/// nothing and returns a zero-height rect.
+pub fn slivered(buf: &mut Buffer, area: Rect, face: Color, surface: Color) -> Rect {
+    if area.height < SLIVER_H || area.width == 0 {
+        return Rect { height: 0, ..area };
+    }
+    let content = Rect {
+        y: area.y + 1,
+        height: area.height - 2,
+        ..area
+    };
+    super::fill(buf, content, face);
+
+    let bottom_y = area.y + area.height - 1;
+    for x in area.x..area.x + area.width {
+        for (y, glyph) in [(area.y, SLIVER_TOP), (bottom_y, SLIVER_BOTTOM)] {
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                cell.set_symbol(glyph);
+                cell.set_fg(face);
+                cell.set_bg(surface);
+            }
+        }
+    }
+    content
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -114,6 +163,49 @@ mod tests {
 
     fn buf(w: u16, h: u16) -> Buffer {
         Buffer::empty(Rect::new(0, 0, w, h))
+    }
+
+    /// The sliver cap is the quarter cap's smaller sibling: an eighth of
+    /// each neighbouring row instead of a quarter, for the one-row chips
+    /// on the app bar. Unlike the quarter cap it needs no inversion trick
+    /// — Unicode has both an upper and a lower one-eighth block, so both
+    /// rows paint face-over-surface the right way up.
+    #[test]
+    fn a_sliver_cap_takes_an_eighth_of_each_neighbouring_row() {
+        let mut b = buf(6, 3);
+        let content = slivered(&mut b, Rect::new(0, 0, 6, 3), Color::Red, Color::Blue);
+
+        assert_eq!(content, Rect::new(0, 1, 6, 1), "content is the middle row");
+        assert_eq!(b[(0, 1)].bg, Color::Red, "the content row is the face");
+
+        let top = &b[(0, 0)];
+        assert_eq!(top.symbol(), SLIVER_TOP, "lower eighth: face at the bottom");
+        assert_eq!(top.fg, Color::Red);
+        assert_eq!(top.bg, Color::Blue);
+
+        let bottom = &b[(0, 2)];
+        assert_eq!(
+            bottom.symbol(),
+            SLIVER_BOTTOM,
+            "upper eighth: face at the top, painted the right way up"
+        );
+        assert_eq!(
+            bottom.fg,
+            Color::Red,
+            "no inversion — an upper-eighth block exists, unlike the quarter"
+        );
+        assert_eq!(bottom.bg, Color::Blue);
+    }
+
+    /// Same refusal as `capped`: too short to hold the anatomy paints
+    /// nothing and reports a zero-height rect, so a caller registering the
+    /// return value cannot leave an invisible control clickable.
+    #[test]
+    fn a_sliver_too_short_to_fit_paints_nothing() {
+        let mut b = buf(6, 2);
+        let r = slivered(&mut b, Rect::new(0, 0, 6, 2), Color::Red, Color::Blue);
+        assert_eq!(r.height, 0);
+        assert_eq!(b[(0, 0)].bg, Color::Reset, "nothing painted");
     }
 
     #[test]

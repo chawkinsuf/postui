@@ -62,6 +62,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let project_name = app.display_name();
     let env_label = app.env_label_display();
     let space_label = app.space_name(&app.active_space());
+    // The shared hover fade, sampled once for the whole frame: every
+    // hovered keycap and chip on the bar and in the footer warms through
+    // it, and it restarts whenever the pointer crosses onto another hit.
+    let hover_t = app.anims.value_or(crate::anim::AnimKey::Hover, now, 1.0);
     crate::components::header_bar::draw_header(
         frame,
         layout.header,
@@ -85,6 +89,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         screen == Screen::Manage,
         &mut hits,
         app.hovered.as_ref(),
+        hover_t,
     );
 
     match screen {
@@ -410,6 +415,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             .as_deref(),
         &mut hits,
         app.hovered.as_ref(),
+        hover_t,
     );
     app.modals.draw(
         frame,
