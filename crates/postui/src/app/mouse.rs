@@ -435,6 +435,7 @@ impl App {
                     }
                     Hit::TableRow(i)
                     | Hit::TableCheckbox(i)
+                    | Hit::TableCopy(i)
                     | Hit::TableDelete(i)
                     | Hit::TableCell { row: i, .. } => {
                         let i = *i;
@@ -1084,6 +1085,7 @@ impl App {
             hit,
             Hit::TableRow(_)
                 | Hit::TableCheckbox(_)
+                | Hit::TableCopy(_)
                 | Hit::TableDelete(_)
                 | Hit::TableCell { .. }
                 | Hit::SplitStop(_)
@@ -1510,6 +1512,7 @@ impl App {
                 }
                 self.update(Action::Render)
             }
+            Hit::TableCopy(i) => self.update(Action::CopyToClipboard(CopyTarget::TableRow(i))),
             Hit::TableDelete(i) => {
                 self.update(Action::FocusPane(PaneId::Editor));
                 self.editor.sub_focus = SubFocus::Content;

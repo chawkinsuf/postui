@@ -60,6 +60,10 @@ pub enum CopyTarget {
     /// One row of the request Headers tab's computed-headers section, by
     /// index into its own display order (see `Hit::AutoHeaderCopy`).
     ComputedHeader(usize),
+    /// One row of the active editor tab's key/value table (Params,
+    /// Headers or Vars), by index — the row's own copy button. Copies the
+    /// value as typed, not as resolved.
+    TableRow(usize),
 }
 
 /// Which user-editable config file an Edit…/Reset button targets.

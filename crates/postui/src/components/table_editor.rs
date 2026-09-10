@@ -83,11 +83,28 @@ impl TableOutcome {
     }
 }
 
-/// Column x-offsets (relative to the drawn area's own left edge, i.e.
-/// *before* the active row's 1-column accent-bar indent is applied).
-/// There is no checkbox column any more: enabled/disabled reads from the
-/// row's own styling (dim + struck name), and toggling happens through the
-/// hover-revealed buttons at the row's right edge.
+/// The toggle's zone at a row's left edge: the glyph plus a column of air
+/// either side, which is also the row's left padding.
+pub(crate) const TOGGLE_W: u16 = 3;
+
+/// One right-edge action button's zone (copy, delete): a glyph centred in
+/// three cells.
+const ACTION_W: u16 = 3;
+
+/// The columns a row's right-edge actions claim: copy, delete, and a
+/// column of margin outside them. A cell edit's input stops short of this
+/// so a long value never runs under the buttons.
+const ACTIONS_W: u16 = ACTION_W * 2 + 1;
+
+/// Column x-offsets, relative to the drawn area's own left edge. Every
+/// row — plain, hovered or active — lays out from the same offsets, so
+/// activating a row never jogs its text sideways.
+///
+/// The first [`TOGGLE_W`] columns are the enable/disable toggle's, which
+/// every row carries whether the pointer is on it or not: it reports
+/// state, and state that only appears under the pointer is state you have
+/// to go looking for. The row's *actions* — copy, delete — stay at the
+/// right edge, revealed on hover.
 pub(crate) struct Columns {
     pub(crate) name_x: u16,
     pub(crate) divider_x: u16,
@@ -95,7 +112,7 @@ pub(crate) struct Columns {
 }
 
 pub(crate) fn columns(x0: u16, width: u16) -> Columns {
-    let pad = 2u16.min(width);
+    let pad = TOGGLE_W.min(width);
     let remaining = width.saturating_sub(pad);
     let name_w = (remaining / 3)
         .max(4)
@@ -124,7 +141,9 @@ pub fn table_height(rows: usize, active: Option<usize>, active_hint: bool) -> u1
 /// that one row.
 fn hovered_row(ctx: &DrawCtx) -> Option<usize> {
     match ctx.hovered? {
-        Hit::TableRow(i) | Hit::TableCheckbox(i) | Hit::TableDelete(i) => Some(*i),
+        Hit::TableRow(i) | Hit::TableCheckbox(i) | Hit::TableCopy(i) | Hit::TableDelete(i) => {
+            Some(*i)
+        }
         Hit::TableCell { row, .. } => Some(*row),
         _ => None,
     }
@@ -566,8 +585,8 @@ impl TableEditorState {
 
     /// Draws the table as one contiguous painted control: a muted-uppercase
     /// `NAME`/`VALUE` header row on `panel`, a `control` body of compact
-    /// 1-line rows (the active row — selected, or being edited — expands to
-    /// 3 with a full-row pill and a `󰅖` delete affordance), the ghost row
+    /// 1-line rows (the active row — selected, or being edited — grows to a
+    /// 3-row slivered block carrying its own buttons), the ghost row
     /// (an empty row labelled by `add_label` until it is typed into), and a
     /// closing `▔` edge. Every cell registers a `Hit::TableCell`, so a
     /// click lands straight in that cell's editor.
@@ -707,8 +726,8 @@ impl TableEditorState {
     /// typing a new row.
     #[allow(clippy::too_many_arguments)]
     /// The ghost row with the keyboard cursor resting on it: the same
-    /// 3-line pill a selected data row gets, but still labelled by
-    /// `add_label` — nothing exists yet to show cells or buttons for.
+    /// slivered 3-line block a selected data row gets, but still labelled
+    /// by `add_label` — nothing exists yet to show cells or buttons for.
     /// Enter (or a click) is what actually opens the add edit.
     #[allow(clippy::too_many_arguments)]
     fn draw_ghost_row_selected(
@@ -729,28 +748,10 @@ impl TableEditorState {
         } else {
             RowHighlight::Hover
         };
-        let hover_t = ctx.hover_t();
-        let bg = ListRow::resolve_fill(theme, highlight, theme.control, hover_t);
-        if y < bottom {
-            fill(buf, Rect::new(area.x, y, area.width, 1), bg);
-        }
-        ListRow {
-            highlight,
-            zebra: None,
-        }
-        .paint(
-            buf,
-            text_row,
-            area.x,
-            area.width,
-            theme.control,
-            hover_t,
-            theme,
-        );
-        if text_row + 1 < bottom {
-            fill(buf, Rect::new(area.x, text_row + 1, area.width, 1), bg);
-        }
-        let cols = columns(area.x + 1, area.width.saturating_sub(1));
+        let bg = ListRow::resolve_fill(theme, highlight, theme.control, ctx.hover_t());
+        let block = Rect::new(area.x, y, area.width, 3.min(bottom.saturating_sub(y)));
+        Self::paint_row_block(buf, block, bg, theme);
+        let cols = columns(area.x, area.width);
         if text_row < bottom {
             // The lit label reads as "the cursor is here"; unfocused it
             // demotes to the plain ghost row's muted tone.
@@ -801,17 +802,26 @@ impl TableEditorState {
         Self::register_cells(hits, cols_span(&cols, area), y, row);
     }
 
-    /// Paints the row's two right-edge buttons — the enable/disable toggle
-    /// (`●` on / `○` off, a 3-cell zone) and the `󰆴` delete (a Nerd Font
-    /// Material glyph in its own 3-cell zone) — flush against the row's
-    /// right edge with one column of margin. A
-    /// directly-hovered button inverts onto accent (error red for the
-    /// trash), the same treatment the response pane's copy pills use.
+    /// Scrubs the strikethrough off a button zone before its glyph lands
+    /// there: `text` patches styles, so a disabled row's struck name or
+    /// value would otherwise bleed onto the glyphs painted over it.
+    fn clear_strike(buf: &mut ratatui::buffer::Buffer, x: u16, y: u16, w: u16) {
+        for x in x..x.saturating_add(w) {
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                cell.set_style(Style::default().remove_modifier(Modifier::CROSSED_OUT));
+            }
+        }
+    }
+
+    /// Paints the row's enable/disable toggle (`●` on / `○` off) in the
+    /// [`TOGGLE_W`]-cell gutter at the row's left edge, `x` being that
+    /// edge. Unlike the actions opposite it this is not hover-revealed:
+    /// it is the row's own state, and every row shows it.
     #[allow(clippy::too_many_arguments)]
-    fn draw_row_buttons(
+    fn draw_row_toggle(
         buf: &mut ratatui::buffer::Buffer,
         hits: &mut HitMap,
-        right: u16,
+        x: u16,
         y: u16,
         i: usize,
         enabled: bool,
@@ -819,43 +829,60 @@ impl TableEditorState {
         hovered: Option<&Hit>,
         theme: &Theme,
     ) {
-        let trash_x = right.saturating_sub(4);
-        let toggle_x = trash_x.saturating_sub(3);
-        let toggle_hit = Hit::TableCheckbox(i);
-        let trash_hit = Hit::TableDelete(i);
-
-        // `text` patches styles, so a disabled row's strikethrough would
-        // bleed onto the glyphs when the value runs under this zone —
-        // scrub it first.
-        for x in toggle_x..trash_x + 3 {
-            if let Some(cell) = buf.cell_mut((x, y)) {
-                cell.set_style(Style::default().remove_modifier(Modifier::CROSSED_OUT));
-            }
-        }
-
+        let hit = Hit::TableCheckbox(i);
+        Self::clear_strike(buf, x, y, TOGGLE_W);
         let (glyph, state_fg) = if enabled {
             (" \u{25CF} ", theme.success)
         } else {
             (" \u{25CB} ", theme.text_muted)
         };
-        let (tfg, tbg) = if hovered == Some(&toggle_hit) {
+        let (fg, bg) = if hovered == Some(&hit) {
             (theme.on_accent, theme.accent)
         } else {
             (state_fg, bg)
         };
-        text(buf, toggle_x, y, glyph, tfg, tbg, false);
+        text(buf, x, y, glyph, fg, bg, false);
+        hits.register(Rect::new(x, y, TOGGLE_W, 1), hit);
+    }
 
+    /// Paints the row's right-edge actions — copy then delete, each a Nerd
+    /// Font Material glyph centred in its own [`ACTION_W`]-cell zone —
+    /// flush against `right` with one column of margin. A directly-hovered
+    /// button inverts onto accent (error red for the trash), the same
+    /// treatment the response pane's copy pills use.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_row_actions(
+        buf: &mut ratatui::buffer::Buffer,
+        hits: &mut HitMap,
+        right: u16,
+        y: u16,
+        i: usize,
+        bg: ratatui::style::Color,
+        hovered: Option<&Hit>,
+        theme: &Theme,
+    ) {
+        let trash_x = right.saturating_sub(ACTION_W + 1);
+        let copy_x = trash_x.saturating_sub(ACTION_W);
+        Self::clear_strike(buf, copy_x, y, ACTIONS_W);
+
+        let copy_hit = Hit::TableCopy(i);
+        let (cfg, cbg) = if hovered == Some(&copy_hit) {
+            (theme.on_accent, theme.accent)
+        } else {
+            (theme.text_muted, bg)
+        };
+        text(buf, copy_x, y, crate::glyph::COPY_PILL, cfg, cbg, false);
+
+        let trash_hit = Hit::TableDelete(i);
         let (dfg, dbg) = if hovered == Some(&trash_hit) {
             (theme.on_accent, theme.error)
         } else {
             (theme.text_muted, bg)
         };
-        // Nerd Font Material glyph (one cell everywhere), centred in a
-        // three-cell zone like the toggle beside it.
         text(buf, trash_x, y, crate::glyph::DELETE_PILL, dfg, dbg, false);
 
-        hits.register(Rect::new(toggle_x, y, 3, 1), toggle_hit);
-        hits.register(Rect::new(trash_x, y, 3, 1), trash_hit);
+        hits.register(Rect::new(copy_x, y, ACTION_W, 1), copy_hit);
+        hits.register(Rect::new(trash_x, y, ACTION_W, 1), trash_hit);
     }
 
     /// Strikes through `len` cells starting at `(x, y)` — the disabled
@@ -917,13 +944,14 @@ impl TableEditorState {
         hits.register(Rect::new(area.x, y, area.width, 1), Hit::TableRow(i));
         Self::register_cells(hits, cols_span(&cols, area), y, i);
         paint_cell_tokens(buf, hits, &cols, area, y, key, &entry.value, vars, theme);
-        // Hover-revealed toggle/delete, painted (and registered) last so
-        // they win over the value cell underneath.
-        if hovered && area.width >= 10 {
-            Self::draw_row_buttons(
+        // The toggle owns the left gutter on every row; the actions are
+        // hover-revealed. Both paint (and register) last so they win over
+        // the cells underneath.
+        if area.width >= TOGGLE_W {
+            Self::draw_row_toggle(
                 buf,
                 hits,
-                area.right(),
+                area.x,
                 y,
                 i,
                 entry.enabled,
@@ -931,6 +959,9 @@ impl TableEditorState {
                 ctx.hovered,
                 theme,
             );
+        }
+        if hovered && area.width >= 10 {
+            Self::draw_row_actions(buf, hits, area.right(), y, i, bg, ctx.hovered, theme);
         }
     }
 
@@ -958,22 +989,21 @@ impl TableEditorState {
         }
     }
 
-    /// Draws row `i` expanded to 3 lines (pad/text/pad) — 4 (pad/text/hint/
-    /// pad) when `hint` is `Some`, adding a dim shadow line ("overrides qa:
-    /// 1001") right under the value row. `show_delete` gates the `󰅖`
-    /// affordance (the ghost row has nothing to delete yet). Returns the
-    /// next `y`.
+    /// Draws row `i` as a slivered control spanning 3 lines (cap/text/cap)
+    /// — 4 (cap/text/hint/cap) when `hint` is `Some`, adding a dim shadow
+    /// line ("overrides qa: 1001") right under the value row.
+    /// `show_delete` gates the delete affordance (the ghost row has
+    /// nothing to delete yet). Returns the next `y`.
     ///
-    /// The expansion itself persists when the pane loses focus (it feeds
+    /// The block persists when the pane loses focus (it feeds
     /// `table_geometry`, so collapsing would shift the layout every focus
     /// change, and its affordances stay mouse-usable) — but the cursor
-    /// styling demotes: no accent bar, resting fill instead of the lift.
-    /// The text row's own fill/bar comes from `ListRow` (`Selected` while
-    /// focused, `Hover` otherwise — which, base and target both being
+    /// styling demotes: `ListRow::resolve_fill` reads `Selected` while
+    /// focused and `Hover` otherwise, which, base and target both being
     /// `theme.control`, paints as a flat `theme.control` regardless of
-    /// `hover_t`, matching the old resting-fill demotion exactly); the pad
-    /// rows above/below just carry that same resolved fill flat, with no
-    /// half-block cap glyph.
+    /// `hover_t`. There is no accent bar in either state: this row lifts
+    /// its own fill and stands an eighth of a row proud of the surface,
+    /// which is the whole of the app's focus language.
     #[allow(clippy::too_many_arguments)]
     fn draw_active_row(
         &self,
@@ -997,33 +1027,19 @@ impl TableEditorState {
         } else {
             RowHighlight::Hover
         };
-        let hover_t = ctx.hover_t();
-        let bg = ListRow::resolve_fill(theme, highlight, theme.control, hover_t);
-        if y < bottom {
-            fill(buf, Rect::new(area.x, y, area.width, 1), bg);
-        }
-        ListRow {
-            highlight,
-            zebra: None,
-        }
-        .paint(
-            buf,
-            text_row,
+        let bg = ListRow::resolve_fill(theme, highlight, theme.control, ctx.hover_t());
+        let row_height = if hint.is_some() { 4 } else { 3 };
+        let block = Rect::new(
             area.x,
+            y,
             area.width,
-            theme.control,
-            hover_t,
-            theme,
+            row_height.min(bottom.saturating_sub(y)),
         );
-        if text_row + 1 < bottom {
-            fill(buf, Rect::new(area.x, text_row + 1, area.width, 1), bg);
-        }
-
-        // The accent bar occupies column `area.x`; cell content is indented
-        // one column past it.
-        let content_x = area.x + 1;
-        let content_w = area.width.saturating_sub(1);
-        let cols = columns(content_x, content_w);
+        Self::paint_row_block(buf, block, bg, theme);
+        // The row's columns are the plain row's columns: an active row that
+        // indented its own content would jog the key sideways on every
+        // click.
+        let cols = columns(area.x, area.width);
         let fg = if entry.enabled {
             theme.text
         } else {
@@ -1033,12 +1049,11 @@ impl TableEditorState {
         let editing_col = self.editing.as_ref().filter(|e| e.row == i).map(|e| e.col);
         // The toggle/delete buttons stay up for the whole active row, cell
         // edits included, so a value edit's input must stop short of their
-        // 8-cell zone (toggle 3 + trash 4 + right margin 1) instead of
-        // running under it. The ghost row has no buttons, so its input
-        // keeps the full width.
+        // `ACTIONS_W` zone instead of running under it. The ghost row has
+        // no buttons, so its input keeps the full width.
         let show_buttons = show_delete && area.width >= 10;
         let value_right = if show_buttons {
-            (area.x + area.width).saturating_sub(8)
+            (area.x + area.width).saturating_sub(ACTIONS_W)
         } else {
             area.x + area.width
         };
@@ -1083,7 +1098,6 @@ impl TableEditorState {
             }
         }
 
-        let row_height = if hint.is_some() { 4 } else { 3 };
         hits.register(
             Rect::new(area.x, y, area.width, row_height),
             Hit::TableRow(i),
@@ -1112,16 +1126,16 @@ impl TableEditorState {
             vars,
             theme,
         );
-        // The expanded row keeps its toggle/delete visible without hover —
-        // it is the active row — including while a cell edit is live (the
-        // value input was clipped to `value_right` above so they never
-        // collide). `show_delete` gates both: the ghost row has nothing to
-        // toggle or delete yet.
+        // The active row keeps its actions visible without hover — it is
+        // the active row — including while a cell edit is live (the value
+        // input was clipped to `value_right` above so they never collide).
+        // `show_delete` gates them, and the toggle with them: the ghost row
+        // has nothing to toggle or delete yet.
         if show_buttons {
-            Self::draw_row_buttons(
+            Self::draw_row_toggle(
                 buf,
                 hits,
-                area.x + area.width,
+                area.x,
                 text_row,
                 i,
                 entry.enabled,
@@ -1129,26 +1143,55 @@ impl TableEditorState {
                 ctx.hovered,
                 theme,
             );
+            Self::draw_row_actions(
+                buf,
+                hits,
+                area.x + area.width,
+                text_row,
+                i,
+                bg,
+                ctx.hovered,
+                theme,
+            );
         }
 
-        // A shadow hint replaces the pad-bottom row already flat-filled
-        // above (`text_row + 1`) with a dim "overrides <env>: <value>" line
-        // on the same fill, then adds one more flat row to close the block —
-        // one row taller overall (4 instead of 3).
+        // A shadow hint takes a second content row inside the same
+        // slivered block — a dim "overrides <env>: <value>" line under the
+        // value, aligned with the key above it. The block is one row taller
+        // overall (4 instead of 3); the caps are where they always are.
         if let Some(hint) = hint {
             let hint_row = text_row + 1;
             if hint_row < bottom {
-                fill(buf, Rect::new(area.x, hint_row, area.width, 1), bg);
-                text(buf, content_x, hint_row, hint, theme.text_muted, bg, false);
+                text(
+                    buf,
+                    cols.name_x,
+                    hint_row,
+                    hint,
+                    theme.text_muted,
+                    bg,
+                    false,
+                );
             }
-            let closing_row = hint_row + 1;
-            if closing_row < bottom {
-                fill(buf, Rect::new(area.x, closing_row, area.width, 1), bg);
-            }
-            return (closing_row + 1).min(bottom);
         }
 
-        (y + 3).min(bottom)
+        (y + row_height).min(bottom)
+    }
+
+    /// Paints an active row's face: a slivered control — eighth-row caps
+    /// over whatever surface is already behind them, its fill between — so
+    /// the row reads at its own 1.25-row size rather than as a slab the
+    /// table grew. A `block` too squeezed for the anatomy (a table clipped
+    /// by a short pane) paints flat rather than dropping the row.
+    fn paint_row_block(
+        buf: &mut ratatui::buffer::Buffer,
+        block: Rect,
+        bg: ratatui::style::Color,
+        theme: &Theme,
+    ) {
+        let surface = crate::paint::cap::backdrop(buf, block, theme);
+        if crate::paint::cap::slivered(buf, block, bg, surface).height == 0 {
+            fill(buf, block, bg);
+        }
     }
 }
 
@@ -1954,16 +1997,20 @@ mod tests {
         );
     }
 
+    /// The actions — copy and trash — are hover-revealed and belong to the
+    /// hovered row alone. The toggle beside them is not: it reports state,
+    /// so it stays up (see
+    /// `every_row_carries_its_toggle_at_the_left_edge_without_hover`).
     #[test]
-    fn compact_rows_reveal_toggle_and_trash_only_on_hover() {
+    fn compact_rows_reveal_their_actions_only_on_hover() {
         let theme = Theme::dark();
         let map = map_of(&[("a", "1"), ("b", "2")]);
         let t = TableEditorState::default();
         let mut hits = HitMap::default();
         draw_to(&t, &map, &ctx(&theme, None), &mut hits);
         assert!(
-            hits.rect_of(&Hit::TableCheckbox(0)).is_none(),
-            "no buttons on an unhovered row"
+            hits.rect_of(&Hit::TableCopy(0)).is_none(),
+            "no actions on an unhovered row"
         );
         assert!(hits.rect_of(&Hit::TableDelete(0)).is_none());
 
@@ -1975,16 +2022,16 @@ mod tests {
             content.contains("\u{F01B4}"),
             "the delete button is a trash can: {content}"
         );
-        let toggle = hits.rect_of(&Hit::TableCheckbox(0)).expect("toggle hit");
+        let copy = hits.rect_of(&Hit::TableCopy(0)).expect("copy hit");
         let trash = hits.rect_of(&Hit::TableDelete(0)).expect("delete hit");
         assert!(
-            toggle.width >= 3 && trash.width >= 3,
-            "buttons get comfortable click targets: {toggle:?} {trash:?}"
+            copy.width >= 3 && trash.width >= 3,
+            "buttons get comfortable click targets: {copy:?} {trash:?}"
         );
-        assert!(toggle.x < trash.x, "toggle left of trash");
+        assert!(copy.x < trash.x, "copy left of trash");
         assert!(
-            hits.rect_of(&Hit::TableCheckbox(1)).is_none(),
-            "only the hovered row shows buttons"
+            hits.rect_of(&Hit::TableDelete(1)).is_none(),
+            "only the hovered row shows actions"
         );
     }
 
@@ -2009,6 +2056,170 @@ mod tests {
         assert!(
             vcell.modifier.contains(Modifier::CROSSED_OUT),
             "the disabled value is struck through with the name"
+        );
+    }
+
+    /// The active row is a slivered control, not a three-row block: the
+    /// pad rows above and below it carry the eighth-row cap glyphs, so the
+    /// row reads at its own 1.25-row size on the surface behind it rather
+    /// than as a slab the table grew.
+    #[test]
+    fn the_active_row_caps_itself_with_slivers_instead_of_solid_pads() {
+        let theme = Theme::dark();
+        let map = map_of(&[("a", "1")]);
+        let t = TableEditorState {
+            selected: Some(0),
+            ..TableEditorState::default()
+        };
+        let mut hits = HitMap::default();
+        let terminal = draw_to(&t, &map, &ctx(&theme, None), &mut hits);
+        let buf = terminal.backend().buffer();
+        let row = hits.rect_of(&Hit::TableRow(0)).unwrap();
+        assert_eq!(
+            buf.cell((row.x, row.y)).unwrap().symbol(),
+            crate::paint::cap::SLIVER_TOP,
+            "the row's top pad is a sliver cap"
+        );
+        assert_eq!(
+            buf.cell((row.x, row.bottom() - 1)).unwrap().symbol(),
+            crate::paint::cap::SLIVER_BOTTOM,
+            "the row's bottom pad is a sliver cap"
+        );
+    }
+
+    /// Activating a row must not move its text: the old active row indented
+    /// its columns one cell to clear an accent bar, so the key jumped
+    /// sideways on every click.
+    #[test]
+    fn selecting_a_row_never_shifts_its_text_sideways() {
+        let theme = Theme::dark();
+        let map = map_of(&[("a", "1")]);
+        let mut plain_hits = HitMap::default();
+        draw_to(
+            &TableEditorState::default(),
+            &map,
+            &ctx(&theme, None),
+            &mut plain_hits,
+        );
+        let plain = plain_hits
+            .rect_of(&Hit::TableCell { row: 0, col: 0 })
+            .unwrap();
+        let t = TableEditorState {
+            selected: Some(0),
+            ..TableEditorState::default()
+        };
+        let mut hits = HitMap::default();
+        draw_to(&t, &map, &ctx(&theme, None), &mut hits);
+        let active = hits.rect_of(&Hit::TableCell { row: 0, col: 0 }).unwrap();
+        assert_eq!(
+            active.x, plain.x,
+            "the key cell keeps its column when the row activates"
+        );
+    }
+
+    /// The ghost row is the same pill, so it caps the same way and holds
+    /// its label in the same column as the ghost row at rest.
+    #[test]
+    fn the_selected_ghost_row_is_slivered_and_keeps_its_label_column() {
+        let theme = Theme::dark();
+        let map = map_of(&[("a", "1")]);
+        let mut resting = HitMap::default();
+        draw_to(
+            &TableEditorState::default(),
+            &map,
+            &ctx(&theme, None),
+            &mut resting,
+        );
+        let at_rest = resting.rect_of(&Hit::TableCell { row: 1, col: 0 }).unwrap();
+        let t = TableEditorState {
+            selected: Some(1),
+            ..TableEditorState::default()
+        };
+        let mut hits = HitMap::default();
+        let terminal = draw_to(&t, &map, &ctx(&theme, None), &mut hits);
+        let buf = terminal.backend().buffer();
+        let ghost = hits.rect_of(&Hit::TableRow(1)).unwrap();
+        assert_eq!(
+            buf.cell((ghost.x, ghost.y)).unwrap().symbol(),
+            crate::paint::cap::SLIVER_TOP,
+            "the ghost's top pad is a sliver cap"
+        );
+        assert_eq!(
+            buf.cell((ghost.x, ghost.bottom() - 1)).unwrap().symbol(),
+            crate::paint::cap::SLIVER_BOTTOM,
+            "the ghost's bottom pad is a sliver cap"
+        );
+        let selected = hits.rect_of(&Hit::TableCell { row: 1, col: 0 }).unwrap();
+        assert_eq!(
+            selected.x, at_rest.x,
+            "the add label keeps its column when the ghost is selected"
+        );
+    }
+
+    /// The enable/disable toggle is state, not an action: it sits at the
+    /// row's left edge, before the key, and shows on every row whether the
+    /// pointer is there or not.
+    #[test]
+    fn every_row_carries_its_toggle_at_the_left_edge_without_hover() {
+        let theme = Theme::dark();
+        let map = map_of(&[("a", "1")]);
+        let t = TableEditorState::default();
+        let mut hits = HitMap::default();
+        draw_to(&t, &map, &ctx(&theme, None), &mut hits);
+        let row = hits.rect_of(&Hit::TableRow(0)).unwrap();
+        let toggle = hits
+            .rect_of(&Hit::TableCheckbox(0))
+            .expect("the toggle is up on an untouched row");
+        assert_eq!(toggle.x, row.x, "flush with the row's left edge");
+        assert_eq!(toggle.y, row.y, "on the row's own line");
+        let key = hits.rect_of(&Hit::TableCell { row: 0, col: 0 }).unwrap();
+        assert!(
+            toggle.right() <= key.x,
+            "the toggle sits before the key text: {toggle:?} {key:?}"
+        );
+    }
+
+    /// The row's context buttons are copy then delete, at the right edge,
+    /// with the toggle now away on the left.
+    #[test]
+    fn the_active_rows_buttons_offer_copy_before_the_trash() {
+        let theme = Theme::dark();
+        let map = map_of(&[("a", "1")]);
+        let t = TableEditorState {
+            selected: Some(0),
+            ..TableEditorState::default()
+        };
+        let mut hits = HitMap::default();
+        let terminal = draw_to(&t, &map, &ctx(&theme, None), &mut hits);
+        let copy = hits
+            .rect_of(&Hit::TableCopy(0))
+            .expect("the active row offers copy");
+        let trash = hits.rect_of(&Hit::TableDelete(0)).unwrap();
+        assert!(
+            copy.right() <= trash.x,
+            "copy left of trash: {copy:?} {trash:?}"
+        );
+        let value = hits.rect_of(&Hit::TableCell { row: 0, col: 1 }).unwrap();
+        assert!(value.x < copy.x, "the buttons sit past the value cell");
+        let content = format!("{:?}", terminal.backend().buffer());
+        assert!(
+            content.contains(crate::glyph::COPY),
+            "the copy glyph is painted: {content}"
+        );
+    }
+
+    /// A compact row reveals copy along with its trash on hover.
+    #[test]
+    fn hovering_a_compact_row_reveals_its_copy_button() {
+        let theme = Theme::dark();
+        let map = map_of(&[("a", "1")]);
+        let t = TableEditorState::default();
+        let hovered = Hit::TableRow(0);
+        let mut hits = HitMap::default();
+        draw_to(&t, &map, &ctx(&theme, Some(&hovered)), &mut hits);
+        assert!(
+            hits.rect_of(&Hit::TableCopy(0)).is_some(),
+            "hover reveals copy"
         );
     }
 

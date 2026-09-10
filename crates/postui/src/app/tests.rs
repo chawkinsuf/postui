@@ -1233,20 +1233,20 @@ fn alt_a_starts_a_new_row_on_the_active_table_tab() {
 }
 
 /// A control that appears under a stationary pointer (here: the row's
-/// hover-revealed toggle button) must pick up hover styling from the
+/// hover-revealed copy button) must pick up hover styling from the
 /// post-frame resync, without the mouse having to move again.
 #[test]
 fn hover_resyncs_to_controls_revealed_under_a_stationary_pointer() {
     let mut app = app_with_one_param();
     render_once(&mut app);
     let row = app.hits.rect_of(&Hit::TableRow(0)).unwrap();
-    // Land exactly where the toggle button will appear (3 cells starting 8
-    // from the row's right edge — see `draw_row_buttons`).
+    // Land exactly where the copy button will appear (3 cells starting 7
+    // from the row's right edge — see `draw_row_actions`).
     let x = row.right() - 7;
     app.handle_mouse(moved(x, row.y));
     assert_ne!(
         app.hovered,
-        Some(Hit::TableCheckbox(0)),
+        Some(Hit::TableCopy(0)),
         "frame N has no button registered yet"
     );
     render_once(&mut app); // frame N+1 draws + registers the buttons
@@ -1254,7 +1254,7 @@ fn hover_resyncs_to_controls_revealed_under_a_stationary_pointer() {
         app.resync_hover(),
         "the resync notices the new control under the pointer"
     );
-    assert_eq!(app.hovered, Some(Hit::TableCheckbox(0)));
+    assert_eq!(app.hovered, Some(Hit::TableCopy(0)));
     assert!(
         !app.resync_hover(),
         "a second resync with nothing changed is quiet"
@@ -13156,6 +13156,64 @@ fn auto_header_copy_icon_puts_the_resolved_value_on_the_clipboard() {
     assert!(
         rendered_text(&mut app).contains("Copied Host"),
         "toast confirms the copy"
+    );
+}
+
+/// The row's copy button puts that row's value — as typed, tokens and all
+/// — on the clipboard, and says which row it took it from.
+#[test]
+fn the_table_rows_copy_button_puts_its_value_on_the_clipboard() {
+    let mut app = app_with_one_param();
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(
+        None, 65536, false,
+    ));
+    hover_row_then_click(&mut app, Hit::TableRow(0), Hit::TableCopy(0));
+    assert!(
+        rendered_text(&mut app).contains("Copied page"),
+        "the toast names the row it copied"
+    );
+}
+
+/// Copy is a read-only side action: taking a value off a row must not
+/// cost the row its selection, the way clicking away from the table does.
+#[test]
+fn copying_a_row_leaves_the_table_selection_where_it_was() {
+    let mut app = app_with_one_param();
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(
+        None, 65536, false,
+    ));
+    app.editor.table.selected = Some(0);
+    click_hit(&mut app, Hit::TableCopy(0));
+    assert_eq!(
+        app.editor.table.selected,
+        Some(0),
+        "the row stays selected through a copy"
+    );
+}
+
+/// The copy button is part of its row: right-clicking it opens the row's
+/// own context menu, on that row, exactly as right-clicking the row does.
+#[test]
+fn right_clicking_the_copy_button_opens_the_rows_context_menu() {
+    let mut app = app_with_one_param();
+    render_once(&mut app);
+    let row = app.hits.rect_of(&Hit::TableRow(0)).unwrap();
+    app.handle_mouse(moved(row.x + 1, row.y));
+    render_once(&mut app);
+    let copy = app
+        .hits
+        .rect_of(&Hit::TableCopy(0))
+        .expect("hover reveals the copy button");
+    app.handle_mouse(right_down(copy.x + 1, copy.y));
+
+    assert_eq!(
+        app.editor.table.selected,
+        Some(0),
+        "the click lands the cursor on the row before its menu opens"
+    );
+    assert!(
+        matches!(app.modals.top(), Some(Modal::Dropdown(_))),
+        "the row's context menu opened"
     );
 }
 

@@ -2165,6 +2165,21 @@ impl Editor {
         map.get_index(i).map(|(k, _)| k.clone())
     }
 
+    /// The key and value of the active tab's table row `i` — what the
+    /// row's copy button puts on the clipboard, verbatim as typed
+    /// (`{{tokens}}` included). `None` out of range, or on Body, which has
+    /// no table.
+    pub fn table_row_at(&self, i: usize) -> Option<(&str, &str)> {
+        let map = match self.active_tab {
+            EditorTab::Params => &self.params,
+            EditorTab::Headers => &self.headers,
+            EditorTab::Vars => &self.variables,
+            EditorTab::Body => return None,
+        };
+        map.get_index(i)
+            .map(|(k, e)| (k.as_str(), e.value.as_str()))
+    }
+
     /// Row `i`'s enabled flag on the active table tab. `true` out of range
     /// or on Body — callers only ask about real rows.
     pub fn table_row_enabled(&self, i: usize) -> bool {
@@ -5885,7 +5900,11 @@ url = "https://api.example.com/users""#,
         let buf = terminal.backend().buffer();
         let row = hits.rect_of(&crate::hit::Hit::TableRow(0)).unwrap();
         assert_eq!(row.height, 4, "hint adds one extra row to the expansion");
-        let hint_cell = buf.cell((row.x + 2, row.y + 2)).unwrap();
+        // The hint lines up under the key, in the key cell's own column.
+        let key = hits
+            .rect_of(&crate::hit::Hit::TableCell { row: 0, col: 0 })
+            .unwrap();
+        let hint_cell = buf.cell((key.x, row.y + 2)).unwrap();
         assert_eq!(
             hint_cell.fg, theme.text_muted,
             "the overrides hint is dim, not full text color"
