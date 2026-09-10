@@ -2577,6 +2577,7 @@ impl Editor {
         let right_limit = area.x + area.width;
         crate::components::footer::paint_chip_row(
             buf,
+            area,
             area.y,
             area.x + 1,
             right_limit,

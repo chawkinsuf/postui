@@ -2412,6 +2412,14 @@ fn draw_dropdown(
     // the content row puts it back exactly where it was, its top edge on the
     // chip's bottom sliver. A one-row anchor is its own content row, so the
     // method dropdown is unaffected either way.
+    //
+    // Covering that sliver is deliberate, not a cost of the placement: a
+    // chip and its open menu are one object while the menu is up, and a
+    // cap is a chip's boundary against the bar. Where the menu attaches
+    // there is no boundary to draw, so the chip gives its bottom edge up
+    // for as long as the menu holds it. Dropping the popup a row to spare
+    // the sliver buys back an edge nobody misses and costs the join, which
+    // reads immediately as a menu floating loose of the chip that opened it.
     let anchor_mid = state.anchor.y + state.anchor.height / 2;
     let below_y = anchor_mid + 1;
     let y = if below_y + height > screen.y + screen.height {

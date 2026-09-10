@@ -3,7 +3,6 @@ use crate::paint::{fill, text};
 use crate::theme::Theme;
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::Color;
 
 /// The app bar is always exactly this many rows tall: a blank panel row on
 /// top, the content row (wordmark + chips), a blank panel row on the
@@ -74,45 +73,6 @@ const RELOAD_W: u16 = (RELOAD_LABEL.len() + " alt+r ".len()) as u16;
 /// working in every case, and their hints stay in the footer/palette. If
 /// even the bare Manage chip can't fit right-anchored beside the
 /// selectors, it follows them and clips at the bar's edge as before.
-/// Paints `face` as a 1.25-row slivered block centred on the bar's content
-/// row, and returns the block for the caller to register its hit over.
-///
-/// The caps are the control (`cap.rs`), so the returned block is all three
-/// rows: a click on the sliver above `Manage` means Manage, the same way a
-/// click on a `Button`'s cap means the button. On a bar too short for the
-/// caps this degrades to the plain one-row fill it used to be, rather than
-/// dropping the chip.
-fn slivered_block(
-    buf: &mut ratatui::buffer::Buffer,
-    area: Rect,
-    mid_y: u16,
-    x: u16,
-    width: u16,
-    face: Color,
-    theme: &Theme,
-) -> Rect {
-    if area.height >= crate::paint::cap::SLIVER_H && mid_y > area.y {
-        let block = Rect {
-            x,
-            y: mid_y - 1,
-            width,
-            height: crate::paint::cap::SLIVER_H,
-        };
-        let surface = crate::paint::cap::backdrop(buf, block, theme);
-        if crate::paint::cap::slivered(buf, block, face, surface).height > 0 {
-            return block;
-        }
-    }
-    let row = Rect {
-        x,
-        y: mid_y,
-        width,
-        height: 1,
-    };
-    fill(buf, row, face);
-    row
-}
-
 /// Paints one composite app-bar button at `(x, y)`: a keycap pill and the
 /// name beside it. The two are a single hit, so they warm as one unit —
 /// the keycap through `paint::keycap_face`, the name's fill through
@@ -144,10 +104,10 @@ fn paint_bar_button(
     // At rest the name's own fill IS the panel, so its slivers paint panel
     // on panel and read as the bare bar they were; hovering fills the span
     // and the slivers come with it.
-    let block = slivered_block(buf, area, y, x, width, label_bg, theme);
+    let block = crate::paint::cap::chip_block(buf, area, y, x, width, label_bg, theme);
     // Then the keycap's own fill over its share of the block, so the pill
     // keeps its tint against the name beside it.
-    slivered_block(buf, area, y, x, key_w, theme.tint(color, on), theme);
+    crate::paint::cap::chip_block(buf, area, y, x, key_w, theme.tint(color, on), theme);
 
     chip.paint(buf, x, y, on, theme);
     text(buf, x + key_w, y, label, theme.text, label_bg, false);
@@ -298,7 +258,7 @@ pub fn draw_header(
             };
             // The slivers carry the pill's own tinted fill, so the cap is
             // the same colour as the face it belongs to.
-            let block = slivered_block(
+            let block = crate::paint::cap::chip_block(
                 buf,
                 area,
                 mid_y,
@@ -315,7 +275,7 @@ pub fn draw_header(
         // Then the chip that opens the picker.
         let w = label.chars().count() as u16;
         let bg = crate::paint::hover_surface(theme, theme.control, hovered == Some(hit), hover_t);
-        let block = slivered_block(buf, area, mid_y, x, w, bg, theme);
+        let block = crate::paint::cap::chip_block(buf, area, mid_y, x, w, bg, theme);
         text(buf, x, mid_y, label, theme.text, bg, true);
         hits.register(block, hit.clone());
         x += w;
@@ -393,9 +353,9 @@ pub fn draw_header(
     // Caps across the whole span, keycap and name alike, exactly as
     // `paint_bar_button` does for its neighbours — Manage keeps its own
     // copy only because the pressed state overrides hover.
-    let manage_block = slivered_block(buf, area, mid_y, manage_x, manage_w, vm_label_bg, theme);
+    let manage_block = crate::paint::cap::chip_block(buf, area, mid_y, manage_x, manage_w, vm_label_bg, theme);
     if show_manage_pill {
-        slivered_block(
+        crate::paint::cap::chip_block(
             buf,
             area,
             mid_y,
@@ -665,27 +625,33 @@ mod tests {
     /// per `cap.rs`, the caps ARE the control — so a click on the sliver
     /// lands on the chip it belongs to.
     #[test]
-    fn a_selector_chip_is_a_slivered_three_row_block() {
+    fn a_selector_chip_stands_in_the_apps_chip_anatomy() {
+        use crate::paint::cap::{CHIP_CAPS, ChipCaps};
         let theme = Theme::dark();
         let (term, hits) = render(&theme, "alpha", "qa", None);
         let rect = hits.rect_of(&Hit::HeaderEnv).expect("env chip");
 
-        assert_eq!(rect.height, 3, "the hit covers the whole capped block");
-        let mid = rect.y + 1;
-
         assert_eq!(
-            cell(&term, rect.x, mid).bg,
+            rect.height,
+            CHIP_CAPS.height(),
+            "the hit covers the whole control, caps included"
+        );
+        assert_eq!(
+            cell(&term, rect.x, mid_of(&rect)).bg,
             theme.control,
             "the content row is the chip's face"
         );
-        let top = cell(&term, rect.x, rect.y);
-        assert_eq!(top.symbol(), crate::paint::cap::SLIVER_TOP);
-        assert_eq!(top.fg, theme.control, "an eighth of face...");
-        assert_eq!(top.bg, theme.panel, "...over the bar's own panel");
-        let bottom = cell(&term, rect.x, rect.y + 2);
-        assert_eq!(bottom.symbol(), crate::paint::cap::SLIVER_BOTTOM);
-        assert_eq!(bottom.fg, theme.control);
-        assert_eq!(bottom.bg, theme.panel);
+
+        if CHIP_CAPS == ChipCaps::Sliver {
+            let top = cell(&term, rect.x, rect.y);
+            assert_eq!(top.symbol(), crate::paint::cap::SLIVER_TOP);
+            assert_eq!(top.fg, theme.control, "an eighth of face...");
+            assert_eq!(top.bg, theme.panel, "...over the bar's own panel");
+            let bottom = cell(&term, rect.x, rect.y + 2);
+            assert_eq!(bottom.symbol(), crate::paint::cap::SLIVER_BOTTOM);
+            assert_eq!(bottom.fg, theme.control);
+            assert_eq!(bottom.bg, theme.panel);
+        }
     }
 
     /// The sliver is part of the button, so hovering it warms the chip
@@ -694,37 +660,47 @@ mod tests {
     #[test]
     fn hovering_a_chip_lifts_its_slivers_with_its_face() {
         let theme = Theme::dark();
+        use crate::paint::cap::{CHIP_CAPS, ChipCaps};
         let (term, hits) = render(&theme, "alpha", "qa", Some(&Hit::HeaderEnv));
         let rect = hits.rect_of(&Hit::HeaderEnv).expect("env chip");
         let lifted = crate::paint::hover_surface(&theme, theme.control, true, 1.0);
 
-        assert_eq!(cell(&term, rect.x, rect.y + 1).bg, lifted, "face lifts");
         assert_eq!(
-            cell(&term, rect.x, rect.y).fg,
+            cell(&term, rect.x, mid_of(&rect)).bg,
             lifted,
-            "and so does the sliver above it"
+            "the face lifts"
         );
-        assert_eq!(
-            cell(&term, rect.x, rect.y + 2).fg,
-            lifted,
-            "and the one below"
-        );
+        if CHIP_CAPS == ChipCaps::Sliver {
+            assert_eq!(
+                cell(&term, rect.x, rect.y).fg,
+                lifted,
+                "and so does the sliver above it"
+            );
+            assert_eq!(
+                cell(&term, rect.x, rect.y + 2).fg,
+                lifted,
+                "and the one below"
+            );
+        }
     }
 
     /// A cycle pill is its own button, so it caps as its own block too.
     #[test]
-    fn a_cycle_pill_is_slivered_and_hit_as_its_own_block() {
+    fn a_cycle_pill_is_capped_and_hit_as_its_own_block() {
+        use crate::paint::cap::{CHIP_CAPS, ChipCaps};
         let theme = Theme::dark();
         let (term, hits) = render(&theme, "alpha", "qa", None);
         let pill = hits.rect_of(&Hit::HeaderEnvCycle).expect("env cycle");
-        assert_eq!(pill.height, 3);
+        assert_eq!(pill.height, CHIP_CAPS.height());
         let face = theme.tint(theme.text_muted, theme.control);
-        assert_eq!(cell(&term, pill.x, pill.y + 1).bg, face);
-        assert_eq!(
-            cell(&term, pill.x, pill.y).fg,
-            face,
-            "the sliver carries the pill's own tinted fill"
-        );
+        assert_eq!(cell(&term, pill.x, mid_of(&pill)).bg, face);
+        if CHIP_CAPS == ChipCaps::Sliver {
+            assert_eq!(
+                cell(&term, pill.x, pill.y).fg,
+                face,
+                "the sliver carries the pill's own tinted fill"
+            );
+        }
     }
 
     /// A composite button caps as one block across keycap AND name: the
@@ -736,16 +712,30 @@ mod tests {
     /// and the slivers follow that fill across the whole button.
     #[test]
     fn a_composite_button_caps_across_its_whole_span() {
+        use crate::paint::cap::{CHIP_CAPS, ChipCaps};
         let theme = Theme::dark();
         let (term, hits) = render_wide(&theme, "alpha", "qa", false, None, 150);
         let rect = hits.rect_of(&Hit::HeaderTheme).expect("theme hit");
-        assert_eq!(rect.height, 3, "the hit is the whole capped block");
+        assert_eq!(
+            rect.height,
+            CHIP_CAPS.height(),
+            "the hit is the whole control, keycap and name together"
+        );
 
         let key_w = " alt+t ".chars().count() as u16;
         assert_eq!(
+            cell(&term, rect.x, mid_of(&rect)).bg,
+            theme.tint(theme.text_muted, theme.control),
+            "the keycap's own tinted fill"
+        );
+
+        if CHIP_CAPS != ChipCaps::Sliver {
+            return;
+        }
+        assert_eq!(
             cell(&term, rect.x, rect.y).fg,
             theme.tint(theme.text_muted, theme.control),
-            "at rest the keycap's sliver carries the keycap's own tinted fill"
+            "at rest the keycap's sliver carries that same fill"
         );
         assert_eq!(
             cell(&term, rect.x + key_w, rect.y).bg,

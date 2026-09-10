@@ -66,6 +66,39 @@ pub const SLIVER_TOP: &str = "\u{2581}";
 /// inversion trick.
 pub const SLIVER_BOTTOM: &str = "\u{2594}";
 
+/// Whether the app's one-row chips — the app bar's selectors, cycle pills
+/// and buttons, the footer's shortcut chips — carry caps, and so how tall
+/// they stand and how tall a hit they register.
+///
+/// The whole app reads this from one place, [`CHIP_CAPS`]. Flipping that
+/// constant moves every chip together, hit box included, with no other
+/// edit anywhere — which is the point: the two looks are worth comparing
+/// directly, and a comparison you have to hand-edit a dozen call sites for
+/// is one nobody makes twice.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ChipCaps {
+    /// A flat one-row chip: the fill is the whole control, and the hit is
+    /// that single row.
+    None,
+    /// A 1.25-row chip: an eighth-row sliver above and below the fill, and
+    /// a three-row hit — the caps *are* the control, the same rule the
+    /// full-size [`capped`] anatomy follows.
+    Sliver,
+}
+
+impl ChipCaps {
+    /// The rows a chip occupies under this setting, caps and hit included.
+    pub const fn height(self) -> u16 {
+        match self {
+            ChipCaps::None => 1,
+            ChipCaps::Sliver => SLIVER_H,
+        }
+    }
+}
+
+/// The one place the app decides how tall its chips stand. See [`ChipCaps`].
+pub const CHIP_CAPS: ChipCaps = ChipCaps::Sliver;
+
 /// The surface a control about to paint into `area` is sitting on, read
 /// from the cell at the block's top-left — the first cell its top cap
 /// will cover, and so by definition part of the surface behind it.
@@ -156,6 +189,46 @@ pub fn slivered(buf: &mut Buffer, area: Rect, face: Color, surface: Color) -> Re
     content
 }
 
+/// Paints `face` as a chip centred on the content row `mid_y`, in whatever
+/// anatomy [`CHIP_CAPS`] calls for, and returns the block to register the
+/// chip's hit over — all three rows when capped, since the caps are the
+/// control.
+///
+/// `bounds` is the strip the chip lives in (the app bar, the footer row).
+/// Where it has no room for the caps — a terminal squeezed too short, or
+/// the editor's one-row Body toolbar — the chip degrades to the flat single
+/// row rather than being dropped.
+pub fn chip_block(
+    buf: &mut Buffer,
+    bounds: Rect,
+    mid_y: u16,
+    x: u16,
+    width: u16,
+    face: Color,
+    theme: &Theme,
+) -> Rect {
+    if CHIP_CAPS == ChipCaps::Sliver && bounds.height >= SLIVER_H && mid_y > bounds.y {
+        let block = Rect {
+            x,
+            y: mid_y - 1,
+            width,
+            height: SLIVER_H,
+        };
+        let surface = backdrop(buf, block, theme);
+        if slivered(buf, block, face, surface).height > 0 {
+            return block;
+        }
+    }
+    let row = Rect {
+        x,
+        y: mid_y,
+        width,
+        height: 1,
+    };
+    super::fill(buf, row, face);
+    row
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -163,6 +236,51 @@ mod tests {
 
     fn buf(w: u16, h: u16) -> Buffer {
         Buffer::empty(Rect::new(0, 0, w, h))
+    }
+
+    /// A chip stands however tall [`CHIP_CAPS`] says, and registers a hit
+    /// that tall — the caps are part of the control. Written against the
+    /// constant rather than a literal, so it keeps passing when the
+    /// constant is flipped: that is the whole point of the constant.
+    #[test]
+    fn a_chip_block_stands_as_tall_as_the_chip_caps_constant() {
+        let theme = Theme::dark();
+        let bounds = Rect::new(0, 0, 20, 3);
+        let mut b = buf(20, 3);
+        crate::paint::fill(&mut b, bounds, theme.panel);
+
+        let block = chip_block(&mut b, bounds, 1, 2, 6, theme.control, &theme);
+        assert_eq!(block.height, CHIP_CAPS.height());
+        assert_eq!(block.width, 6);
+        assert_eq!(b[(2, 1)].bg, theme.control, "the content row is the face");
+
+        match CHIP_CAPS {
+            ChipCaps::None => {
+                assert_eq!(block.y, 1, "a flat chip is its content row alone");
+                assert_eq!(b[(2, 0)].bg, theme.panel, "nothing above it");
+            }
+            ChipCaps::Sliver => {
+                assert_eq!(block.y, 0, "the block opens a row above the face");
+                assert_eq!(b[(2, 0)].symbol(), SLIVER_TOP);
+                assert_eq!(b[(2, 0)].fg, theme.control);
+                assert_eq!(b[(2, 2)].symbol(), SLIVER_BOTTOM);
+                assert_eq!(b[(2, 2)].fg, theme.control);
+            }
+        }
+    }
+
+    /// Bounds with no room for the caps get a flat one-row chip rather than
+    /// a dropped one — a terminal too short for the bar's full height, or
+    /// the editor's one-row Body toolbar, which has no spare rows at all.
+    #[test]
+    fn a_chip_block_degrades_to_one_row_where_the_caps_cannot_fit() {
+        let theme = Theme::dark();
+        let bounds = Rect::new(0, 0, 20, 1);
+        let mut b = buf(20, 1);
+
+        let block = chip_block(&mut b, bounds, 0, 2, 6, theme.control, &theme);
+        assert_eq!(block, Rect::new(2, 0, 6, 1));
+        assert_eq!(b[(2, 0)].bg, theme.control, "still painted, just flat");
     }
 
     /// The sliver cap is the quarter cap's smaller sibling: an eighth of
