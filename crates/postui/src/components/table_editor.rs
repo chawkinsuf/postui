@@ -568,30 +568,18 @@ impl TableEditorState {
         TableOutcome::maybe_warn(warning)
     }
 
-    /// The existing row (by map index) currently drawn expanded: the row
-    /// being edited, or — when nothing is being edited — the selected row.
-    /// Hover never expands a row (it only tints its background), so what's
-    /// selected is always the one visibly expanded row. `None` when nothing
-    /// in the map is expanded (empty map, or the ghost row under edit —
-    /// see [`Self::editing_ghost`]).
-    pub fn active_index(&self, map_len: usize) -> Option<usize> {
-        match &self.editing {
-            Some(edit) => (edit.row < map_len).then_some(edit.row),
-            None => self.selected.filter(|s| *s < map_len),
-        }
-    }
-
     /// Draws the table as one contiguous painted control: a muted-uppercase
     /// `NAME`/`VALUE` header row on `panel`, a `control` body of compact
-    /// 1-line rows (the active row — selected, or being edited — grows to a
-    /// 3-row slivered block carrying its own buttons), the ghost row
-    /// (an empty row labelled by `add_label` until it is typed into), and a
-    /// closing `▔` edge. Every cell registers a `Hit::TableCell`, so a
-    /// click lands straight in that cell's editor.
+    /// 1-line rows (the active row — selected, or being edited — keeps that
+    /// height and reveals its own buttons at the value's right end), the
+    /// ghost row (an empty row labelled by `add_label` until it is typed
+    /// into), and a closing `▔` edge. Every cell registers a
+    /// `Hit::TableCell`, so a click lands straight in that cell's editor.
     /// `shadow` is `Some` only on the Vars tab: `name → "overrides <env>:
     /// <value>"`, already formatted (masked for secrets) by the caller. A
-    /// row whose key is present shows that line, dim, under its expanded
-    /// form. `None` on Params/Headers, which have no shadowing concept.
+    /// row whose key is present shows that note, dim, trailing its value on
+    /// the same line. `None` on Params/Headers, which have no shadowing
+    /// concept.
     /// `vars` is the variable snapshot every drawn cell's `{{tokens}}` are
     /// tinted and registered against (spec §7).
     #[allow(clippy::too_many_arguments)] // signature is the produced interface, verbatim
@@ -917,11 +905,17 @@ impl TableEditorState {
         }
 
         if real && !entry.enabled {
+            // The strike marks the text that is actually there: a value
+            // too long for its cell was clipped, and the line has to stop
+            // where the clip did rather than run on across empty cells
+            // (and, on a narrow pane, into whatever is drawn beside it).
             if editing_col != Some(Col::Key) {
-                Self::strike_cells(buf, cols.name_x, y, key.chars().count() as u16);
+                let len = (key.chars().count() as u16).min(name_w);
+                Self::strike_cells(buf, cols.name_x, y, len);
             }
             if editing_col != Some(Col::Value) {
-                Self::strike_cells(buf, cols.value_x, y, entry.value.chars().count() as u16);
+                let len = (entry.value.chars().count() as u16).min(value_w);
+                Self::strike_cells(buf, cols.value_x, y, len);
             }
         }
 
@@ -938,7 +932,7 @@ impl TableEditorState {
         }
 
         hits.register(Rect::new(area.x, y, area.width, 1), Hit::TableRow(i));
-        Self::register_cells(hits, cols_span(&cols, area), y, i);
+        Self::register_cells(hits, cols_span(&cols, value_right), y, i);
         // Only the cells drawn as plain text get token treatment: a cell
         // under edit is showing a live `LineInput` (caret and all), and
         // registering a `VarToken` over it would turn the next click into a
@@ -948,7 +942,7 @@ impl TableEditorState {
             buf,
             hits,
             &cols,
-            area,
+            value_right,
             y,
             if real && editing_col != Some(Col::Key) {
                 key
@@ -1016,14 +1010,14 @@ fn paint_cell_tokens(
     buf: &mut ratatui::buffer::Buffer,
     hits: &mut HitMap,
     cols: &Columns,
-    area: Rect,
+    value_right: u16,
     y: u16,
     key: &str,
     value: &str,
     vars: &VarView,
     theme: &Theme,
 ) {
-    let (name_x, name_w, value_x, value_w) = cols_span(cols, area);
+    let (name_x, name_w, value_x, value_w) = cols_span(cols, value_right);
     if name_w > 0 {
         paint_var_tokens(
             buf,
@@ -1049,11 +1043,15 @@ fn paint_cell_tokens(
 }
 
 /// `(name_x, name_w, value_x, value_w)` for a row's two clickable cells:
-/// the name cell stops at the divider, the value cell runs to the drawn
-/// area's right edge.
-fn cols_span(cols: &Columns, area: Rect) -> (u16, u16, u16, u16) {
+/// the name cell stops at the divider, the value cell runs to
+/// `value_right` — where the value was actually drawn, which is short of
+/// the area's right edge on a row showing its actions. The registered
+/// width has to be the drawn width: a cell under edit windows its text to
+/// it, and the click that places the caret reads the width back off the
+/// hit rect.
+fn cols_span(cols: &Columns, value_right: u16) -> (u16, u16, u16, u16) {
     let name_w = cols.divider_x.saturating_sub(cols.name_x);
-    let value_w = area.right().saturating_sub(cols.value_x);
+    let value_w = value_right.saturating_sub(cols.value_x);
     (cols.name_x, name_w, cols.value_x, value_w)
 }
 #[cfg(test)]
@@ -1881,6 +1879,45 @@ mod tests {
         );
     }
 
+    /// A disabled value too long for its cell is clipped, so the strike has
+    /// to stop where the text did — not run on across empty cells and out
+    /// of the table's own area into whatever is drawn beside it.
+    #[test]
+    fn a_long_disabled_value_is_struck_only_where_it_is_drawn() {
+        let theme = Theme::dark();
+        let mut map = map_of(&[("a", "0123456789012345678901234567890123456789")]);
+        map["a"].enabled = false;
+        let t = TableEditorState::default();
+        let mut hits = HitMap::default();
+        let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+        let area = Rect::new(0, 0, 24, 10);
+        terminal
+            .draw(|f| {
+                t.draw(
+                    f,
+                    area,
+                    &map,
+                    &ctx(&theme, None),
+                    "+ Add param",
+                    &mut hits,
+                    None,
+                    &VarView::default(),
+                )
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let y = hits.rect_of(&Hit::TableCell { row: 0, col: 1 }).unwrap().y;
+        for x in area.right()..40 {
+            assert!(
+                !buf.cell((x, y))
+                    .unwrap()
+                    .modifier
+                    .contains(Modifier::CROSSED_OUT),
+                "the strike ran past the table's own area, at column {x}"
+            );
+        }
+    }
+
     /// Selecting a row must not move anything: rows edit in place on their
     /// own single line, the way the Variable Manager's grid does, so no
     /// row below the cursor ever shifts under it.
@@ -2154,21 +2191,13 @@ mod tests {
     }
 
     #[test]
-    fn active_index_and_editing_the_ghost_row() {
+    fn editing_the_ghost_row() {
         let mut map = map_of(&[("a", "1")]);
         let mut t = TableEditorState::default();
-        assert_eq!(t.active_index(map.len()), None);
-        t.selected = Some(0);
-        assert_eq!(t.active_index(map.len()), Some(0));
-        t.selected = Some(1); // the ghost
-        assert_eq!(
-            t.active_index(map.len()),
-            None,
-            "the ghost row expands nothing in the map"
-        );
+        assert!(!t.editing_ghost(map.len()));
+        t.selected = Some(1); // the ghost, selected but not typed into
         assert!(!t.editing_ghost(map.len()));
         t.click_cell(1, Col::Key, &mut map);
-        assert_eq!(t.active_index(map.len()), None);
         assert!(t.editing_ghost(map.len()), "the ghost row is under edit");
     }
 

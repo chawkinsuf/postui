@@ -13195,6 +13195,139 @@ fn copying_a_row_leaves_the_table_selection_where_it_was() {
     );
 }
 
+/// A cell edit windows its text, so a value longer than its cell scrolls
+/// under the pointer. The click that places the caret has to add that
+/// window's start: clicking the leftmost visible character must land on
+/// that character, not on char 0 of the string.
+#[test]
+fn clicking_a_scrolled_cell_edit_puts_the_caret_under_the_pointer() {
+    let mut app = app_with_one_param();
+    let long: String = ('a'..='z').cycle().take(200).collect();
+    app.editor.params.get_index_mut(0).unwrap().1.value = long;
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+    app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+    render_once(&mut app);
+
+    let area = app
+        .hits
+        .rect_of(&Hit::TableCell { row: 0, col: 1 })
+        .unwrap();
+    let start = app
+        .editor
+        .table
+        .editing
+        .as_ref()
+        .unwrap()
+        .input
+        .window_start(true, area.width);
+    assert!(start > 0, "the caret at the end scrolled the window");
+
+    // The cell was just clicked open; without this the next click on it
+    // pairs into a double click and selects the word instead.
+    app.last_click = None;
+    app.handle_mouse(left_down(area.x, area.y));
+
+    assert_eq!(
+        app.editor.table.editing.as_ref().unwrap().input.cursor(),
+        start,
+        "the leftmost visible column is the window's first char"
+    );
+}
+
+/// And the sweep that follows that click reads the same window: dragging
+/// across a scrolled cell selects the characters under the pointer.
+#[test]
+fn dragging_across_a_scrolled_cell_edit_selects_what_is_under_the_pointer() {
+    let mut app = app_with_one_param();
+    let long: String = ('a'..='z').cycle().take(200).collect();
+    app.editor.params.get_index_mut(0).unwrap().1.value = long;
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+    app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+    render_once(&mut app);
+
+    let area = app
+        .hits
+        .rect_of(&Hit::TableCell { row: 0, col: 1 })
+        .unwrap();
+    app.last_click = None;
+    app.handle_mouse(left_down(area.x, area.y));
+    // The caret moved, so the cell redraws around it: the sweep reads the
+    // window the next frame actually shows.
+    render_once(&mut app);
+    let input = &app.editor.table.editing.as_ref().unwrap().input;
+    let anchor = input.cursor();
+    let win = input.window_start(true, area.width);
+    app.handle_mouse(dragged(area.x + 4, area.y));
+
+    assert!(win > 0, "the cell is still scrolled off its start");
+    assert_eq!(
+        app.editor
+            .table
+            .editing
+            .as_ref()
+            .unwrap()
+            .input
+            .selection()
+            .expect("the sweep selected something"),
+        (win + 4, anchor),
+        "the sweep covers the visible characters it crossed"
+    );
+}
+
+/// The value cell is registered at the width it was drawn at: on a row
+/// showing its actions the value stops short of them, and the caret
+/// arithmetic reads that width back off the hit rect.
+#[test]
+fn the_value_cells_hit_rect_stops_where_the_actions_begin() {
+    let mut app = app_with_one_param();
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+    render_once(&mut app);
+
+    let cell = app
+        .hits
+        .rect_of(&Hit::TableCell { row: 0, col: 1 })
+        .unwrap();
+    let copy = app
+        .hits
+        .rect_of(&Hit::TableCopy(0))
+        .expect("the row under edit shows its actions");
+    assert!(
+        cell.right() <= copy.x,
+        "value cell {cell:?} runs under the actions at {copy:?}"
+    );
+}
+
+/// The copy pill shows on the row being typed into, so it must take the
+/// value as typed — committing the live edit first — not the one the map
+/// still holds behind it.
+#[test]
+fn copying_the_row_under_edit_takes_the_typed_value() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.txt");
+    let cmd = format!("cat > {}", out.to_string_lossy());
+    let mut app = app_with_one_param();
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(
+        Some(cmd),
+        65536,
+        false,
+    ));
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+    type_chars(&mut app, "23");
+
+    click_hit(&mut app, Hit::TableCopy(0));
+
+    assert_eq!(
+        app.editor.params.get_index(0).unwrap().1.value,
+        "123",
+        "the copy committed the edit on its way through"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&out).unwrap(),
+        "123",
+        "the clipboard got what the screen was showing"
+    );
+}
+
 /// The copy button is part of its row: right-clicking it opens the row's
 /// own context menu, on that row, exactly as right-clicking the row does.
 #[test]
