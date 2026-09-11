@@ -511,6 +511,12 @@ const GHOST_LABEL: &str = "+ option";
 /// Width of the grid's radio column (glyph + one column of gutter).
 const RADIO_W: u16 = 3;
 
+/// The gutter between the selector pane's two button families (the verbs
+/// that act on options, and the verbs that act on the selector itself).
+/// Wider than the single column between buttons of one family, which is
+/// the whole point: it is what makes them read as two groups.
+const GROUP_GAP: u16 = 3;
+
 /// The option row's `󰆴` zone: space + glyph + space. The `󰆏` copy zone
 /// beside it is the same width — the table editor's row actions exactly.
 const TRASH_W: u16 = 3;
@@ -1616,22 +1622,34 @@ impl VarManager {
             let label = format!("Selector: {selector}");
             text(buf, x0, y, &label, theme.text, theme.page, true);
             let mut bx = right.x + right.width;
-            // `Paste` comes last so it is the first button a narrow pane
-            // drops — the row's own `󰆏` buttons and the `v` chip keep the
-            // pair reachable when it goes.
+            // Painted right to left, so the array runs that way too: the
+            // two option-level verbs hold the right edge — `+ Option`, the
+            // primary, on the edge itself — and the three selector-level
+            // ones trail off to the left, where a narrow pane drops them
+            // first. That is the right order to lose them in: they are the
+            // rare verbs, and each has a menu row and a footer chip of its
+            // own, while `Paste` is used as often as options are added.
+            // `GROUP_GAP` before `Edit fields` is where one family ends and
+            // the other begins — two columns of air so the eye reads two
+            // groups rather than five loose buttons.
             let can_paste = self.can_paste(selector);
-            for (lbl, kind, hit) in [
-                ("Delete", ButtonKind::Secondary, Hit::VmDelete),
-                ("Rename", ButtonKind::Secondary, Hit::VmRename),
-                ("Edit fields", ButtonKind::Secondary, Hit::VmEditFields),
-                ("+ Option", ButtonKind::Primary, Hit::VmNewOption),
-                ("Paste", ButtonKind::Secondary, Hit::VmPasteOption),
+            for (lbl, kind, hit, gap) in [
+                ("+ Option", ButtonKind::Primary, Hit::VmNewOption, 1),
+                ("Paste", ButtonKind::Secondary, Hit::VmPasteOption, 1),
+                (
+                    "Edit fields",
+                    ButtonKind::Secondary,
+                    Hit::VmEditFields,
+                    GROUP_GAP,
+                ),
+                ("Rename", ButtonKind::Secondary, Hit::VmRename, 1),
+                ("Delete", ButtonKind::Secondary, Hit::VmDelete, 1),
             ] {
                 let w = button_min_width(lbl);
-                if bx < x0 + label.chars().count() as u16 + w + 3 {
+                if bx < x0 + label.chars().count() as u16 + w + gap + 2 {
                     break;
                 }
-                bx -= w + 1;
+                bx -= w + gap;
                 let rect = Rect {
                     x: bx,
                     y: y - 1,
@@ -3559,6 +3577,55 @@ fields = ["user_id", "customer_id"]
         ] {
             assert!(hits.rect_of(&hit).is_some(), "{hit:?} has no button");
         }
+    }
+
+    #[test]
+    fn the_title_rows_buttons_run_rarest_first_with_the_primary_at_the_edge() {
+        let (_dir, ctx) = fixture_with_description();
+        let mut vm = VarManager::default();
+        select_group(&mut vm, &ctx, "creds");
+        vm.stash = Some(vm.option_row(&ctx, 0).expect("row 0 is an option"));
+        let (_, hits) = render(&mut vm, &ctx);
+
+        // Left to right: the three selector-level verbs, then the two
+        // option-level ones. A narrow pane drops from the left, so the
+        // rare verbs go first and `+ Option` — the primary — holds the
+        // right edge, with `Paste` beside its own family.
+        let xs: Vec<u16> = [
+            Hit::VmDelete,
+            Hit::VmRename,
+            Hit::VmEditFields,
+            Hit::VmPasteOption,
+            Hit::VmNewOption,
+        ]
+        .iter()
+        .map(|h| hits.rect_of(h).unwrap_or_else(|| panic!("{h:?} has no button")).x)
+        .collect();
+        assert!(
+            xs.windows(2).all(|w| w[0] < w[1]),
+            "buttons out of order: {xs:?}"
+        );
+        // Delete no longer anchors the row, and nothing sits between the
+        // primary and the pane's right edge.
+        let primary = hits.rect_of(&Hit::VmNewOption).unwrap();
+        assert!(
+            xs.iter().all(|x| *x <= primary.x),
+            "the primary is not the rightmost button: {xs:?}"
+        );
+
+        // The two families are set apart by a wider gutter than the one
+        // between buttons of the same family — that gap is the only thing
+        // saying these are two groups.
+        let gap_between = |left: Hit, right: Hit| {
+            let (l, r) = (hits.rect_of(&left).unwrap(), hits.rect_of(&right).unwrap());
+            r.x - (l.x + l.width)
+        };
+        let within = gap_between(Hit::VmRename, Hit::VmEditFields);
+        let between = gap_between(Hit::VmEditFields, Hit::VmPasteOption);
+        assert!(
+            between > within,
+            "the families run together: {between} vs {within}"
+        );
     }
 
     #[test]
