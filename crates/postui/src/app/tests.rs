@@ -10567,12 +10567,23 @@ fn prompt_rename_var_surfaces_scan_usage_count_like_delete_does() {
         from: "base_url".into(),
     });
 
-    let Some(Modal::Prompt { title, .. }) = app.modals.top() else {
+    // The caveat is a note under the field, not part of the heading — but
+    // it must still name the request and the count (finding 7's point).
+    let Some(Modal::Prompt { title, kind, .. }) = app.modals.top() else {
         panic!("expected a Prompt modal");
     };
+    assert_eq!(title, "Rename base_url");
+    let PromptKind::RenameVariable { note, .. } = kind else {
+        panic!("expected a rename prompt");
+    };
+    let note = note.as_deref().expect("a referenced name carries a note");
     assert!(
-        title.contains("uses-it") && title.contains('1'),
-        "the rename prompt must name the referencing request: {title}"
+        note.contains("uses-it") && note.contains('1'),
+        "the rename prompt must name the referencing request: {note}"
+    );
+    assert!(
+        note.contains("keep the old name"),
+        "and say what renaming does to those references: {note}"
     );
 }
 

@@ -71,9 +71,14 @@ pub enum PromptKind {
     AddSelectorField {
         selector: String,
     },
-    /// `e`/`F2` on a variable row.
+    /// `e`/`F2` on a variable row. `note` is the usage caveat when the
+    /// name is referenced by requests (`scan_usage` — renaming doesn't
+    /// rewrite them): it belongs to the rename, not to the title line, so
+    /// it travels here and the painter sets it below the field in muted
+    /// text rather than running it into the heading.
     RenameVariable {
         from: String,
+        note: Option<String>,
     },
     /// Send-time secret prompt (spec §3): `prepare()` reported `name`
     /// missing for the active environment (`env`, display only — never a
@@ -1114,7 +1119,7 @@ impl ModalStack {
                                 field: text.to_string(),
                             }])
                         }
-                        PromptKind::RenameVariable { from } => {
+                        PromptKind::RenameVariable { from, .. } => {
                             Some(vec![Action::VarStruct(VarStructOp::Rename {
                                 from: from.clone(),
                                 to: text.to_string(),
@@ -1826,11 +1831,14 @@ impl ModalStack {
                 }
 
                 let title_y = area.y + 1;
+                // Clipped, always: a title is one line, and a long one
+                // used to run straight out of the panel and across the
+                // dimmed screen behind it.
                 paint::text(
                     frame.buffer_mut(),
                     area.x + 2,
                     title_y,
-                    title,
+                    super::chooser::clip(title, area.width.saturating_sub(4)),
                     theme.text,
                     theme.panel,
                     true,
@@ -1931,6 +1939,32 @@ impl ModalStack {
                 }
 
                 let buttons_y = area.y + area.height.saturating_sub(1 + BUTTON_HEIGHT);
+
+                // The rename's usage caveat, in the airy space this shell
+                // already had between the field and the buttons: wrapped,
+                // muted, and read as the footnote it is rather than as
+                // half of the heading.
+                if let PromptKind::RenameVariable {
+                    note: Some(note), ..
+                } = kind
+                {
+                    let note_y = field_area.y + FIELD_HEIGHT + 1;
+                    let height = buttons_y.saturating_sub(note_y).saturating_sub(1);
+                    if height > 0 {
+                        frame.render_widget(
+                            Paragraph::new(note.as_str())
+                                .style(Style::default().fg(theme.text_muted).bg(theme.panel))
+                                .wrap(Wrap { trim: false }),
+                            Rect {
+                                x: area.x + 2,
+                                y: note_y,
+                                width: area.width.saturating_sub(4),
+                                height,
+                            },
+                        );
+                    }
+                }
+
                 draw_cancel_confirm_row(frame, hits, theme, area, buttons_y, hovered);
             }
             Modal::Palette(state) => state.draw(frame, screen, theme, hits, hovered, keymap, t),
@@ -3075,6 +3109,105 @@ mod tests {
         assert!(content.contains("ctrl+r reveal"), "{content}");
         assert!(!content.contains("esc cancel"), "{content}");
         assert!(!content.contains("enter confirm"), "{content}");
+    }
+
+    fn draw_modal_buf(m: &mut ModalStack) -> ratatui::buffer::Buffer {
+        let theme = Theme::dark();
+        let keymap = crate::keys::Keymap::default_bindings();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| {
+                m.draw(
+                    f,
+                    f.area(),
+                    &theme,
+                    &mut hits,
+                    None,
+                    &keymap,
+                    test_anims(),
+                    std::time::Instant::now(),
+                )
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    /// The panel is 60 wide centred in 80 columns, so these are the
+    /// backdrop columns either side of it: nothing the modal paints may
+    /// land there.
+    fn assert_nothing_outside_the_panel(buf: &ratatui::buffer::Buffer) {
+        for y in 0..buf.area.height {
+            for x in (0..10).chain(70..80) {
+                let sym = buf.cell((x, y)).unwrap().symbol();
+                assert!(
+                    sym == " " || sym.is_empty(),
+                    "the modal painted {sym:?} at {x},{y}, outside its own panel"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_long_prompt_title_stays_inside_the_panel() {
+        let mut m = ModalStack::default();
+        m.push(Modal::Prompt {
+            title: format!("Rename foo {}", "wordy ".repeat(20)),
+            input: LineInput::new("foo"),
+            kind: PromptKind::RenameVariable {
+                from: "foo".into(),
+                note: None,
+            },
+            revealed: false,
+        });
+        assert_nothing_outside_the_panel(&draw_modal_buf(&mut m));
+    }
+
+    #[test]
+    fn the_rename_prompts_note_wraps_muted_under_the_field() {
+        let mut m = ModalStack::default();
+        m.push(Modal::Prompt {
+            title: "Rename foo".into(),
+            input: LineInput::new("foo"),
+            kind: PromptKind::RenameVariable {
+                from: "foo".into(),
+                note: Some(
+                    "Referenced by 1 request: vllm/chat-disable-resoning. \
+                     References keep the old name."
+                        .into(),
+                ),
+            },
+            revealed: false,
+        });
+        let buf = draw_modal_buf(&mut m);
+        assert_nothing_outside_the_panel(&buf);
+
+        let row_of = |needle: &str| {
+            (0..buf.area.height).find(|y| {
+                (0..buf.area.width)
+                    .map(|x| buf.cell((x, *y)).unwrap().symbol().to_string())
+                    .collect::<String>()
+                    .contains(needle)
+            })
+        };
+        let title = row_of("Rename foo").expect("the title is painted");
+        // The first "foo" below the heading is the input's own text.
+        let field = ((title + 1)..buf.area.height)
+            .find(|y| {
+                (0..buf.area.width)
+                    .map(|x| buf.cell((x, *y)).unwrap().symbol().to_string())
+                    .collect::<String>()
+                    .contains("foo")
+            })
+            .expect("the input");
+        let note = row_of("Referenced by").expect("the note is painted");
+        assert!(note > field && field > title, "{title} {field} {note}");
+        // The slug is long enough that the note has to wrap rather than
+        // run off the panel.
+        assert!(
+            row_of("References keep the old name").is_some_and(|y| y > note),
+            "the note did not wrap onto a second line"
+        );
     }
 
     #[test]

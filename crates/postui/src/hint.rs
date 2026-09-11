@@ -42,6 +42,28 @@ pub struct HintCtx {
     /// The Manage screen's open tab, naming what its buttons act on: a
     /// space on the Spaces tab, an environment on the Environments tab.
     pub manage_tab: Option<crate::components::manage::ManageTab>,
+    /// What the Variable Manager's detail pane has open, naming what its
+    /// shared `[Rename]`/`[Delete]` buttons act on.
+    pub vm_noun: VmNoun,
+}
+
+/// The two things the Variable Manager's shared buttons can be pointed at.
+/// One pane, one pair of buttons, two nouns — so the hint asks rather than
+/// assuming the commoner of the two.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum VmNoun {
+    #[default]
+    Variable,
+    Selector,
+}
+
+impl VmNoun {
+    fn label(self) -> &'static str {
+        match self {
+            VmNoun::Variable => "variable",
+            VmNoun::Selector => "selector",
+        }
+    }
 }
 
 /// What the Manage screen's buttons act on, from the open tab. "item" is
@@ -473,8 +495,8 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
             "Show this secret's value"
         }),
         Hit::VmRemoveEnvValue => text("Remove this environment's value"),
-        Hit::VmRename => text("Rename this variable"),
-        Hit::VmDelete => text("Delete this variable"),
+        Hit::VmRename => text(&format!("Rename this {}", ctx.vm_noun.label())),
+        Hit::VmDelete => text(&format!("Delete this {}", ctx.vm_noun.label())),
         Hit::VmEntryRadio(_) => text("Select this option for the environment"),
         Hit::VmEntryCopy(_) => text("Copy this option to paste into another environment"),
         Hit::VmEntryDelete(_) => text("Delete this option"),
@@ -491,6 +513,26 @@ mod tests {
 
     fn ctx() -> HintCtx {
         HintCtx::default()
+    }
+
+    /// The Variable Manager's shared `[Rename]`/`[Delete]` buttons act on
+    /// whatever the detail pane has open, so the hint has to name it.
+    #[test]
+    fn the_managers_rename_and_delete_name_what_is_open() {
+        let keymap = Keymap::default_bindings();
+        for (noun, expected) in [
+            (VmNoun::Variable, "variable"),
+            (VmNoun::Selector, "selector"),
+        ] {
+            let ctx = HintCtx {
+                vm_noun: noun,
+                ..ctx()
+            };
+            for hit in [Hit::VmRename, Hit::VmDelete] {
+                let h = hint_for(&hit, &keymap, &ctx).unwrap();
+                assert!(h.contains(expected), "{hit:?} with {noun:?} open said {h:?}");
+            }
+        }
     }
 
     /// A control with no keycap of its own teaches the keyboard route.

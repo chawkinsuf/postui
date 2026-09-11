@@ -1153,6 +1153,12 @@ impl App {
             on,
             remove_scope: self.modals.value_popup_remove_scope(),
             manage_tab: (self.screen == Screen::Manage).then_some(self.manage.tab),
+            // The Manager's `[Rename]`/`[Delete]` act on whatever the
+            // detail pane has open, so the hint reads it from there.
+            vm_noun: match self.varmanager.detail {
+                VmDetail::Group(_) => crate::hint::VmNoun::Selector,
+                VmDetail::Var(_) | VmDetail::None => crate::hint::VmNoun::Variable,
+            },
         }
     }
 
@@ -5010,19 +5016,21 @@ impl App {
                     .project()
                     .map(|p| p.scan_usage(&from))
                     .unwrap_or_default();
-                let title = if usage.is_empty() {
-                    format!("Rename {from}")
-                } else {
+                // The caveat is a note, not a heading: the title stays the
+                // one line it always was, and the prompt sets this below
+                // the field (see the `Modal::Prompt` painter).
+                let note = (!usage.is_empty()).then(|| {
                     format!(
-                        "Rename {from} \u{2014} referenced by {} request(s): {} (references keep the old name)",
+                        "Referenced by {} request{}: {}. References keep the old name.",
                         usage.len(),
+                        if usage.len() == 1 { "" } else { "s" },
                         usage.join(", ")
                     )
-                };
+                });
                 self.push_modal(Modal::Prompt {
-                    title,
+                    title: format!("Rename {from}"),
                     input: LineInput::new(&from),
-                    kind: PromptKind::RenameVariable { from },
+                    kind: PromptKind::RenameVariable { from, note },
                     revealed: false,
                 });
                 true
