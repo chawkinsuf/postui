@@ -2161,6 +2161,30 @@ impl App {
                     option,
                 }))
             }
+            Hit::VmEntryCopy(row) => {
+                // The click takes the grid the way the trash beside it
+                // does, so the keyboard is left where the pointer acted.
+                self.varmanager.grid.cursor = (row, 0);
+                self.varmanager.focus = VmFocus::Grid;
+                self.update(Action::CopyOption { row })
+            }
+            Hit::VmPasteOption => {
+                let crate::components::varmanager::VmDetail::Group(selector) =
+                    self.varmanager.detail.clone()
+                else {
+                    return false;
+                };
+                let Some(env) = self
+                    .project()
+                    .and_then(|p| crate::components::varmanager::op_env(p, &selector))
+                else {
+                    return false;
+                };
+                self.update(Action::VarStruct(VarStructOp::PasteOption {
+                    env,
+                    selector,
+                }))
+            }
             Hit::VmEntryDelete(row) => {
                 let crate::components::varmanager::VmDetail::Group(selector) =
                     self.varmanager.detail.clone()

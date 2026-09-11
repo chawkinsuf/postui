@@ -753,6 +753,13 @@ pub enum Action {
         selector: String,
         name: String,
     },
+    /// The option row's 󰆏 button / `c` on a grid row: holds the row —
+    /// name, description and every field value — in
+    /// [`crate::components::VarManager::stash`] so it can be pasted into
+    /// another environment. Writes nothing, so it is not an undo step.
+    CopyOption {
+        row: usize,
+    },
     /// The `[+ Option]` button and the grid footer's "new option" chip:
     /// puts the grid cursor in the ghost row's name cell and starts typing
     /// (the `o` key's path). Toasts `NO_ENV_HINT` with no active env.

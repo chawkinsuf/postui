@@ -216,11 +216,18 @@ pub enum Hit {
         row: usize,
         col: usize,
     },
+    /// The selector grid's per-row `󰆏` copy on option row `i` (the table
+    /// editor's row-copy twin): holds the whole row so it can be pasted
+    /// into another environment.
+    VmEntryCopy(usize),
     /// The selector grid's per-row `󰆴` delete on option row `i` (the
     /// table editor's row-trash twin): opens the delete-option confirm.
     VmEntryDelete(usize),
     /// The selector pane's `[+ Option]` button.
     VmNewOption,
+    /// The selector pane's `[Paste option]` button. Registered only while
+    /// a copied row can land here — a greyed button takes no clicks.
+    VmPasteOption,
     /// The selector pane's `[Edit fields]` button: opens the field-list
     /// editor (one text slot per current field plus an empty one).
     VmEditFields,
