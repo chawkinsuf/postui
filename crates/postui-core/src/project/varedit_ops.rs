@@ -28,7 +28,16 @@ pub enum VarEdit {
     NewOption { env: String, selector: String, name: String, description: Option<String>, values: IndexMap<String, String> },
     RenameOption { env: String, selector: String, from: String, to: String },
     DeleteOption { env: String, selector: String, name: String },
-    DuplicateOption { env: String, selector: String, name: String },
+    /// Lands a copied option row in `env` (spec: the Manager's copy/paste
+    /// pair). The row travels with the app, so its description and values
+    /// come in as data rather than being read from a source environment.
+    PasteOption {
+        env: String,
+        selector: String,
+        name: String,
+        description: Option<String>,
+        values: IndexMap<String, String>,
+    },
 }
 
 impl VarEdit {
@@ -51,7 +60,7 @@ impl VarEdit {
             VarEdit::NewOption { .. } => "new option",
             VarEdit::RenameOption { .. } => "rename option",
             VarEdit::DeleteOption { .. } => "delete option",
-            VarEdit::DuplicateOption { .. } => "duplicate option",
+            VarEdit::PasteOption { .. } => "paste option",
         }
     }
 }
@@ -314,26 +323,32 @@ impl Project {
                     Ok(())
                 })
             }
-            VarEdit::DuplicateOption { env, selector, name } => {
-                // Copies one option's description and values to a fresh
-                // name in the same environment — `"<name> copy"`, then
-                // `"<name> copy-2"`, … while that is taken.
-                let options = self
-                    .options_of_for(env, selector)
-                    .ok_or_else(|| edit(format!("selector \"{selector}\" has no options in {env}")))?;
-                let source = options
-                    .get(name)
-                    .ok_or_else(|| edit(format!("no option \"{name}\" in {selector}")))?
-                    .clone();
-                let mut copy = format!("{name} copy");
-                let mut n = 2;
-                while options.contains_key(&copy) {
-                    copy = format!("{name} copy-{n}");
-                    n += 1;
+            VarEdit::PasteOption {
+                env,
+                selector,
+                name,
+                description,
+                values,
+            } => {
+                // The copied row keeps its own name when `env` has nothing
+                // by it, and steps aside when it does — `"<name> copy"`,
+                // then `"<name> copy-2"`, … while the name is taken. A
+                // paste never overwrites the row it collides with, so
+                // pasting back into the environment a row came from is
+                // exactly a duplicate of it.
+                let taken = self.options_of_for(env, selector).unwrap_or_default();
+                let mut fresh = name.clone();
+                if taken.contains_key(&fresh) {
+                    fresh = format!("{name} copy");
+                    let mut n = 2;
+                    while taken.contains_key(&fresh) {
+                        fresh = format!("{name} copy-{n}");
+                        n += 1;
+                    }
                 }
                 self.cascade(label, |p| {
                     p.edit_options_home(selector, env, |doc| {
-                        varedit::upsert_option(doc, selector, &copy, source.description.as_deref(), &source.values)
+                        varedit::upsert_option(doc, selector, &fresh, description.as_deref(), values)
                     })
                 })
             }
@@ -620,5 +635,53 @@ mod tests {
         })
         .unwrap();
         assert!(!read(&dir, "environments/qa.toml").unwrap().contains("dave"));
+    }
+
+    #[test]
+    fn paste_option_lands_the_whole_row_in_another_env_and_undoes_whole() {
+        let (dir, mut p) = vars_fixture();
+        let mut values = IndexMap::new();
+        values.insert("user_id".to_string(), "1".to_string());
+        values.insert("customer_id".to_string(), "2".to_string());
+        p.apply_var_edit(&VarEdit::PasteOption {
+            env: "dev".into(),
+            selector: "creds".into(),
+            name: "alice".into(),
+            description: Some("the first one".into()),
+            values,
+        })
+        .unwrap();
+        let dev = read(&dir, "environments/dev.toml").unwrap();
+        assert!(dev.contains("[options.creds.alice]"), "{dev}");
+        assert!(dev.contains("user_id = \"1\""), "{dev}");
+        assert!(dev.contains("customer_id = \"2\""), "{dev}");
+        assert!(dev.contains("description = \"the first one\""), "{dev}");
+        // The source environment is untouched.
+        assert!(read(&dir, "environments/qa.toml").unwrap().contains("[options.creds.alice]"));
+        assert_eq!(p.journal_len(), 1);
+        p.undo().unwrap();
+        assert!(!read(&dir, "environments/dev.toml").unwrap().contains("alice"));
+    }
+
+    #[test]
+    fn paste_option_freshens_a_name_the_target_env_already_has() {
+        let (dir, mut p) = vars_fixture();
+        let mut values = IndexMap::new();
+        values.insert("user_id".to_string(), "1".to_string());
+        values.insert("customer_id".to_string(), "2".to_string());
+        let paste = VarEdit::PasteOption {
+            env: "qa".into(),
+            selector: "creds".into(),
+            name: "alice".into(),
+            description: None,
+            values,
+        };
+        p.apply_var_edit(&paste).unwrap();
+        assert!(read(&dir, "environments/qa.toml").unwrap().contains("[options.creds.\"alice copy\"]"));
+        p.apply_var_edit(&paste).unwrap();
+        let qa = read(&dir, "environments/qa.toml").unwrap();
+        assert!(qa.contains("[options.creds.\"alice copy-2\"]"), "{qa}");
+        // The row it collided with is still there, unchanged.
+        assert!(qa.contains("[options.creds.alice]"), "{qa}");
     }
 }

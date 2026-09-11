@@ -9557,6 +9557,143 @@ fn shared_locale_app(dir: &std::path::Path) -> App {
     App::with_root(tx, dir.to_path_buf())
 }
 
+/// A per-environment selector: `creds` with two fields, one option
+/// (`alice`) in `qa`, and an empty `dev` to paste into. `qa` is active.
+fn creds_app(dir: &std::path::Path) -> App {
+    postui_core::fixtures::init_project(dir, Some("demo")).unwrap();
+    std::fs::write(
+        dir.join("variables.toml"),
+        "[selectors.creds]\nfields = [\"user_id\", \"customer_id\"]\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("environments/dev.toml"), "").unwrap();
+    std::fs::write(
+        dir.join("environments/qa.toml"),
+        "[options.creds.alice]\ndescription = \"the first one\"\nuser_id = \"1\"\ncustomer_id = \"2\"\n",
+    )
+    .unwrap();
+    postui_core::fixtures::save_local_state(
+        dir,
+        &postui_core::project::LocalState {
+            environment: Some("qa".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.to_path_buf());
+    app.varmanager.detail = VmDetail::Group("creds".into());
+    app
+}
+
+#[test]
+fn a_copied_option_pastes_the_whole_row_into_another_environment() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = creds_app(dir.path());
+
+    app.update(Action::CopyOption { row: 0 });
+    app.update(Action::SwitchEnv(Some("dev".into())));
+    app.update(Action::VarStruct(VarStructOp::PasteOption {
+        env: "dev".into(),
+        selector: "creds".into(),
+    }));
+
+    assert!(
+        app.toasts
+            .messages()
+            .contains(&"Copied option \"alice\""),
+        "{:?}",
+        app.toasts.messages()
+    );
+    let dev = std::fs::read_to_string(dir.path().join("environments/dev.toml")).unwrap();
+    assert!(dev.contains("[options.creds.alice]"), "{dev}");
+    assert!(dev.contains("user_id = \"1\""), "{dev}");
+    assert!(dev.contains("customer_id = \"2\""), "{dev}");
+    assert!(dev.contains("description = \"the first one\""), "{dev}");
+}
+
+#[test]
+fn pasting_back_into_the_environment_a_row_came_from_duplicates_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = creds_app(dir.path());
+
+    app.update(Action::CopyOption { row: 0 });
+    app.update(Action::VarStruct(VarStructOp::PasteOption {
+        env: "qa".into(),
+        selector: "creds".into(),
+    }));
+
+    let options = postui_core::varmodel::options_of(
+        app.proj().variables(),
+        app.proj().env_data(),
+        "creds",
+    )
+    .cloned()
+    .unwrap_or_default();
+    assert_eq!(options["alice copy"].values["user_id"], "1");
+    assert_eq!(options["alice"].values["user_id"], "1");
+}
+
+#[test]
+fn pasting_with_nothing_copied_says_so_and_writes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = creds_app(dir.path());
+
+    app.update(Action::VarStruct(VarStructOp::PasteOption {
+        env: "qa".into(),
+        selector: "creds".into(),
+    }));
+
+    assert!(
+        app.toasts.messages().iter().any(|m| m.contains("copied")),
+        "{:?}",
+        app.toasts.messages()
+    );
+    let qa = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(!qa.contains("alice copy"), "{qa}");
+}
+
+#[test]
+fn a_copied_row_does_not_paste_into_a_different_selector() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = creds_app(dir.path());
+    app.update(Action::CopyOption { row: 0 });
+
+    app.update(Action::VarStruct(VarStructOp::NewSelector {
+        name: "other".into(),
+        fields: vec!["user_id".into()],
+        shared: false,
+    }));
+    app.update(Action::VarStruct(VarStructOp::PasteOption {
+        env: "qa".into(),
+        selector: "other".into(),
+    }));
+
+    assert!(
+        !app.toasts.is_empty(),
+        "a paste into the wrong selector must be refused"
+    );
+    let qa = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(!qa.contains("[options.other"), "{qa}");
+}
+
+#[test]
+fn switching_project_forgets_the_copied_option() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = creds_app(dir.path());
+    app.update(Action::CopyOption { row: 0 });
+    assert!(app.varmanager.stash.is_some());
+
+    let other = tempfile::tempdir().unwrap();
+    postui_core::fixtures::init_project(other.path(), Some("other")).unwrap();
+    app.update(Action::SwitchProject(other.path().to_path_buf()));
+
+    assert!(
+        app.varmanager.stash.is_none(),
+        "a row copied out of one project has no home in the next"
+    );
+}
+
 #[test]
 fn shared_selector_new_option_writes_variables_toml_not_the_env() {
     let dir = tempfile::tempdir().unwrap();
@@ -9618,17 +9755,17 @@ fn shared_selector_delete_option_clears_the_global_selection() {
 }
 
 #[test]
-fn shared_selector_duplicate_option_lands_in_variables_toml() {
+fn shared_selector_paste_lands_in_variables_toml() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = shared_locale_app(dir.path());
+    app.varmanager.detail = VmDetail::Group("locale".into());
 
-    app.update(Action::VarStruct(VarStructOp::DuplicateOption {
+    app.update(Action::CopyOption { row: 0 });
+    app.update(Action::VarStruct(VarStructOp::PasteOption {
         env: "qa".into(),
         selector: "locale".into(),
-        name: "en".into(),
     }));
 
-    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
     assert_eq!(
         app.proj().variables().options["locale"]["en copy"].values["lang"],
         "en"
@@ -10430,12 +10567,23 @@ fn prompt_rename_var_surfaces_scan_usage_count_like_delete_does() {
         from: "base_url".into(),
     });
 
-    let Some(Modal::Prompt { title, .. }) = app.modals.top() else {
+    // The caveat is a note under the field, not part of the heading — but
+    // it must still name the request and the count (finding 7's point).
+    let Some(Modal::Prompt { title, kind, .. }) = app.modals.top() else {
         panic!("expected a Prompt modal");
     };
+    assert_eq!(title, "Rename base_url");
+    let PromptKind::RenameVariable { note, .. } = kind else {
+        panic!("expected a rename prompt");
+    };
+    let note = note.as_deref().expect("a referenced name carries a note");
     assert!(
-        title.contains("uses-it") && title.contains('1'),
-        "the rename prompt must name the referencing request: {title}"
+        note.contains("uses-it") && note.contains('1'),
+        "the rename prompt must name the referencing request: {note}"
+    );
+    assert!(
+        note.contains("keep the old name"),
+        "and say what renaming does to those references: {note}"
     );
 }
 
@@ -14291,6 +14439,38 @@ fn cell_rect(app: &mut App, row: usize, col: usize) -> ratatui::layout::Rect {
 }
 
 #[test]
+fn clicking_a_rows_copy_button_copies_it_and_the_paste_button_lands_it() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+
+    // Wide enough for the selector pane's fifth title-row button: [Paste]
+    // is the first one a narrow pane drops.
+    rendered_text_at(&mut app, 130, 46);
+    let copy = app
+        .hits
+        .rect_of(&crate::hit::Hit::VmEntryCopy(0))
+        .expect("row 0 has a copy button");
+    app.handle_mouse(left_down(copy.x, copy.y));
+    assert_eq!(
+        app.varmanager.stash.as_ref().map(|s| s.name.as_str()),
+        Some("alice")
+    );
+
+    // The button the copy armed lands the row right back, beside itself.
+    rendered_text_at(&mut app, 130, 46);
+    let paste = app
+        .hits
+        .rect_of(&crate::hit::Hit::VmPasteOption)
+        .expect("the copy armed the paste button");
+    app.handle_mouse(left_down(paste.x + 2, paste.y + 1));
+    let env = postui_core::fixtures::load_environment(dir.path(), "qa").unwrap();
+    assert_eq!(env.options["user"]["alice copy"].values["user"], "1001");
+}
+
+#[test]
 fn clicking_an_entrys_radio_records_the_selection_and_re_resolves_every_field() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
@@ -15058,7 +15238,13 @@ fn right_clicking_an_entry_row_opens_its_own_menu() {
     // "Rename" has no ellipsis: it starts the inline name-cell edit.
     assert_eq!(
         labels,
-        vec!["Edit\u{2026}", "Duplicate option", "Rename", "Delete"]
+        vec![
+            "Edit\u{2026}",
+            "Copy option",
+            "Paste option",
+            "Rename",
+            "Delete"
+        ]
     );
 }
 
@@ -15104,7 +15290,7 @@ fn right_clicking_another_row_commits_the_live_cell_to_the_entry_it_belongs_to()
         panic!("no entry menu");
     };
     assert_eq!(
-        state.items[3].action,
+        state.items[4].action,
         Some(Action::DeleteEntry {
             env: "qa".into(),
             selector: "user".into(),

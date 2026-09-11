@@ -98,7 +98,7 @@ pub enum VarEditOp {
 /// `App::apply_var_struct`, which core applies as one journal entry.
 ///
 /// The declaration ops (`NewVar`..`Promote`) write `variables.toml`; the
-/// option ops (`NewOption`..`DuplicateOption`) write one environment file
+/// option ops (`NewOption`..`PasteOption`) write one environment file
 /// each — options belong to exactly one environment (spec §3.1), so every
 /// one of them names the `env` it targets.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -161,12 +161,14 @@ pub enum VarStructOp {
         selector: String,
         name: String,
     },
-    /// Copy one option of `selector` in `env` to a fresh name — `"<name> copy"`,
-    /// then `"<name> copy-2"`, … on collision.
-    DuplicateOption {
+    /// Land the copied row ([`VarManager::stash`]) in `env` under a name
+    /// that is free there — its own, else `"<name> copy"`, then
+    /// `"<name> copy-2"`, … Refused when nothing is copied, or when what
+    /// is copied came from a different selector; pasting into the
+    /// environment the row came from duplicates it.
+    PasteOption {
         env: String,
         selector: String,
-        name: String,
     },
 }
 
@@ -430,6 +432,20 @@ pub enum VmFocus {
     Form,
 }
 
+/// One option row, held out of the grid so it can be pasted into another
+/// environment. Not persisted: a copy lives as long as the session, and
+/// only while the selector it came from is still declared.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StashedOption {
+    /// The selector the row belongs to. A paste is offered only while this
+    /// selector is the one on screen — its fields are the row's fields, so
+    /// a paste can never produce an option the model refuses.
+    pub selector: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub values: IndexMap<String, String>,
+}
+
 /// The full-frame Variable Manager screen.
 #[derive(Debug, Default)]
 pub struct VarManager {
@@ -447,6 +463,9 @@ pub struct VarManager {
     /// keyboard — kept across focus trips like the grid's.
     pub form_cursor: VmField,
     pub grid: OptionGridState,
+    /// The copied option row, if any — filled by
+    /// [`crate::action::Action::CopyOption`], read by every paste.
+    pub stash: Option<StashedOption>,
     /// Which stop has the keyboard (see [`VmFocus`]).
     pub focus: VmFocus,
     /// The selector grid's option-row region as of the last `draw` — the wheel
@@ -492,8 +511,18 @@ const GHOST_LABEL: &str = "+ option";
 /// Width of the grid's radio column (glyph + one column of gutter).
 const RADIO_W: u16 = 3;
 
-/// The option row's `󰆴` zone: space + glyph + space.
+/// The gutter between the selector pane's two button families (the verbs
+/// that act on options, and the verbs that act on the selector itself).
+/// Wider than the single column between buttons of one family, which is
+/// the whole point: it is what makes them read as two groups.
+const GROUP_GAP: u16 = 3;
+
+/// The option row's `󰆴` zone: space + glyph + space. The `󰆏` copy zone
+/// beside it is the same width — the table editor's row actions exactly.
 const TRASH_W: u16 = 3;
+const COPY_W: u16 = TRASH_W;
+/// Both row buttons together: what the last column's text stops short of.
+const ROW_ACTIONS_W: u16 = COPY_W + TRASH_W;
 
 /// Where each grid column starts and how wide it is: `x[0]`/`w[0]` is the
 /// option-name column, `x[n]` the selector's `n-1`th field. Columns that would
@@ -538,7 +567,7 @@ fn is_shared(ctx: &Project, selector: &str) -> bool {
 /// environment — or, for a shared selector (whose ops ignore it), the
 /// active env's name if any, else `""`. `None` only when a non-shared
 /// selector has no active environment: nowhere for its options to live.
-fn op_env(ctx: &Project, selector: &str) -> Option<String> {
+pub fn op_env(ctx: &Project, selector: &str) -> Option<String> {
     if is_shared(ctx, selector) {
         Some(ctx.active_env().unwrap_or_default().to_string())
     } else {
@@ -753,6 +782,32 @@ impl VarManager {
             .map(|(n, _, _)| n.clone())
     }
 
+    /// Whether a paste into `selector` has something to land. A copied row
+    /// travels between environments but never between selectors: its
+    /// fields are that selector's fields, so the pair stays armed only
+    /// while the selector it came from is the one on screen.
+    pub fn can_paste(&self, selector: &str) -> bool {
+        self.stash.as_ref().is_some_and(|s| s.selector == selector)
+    }
+
+    /// Option row `row` lifted out of the grid, ready for [`Self::stash`].
+    /// `None` for the ghost row and when no selector is open — nothing to
+    /// copy. Takes `&self` so the caller can hold the project borrow while
+    /// it reads the row and still assign the stash afterwards.
+    pub fn option_row(&self, ctx: &Project, row: usize) -> Option<StashedOption> {
+        let VmDetail::Group(selector) = &self.detail else {
+            return None;
+        };
+        let selector = selector.clone();
+        let (name, description, values) = entry_rows(ctx, &selector).into_iter().nth(row)?;
+        Some(StashedOption {
+            selector,
+            name,
+            description,
+            values,
+        })
+    }
+
     /// The footer's context chips while the Variable Manager is on screen
     /// (the main screen's per-pane chips make no sense here — their actions
     /// target requests). Grid focus advertises the option-row verbs
@@ -814,21 +869,35 @@ impl VarManager {
         let mut chips: Vec<(&'static str, &'static str, Option<Action>)> =
             if let (VmDetail::Group(selector), VmFocus::Grid) = (&self.detail, self.focus) {
                 let target = op_env(ctx, selector).zip(self.entry_at(ctx, self.grid.cursor.0));
+                // Terse labels on purpose: seven chips share the footer
+                // with the right-aligned save/palette/quit group, and the
+                // grid context already names the target (an option).
+                //
+                // The order is the selector pane's own, so one sequence of
+                // verbs serves the whole screen: the destructive one, then
+                // rename, then edit, then the rest. `paste` is the
+                // exception, and sits last for a reason of its own — it
+                // comes and goes with what is copied, and from the end of
+                // the strip it can appear without shifting a chip beside
+                // it. Its button is the protected one in the pane, so
+                // being first to drop on a narrow footer costs nothing.
                 vec![
                     (
-                        "space",
-                        "select",
-                        target.clone().map(|(env, option)| {
-                            Action::VarEdit(VarEditOp::SelectOption {
-                                env,
-                                selector: selector.clone(),
-                                option,
-                            })
+                        "d",
+                        "delete",
+                        target.clone().map(|(env, name)| Action::DeleteEntry {
+                            env,
+                            selector: selector.clone(),
+                            name,
                         }),
                     ),
-                    // Terse labels on purpose: five chips share the footer
-                    // with the right-aligned save/palette/quit group, and
-                    // the grid context already names the target (an option).
+                    (
+                        "r",
+                        "rename",
+                        target.clone().map(|_| Action::StartOptionNameEdit {
+                            row: self.grid.cursor.0,
+                        }),
+                    ),
                     (
                         "e",
                         "edit",
@@ -846,34 +915,37 @@ impl VarManager {
                     (
                         "c",
                         "copy",
-                        target.clone().map(|(env, name)| {
-                            Action::VarStruct(VarStructOp::DuplicateOption {
+                        target
+                            .clone()
+                            .map(|_| Action::CopyOption { row: self.grid.cursor.0 }),
+                    ),
+                    (
+                        "space",
+                        "select",
+                        target.map(|(env, option)| {
+                            Action::VarEdit(VarEditOp::SelectOption {
                                 env,
                                 selector: selector.clone(),
-                                name,
+                                option,
                             })
                         }),
                     ),
-                    (
-                        "r",
-                        "rename",
-                        target.clone().map(|_| Action::StartOptionNameEdit {
-                            row: self.grid.cursor.0,
-                        }),
-                    ),
-                    (
-                        "d",
-                        "delete",
-                        target.map(|(env, name)| Action::DeleteEntry {
-                            env,
-                            selector: selector.clone(),
-                            name,
-                        }),
-                    ),
-                    // Last on purpose: `paint_chip_row` drops trailing
-                    // chips on a narrow footer, and the ghost row and the
-                    // `[+ Option]` button already cover this one.
                     ("o", "new option", Some(Action::StartNewOptionEdit)),
+                    (
+                        "v",
+                        "paste",
+                        // Armed by what was copied, not by the cursor: a
+                        // paste lands a row in this environment whatever
+                        // the grid is pointing at (an empty grid included).
+                        op_env(ctx, selector)
+                            .filter(|_| self.can_paste(selector))
+                            .map(|env| {
+                                Action::VarStruct(VarStructOp::PasteOption {
+                                    env,
+                                    selector: selector.clone(),
+                                })
+                            }),
+                    ),
                 ]
             } else {
                 // The list cursor's row when it names something, else
@@ -885,19 +957,22 @@ impl VarManager {
                     .and_then(VmRow::name)
                     .or_else(|| self.detail.name())
                     .map(str::to_string);
+                // The selector pane's verbs in its buttons' order, then
+                // the left column's two `+` buttons in theirs — the same
+                // sequence the grid's strip runs in, so the footer reads
+                // the same wherever the keyboard is.
                 let mut chips = vec![
-                    ("n", "new variable", Some(Action::PromptNewVar)),
-                    ("g", "new selector", Some(Action::PromptNewSelector)),
+                    ("d", "delete", name.clone().map(|name| Action::DeleteVar { name })),
                     (
                         "e",
                         "rename",
-                        name.clone().map(|from| Action::PromptRenameVar { from }),
+                        name.map(|from| Action::PromptRenameVar { from }),
                     ),
-                    ("d", "delete", name.map(|name| Action::DeleteVar { name })),
                 ];
                 // With a selector open, its fields editor is one key away —
                 // the `m` binding predates this chip, but a key the footer
-                // never taught was as good as mouse-only.
+                // never taught was as good as mouse-only. It sits third,
+                // where `[Edit fields]` sits among the buttons.
                 if let VmDetail::Group(selector) = &self.detail {
                     chips.push((
                         "m",
@@ -907,6 +982,8 @@ impl VarManager {
                         }),
                     ));
                 }
+                chips.push(("n", "new variable", Some(Action::PromptNewVar)));
+                chips.push(("g", "new selector", Some(Action::PromptNewSelector)));
                 chips
             };
         chips.retain(|(_, _, a)| a.is_some());
@@ -1244,11 +1321,18 @@ impl VarManager {
                     values: decl.values,
                 })
             }
-            KeyCode::Char('c') => Some(Action::VarStruct(VarStructOp::DuplicateOption {
-                env: op_env(ctx, selector)?,
-                selector: selector.to_string(),
-                name: self.entry_at(ctx, self.grid.cursor.0)?,
-            })),
+            KeyCode::Char('c') => {
+                self.entry_at(ctx, self.grid.cursor.0)?;
+                Some(Action::CopyOption {
+                    row: self.grid.cursor.0,
+                })
+            }
+            KeyCode::Char('v') if self.can_paste(selector) => {
+                Some(Action::VarStruct(VarStructOp::PasteOption {
+                    env: op_env(ctx, selector)?,
+                    selector: selector.to_string(),
+                }))
+            }
             // `r`/`F2`: the inline name-cell rename (committing a changed
             // name IS the rename). `r` is inert on the ghost row — there is
             // no name yet, and starting the ghost edit under a "rename"
@@ -1356,14 +1440,20 @@ impl VarManager {
                     values: decl.values.clone(),
                 },
             ),
-            MenuItem::new(
-                "Duplicate option",
-                Action::VarStruct(VarStructOp::DuplicateOption {
-                    env: env.clone(),
-                    selector: selector.clone(),
-                    name: n.clone(),
-                }),
-            ),
+            MenuItem::new("Copy option", Action::CopyOption { row: i }),
+            // Shown disabled rather than hidden with nothing copied, so
+            // the menu keeps its shape and the pair reads as a pair.
+            if self.can_paste(&selector) {
+                MenuItem::new(
+                    "Paste option",
+                    Action::VarStruct(VarStructOp::PasteOption {
+                        env: env.clone(),
+                        selector: selector.clone(),
+                    }),
+                )
+            } else {
+                MenuItem::disabled("Paste option")
+            },
             // No ellipsis: rename is the inline name-cell edit, not a
             // dialog.
             MenuItem::new("Rename", Action::StartOptionNameEdit { row: i }),
@@ -1543,31 +1633,58 @@ impl VarManager {
             let label = format!("Selector: {selector}");
             text(buf, x0, y, &label, theme.text, theme.page, true);
             let mut bx = right.x + right.width;
-            for (lbl, kind, hit) in [
-                ("Delete", ButtonKind::Secondary, Hit::VmDelete),
-                ("Rename", ButtonKind::Secondary, Hit::VmRename),
-                ("Edit fields", ButtonKind::Secondary, Hit::VmEditFields),
-                ("+ Option", ButtonKind::Primary, Hit::VmNewOption),
+            // Painted right to left, so the array runs that way too: the
+            // two option-level verbs hold the right edge — `+ Option`, the
+            // primary, on the edge itself — and the three selector-level
+            // ones trail off to the left, where a narrow pane drops them
+            // first. That is the right order to lose them in: they are the
+            // rare verbs, and each has a menu row and a footer chip of its
+            // own, while `Paste` is used as often as options are added.
+            // `GROUP_GAP` before `Edit fields` is where one family ends and
+            // the other begins — two columns of air so the eye reads two
+            // groups rather than five loose buttons.
+            let can_paste = self.can_paste(selector);
+            for (lbl, kind, hit, gap) in [
+                ("+ Option", ButtonKind::Primary, Hit::VmNewOption, 1),
+                ("Paste", ButtonKind::Secondary, Hit::VmPasteOption, 1),
+                (
+                    "Edit fields",
+                    ButtonKind::Secondary,
+                    Hit::VmEditFields,
+                    GROUP_GAP,
+                ),
+                ("Rename", ButtonKind::Secondary, Hit::VmRename, 1),
+                ("Delete", ButtonKind::Secondary, Hit::VmDelete, 1),
             ] {
                 let w = button_min_width(lbl);
-                if bx < x0 + label.chars().count() as u16 + w + 3 {
+                if bx < x0 + label.chars().count() as u16 + w + gap + 2 {
                     break;
                 }
-                bx -= w + 1;
+                bx -= w + gap;
                 let rect = Rect {
                     x: bx,
                     y: y - 1,
                     width: w,
                     height: TALL_PILL_H,
                 };
-                let state = state_of(&hit);
+                // Paste stands there greyed with nothing copied — the one
+                // control that says the pair exists before it is used —
+                // and takes no clicks and no hover while it does.
+                let disabled = hit == Hit::VmPasteOption && !can_paste;
+                let state = if disabled {
+                    ControlState::Disabled
+                } else {
+                    state_of(&hit)
+                };
                 let painted = Button {
                     label: lbl,
                     kind,
                     state,
                 }
                 .paint(buf, rect, theme);
-                hits.register(painted, hit);
+                if !disabled {
+                    hits.register(painted, hit);
+                }
             }
             y += TALL_PILL_H;
             // The scope line goes in the blank row under the title rather
@@ -1767,10 +1884,10 @@ impl VarManager {
                         _ if desc_col => ("", theme.text_muted),
                         _ => ("(empty)", theme.text_muted),
                     };
-                    // The last column's text stops short of the row's trash
-                    // zone so a long value never runs under the glyph.
+                    // The last column's text stops short of the row's own
+                    // buttons so a long value never runs under a glyph.
                     let cw = if col + 1 == cols.x.len() {
-                        cw.saturating_sub(TRASH_W + 1)
+                        cw.saturating_sub(ROW_ACTIONS_W + 1)
                     } else {
                         cw
                     };
@@ -1779,22 +1896,33 @@ impl VarManager {
                 hits.register(Rect::new(cx, ry, cw, 1), Hit::VmEntryCell { row: i, col });
             }
 
-            // Per-row `󰆴` delete at the right edge (the table editor's
-            // row-trash twin — spec: destructive actions get an explicit
-            // control). Hidden while a cell edit is live on the row: the
+            // Per-row `󰆏` copy and `󰆴` delete at the right edge (the table
+            // editor's row actions — spec: destructive actions get an
+            // explicit control, and so does the copy the paste button
+            // waits on). Hidden while a cell edit is live on the row: the
             // last column's windowed input owns those cells, and a stray
-            // click mid-edit must not read as delete.
+            // click mid-edit must not read as copy or delete.
             let editing_row = self.grid.editing.as_ref().is_some_and(|e| e.row == i);
-            if !ghost && !editing_row && inner_w > TRASH_W + 1 {
+            if !ghost && !editing_row && inner_w > ROW_ACTIONS_W + 1 {
                 let trash_x = x0 + inner_w - (TRASH_W + 1);
+                let copy_x = trash_x - COPY_W;
+                let copy_hit = Hit::VmEntryCopy(i);
+                let (cfg, cbg) = if hovered == Some(&copy_hit) {
+                    (theme.on_accent, theme.accent)
+                } else {
+                    (theme.text_muted, bg)
+                };
+                // Nerd Font Material glyphs (one cell everywhere), each
+                // centred in its own three-cell zone.
+                text(buf, copy_x, ry, crate::glyph::COPY_PILL, cfg, cbg, false);
+                hits.register(Rect::new(copy_x, ry, COPY_W, 1), copy_hit);
+
                 let trash_hit = Hit::VmEntryDelete(i);
                 let (dfg, dbg) = if hovered == Some(&trash_hit) {
                     (theme.on_accent, theme.error)
                 } else {
                     (theme.text_muted, bg)
                 };
-                // Nerd Font Material glyph (one cell everywhere), centred in
-                // the three-cell zone.
                 text(buf, trash_x, ry, crate::glyph::DELETE_PILL, dfg, dbg, false);
                 hits.register(Rect::new(trash_x, ry, TRASH_W, 1), trash_hit);
             }
@@ -2487,9 +2615,9 @@ fields = ["user_id", "customer_id"]
 
     fn render_buf(vm: &mut VarManager, ctx: &Project) -> (Buffer, HitMap) {
         let theme = Theme::dark();
-        // Wide enough for the selector pane's four title-row buttons
+        // Wide enough for the selector pane's five title-row buttons
         // beside a fixture-length selector name.
-        let mut terminal = Terminal::new(TestBackend::new(104, 24)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(116, 24)).unwrap();
         let mut hits = HitMap::default();
         terminal
             .draw(|f| vm.draw(f, f.area(), &theme, ctx, None, &mut hits, None))
@@ -3333,11 +3461,7 @@ fields = ["user_id", "customer_id"]
         assert_eq!(vm.focus, VmFocus::Grid);
         assert_eq!(
             vm.handle_key(key(KeyCode::Char('c')), &ctx, None),
-            Some(Action::VarStruct(VarStructOp::DuplicateOption {
-                env: "".into(),
-                selector: "locale".into(),
-                name: "en".into(),
-            }))
+            Some(Action::CopyOption { row: 0 })
         );
         assert_eq!(
             vm.handle_key(key(KeyCode::Char('d')), &ctx, None),
@@ -3359,6 +3483,52 @@ fields = ["user_id", "customer_id"]
             .find(|(k, _, _)| *k == "c")
             .expect("copy chip is advertised");
         assert!(copy.2.is_some(), "copy chip armed without an environment");
+    }
+
+    #[test]
+    fn every_option_row_offers_a_copy_button_and_the_ghost_row_does_not() {
+        let (_dir, ctx) = fixture_with_description();
+        let mut vm = VarManager::default();
+        select_group(&mut vm, &ctx, "creds");
+        let (_, hits) = render(&mut vm, &ctx);
+
+        for row in 0..2 {
+            assert!(
+                hits.rect_of(&Hit::VmEntryCopy(row)).is_some(),
+                "row {row} has no copy button"
+            );
+        }
+        assert!(
+            hits.rect_of(&Hit::VmEntryCopy(2)).is_none(),
+            "the ghost row has nothing to copy"
+        );
+        // The copy button sits immediately left of the row's trash, and
+        // never on top of it.
+        let copy = hits.rect_of(&Hit::VmEntryCopy(0)).unwrap();
+        let trash = hits.rect_of(&Hit::VmEntryDelete(0)).unwrap();
+        assert_eq!(copy.y, trash.y);
+        assert!(copy.x + copy.width <= trash.x, "{copy:?} {trash:?}");
+    }
+
+    #[test]
+    fn the_paste_button_stands_greyed_until_a_row_is_copied() {
+        let (_dir, ctx) = fixture_with_description();
+        let mut vm = VarManager::default();
+        select_group(&mut vm, &ctx, "creds");
+
+        let (content, hits) = render(&mut vm, &ctx);
+        assert!(content.contains("Paste"), "{content}");
+        assert!(
+            hits.rect_of(&Hit::VmPasteOption).is_none(),
+            "a greyed paste button takes no clicks"
+        );
+
+        vm.stash = Some(vm.option_row(&ctx, 0).expect("row 0 is an option"));
+        let (_, hits) = render(&mut vm, &ctx);
+        assert!(
+            hits.rect_of(&Hit::VmPasteOption).is_some(),
+            "the copied row arms the paste button"
+        );
     }
 
     fn select_group(vm: &mut VarManager, ctx: &Project, name: &str) {
@@ -3418,6 +3588,90 @@ fields = ["user_id", "customer_id"]
         ] {
             assert!(hits.rect_of(&hit).is_some(), "{hit:?} has no button");
         }
+    }
+
+    #[test]
+    fn both_footer_strips_run_in_the_buttons_order_with_paste_last() {
+        let (_dir, ctx) = fixture_with_description();
+        let mut vm = VarManager::default();
+        select_group(&mut vm, &ctx, "creds");
+
+        // The left list's strip: the selector-pane verbs in the order its
+        // buttons stand in, then the two `+` buttons in theirs.
+        let keys: Vec<&str> = vm
+            .footer_chips(&ctx, None)
+            .iter()
+            .map(|(k, _, _)| *k)
+            .collect();
+        assert_eq!(keys, vec!["d", "e", "m", "n", "g"]);
+
+        // The grid's strip: the same verb order, and `paste` at the far
+        // right — it comes and goes with what is copied, and from there it
+        // can appear without shifting a single chip beside it.
+        vm.focus = VmFocus::Grid;
+        let keys: Vec<&str> = vm
+            .footer_chips(&ctx, None)
+            .iter()
+            .map(|(k, _, _)| *k)
+            .collect();
+        assert_eq!(keys, vec!["d", "r", "e", "c", "space", "o"]);
+
+        vm.stash = Some(vm.option_row(&ctx, 0).expect("row 0 is an option"));
+        let keys: Vec<&str> = vm
+            .footer_chips(&ctx, None)
+            .iter()
+            .map(|(k, _, _)| *k)
+            .collect();
+        assert_eq!(keys, vec!["d", "r", "e", "c", "space", "o", "v"]);
+    }
+
+    #[test]
+    fn the_title_rows_buttons_run_rarest_first_with_the_primary_at_the_edge() {
+        let (_dir, ctx) = fixture_with_description();
+        let mut vm = VarManager::default();
+        select_group(&mut vm, &ctx, "creds");
+        vm.stash = Some(vm.option_row(&ctx, 0).expect("row 0 is an option"));
+        let (_, hits) = render(&mut vm, &ctx);
+
+        // Left to right: the three selector-level verbs, then the two
+        // option-level ones. A narrow pane drops from the left, so the
+        // rare verbs go first and `+ Option` — the primary — holds the
+        // right edge, with `Paste` beside its own family.
+        let xs: Vec<u16> = [
+            Hit::VmDelete,
+            Hit::VmRename,
+            Hit::VmEditFields,
+            Hit::VmPasteOption,
+            Hit::VmNewOption,
+        ]
+        .iter()
+        .map(|h| hits.rect_of(h).unwrap_or_else(|| panic!("{h:?} has no button")).x)
+        .collect();
+        assert!(
+            xs.windows(2).all(|w| w[0] < w[1]),
+            "buttons out of order: {xs:?}"
+        );
+        // Delete no longer anchors the row, and nothing sits between the
+        // primary and the pane's right edge.
+        let primary = hits.rect_of(&Hit::VmNewOption).unwrap();
+        assert!(
+            xs.iter().all(|x| *x <= primary.x),
+            "the primary is not the rightmost button: {xs:?}"
+        );
+
+        // The two families are set apart by a wider gutter than the one
+        // between buttons of the same family — that gap is the only thing
+        // saying these are two groups.
+        let gap_between = |left: Hit, right: Hit| {
+            let (l, r) = (hits.rect_of(&left).unwrap(), hits.rect_of(&right).unwrap());
+            r.x - (l.x + l.width)
+        };
+        let within = gap_between(Hit::VmRename, Hit::VmEditFields);
+        let between = gap_between(Hit::VmEditFields, Hit::VmPasteOption);
+        assert!(
+            between > within,
+            "the families run together: {between} vs {within}"
+        );
     }
 
     #[test]
@@ -3637,7 +3891,7 @@ fields = ["user_id", "customer_id"]
     }
 
     #[test]
-    fn grid_focus_chips_offer_edit_and_duplicate_on_the_cursors_option() {
+    fn grid_focus_chips_offer_edit_and_copy_on_the_cursors_option() {
         let (_dir, ctx) = fixture_with_description();
         let mut vm = VarManager::default();
         select_group(&mut vm, &ctx, "creds");
@@ -3653,23 +3907,42 @@ fields = ["user_id", "customer_id"]
             Some(Action::OpenEditOptionPrompt { owner, key, description, .. })
                 if owner == "creds" && key == "alice" && description.as_deref() == Some("the admin")
         ));
-        let dup = chips
+        let copy = chips
             .iter()
             .find(|(k, _, _)| *k == "c")
             .expect("c chip present");
-        assert_eq!(dup.1, "copy");
+        assert_eq!(copy.1, "copy");
+        assert_eq!(copy.2, Some(Action::CopyOption { row: 0 }));
+        // With nothing copied there is nothing to paste, so the chip
+        // drops like every other chip without a target — the pane's
+        // [Paste option] button is what stands there greyed instead.
+        assert!(!chips.iter().any(|(k, _, _)| *k == "v"), "{chips:?}");
+        vm.stash = Some(StashedOption {
+            selector: "creds".into(),
+            name: "alice".into(),
+            description: None,
+            values: IndexMap::new(),
+        });
+        let chips = vm.footer_chips(&ctx, None);
+        let paste = chips
+            .iter()
+            .find(|(k, _, _)| *k == "v")
+            .expect("v chip present once a row is copied");
+        assert_eq!(paste.1, "paste");
         assert!(matches!(
-            &dup.2,
-            Some(Action::VarStruct(VarStructOp::DuplicateOption { env, selector, name }))
-                if env == "qa" && selector == "creds" && name == "alice"
+            &paste.2,
+            Some(Action::VarStruct(VarStructOp::PasteOption { env, selector }))
+                if env == "qa" && selector == "creds"
         ));
 
-        // On the ghost row there is no option to edit or duplicate — both
-        // chips drop (a dead chip advertises a key that would do nothing).
+        // On the ghost row there is no option to edit or copy — both chips
+        // drop (a dead chip advertises a key that would do nothing). Paste
+        // stays: it lands a row wherever the cursor is.
         vm.grid.cursor.0 = 2;
         let chips = vm.footer_chips(&ctx, None);
         assert!(!chips.iter().any(|(k, _, _)| *k == "e"), "{chips:?}");
         assert!(!chips.iter().any(|(k, _, _)| *k == "c"), "{chips:?}");
+        assert!(chips.iter().any(|(k, _, _)| *k == "v"), "{chips:?}");
     }
 
     #[test]
@@ -3691,18 +3964,27 @@ fields = ["user_id", "customer_id"]
     }
 
     #[test]
-    fn c_in_the_grid_duplicates_the_cursors_option() {
+    fn c_copies_the_cursors_option_and_v_pastes_it_back() {
         let (_dir, ctx) = fixture_with_description();
         let mut vm = VarManager::default();
         select_group(&mut vm, &ctx, "creds");
         vm.focus = VmFocus::Grid;
         vm.grid.cursor.0 = 1;
-        let action = vm.handle_key(key(KeyCode::Char('c')), &ctx, None);
+        assert_eq!(
+            vm.handle_key(key(KeyCode::Char('c')), &ctx, None),
+            Some(Action::CopyOption { row: 1 })
+        );
+        // `v` is inert until something is copied — the key does nothing
+        // rather than dispatching a paste core would refuse.
+        assert_eq!(vm.handle_key(key(KeyCode::Char('v')), &ctx, None), None);
+        vm.stash = Some(vm.option_row(&ctx, 1).expect("row 1 is an option"));
+        assert_eq!(vm.stash.as_ref().unwrap().name, "bob");
+        let action = vm.handle_key(key(KeyCode::Char('v')), &ctx, None);
         assert!(
             matches!(
                 &action,
-                Some(Action::VarStruct(VarStructOp::DuplicateOption { env, selector, name }))
-                    if env == "qa" && selector == "creds" && name == "bob"
+                Some(Action::VarStruct(VarStructOp::PasteOption { env, selector }))
+                    if env == "qa" && selector == "creds"
             ),
             "{action:?}"
         );
@@ -3762,7 +4044,13 @@ fields = ["user_id", "customer_id"]
         // edit rather than opening a dialog.
         assert_eq!(
             labels,
-            vec!["Edit\u{2026}", "Duplicate option", "Rename", "Delete"]
+            vec![
+                "Edit\u{2026}",
+                "Copy option",
+                "Paste option",
+                "Rename",
+                "Delete"
+            ]
         );
         let Some(Action::OpenEditOptionPrompt {
             owner, key, values, ..
@@ -3772,20 +4060,17 @@ fields = ["user_id", "customer_id"]
         };
         assert_eq!((owner.as_str(), key.as_str()), ("creds", "bob"));
         assert_eq!(values["user_id"], "2002");
+        assert_eq!(items[1].label, "Copy option");
+        assert_eq!(items[1].action, Some(Action::CopyOption { row: 1 }));
+        // Paste keeps its place in the menu with nothing copied, disabled.
+        assert_eq!(items[2].label, "Paste option");
+        assert_eq!(items[2].action, None);
         assert_eq!(
-            items[1].action,
-            Some(Action::VarStruct(VarStructOp::DuplicateOption {
-                env: "qa".into(),
-                selector: "creds".into(),
-                name: "bob".into(),
-            }))
-        );
-        assert_eq!(
-            items[2].action,
+            items[3].action,
             Some(Action::StartOptionNameEdit { row: 1 })
         );
         assert_eq!(
-            items[3].action,
+            items[4].action,
             Some(Action::DeleteEntry {
                 env: "qa".into(),
                 selector: "creds".into(),
