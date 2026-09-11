@@ -869,21 +869,35 @@ impl VarManager {
         let mut chips: Vec<(&'static str, &'static str, Option<Action>)> =
             if let (VmDetail::Group(selector), VmFocus::Grid) = (&self.detail, self.focus) {
                 let target = op_env(ctx, selector).zip(self.entry_at(ctx, self.grid.cursor.0));
+                // Terse labels on purpose: seven chips share the footer
+                // with the right-aligned save/palette/quit group, and the
+                // grid context already names the target (an option).
+                //
+                // The order is the selector pane's own, so one sequence of
+                // verbs serves the whole screen: the destructive one, then
+                // rename, then edit, then the rest. `paste` is the
+                // exception, and sits last for a reason of its own — it
+                // comes and goes with what is copied, and from the end of
+                // the strip it can appear without shifting a chip beside
+                // it. Its button is the protected one in the pane, so
+                // being first to drop on a narrow footer costs nothing.
                 vec![
                     (
-                        "space",
-                        "select",
-                        target.clone().map(|(env, option)| {
-                            Action::VarEdit(VarEditOp::SelectOption {
-                                env,
-                                selector: selector.clone(),
-                                option,
-                            })
+                        "d",
+                        "delete",
+                        target.clone().map(|(env, name)| Action::DeleteEntry {
+                            env,
+                            selector: selector.clone(),
+                            name,
                         }),
                     ),
-                    // Terse labels on purpose: five chips share the footer
-                    // with the right-aligned save/palette/quit group, and
-                    // the grid context already names the target (an option).
+                    (
+                        "r",
+                        "rename",
+                        target.clone().map(|_| Action::StartOptionNameEdit {
+                            row: self.grid.cursor.0,
+                        }),
+                    ),
                     (
                         "e",
                         "edit",
@@ -906,6 +920,18 @@ impl VarManager {
                             .map(|_| Action::CopyOption { row: self.grid.cursor.0 }),
                     ),
                     (
+                        "space",
+                        "select",
+                        target.map(|(env, option)| {
+                            Action::VarEdit(VarEditOp::SelectOption {
+                                env,
+                                selector: selector.clone(),
+                                option,
+                            })
+                        }),
+                    ),
+                    ("o", "new option", Some(Action::StartNewOptionEdit)),
+                    (
                         "v",
                         "paste",
                         // Armed by what was copied, not by the cursor: a
@@ -920,26 +946,6 @@ impl VarManager {
                                 })
                             }),
                     ),
-                    (
-                        "r",
-                        "rename",
-                        target.clone().map(|_| Action::StartOptionNameEdit {
-                            row: self.grid.cursor.0,
-                        }),
-                    ),
-                    (
-                        "d",
-                        "delete",
-                        target.map(|(env, name)| Action::DeleteEntry {
-                            env,
-                            selector: selector.clone(),
-                            name,
-                        }),
-                    ),
-                    // Last on purpose: `paint_chip_row` drops trailing
-                    // chips on a narrow footer, and the ghost row and the
-                    // `[+ Option]` button already cover this one.
-                    ("o", "new option", Some(Action::StartNewOptionEdit)),
                 ]
             } else {
                 // The list cursor's row when it names something, else
@@ -951,19 +957,22 @@ impl VarManager {
                     .and_then(VmRow::name)
                     .or_else(|| self.detail.name())
                     .map(str::to_string);
+                // The selector pane's verbs in its buttons' order, then
+                // the left column's two `+` buttons in theirs — the same
+                // sequence the grid's strip runs in, so the footer reads
+                // the same wherever the keyboard is.
                 let mut chips = vec![
-                    ("n", "new variable", Some(Action::PromptNewVar)),
-                    ("g", "new selector", Some(Action::PromptNewSelector)),
+                    ("d", "delete", name.clone().map(|name| Action::DeleteVar { name })),
                     (
                         "e",
                         "rename",
-                        name.clone().map(|from| Action::PromptRenameVar { from }),
+                        name.map(|from| Action::PromptRenameVar { from }),
                     ),
-                    ("d", "delete", name.map(|name| Action::DeleteVar { name })),
                 ];
                 // With a selector open, its fields editor is one key away —
                 // the `m` binding predates this chip, but a key the footer
-                // never taught was as good as mouse-only.
+                // never taught was as good as mouse-only. It sits third,
+                // where `[Edit fields]` sits among the buttons.
                 if let VmDetail::Group(selector) = &self.detail {
                     chips.push((
                         "m",
@@ -973,6 +982,8 @@ impl VarManager {
                         }),
                     ));
                 }
+                chips.push(("n", "new variable", Some(Action::PromptNewVar)));
+                chips.push(("g", "new selector", Some(Action::PromptNewSelector)));
                 chips
             };
         chips.retain(|(_, _, a)| a.is_some());
@@ -3577,6 +3588,41 @@ fields = ["user_id", "customer_id"]
         ] {
             assert!(hits.rect_of(&hit).is_some(), "{hit:?} has no button");
         }
+    }
+
+    #[test]
+    fn both_footer_strips_run_in_the_buttons_order_with_paste_last() {
+        let (_dir, ctx) = fixture_with_description();
+        let mut vm = VarManager::default();
+        select_group(&mut vm, &ctx, "creds");
+
+        // The left list's strip: the selector-pane verbs in the order its
+        // buttons stand in, then the two `+` buttons in theirs.
+        let keys: Vec<&str> = vm
+            .footer_chips(&ctx, None)
+            .iter()
+            .map(|(k, _, _)| *k)
+            .collect();
+        assert_eq!(keys, vec!["d", "e", "m", "n", "g"]);
+
+        // The grid's strip: the same verb order, and `paste` at the far
+        // right — it comes and goes with what is copied, and from there it
+        // can appear without shifting a single chip beside it.
+        vm.focus = VmFocus::Grid;
+        let keys: Vec<&str> = vm
+            .footer_chips(&ctx, None)
+            .iter()
+            .map(|(k, _, _)| *k)
+            .collect();
+        assert_eq!(keys, vec!["d", "r", "e", "c", "space", "o"]);
+
+        vm.stash = Some(vm.option_row(&ctx, 0).expect("row 0 is an option"));
+        let keys: Vec<&str> = vm
+            .footer_chips(&ctx, None)
+            .iter()
+            .map(|(k, _, _)| *k)
+            .collect();
+        assert_eq!(keys, vec!["d", "r", "e", "c", "space", "o", "v"]);
     }
 
     #[test]
