@@ -211,7 +211,14 @@ impl App {
                 // (its release lost the same way) would promote a row drag
                 // out from under whatever this press starts. `on_hit`
                 // re-arms the press when this click lands on a row.
-                let hit = self.hits.hit_at(m.column, m.row).cloned();
+                // `{{token}}` overlays are skipped: a click on one is a
+                // click on the text it sits in (caret placement, cell
+                // edit), never a dialog — the tooltip's edit pill is the
+                // route to the variable itself.
+                let hit = self
+                    .hits
+                    .hit_at_ignoring_var_tokens(m.column, m.row)
+                    .cloned();
                 let hit = self.cancel_stale_drags(hit);
                 // A click anywhere but the jq bar itself is Enter for a
                 // focused bar: the filter is already applied (every edit
@@ -1121,9 +1128,8 @@ impl App {
                 // the picker it opens with nowhere to insert.
                 | Hit::FooterChip(Action::OpenVarPicker { .. })
         )
-        // A token sits *on* a cell, and its tooltip floats over the rows:
-        // clicking either must neither commit the cell under edit nor
-        // drop the selection.
+        // The tooltip floats over the rows: clicking one of its pills
+        // must neither commit the cell under edit nor drop the selection.
         || hit.is_float_overlay();
         if !keeps_table_selection {
             self.commit_table_edit();
@@ -1987,12 +1993,16 @@ impl App {
                 self.update(Action::Render)
             }
             Hit::HScrollTrack(..) => false,
-            // Clicking a drawn `{{token}}` opens the var picker already
-            // filtered to that name (spec §7) — the shortest path from
-            // "what is this?" to the variable itself.
-            Hit::VarToken(name) => self.update(Action::OpenVarTokenPopup(name)),
-            // The tooltip's controls. A secret's *real* value is what gets
-            // copied, mask or no mask — the point of the button.
+            // A drawn `{{token}}` is never a click target (`Down(Left)`
+            // resolves past it); the arm keeps the match exhaustive.
+            Hit::VarToken(_) => false,
+            // The tooltip's controls. Its edit pill is the path from "what
+            // is this?" to the variable itself (spec §7): the popup action
+            // picks the editor the token calls for, and the modal it
+            // opens takes the tip down.
+            Hit::TipEdit(name) => self.update(Action::OpenVarTokenPopup(name)),
+            // A secret's *real* value is what gets copied, mask or no mask
+            // — the point of the button.
             Hit::TipCopy(name) => {
                 let Some(value) = self.editor.vars.describe(&name).value else {
                     return false;

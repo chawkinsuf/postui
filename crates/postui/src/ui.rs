@@ -486,17 +486,27 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 /// Widest a tooltip line may run before the value wraps onto another row.
 const TOOLTIP_MAX_TEXT_W: usize = 56;
 
-/// Draws the hover/caret tooltip for one `{{token}}` (spec §7): first the
-/// value — one mask dot per cell for a secret unless `revealed` — wrapped
-/// onto further rows rather than truncated so the whole value is
-/// readable — then a line naming the scope the value came from (`this
-/// request`, `env = qa`, `default`, `option = user 2`, `needs selection`,
-/// `missing secret`). When there is a value, icon pills sit at the right
-/// of its first row: `󰆏` copy (the real value, a secret's included) and,
-/// for a secret, `󰈈` reveal / `󰈉` hide. It sits under the token it
-/// belongs to, flipping above when there is no room below, and is
-/// clamped to stay inside `screen`; nothing is drawn when even the pills
-/// would not fit. Registers the panel and its pills in `hits`.
+/// Draws the hover/caret tooltip for one `{{token}}` (spec §7). Three
+/// parts, top to bottom:
+///
+/// - a **header** row: the variable's name in the token's own tint, the
+///   scope its value came from in muted text (`this request`, `env = qa`,
+///   `default`, `option = user 2`, `needs selection`, `missing secret`,
+///   `not defined`), and the icon pills right-aligned — `󰈈` reveal /
+///   `󰈉` hide for a secret, `󰆏` copy (the real value, a secret's
+///   included) when there is a value, and `󰏫` edit always. Right-anchored
+///   in that order: edit is the primary verb and holds the anchor edge,
+///   reveal is the rare, dynamic one and comes and goes at the far end
+///   without moving the other two;
+/// - the **value**, when there is one — one mask dot per cell for a
+///   secret unless `revealed` — wrapped onto further rows rather than
+///   truncated so the whole value is readable;
+/// - the declaration's **description**, when written.
+///
+/// It sits under the token it belongs to, flipping above when there is no
+/// room below, and is clamped to stay inside `screen`; nothing is drawn
+/// when even the header would not fit. Registers the panel and its pills
+/// in `hits`.
 #[allow(clippy::too_many_arguments)]
 fn draw_var_tooltip(
     frame: &mut Frame,
@@ -516,8 +526,8 @@ fn draw_var_tooltip(
     // structure and widths whatever mix of narrow, wide, or control
     // characters the secret holds, so reveal / hide moves nothing.
     let masked = info.secret && !revealed;
-    let mut value_lines: Vec<String> =
-        wrap_cells(&info.display_value_unmasked(), TOOLTIP_MAX_TEXT_W)
+    let mut value_lines: Vec<String> = match &info.value {
+        Some(value) => wrap_cells(value, TOOLTIP_MAX_TEXT_W)
             .into_iter()
             .map(|row| {
                 if masked {
@@ -526,33 +536,36 @@ fn draw_var_tooltip(
                     row
                 }
             })
-            .collect();
-    let line2 = info.source.label();
-    let line3 = info
+            .collect(),
+        None => Vec::new(),
+    };
+    let source = info.source.label();
+    let description = info
         .description
         .as_ref()
         .map(|d| ellipsize(d, TOOLTIP_MAX_TEXT_W));
-    // The icon pills, only when there is a value to act on: three cells
-    // each (` 󰆏 `) so the hover fill surrounds the glyph.
+    // The icon pills: three cells each (` 󰆏 `) so the hover fill
+    // surrounds the glyph.
     let mut pills: Vec<(&str, Hit)> = Vec::new();
+    if info.secret && info.value.is_some() {
+        let eye = if revealed {
+            crate::glyph::EYE_OFF_PILL
+        } else {
+            crate::glyph::EYE_PILL
+        };
+        pills.push((eye, Hit::TipReveal(tip.name.clone())));
+    }
     if info.value.is_some() {
         pills.push((crate::glyph::COPY_PILL, Hit::TipCopy(tip.name.clone())));
-        if info.secret {
-            let eye = if revealed {
-                crate::glyph::EYE_OFF_PILL
-            } else {
-                crate::glyph::EYE_PILL
-            };
-            pills.push((eye, Hit::TipReveal(tip.name.clone())));
-        }
     }
-    // Trailing the first value row: a gap, then the pills.
+    pills.push((crate::glyph::PENCIL_PILL, Hit::TipEdit(tip.name.clone())));
     let pills_w = 3 * pills.len();
-    let controls_w = if pills.is_empty() { 0 } else { 1 + pills_w };
-    // Padding rows top and bottom, the value rows, the source line, and an
+    // The header: name, two cells, source, a gap, then the pills.
+    let header_w = (tip.name.width() + 2 + source.width()).min(TOOLTIP_MAX_TEXT_W) + 1 + pills_w;
+    // Padding rows top and bottom, the header, the value rows, and an
     // optional description line. A value taller than the terminal is cut
     // to fit, the last surviving row ellipsized to say so.
-    let fixed = 3 + u16::from(line3.is_some());
+    let fixed = 3 + u16::from(description.is_some());
     let max_value_rows = screen.height.saturating_sub(fixed).max(1) as usize;
     if value_lines.len() > max_value_rows {
         value_lines.truncate(max_value_rows);
@@ -560,23 +573,20 @@ fn draw_var_tooltip(
         *last = take_cells(last, TOOLTIP_MAX_TEXT_W - 1) + "\u{2026}";
     }
     let height = fixed + value_lines.len() as u16;
-    // Display cells throughout (a wide glyph is one char but two cells),
-    // so the pills land after the text rather than on top of its tail.
-    let first_value_w = value_lines.first().map_or(0, |l| l.width());
+    // Display cells throughout (a wide glyph is one char but two cells).
     let text_w = value_lines
         .iter()
         .map(|l| l.width())
         .max()
         .unwrap_or(0)
-        .max(first_value_w + controls_w)
-        .max(line2.width())
-        .max(line3.as_ref().map_or(0, |l| l.width())) as u16;
+        .max(header_w)
+        .max(description.as_ref().map_or(0, |l| l.width())) as u16;
     // 2 columns of padding each side, plus a column for the drop shadow.
     let width = (text_w + 4).min(screen.width.saturating_sub(1));
     // Too narrow for the padding, the pills, and at least one cell of
-    // value before them: no tip at all, rather than pills painted over
+    // header before them: no tip at all, rather than pills painted over
     // the border (or placed off a u16 underflow).
-    if width < 5 || (width as usize) < 5 + controls_w || screen.height < height {
+    if (width as usize) < 6 + pills_w || screen.height < height {
         return;
     }
     let below = tip.anchor.bottom();
@@ -594,35 +604,46 @@ fn draw_var_tooltip(
     let buf = frame.buffer_mut();
     crate::paint::floating_panel(buf, area, screen, theme);
     let inner = width.saturating_sub(4) as usize;
+    // The header keeps room for the pills after its text: the name in
+    // the token's tint (so the panel reads as that token's), the source
+    // muted after it — cut from the source first, the name last.
+    let header_room = inner.saturating_sub(1 + pills_w);
+    let name = ellipsize(&tip.name, header_room);
+    let source_room = header_room.saturating_sub(name.width() + 2);
     let mut row = y + 1;
-    for (i, line) in value_lines.iter().enumerate() {
-        // The first row keeps room for the pills after the value.
-        let room = if i == 0 {
-            inner.saturating_sub(controls_w)
-        } else {
-            inner
-        };
-        crate::paint::text(
-            buf,
-            x + 2,
-            row,
-            &ellipsize(line, room),
-            theme.text,
-            theme.panel,
-            true,
-        );
-        row += 1;
-    }
     crate::paint::text(
         buf,
         x + 2,
         row,
-        &ellipsize(&line2, inner),
-        theme.text_muted,
+        &name,
+        crate::components::var_tokens::token_color(theme, info),
         theme.panel,
-        false,
+        true,
     );
-    if let Some(desc) = &line3 {
+    if source_room > 0 {
+        crate::paint::text(
+            buf,
+            x + 2 + name.width() as u16 + 2,
+            row,
+            &ellipsize(&source, source_room),
+            theme.text_muted,
+            theme.panel,
+            false,
+        );
+    }
+    for line in &value_lines {
+        row += 1;
+        crate::paint::text(
+            buf,
+            x + 2,
+            row,
+            &ellipsize(line, inner),
+            theme.text,
+            theme.panel,
+            false,
+        );
+    }
+    if let Some(desc) = &description {
         row += 1;
         crate::paint::text(
             buf,

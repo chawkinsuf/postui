@@ -1159,6 +1159,45 @@ impl App {
                 VmDetail::Group(_) => crate::hint::VmNoun::Selector,
                 VmDetail::Var(_) | VmDetail::None => crate::hint::VmNoun::Variable,
             },
+            tip_edit: match hit {
+                Hit::TipEdit(name) => self.tip_edit_verb(name),
+                _ => crate::hint::TipEditVerb::default(),
+            },
+        }
+    }
+
+    /// What `Action::OpenVarTokenPopup(name)` would open, read off the same
+    /// declaration it dispatches on (keep the two in step), so the
+    /// tooltip's edit pill never promises a different dialog than the
+    /// click delivers.
+    fn tip_edit_verb(&self, name: &str) -> crate::hint::TipEditVerb {
+        use crate::hint::TipEditVerb;
+        use postui_core::varmodel::VarMeta;
+        match self.resolved().meta.get(name) {
+            Some(VarMeta::SelectorMember { .. }) => TipEditVerb::Option,
+            Some(VarMeta::NeedsSelection) => {
+                let in_a_selector = self
+                    .variables()
+                    .selectors
+                    .values()
+                    .any(|s| s.fields.iter().any(|f| f == name));
+                if in_a_selector {
+                    TipEditVerb::Option
+                } else {
+                    TipEditVerb::Define
+                }
+            }
+            Some(VarMeta::Secret) | Some(VarMeta::MissingSecret) => TipEditVerb::Secret,
+            Some(VarMeta::Simple) => TipEditVerb::Value,
+            None => {
+                let has_value = self.editor.variables.contains_key(name)
+                    || self.resolved().values.contains_key(name);
+                if has_value {
+                    TipEditVerb::Value
+                } else {
+                    TipEditVerb::Define
+                }
+            }
         }
     }
 
@@ -7035,9 +7074,7 @@ impl App {
                     .stash
                     .as_ref()
                     .filter(|s| s.selector == *selector)
-                    .ok_or_else(|| {
-                        format!("no option copied from \"{selector}\" to paste")
-                    })?;
+                    .ok_or_else(|| format!("no option copied from \"{selector}\" to paste"))?;
                 E::PasteOption {
                     env: env.clone(),
                     selector: selector.clone(),

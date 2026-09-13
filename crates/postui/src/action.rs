@@ -554,7 +554,8 @@ pub enum Action {
     OpenVarPicker {
         completing: bool,
     },
-    /// The value control behind clicking an inline `{{token}}`: a selector
+    /// The value control behind the variable tooltip's `󰏫` edit pill (a
+    /// token's own click places the caret in the text): a selector
     /// field opens the `SelectOption` picker (pick an option, every linked
     /// field updates), a secret opens the masked secret prompt, a simple /
     /// request-scoped name opens the value-edit popup (value +
