@@ -94,6 +94,17 @@ fn hover_token(app: &mut App, name: &str) -> Rect {
     r
 }
 
+/// Clicks a hit the tooltip registers (its pills), drawing first so the
+/// tip is on screen and its rects are live.
+fn click_hit(app: &mut App, hit: Hit) {
+    draw(app);
+    let r = app
+        .hits
+        .rect_of(&hit)
+        .unwrap_or_else(|| panic!("no rect registered for {hit:?}"));
+    app.handle_mouse(left_down(r.x, r.y));
+}
+
 #[test]
 fn a_url_token_registers_a_var_token_hit_inside_the_url_bar() {
     let mut app = app_with_vars();
@@ -308,11 +319,29 @@ fn a_secrets_tooltip_is_masked_and_never_reveals_the_value() {
 }
 
 #[test]
-fn clicking_a_token_opens_the_value_popup_on_its_supplying_scope() {
+fn clicking_a_token_places_the_caret_and_its_tip_pill_opens_the_value_popup() {
     let mut app = app_with_vars();
     set_url(&mut app, "{{base_url}}/x");
     let r = token_rect(&mut app, "base_url");
+    let text = app.editor.last_url_text_area.expect("url text area");
+
+    // A click resolves *past* the token overlay to the text beneath: the
+    // URL line takes focus and the caret lands on the clicked column.
     app.handle_mouse(left_down(r.x + 1, r.y));
+    assert_eq!(app.editor.sub_focus, SubFocus::Url);
+    assert_eq!(
+        app.editor.url.cursor(),
+        usize::from(r.x + 1 - text.x),
+        "the caret follows the pointer into the token"
+    );
+    assert!(
+        app.modals.top().is_none(),
+        "a plain click is caret placement, not a dialog"
+    );
+
+    // The value popup is reached through the tooltip's edit pill.
+    hover_token(&mut app, "base_url");
+    click_hit(&mut app, Hit::TipEdit("base_url".into()));
 
     match app.modals.top() {
         Some(Modal::MultiPrompt { title, fields, .. }) => {
@@ -364,12 +393,26 @@ fn tokens_in_table_cells_are_tinted_and_hoverable_without_disturbing_the_table()
         "the cell under the token keeps the hover styling"
     );
 
-    // ...and neither does clicking it (which opens the value popup
-    // instead of starting a cell edit).
+    // ...and clicking it starts the ordinary cell edit beneath, with the
+    // caret on the clicked column — the token overlay is not a button.
     app.handle_mouse(left_down(r.x + 1, r.y));
     assert_eq!(app.editor.table.selected, Some(0));
-    assert!(app.editor.table.editing.is_none(), "no cell edit started");
-    assert!(matches!(app.modals.top(), Some(Modal::MultiPrompt { .. })));
+    let edit = app
+        .editor
+        .table
+        .editing
+        .as_ref()
+        .expect("the click starts the cell edit under the token");
+    assert_eq!(edit.input.text(), "{{base_url}}");
+    assert_eq!(
+        edit.input.cursor(),
+        usize::from(r.x + 1 - cell.x),
+        "the caret follows the pointer into the token"
+    );
+    assert!(
+        app.modals.top().is_none(),
+        "a plain click is caret placement, not a dialog"
+    );
 }
 
 #[test]
