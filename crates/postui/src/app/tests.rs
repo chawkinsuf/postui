@@ -9599,9 +9599,7 @@ fn a_copied_option_pastes_the_whole_row_into_another_environment() {
     }));
 
     assert!(
-        app.toasts
-            .messages()
-            .contains(&"Copied option \"alice\""),
+        app.toasts.messages().contains(&"Copied option \"alice\""),
         "{:?}",
         app.toasts.messages()
     );
@@ -9623,13 +9621,10 @@ fn pasting_back_into_the_environment_a_row_came_from_duplicates_it() {
         selector: "creds".into(),
     }));
 
-    let options = postui_core::varmodel::options_of(
-        app.proj().variables(),
-        app.proj().env_data(),
-        "creds",
-    )
-    .cloned()
-    .unwrap_or_default();
+    let options =
+        postui_core::varmodel::options_of(app.proj().variables(), app.proj().env_data(), "creds")
+            .cloned()
+            .unwrap_or_default();
     assert_eq!(options["alice copy"].values["user_id"], "1");
     assert_eq!(options["alice"].values["user_id"], "1");
 }
@@ -11230,20 +11225,22 @@ fn token_popup_app() -> (App, tempfile::TempDir) {
 }
 
 #[test]
-fn clicking_a_selector_field_token_opens_the_select_picker() {
+fn editing_a_selector_field_token_opens_the_select_picker() {
     let (mut app, _dir) = token_popup_app();
     app.proj_mut().set_selection_for("qa", "user", "alice");
     app.editor.url = crate::components::line_input::LineInput::new("https://x/{{user}}");
     render_once(&mut app);
 
+    // Through the tooltip: hover the token, then its edit pill.
     let r = app
         .hits
         .rect_of(&crate::hit::Hit::VarToken("user".into()))
         .expect("the token registers a hit");
-    app.handle_mouse(left_down(r.x, r.y));
+    app.handle_mouse(moved(r.x, r.y));
+    click_hit(&mut app, Hit::TipEdit("user".into()));
 
     let Some(Modal::VarPicker(p)) = app.modals.top() else {
-        panic!("clicking a selector-field token must open the select picker")
+        panic!("editing a selector-field token must open the select picker")
     };
     assert_eq!(
         p.mode,
@@ -11255,7 +11252,7 @@ fn clicking_a_selector_field_token_opens_the_select_picker() {
 }
 
 #[test]
-fn clicking_a_simple_var_token_opens_the_value_popup_on_its_supplying_scope() {
+fn editing_a_simple_var_token_opens_the_value_popup_on_its_supplying_scope() {
     let (mut app, _dir) = token_popup_app();
     app.update(Action::OpenVarTokenPopup("base_url".into()));
 
@@ -11889,7 +11886,7 @@ fn remove_marks_the_default_when_it_is_the_supplier_and_confirm_clears_it() {
 }
 
 #[test]
-fn clicking_a_secret_token_opens_the_masked_secret_prompt() {
+fn editing_a_secret_token_opens_the_masked_secret_prompt() {
     let (mut app, _dir) = token_popup_app();
     app.update(Action::OpenVarTokenPopup("api_key".into()));
 
@@ -11906,7 +11903,7 @@ fn clicking_a_secret_token_opens_the_masked_secret_prompt() {
 }
 
 #[test]
-fn clicking_a_token_of_a_selector_with_no_options_opens_the_picker_on_its_ghost_row() {
+fn editing_a_token_of_a_selector_with_no_options_opens_the_picker_on_its_ghost_row() {
     let (mut app, _dir) = token_popup_app();
     // dev has no options for the selector, so the picker opens with only
     // its "add new option…" ghost row — no prompt is forced on the user.
@@ -21405,6 +21402,182 @@ fn hover_token(app: &mut App, name: &str) {
     render_once(app);
 }
 
+/// A `{{token}}` is text: clicking it lands the caret in the URL under
+/// the pointer, exactly as a click on any other character does, and
+/// opens nothing. The tooltip's edit pill is the route to the variable.
+#[test]
+fn clicking_a_token_places_the_caret_and_opens_nothing() {
+    let (mut app, _dir, _out) = tooltip_app("base_url");
+    app.editor.sub_focus = SubFocus::Content;
+    render_once(&mut app);
+    let token = app.hits.rect_of(&Hit::VarToken("base_url".into())).unwrap();
+    let text_area = app.editor.last_url_text_area.unwrap();
+    assert_eq!(token.x, text_area.x, "the token opens the URL");
+    assert!(app.handle_mouse(left_down(token.x + 4, token.y)));
+    assert!(app.modals.is_empty(), "a token click must open no dialog");
+    assert_eq!(app.editor.sub_focus, SubFocus::Url);
+    assert_eq!(app.editor.url.cursor(), 4, "caret where the click landed");
+}
+
+/// The tip's `󰏫` pill is what the token click used to be: it opens the
+/// editor the token calls for (the value popup for a plain variable),
+/// and the dialog it raises takes the tip down with it.
+#[test]
+fn tooltip_edit_pill_opens_the_tokens_editor() {
+    let (mut app, _dir, _out) = tooltip_app("base_url");
+    hover_token(&mut app, "base_url");
+    let text = tooltip_text(&mut app);
+    assert!(text.contains("\u{F03EB}"), "edit control: {text}");
+    click_hit(&mut app, Hit::TipEdit("base_url".into()));
+    assert!(
+        matches!(
+            app.modals.top(),
+            Some(Modal::MultiPrompt { kind: PromptKind::EditVarValue { name, .. }, .. })
+                if name == "base_url"
+        ),
+        "the value popup opens for a plain variable"
+    );
+    assert!(
+        app.var_token_tip().is_none(),
+        "the dialog takes the tip down"
+    );
+}
+
+/// A name defined nowhere still gets a tip, and the edit pill is its
+/// create flow — the copy pill has nothing to copy and stays away.
+#[test]
+fn tooltip_for_an_undefined_token_offers_edit_but_not_copy() {
+    let (mut app, _dir, _out) = tooltip_app("nowhere");
+    hover_token(&mut app, "nowhere");
+    let text = tooltip_text(&mut app);
+    assert!(text.contains("not defined"), "{text}");
+    assert!(app.hits.rect_of(&Hit::TipEdit("nowhere".into())).is_some());
+    assert!(app.hits.rect_of(&Hit::TipCopy("nowhere".into())).is_none());
+    click_hit(&mut app, Hit::TipEdit("nowhere".into()));
+    assert!(
+        matches!(app.modals.top(), Some(Modal::VarPicker(_))),
+        "an undefined name opens the insert picker (its create flow)"
+    );
+}
+
+/// One screen row at the 120×40 size `render_once` uses, cut to the
+/// panel's own columns (trailing spaces trimmed).
+fn panel_row(app: &mut App, panel: ratatui::layout::Rect, row: u16) -> String {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    app.anims.finish_all();
+    let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
+    let buf = terminal.backend().buffer();
+    (panel.x..panel.right())
+        .map(|x| buf[(x, row)].symbol().to_string())
+        .collect::<String>()
+        .trim_end()
+        .to_string()
+}
+
+/// The tip's layout: a header row naming the variable and its source
+/// with the pills on the right, the value on its own full-width row
+/// beneath, then the description.
+#[test]
+fn tooltip_lays_out_a_header_row_then_the_value_then_the_description() {
+    let (mut app, _dir, _out) = tooltip_app("base_url");
+    hover_token(&mut app, "base_url");
+    let panel = app.hits.rect_of(&Hit::TipPanel("base_url".into())).unwrap();
+    assert_eq!(
+        panel.height, 5,
+        "padding, header, value, description, padding"
+    );
+    assert_eq!(
+        panel_row(&mut app, panel, panel.y + 1),
+        "\u{2502} base_url  env = qa  \u{F018F}  \u{F03EB}  \u{2502}",
+        "header: name, source, then copy and edit pills at the right edge"
+    );
+    assert_eq!(
+        panel_row(&mut app, panel, panel.y + 2),
+        "\u{2502} https://qa.example.com    \u{2502}",
+        "the value takes the next row, with no pills crowding it"
+    );
+    assert_eq!(
+        panel_row(&mut app, panel, panel.y + 3),
+        "\u{2502} API root                  \u{2502}"
+    );
+    // Right-anchored pills: edit holds the anchor edge, copy before it.
+    assert_eq!(
+        app.hits.rect_of(&Hit::TipEdit("base_url".into())),
+        Some(ratatui::layout::Rect::new(
+            panel.right() - 5,
+            panel.y + 1,
+            3,
+            1
+        ))
+    );
+    assert_eq!(
+        app.hits.rect_of(&Hit::TipCopy("base_url".into())),
+        Some(ratatui::layout::Rect::new(
+            panel.right() - 8,
+            panel.y + 1,
+            3,
+            1
+        ))
+    );
+}
+
+/// A secret's pills run reveal, copy, edit: reveal is the rare, dynamic
+/// one and sits in the drop-first slot at the far left, so copy and edit
+/// stay put whether or not it is offered.
+#[test]
+fn tooltip_pills_run_reveal_copy_edit_from_the_left() {
+    let (mut app, _dir, _out) = tooltip_app("api_key");
+    hover_token(&mut app, "api_key");
+    let panel = app.hits.rect_of(&Hit::TipPanel("api_key".into())).unwrap();
+    let at = |hit: Hit| app.hits.rect_of(&hit).map(|r| r.x);
+    assert_eq!(
+        at(Hit::TipReveal("api_key".into())),
+        Some(panel.right() - 11)
+    );
+    assert_eq!(at(Hit::TipCopy("api_key".into())), Some(panel.right() - 8));
+    assert_eq!(at(Hit::TipEdit("api_key".into())), Some(panel.right() - 5));
+}
+
+/// With nothing to show, there is no value row: the header already says
+/// `not defined`, and the panel is header plus padding.
+#[test]
+fn tooltip_for_an_undefined_token_has_no_value_row() {
+    let (mut app, _dir, _out) = tooltip_app("nowhere");
+    hover_token(&mut app, "nowhere");
+    let panel = app.hits.rect_of(&Hit::TipPanel("nowhere".into())).unwrap();
+    assert_eq!(panel.height, 3, "padding, header, padding — no dash row");
+    assert_eq!(
+        panel_row(&mut app, panel, panel.y + 1),
+        "\u{2502} nowhere  not defined  \u{F03EB}  \u{2502}"
+    );
+}
+
+/// The hint context reads the edit pill's verb off the same declaration
+/// `OpenVarTokenPopup` dispatches on, per token kind.
+#[test]
+fn hint_ctx_classifies_the_edit_pill_by_what_the_popup_will_open() {
+    use crate::hint::TipEditVerb;
+    let (mut app, _dir, _out) = tooltip_app("base_url");
+    app.proj_mut().set_selection_for("qa", "user", "alice");
+    app.update(Action::ReloadProjectFiles);
+    let verb = |app: &App, name: &str| app.hint_ctx(&Hit::TipEdit(name.into())).tip_edit;
+    assert_eq!(verb(&app, "base_url"), TipEditVerb::Value);
+    assert_eq!(verb(&app, "user"), TipEditVerb::Option);
+    assert_eq!(verb(&app, "api_key"), TipEditVerb::Secret);
+    assert_eq!(verb(&app, "nowhere"), TipEditVerb::Define);
+    // A request-scoped value with no declaration edits like a plain one.
+    app.editor.variables.insert(
+        "adhoc".into(),
+        postui_core::model::Entry {
+            value: "x".into(),
+            enabled: true,
+        },
+    );
+    assert_eq!(verb(&app, "adhoc"), TipEditVerb::Value);
+}
+
 #[test]
 fn tooltip_stays_while_the_pointer_is_over_it_and_drops_when_it_leaves() {
     let (mut app, _dir, _out) = tooltip_app("base_url");
@@ -21442,12 +21615,13 @@ fn tooltip_copy_puts_the_value_on_the_clipboard() {
         !text.contains("\u{F06D0}"),
         "no reveal for a plain value: {text}"
     );
-    // Icons only: the panel is the value, a gap, one 3-cell pill, and
-    // 2 columns of padding each side — no room for a label.
+    // Icons only: the header is the name, two cells, the source, a gap,
+    // two 3-cell pills (copy, edit), and 2 columns of padding each side
+    // — the value row underneath is exactly as wide.
     let panel = app.hits.rect_of(&Hit::TipPanel("base_url".into())).unwrap();
     assert_eq!(
         panel.width,
-        ("https://qa.example.com".len() + 1 + 3 + 4) as u16
+        ("base_url".len() + 2 + "env = qa".len() + 1 + 6 + 4) as u16
     );
     click_hit(&mut app, Hit::TipCopy("base_url".into()));
     assert_eq!(
@@ -21478,10 +21652,13 @@ fn tooltip_reveal_shows_the_secret_until_the_tip_moves_on() {
     hover_token(&mut app, "api_key");
     let text = tooltip_text(&mut app);
     assert!(text.contains("\u{F06D0}"), "reveal control: {text}");
-    // Icons only: one mask dot per secret character, a gap, two 3-cell
-    // pills, padding — no labels.
+    // Icons only: the header (name, two cells, source, a gap, three
+    // 3-cell pills) sets the width here; the masked value is narrower.
     let panel = app.hits.rect_of(&Hit::TipPanel("api_key".into())).unwrap();
-    assert_eq!(panel.width, ("sk-super-secret".len() + 1 + 6 + 4) as u16);
+    assert_eq!(
+        panel.width,
+        ("api_key".len() + 2 + "env = qa".len() + 1 + 9 + 4) as u16
+    );
     assert!(text.contains(&"\u{25cf}".repeat(15)), "{text}");
     click_hit(&mut app, Hit::TipReveal("api_key".into()));
     let text = tooltip_text(&mut app);
@@ -21494,7 +21671,7 @@ fn tooltip_reveal_shows_the_secret_until_the_tip_moves_on() {
     assert_eq!(
         app.hits.rect_of(&Hit::TipReveal("api_key".into())),
         Some(ratatui::layout::Rect::new(
-            panel.right() - 5,
+            panel.right() - 11,
             panel.y + 1,
             3,
             1

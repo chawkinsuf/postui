@@ -4,7 +4,7 @@
 //!
 //! One [`VarView`] snapshot answers both halves: [`paint_var_tokens`] tints
 //! every token drawn on a row (and registers a [`Hit::VarToken`] over it so
-//! it can be hovered and clicked), and [`VarView::describe`] says what a
+//! it can be hovered), and [`VarView::describe`] says what a
 //! name resolves to and *where* the value came from, which is what the
 //! tooltip renders.
 //!
@@ -233,7 +233,8 @@ pub fn token_color(theme: &Theme, info: &TokenInfo) -> Color {
 
 /// Tints every well-formed `{{token}}` in `text` and registers a
 /// [`Hit::VarToken`] over each one, on top of whatever hit the control
-/// underneath already registered (last-wins, so a click lands on the token).
+/// underneath already registered (last-wins, so a hover finds the token;
+/// clicks resolve past it to the control).
 ///
 /// `text` must be exactly the string drawn on `row.y` starting at
 /// `text_origin_col` — the painter walks it by display width to find each

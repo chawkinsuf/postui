@@ -237,9 +237,11 @@ pub enum Hit {
     VmPromoteBtn,
     /// One drawn `{{name}}` token, carrying the variable's name (spec §7).
     /// Registered *over* whatever control the token sits on (URL bar, table
-    /// cell, computed-header row, body editor), so a left click opens the
-    /// var picker prefiltered to that name. Deliberately invisible to
-    /// hover styling and to right-click menus — see
+    /// cell, computed-header row, body editor) as the hover/caret
+    /// tooltip's anchor — and nothing more: a left click on it places the
+    /// caret in the text beneath like any other click, and the tip's `󰏫`
+    /// pill is the route to editing. Deliberately invisible to hover
+    /// styling, to clicks, and to right-click menus — see
     /// [`HitMap::hit_at_ignoring_var_tokens`].
     VarToken(String),
     /// The variable tooltip's panel for `{{name}}`: a catch-all so a left
@@ -252,6 +254,11 @@ pub enum Hit {
     TipCopy(String),
     /// The tooltip's `󰈈 reveal` / `󰈉 hide` toggle, offered for a secret.
     TipReveal(String),
+    /// The tooltip's `󰏫 edit` control: opens whatever editing the token
+    /// calls for (`Action::OpenVarTokenPopup`) — the value popup, a
+    /// selector's option picker, the secret prompt, or the create flow
+    /// for a name defined nowhere. Always offered, value or no value.
+    TipEdit(String),
     /// A clickable `[y] Label` chip in a Confirm modal.
     ConfirmChoice(char),
     /// One of `Modal::ConfigStartup`'s four buttons
@@ -380,20 +387,21 @@ impl PointerShape {
 
 impl Hit {
     /// The token a variable-tooltip hit belongs to: the tip stays up while
-    /// the pointer rests on any of these (panel, copy pill, reveal pill).
+    /// the pointer rests on any of these (panel, copy/reveal/edit pills).
     pub fn tip_name(&self) -> Option<&str> {
         match self {
-            Hit::TipPanel(n) | Hit::TipCopy(n) | Hit::TipReveal(n) => Some(n),
+            Hit::TipPanel(n) | Hit::TipCopy(n) | Hit::TipReveal(n) | Hit::TipEdit(n) => Some(n),
             _ => None,
         }
     }
 
     /// Overlays that float over the panes: `{{token}}` spans and the
-    /// variable tooltip's hits. A click on one is never a "click away":
-    /// it must not commit a table cell under edit, blur the URL line, or
-    /// drop the row selection beneath — and a right click belongs to the
-    /// row/cell under it and its context menu, so right-click resolution
-    /// skips them (`HitMap::hit_at_ignoring_overlays`).
+    /// variable tooltip's hits. A click on a tip pill is never a "click
+    /// away": it must not commit a table cell under edit, blur the URL
+    /// line, or drop the row selection beneath (a token span is never a
+    /// click target at all — left clicks resolve past it) — and a right
+    /// click belongs to the row/cell under it and its context menu, so
+    /// right-click resolution skips them (`HitMap::hit_at_ignoring_overlays`).
     pub fn is_float_overlay(&self) -> bool {
         matches!(self, Hit::VarToken(_)) || self.tip_name().is_some()
     }
@@ -493,11 +501,12 @@ impl HitMap {
     }
 
     /// Topmost hit containing the point, skipping [`Hit::VarToken`]
-    /// overlays: a token sits *on* a control, and hover styling and
-    /// right-click menus belong to the control under it (a hovered row must
-    /// not lose its highlight because the pointer crossed a `{{token}}` in
-    /// its value). Token hovering is tracked separately, by
-    /// [`HitMap::var_token_at`].
+    /// overlays: a token sits *on* a control, and hover styling, left
+    /// clicks and right-click menus all belong to the control under it (a
+    /// hovered row must not lose its highlight because the pointer crossed
+    /// a `{{token}}` in its value, and a click on one lands the caret in
+    /// the text, not in a dialog). Token hovering is tracked separately,
+    /// by [`HitMap::var_token_at`].
     pub fn hit_at_ignoring_var_tokens(&self, x: u16, y: u16) -> Option<&Hit> {
         self.hit_at_where(x, y, |hit| matches!(hit, Hit::VarToken(_)))
     }

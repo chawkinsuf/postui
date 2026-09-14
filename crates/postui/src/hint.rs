@@ -45,6 +45,24 @@ pub struct HintCtx {
     /// What the Variable Manager's detail pane has open, naming what its
     /// shared `[Rename]`/`[Delete]` buttons act on.
     pub vm_noun: VmNoun,
+    /// What the variable tooltip's `󰏫` pill opens for the token under it.
+    pub tip_edit: TipEditVerb,
+}
+
+/// What `Action::OpenVarTokenPopup` will open for a token, so the tip's
+/// edit pill can say so: the popup action picks the editor from the
+/// declaration, and the hint must name that same one.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum TipEditVerb {
+    /// A plain value (declared or request-scoped): the value popup.
+    #[default]
+    Value,
+    /// A selector field: the option picker.
+    Option,
+    /// A secret, set or missing: the secret prompt.
+    Secret,
+    /// A name defined nowhere: the create flow.
+    Define,
 }
 
 /// The two things the Variable Manager's shared buttons can be pointed at.
@@ -474,6 +492,12 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
             Some(ExtractDestination::ActiveEnv) => "Remove this environment's value",
             _ => "Remove the project default value",
         }),
+        Hit::TipEdit(_) => text(match ctx.tip_edit {
+            TipEditVerb::Value => "Edit this variable's value",
+            TipEditVerb::Option => "Choose this selector's option",
+            TipEditVerb::Secret => "Set this secret",
+            TipEditVerb::Define => "Define this variable",
+        }),
         Hit::TipCopy(_) => text("Copy this variable's value"),
         Hit::TipReveal(_) => text(if ctx.on {
             "Hide this secret's value"
@@ -530,8 +554,31 @@ mod tests {
             };
             for hit in [Hit::VmRename, Hit::VmDelete] {
                 let h = hint_for(&hit, &keymap, &ctx).unwrap();
-                assert!(h.contains(expected), "{hit:?} with {noun:?} open said {h:?}");
+                assert!(
+                    h.contains(expected),
+                    "{hit:?} with {noun:?} open said {h:?}"
+                );
             }
+        }
+    }
+
+    /// The tooltip's edit pill opens a different dialog per token, and
+    /// the hint names the one it will open.
+    #[test]
+    fn the_tips_edit_pill_names_the_dialog_it_opens() {
+        let keymap = Keymap::default_bindings();
+        for (verb, expected) in [
+            (TipEditVerb::Value, "Edit this variable's value"),
+            (TipEditVerb::Option, "Choose this selector's option"),
+            (TipEditVerb::Secret, "Set this secret"),
+            (TipEditVerb::Define, "Define this variable"),
+        ] {
+            let ctx = HintCtx {
+                tip_edit: verb,
+                ..ctx()
+            };
+            let h = hint_for(&Hit::TipEdit("tok".into()), &keymap, &ctx).unwrap();
+            assert_eq!(h, expected, "{verb:?}");
         }
     }
 
