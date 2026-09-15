@@ -14226,6 +14226,32 @@ fn enter_and_esc_both_commit_a_field_edit() {
     );
 }
 
+/// The Variable Manager form routes ctrl+z through `open_text_field_mut`'s
+/// generic arm: it walks the typed run back inside the field and leaves
+/// the field open, the same as a table cell or a Settings field.
+#[test]
+fn ctrl_z_in_the_vm_form_field_restores_the_original() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_row(&mut app, |r| {
+        r == &crate::components::varmanager::VmRow::Var("base_url".into())
+    });
+
+    let r = field_rect(&mut app, VmField::Description);
+    app.handle_mouse(left_down(r.x + r.width - 2, r.y));
+    app.handle_key(plain('!'));
+    app.handle_key(ctrl('z'));
+    let (_, input) = app
+        .varmanager
+        .form
+        .editing
+        .as_ref()
+        .expect("the field stays open");
+    assert_eq!(input.text(), "API root", "ctrl+z undid the typing");
+}
+
 /// Clicking straight from one form field into a *different* one (no
 /// intervening click-away) must commit the first field rather than
 /// silently discarding it — a regression the top-of-`on_hit` guard's
@@ -15010,6 +15036,30 @@ fn editing_a_field_cell_and_clicking_away_rewrites_the_env_file() {
     assert!(app.varmanager.grid.editing.is_none());
     let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     assert!(on_disk.contains("2002x"), "esc committed: {on_disk}");
+}
+
+/// The Variable Manager grid cell also routes ctrl+z through
+/// `open_text_field_mut`'s generic arm: it walks the typed run back
+/// inside the cell and leaves the cell open.
+#[test]
+fn ctrl_z_in_the_vm_grid_cell_restores_the_original() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+
+    let r = cell_rect(&mut app, 0, 1);
+    app.handle_mouse(left_down(r.x + 10, r.y));
+    app.handle_key(plain('9'));
+    app.handle_key(ctrl('z'));
+    let edit = app
+        .varmanager
+        .grid
+        .editing
+        .as_ref()
+        .expect("the cell stays open");
+    assert_eq!(edit.input.text(), "1001", "ctrl+z undid the typing");
 }
 
 /// User finding: there was no button for deleting an option — only the `d`
@@ -19596,6 +19646,23 @@ fn ctrl_z_in_the_jq_bar_walks_the_filter_back() {
     app.sync_jq();
     assert_eq!(app.session.response.jq_text(), "");
     assert!(app.session.response.jq_focused(), "the bar keeps the caret");
+}
+
+/// The search box routes ctrl+z through `open_text_field_mut`'s fallback
+/// arm the same way the jq bar's own arm does: it walks the typed run
+/// back and leaves the box open.
+#[test]
+fn ctrl_z_in_the_search_box_walks_the_query_back() {
+    let mut app = App::new_for_test();
+    ready_response(&mut app, JQ_BODY);
+    app.focus = PaneId::Response;
+    app.handle_key(plain('/'));
+    type_str(&mut app, "status");
+    app.handle_key(ctrl('z'));
+    let view = app.session.response.view().unwrap();
+    let search = view.search.as_ref().expect("the search stays open");
+    assert!(search.active, "ctrl+z did not close the box");
+    assert_eq!(search.input.text(), "", "ctrl+z undid the typed run");
 }
 
 #[test]

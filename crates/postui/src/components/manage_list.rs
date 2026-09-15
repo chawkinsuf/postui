@@ -814,8 +814,10 @@ mod tests {
             assert_eq!(ra, rb, "{alias:?}");
             assert_eq!(a.cursor, b.cursor, "{alias:?}");
         }
-        let mut l = ManageList::default();
-        l.visible_rows = 2;
+        let mut l = ManageList {
+            visible_rows: 2,
+            ..Default::default()
+        };
         l.handle_key(ctrl('f'), ManageTab::Spaces, &ctx);
         assert_eq!(l.cursor, 2, "three spaces: clamped to the last");
         l.handle_key(ctrl('b'), ManageTab::Spaces, &ctx);

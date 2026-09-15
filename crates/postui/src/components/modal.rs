@@ -4167,6 +4167,41 @@ mod tests {
         assert!(res.close && res.actions.is_empty());
     }
 
+    /// On a `MultiPrompt` with more than one field, ↑ off the button row
+    /// must land back on whichever field Esc was pressed from, not
+    /// always the first: `focus` is never reset by Esc or by the row.
+    #[test]
+    fn up_from_the_button_row_returns_to_the_same_field_index() {
+        let mut m = ModalStack::default();
+        m.push(Modal::MultiPrompt {
+            title: "Extract to variable".into(),
+            fields: vec![
+                PromptField::text("name", "Name", ""),
+                PromptField::text("destination", "Destination", ""),
+            ],
+            focus: 0,
+            kind: PromptKind::ExtractVariable,
+        });
+        // Move to the second field and type into it.
+        m.handle_key(key(KeyCode::Tab));
+        m.handle_key(key(KeyCode::Char('b')));
+        // Esc lands on the button row from the second field…
+        m.handle_key(key(KeyCode::Esc));
+        assert_eq!(m.button_focus(), Some(FormButton::Confirm));
+        // …and ↑ hands the caret back to that same field, not the first.
+        m.handle_key(key(KeyCode::Up));
+        assert_eq!(m.button_focus(), None);
+        assert_eq!(
+            m.focused_input().map(|i| i.text()),
+            Some("b"),
+            "back in the second field, text intact"
+        );
+        let Some(Modal::MultiPrompt { focus, .. }) = m.top() else {
+            panic!("still a MultiPrompt");
+        };
+        assert_eq!(*focus, 1, "focus stayed on the second field");
+    }
+
     /// A swallowed confirm (empty name) must leave the aim where it was:
     /// silently dropping back into the field would move focus on a frame
     /// nothing asked to be repainted.

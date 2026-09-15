@@ -464,12 +464,12 @@ impl TableEditorState {
                 TableOutcome::consumed()
             }
             KeyCode::Char('d') if ev.modifiers == KeyModifiers::CONTROL => {
-                let half = ((map.len() + 1) / 2).max(1);
+                let half = map.len().div_ceil(2).max(1);
                 self.selected = Some((self.selected.unwrap_or(0) + half).min(map.len()));
                 TableOutcome::consumed()
             }
             KeyCode::Char('u') if ev.modifiers == KeyModifiers::CONTROL => {
-                let half = ((map.len() + 1) / 2).max(1);
+                let half = map.len().div_ceil(2).max(1);
                 self.selected = Some(self.selected.unwrap_or(0).saturating_sub(half));
                 TableOutcome::consumed()
             }
