@@ -9884,10 +9884,11 @@ impl App {
     }
 
     /// Keys on the Settings tab. A live field edit owns the keyboard —
-    /// `Enter` commits, `Esc` cancels, everything else types — exactly
-    /// as the Manage grid's cell edit does; otherwise up/down walk the
-    /// rows, left/right aim a Files row's two buttons, and enter/space
-    /// activates whatever the cursor is on. Always reports a redraw:
+    /// `Enter` and `Esc` both commit (the field rule), everything else
+    /// types — exactly as the Manage grid's cell edit does; otherwise
+    /// up/down walk the rows, left/right aim a Files row's two buttons,
+    /// and enter/space activates whatever the cursor is on. Always
+    /// reports a redraw:
     /// like every other non-`Main` screen, keys it doesn't claim are
     /// swallowed rather than falling through to the global keymap.
     fn handle_settings_key(&mut self, ev: KeyEvent) -> bool {
@@ -9898,11 +9899,7 @@ impl App {
         self.settings.focused = true;
         if self.settings.editing.is_some() {
             return match ev.code {
-                KeyCode::Esc => {
-                    self.settings.end_edit();
-                    true
-                }
-                KeyCode::Enter => self.commit_settings_edit(),
+                KeyCode::Esc | KeyCode::Enter => self.commit_settings_edit(),
                 _ => {
                     self.settings.type_key(ev);
                     true
@@ -9998,10 +9995,10 @@ impl App {
         }
     }
 
-    /// Enter in a live Settings field edit. `osc52_limit` is validated
-    /// here and *rejected* rather than coerced: the edit stays open with
-    /// what was typed, the stored value stands, and a toast says what
-    /// was expected.
+    /// Esc and Enter in a live Settings field edit — the field rule, both
+    /// commit. `osc52_limit` is validated here and *rejected* rather than
+    /// coerced: the edit stays open with what was typed, the stored value
+    /// stands, and a toast says what was expected.
     pub(crate) fn commit_settings_edit(&mut self) -> bool {
         use crate::components::settings::{SettingsField, parse_osc52_limit};
         let Some(field) = self.settings.editing else {
@@ -10071,19 +10068,14 @@ impl App {
         true
     }
 
-    /// Keys while a variable-form field owns the keyboard (Task 8's model,
-    /// exactly): `Esc` reverts (drops the edit with nothing written —
-    /// there's nothing to restore since the form only ever reads its
-    /// resting text live from `self.project`, never caches it), `Enter`
-    /// commits via `commit_var_form`, everything else goes to the field's
-    /// own `LineInput`. Always reports a redraw, like a modal capturing
-    /// every key while it's open.
+    /// Keys while a variable-form field owns the keyboard (the field rule):
+    /// `Esc` and `Enter` both commit via `commit_var_form` — discard is
+    /// undo, in the field or after close — everything else goes to the
+    /// field's own `LineInput`. Always reports a redraw, like a modal
+    /// capturing every key while it's open.
     fn handle_var_form_key(&mut self, ev: KeyEvent) -> bool {
         match ev.code {
-            KeyCode::Esc => {
-                self.varmanager.form.editing = None;
-            }
-            KeyCode::Enter => self.commit_var_form(),
+            KeyCode::Esc | KeyCode::Enter => self.commit_var_form(),
             _ => {
                 if let Some((_, input)) = self.varmanager.form.editing.as_mut() {
                     input.handle_key(ev);
@@ -10094,18 +10086,14 @@ impl App {
     }
 
     /// Keys while a selector-grid cell owns the keyboard — the same contract
-    /// as [`Self::handle_var_form_key`]: `Esc` reverts (nothing is written,
-    /// and the cell's resting text is read live from the project either
-    /// way), `Enter` commits, anything else goes to the cell's own
-    /// `LineInput`. `Tab` commits and steps one column right on the same
-    /// row, so a freshly created option can be filled in without reaching
-    /// for the mouse; a commit that failed keeps its edit and stays put.
+    /// as [`Self::handle_var_form_key`]: `Esc` and `Enter` both commit
+    /// (the field rule), anything else goes to the cell's own `LineInput`.
+    /// `Tab` commits and steps one column right on the same row, so a
+    /// freshly created option can be filled in without reaching for the
+    /// mouse; a commit that failed keeps its edit and stays put.
     fn handle_grid_key(&mut self, ev: KeyEvent) -> bool {
         match ev.code {
-            KeyCode::Esc => {
-                self.varmanager.grid.editing = None;
-            }
-            KeyCode::Enter => self.commit_grid_edit(),
+            KeyCode::Esc | KeyCode::Enter => self.commit_grid_edit(),
             KeyCode::Tab => self.step_grid_edit(1),
             KeyCode::BackTab => self.step_grid_edit(-1),
             _ => {

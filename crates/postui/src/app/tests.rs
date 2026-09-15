@@ -13897,7 +13897,7 @@ fn clicking_the_env_value_field_typing_and_clicking_away_writes_the_env_file() {
 }
 
 #[test]
-fn enter_commits_a_field_edit_and_esc_reverts_it() {
+fn enter_and_esc_both_commit_a_field_edit() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -13906,8 +13906,8 @@ fn enter_commits_a_field_edit_and_esc_reverts_it() {
         r == &crate::components::varmanager::VmRow::Var("base_url".into())
     });
 
-    // Esc reverts: the typed digit never reaches disk. (Right-edge clicks
-    // throughout: a click places the caret at the pointer, and the
+    // Esc keeps the typed text: it commits exactly like Enter. (Right-edge
+    // clicks throughout: a click places the caret at the pointer, and the
     // assertions want the typed char at the end of the text.)
     let r = field_rect(&mut app, VmField::Description);
     app.handle_mouse(left_down(r.x + r.width - 2, r.y));
@@ -13918,8 +13918,8 @@ fn enter_commits_a_field_edit_and_esc_reverts_it() {
         app.proj().variables().vars["base_url"]
             .description
             .as_deref(),
-        Some("API root"),
-        "Esc must not write anything"
+        Some("API root!"),
+        "Esc keeps the typed text"
     );
 
     // Enter commits.
@@ -13932,7 +13932,7 @@ fn enter_commits_a_field_edit_and_esc_reverts_it() {
         app.proj().variables().vars["base_url"]
             .description
             .as_deref(),
-        Some("API root!")
+        Some("API root!!")
     );
 }
 
@@ -14709,12 +14709,13 @@ fn editing_a_field_cell_and_clicking_away_rewrites_the_env_file() {
     assert_eq!((edit.row, edit.col), (1, 1));
     assert_eq!(edit.input.text(), "2002");
 
-    // Esc puts the second cell back with nothing written.
+    // Esc commits the second cell — the field rule: Esc keeps the typed
+    // text just like Enter does.
     app.handle_key(plain('x'));
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(app.varmanager.grid.editing.is_none());
     let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
-    assert!(!on_disk.contains("2002x"), "esc reverted: {on_disk}");
+    assert!(on_disk.contains("2002x"), "esc committed: {on_disk}");
 }
 
 /// User finding: there was no button for deleting an option — only the `d`
@@ -24342,6 +24343,25 @@ fn a_bad_osc52_limit_is_rejected_and_the_stored_value_stands() {
     app.commit_settings_edit();
     assert_eq!(app.ui_settings.osc52_limit, 1024);
     assert!(app.settings.editing.is_none());
+}
+
+/// The field rule's discard route for a Settings field: Esc commits (it
+/// never reverts), so undoing a mis-typed run has to happen inside the
+/// field itself, via ctrl+z — same as every other field on this branch.
+#[test]
+fn ctrl_z_in_a_settings_field_undoes_the_typing() {
+    let mut app = App::new_for_test();
+    app.update(Action::OpenManage {
+        tab: Some(crate::components::manage::ManageTab::Settings),
+    });
+    // Open the ai_cmd row's edit directly, the way
+    // `a_bad_osc52_limit_is_rejected_and_the_stored_value_stands` does.
+    app.settings
+        .begin_edit(crate::components::settings::SettingsField::AiCmd, "");
+    type_chars(&mut app, "xyz");
+    app.handle_key(ctrl('z'));
+    assert_eq!(app.settings.field_text(), "", "the run came off");
+    assert!(app.settings.editing.is_some(), "the field stays open");
 }
 
 /// A refused `osc52_limit` keeps its edit open, so a click landing on

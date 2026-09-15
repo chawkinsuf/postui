@@ -385,8 +385,8 @@ fn env_stores(ctx: &Project, name: &str) -> bool {
 }
 
 /// One grid cell's in-progress edit (Task 8's `CellEdit`, for the selector
-/// grid): which cell, the live buffer, and the text it started from so
-/// `Esc` can put it back.
+/// grid): which cell, the live buffer, and the text it started from so a
+/// commit that changed nothing is skipped.
 #[derive(Debug)]
 pub struct GridEdit {
     /// Index into the selector's options — or `options.len()`, the ghost row
@@ -396,7 +396,8 @@ pub struct GridEdit {
     /// `0` is the option-name column; `n` is the selector's `n-1`th field.
     pub col: usize,
     pub input: LineInput,
-    /// The cell's pre-edit text, for `Esc`-revert.
+    /// The text the edit started from, so a commit that changed nothing is
+    /// skipped.
     pub original: String,
 }
 
