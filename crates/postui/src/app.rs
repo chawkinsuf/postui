@@ -4241,6 +4241,14 @@ impl App {
                 if self.undo_in_open_field(false) {
                     return true;
                 }
+                // A field that has run out of steps still owns the key:
+                // `edited()` — the router carve-out's gate — stays true
+                // while the redo stack holds anything, so a step that
+                // found nothing must stop here rather than quietly
+                // spending an app-history step behind the user's back.
+                if self.open_text_field_edited() {
+                    return true;
+                }
                 if !self.modals.is_empty() {
                     return true;
                 }
@@ -4272,6 +4280,14 @@ impl App {
             }
             Action::Redo => {
                 if self.undo_in_open_field(true) {
+                    return true;
+                }
+                // A field that has run out of steps still owns the key:
+                // `edited()` — the router carve-out's gate — stays true
+                // while the redo stack holds anything, so a step that
+                // found nothing must stop here rather than quietly
+                // spending an app-history step behind the user's back.
+                if self.open_text_field_edited() {
                     return true;
                 }
                 if !self.modals.is_empty() {

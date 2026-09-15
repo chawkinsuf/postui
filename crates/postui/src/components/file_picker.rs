@@ -958,6 +958,30 @@ mod tests {
         assert_eq!(b.input().text(), "", "ctrl+n/p never type");
     }
 
+    /// Undo in the field is not just the field: the listing has to be
+    /// rebuilt from the text the undo left behind, exactly as a keystroke
+    /// rebuilds it.
+    #[test]
+    fn undo_filter_walks_the_field_back_and_rebuilds_the_rows() {
+        let dir = tree();
+        let mut p = FilePickerState::new("Open project", PickerTarget::OpenProject, dir.path(), "");
+        let all = p.rows().len();
+        type_str(&mut p, "alp");
+        let narrowed = p.rows().len();
+        assert!(narrowed < all, "the filter narrowed the listing");
+
+        assert!(p.undo_filter(false), "there was a typing run to step");
+        assert_eq!(p.input().text(), "");
+        assert_eq!(p.rows().len(), all, "the rows came back with the text");
+        assert!(p.selected() < p.rows().len());
+
+        assert!(p.undo_filter(true), "and redo walks it forward again");
+        assert_eq!(p.input().text(), "alp");
+        assert_eq!(p.rows().len(), narrowed);
+
+        assert!(!p.undo_filter(true), "nothing left to redo");
+    }
+
     fn type_str(p: &mut FilePickerState, s: &str) {
         for ch in s.chars() {
             p.handle_key(key(KeyCode::Char(ch)));

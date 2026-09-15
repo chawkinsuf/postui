@@ -972,6 +972,44 @@ fn ctrl_z_in_an_untouched_open_cell_is_the_app_history() {
     );
 }
 
+/// A field that has run out of undo must not quietly spend an app-history
+/// step instead: off the Main screen the undo keys never reached the app
+/// history before the field rule, and they still don't.
+#[test]
+fn an_exhausted_settings_field_undo_never_reaches_the_app_history() {
+    use crate::components::manage::ManageTab;
+    use crate::components::settings::SettingsField;
+    let mut app = app_with_one_param();
+    // One app-history step to notice being spent.
+    app.capture_undo();
+    app.editor.sub_focus = SubFocus::Url;
+    app.handle_key(plain('/'));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.capture_undo();
+    let steps = app.history.undo_len();
+    assert!(steps > 0);
+
+    app.screen = Screen::Manage;
+    app.manage.tab = ManageTab::Settings;
+    app.settings.begin_edit(SettingsField::AiCmd, "claude -p");
+    type_chars(&mut app, "x");
+    app.handle_key(ctrl('z'));
+    assert_eq!(
+        app.settings.field_text(),
+        "claude -p",
+        "the typing run came off inside the field"
+    );
+    // The undo stack is empty now, but the redo stack is not, so the field
+    // still counts as edited: the key must stop here, not fall through.
+    app.handle_key(ctrl('z'));
+    assert_eq!(
+        app.history.undo_len(),
+        steps,
+        "an exhausted field undo is swallowed, not spent on the app history"
+    );
+    assert!(app.settings.editing.is_some(), "the field stays open");
+}
+
 /// A picker's filter box is not just a `LineInput`: undoing in it has to
 /// re-run the filter, or the rows would go on showing the old query's
 /// matches under a query that no longer says so.
@@ -19310,6 +19348,35 @@ fn undo_restores_the_previous_filter_text_in_the_bar() {
         app.session.response.jq_text(),
         ".data",
         "the bar follows the editor after undo"
+    );
+}
+
+/// The other half of the jq undo contract: with the caret *in* the bar,
+/// ctrl+z is the bar's own undo, and what it leaves has to stick — an
+/// unmarked step would be written straight back by the reconcile at the
+/// end of the very same update.
+#[test]
+fn ctrl_z_in_the_focused_jq_bar_walks_the_filter_back_and_it_sticks() {
+    let mut app = App::new_for_test();
+    ready_response(&mut app, JQ_BODY);
+    app.handle_key(alt('q'));
+    assert!(app.session.response.jq_focused());
+    type_str(&mut app, ".data");
+    assert_eq!(app.editor.jq, ".data");
+
+    app.handle_key(ctrl('z'));
+    assert_eq!(
+        app.session.response.jq_text(),
+        "",
+        "the typing run came off in the bar"
+    );
+    assert_eq!(
+        app.editor.jq, "",
+        "and the reconcile followed the bar instead of writing the filter back"
+    );
+    assert!(
+        app.session.response.jq_focused(),
+        "the bar keeps the caret: undo in a field never closes it"
     );
 }
 

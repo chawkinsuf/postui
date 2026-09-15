@@ -1367,6 +1367,7 @@ impl Response {
     /// keystroke into the bar does. `false` when there was nothing to step.
     pub fn field_undo(&mut self, redo: bool) -> bool {
         if self.jq.focused {
+            self.jq.begin_edit();
             let stepped = if redo {
                 self.jq.input.redo()
             } else {
