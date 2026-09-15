@@ -2591,6 +2591,10 @@ fn discard_on_a_clean_editor_is_a_no_op() {
 #[test]
 fn discard_is_itself_undoable() {
     let mut app = dirty_app();
+    // `dirty_app` leaves the caret in the URL line, and the app history
+    // waits for a live-synced field to close: Esc closes it (keeping the
+    // text), and the close is the step.
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.capture_undo(); // the dirtying edit becomes its own step
     let dirty_url = app.editor.url.text().to_string();
     app.update(Action::DiscardChanges);
@@ -4093,6 +4097,9 @@ fn move_all_requests_empties_the_source_and_follows_the_open_request() {
     assert!(!app.capture_undo(), "the move itself is not an edit");
     assert_eq!(app.history.undo_len(), steps_before + 1);
     dirty_the_editor(&mut app);
+    // The typed character lives in the URL line's own history until the
+    // line closes; the close is what the app history records.
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(app.capture_undo());
     assert_eq!(
         app.history.undo_len(),
@@ -16819,30 +16826,88 @@ mod undo_tests {
     }
 
     #[test]
-    fn url_typing_is_captured_and_coalesced() {
+    fn a_url_edit_lands_as_one_step_when_the_line_closes() {
         let mut app = App::new_for_test();
         app.update(Action::CreateRequest("cap".into()));
         app.capture_undo(); // seed shadow
+        app.focus = PaneId::Editor;
         app.editor.sub_focus = SubFocus::Url;
         for c in ['h', 't', 't', 'p'] {
-            app.editor
-                .handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
             app.capture_undo();
         }
-        let step = app.history.pop_undo().expect("typing recorded");
+        // The line's own history holds the burst; closing it hands the
+        // whole edit to the app history as one step.
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        app.capture_undo();
+        let step = app.history.pop_undo().expect("the close recorded");
         let crate::undo::StepKind::EditorDelta { before, after, .. } = step.kind else {
             panic!()
         };
         assert_eq!(before.url, "");
         assert_eq!(after.url, "http");
         // create's own FileStates step (Task 6) may remain beneath it, but
-        // the typing burst itself must be exactly one coalesced EditorDelta.
+        // the whole edit must be exactly one EditorDelta.
         while let Some(step) = app.history.pop_undo() {
             assert!(
                 !matches!(step.kind, crate::undo::StepKind::EditorDelta { .. }),
-                "typing burst produced more than one EditorDelta step"
+                "one close must produce exactly one EditorDelta step"
             );
         }
+    }
+
+    /// Typing in the URL line records nothing until the line closes; the close
+    /// is exactly one step however long the typing took, and a second
+    /// open/edit/close is a second step — never merged with the first.
+    #[test]
+    fn a_url_edit_is_one_app_history_step_per_close() {
+        let mut app = App::new_for_test();
+        app.update(Action::CreateRequest("r".into()));
+        app.capture_undo();
+        let steps = app.history.undo_len();
+        app.focus = PaneId::Editor;
+        app.editor.sub_focus = SubFocus::Url;
+        type_chars(&mut app, "/a");
+        app.capture_undo();
+        assert_eq!(app.history.undo_len(), steps, "open: nothing recorded");
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.editor.sub_focus, SubFocus::None);
+        app.capture_undo();
+        assert_eq!(app.history.undo_len(), steps + 1, "close: one step");
+        assert!(app.editor.url.text().ends_with("/a"), "Esc kept the text");
+
+        app.editor.sub_focus = SubFocus::Url;
+        type_chars(&mut app, "/b");
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.capture_undo();
+        assert_eq!(
+            app.history.undo_len(),
+            steps + 2,
+            "a second close is a second step"
+        );
+
+        app.update(Action::Undo);
+        assert!(
+            app.editor.url.text().ends_with("/a"),
+            "undo takes off the second close only"
+        );
+    }
+
+    /// An in-field undo that returns the text to where it started, then a
+    /// close, records nothing.
+    #[test]
+    fn undoing_a_url_edit_back_to_the_start_then_closing_records_nothing() {
+        let mut app = App::new_for_test();
+        app.update(Action::CreateRequest("r".into()));
+        app.capture_undo();
+        let steps = app.history.undo_len();
+        app.focus = PaneId::Editor;
+        app.editor.sub_focus = SubFocus::Url;
+        type_chars(&mut app, "zzz");
+        app.handle_key(ctrl('z'));
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        app.capture_undo();
+        assert_eq!(app.history.undo_len(), steps);
     }
 
     #[test]
@@ -16894,16 +16959,18 @@ mod undo_tests {
     }
 
     #[test]
-    fn undo_reverts_url_typing_and_redo_restores() {
+    fn undo_reverts_a_closed_url_edit_and_redo_restores() {
         let mut app = App::new_for_test();
         app.update(Action::CreateRequest("uz".into()));
         app.capture_undo();
+        app.focus = PaneId::Editor;
         app.editor.sub_focus = SubFocus::Url;
         for c in "abc".chars() {
-            app.editor
-                .handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
             app.capture_undo();
         }
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        app.capture_undo();
         app.update(Action::Undo);
         assert_eq!(app.editor.url.text(), "");
         app.update(Action::Redo);
@@ -19071,7 +19138,7 @@ fn enter_commits_the_filter_and_leaves_it_on() {
 }
 
 #[test]
-fn esc_cancels_the_edit_and_a_bar_opened_onto_no_filter_closes() {
+fn esc_cancels_the_edit_and_a_bar_opened_onto_no_filter_closes_with_nothing_to_undo() {
     let mut app = App::new_for_test();
     ready_response(&mut app, JQ_BODY);
     let full = app.session.response.view().unwrap().view_text();
@@ -19089,11 +19156,13 @@ fn esc_cancels_the_edit_and_a_bar_opened_onto_no_filter_closes() {
     );
     assert!(!app.session.response.jq_open(), "…which, empty, is hidden");
     assert_eq!(app.session.response.view().unwrap().view_text(), full);
-    // The cancel was an edit: undo brings the typed filter back.
+    // The app history waited for the bar to close, and the cancel closed it
+    // on the filter it opened with: there is no step, and undo has nothing
+    // of this edit to take off.
     app.capture_undo();
     app.update(Action::Undo);
-    assert_eq!(app.editor.jq, ".data.total");
-    assert_eq!(app.session.response.view().unwrap().view_text(), "2");
+    assert_eq!(app.editor.jq, "");
+    assert_eq!(app.session.response.view().unwrap().view_text(), full);
 }
 
 #[test]
@@ -19328,25 +19397,34 @@ fn a_saved_filter_is_applied_when_the_request_opens_and_when_a_response_lands() 
 }
 
 #[test]
-fn undo_restores_the_previous_filter_text_in_the_bar() {
+fn undo_after_the_bar_closes_takes_the_whole_edit_off_and_the_bar_follows() {
     let mut app = App::new_for_test();
     ready_response(&mut app, JQ_BODY);
+    app.capture_undo(); // seed the shadow
+    let steps = app.history.undo_len();
     app.handle_key(alt('q'));
     type_str(&mut app, ".data");
     app.capture_undo();
-    app.no_coalesce = true;
     type_str(&mut app, ".total");
     app.capture_undo();
+    assert_eq!(
+        app.history.undo_len(),
+        steps,
+        "the app history waits for the open bar"
+    );
     // Take the caret off the bar: while it has the caret ctrl+z is the
     // bar's own undo, and this test is about the app history flowing back
-    // into it.
+    // into it. The caret leaving is the close, and the close is the one
+    // step the app history gets — however many bursts went into it.
     app.focus = PaneId::Editor;
     app.update(Action::Render);
+    assert!(app.capture_undo(), "the close records");
+    assert_eq!(app.history.undo_len(), steps + 1, "one step for the edit");
     app.update(Action::Undo);
-    assert_eq!(app.editor.jq, ".data");
+    assert_eq!(app.editor.jq, "");
     assert_eq!(
         app.session.response.jq_text(),
-        ".data",
+        "",
         "the bar follows the editor after undo"
     );
 }

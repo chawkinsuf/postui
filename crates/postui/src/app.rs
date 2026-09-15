@@ -433,6 +433,11 @@ pub struct App {
     /// `cursor_before` reflects where the cursor sat before this burst of
     /// edits began, not just before the immediately preceding keystroke.
     shadow_cursor: crate::undo::CursorPos,
+    /// Whether the last `capture_undo` call was held back by an open
+    /// live-synced field (see [`Self::field_gate`]); the call that finds
+    /// the gate open again is the field's close and records without
+    /// coalescing, so two closes are two steps.
+    field_gate_was_on: bool,
     /// Set by wholesale-change arms (format/minify, discard, method change,
     /// insert-var, `$EDITOR` round-trip, table row delete/duplicate) so the
     /// next `capture_undo` records a standalone, non-coalescing step and
@@ -1614,6 +1619,7 @@ impl App {
             marked_entry: None,
             shadow: None,
             shadow_cursor: crate::undo::CursorPos::None,
+            field_gate_was_on: false,
             no_coalesce: false,
             testbed_list_dir_plan: 1,
             testbed_list_dir_alt: 1,
@@ -2202,9 +2208,32 @@ impl App {
             .unwrap_or_default()
     }
 
+    /// Whether a text field that writes into the request as you type has
+    /// keystrokes of its own in flight: the URL line, and the jq bar. While
+    /// it does, the app history waits — the field's own history covers the
+    /// keystrokes, and the close lands as one step (spec 2026-09-15, "Two
+    /// histories, one handover").
+    fn field_gate(&self) -> bool {
+        let url = self.focus == PaneId::Editor
+            && self.editor.sub_focus == SubFocus::Url
+            && self.editor.url.edited();
+        let jq = self.focus == PaneId::Response && self.session.response.jq_field_edited();
+        url || jq
+    }
+
     pub fn capture_undo(&mut self) -> bool {
         let current_slug = self.editor.slug.clone();
         let cursor = self.editor.cursor_pos();
+        // A field that has left the URL line closes its session here too,
+        // so a mouse blur or alt+u is as good as Esc.
+        if self.editor.sub_focus != SubFocus::Url {
+            self.editor.url.end_edit();
+        }
+        if self.field_gate() {
+            self.field_gate_was_on = true;
+            return false;
+        }
+        let closing = std::mem::take(&mut self.field_gate_was_on);
         match &self.shadow {
             // Which request is open changed (open/create/delete/rename/
             // save-as): re-seed, never record — the transition itself is
@@ -2228,7 +2257,7 @@ impl App {
                             cursor_after: cursor.clone(),
                         },
                     };
-                    let coalesce = !std::mem::take(&mut self.no_coalesce);
+                    let coalesce = !std::mem::take(&mut self.no_coalesce) && !closing;
                     self.history.record_maybe_coalesce(step, coalesce);
                     self.shadow = Some((current_slug, current));
                     self.shadow_cursor = cursor;

@@ -1359,6 +1359,13 @@ impl Response {
         self.jq.focused
     }
 
+    /// Whether the jq bar has keystrokes of its own in flight — the bar is
+    /// open and its line has an edit session with history. The app history
+    /// waits while it does (see `App::field_gate`).
+    pub fn jq_field_edited(&self) -> bool {
+        self.jq.focused && self.jq.input.edited()
+    }
+
     /// Routes an undo (or `redo`) into the pane's open text field. The bar
     /// cannot be stepped through [`Self::open_text_field_mut`] alone: a
     /// bare `LineInput::undo` leaves `jq.edited` clear, and the reconcile

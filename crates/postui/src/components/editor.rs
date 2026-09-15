@@ -1362,6 +1362,7 @@ impl Component for Editor {
                 // no text to move over; it steps out onto the method badge
                 // instead (the only keyboard route to it).
                 if ev.code == KeyCode::Left && self.url.cursor() == 0 {
+                    self.url.end_edit();
                     self.sub_focus = SubFocus::Method;
                     return Some(Action::Render);
                 }
@@ -1372,12 +1373,15 @@ impl Component for Editor {
                     return Some(Action::Render);
                 }
                 if ev.code == KeyCode::Down {
+                    self.url.end_edit();
                     self.sub_focus = SubFocus::Tabs;
                     return Some(Action::Render);
                 }
-                // Enter commits and Esc abandons; both blur the input, so a
-                // caret on screen always means keys land in the URL line.
+                // Enter and Esc both close the line with the text kept
+                // (the field rule): the caret leaves, the edit session ends,
+                // and the app history records the close as one step.
                 if matches!(ev.code, KeyCode::Enter | KeyCode::Esc) {
+                    self.url.end_edit();
                     self.sub_focus = SubFocus::None;
                     return Some(Action::Render);
                 }
