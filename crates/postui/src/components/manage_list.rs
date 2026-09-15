@@ -292,6 +292,7 @@ impl ManageList {
             KeyCode::Char('d') | KeyCode::Delete => {
                 Some(Self::delete_action(tab, self.selected(tab, ctx)?))
             }
+            KeyCode::Char('u') if ev.modifiers.is_empty() => Some(Action::Undo),
             _ => None,
         }
     }

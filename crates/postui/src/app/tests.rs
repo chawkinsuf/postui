@@ -404,6 +404,38 @@ fn plain_q_quits_when_no_modal_and_component_ignores_it() {
 }
 
 #[test]
+fn colon_opens_the_palette_from_a_list_and_types_in_a_field() {
+    let mut app = App::new_for_test();
+    app.focus = PaneId::Sidebar;
+    app.handle_key(plain(':'));
+    assert!(matches!(app.modals.top(), Some(Modal::Palette(_))));
+    app.modals.pop();
+    app.focus = PaneId::Editor;
+    app.editor.sub_focus = SubFocus::Url;
+    app.handle_key(plain(':'));
+    assert!(app.modals.is_empty(), "in a text field ':' is a character");
+    assert!(app.editor.url.text().ends_with(':'));
+}
+
+#[test]
+fn u_undoes_from_every_list_surface() {
+    let mut app = App::new_for_test();
+    app.update(Action::CreateRequest("r".into()));
+    dirty_the_editor(&mut app);
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.capture_undo();
+    let steps = app.history.undo_len();
+    app.focus = PaneId::Sidebar;
+    app.handle_key(plain('u'));
+    assert_eq!(app.history.undo_len(), steps - 1, "sidebar: u is undo");
+    // The Manage screens swallow plain keys, so each maps u itself.
+    app.update(Action::OpenManage { tab: Some(crate::components::manage::ManageTab::Spaces) });
+    app.update(Action::Redo);
+    app.handle_key(plain('u'));
+    assert_eq!(app.history.undo_len(), steps - 1, "manage list: u is undo");
+}
+
+#[test]
 fn tick_requests_no_redraw_when_idle() {
     let mut app = App::new_for_test();
     assert!(!app.update(Action::Tick), "idle tick must not redraw");

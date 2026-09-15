@@ -9982,6 +9982,7 @@ impl App {
                 true
             }
             KeyCode::Enter | KeyCode::Char(' ') => self.activate_settings_row(),
+            KeyCode::Char('u') if ev.modifiers.is_empty() => self.update(Action::Undo),
             _ => true,
         }
     }

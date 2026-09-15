@@ -1245,6 +1245,7 @@ impl VarManager {
                 }
                 _ => None,
             },
+            KeyCode::Char('u') if ev.modifiers.is_empty() => Some(Action::Undo),
             _ => None,
         }
     }
@@ -1362,6 +1363,7 @@ impl VarManager {
             KeyCode::Char('n') => Some(Action::PromptNewVar),
             KeyCode::Char('g') => Some(Action::PromptNewSelector),
             KeyCode::Char('q') => Some(Action::Quit),
+            KeyCode::Char('u') if ev.modifiers.is_empty() => Some(Action::Undo),
             _ => None,
         }
     }
