@@ -1083,7 +1083,8 @@ impl ModalStack {
                     }
                 }
                 chips.push(("alt+h", "hidden files", None));
-                chips.push(("esc", "cancel", None));
+                // A filter picker, like the other pickers: Esc closes it.
+                chips.push(("esc", "close", None));
                 chips
             }
             Modal::Chooser(_) => vec![
@@ -4143,6 +4144,22 @@ mod tests {
             "Pick",
             vec![],
         )));
+        assert!(
+            m.footer_chips()
+                .unwrap()
+                .iter()
+                .any(|(k, l, _)| k == "esc" && l == "close")
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let mut m = ModalStack::default();
+        m.push(Modal::FilePicker(
+            super::super::file_picker::FilePickerState::new(
+                "Open project",
+                super::super::file_picker::PickerTarget::OpenProject,
+                dir.path(),
+                "",
+            ),
+        ));
         assert!(
             m.footer_chips()
                 .unwrap()
