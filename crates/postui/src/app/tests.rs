@@ -883,6 +883,28 @@ fn undo_restores_a_deleted_table_row() {
     assert_eq!(app.editor.params.len(), 1, "undo brings the row back");
 }
 
+/// ctrl+d is unbound at the global keymap, so it must reach the focused
+/// params table's own `handle_key` through the app router (app.rs "step 5").
+#[test]
+fn ctrl_d_pages_the_table_editor_through_the_router() {
+    let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Params;
+    for (k, v) in [("a", "1"), ("b", "2"), ("c", "3")] {
+        app.editor.params.insert(
+            k.into(),
+            postui_core::model::Entry {
+                value: v.into(),
+                enabled: true,
+            },
+        );
+    }
+    app.focus = PaneId::Editor;
+    app.editor.sub_focus = SubFocus::Content;
+    app.editor.table.selected = Some(0);
+    app.handle_key(ctrl('d'));
+    assert_ne!(app.editor.table.selected, Some(0), "ctrl+d must move the selection");
+}
+
 #[test]
 fn clicking_the_row_delete_affordance_deletes_the_row() {
     let mut app = App::new_for_test();

@@ -419,7 +419,7 @@ impl TableEditorState {
             }
             // `a` is the keyboard shorthand for "start a new row": it opens
             // the ghost row's key cell, exactly like clicking it.
-            KeyCode::Char('a') => {
+            KeyCode::Char('a') if ev.modifiers.is_empty() => {
                 self.begin_add(map);
                 TableOutcome::consumed()
             }
@@ -430,7 +430,7 @@ impl TableEditorState {
                 self.begin_edit_selected(map);
                 TableOutcome::consumed()
             }
-            KeyCode::Char(' ') => {
+            KeyCode::Char(' ') if ev.modifiers.is_empty() => {
                 if self.ghost_selected(map) {
                     return TableOutcome::not_consumed();
                 }
@@ -440,7 +440,40 @@ impl TableEditorState {
                 e.enabled = !e.enabled;
                 TableOutcome::consumed()
             }
-            KeyCode::Char('d') | KeyCode::Delete => {
+            // The table never scrolls, so its "page" is its row count: g/Home
+            // → row 0, G/End → the ghost row, ctrl+f/PageDown → the ghost
+            // row, ctrl+b/PageUp → row 0, ctrl+d/u ± half the rows.
+            KeyCode::Char('g') if ev.modifiers.is_empty() => {
+                self.handle_nav_key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE), map)
+            }
+            KeyCode::Char('G') => {
+                self.handle_nav_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE), map)
+            }
+            KeyCode::Char('f') if ev.modifiers == KeyModifiers::CONTROL => {
+                self.handle_nav_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE), map)
+            }
+            KeyCode::Char('b') if ev.modifiers == KeyModifiers::CONTROL => {
+                self.handle_nav_key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE), map)
+            }
+            KeyCode::Home | KeyCode::PageUp => {
+                self.selected = Some(0);
+                TableOutcome::consumed()
+            }
+            KeyCode::End | KeyCode::PageDown => {
+                self.selected = Some(map.len());
+                TableOutcome::consumed()
+            }
+            KeyCode::Char('d') if ev.modifiers == KeyModifiers::CONTROL => {
+                let half = ((map.len() + 1) / 2).max(1);
+                self.selected = Some((self.selected.unwrap_or(0) + half).min(map.len()));
+                TableOutcome::consumed()
+            }
+            KeyCode::Char('u') if ev.modifiers == KeyModifiers::CONTROL => {
+                let half = ((map.len() + 1) / 2).max(1);
+                self.selected = Some(self.selected.unwrap_or(0).saturating_sub(half));
+                TableOutcome::consumed()
+            }
+            KeyCode::Char('d') | KeyCode::Delete if ev.modifiers.is_empty() => {
                 if self.ghost_selected(map) || self.selected.is_none_or(|s| s >= map.len()) {
                     return TableOutcome::not_consumed();
                 }
@@ -1064,6 +1097,35 @@ mod tests {
         for c in s.chars() {
             t.handle_key(key(KeyCode::Char(c)), map);
         }
+    }
+
+    #[test]
+    fn vim_aliases_are_strict_synonyms_in_the_table() {
+        let ctrl = |c: char| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+        let pairs = [
+            (key(KeyCode::Char('g')), key(KeyCode::Home)),
+            (key(KeyCode::Char('G')), key(KeyCode::End)),
+            (ctrl('f'), key(KeyCode::PageDown)),
+            (ctrl('b'), key(KeyCode::PageUp)),
+        ];
+        for (alias, canonical) in pairs {
+            let mut ma = map_of(&[("a", "1"), ("b", "2"), ("c", "3")]);
+            let mut mb = ma.clone();
+            let (mut a, mut b) = (TableEditorState::default(), TableEditorState::default());
+            a.selected = Some(1);
+            b.selected = Some(1);
+            a.handle_key(alias, &mut ma);
+            b.handle_key(canonical, &mut mb);
+            assert_eq!(a.selected, b.selected, "{alias:?}");
+        }
+        let mut map = map_of(&[("a", "1"), ("b", "2"), ("c", "3")]);
+        let mut t = TableEditorState::default();
+        t.handle_key(key(KeyCode::End), &mut map);
+        assert_eq!(t.selected, Some(3), "End is the ghost row");
+        t.handle_key(ctrl('u'), &mut map);
+        assert_eq!(t.selected, Some(1), "half of four stops");
+        t.handle_key(ctrl('d'), &mut map);
+        assert_eq!(t.selected, Some(3));
     }
 
     // --- ghost row selection ----------------------------------------------
