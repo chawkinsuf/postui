@@ -8558,6 +8558,47 @@ fn click_prompt_cancel_button_closes_without_creating_a_request() {
     );
 }
 
+/// The button row is a focus stop, so it paints like one: the aimed
+/// button lifts its fill, and the field it came from drops its focused
+/// fill — one focused-looking control at a time.
+#[test]
+fn the_aimed_modal_button_paints_focused_and_the_field_does_not() {
+    let mut app = App::new_for_test();
+    app.anims.enabled = false;
+    app.update(Action::PromptNewRequest);
+    // Renders into a TestBackend and returns the background colour of the
+    // cell at the middle of `hit`'s rect (the shape the tab-strip test
+    // `add_row_chip_label_follows_the_active_tab` uses to read a frame).
+    fn bg_of(app: &mut App, hit: Hit) -> ratatui::style::Color {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        render_once(app);
+        let r = app.hits.rect_of(&hit).unwrap();
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
+        terminal.backend().buffer()[(r.x + r.width / 2, r.y + r.height / 2)].bg
+    }
+    let confirm_in_field = bg_of(&mut app, Hit::ModalConfirm);
+    let field_in_field = bg_of(&mut app, Hit::ModalInput(0));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(
+        app.modals.button_focus(),
+        Some(crate::components::modal::FormButton::Confirm)
+    );
+    let confirm_aimed = bg_of(&mut app, Hit::ModalConfirm);
+    let field_blurred = bg_of(&mut app, Hit::ModalInput(0));
+    assert_ne!(
+        confirm_in_field, confirm_aimed,
+        "the aimed Confirm lifts its fill"
+    );
+    assert_ne!(
+        field_in_field, field_blurred,
+        "the field drops its focused fill"
+    );
+}
+
 #[test]
 fn cancel_click_closes_a_form_modal_from_inside_its_field() {
     let mut app = App::new_for_test();

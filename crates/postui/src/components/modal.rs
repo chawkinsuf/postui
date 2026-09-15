@@ -901,9 +901,18 @@ impl ModalStack {
 
     /// The top modal's confirm, from wherever focus sits: Enter in a field
     /// already confirms, so this only has to leave the button row first.
+    ///
+    /// A modal may swallow that Enter (an empty name has nothing to
+    /// confirm), and then nothing has happened — so the aim goes back on
+    /// the button row it came from rather than silently dropping into the
+    /// field on a frame the caller may not repaint.
     pub fn confirm_top(&mut self) -> Option<ModalResult> {
-        self.button_focus = None;
-        self.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        let aimed = self.button_focus.take();
+        let res = self.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        if res.is_none() {
+            self.button_focus = aimed;
+        }
+        res
     }
 
     /// Whether the top modal may be dismissed without choosing one of its
@@ -952,6 +961,30 @@ impl ModalStack {
     /// chip names the Write-to scope it would clear, and the fields
     /// editor's flips to "restore field" on a removed row.
     pub fn footer_chips(&self) -> Option<Vec<crate::components::footer::FooterChip>> {
+        // A form modal's Esc means two different things: in a field it
+        // commits the field onto the button row ("done"), and only on
+        // that row is it the cancel. The footer says which one is under
+        // the finger rather than letting one label stand for both.
+        if self.button_focus.is_some() && self.top().is_some_and(Modal::is_form) {
+            let verb = match self.top()? {
+                Modal::FieldsEditor(_) => "apply",
+                Modal::Prompt { .. } | Modal::NewProject { .. } | Modal::MultiPrompt { .. } => {
+                    "save"
+                }
+                _ => "confirm",
+            };
+            return Some(
+                [
+                    ("\u{2190}\u{2192}", "aim"),
+                    ("enter", verb),
+                    ("esc", "cancel"),
+                    ("\u{2191}", "back"),
+                ]
+                .into_iter()
+                .map(|(k, l)| (k.to_string(), l.to_string(), None))
+                .collect(),
+            );
+        }
         // The confirm's chips are its own answer keys — runtime values, so
         // they're built owned here rather than in the static list below.
         if let Modal::Confirm { choices, .. } = self.top()? {
@@ -977,7 +1010,7 @@ impl ModalStack {
                         None,
                     ),
                     ("enter", "apply", None),
-                    ("esc", "cancel", None),
+                    ("esc", "done", None),
                 ]
             }
             Modal::MultiPrompt { fields, kind, .. } => {
@@ -1000,7 +1033,7 @@ impl ModalStack {
                     chips.push(("tab", "next field", None));
                 }
                 chips.push(("enter", "save", None));
-                chips.push(("esc", "cancel", None));
+                chips.push(("esc", "done", None));
                 chips
             }
             Modal::Message { .. } => vec![("enter", "close", None)],
@@ -1030,14 +1063,14 @@ impl ModalStack {
                     chips.push(("space", "toggle", None));
                 }
                 chips.push(("enter", "save", None));
-                chips.push(("esc", "cancel", None));
+                chips.push(("esc", "done", None));
                 chips
             }
-            Modal::Prompt { .. } => vec![("enter", "save", None), ("esc", "cancel", None)],
+            Modal::Prompt { .. } => vec![("enter", "save", None), ("esc", "done", None)],
             Modal::NewProject { .. } => vec![
                 ("alt+b", "browse folder", None),
                 ("enter", "save", None),
-                ("esc", "cancel", None),
+                ("esc", "done", None),
             ],
             Modal::FilePicker(state) => {
                 use crate::components::file_picker::PickerMode;
@@ -1707,6 +1740,9 @@ impl ModalStack {
         } else {
             screen
         };
+        // Read before the modal is borrowed mutably below: the aim the
+        // button row paints, and the reason a field paints unfocused.
+        let button_focus = self.button_focus;
         let Some(top) = self.stack.last_mut() else {
             return;
         };
@@ -2027,14 +2063,16 @@ impl ModalStack {
                     height: FIELD_HEIGHT,
                 };
                 // The new-selector prompt's shared toggle is the only
-                // thing that can take focus off the name field.
-                let field_focused = !matches!(
-                    kind,
-                    PromptKind::NewSelector {
-                        on_toggle: true,
-                        ..
-                    }
-                );
+                // thing that can take focus off the name field — that,
+                // and Esc having moved focus down to the button row.
+                let field_focused = button_focus.is_none()
+                    && !matches!(
+                        kind,
+                        PromptKind::NewSelector {
+                            on_toggle: true,
+                            ..
+                        }
+                    );
                 let content = if masked {
                     input.draw_line_windowed_masked(
                         field_focused,
@@ -2141,7 +2179,7 @@ impl ModalStack {
                     }
                 }
 
-                draw_cancel_confirm_row(frame, hits, theme, area, buttons_y, hovered);
+                draw_cancel_confirm_row(frame, hits, theme, area, buttons_y, hovered, button_focus);
             }
             Modal::Palette(state) => state.draw(frame, screen, theme, hits, hovered, keymap, t),
             Modal::Chooser(state) => state.draw(frame, screen, theme, hits, hovered, t),
@@ -2190,12 +2228,20 @@ impl ModalStack {
                     width: field_w,
                     height: FIELD_HEIGHT,
                 };
+                // Either field keeps the keyboard only while the button
+                // row doesn't have it.
+                let name_focused = button_focus.is_none() && !*on_path;
+                let path_focused = button_focus.is_none() && *on_path;
                 TextField {
-                    content: name.draw_line_windowed(!*on_path, theme, field_w.saturating_sub(2)),
-                    state: if *on_path {
-                        ControlState::Normal
-                    } else {
+                    content: name.draw_line_windowed(
+                        name_focused,
+                        theme,
+                        field_w.saturating_sub(2),
+                    ),
+                    state: if name_focused {
                         ControlState::Focused
+                    } else {
+                        ControlState::Normal
                     },
                 }
                 .paint(frame.buffer_mut(), name_area, theme);
@@ -2223,8 +2269,8 @@ impl ModalStack {
                     height: FIELD_HEIGHT,
                 };
                 TextField {
-                    content: path.draw_line_windowed(*on_path, theme, path_w.saturating_sub(2)),
-                    state: if *on_path {
+                    content: path.draw_line_windowed(path_focused, theme, path_w.saturating_sub(2)),
+                    state: if path_focused {
                         ControlState::Focused
                     } else {
                         ControlState::Normal
@@ -2251,7 +2297,7 @@ impl ModalStack {
                 hits.register(browse_area, crate::hit::Hit::NewProjectBrowse);
 
                 let buttons_y = area.y + area.height.saturating_sub(1 + BUTTON_HEIGHT);
-                draw_cancel_confirm_row(frame, hits, theme, area, buttons_y, hovered);
+                draw_cancel_confirm_row(frame, hits, theme, area, buttons_y, hovered, button_focus);
             }
             Modal::Dropdown(state) => {
                 draw_dropdown(frame, screen, theme, hits, hovered, state, anims, now)
@@ -2294,7 +2340,7 @@ impl ModalStack {
                 let field_w = area.width.saturating_sub(4);
                 let mut y = title_y + 2;
                 for (i, field) in fields.iter().enumerate() {
-                    let focused = i == *focus;
+                    let focused = button_focus.is_none() && i == *focus;
                     let label = format!("{}:", field.label);
                     paint::text(
                         frame.buffer_mut(),
@@ -2406,7 +2452,7 @@ impl ModalStack {
                 }
 
                 let buttons_y = area.y + area.height.saturating_sub(1 + BUTTON_HEIGHT);
-                draw_cancel_confirm_row(frame, hits, theme, area, buttons_y, hovered);
+                draw_cancel_confirm_row(frame, hits, theme, area, buttons_y, hovered, button_focus);
                 // The value popup's remove: only when the chosen Write-to
                 // scope actually stores a value to delete. Painted as the
                 // same one-row "✕ remove" accent control the variable
@@ -2468,7 +2514,7 @@ impl ModalStack {
                 let field_w = area.width.saturating_sub(4 + toggle_w);
                 let mut y = title_y + 2;
                 for (i, row) in state.rows.iter().enumerate() {
-                    let focused = i == state.focus && !row.removed;
+                    let focused = button_focus.is_none() && i == state.focus && !row.removed;
                     let field_area = Rect {
                         x: field_x,
                         y,
@@ -2566,7 +2612,7 @@ impl ModalStack {
                 hits.register(add_area, add_hit);
 
                 let buttons_y = area.y + area.height.saturating_sub(1 + BUTTON_HEIGHT);
-                draw_cancel_confirm_row(frame, hits, theme, area, buttons_y, hovered);
+                draw_cancel_confirm_row(frame, hits, theme, area, buttons_y, hovered, button_focus);
             }
         }
     }
@@ -2790,9 +2836,15 @@ fn button_row_width(labels: &[impl AsRef<str>]) -> u16 {
 /// Paints the right-aligned Secondary "Cancel" + Primary "Confirm" button
 /// row shared by `Prompt` and `NewProject`, at `buttons_y` inside `area`.
 /// Registers `Hit::ModalCancel`/`Hit::ModalConfirm` on the two button rects
-/// — the app-side click handler dispatches both by synthesizing the same
-/// `Esc`/`Enter` key event `ModalStack::handle_key` already handles for
-/// whichever modal is on top, so this is pure painting: no new behavior.
+/// — the app-side click handler dispatches a Cancel click through
+/// `ModalStack::cancel_top` and a Confirm click through
+/// `ModalStack::confirm_top`, so a click lands the same answer from
+/// wherever focus happens to sit.
+///
+/// `aimed` is the keyboard's aim on the row (`ModalStack::button_focus`),
+/// and that button paints `Focused`: the row is a focus stop like any
+/// other, so it has to look like one. Hover still wins for the button
+/// under the pointer — the ladder every control here shares.
 fn draw_cancel_confirm_row(
     frame: &mut Frame,
     hits: &mut crate::hit::HitMap,
@@ -2800,6 +2852,7 @@ fn draw_cancel_confirm_row(
     area: Rect,
     buttons_y: u16,
     hovered: Option<&crate::hit::Hit>,
+    aimed: Option<FormButton>,
 ) {
     let buttons = [
         (
@@ -2824,8 +2877,15 @@ fn draw_cancel_confirm_row(
             width: w,
             height: BUTTON_HEIGHT,
         };
+        let this = if hit == crate::hit::Hit::ModalCancel {
+            FormButton::Cancel
+        } else {
+            FormButton::Confirm
+        };
         let state = if hovered == Some(&hit) {
             ControlState::Hover
+        } else if aimed == Some(this) {
+            ControlState::Focused
         } else {
             ControlState::Normal
         };
@@ -4037,6 +4097,70 @@ mod tests {
         m.handle_key(key(KeyCode::Left));
         let res = m.handle_key(key(KeyCode::Enter)).expect("Enter on Cancel cancels");
         assert!(res.close && res.actions.is_empty());
+    }
+
+    /// A swallowed confirm (empty name) must leave the aim where it was:
+    /// silently dropping back into the field would move focus on a frame
+    /// nothing asked to be repainted.
+    #[test]
+    fn a_swallowed_confirm_keeps_the_aim_on_the_button_row() {
+        let mut m = prompt_stack();
+        m.handle_key(key(KeyCode::Esc));
+        assert_eq!(m.button_focus(), Some(FormButton::Confirm));
+        assert!(
+            m.handle_key(key(KeyCode::Enter)).is_none(),
+            "an empty name has nothing to confirm"
+        );
+        assert_eq!(
+            m.button_focus(),
+            Some(FormButton::Confirm),
+            "still on the row, Confirm still aimed"
+        );
+    }
+
+    /// In a field Esc no longer cancels — it commits the field onto the
+    /// button row — so the footer says "done" there and keeps "cancel"
+    /// for the Esc that really does cancel, on the row.
+    #[test]
+    fn form_footer_says_done_in_a_field_and_cancel_on_the_buttons() {
+        let mut m = prompt_stack();
+        let chips = m.footer_chips().unwrap();
+        assert!(chips.iter().any(|(k, l, _)| k == "esc" && l == "done"));
+        assert!(!chips.iter().any(|(k, l, _)| k == "esc" && l == "cancel"));
+        m.handle_key(key(KeyCode::Esc));
+        let chips = m.footer_chips().unwrap();
+        assert!(chips.iter().any(|(k, l, _)| k == "esc" && l == "cancel"));
+        assert!(chips.iter().any(|(k, l, _)| k == "\u{2191}" && l == "back"));
+        assert!(chips.iter().any(|(k, l, _)| k == "enter" && l == "save"));
+    }
+
+    /// Only form modals re-label their Esc: a picker's Esc still closes
+    /// it, and a confirm's still cancels.
+    #[test]
+    fn pickers_say_close_and_confirms_say_cancel() {
+        let mut m = ModalStack::default();
+        m.push(Modal::Chooser(super::super::chooser::ChooserState::new(
+            "Pick",
+            vec![],
+        )));
+        assert!(
+            m.footer_chips()
+                .unwrap()
+                .iter()
+                .any(|(k, l, _)| k == "esc" && l == "close")
+        );
+        let mut m = ModalStack::default();
+        m.push(Modal::Confirm {
+            title: "?".into(),
+            body: String::new(),
+            choices: vec![],
+        });
+        assert!(
+            m.footer_chips()
+                .unwrap()
+                .iter()
+                .any(|(k, l, _)| k == "esc" && l == "cancel")
+        );
     }
 
     #[test]

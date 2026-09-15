@@ -469,7 +469,7 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         }
         Hit::ConfigEditKeepEditing => text("Resume editing this file"),
         Hit::ConfigEditDiscard => text("Discard these edits"),
-        Hit::ModalCancel => text("Close without changes \u{b7} esc"),
+        Hit::ModalCancel => text("Cancel and close \u{b7} esc on the buttons"),
         Hit::ModalConfirm => text("Confirm and close \u{b7} enter"),
         Hit::ModalChoiceArrow { dir, .. } => text(if *dir > 0 {
             "Go to the next choice"
