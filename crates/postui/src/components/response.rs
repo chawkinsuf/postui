@@ -196,13 +196,6 @@ pub struct JqBar {
     /// an edge. Set by the draw (it needs the width), reset whenever the
     /// row is entered or left.
     menu_scroll: std::cell::Cell<u16>,
-    /// The filter text as it stood when the current edit began — what
-    /// Esc puts back. Taken just before the first change to a focused
-    /// bar's text (`begin_edit`), not when it took the caret: merely
-    /// landing in the bar and leaving again changes nothing, and the
-    /// on/off switch is never part of it. Dropped on blur; `None` while
-    /// unfocused or until something is typed.
-    edit_origin: Option<String>,
 }
 
 impl JqBar {
@@ -214,30 +207,19 @@ impl JqBar {
             && now.saturating_duration_since(self.pending_since) >= JQ_SPINNER_AFTER
     }
 
-    /// Gives the bar the caret. No edit has begun yet: the origin is
-    /// taken by the first change (`begin_edit`).
+    /// Gives the bar the caret. The line's own edit session starts with
+    /// the first keystroke and ends on [`Self::blur`].
     fn focus(&mut self) {
         self.focused = true;
     }
 
-    /// Takes the caret away; whatever was typed stands (the filter is
-    /// live already), so the origin is forgotten.
+    /// Takes the caret away. Whatever was typed stands (the filter is
+    /// live already) and the edit session ends: the app history records
+    /// the close as one step.
     fn blur(&mut self) {
         self.focused = false;
-        self.edit_origin = None;
         self.menu = None;
-    }
-
-    /// Called before every change to the focused bar's text — a key, a
-    /// paste, an accepted completion, a tee-up or an AI reply landing —
-    /// so the first of them remembers the text it started from. Later
-    /// changes in the same session leave that origin alone, and text
-    /// landed into an unfocused bar (a saved filter applied, a verb from
-    /// the tree) starts no session at all.
-    fn begin_edit(&mut self) {
-        if self.focused && self.edit_origin.is_none() {
-            self.edit_origin = Some(self.input.text().to_string());
-        }
+        self.input.end_edit();
     }
 
     /// See [`Response::jq_open`].
@@ -348,7 +330,6 @@ impl JqBar {
         let labels = self.candidate_labels();
         let index = index.min(items.len() - 1);
         let base = self.input.text().to_string();
-        self.begin_edit();
         Self::apply_candidate(&mut self.input, &items[index]);
         self.edited = true;
         if items.len() < 2 {
@@ -473,7 +454,6 @@ impl Default for JqBar {
             tab: JqTab::Menu,
             menu: None,
             menu_scroll: std::cell::Cell::new(0),
-            edit_origin: None,
         }
     }
 }
@@ -1259,39 +1239,15 @@ impl Response {
         self.jq.pending = None;
     }
 
-    /// Cancels the edit in progress: puts the text back to what it was
-    /// when the typing started and blurs. Nothing typed yet — the bar was
-    /// only entered — and it just blurs, the filter left exactly as it
-    /// was, on. The on/off switch is never touched: a filter opened from
-    /// off stays on (opening it was the user's doing, not the edit's).
-    /// Started from no filter, the bar is empty again and, unfocused,
-    /// hidden; the switch is left on then too, so the request never
-    /// persists `jq_enabled = false` without a filter. An edit whenever
-    /// the text actually changes, so undo brings the typed filter back.
-    pub fn cancel_jq_edit(&mut self) {
-        let origin = self.jq.edit_origin.take();
-        self.jq.blur();
-        let Some(origin) = origin else {
-            return;
-        };
-        if self.jq.input.text() != origin {
-            self.set_jq_text(&origin);
-            self.jq.edited = true;
-        }
-        if self.jq.input.text().is_empty() && !self.jq.enabled {
-            self.jq.enabled = true;
-            self.jq.edited = true;
-        }
-    }
-
     /// Sets the bar's text and cursor together (a tee-up from elsewhere —
     /// e.g. the AI describe flow seeding a filter). Counts as an edit, and
     /// switches a closed bar back on: a verb or the AI landing a filter
-    /// means "show me this".
+    /// means "show me this". The text goes in through `set_text`, not a
+    /// fresh line, so a tee-up into a focused bar keeps the session's
+    /// history and is undoable in the bar.
     pub fn set_jq_text_with_cursor(&mut self, text: &str, cursor: usize) {
-        self.jq.begin_edit();
         self.jq.menu = None;
-        self.jq.input = LineInput::new(text);
+        self.jq.input.set_text(text);
         self.jq.input.set_cursor(cursor);
         self.jq.enabled = true;
         self.jq.edited = true;
@@ -1374,7 +1330,6 @@ impl Response {
     /// keystroke into the bar does. `false` when there was nothing to step.
     pub fn field_undo(&mut self, redo: bool) -> bool {
         if self.jq.focused {
-            self.jq.begin_edit();
             let stepped = if redo {
                 self.jq.input.redo()
             } else {
@@ -1541,7 +1496,6 @@ impl Response {
         if !self.jq.focused {
             return false;
         }
-        self.jq.begin_edit();
         self.jq.menu = None;
         self.jq.input.paste(text);
         self.jq.edited = true;
@@ -1817,7 +1771,6 @@ impl Response {
         let Some(cand) = self.jq.candidate().cloned() else {
             return;
         };
-        self.jq.begin_edit();
         JqBar::apply_candidate(&mut self.jq.input, &cand);
         self.jq.edited = true;
     }
@@ -1825,7 +1778,6 @@ impl Response {
     /// The bar's ctrl/alt+backspace: a path segment when the caret is in
     /// a path token and nothing is selected, else the input's own rule.
     fn jq_segment_backspace(&mut self, ev: KeyEvent) {
-        self.jq.begin_edit();
         self.jq.menu = None;
         match self.jq.segment_delete_target() {
             Some(target) if self.jq.input.selection().is_none() => {
@@ -2221,10 +2173,9 @@ impl Response {
         // keys go to its LineInput, Enter/Down blur (committing is
         // implicit — every edit re-runs the filter — so the filter
         // stays on; Enter on an entered menu row first confirms it), Esc
-        // cancels the edit — the text goes back to what it was when the
-        // typing started, and a bar opened onto no filter closes —
-        // unless an AI request is pending, in which case it cancels that
-        // instead. Runs before the view is borrowed, so it works even
+        // does the same — it leaves the bar with the text kept (the field
+        // rule; ctrl+z, not Esc, is what walks an edit back) — unless an
+        // AI request is pending, in which case it cancels that instead. Runs before the view is borrowed, so it works even
         // with no ready view (it never should, in practice: the bar can't
         // focus without one).
         if self.jq.focused {
@@ -2233,7 +2184,7 @@ impl Response {
             // row (staying in the bar — its text is already the chip's,
             // so there is nothing more to take), Esc un-picks it — the
             // text goes back to what was typed before Tab, the row closes,
-            // the caret stays (Esc again cancels the edit as usual) — and
+            // the caret stays (Esc again leaves the bar as usual) — and
             // any other key leaves the row keeping the selection and is
             // then handled as usual.
             if self.jq.menu.is_some() {
@@ -2313,10 +2264,11 @@ impl Response {
                     if self.jq.ai_pending {
                         return Some(Action::CancelJqDescribe);
                     }
-                    self.cancel_jq_edit();
+                    // The field rule: Esc closes the bar keeping its text,
+                    // exactly like Enter.
+                    self.jq.blur();
                 }
                 _ => {
-                    self.jq.begin_edit();
                     self.jq.input.handle_key(ev);
                     self.jq.edited = true;
                 }
@@ -2327,17 +2279,18 @@ impl Response {
         let view = self.view.as_mut()?;
 
         // An active search input swallows everything: chars and editing keys
-        // go to the LineInput, Enter commits, Esc closes.
+        // go to the LineInput; Enter and Esc both run the search and hand
+        // the caret back to the tree (the field rule) — Esc in the tree is
+        // what clears it.
         if view.search.as_ref().is_some_and(|s| s.active) {
             match ev.code {
-                KeyCode::Enter => {
+                KeyCode::Enter | KeyCode::Esc => {
                     let search = view.search.as_mut().expect("checked above");
                     search.active = false;
                     search.query = search.input.text().to_string();
                     view.recompute_matches();
                     view.jump_to_match();
                 }
-                KeyCode::Esc => view.search = None,
                 _ => {
                     let search = view.search.as_mut().expect("checked above");
                     search.input.handle_key(ev);
@@ -6070,12 +6023,11 @@ mod tests {
     }
 
     #[test]
-    fn esc_on_an_entered_row_unpicks_it_and_stays_and_a_second_esc_cancels() {
+    fn esc_on_an_entered_row_unpicks_it_and_stays_and_a_second_esc_leaves() {
         let mut r = ready(ITEMS);
         r.set_jq_tab(JqTab::Menu);
         r.set_jq_text(".data");
         assert!(r.set_jq_focus(true));
-        // Typed this session: `.items[] | .` — the origin is `.data`.
         for c in ".items[] | .".chars() {
             bar_key(&mut r, ch(c));
         }
@@ -6092,7 +6044,11 @@ mod tests {
         assert!(r.jq_menu_offered(), "…and shows again, unentered");
         assert!(r.jq_focused(), "the caret stays");
         bar_key(&mut r, key(KeyCode::Esc));
-        assert_eq!(r.jq_text(), ".data", "the second Esc cancels the edit");
+        assert_eq!(
+            r.jq_text(),
+            ".data.items[] | .",
+            "the second Esc leaves the bar, the text kept"
+        );
         assert!(!r.jq_focused());
     }
 
@@ -6749,13 +6705,13 @@ mod tests {
         assert!(r.take_jq_edited());
         assert!(!r.take_jq_edited());
         r.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        assert_eq!(r.jq_text(), ".a", "Esc cancels the edit");
+        assert_eq!(r.jq_text(), ".ab", "Esc keeps the edit");
         assert!(!r.jq_focused(), "…and leaves the bar");
-        assert!(r.take_jq_edited(), "a revert is an edit");
+        assert!(!r.take_jq_edited(), "…changing nothing on the way out");
         assert!(r.set_jq_focus(true));
         r.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert!(!r.jq_focused(), "Esc with nothing typed blurs");
-        assert_eq!(r.jq_text(), ".a");
+        assert_eq!(r.jq_text(), ".ab");
         assert!(!r.take_jq_edited(), "…which is not an edit");
         r.set_jq_text_with_cursor("map(select(.x == ))", 17);
         assert!(r.take_jq_edited(), "a tee-up counts as an edit");
@@ -6763,22 +6719,22 @@ mod tests {
     }
 
     #[test]
-    fn esc_on_a_bar_opened_onto_no_filter_closes_it() {
+    fn esc_on_a_bar_opened_onto_no_filter_keeps_the_typed_filter() {
         let mut r = ready(ITEMS);
         assert!(r.open_jq());
         r.handle_key(KeyEvent::new(KeyCode::Char('.'), KeyModifiers::NONE));
         r.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
         assert!(r.take_jq_edited());
         r.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        assert_eq!(r.jq_text(), "");
+        assert_eq!(r.jq_text(), ".a", "Esc keeps what was typed");
         assert!(!r.jq_focused());
-        assert!(!r.jq_open(), "empty and unfocused: the bar is gone");
-        assert!(r.jq_enabled(), "nothing left to switch off");
-        assert!(r.take_jq_edited(), "dropping the typed text is an edit");
+        assert!(r.jq_open(), "…so the bar stays, unfocused");
+        assert!(r.jq_enabled());
+        assert!(!r.take_jq_edited(), "leaving changes nothing");
     }
 
     #[test]
-    fn esc_on_a_bar_opened_from_off_reverts_the_text_but_leaves_it_on() {
+    fn esc_on_a_bar_opened_from_off_keeps_the_text_and_leaves_it_on() {
         let mut r = ready(ITEMS);
         r.set_jq_text(".a");
         assert!(r.open_jq());
@@ -6789,10 +6745,9 @@ mod tests {
         assert!(r.jq_enabled());
         r.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE));
         r.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        assert_eq!(r.jq_text(), ".a", "the typed char is gone");
+        assert_eq!(r.jq_text(), ".ab", "the typed char stands");
         assert!(r.jq_enabled(), "the switch is never part of the edit");
         assert!(r.jq_open() && !r.jq_focused());
-        assert!(r.take_jq_edited());
     }
 
     #[test]
@@ -6818,7 +6773,7 @@ mod tests {
     }
 
     #[test]
-    fn enter_keeps_the_edit_and_forgets_the_origin() {
+    fn enter_keeps_the_edit_and_ends_the_session() {
         let mut r = ready(ITEMS);
         r.set_jq_text(".a");
         assert!(r.set_jq_focus(true));
@@ -6826,22 +6781,32 @@ mod tests {
         r.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(r.jq_text(), ".ab");
         assert!(!r.jq_focused());
+        assert!(
+            !r.jq_bar().input.edited(),
+            "Enter ended the session: ctrl+z is the app history again"
+        );
         // A fresh edit session starts from the committed text.
         assert!(r.set_jq_focus(true));
         r.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
-        r.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(r.field_undo(false));
         assert_eq!(r.jq_text(), ".ab", "back to the last commit, not further");
+        assert!(!r.field_undo(false), "and no further: the session is its own");
     }
 
     #[test]
-    fn text_landing_in_a_focused_bar_cancels_back_to_before_it() {
+    fn text_landing_in_a_focused_bar_stands_and_is_one_step_in_the_bar() {
         let mut r = ready(ITEMS);
         r.set_jq_text(".a");
         assert!(r.set_jq_focus(true));
         // The AI reply / a tee-up lands text into the focused bar.
         r.set_jq_text_with_cursor(".data.items", 11);
         r.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        assert_eq!(r.jq_text(), ".a");
+        assert_eq!(r.jq_text(), ".data.items", "Esc keeps it");
+        // …and while the bar still has the caret it is one undoable step.
+        assert!(r.set_jq_focus(true));
+        r.set_jq_text_with_cursor(".data.total", 11);
+        assert!(r.field_undo(false));
+        assert_eq!(r.jq_text(), ".data.items");
     }
 
     #[test]

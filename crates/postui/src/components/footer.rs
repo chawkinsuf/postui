@@ -127,9 +127,9 @@ pub(crate) fn footer_chips(
             if let JqBarState::Focused | JqBarState::Completing { .. } | JqBarState::Menu = jq_bar {
                 // Enter commits (the filter is live already; Enter just
                 // hands focus back to the tree with the filter on), Esc
-                // cancels the edit (the filter goes back to what it was),
-                // alt+shift+q closes the bar — switching the filter off
-                // without losing it. While a completion ghost
+                // does the same — it leaves with the edit kept (the field
+                // rule), alt+shift+q closes the bar — switching the filter
+                // off without losing it. While a completion ghost
                 // shows, the Tab chip(s) lead: "tab next" + "→ accept" in
                 // cycle mode, or "tab complete" in menu mode; with the
                 // menu row open, "tab next" + "shift+tab prev".
@@ -160,7 +160,7 @@ pub(crate) fn footer_chips(
                         },
                         None,
                     ),
-                    ("esc", "cancel", Some(Action::CancelJqEdit)),
+                    ("esc", "done", None),
                     ("alt+shift+q", "unfilter", Some(Action::ToggleJqBar)),
                     (
                         crate::glyph::CREATION,

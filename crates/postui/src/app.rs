@@ -4367,10 +4367,6 @@ impl App {
                 }
                 true
             }
-            Action::CancelJqEdit => {
-                self.session.response.cancel_jq_edit();
-                true // sync_jq lands the restored filter in the editor
-            }
             Action::OpenJqBar => {
                 if let Some(why) = self.session.response.jq_blocked_reason() {
                     self.toasts.push(why, ToastKind::Info);
@@ -4386,8 +4382,9 @@ impl App {
                 true // sync_jq applies it
             }
             Action::JqTeeUp { text, cursor } => {
-                // Focus before the text lands, so Esc cancels the tee-up
-                // back to the filter that was there.
+                // Focus before the text lands, so the tee-up joins the
+                // bar's edit session and ctrl+z walks it back to the
+                // filter that was there.
                 self.dispatch(Action::FocusPane(PaneId::Response));
                 self.session.response.set_jq_focus(true);
                 self.session.response.set_jq_text_with_cursor(&text, cursor);

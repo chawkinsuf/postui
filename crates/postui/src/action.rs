@@ -880,11 +880,6 @@ pub enum Action {
     /// closed jq bar (filter on, focused) or closes an open one (filter
     /// off, text kept) whether or not the caret is in it.
     ToggleJqBar,
-    /// Esc in the bar (and the footer's `esc cancel` chip): puts the
-    /// filter back to what it was when the bar took the caret — text and
-    /// on/off switch — and blurs; a bar opened onto no filter closes. An
-    /// edit whenever anything changed — undo brings the typed text back.
-    CancelJqEdit,
     /// alt+q / the palette / the footer's `filter` chip: focus the bar,
     /// switching it on if it was off. Never blurs and never switches off
     /// — alt+q always means "type a filter", so the switch is a different
