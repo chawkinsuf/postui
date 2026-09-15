@@ -5,7 +5,7 @@ use crate::layout::PaneId;
 use crate::paint::{self, ControlState, FIELD_HEIGHT, ListRow, RowHighlight, TextField};
 use crate::theme::Theme;
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
 
 #[derive(Clone)]
@@ -510,7 +510,17 @@ impl PaletteState {
                 self.selected = self.selected.saturating_sub(1);
                 self.ensure_visible = true;
             }
+            KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.selected = self.selected.saturating_sub(1);
+                self.ensure_visible = true;
+            }
             KeyCode::Down => {
+                if self.selected + 1 < self.filtered.len() {
+                    self.selected += 1;
+                }
+                self.ensure_visible = true;
+            }
+            KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if self.selected + 1 < self.filtered.len() {
                     self.selected += 1;
                 }
@@ -705,6 +715,23 @@ mod tests {
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn ctrl(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+    }
+
+    #[test]
+    fn ctrl_n_and_ctrl_p_are_down_and_up() {
+        let mut a = PaletteState::new(&crate::usage::UsageStore::default(), 0);
+        let mut b = PaletteState::new(&crate::usage::UsageStore::default(), 0);
+        a.handle_key(key(KeyCode::Down));
+        b.handle_key(ctrl('n'));
+        assert_eq!(a.selected(), b.selected());
+        a.handle_key(key(KeyCode::Up));
+        b.handle_key(ctrl('p'));
+        assert_eq!(a.selected(), b.selected());
+        assert_eq!(b.input(), "", "ctrl+n/p never type");
     }
 
     /// Puts the cursor on command `id`. A query is a subsequence match, so

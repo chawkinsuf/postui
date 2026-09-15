@@ -597,6 +597,19 @@ impl FilePickerState {
         self.rebuild_rows();
     }
 
+    /// Moves the row selection by `delta` (`-1` = Up, `1` = Down), clamped
+    /// to the row list, same as the arrow keys and their ctrl+p/ctrl+n
+    /// aliases.
+    fn move_selection(&mut self, delta: i32) {
+        if delta < 0 {
+            self.selected = self.selected.saturating_sub(1);
+        } else if self.selected + 1 < self.rows.len() {
+            self.selected += 1;
+        }
+        self.ensure_visible = true;
+        self.row_chosen = true;
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<ModalResult> {
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         match key.code {
@@ -609,17 +622,13 @@ impl FilePickerState {
             KeyCode::Enter if alt => return self.confirm_here(),
             KeyCode::Enter => return self.activate(),
             KeyCode::Char('h') if alt => self.toggle_hidden(),
-            KeyCode::Up => {
-                self.selected = self.selected.saturating_sub(1);
-                self.ensure_visible = true;
-                self.row_chosen = true;
+            KeyCode::Up => self.move_selection(-1),
+            KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.move_selection(-1)
             }
-            KeyCode::Down => {
-                if self.selected + 1 < self.rows.len() {
-                    self.selected += 1;
-                }
-                self.ensure_visible = true;
-                self.row_chosen = true;
+            KeyCode::Down => self.move_selection(1),
+            KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.move_selection(1)
             }
             KeyCode::Backspace if self.input.text().is_empty() => self.climb(),
             _ => {
@@ -913,6 +922,24 @@ mod tests {
 
     fn alt(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::ALT)
+    }
+
+    fn ctrl(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+    }
+
+    #[test]
+    fn ctrl_n_and_ctrl_p_are_down_and_up() {
+        let dir = tree();
+        let mut a = FilePickerState::new("Open project", PickerTarget::OpenProject, dir.path(), "");
+        let mut b = FilePickerState::new("Open project", PickerTarget::OpenProject, dir.path(), "");
+        a.handle_key(key(KeyCode::Down));
+        b.handle_key(ctrl('n'));
+        assert_eq!(a.selected(), b.selected());
+        a.handle_key(key(KeyCode::Up));
+        b.handle_key(ctrl('p'));
+        assert_eq!(a.selected(), b.selected());
+        assert_eq!(b.input().text(), "", "ctrl+n/p never type");
     }
 
     fn type_str(p: &mut FilePickerState, s: &str) {

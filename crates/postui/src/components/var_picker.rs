@@ -8,7 +8,7 @@ use crate::paint::{self, ControlState, FIELD_HEIGHT, ListRow, RowHighlight, Text
 use crate::theme::Theme;
 use indexmap::IndexMap;
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::text::Span;
 
@@ -392,7 +392,17 @@ impl VarPickerState {
                 self.selected = self.selected.saturating_sub(1);
                 self.ensure_visible = true;
             }
+            KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.selected = self.selected.saturating_sub(1);
+                self.ensure_visible = true;
+            }
             KeyCode::Down => {
+                if self.selected + 1 < self.row_count() {
+                    self.selected += 1;
+                }
+                self.ensure_visible = true;
+            }
+            KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if self.selected + 1 < self.row_count() {
                     self.selected += 1;
                 }
@@ -832,6 +842,24 @@ mod tests {
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn ctrl(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+    }
+
+    #[test]
+    fn ctrl_n_and_ctrl_p_are_down_and_up() {
+        let entries = vec![var_entry("a", None, None), var_entry("b", None, None)];
+        let mut a = VarPickerState::new(entries.clone(), true);
+        let mut b = VarPickerState::new(entries, true);
+        a.handle_key(key(KeyCode::Down));
+        b.handle_key(ctrl('n'));
+        assert_eq!(a.selected(), b.selected());
+        a.handle_key(key(KeyCode::Up));
+        b.handle_key(ctrl('p'));
+        assert_eq!(a.selected(), b.selected());
+        assert_eq!(b.input(), "", "ctrl+n/p never type");
     }
 
     /// A `VarScope::Project`, non-secret entry — the common case for tests

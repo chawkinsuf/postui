@@ -4,7 +4,7 @@ use crate::action::Action;
 use crate::paint::{self, ControlState, FIELD_HEIGHT, ListRow, RowHighlight, TextField};
 use crate::theme::Theme;
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
 
 /// One selectable entry in a `ChooserState`: a label, an optional detail
@@ -221,7 +221,17 @@ impl ChooserState {
                 self.selected = self.selected.saturating_sub(1);
                 self.ensure_visible = true;
             }
+            KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.selected = self.selected.saturating_sub(1);
+                self.ensure_visible = true;
+            }
             KeyCode::Down => {
+                if self.selected + 1 < self.filtered.len() {
+                    self.selected += 1;
+                }
+                self.ensure_visible = true;
+            }
+            KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if self.selected + 1 < self.filtered.len() {
                     self.selected += 1;
                 }
@@ -437,6 +447,23 @@ mod tests {
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn ctrl(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+    }
+
+    #[test]
+    fn ctrl_n_and_ctrl_p_are_down_and_up() {
+        let mut a = ChooserState::new("t", items(&["a", "b"]));
+        let mut b = ChooserState::new("t", items(&["a", "b"]));
+        a.handle_key(key(KeyCode::Down));
+        b.handle_key(ctrl('n'));
+        assert_eq!(a.selected(), b.selected());
+        a.handle_key(key(KeyCode::Up));
+        b.handle_key(ctrl('p'));
+        assert_eq!(a.selected(), b.selected());
+        assert_eq!(b.input(), "", "ctrl+n/p never type");
     }
 
     fn items(labels: &[&str]) -> Vec<ChooserItem> {
