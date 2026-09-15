@@ -24665,6 +24665,38 @@ fn ctrl_z_in_a_settings_field_undoes_the_typing() {
     assert!(app.settings.editing.is_some(), "the field stays open");
 }
 
+#[test]
+fn settings_vim_aliases_are_strict_synonyms() {
+    fn fresh() -> App {
+        let mut app = App::new_for_test();
+        app.update(Action::OpenManage {
+            tab: Some(crate::components::manage::ManageTab::Settings),
+        });
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        app
+    }
+    let pairs = [
+        (plain('j'), KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
+        (plain('k'), KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)),
+        (plain('g'), KeyEvent::new(KeyCode::Home, KeyModifiers::NONE)),
+        (plain('G'), KeyEvent::new(KeyCode::End, KeyModifiers::NONE)),
+    ];
+    for (alias, canonical) in pairs {
+        let (mut a, mut b) = (fresh(), fresh());
+        a.handle_key(alias);
+        b.handle_key(canonical);
+        assert_eq!(a.settings.cursor, b.settings.cursor, "{alias:?}");
+    }
+    let (mut a, mut b) = (fresh(), fresh());
+    for app in [&mut a, &mut b] {
+        app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE)); // a Files row
+    }
+    a.handle_key(plain('l'));
+    b.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    assert_eq!(a.settings.file_button, b.settings.file_button);
+    assert_eq!(a.settings.file_button, 1);
+}
+
 /// A refused `osc52_limit` keeps its edit open, so a click landing on
 /// another row must not move the cursor out from under it -- `editing`
 /// and `cursor` would then name different rows and the painted well

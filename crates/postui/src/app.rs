@@ -9975,9 +9975,39 @@ impl App {
                     .move_cursor(-1, self.ui_settings_are_editable());
                 true
             }
+            KeyCode::Char('k') if ev.modifiers.is_empty() => {
+                self.settings
+                    .move_cursor(-1, self.ui_settings_are_editable());
+                true
+            }
             KeyCode::Down => {
                 self.settings
                     .move_cursor(1, self.ui_settings_are_editable());
+                true
+            }
+            KeyCode::Char('j') if ev.modifiers.is_empty() => {
+                self.settings
+                    .move_cursor(1, self.ui_settings_are_editable());
+                true
+            }
+            KeyCode::Home => {
+                self.settings
+                    .move_cursor(i32::MIN / 2, self.ui_settings_are_editable());
+                true
+            }
+            KeyCode::Char('g') if ev.modifiers.is_empty() => {
+                self.settings
+                    .move_cursor(i32::MIN / 2, self.ui_settings_are_editable());
+                true
+            }
+            KeyCode::End => {
+                self.settings
+                    .move_cursor(i32::MAX / 2, self.ui_settings_are_editable());
+                true
+            }
+            KeyCode::Char('G') if ev.modifiers.is_empty() => {
+                self.settings
+                    .move_cursor(i32::MAX / 2, self.ui_settings_are_editable());
                 true
             }
             // Only a Files row has two buttons to choose between; on a
@@ -9986,6 +10016,12 @@ impl App {
                 if matches!(self.settings.row(), SettingsRow::File(_)) =>
             {
                 self.settings.file_button = usize::from(ev.code == KeyCode::Right);
+                true
+            }
+            KeyCode::Char('h') | KeyCode::Char('l')
+                if ev.modifiers.is_empty() && matches!(self.settings.row(), SettingsRow::File(_)) =>
+            {
+                self.settings.file_button = usize::from(matches!(ev.code, KeyCode::Char('l')));
                 true
             }
             KeyCode::Enter | KeyCode::Char(' ') => self.activate_settings_row(),

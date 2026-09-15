@@ -618,6 +618,11 @@ impl DropdownState {
     pub fn first_enabled(items: &[MenuItem]) -> usize {
         items.iter().position(MenuItem::is_enabled).unwrap_or(0)
     }
+
+    /// The last enabled row, for `G`/End.
+    fn last_enabled(&self) -> Option<usize> {
+        self.items.iter().rposition(MenuItem::is_enabled)
+    }
 }
 
 /// The outcome of a modal handling a key event: any actions the caller
@@ -1452,8 +1457,40 @@ impl ModalStack {
                     }
                     None // swallowed: modals capture all input
                 }
+                KeyCode::Char('k') if key.modifiers.is_empty() => {
+                    if let Some(i) = state.step(-1) {
+                        state.selected = i;
+                    }
+                    None // swallowed: modals capture all input
+                }
                 KeyCode::Down => {
                     if let Some(i) = state.step(1) {
+                        state.selected = i;
+                    }
+                    None // swallowed: modals capture all input
+                }
+                KeyCode::Char('j') if key.modifiers.is_empty() => {
+                    if let Some(i) = state.step(1) {
+                        state.selected = i;
+                    }
+                    None // swallowed: modals capture all input
+                }
+                KeyCode::Home => {
+                    state.selected = DropdownState::first_enabled(&state.items);
+                    None // swallowed: modals capture all input
+                }
+                KeyCode::Char('g') if key.modifiers.is_empty() => {
+                    state.selected = DropdownState::first_enabled(&state.items);
+                    None // swallowed: modals capture all input
+                }
+                KeyCode::End => {
+                    if let Some(i) = state.last_enabled() {
+                        state.selected = i;
+                    }
+                    None // swallowed: modals capture all input
+                }
+                KeyCode::Char('G') if key.modifiers.is_empty() => {
+                    if let Some(i) = state.last_enabled() {
                         state.selected = i;
                     }
                     None // swallowed: modals capture all input
@@ -3683,6 +3720,36 @@ mod tests {
         );
         let res = m.handle_key(key(KeyCode::Esc)).unwrap();
         assert!(res.close && res.actions.is_empty());
+    }
+
+    #[test]
+    fn dropdown_vim_aliases_are_strict_synonyms() {
+        fn menu() -> ModalStack {
+            let mut m = ModalStack::default();
+            m.push(Modal::Dropdown(DropdownState {
+                anchor: Rect::default(),
+                items: dropdown_items(),
+                selected: 1,
+                current: None,
+            }));
+            m
+        }
+        let pairs = [
+            (key(KeyCode::Char('j')), key(KeyCode::Down)),
+            (key(KeyCode::Char('k')), key(KeyCode::Up)),
+            (key(KeyCode::Char('g')), key(KeyCode::Home)),
+            (key(KeyCode::Char('G')), key(KeyCode::End)),
+        ];
+        for (alias, canonical) in pairs {
+            let (mut a, mut b) = (menu(), menu());
+            a.handle_key(alias);
+            b.handle_key(canonical);
+            let (Some(Modal::Dropdown(da)), Some(Modal::Dropdown(db))) = (a.top(), b.top())
+            else {
+                panic!()
+            };
+            assert_eq!(da.selected, db.selected, "{alias:?}");
+        }
     }
 
     #[test]
