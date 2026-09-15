@@ -1719,13 +1719,6 @@ impl App {
                 self.text_drag = Some(TextDrag::ModalInput(i));
                 self.update(Action::Render)
             }
-            // The painted Cancel/Confirm buttons deliver exactly what
-            // Esc/Enter already dispatch for whichever modal is on top: a
-            // synthesized key event routed through the same
-            // `ModalStack::handle_key` match, rather than duplicating its
-            // per-variant logic here. Message's only button ("OK") also
-            // maps to `ModalConfirm` — Enter and Esc already produce the
-            // same close-with-no-actions result for `Modal::Message`.
             Hit::ModalRowToggle(i) => {
                 if let Some(crate::components::modal::Modal::FieldsEditor(state)) =
                     self.modals.top_mut()
@@ -1759,16 +1752,19 @@ impl App {
                 false
             }
             Hit::ModalRemove => self.remove_from_value_popup(),
+            // The painted buttons dispatch the modal's own cancel/confirm
+            // directly; a synthesized Esc would only close the field now.
+            // Message's only button ("OK") also maps to `ModalConfirm` —
+            // `confirm_top` synthesizes Enter, which `Modal::Message`
+            // already closes on.
             Hit::ModalCancel => {
-                let synth = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
-                let Some(res) = self.modals.handle_key(synth) else {
+                let Some(res) = self.modals.cancel_top() else {
                     return false;
                 };
                 self.apply_modal_result(res)
             }
             Hit::ModalConfirm => {
-                let synth = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
-                let Some(res) = self.modals.handle_key(synth) else {
+                let Some(res) = self.modals.confirm_top() else {
                     return false;
                 };
                 self.apply_modal_result(res)

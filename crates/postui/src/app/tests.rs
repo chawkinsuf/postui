@@ -2697,6 +2697,9 @@ fn escaping_the_gates_save_prompt_cancels_everything() {
     let mut app = scratch_app();
     app.update(Action::Quit);
     app.handle_key(plain('s'));
+    // The field rule: the first Esc leaves the name field for the
+    // prompt's button row, the second one cancels the prompt.
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(app.modals.is_empty());
     assert!(!app.should_quit, "Esc means stay, with everything intact");
@@ -6735,6 +6738,8 @@ fn new_project_empty_name_swallows_enter_and_esc_cancels() {
     app.update(Action::PromptNewProject);
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(!app.modals.is_empty(), "empty name: modal stays");
+    // The field rule: Esc leaves the field for the button row, then cancels.
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(app.modals.is_empty());
 }
@@ -8551,6 +8556,35 @@ fn click_prompt_cancel_button_closes_without_creating_a_request() {
             .is_empty(),
         "Cancel must not create anything, matching Esc's no-op"
     );
+}
+
+#[test]
+fn cancel_click_closes_a_form_modal_from_inside_its_field() {
+    let mut app = App::new_for_test();
+    app.anims.enabled = false;
+    app.update(Action::PromptNewRequest);
+    type_chars(&mut app, "x");
+    render_once(&mut app);
+    let cancel = app.hits.rect_of(&Hit::ModalCancel).unwrap();
+    app.handle_mouse(left_down(cancel.x, cancel.y));
+    assert!(
+        app.modals.is_empty(),
+        "a Cancel click is the cancel, not a synthesized Esc"
+    );
+}
+
+#[test]
+fn confirm_click_confirms_even_with_cancel_aimed() {
+    let mut app = App::new_for_test();
+    app.anims.enabled = false;
+    app.update(Action::PromptNewRequest);
+    type_chars(&mut app, "api/ping");
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+    render_once(&mut app);
+    let confirm = app.hits.rect_of(&Hit::ModalConfirm).unwrap();
+    app.handle_mouse(left_down(confirm.x, confirm.y));
+    assert!(postui_core::fixtures::load_request(app.proj().root(), "main/api/ping").is_ok());
 }
 
 #[test]
@@ -10951,6 +10985,8 @@ fn keyboard_n_and_g_open_the_new_var_and_new_group_prompts() {
             ..
         })
     ));
+    // The field rule: Esc leaves the field for the button row, then cancels.
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
     app.handle_key(plain('g'));
@@ -10984,6 +11020,8 @@ fn keyboard_f2_d_s_open_the_matching_var_row_actions() {
             ..
         })
     ));
+    // The field rule: Esc leaves the field for the button row, then cancels.
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
     app.handle_key(plain('d'));
@@ -11259,6 +11297,8 @@ fn add_and_remove_group_members_one_at_a_time() {
     );
 
     // the failed duplicate keeps its prompt open for a retry; drop it
+    // The field rule: Esc leaves the field for the button row, then cancels.
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
     // `d` flow: removal is immediate (undoable)
@@ -12314,6 +12354,8 @@ async fn esc_mid_chain_cancels_the_send_and_keeps_only_confirmed_secrets() {
             ..
         }) if name == "api_secret"
     ));
+    // The field rule: Esc leaves the field for the button row, then cancels.
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
     assert!(app.modals.is_empty(), "esc closes the prompt");
@@ -14252,6 +14294,8 @@ fn keyboard_e_and_s_still_work_with_the_form_on_screen() {
             ..
         })
     ));
+    // The field rule: Esc leaves the field for the button row, then cancels.
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
     app.handle_key(plain('s'));
@@ -14524,6 +14568,8 @@ fn the_quit_chip_shows_ctrl_c_wherever_plain_q_would_type() {
     app.update(Action::PromptNewRequest);
     let content = rendered_text(&mut app);
     assert!(content.contains("^C  quit"), "{content}");
+    // The field rule: Esc leaves the field for the button row, then cancels.
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
     // The manager binds plain q to quit in every focus stop, so the chip

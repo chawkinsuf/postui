@@ -648,17 +648,54 @@ fn config_startup_choices() -> [(char, &'static str, ConfigStartupChoice); 4] {
     ]
 }
 
+/// Which of a form modal's two buttons the keyboard aims at while focus
+/// is on the button row (spec 2026-09-15, "Form modals: the button row").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormButton {
+    Cancel,
+    Confirm,
+}
+
+impl FormButton {
+    fn other(self) -> Self {
+        match self {
+            Self::Cancel => Self::Confirm,
+            Self::Confirm => Self::Cancel,
+        }
+    }
+}
+
+impl Modal {
+    /// The modals with text fields and a Cancel/Confirm row: Esc in a
+    /// field lands on that row rather than closing the modal.
+    pub fn is_form(&self) -> bool {
+        matches!(
+            self,
+            Modal::Prompt { .. }
+                | Modal::NewProject { .. }
+                | Modal::MultiPrompt { .. }
+                | Modal::FieldsEditor(_)
+        )
+    }
+}
+
 #[derive(Default)]
 pub struct ModalStack {
     stack: Vec<Modal>,
+    /// `Some` while the top form modal's focus is on its button row —
+    /// where Esc from a field lands. Cleared by any push or pop, by a
+    /// click into a field, and by `↑`.
+    button_focus: Option<FormButton>,
 }
 
 impl ModalStack {
     pub fn push(&mut self, modal: Modal) {
+        self.button_focus = None;
         self.stack.push(modal);
     }
 
     pub fn pop(&mut self) -> Option<Modal> {
+        self.button_focus = None;
         self.stack.pop()
     }
 
@@ -670,6 +707,11 @@ impl ModalStack {
     /// if that modal is a text-option kind — used by the app's ctrl+c
     /// copy-selection interception.
     pub fn focused_input(&self) -> Option<&LineInput> {
+        // On the button row the field is blurred: no caret, and nothing
+        // for paste or undo to reach into.
+        if self.button_focus.is_some() {
+            return None;
+        }
         match self.stack.last()? {
             Modal::Prompt { input, .. } => Some(input),
             Modal::NewProject {
@@ -692,6 +734,9 @@ impl ModalStack {
     /// [`Self::focused_input`], mutably — for the undo/redo keys, which dig
     /// past the modal into its live field exactly as paste does.
     pub fn focused_input_mut(&mut self) -> Option<&mut LineInput> {
+        if self.button_focus.is_some() {
+            return None;
+        }
         match self.stack.last_mut()? {
             Modal::Prompt { input, .. } => Some(input),
             Modal::NewProject {
@@ -722,6 +767,9 @@ impl ModalStack {
     /// `undo_filter`, so they answer for themselves; everything else (the
     /// file picker included) answers through [`Self::focused_input`].
     pub fn field_edited(&self) -> bool {
+        if self.button_focus.is_some() {
+            return false; // the button row has no field to step
+        }
         match self.stack.last() {
             Some(Modal::Palette(state)) => state.filter_edited(),
             Some(Modal::Chooser(state)) => state.filter_edited(),
@@ -735,6 +783,9 @@ impl ModalStack {
     /// so the rows never lag the query; everything else steps its
     /// `LineInput` directly. `false` when there was nothing to step.
     pub fn field_undo(&mut self, redo: bool) -> bool {
+        if self.button_focus.is_some() {
+            return false; // nothing to step while the field is blurred
+        }
         match self.stack.last_mut() {
             Some(Modal::Palette(state)) => state.undo_filter(redo),
             Some(Modal::Chooser(state)) => state.undo_filter(redo),
@@ -757,6 +808,9 @@ impl ModalStack {
     /// the top modal's field focus, if any — what a click-time window
     /// mapping needs to know *before* `focus_input` moves the focus.
     pub fn focused_input_index(&self) -> Option<usize> {
+        if self.button_focus.is_some() {
+            return None;
+        }
         match self.stack.last()? {
             Modal::Prompt { .. } | Modal::FilePicker(_) => Some(0),
             Modal::NewProject { on_path, .. } => Some(usize::from(*on_path)),
@@ -778,6 +832,8 @@ impl ModalStack {
     /// mouse path's counterpart to Tab/Down field switching. `None` when
     /// the top modal has no text box `i`.
     pub fn focus_input(&mut self, i: usize) -> Option<&mut LineInput> {
+        // A click into a text box takes focus off the button row.
+        self.button_focus = None;
         match self.stack.last_mut()? {
             // Clicking the name field takes focus off the shared toggle.
             Modal::Prompt { input, kind, .. } if i == 0 => {
@@ -817,6 +873,37 @@ impl ModalStack {
 
     pub fn top(&self) -> Option<&Modal> {
         self.stack.last()
+    }
+
+    /// Which button the keyboard aims at, while the top form modal's
+    /// focus sits on its Cancel/Confirm row rather than in a field.
+    pub fn button_focus(&self) -> Option<FormButton> {
+        self.button_focus
+    }
+
+    /// The top modal's cancel: closes with no actions — except the
+    /// send-time secret prompt, which cancels the whole send and says so.
+    pub fn cancel_top(&mut self) -> Option<ModalResult> {
+        let top = self.stack.last()?;
+        let actions = match top {
+            Modal::Prompt { kind, .. } if kind.is_secret() => vec![Action::ShowToast(
+                "send canceled".to_string(),
+                crate::components::toast::ToastKind::Warning,
+            )],
+            _ => vec![],
+        };
+        Some(ModalResult {
+            actions,
+            close: true,
+            ..Default::default()
+        })
+    }
+
+    /// The top modal's confirm, from wherever focus sits: Enter in a field
+    /// already confirms, so this only has to leave the button row first.
+    pub fn confirm_top(&mut self) -> Option<ModalResult> {
+        self.button_focus = None;
+        self.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
     }
 
     /// Whether the top modal may be dismissed without choosing one of its
@@ -1012,6 +1099,35 @@ impl ModalStack {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<ModalResult> {
+        // Focus on a form modal's button row: the row owns the keyboard
+        // until ↑ hands it back to the field (spec 2026-09-15, "Form
+        // modals: the button row").
+        if let Some(aimed) = self.button_focus
+            && self.stack.last().is_some_and(Modal::is_form)
+        {
+            return match key.code {
+                KeyCode::Left
+                | KeyCode::Right
+                | KeyCode::Tab
+                | KeyCode::BackTab
+                | KeyCode::Char('h')
+                | KeyCode::Char('l') => {
+                    self.button_focus = Some(aimed.other());
+                    None
+                }
+                KeyCode::Enter => match aimed {
+                    FormButton::Confirm => self.confirm_top(),
+                    FormButton::Cancel => self.cancel_top(),
+                },
+                KeyCode::Esc => self.cancel_top(),
+                KeyCode::Up => {
+                    self.button_focus = None;
+                    None
+                }
+                _ => None, // swallowed: the row has nothing to type into
+            };
+        }
+        let button_focus = &mut self.button_focus;
         let top = self.stack.last_mut()?;
         match top {
             // No `Esc` arm: this modal blocks until one of its four
@@ -1075,21 +1191,14 @@ impl ModalStack {
                 revealed,
                 ..
             } => match key.code {
-                KeyCode::Esc => Some(ModalResult {
-                    // The send-time secret prompt (spec §3) cancels the
-                    // whole send, not just this one field — surfaced so the
-                    // user isn't left wondering whether anything happened.
-                    actions: if kind.is_secret() {
-                        vec![Action::ShowToast(
-                            "send canceled".to_string(),
-                            crate::components::toast::ToastKind::Warning,
-                        )]
-                    } else {
-                        vec![]
-                    },
-                    close: true,
-                    ..Default::default()
-                }),
+                // The field rule: Esc closes the field onto the button
+                // row (Confirm aimed); Esc there is the cancel — and for
+                // the send-time secret prompt (spec §3) that cancel is
+                // the whole send, which `cancel_top` says out loud.
+                KeyCode::Esc => {
+                    *button_focus = Some(FormButton::Confirm);
+                    None
+                }
                 KeyCode::Char('r' | 'R')
                     if kind.is_secret() && key.modifiers.contains(KeyModifiers::CONTROL) =>
                 {
@@ -1246,11 +1355,12 @@ impl ModalStack {
                 on_path,
                 prefilled,
             } => match key.code {
-                KeyCode::Esc => Some(ModalResult {
-                    actions: vec![],
-                    close: true,
-                    ..Default::default()
-                }),
+                // The field rule: Esc closes the field onto the button
+                // row (Confirm aimed); Esc there is the cancel.
+                KeyCode::Esc => {
+                    *button_focus = Some(FormButton::Confirm);
+                    None
+                }
                 KeyCode::Enter => {
                     let name_text = name.text().trim();
                     if name_text.is_empty() {
@@ -1338,11 +1448,12 @@ impl ModalStack {
                 focus,
                 ..
             } => match key.code {
-                KeyCode::Esc => Some(ModalResult {
-                    actions: vec![],
-                    close: true,
-                    ..Default::default()
-                }),
+                // The field rule: Esc closes the field onto the button
+                // row (Confirm aimed); Esc there is the cancel.
+                KeyCode::Esc => {
+                    *button_focus = Some(FormButton::Confirm);
+                    None
+                }
                 KeyCode::Tab | KeyCode::Down => {
                     *focus = (*focus + 1) % fields.len();
                     None // swallowed: modals capture all input
@@ -1491,11 +1602,12 @@ impl ModalStack {
                 }
             },
             Modal::FieldsEditor(state) => match key.code {
-                KeyCode::Esc => Some(ModalResult {
-                    actions: vec![],
-                    close: true,
-                    ..Default::default()
-                }),
+                // The field rule: Esc closes the field onto the button
+                // row (Confirm aimed); Esc there is the cancel.
+                KeyCode::Esc => {
+                    *button_focus = Some(FormButton::Confirm);
+                    None
+                }
                 KeyCode::Enter => Some(ModalResult {
                     actions: vec![Action::ApplyGroupFields {
                         selector: state.selector.clone(),
@@ -3871,5 +3983,124 @@ mod tests {
             theme.panel,
             "t=1: fully settled, panel fill covers the whole popup"
         );
+    }
+
+    fn prompt_stack() -> ModalStack {
+        let mut m = ModalStack::default();
+        m.push(Modal::Prompt {
+            title: "Name".into(),
+            input: LineInput::new(""),
+            kind: PromptKind::NewRequest,
+            revealed: false,
+        });
+        m
+    }
+
+    #[test]
+    fn esc_in_a_form_field_lands_on_confirm_and_esc_again_cancels() {
+        let mut m = prompt_stack();
+        m.handle_key(key(KeyCode::Char('a')));
+        assert!(
+            m.handle_key(key(KeyCode::Esc)).is_none(),
+            "first Esc closes the field, not the modal"
+        );
+        assert_eq!(m.button_focus(), Some(FormButton::Confirm));
+        assert!(m.focused_input().is_none(), "no caret while on the buttons");
+        let res = m.handle_key(key(KeyCode::Esc)).expect("second Esc cancels");
+        assert!(res.close);
+        assert!(res.actions.is_empty());
+    }
+
+    #[test]
+    fn the_button_row_aims_activates_and_goes_back_up() {
+        let mut m = prompt_stack();
+        m.handle_key(key(KeyCode::Char('a')));
+        m.handle_key(key(KeyCode::Esc));
+        m.handle_key(key(KeyCode::Left));
+        assert_eq!(m.button_focus(), Some(FormButton::Cancel));
+        m.handle_key(key(KeyCode::Char('l')));
+        assert_eq!(m.button_focus(), Some(FormButton::Confirm));
+        m.handle_key(key(KeyCode::Tab));
+        assert_eq!(m.button_focus(), Some(FormButton::Cancel));
+        assert!(
+            m.handle_key(key(KeyCode::Char('x'))).is_none(),
+            "letters are swallowed on the row"
+        );
+        m.handle_key(key(KeyCode::Up));
+        assert_eq!(m.button_focus(), None);
+        assert_eq!(
+            m.focused_input().map(|i| i.text()),
+            Some("a"),
+            "back in the field, text intact"
+        );
+        m.handle_key(key(KeyCode::Esc));
+        m.handle_key(key(KeyCode::Left));
+        let res = m.handle_key(key(KeyCode::Enter)).expect("Enter on Cancel cancels");
+        assert!(res.close && res.actions.is_empty());
+    }
+
+    #[test]
+    fn enter_on_an_aimed_confirm_confirms_like_enter_in_the_field() {
+        let mut m = prompt_stack();
+        for c in "ping".chars() {
+            m.handle_key(key(KeyCode::Char(c)));
+        }
+        m.handle_key(key(KeyCode::Esc));
+        let res = m.handle_key(key(KeyCode::Enter)).expect("confirm");
+        assert_eq!(res.actions, vec![Action::CreateRequest("ping".into())]);
+        assert!(res.close);
+    }
+
+    #[test]
+    fn the_secret_prompt_cancels_the_send_from_the_button_row() {
+        let mut m = ModalStack::default();
+        m.push(Modal::Prompt {
+            title: "Secret".into(),
+            input: LineInput::new(""),
+            kind: PromptKind::SecretValue {
+                name: "k".into(),
+                env: "dev".into(),
+            },
+            revealed: false,
+        });
+        assert!(m.handle_key(key(KeyCode::Esc)).is_none());
+        let res = m.handle_key(key(KeyCode::Esc)).unwrap();
+        assert!(res.close);
+        assert!(matches!(res.actions.as_slice(), [Action::ShowToast(msg, _)] if msg == "send canceled"));
+    }
+
+    #[test]
+    fn the_button_row_hides_the_field_from_paste_and_undo() {
+        let mut m = prompt_stack();
+        m.handle_key(key(KeyCode::Char('a')));
+        m.handle_key(key(KeyCode::Esc));
+        assert!(
+            m.focused_input_mut().is_none(),
+            "paste must not dig into a blurred field"
+        );
+        assert!(!m.field_edited(), "the row has no field to step");
+        assert!(!m.field_undo(false), "ctrl+z does nothing on the row");
+        m.handle_key(key(KeyCode::Up));
+        assert_eq!(
+            m.focused_input().map(|i| i.text()),
+            Some("a"),
+            "the field is untouched underneath"
+        );
+    }
+
+    #[test]
+    fn pickers_and_confirms_still_close_on_one_esc() {
+        let mut m = ModalStack::default();
+        m.push(Modal::Confirm {
+            title: "?".into(),
+            body: String::new(),
+            choices: vec![],
+        });
+        assert!(m.handle_key(key(KeyCode::Esc)).unwrap().close);
+        let mut m = ModalStack::default();
+        m.push(Modal::Chooser(
+            crate::components::chooser::ChooserState::new("Pick", vec![]),
+        ));
+        assert!(m.handle_key(key(KeyCode::Esc)).unwrap().close);
     }
 }
