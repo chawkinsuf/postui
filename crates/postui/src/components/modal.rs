@@ -1168,7 +1168,7 @@ impl ModalStack {
                     FormButton::Cancel => self.cancel_top(),
                 },
                 KeyCode::Esc => self.cancel_top(),
-                KeyCode::Up => {
+                KeyCode::Up | KeyCode::Char('k') => {
                     self.button_focus = None;
                     None
                 }
@@ -4180,6 +4180,19 @@ mod tests {
         m.handle_key(key(KeyCode::Left));
         let res = m.handle_key(key(KeyCode::Enter)).expect("Enter on Cancel cancels");
         assert!(res.close && res.actions.is_empty());
+    }
+
+    /// `k` is the vim spelling of ↑ on the button row, as `h`/`l` are of
+    /// ←/→: it hands the keyboard back to the field with the text intact.
+    #[test]
+    fn k_from_the_button_row_returns_to_the_field_like_up() {
+        let mut m = prompt_stack();
+        m.handle_key(key(KeyCode::Char('a')));
+        m.handle_key(key(KeyCode::Esc));
+        assert_eq!(m.button_focus(), Some(FormButton::Confirm));
+        m.handle_key(key(KeyCode::Char('k')));
+        assert_eq!(m.button_focus(), None);
+        assert_eq!(m.focused_input().map(|i| i.text()), Some("a"));
     }
 
     /// On a `MultiPrompt` with more than one field, ↑ off the button row

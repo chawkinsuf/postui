@@ -1341,13 +1341,15 @@ impl Component for Editor {
             // The method badge: a plain control, not a text input, so
             // Enter/Space activate it (opening the chooser) and arrows only
             // navigate. alt+m still cycles the method without focusing it.
+            // `l`/`j` are the vim spellings of Right/Down: a resting stop,
+            // so the letters are free (spec 2026-09-15).
             SubFocus::Method => match ev.code {
                 KeyCode::Enter | KeyCode::Char(' ') => Some(Action::OpenMethodDropdown),
-                KeyCode::Right => {
+                KeyCode::Right | KeyCode::Char('l') => {
                     self.sub_focus = SubFocus::Url;
                     Some(Action::Render)
                 }
-                KeyCode::Down => {
+                KeyCode::Down | KeyCode::Char('j') => {
                     self.sub_focus = SubFocus::Tabs;
                     Some(Action::Render)
                 }
@@ -1390,11 +1392,12 @@ impl Component for Editor {
             // The tab strip: Left/Right switch tabs (the tab-change action
             // resets table state, so it goes through App like a click),
             // Down/Enter descend into the active tab's content, Up climbs
-            // back to the URL line.
+            // back to the URL line. h/l and j/k are strict synonyms of the
+            // arrows here (a resting stop, spec 2026-09-15).
             SubFocus::Tabs => match ev.code {
-                KeyCode::Left => Some(Action::EditorTabCycle(-1)),
-                KeyCode::Right => Some(Action::EditorTabCycle(1)),
-                KeyCode::Down | KeyCode::Enter => {
+                KeyCode::Left | KeyCode::Char('h') => Some(Action::EditorTabCycle(-1)),
+                KeyCode::Right | KeyCode::Char('l') => Some(Action::EditorTabCycle(1)),
+                KeyCode::Down | KeyCode::Char('j') | KeyCode::Enter => {
                     self.sub_focus = SubFocus::Content;
                     // Entering a table tab must land somewhere visible:
                     // select its first row — or, on an empty table, its
@@ -1409,7 +1412,7 @@ impl Component for Editor {
                     }
                     Some(Action::Render)
                 }
-                KeyCode::Up => {
+                KeyCode::Up | KeyCode::Char('k') => {
                     self.sub_focus = SubFocus::Url;
                     Some(Action::Render)
                 }
@@ -3714,6 +3717,38 @@ mod tests {
         e.sub_focus = SubFocus::Tabs;
         e.handle_key(key(KeyCode::Esc));
         assert_eq!(e.sub_focus, SubFocus::None);
+    }
+
+    /// The method badge and the tab strip are resting stops (no text
+    /// field is live), so the vim letters are strict synonyms of the
+    /// arrows there too (spec 2026-09-15).
+    #[test]
+    fn vim_aliases_are_strict_synonyms_on_the_method_badge_and_tab_strip() {
+        let pairs = [
+            (key(KeyCode::Char('h')), key(KeyCode::Left)),
+            (key(KeyCode::Char('l')), key(KeyCode::Right)),
+            (key(KeyCode::Char('j')), key(KeyCode::Down)),
+            (key(KeyCode::Char('k')), key(KeyCode::Up)),
+        ];
+        for stop in [SubFocus::Method, SubFocus::Tabs] {
+            for (alias, canonical) in pairs {
+                let mut a = Editor {
+                    sub_focus: stop,
+                    ..Editor::default()
+                };
+                let mut b = Editor {
+                    sub_focus: stop,
+                    ..Editor::default()
+                };
+                assert_eq!(
+                    a.handle_key(alias),
+                    b.handle_key(canonical),
+                    "{stop:?} {alias:?}"
+                );
+                assert_eq!(a.sub_focus, b.sub_focus, "{stop:?} {alias:?}");
+                assert_eq!(a.table.selected, b.table.selected, "{stop:?} {alias:?}");
+            }
+        }
     }
 
     #[test]
