@@ -450,6 +450,22 @@ fn ctrl_d_pages_the_sidebar_through_the_router() {
     assert_ne!(app.sidebar.selected, Some(0), "ctrl+d must move the selection");
 }
 
+/// ctrl+d is unbound at the global keymap, so it must reach the focused
+/// manage list's own `handle_key` through the app router (app.rs "step 5").
+#[test]
+fn ctrl_d_pages_the_manage_list_through_the_router() {
+    let mut app = App::new_for_test();
+    for n in ["auth", "billing", "cache"] {
+        app.update(Action::CreateSpace(n.into()));
+    }
+    app.update(Action::OpenManage {
+        tab: Some(crate::components::manage::ManageTab::Spaces),
+    });
+    app.manage.list.cursor = 0;
+    app.handle_key(ctrl('d'));
+    assert_ne!(app.manage.list.cursor, 0, "ctrl+d must move the cursor");
+}
+
 #[test]
 fn tick_requests_no_redraw_when_idle() {
     let mut app = App::new_for_test();

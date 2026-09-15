@@ -269,16 +269,44 @@ impl ManageList {
             KeyCode::Char('q') => Some(Action::Quit),
             KeyCode::Up if alt => Some(Self::move_action(tab, self.selected(tab, ctx)?, -1)),
             KeyCode::Down if alt => Some(Self::move_action(tab, self.selected(tab, ctx)?, 1)),
-            KeyCode::Up => {
-                self.cursor = self.cursor.saturating_sub(1);
-                self.ensure_visible = true;
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.step(1, len);
                 None
             }
-            KeyCode::Down => {
-                if self.cursor + 1 < len {
-                    self.cursor += 1;
-                }
-                self.ensure_visible = true;
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.step(-1, len);
+                None
+            }
+            KeyCode::Char('g') | KeyCode::Home => {
+                self.step(i32::MIN / 2, len);
+                None
+            }
+            KeyCode::Char('G') | KeyCode::End => {
+                self.step(i32::MAX / 2, len);
+                None
+            }
+            KeyCode::PageDown => {
+                self.step((self.page() / 2).max(1), len);
+                None
+            }
+            KeyCode::PageUp => {
+                self.step(-(self.page() / 2).max(1), len);
+                None
+            }
+            KeyCode::Char('d') if ev.modifiers == KeyModifiers::CONTROL => {
+                self.step((self.page() / 2).max(1), len);
+                None
+            }
+            KeyCode::Char('u') if ev.modifiers == KeyModifiers::CONTROL => {
+                self.step(-(self.page() / 2).max(1), len);
+                None
+            }
+            KeyCode::Char('f') if ev.modifiers == KeyModifiers::CONTROL => {
+                self.step(self.page(), len);
+                None
+            }
+            KeyCode::Char('b') if ev.modifiers == KeyModifiers::CONTROL => {
+                self.step(-self.page(), len);
                 None
             }
             KeyCode::Char('n') => Some(Self::new_action(tab)),
@@ -289,12 +317,27 @@ impl ManageList {
             KeyCode::Char('t') if tab == ManageTab::Environments => {
                 Some(Self::cycle_tls_action(ctx, self.selected(tab, ctx)?))
             }
-            KeyCode::Char('d') | KeyCode::Delete => {
+            KeyCode::Char('d') | KeyCode::Delete if ev.modifiers.is_empty() => {
                 Some(Self::delete_action(tab, self.selected(tab, ctx)?))
             }
             KeyCode::Char('u') if ev.modifiers.is_empty() => Some(Action::Undo),
             _ => None,
         }
+    }
+
+    /// Moves `cursor` by `delta` rows, clamped to `0..len` (or the single
+    /// slot `0` when the list is empty), and marks it for scroll-into-view.
+    /// The shared body behind Up/Down and every g/G/page-key alias.
+    fn step(&mut self, delta: i32, len: usize) {
+        let bound = len.max(1) as i32 - 1;
+        self.cursor = (self.cursor as i32 + delta).clamp(0, bound.max(0)) as usize;
+        self.ensure_visible = true;
+    }
+
+    /// Height of the row list as of the last draw, as a page size for
+    /// ctrl+d/u/f/b and PageUp/PageDown (never zero, so a page always moves).
+    fn page(&self) -> i32 {
+        self.visible_rows.max(1) as i32
     }
 
     pub fn footer_chips(
@@ -742,6 +785,41 @@ mod tests {
         ctx.create_space("billing").unwrap();
         assert_eq!(ctx.spaces(), ["main", "auth", "billing"]);
         (ctx, dir)
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn vim_aliases_are_strict_synonyms_in_the_manage_list() {
+        let (ctx, _dir) = ctx();
+        let ctrl = |c: char| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+        let pairs = [
+            (key(KeyCode::Char('j')), key(KeyCode::Down)),
+            (key(KeyCode::Char('k')), key(KeyCode::Up)),
+            (key(KeyCode::Char('g')), key(KeyCode::Home)),
+            (key(KeyCode::Char('G')), key(KeyCode::End)),
+            (ctrl('d'), key(KeyCode::PageDown)),
+            (ctrl('u'), key(KeyCode::PageUp)),
+        ];
+        for (alias, canonical) in pairs {
+            let (mut a, mut b) = (ManageList::default(), ManageList::default());
+            a.cursor = 1;
+            b.cursor = 1;
+            a.visible_rows = 2;
+            b.visible_rows = 2;
+            let ra = a.handle_key(alias, ManageTab::Spaces, &ctx);
+            let rb = b.handle_key(canonical, ManageTab::Spaces, &ctx);
+            assert_eq!(ra, rb, "{alias:?}");
+            assert_eq!(a.cursor, b.cursor, "{alias:?}");
+        }
+        let mut l = ManageList::default();
+        l.visible_rows = 2;
+        l.handle_key(ctrl('f'), ManageTab::Spaces, &ctx);
+        assert_eq!(l.cursor, 2, "three spaces: clamped to the last");
+        l.handle_key(ctrl('b'), ManageTab::Spaces, &ctx);
+        assert_eq!(l.cursor, 0);
     }
 
     #[test]
