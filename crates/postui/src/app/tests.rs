@@ -15380,7 +15380,9 @@ fn form_focus_advertises_and_handles_the_field_verbs() {
         "off the env-value field, no clear chip: {chips:?}"
     );
 
-    // Down to the env-value field: qa stores one, so `x` clears it.
+    // Down to the env-value field (past Default and the Secret toggle):
+    // qa stores one, so `x` clears it.
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     let clear = Action::RemoveVarValue {
@@ -15389,8 +15391,8 @@ fn form_focus_advertises_and_handles_the_field_verbs() {
     };
     assert_eq!(
         app.varmanager.form_cursor,
-        crate::components::varmanager::VmField::EnvValue,
-        "two downs land on the env-value field"
+        crate::components::varmanager::FormStop::Field(crate::components::varmanager::VmField::EnvValue),
+        "three downs land on the env-value field"
     );
     let chips = app.varmanager.footer_chips(app.proj(), None);
     assert!(

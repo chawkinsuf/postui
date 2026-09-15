@@ -267,10 +267,11 @@ rather than letting them fall through to the global keymap.
 | Sidebar tree | have | ←/→: collapse-or-parent, expand | first/last row | half page | full page |
 | Response viewer | have | ←/→: horizontal scroll | have | half page | full page |
 | Table editor (nav) | have | — | first/last row | half page | full page |
-| Manage lists | ↑/↓ | — | first/last | half page | full page |
+| Manage lists | ↑/↓ | →: into the detail pane | first/last | half page | full page |
+| Manage detail pane (Environments/Spaces) | ↑/↓: buttons row ⇄ TLS row | ←/→: aim a button or TLS segment; ← on the first leaves | first/last row | — | — |
 | Variable Manager list | ↑/↓ | ←/→: list⇄grid | first/last | half page | full page |
 | Variable Manager grid | ↑/↓ | ←/→ | first/last row | — | — |
-| Variable Manager form | ↑/↓ | ←: back to the list | first/last field | — | — |
+| Variable Manager form | ↑/↓ over the painted stops (Description, Default unless secret, the Secret toggle, env value) | ←: back to the list | first/last stop | — | — |
 | Settings tab | ↑/↓ | ←/→: aim a Files row's buttons | first/last row | — | — |
 | Context menu / dropdown | ↑/↓ | — | first/last | — | — |
 | Form modal button row | — | ←/→: aim | — | — | — |
@@ -300,6 +301,16 @@ kill-to-start in a text box.
   follow.
 - **Variable Manager new selector**: `g` → `a`, matching the table's
   `a add row`. Footer chip and hint follow.
+
+The Environments and Spaces tabs' detail pane is a focus stop of its
+own, the Variable Manager's list ⇄ detail rhythm: `l`/Right/Tab enters
+it aimed at its first painted control, `j`/`k` walk its rows (title
+buttons, then the TLS segments on Environments), `h`/`l` aim along a
+row, Enter or space fires the aim (the click's action exactly), and
+`h` on the first control, Esc or shift+Tab hand the keyboard back. The
+footer names the aim (`enter rename`, `enter verify`) while the pane
+has it. The command letters and alt+↑/↓ keep working from either stop.
+The tab strip's alt+←/→ gets a footer chip on every Manage tab.
 
 `g` for top-of-list is deliberately a single key: pressing it twice
 (`gg` by habit) goes to the top twice, so no prefix-key machinery is

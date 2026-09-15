@@ -245,6 +245,22 @@ pub enum VmField {
     EnvValue,
 }
 
+/// A stop of the variable form's keyboard cursor: one of its text
+/// fields, or the Secret toggle between Default and the env value. Only
+/// painted stops are walked -- a secret's Default row is not painted, so
+/// it is never a stop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormStop {
+    Field(VmField),
+    Secret,
+}
+
+impl Default for FormStop {
+    fn default() -> Self {
+        Self::Field(VmField::Description)
+    }
+}
+
 /// The detail pane's variable form (spec §3.4). Editing is always in place
 /// (the field rule): a click seeds `editing` with the clicked field's
 /// current text and a caret at the end; another click, `Enter`, or `Esc`
@@ -462,7 +478,7 @@ pub struct VarManager {
     pub form: VarFormState,
     /// The form's keyboard field cursor while [`VmFocus::Form`] holds the
     /// keyboard — kept across focus trips like the grid's.
-    pub form_cursor: VmField,
+    pub form_cursor: FormStop,
     pub grid: OptionGridState,
     /// The copied option row, if any — filled by
     /// [`crate::action::Action::CopyOption`], read by every paste.
@@ -740,7 +756,7 @@ impl VarManager {
         // the keyboard, however the edit began — `Esc` out of it lands on
         // the form's field cursor, not back in the left list.
         self.focus = VmFocus::Form;
-        self.form_cursor = field;
+        self.form_cursor = FormStop::Field(field);
         self.form.editing = Some((field, LineInput::new(&seed)));
     }
 
@@ -858,7 +874,17 @@ impl VarManager {
                     None,
                 ));
             }
-            if self.form_cursor == VmField::EnvValue && env_stores(ctx, name) {
+            // Enter on the toggle stop flips it (the same action the `s`
+            // chip carries); on a field it opens the edit, which the
+            // pane's own affordance already says.
+            if self.form_cursor == FormStop::Secret && ctx.variables().vars.contains_key(name) {
+                chips.push((
+                    "enter",
+                    "toggle secret",
+                    Some(Action::ToggleSecretVar { name: name.clone() }),
+                ));
+            }
+            if self.form_cursor == FormStop::Field(VmField::EnvValue) && env_stores(ctx, name) {
                 chips.push((
                     "x",
                     "clear env value",
@@ -997,6 +1023,23 @@ impl VarManager {
         chips
     }
 
+    /// The form's keyboard stops for `name`, top to bottom, exactly the
+    /// rows [`Self::draw_var_form`] paints: Description, Default (never
+    /// for a secret), the Secret toggle, and the env value (only with an
+    /// environment active).
+    fn form_stops(&self, ctx: &Project, name: &str) -> Vec<FormStop> {
+        let secret = ctx.variables().vars.get(name).is_some_and(|d| d.secret);
+        let mut stops = vec![FormStop::Field(VmField::Description)];
+        if !secret {
+            stops.push(FormStop::Field(VmField::Default));
+        }
+        stops.push(FormStop::Secret);
+        if ctx.active_env().is_some() {
+            stops.push(FormStop::Field(VmField::EnvValue));
+        }
+        stops
+    }
+
     /// Keys while the variable form is the focus stop: `Up`/`Down` (`k`/`j`)
     /// move the field cursor over the fields the form shows (the env-value
     /// row only exists with an env active), `Home`/`End` (`g`/`G`) jump to
@@ -1016,10 +1059,7 @@ impl VarManager {
         let VmDetail::Var(name) = self.detail.clone() else {
             return None;
         };
-        let mut fields = vec![VmField::Description, VmField::Default];
-        if ctx.active_env().is_some() {
-            fields.push(VmField::EnvValue);
-        }
+        let fields = self.form_stops(ctx, &name);
         let at = fields
             .iter()
             .position(|f| *f == self.form_cursor)
@@ -1049,17 +1089,22 @@ impl VarManager {
                 self.form_cursor = fields[fields.len() - 1];
                 None
             }
-            KeyCode::Enter => {
-                self.start_field_edit(ctx, self.form_cursor);
-                None
-            }
+            KeyCode::Enter | KeyCode::Char(' ') => match self.form_cursor {
+                FormStop::Field(field) => {
+                    self.start_field_edit(ctx, field);
+                    None
+                }
+                // The toggle has no text: Enter flips it, as a click does.
+                FormStop::Secret => Some(Action::ToggleSecretVar { name }),
+            },
             // The form's quick actions — the keyboard twins of its
             // inline controls, advertised by the footer's Form chips.
             KeyCode::Char('s') if ctx.variables().vars.contains_key(&name) => {
                 Some(Action::ToggleSecretVar { name })
             }
             KeyCode::Char('x')
-                if self.form_cursor == VmField::EnvValue && env_stores(ctx, &name) =>
+                if self.form_cursor == FormStop::Field(VmField::EnvValue)
+                    && env_stores(ctx, &name) =>
             {
                 Some(Action::RemoveVarValue {
                     name,
@@ -2196,9 +2241,16 @@ impl VarManager {
             // The toggle clamps itself to the slot and returns what it
             // painted; registering that keeps the hit inside the row
             // however narrow the pane has become.
+            // The keyboard cursor on the toggle paints focused, like a
+            // field under the cursor does.
+            let key_cursor = self.focus == VmFocus::Form
+                && self.form_cursor == FormStop::Secret
+                && self.form.editing.is_none();
             let rect = Toggle {
                 on: secret,
-                state: if hovered == Some(&Hit::VmSecretToggle) {
+                state: if key_cursor {
+                    ControlState::Focused
+                } else if hovered == Some(&Hit::VmSecretToggle) {
                     ControlState::Hover
                 } else {
                     ControlState::Normal
@@ -2364,8 +2416,9 @@ impl VarManager {
         // The keyboard field cursor paints exactly like a live edit or
         // hover — `ControlState::Focused` is the "you are here" the form
         // area's arrow keys move around.
-        let key_cursor =
-            self.focus == VmFocus::Form && self.form_cursor == field && self.form.editing.is_none();
+        let key_cursor = self.focus == VmFocus::Form
+            && self.form_cursor == FormStop::Field(field)
+            && self.form.editing.is_none();
         let state = if editing.is_some() || key_cursor {
             ControlState::Focused
         } else if hovered == Some(&hit) {
@@ -3038,7 +3091,7 @@ fields = ["user_id", "customer_id"]
             for vm in [&mut a, &mut b] {
                 select_var(vm, &ctx, "base_url");
                 vm.focus = VmFocus::Form;
-                vm.form_cursor = VmField::Default;
+                vm.form_cursor = FormStop::Field(VmField::Default);
             }
             assert_eq!(
                 a.handle_key(alias, &ctx, None),
@@ -3059,16 +3112,107 @@ fields = ["user_id", "customer_id"]
         let mut vm = VarManager::default();
         select_var(&mut vm, &ctx, "base_url");
         vm.focus = VmFocus::Form;
-        vm.form_cursor = VmField::Default;
+        vm.form_cursor = FormStop::Field(VmField::Default);
         vm.handle_key(key(KeyCode::Char('g')), &ctx, None);
-        assert_eq!(vm.form_cursor, VmField::Description);
+        assert_eq!(vm.form_cursor, FormStop::Field(VmField::Description));
         vm.handle_key(
             KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT),
             &ctx,
             None,
         );
-        assert_eq!(vm.form_cursor, VmField::EnvValue);
+        assert_eq!(vm.form_cursor, FormStop::Field(VmField::EnvValue));
         assert_eq!(vm.focus, VmFocus::Form);
+    }
+
+    /// The Secret toggle is a stop of the form's cursor like the text
+    /// fields around it: ↓ from Default lands on it, and Enter (or space)
+    /// flips it -- the click's action exactly.
+    #[test]
+    fn the_secret_toggle_is_a_form_stop_and_enter_flips_it() {
+        let (_dir, ctx) = fixture();
+        let mut vm = VarManager::default();
+        select_var(&mut vm, &ctx, "base_url");
+        vm.focus = VmFocus::Form;
+        vm.form_cursor = FormStop::Field(VmField::Default);
+        vm.handle_key(key(KeyCode::Down), &ctx, None);
+        assert_eq!(vm.form_cursor, FormStop::Secret);
+        assert_eq!(
+            vm.handle_key(key(KeyCode::Enter), &ctx, None),
+            Some(Action::ToggleSecretVar {
+                name: "base_url".into()
+            })
+        );
+        assert_eq!(
+            vm.handle_key(key(KeyCode::Char(' ')), &ctx, None),
+            Some(Action::ToggleSecretVar {
+                name: "base_url".into()
+            })
+        );
+        assert!(vm.form.editing.is_none(), "a toggle has no text to edit");
+        vm.handle_key(key(KeyCode::Down), &ctx, None);
+        assert_eq!(vm.form_cursor, FormStop::Field(VmField::EnvValue));
+        vm.handle_key(key(KeyCode::Up), &ctx, None);
+        assert_eq!(vm.form_cursor, FormStop::Secret);
+        let chips = vm.footer_chips(&ctx, None);
+        assert!(
+            chips.iter().any(|(k, l, a)| *k == "enter"
+                && *l == "toggle secret"
+                && *a
+                    == Some(Action::ToggleSecretVar {
+                        name: "base_url".into()
+                    })),
+            "{chips:?}"
+        );
+    }
+
+    /// A secret's Default row is not painted, so the cursor never stops
+    /// on it: ↓ from Description goes straight to the Secret toggle.
+    #[test]
+    fn the_form_cursor_skips_the_default_row_a_secret_hides() {
+        let (_dir, ctx) = fixture();
+        let mut vm = VarManager::default();
+        select_var(&mut vm, &ctx, "api_key");
+        vm.focus = VmFocus::Form;
+        vm.form_cursor = FormStop::Field(VmField::Description);
+        vm.handle_key(key(KeyCode::Down), &ctx, None);
+        assert_eq!(vm.form_cursor, FormStop::Secret);
+        vm.handle_key(key(KeyCode::Up), &ctx, None);
+        assert_eq!(vm.form_cursor, FormStop::Field(VmField::Description));
+        // Even a stale cursor on the hidden row is repaired to a painted
+        // stop before it moves.
+        vm.form_cursor = FormStop::Field(VmField::Default);
+        vm.handle_key(key(KeyCode::Down), &ctx, None);
+        assert_ne!(vm.form_cursor, FormStop::Field(VmField::Default));
+    }
+
+    /// The aimed toggle paints focused, like the aimed text field does.
+    #[test]
+    fn the_aimed_secret_toggle_paints_focused() {
+        use crate::paint::Toggle;
+        let (_dir, ctx) = fixture();
+        let theme = Theme::dark();
+        let mut vm = VarManager::default();
+        select_var(&mut vm, &ctx, "base_url");
+        vm.focus = VmFocus::Form;
+        vm.form_cursor = FormStop::Secret;
+        let (buf, hits) = render_buf(&mut vm, &ctx);
+        let rect = hits.rect_of(&Hit::VmSecretToggle).expect("toggle painted");
+        let painted = buf.cell((rect.x, rect.y)).unwrap().bg;
+        let mut scratch = Buffer::empty(Rect::new(0, 0, 20, 1));
+        Toggle {
+            on: false,
+            state: ControlState::Focused,
+        }
+        .paint(&mut scratch, Rect::new(0, 0, 20, 1), &theme);
+        let focused = scratch.cell((0, 0)).unwrap().bg;
+        Toggle {
+            on: false,
+            state: ControlState::Normal,
+        }
+        .paint(&mut scratch, Rect::new(0, 0, 20, 1), &theme);
+        let normal = scratch.cell((0, 0)).unwrap().bg;
+        assert_ne!(focused, normal, "the theme distinguishes focus");
+        assert_eq!(painted, focused);
     }
 
     /// The Manage screen swallows unclaimed plain keys, so the form has to
