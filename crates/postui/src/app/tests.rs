@@ -435,6 +435,21 @@ fn u_undoes_from_every_list_surface() {
     assert_eq!(app.history.undo_len(), steps - 1, "manage list: u is undo");
 }
 
+/// ctrl+d is unbound at the global keymap, so it must reach the focused
+/// sidebar's own `handle_key` through the app router (app.rs "step 5").
+#[test]
+fn ctrl_d_pages_the_sidebar_through_the_router() {
+    let mut app = App::new_for_test();
+    for n in ["a", "b", "c", "d", "e"] {
+        app.update(Action::CreateRequest(n.into()));
+    }
+    app.focus = PaneId::Sidebar;
+    app.handle_key(plain('g')); // Home: a known start, row 0
+    assert_eq!(app.sidebar.selected, Some(0));
+    app.handle_key(ctrl('d'));
+    assert_ne!(app.sidebar.selected, Some(0), "ctrl+d must move the selection");
+}
+
 #[test]
 fn tick_requests_no_redraw_when_idle() {
     let mut app = App::new_for_test();

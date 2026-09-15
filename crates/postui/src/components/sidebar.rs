@@ -427,6 +427,12 @@ impl Sidebar {
         self.ensure_visible = true;
     }
 
+    /// Height of the row list as of the last draw, as a page size for
+    /// ctrl+d/u/f/b and PageUp/PageDown (never zero, so a page always moves).
+    fn page(&self) -> i32 {
+        self.last_list_height.max(1) as i32
+    }
+
     /// The path of the parent folder that would contain `row`, if any.
     fn parent_path_of(row: &Row) -> Option<String> {
         match row {
@@ -651,6 +657,46 @@ impl Component for Sidebar {
                 } => Some(Action::ShowRequestError(slug.clone())),
                 Row::Folder { .. } => Some(Action::ToggleSelectedFolder),
             },
+            KeyCode::Char('l') if ev.modifiers.is_empty() => {
+                self.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE))
+            }
+            KeyCode::Char('h') if ev.modifiers.is_empty() => {
+                self.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE))
+            }
+            KeyCode::Char('g') if ev.modifiers.is_empty() => {
+                self.handle_key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE))
+            }
+            KeyCode::Char('G') => self.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE)),
+            KeyCode::Char('d') if ev.modifiers == KeyModifiers::CONTROL => {
+                self.handle_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE))
+            }
+            KeyCode::Char('u') if ev.modifiers == KeyModifiers::CONTROL => {
+                self.handle_key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE))
+            }
+            KeyCode::Char('f') if ev.modifiers == KeyModifiers::CONTROL => {
+                self.move_selection(self.page());
+                Some(Action::Render)
+            }
+            KeyCode::Char('b') if ev.modifiers == KeyModifiers::CONTROL => {
+                self.move_selection(-self.page());
+                Some(Action::Render)
+            }
+            KeyCode::Home => {
+                self.move_selection(i32::MIN / 2);
+                Some(Action::Render)
+            }
+            KeyCode::End => {
+                self.move_selection(i32::MAX / 2);
+                Some(Action::Render)
+            }
+            KeyCode::PageDown => {
+                self.move_selection((self.page() / 2).max(1));
+                Some(Action::Render)
+            }
+            KeyCode::PageUp => {
+                self.move_selection(-(self.page() / 2).max(1));
+                Some(Action::Render)
+            }
             KeyCode::Right => matches!(
                 self.selected_row()?,
                 Row::Folder {
@@ -669,8 +715,10 @@ impl Component for Sidebar {
             KeyCode::Char('n') => Some(Action::PromptNewRequest),
             KeyCode::Char('r') => matches!(self.selected_row()?, Row::Request { .. })
                 .then_some(Action::PromptRenameRequest),
-            KeyCode::Char('d') => matches!(self.selected_row()?, Row::Request { .. })
-                .then_some(Action::DeleteSelectedRequest),
+            KeyCode::Char('d') if ev.modifiers.is_empty() => {
+                matches!(self.selected_row()?, Row::Request { .. })
+                    .then_some(Action::DeleteSelectedRequest)
+            }
             KeyCode::Char('m') => matches!(self.selected_row()?, Row::Request { .. })
                 .then_some(Action::PromptMoveSelectedRequestToSpace),
             _ => None,
@@ -1382,6 +1430,42 @@ mod tests {
             s.handle_key(key(KeyCode::Enter)),
             Some(Action::ToggleSelectedFolder)
         );
+    }
+
+    /// Every vim alias lands in the same state as the key it stands for,
+    /// from the same start (spec 2026-09-15 "Aliases": strict synonyms).
+    #[test]
+    fn vim_aliases_are_strict_synonyms_of_the_arrows() {
+        fn fresh() -> Sidebar {
+            let mut s = Sidebar::default();
+            s.refresh(listing(&["api/a", "api/b", "c", "d", "e", "f"]), "main", &expanded(&["api"]), &[]);
+            s.handle_key(key(KeyCode::Char('j')));
+            s.handle_key(key(KeyCode::Char('j')));
+            s.last_list_height = 4;
+            s
+        }
+        let ctrl = |c: char| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+        let pairs: [(KeyEvent, KeyEvent); 6] = [
+            (key(KeyCode::Char('h')), key(KeyCode::Left)),
+            (key(KeyCode::Char('l')), key(KeyCode::Right)),
+            (key(KeyCode::Char('g')), key(KeyCode::Home)),
+            (key(KeyCode::Char('G')), key(KeyCode::End)),
+            (ctrl('d'), key(KeyCode::PageDown)),
+            (ctrl('u'), key(KeyCode::PageUp)),
+        ];
+        for (alias, canonical) in pairs {
+            let (mut a, mut b) = (fresh(), fresh());
+            let ra = a.handle_key(alias);
+            let rb = b.handle_key(canonical);
+            assert_eq!(ra, rb, "{alias:?} vs {canonical:?}: action");
+            assert_eq!(a.selected, b.selected, "{alias:?} vs {canonical:?}: selection");
+        }
+        // Full pages: ctrl+f/ctrl+b move by the list height.
+        let mut s = fresh();
+        s.handle_key(ctrl('f'));
+        assert_eq!(s.selected, Some(5), "clamped at the last row");
+        s.handle_key(ctrl('b'));
+        assert_eq!(s.selected, Some(1));
     }
 
     #[test]
