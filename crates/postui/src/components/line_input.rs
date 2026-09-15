@@ -5,8 +5,16 @@ use ratatui::text::{Line, Span};
 
 /// A single-line, unicode-safe text input. Cursor position is a char index
 /// (not a byte offset), so operations stay correct with multi-byte
-/// characters. Shared by the URL field, prompt modals (Task 14), and
-/// response search (Task 16).
+/// characters. Shared by every single-line field in the app: the URL
+/// line, table cells, the jq and search bars, modal fields, the filter
+/// pickers, Settings edits and the Variable Manager's fields.
+///
+/// It keeps its own step history while an edit is open (spec 2026-09-15,
+/// "Undo inside a text field"): a run of typed characters, a run of
+/// deletions in one direction, or a single paste/replace is one step;
+/// a caret move or a change of run kind starts a new one. The owner
+/// calls [`Self::end_edit`] when the field closes, and the app history
+/// takes over from there.
 #[derive(Debug, Clone, Default)]
 pub struct LineInput {
     text: String,
@@ -21,7 +29,37 @@ pub struct LineInput {
     /// word-by-word (the body editor's word-sweep behavior). Cleared by
     /// any plain caret placement or edit.
     word_anchor: Option<(usize, usize)>,
+    /// Snapshots taken before each step, newest last.
+    undo: Vec<Snapshot>,
+    /// Snapshots undone, newest last; cleared by any new edit.
+    redo: Vec<Snapshot>,
+    /// The kind of the step in progress, so a same-kind edit extends it
+    /// instead of opening a new one. `None` after a caret move, an undo,
+    /// or a whole-value step.
+    run: Option<EditKind>,
 }
+
+/// Text and caret as they stood before a step.
+#[derive(Debug, Clone)]
+struct Snapshot {
+    text: String,
+    cursor: usize,
+}
+
+/// What kind of edit a step is made of. Consecutive edits of the same
+/// kind (`Insert`, `DeleteBack`, `DeleteForward`) extend one step; a
+/// `Whole` edit (paste, replace-selection, programmatic insert) is always
+/// its own step and never extends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EditKind {
+    Insert,
+    DeleteBack,
+    DeleteForward,
+    Whole,
+}
+
+/// Most snapshots an input keeps; the app history uses the same figure.
+pub(crate) const HISTORY_CAP: usize = 200;
 
 impl LineInput {
     pub fn new(text: &str) -> Self {
@@ -31,6 +69,9 @@ impl LineInput {
             cursor,
             anchor: None,
             word_anchor: None,
+            undo: Vec::new(),
+            redo: Vec::new(),
+            run: None,
         }
     }
 
@@ -46,6 +87,89 @@ impl LineInput {
     /// count. Used by mouse click-to-place. Drops any selection.
     pub fn set_cursor(&mut self, idx: usize) {
         self.cursor = idx.min(self.len_chars());
+        self.anchor = None;
+        self.word_anchor = None;
+        self.break_run();
+    }
+
+    /// Records the state before an edit of `kind`. A same-kind edit
+    /// extends the current run (no new snapshot); anything else opens a
+    /// new step. Any edit drops the redo branch.
+    fn record(&mut self, kind: EditKind) {
+        self.redo.clear();
+        if self.run == Some(kind) && kind != EditKind::Whole {
+            return;
+        }
+        self.undo.push(Snapshot {
+            text: self.text.clone(),
+            cursor: self.cursor,
+        });
+        if self.undo.len() > HISTORY_CAP {
+            self.undo.remove(0);
+        }
+        self.run = if kind == EditKind::Whole { None } else { Some(kind) };
+    }
+
+    /// Ends the current run so the next edit starts a fresh step: called
+    /// on every caret move and selection change.
+    fn break_run(&mut self) {
+        self.run = None;
+    }
+
+    /// Undoes the newest step. `false` when there is nothing to undo.
+    pub fn undo(&mut self) -> bool {
+        let Some(snap) = self.undo.pop() else {
+            return false;
+        };
+        self.redo.push(Snapshot {
+            text: std::mem::replace(&mut self.text, snap.text),
+            cursor: std::mem::replace(&mut self.cursor, snap.cursor),
+        });
+        self.anchor = None;
+        self.word_anchor = None;
+        self.run = None;
+        true
+    }
+
+    /// Redoes the newest undone step. `false` when there is none.
+    pub fn redo(&mut self) -> bool {
+        let Some(snap) = self.redo.pop() else {
+            return false;
+        };
+        self.undo.push(Snapshot {
+            text: std::mem::replace(&mut self.text, snap.text),
+            cursor: std::mem::replace(&mut self.cursor, snap.cursor),
+        });
+        self.anchor = None;
+        self.word_anchor = None;
+        self.run = None;
+        true
+    }
+
+    /// Whether this edit session has recorded anything — what the app
+    /// asks before routing an undo key here rather than to its own
+    /// history.
+    pub fn edited(&self) -> bool {
+        !self.undo.is_empty() || !self.redo.is_empty()
+    }
+
+    /// Closes the edit session: the text stays, the history goes. The
+    /// owner calls this when the field closes (Esc/Enter/blur) so a later
+    /// ctrl+z steps through the app history, never through keystrokes.
+    pub fn end_edit(&mut self) {
+        self.undo.clear();
+        self.redo.clear();
+        self.run = None;
+    }
+
+    /// Replaces the whole text (caret at the end) as one undoable step.
+    /// For owners that reseed a live field — a picker's `seed_filter`, a
+    /// choice cycle — rather than constructing a fresh `LineInput`, which
+    /// would drop the session's history.
+    pub fn set_text(&mut self, text: &str) {
+        self.record(EditKind::Whole);
+        self.text = text.to_string();
+        self.cursor = self.text.chars().count();
         self.anchor = None;
         self.word_anchor = None;
     }
@@ -70,12 +194,14 @@ impl LineInput {
     pub fn clear_selection(&mut self) {
         self.anchor = None;
         self.word_anchor = None;
+        self.break_run();
     }
 
     pub fn select_all(&mut self) {
         self.anchor = Some(0);
         self.cursor = self.len_chars();
         self.word_anchor = None;
+        self.break_run();
     }
 
     /// Selects the word under char index `idx` — the double-click gesture,
@@ -93,6 +219,7 @@ impl LineInput {
         } else {
             self.set_cursor(idx);
         }
+        self.break_run();
     }
 
     /// Anchors a mouse selection at the current cursor; subsequent
@@ -101,6 +228,7 @@ impl LineInput {
     pub fn begin_mouse_selection(&mut self) {
         self.anchor = Some(self.cursor);
         self.word_anchor = None;
+        self.break_run();
     }
 
     /// Extends the live mouse selection to char index `idx`: word-wise
@@ -123,16 +251,19 @@ impl LineInput {
             self.anchor = Some(ws);
             self.cursor = e.max(we);
         }
+        self.break_run();
     }
 
     /// Moves the cursor (clamped) while keeping the selection anchor, so a
     /// mouse drag extends the selection instead of collapsing it.
     pub fn set_cursor_extending(&mut self, idx: usize) {
         self.cursor = idx.min(self.len_chars());
+        self.break_run();
     }
 
     /// Removes the selected text (cursor lands at the selection start).
-    /// Returns whether a selection was removed.
+    /// Returns whether a selection was removed. Never records: the
+    /// caller records the step this deletion belongs to.
     fn delete_selection(&mut self) -> bool {
         let Some((start, end)) = self.selection() else {
             self.anchor = None;
@@ -169,6 +300,7 @@ impl LineInput {
     pub fn delete_back_to(&mut self, idx: usize) {
         let idx = idx.min(self.cursor);
         if idx < self.cursor {
+            self.record(EditKind::DeleteBack);
             let start = self.byte_offset(idx);
             let end = self.byte_offset(self.cursor);
             self.text.replace_range(start..end, "");
@@ -181,6 +313,7 @@ impl LineInput {
     /// count. Used to splice in multi-character text (e.g. a picked
     /// variable token) in one shot, rather than one `handle_key` per char.
     pub fn insert_str(&mut self, s: &str) {
+        self.record(EditKind::Whole);
         let at = self.byte_offset(self.cursor);
         self.text.insert_str(at, s);
         self.cursor += s.chars().count();
@@ -193,9 +326,14 @@ impl LineInput {
     /// [`flatten_paste`], so a multi-line paste can't smuggle an Enter
     /// into a one-line field.
     pub fn paste(&mut self, text: &str) {
+        self.record(EditKind::Whole);
         self.delete_selection();
         let flat = flatten_paste(text);
-        self.insert_str(&flat);
+        let at = self.byte_offset(self.cursor);
+        self.text.insert_str(at, &flat);
+        self.cursor += flat.chars().count();
+        self.anchor = None;
+        self.word_anchor = None;
     }
 
     /// Whether the text *before* the cursor ends with `suffix`. Used to spot
@@ -258,6 +396,11 @@ impl LineInput {
             // 0x08 byte, which crossterm parses as ctrl+h — same word
             // deletion as the enhanced-keys `Backspace + CONTROL` below.
             KeyCode::Char('h') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.record(if self.selection().is_some() {
+                    EditKind::Whole
+                } else {
+                    EditKind::DeleteBack
+                });
                 if !self.delete_selection() {
                     let target = self.word_target(false);
                     if self.cursor > target {
@@ -270,6 +413,11 @@ impl LineInput {
                 true
             }
             KeyCode::Char(c) if key.modifiers.difference(KeyModifiers::SHIFT).is_empty() => {
+                self.record(if self.selection().is_some() {
+                    EditKind::Whole
+                } else {
+                    EditKind::Insert
+                });
                 self.delete_selection();
                 let at = self.byte_offset(self.cursor);
                 self.text.insert(at, c);
@@ -277,6 +425,11 @@ impl LineInput {
                 true
             }
             KeyCode::Backspace => {
+                self.record(if self.selection().is_some() {
+                    EditKind::Whole
+                } else {
+                    EditKind::DeleteBack
+                });
                 if self.delete_selection() {
                     return true;
                 }
@@ -296,6 +449,11 @@ impl LineInput {
                 true
             }
             KeyCode::Delete => {
+                self.record(if self.selection().is_some() {
+                    EditKind::Whole
+                } else {
+                    EditKind::DeleteForward
+                });
                 if self.delete_selection() {
                     return true;
                 }
@@ -307,6 +465,7 @@ impl LineInput {
                 true
             }
             KeyCode::Left => {
+                self.break_run();
                 if shift {
                     self.anchor.get_or_insert(self.cursor);
                     self.cursor = if word {
@@ -328,6 +487,7 @@ impl LineInput {
                 true
             }
             KeyCode::Right => {
+                self.break_run();
                 if shift {
                     self.anchor.get_or_insert(self.cursor);
                     self.cursor = if word {
@@ -349,6 +509,7 @@ impl LineInput {
                 true
             }
             KeyCode::Home => {
+                self.break_run();
                 if shift {
                     self.anchor.get_or_insert(self.cursor);
                 } else {
@@ -358,6 +519,7 @@ impl LineInput {
                 true
             }
             KeyCode::End => {
+                self.break_run();
                 if shift {
                     self.anchor.get_or_insert(self.cursor);
                 } else {
@@ -718,6 +880,117 @@ mod tests {
     fn unhandled_key_returns_false() {
         let mut input = LineInput::new("hi");
         assert!(!input.handle_key(code(KeyCode::Esc)));
+    }
+
+    fn shift(c: KeyCode) -> KeyEvent {
+        KeyEvent::new(c, KeyModifiers::SHIFT)
+    }
+
+    #[test]
+    fn a_typing_run_is_one_undo_step() {
+        let mut i = LineInput::new("");
+        for c in "abc".chars() {
+            i.handle_key(key(c));
+        }
+        assert!(i.edited());
+        assert!(i.undo());
+        assert_eq!(i.text(), "");
+        assert_eq!(i.cursor(), 0);
+        assert!(i.redo());
+        assert_eq!(i.text(), "abc");
+        assert_eq!(i.cursor(), 3);
+    }
+
+    #[test]
+    fn a_cursor_move_splits_the_typing_run() {
+        let mut i = LineInput::new("");
+        for c in "abc".chars() {
+            i.handle_key(key(c));
+        }
+        i.handle_key(code(KeyCode::Left));
+        i.handle_key(key('d'));
+        assert_eq!(i.text(), "abdc");
+        assert!(i.undo());
+        assert_eq!(i.text(), "abc", "only the run after the move comes off");
+        assert_eq!(i.cursor(), 2, "the caret goes back to where that run began");
+        assert!(i.undo());
+        assert_eq!(i.text(), "");
+    }
+
+    #[test]
+    fn backspaces_and_typing_are_separate_runs_and_a_paste_is_its_own() {
+        let mut i = LineInput::new("");
+        for c in "abc".chars() {
+            i.handle_key(key(c));
+        }
+        i.handle_key(code(KeyCode::Backspace));
+        i.handle_key(code(KeyCode::Backspace));
+        assert_eq!(i.text(), "a");
+        i.paste("xy");
+        assert_eq!(i.text(), "axy");
+        assert!(i.undo());
+        assert_eq!(i.text(), "a", "the paste comes off alone");
+        assert!(i.undo());
+        assert_eq!(i.text(), "abc", "the two backspaces come off together");
+        assert!(i.undo());
+        assert_eq!(i.text(), "");
+        assert!(!i.undo(), "nothing left");
+    }
+
+    #[test]
+    fn typing_over_a_selection_is_one_step() {
+        let mut i = LineInput::new("hello");
+        i.set_cursor(0);
+        for _ in 0..5 {
+            i.handle_key(shift(KeyCode::Right));
+        }
+        i.handle_key(key('x'));
+        assert_eq!(i.text(), "x");
+        assert!(i.undo());
+        assert_eq!(i.text(), "hello");
+    }
+
+    #[test]
+    fn a_new_edit_clears_redo_and_end_edit_clears_everything() {
+        let mut i = LineInput::new("");
+        i.handle_key(key('a'));
+        assert!(i.undo());
+        assert!(i.redo());
+        assert!(i.undo());
+        i.handle_key(key('b'));
+        assert!(!i.redo(), "a fresh edit after undo drops the redo branch");
+        assert_eq!(i.text(), "b");
+        i.end_edit();
+        assert!(!i.edited());
+        assert!(!i.undo());
+        assert_eq!(i.text(), "b", "end_edit keeps the text, drops the history");
+    }
+
+    #[test]
+    fn set_text_is_one_undoable_step() {
+        let mut i = LineInput::new("old");
+        i.set_text("new");
+        assert_eq!(i.text(), "new");
+        assert_eq!(i.cursor(), 3);
+        assert!(i.undo());
+        assert_eq!(i.text(), "old");
+    }
+
+    #[test]
+    fn the_history_is_capped() {
+        let mut i = LineInput::new("");
+        for n in 0..(HISTORY_CAP + 10) {
+            i.handle_key(key('a'));
+            // A move between each char makes each char its own step.
+            i.handle_key(code(KeyCode::Left));
+            i.handle_key(code(KeyCode::End));
+            let _ = n;
+        }
+        let mut undone = 0;
+        while i.undo() {
+            undone += 1;
+        }
+        assert_eq!(undone, HISTORY_CAP);
     }
 
     fn line_text(line: &Line<'static>) -> String {
