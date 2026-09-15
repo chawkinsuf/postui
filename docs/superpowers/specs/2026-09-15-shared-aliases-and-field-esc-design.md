@@ -270,6 +270,7 @@ rather than letting them fall through to the global keymap.
 | Manage lists | ↑/↓ | — | first/last | half page | full page |
 | Variable Manager list | ↑/↓ | ←/→: list⇄grid | first/last | half page | full page |
 | Variable Manager grid | ↑/↓ | ←/→ | first/last row | — | — |
+| Variable Manager form | ↑/↓ | ←: back to the list | first/last field | — | — |
 | Settings tab | ↑/↓ | ←/→: aim a Files row's buttons | first/last row | — | — |
 | Context menu / dropdown | ↑/↓ | — | first/last | — | — |
 | Form modal button row | — | ←/→: aim | — | — | — |

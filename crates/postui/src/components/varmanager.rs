@@ -997,12 +997,12 @@ impl VarManager {
         chips
     }
 
-    /// Keys while the variable form is the focus stop: `Up`/`Down` move
-    /// the field cursor over the fields the form shows (the env-value row
-    /// only exists with an env active), `Enter` starts the same in-place
-    /// edit a click does, and `Esc`/`BackTab`/`Left` hand the keyboard
-    /// back to the left list — the grid's leave-the-inner-thing-first
-    /// rhythm exactly.
+    /// Keys while the variable form is the focus stop: `Up`/`Down` (`k`/`j`)
+    /// move the field cursor over the fields the form shows (the env-value
+    /// row only exists with an env active), `Home`/`End` (`g`/`G`) jump to
+    /// the first/last field, `Enter` starts the same in-place edit a click
+    /// does, and `Esc`/`BackTab`/`Left` (`h`) hand the keyboard back to the
+    /// left list — the grid's leave-the-inner-thing-first rhythm exactly.
     fn handle_form_focus_key(
         &mut self,
         ev: KeyEvent,
@@ -1025,17 +1025,28 @@ impl VarManager {
             .position(|f| *f == self.form_cursor)
             .unwrap_or(0);
         self.form_cursor = fields[at];
+        // The vim letters are strict synonyms of the arrows here, as in
+        // the grid: no field is live while the cursor rests, so they are
+        // free (spec 2026-09-15).
         match ev.code {
-            KeyCode::Esc | KeyCode::BackTab | KeyCode::Left => {
+            KeyCode::Esc | KeyCode::BackTab | KeyCode::Left | KeyCode::Char('h') => {
                 self.focus = VmFocus::List;
                 None
             }
-            KeyCode::Up => {
+            KeyCode::Up | KeyCode::Char('k') => {
                 self.form_cursor = fields[at.saturating_sub(1)];
                 None
             }
-            KeyCode::Down => {
+            KeyCode::Down | KeyCode::Char('j') => {
                 self.form_cursor = fields[(at + 1).min(fields.len() - 1)];
+                None
+            }
+            KeyCode::Home | KeyCode::Char('g') => {
+                self.form_cursor = fields[0];
+                None
+            }
+            KeyCode::End | KeyCode::Char('G') => {
+                self.form_cursor = fields[fields.len() - 1];
                 None
             }
             KeyCode::Enter => {
@@ -1061,6 +1072,14 @@ impl VarManager {
                 Some(Action::Render)
             }
             KeyCode::Char('q') => Some(Action::Quit),
+            KeyCode::Char('u') if ev.modifiers.is_empty() => Some(Action::Undo),
+            // Claimed here for the same reason as in the list and grid:
+            // this screen swallows plain keys it does not name.
+            KeyCode::Char(':')
+                if !ev.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                Some(Action::OpenPalette)
+            }
             _ => None,
         }
     }
@@ -2996,6 +3015,79 @@ fields = ["user_id", "customer_id"]
             assert_eq!(a.grid.cursor, b.grid.cursor, "{alias:?}");
             assert_eq!(a.focus, b.focus, "{alias:?}");
         }
+    }
+
+    /// The variable form is a resting-cursor stop like the grid: while no
+    /// field is under edit the letters are free, so the vim motions are
+    /// strict synonyms of the arrows there too (spec 2026-09-15).
+    #[test]
+    fn vim_aliases_are_strict_synonyms_in_the_variable_form() {
+        let (_dir, ctx) = fixture();
+        let pairs = [
+            (key(KeyCode::Char('j')), key(KeyCode::Down)),
+            (key(KeyCode::Char('k')), key(KeyCode::Up)),
+            (key(KeyCode::Char('h')), key(KeyCode::Left)),
+            (key(KeyCode::Char('g')), key(KeyCode::Home)),
+            (
+                KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT),
+                key(KeyCode::End),
+            ),
+        ];
+        for (alias, canonical) in pairs {
+            let (mut a, mut b) = (VarManager::default(), VarManager::default());
+            for vm in [&mut a, &mut b] {
+                select_var(vm, &ctx, "base_url");
+                vm.focus = VmFocus::Form;
+                vm.form_cursor = VmField::Default;
+            }
+            assert_eq!(
+                a.handle_key(alias, &ctx, None),
+                b.handle_key(canonical, &ctx, None),
+                "{alias:?}"
+            );
+            assert_eq!(a.form_cursor, b.form_cursor, "{alias:?}");
+            assert_eq!(a.focus, b.focus, "{alias:?}");
+        }
+    }
+
+    /// `g`/`G` and Home/End jump the form's field cursor to its first and
+    /// last field (the env value row is there because the fixture has an
+    /// active environment).
+    #[test]
+    fn form_home_and_end_jump_to_the_first_and_last_field() {
+        let (_dir, ctx) = fixture();
+        let mut vm = VarManager::default();
+        select_var(&mut vm, &ctx, "base_url");
+        vm.focus = VmFocus::Form;
+        vm.form_cursor = VmField::Default;
+        vm.handle_key(key(KeyCode::Char('g')), &ctx, None);
+        assert_eq!(vm.form_cursor, VmField::Description);
+        vm.handle_key(
+            KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT),
+            &ctx,
+            None,
+        );
+        assert_eq!(vm.form_cursor, VmField::EnvValue);
+        assert_eq!(vm.focus, VmFocus::Form);
+    }
+
+    /// The Manage screen swallows unclaimed plain keys, so the form has to
+    /// claim the two global aliases itself, as the list and grid do.
+    #[test]
+    fn u_and_colon_reach_undo_and_the_palette_from_the_variable_form() {
+        let (_dir, ctx) = fixture();
+        let mut vm = VarManager::default();
+        select_var(&mut vm, &ctx, "base_url");
+        vm.focus = VmFocus::Form;
+        assert_eq!(
+            vm.handle_key(key(KeyCode::Char('u')), &ctx, None),
+            Some(Action::Undo)
+        );
+        assert_eq!(
+            vm.handle_key(key(KeyCode::Char(':')), &ctx, None),
+            Some(Action::OpenPalette)
+        );
+        assert_eq!(vm.focus, VmFocus::Form);
     }
 
     #[test]
