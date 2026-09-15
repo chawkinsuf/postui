@@ -466,6 +466,25 @@ fn ctrl_d_pages_the_manage_list_through_the_router() {
     assert_ne!(app.manage.list.cursor, 0, "ctrl+d must move the cursor");
 }
 
+/// ctrl+d is unbound at the global keymap, so it must reach the focused
+/// Variable Manager's own `handle_key` through the app router (app.rs
+/// "step 5") — the Variables tab has no `manage.list` of its own, unlike
+/// the two tests above.
+#[test]
+fn ctrl_d_pages_the_variable_manager_list_through_the_router() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::OpenManage {
+        tab: Some(crate::components::manage::ManageTab::Variables),
+    });
+    app.sync_varmanager();
+    app.varmanager.left_cursor = 0;
+    app.handle_key(ctrl('d'));
+    assert_ne!(app.varmanager.left_cursor, 0, "ctrl+d must move the cursor");
+}
+
 #[test]
 fn tick_requests_no_redraw_when_idle() {
     let mut app = App::new_for_test();
@@ -11198,7 +11217,7 @@ fn toggle_secret_is_refused_for_a_group() {
 // -- every structural op is reachable both by key and by a painted chip --
 
 #[test]
-fn keyboard_n_and_g_open_the_new_var_and_new_group_prompts() {
+fn keyboard_n_and_a_open_the_new_var_and_new_group_prompts() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -11218,7 +11237,7 @@ fn keyboard_n_and_g_open_the_new_var_and_new_group_prompts() {
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
-    app.handle_key(plain('g'));
+    app.handle_key(plain('a'));
     assert!(matches!(
         app.modals.top(),
         Some(Modal::Prompt {
@@ -15362,7 +15381,7 @@ fn vm_footer_drops_chips_with_no_target() {
         .iter()
         .map(|(k, _, _)| *k)
         .collect();
-    assert_eq!(keys, vec!["n", "g"]);
+    assert_eq!(keys, vec!["n", "a"]);
 
     // Grid focus with the cursor on the ghost row: only "new option".
     goto_group(&mut app, "user");

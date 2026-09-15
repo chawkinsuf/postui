@@ -52,7 +52,7 @@ pub enum PromptKind {
     NewVariableAndInsert {
         completing: bool,
     },
-    /// `g` / the `+ Selector` button: a single name prompt. Confirming
+    /// `a` / the `+ Selector` button: a single name prompt. Confirming
     /// declares a one-field selector whose field is the name itself (the
     /// common selection-set shape); more fields grow through the fields
     /// editor afterward. `shared` makes it a shared selector — same

@@ -678,7 +678,7 @@ pub enum Action {
     // -- Variable Manager structural actions (spec §3.4/§5 action list) --
     /// `n` / the `+ Variable` button: open the new-variable name prompt.
     PromptNewVar,
-    /// `g` / the `+ Group` button: open the new-selector prompt (name + a
+    /// `a` / the `+ Group` button: open the new-selector prompt (name + a
     /// comma-separated field list).
     PromptNewSelector,
     /// `e`/`F2` on a variable row, or its context menu's "Rename…": open

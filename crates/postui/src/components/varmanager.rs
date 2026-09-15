@@ -27,7 +27,7 @@ use postui_core::model::HttpRequest;
 use postui_core::project::Project;
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::Line;
@@ -108,7 +108,7 @@ pub enum VarStructOp {
         name: String,
         description: Option<String>,
     },
-    /// A new selector and its field list (`+ Group` / `g`). Create-or-update:
+    /// A new selector and its field list (`+ Group` / `a`). Create-or-update:
     /// `varedit::upsert_selector` is the same verb either way. `shared`
     /// makes it a shared selector — options in variables.toml, identical
     /// in every environment.
@@ -990,7 +990,7 @@ impl VarManager {
                     ));
                 }
                 chips.push(("n", "new variable", Some(Action::PromptNewVar)));
-                chips.push(("g", "new selector", Some(Action::PromptNewSelector)));
+                chips.push(("a", "new selector", Some(Action::PromptNewSelector)));
                 chips
             };
         chips.retain(|(_, _, a)| a.is_some());
@@ -1122,6 +1122,34 @@ impl VarManager {
         }
     }
 
+    /// Repeats [`Self::move_cursor`] `n` times in `dir` — the paging keys'
+    /// shared body (ctrl+d/u/f/b and PageUp/PageDown).
+    fn move_cursor_n(&mut self, dir: i32, n: usize) {
+        for _ in 0..n {
+            self.move_cursor(dir);
+        }
+    }
+
+    /// Height of the left list as of the last draw, as a page size for
+    /// `move_cursor_n` (never zero, so a page always moves).
+    fn page(&self) -> usize {
+        self.visible_rows.max(1)
+    }
+
+    /// `g`/Home and `G`/End: jumps to the first or last selectable row,
+    /// mirroring `move_cursor`'s own skip of section headers.
+    fn jump_to_edge(&mut self, last: bool) {
+        let found = if last {
+            self.left_rows.iter().rposition(|r| r.is_stop())
+        } else {
+            self.left_rows.iter().position(|r| r.is_stop())
+        };
+        if let Some(i) = found {
+            self.select_row(i);
+            self.ensure_visible = true;
+        }
+    }
+
     /// Handles a key while the Manager screen is open. `App::handle_key`
     /// routes every key here once an open modal and a modified global
     /// shortcut (e.g. ctrl+p for the palette) have had first refusal, and
@@ -1184,16 +1212,52 @@ impl VarManager {
             // manager keeps the app-wide quit (the footer's quit chip
             // advertises it); live edits never reach here.
             KeyCode::Char('q') => return Some(Action::Quit),
-            KeyCode::Up => {
+            KeyCode::Char('k') | KeyCode::Up => {
                 self.move_cursor(-1);
                 return None;
             }
-            KeyCode::Down => {
+            KeyCode::Char('j') | KeyCode::Down => {
                 self.move_cursor(1);
                 return None;
             }
+            // `g`/Home and `G`/End jump to the first/last selectable row.
+            // `Home` shares the guard so a modified combo (there is none
+            // today, but the intent is "plain jump") never falls through
+            // here silently.
+            KeyCode::Char('g') | KeyCode::Home if ev.modifiers.is_empty() => {
+                self.jump_to_edge(false);
+                return None;
+            }
+            KeyCode::Char('G') | KeyCode::End => {
+                self.jump_to_edge(true);
+                return None;
+            }
+            KeyCode::PageDown => {
+                self.move_cursor_n(1, (self.page() / 2).max(1));
+                return None;
+            }
+            KeyCode::PageUp => {
+                self.move_cursor_n(-1, (self.page() / 2).max(1));
+                return None;
+            }
+            KeyCode::Char('d') if ev.modifiers == KeyModifiers::CONTROL => {
+                self.move_cursor_n(1, (self.page() / 2).max(1));
+                return None;
+            }
+            KeyCode::Char('u') if ev.modifiers == KeyModifiers::CONTROL => {
+                self.move_cursor_n(-1, (self.page() / 2).max(1));
+                return None;
+            }
+            KeyCode::Char('f') if ev.modifiers == KeyModifiers::CONTROL => {
+                self.move_cursor_n(1, self.page());
+                return None;
+            }
+            KeyCode::Char('b') if ev.modifiers == KeyModifiers::CONTROL => {
+                self.move_cursor_n(-1, self.page());
+                return None;
+            }
             // Into the grid or the form, whichever the detail pane shows.
-            KeyCode::Right | KeyCode::Tab => {
+            KeyCode::Char('l') | KeyCode::Right | KeyCode::Tab => {
                 if self.form.editing.is_none() && self.grid.editing.is_none() {
                     match &self.detail {
                         VmDetail::Group(g)
@@ -1234,7 +1298,7 @@ impl VarManager {
         }
         match ev.code {
             KeyCode::Char('n') => Some(Action::PromptNewVar),
-            KeyCode::Char('g') => Some(Action::PromptNewSelector),
+            KeyCode::Char('a') => Some(Action::PromptNewSelector),
             KeyCode::Char('e') | KeyCode::F(2) => self.rename_action(),
             KeyCode::Char('d') | KeyCode::Delete => Some(Action::DeleteVar {
                 name: self.selected_row()?.name()?.to_string(),
@@ -1280,15 +1344,15 @@ impl VarManager {
                 self.focus = VmFocus::List;
                 None
             }
-            KeyCode::Up => {
+            KeyCode::Char('k') | KeyCode::Up => {
                 *row = row.saturating_sub(1);
                 None
             }
-            KeyCode::Down => {
+            KeyCode::Char('j') | KeyCode::Down => {
                 *row = (*row + 1).min(last_row);
                 None
             }
-            KeyCode::Left => {
+            KeyCode::Char('h') | KeyCode::Left => {
                 if *col == 0 {
                     self.focus = VmFocus::List;
                 } else {
@@ -1296,8 +1360,16 @@ impl VarManager {
                 }
                 None
             }
-            KeyCode::Right | KeyCode::Tab => {
+            KeyCode::Char('l') | KeyCode::Right | KeyCode::Tab => {
                 *col = (*col + 1).min(last_col);
+                None
+            }
+            KeyCode::Char('g') | KeyCode::Home => {
+                *row = 0;
+                None
+            }
+            KeyCode::Char('G') | KeyCode::End => {
+                *row = last_row;
                 None
             }
             KeyCode::Enter => {
@@ -1361,7 +1433,7 @@ impl VarManager {
                 name: self.entry_at(ctx, self.grid.cursor.0)?,
             }),
             KeyCode::Char('n') => Some(Action::PromptNewVar),
-            KeyCode::Char('g') => Some(Action::PromptNewSelector),
+            KeyCode::Char('a') => Some(Action::PromptNewSelector),
             KeyCode::Char('q') => Some(Action::Quit),
             KeyCode::Char('u') if ev.modifiers.is_empty() => Some(Action::Undo),
             _ => None,
@@ -2834,6 +2906,79 @@ fields = ["user_id", "customer_id"]
     }
 
     #[test]
+    fn vim_aliases_are_strict_synonyms_in_the_left_list() {
+        let (_dir, ctx) = fixture_with_shared_selector();
+        let ctrl = |c: char| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+        let pairs = [
+            (key(KeyCode::Char('j')), key(KeyCode::Down)),
+            (key(KeyCode::Char('k')), key(KeyCode::Up)),
+            (key(KeyCode::Char('g')), key(KeyCode::Home)),
+            (key(KeyCode::Char('G')), key(KeyCode::End)),
+            (ctrl('d'), key(KeyCode::PageDown)),
+            (ctrl('u'), key(KeyCode::PageUp)),
+            (key(KeyCode::Char('l')), key(KeyCode::Right)),
+        ];
+        for (alias, canonical) in pairs {
+            let (mut a, mut b) = (VarManager::default(), VarManager::default());
+            render(&mut a, &ctx);
+            render(&mut b, &ctx);
+            a.select_row(2);
+            b.select_row(2);
+            assert_eq!(
+                a.handle_key(alias, &ctx, None),
+                b.handle_key(canonical, &ctx, None),
+                "{alias:?}"
+            );
+            assert_eq!(a.left_cursor, b.left_cursor, "{alias:?}");
+            assert_eq!(a.focus, b.focus, "{alias:?}");
+        }
+    }
+
+    #[test]
+    fn a_opens_the_new_selector_prompt_and_g_no_longer_does() {
+        let (_dir, ctx) = fixture_with_shared_selector();
+        let mut vm = VarManager::default();
+        render(&mut vm, &ctx);
+        assert_eq!(
+            vm.handle_key(key(KeyCode::Char('a')), &ctx, None),
+            Some(Action::PromptNewSelector)
+        );
+        assert_ne!(
+            vm.handle_key(key(KeyCode::Char('g')), &ctx, None),
+            Some(Action::PromptNewSelector)
+        );
+    }
+
+    #[test]
+    fn vim_aliases_are_strict_synonyms_in_the_grid() {
+        let (_dir, ctx) = fixture_with_shared_selector();
+        let pairs = [
+            (key(KeyCode::Char('j')), key(KeyCode::Down)),
+            (key(KeyCode::Char('k')), key(KeyCode::Up)),
+            (key(KeyCode::Char('h')), key(KeyCode::Left)),
+            (key(KeyCode::Char('l')), key(KeyCode::Right)),
+            (key(KeyCode::Char('g')), key(KeyCode::Home)),
+            (key(KeyCode::Char('G')), key(KeyCode::End)),
+        ];
+        for (alias, canonical) in pairs {
+            let (mut a, mut b) = (VarManager::default(), VarManager::default());
+            for vm in [&mut a, &mut b] {
+                render(vm, &ctx);
+                select_group(vm, &ctx, "creds");
+                vm.focus = VmFocus::Grid;
+                vm.grid.cursor = (1, 1);
+            }
+            assert_eq!(
+                a.handle_key(alias, &ctx, None),
+                b.handle_key(canonical, &ctx, None),
+                "{alias:?}"
+            );
+            assert_eq!(a.grid.cursor, b.grid.cursor, "{alias:?}");
+            assert_eq!(a.focus, b.focus, "{alias:?}");
+        }
+    }
+
+    #[test]
     fn the_detail_pane_asks_for_a_selection_until_a_row_is_open() {
         let (_dir, ctx) = fixture();
         let mut vm = VarManager::default();
@@ -2855,7 +3000,7 @@ fields = ["user_id", "customer_id"]
             Some(Action::PromptNewVar)
         );
         assert_eq!(
-            vm.handle_key(key(KeyCode::Char('g')), &ctx, None),
+            vm.handle_key(key(KeyCode::Char('a')), &ctx, None),
             Some(Action::PromptNewSelector)
         );
 
@@ -3613,7 +3758,7 @@ fields = ["user_id", "customer_id"]
             .iter()
             .map(|(k, _, _)| *k)
             .collect();
-        assert_eq!(keys, vec!["d", "e", "m", "n", "g"]);
+        assert_eq!(keys, vec!["d", "e", "m", "n", "a"]);
 
         // The grid's strip: the same verb order, and `paste` at the far
         // right — it comes and goes with what is copied, and from there it
