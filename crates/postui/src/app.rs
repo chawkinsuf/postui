@@ -2322,11 +2322,14 @@ impl App {
     /// the Settings tab's edit, which that one special-cases away because
     /// its input is private.
     pub(crate) fn field_open(&self) -> bool {
-        if self.settings_edit_live() {
-            return true;
-        }
+        // Modals first, in the same order as `open_text_field_mut`: a
+        // modal over the Settings tab captures the keyboard, and with a
+        // form modal's focus on its button row no field is open at all.
         if !self.modals.is_empty() {
             return self.modals.focused_input().is_some();
+        }
+        if self.settings_edit_live() {
+            return true;
         }
         match self.screen {
             Screen::Manage => {
@@ -2362,11 +2365,12 @@ impl App {
     /// Whether an open text field has keystrokes of its own to undo — the
     /// condition under which the undo keys belong to it.
     pub(crate) fn open_text_field_edited(&mut self) -> bool {
-        if self.settings_edit_live() {
-            return self.settings.field_edited();
-        }
+        // Modals first, matching `open_text_field_mut` and `field_open`.
         if !self.modals.is_empty() {
             return self.modals.field_edited();
+        }
+        if self.settings_edit_live() {
+            return self.settings.field_edited();
         }
         self.open_text_field_mut().is_some_and(|f| f.edited())
     }
@@ -9864,10 +9868,11 @@ impl App {
                 }
                 return true;
             }
-            // A variable-form field under edit owns the keyboard: `Esc`
-            // reverts, `Enter` commits (through `commit_var_form`, which
-            // needs the mutable project access `VarManager::handle_key`'s
-            // shared `&Project` can't give it), everything else is
+            // A variable-form field under edit owns the keyboard (the
+            // field rule): `Esc` and `Enter` both commit through
+            // `commit_var_form` -- which needs the mutable project access
+            // `VarManager::handle_key`'s shared `&Project` can't give it
+            // -- and discard is undo, not Esc. Everything else is
             // forwarded straight to its `LineInput`.
             if self.screen == Screen::Manage && self.varmanager.form.editing.is_some() {
                 return self.handle_var_form_key(ev);
@@ -10005,7 +10010,10 @@ impl App {
                     .move_cursor(i32::MAX / 2, self.ui_settings_are_editable());
                 true
             }
-            KeyCode::Char('G') if ev.modifiers.is_empty() => {
+            // Unguarded, like every other surface's `G`: crossterm reports
+            // an uppercase char with `SHIFT` set, so an `is_empty()` guard
+            // would never match in a real terminal.
+            KeyCode::Char('G') => {
                 self.settings
                     .move_cursor(i32::MAX / 2, self.ui_settings_are_editable());
                 true
@@ -10026,6 +10034,13 @@ impl App {
             }
             KeyCode::Enter | KeyCode::Char(' ') => self.activate_settings_row(),
             KeyCode::Char('u') if ev.modifiers.is_empty() => self.update(Action::Undo),
+            // The Settings tab swallows unclaimed plain keys too, so `:`
+            // is claimed here to stay a synonym of ctrl+p.
+            KeyCode::Char(':')
+                if !ev.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                self.update(Action::OpenPalette)
+            }
             _ => true,
         }
     }

@@ -255,6 +255,11 @@ character.
 Both are named actions already, so they appear in `keys.toml` as extra
 combos and can be unbound.
 
+The Manage screens swallow every plain key they do not name, so they
+claim `:` and `u` themselves — in `manage_list`'s `handle_key`, the
+Variable Manager's list and grid handlers, and `handle_settings_key` —
+rather than letting them fall through to the global keymap.
+
 ### Per surface
 
 | Surface | j/k | h/l | g/G | ctrl+d / ctrl+u | ctrl+f / ctrl+b |

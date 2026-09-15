@@ -1104,7 +1104,10 @@ mod tests {
         let ctrl = |c: char| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
         let pairs = [
             (key(KeyCode::Char('g')), key(KeyCode::Home)),
-            (key(KeyCode::Char('G')), key(KeyCode::End)),
+            (
+                KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT),
+                key(KeyCode::End),
+            ),
             (ctrl('f'), key(KeyCode::PageDown)),
             (ctrl('b'), key(KeyCode::PageUp)),
         ];

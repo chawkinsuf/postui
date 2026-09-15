@@ -1649,6 +1649,10 @@ impl App {
             // anything.
             Hit::ModalBody => false,
             Hit::ModalField(i) => {
+                // A click into the modal's body takes the keyboard off
+                // the button row, even when the field it lands on has no
+                // text box of its own to focus.
+                self.modals.leave_button_row();
                 if let Some(crate::components::modal::Modal::MultiPrompt {
                     focus,
                     fields,
@@ -1674,6 +1678,7 @@ impl App {
                 false
             }
             Hit::ModalChoiceArrow { field, dir } => {
+                self.modals.leave_button_row();
                 if let Some(crate::components::modal::Modal::MultiPrompt {
                     focus,
                     fields,
@@ -1720,6 +1725,7 @@ impl App {
                 self.update(Action::Render)
             }
             Hit::ModalRowToggle(i) => {
+                self.modals.leave_button_row();
                 if let Some(crate::components::modal::Modal::FieldsEditor(state)) =
                     self.modals.top_mut()
                 {
@@ -1729,6 +1735,7 @@ impl App {
                 false
             }
             Hit::ModalAddRow => {
+                self.modals.leave_button_row();
                 if let Some(crate::components::modal::Modal::FieldsEditor(state)) =
                     self.modals.top_mut()
                 {
@@ -1738,6 +1745,7 @@ impl App {
                 false
             }
             Hit::ModalSharedToggle => {
+                self.modals.leave_button_row();
                 if let Some(crate::components::modal::Modal::Prompt {
                     kind: crate::components::modal::PromptKind::NewSelector { shared, on_toggle },
                     ..

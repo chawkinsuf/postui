@@ -321,6 +321,14 @@ impl ManageList {
                 Some(Self::delete_action(tab, self.selected(tab, ctx)?))
             }
             KeyCode::Char('u') if ev.modifiers.is_empty() => Some(Action::Undo),
+            // A Manage screen swallows unclaimed plain keys, so the two
+            // global aliases (`u` for undo, `:` for the palette) have to
+            // be claimed here to stay strict synonyms.
+            KeyCode::Char(':')
+                if !ev.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                Some(Action::OpenPalette)
+            }
             _ => None,
         }
     }
@@ -799,7 +807,10 @@ mod tests {
             (key(KeyCode::Char('j')), key(KeyCode::Down)),
             (key(KeyCode::Char('k')), key(KeyCode::Up)),
             (key(KeyCode::Char('g')), key(KeyCode::Home)),
-            (key(KeyCode::Char('G')), key(KeyCode::End)),
+            (
+                KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT),
+                key(KeyCode::End),
+            ),
             (ctrl('d'), key(KeyCode::PageDown)),
             (ctrl('u'), key(KeyCode::PageUp)),
         ];

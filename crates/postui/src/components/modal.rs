@@ -688,19 +688,20 @@ impl Modal {
 pub struct ModalStack {
     stack: Vec<Modal>,
     /// `Some` while the top form modal's focus is on its button row —
-    /// where Esc from a field lands. Cleared by any push or pop, by a
-    /// click into a field, and by `↑`.
+    /// where Esc from a field lands. Cleared by any push or pop, by any
+    /// click that moves focus into the modal's body, and by `↑` — all
+    /// through `leave_button_row`.
     button_focus: Option<FormButton>,
 }
 
 impl ModalStack {
     pub fn push(&mut self, modal: Modal) {
-        self.button_focus = None;
+        self.leave_button_row();
         self.stack.push(modal);
     }
 
     pub fn pop(&mut self) -> Option<Modal> {
-        self.button_focus = None;
+        self.leave_button_row();
         self.stack.pop()
     }
 
@@ -838,7 +839,7 @@ impl ModalStack {
     /// the top modal has no text box `i`.
     pub fn focus_input(&mut self, i: usize) -> Option<&mut LineInput> {
         // A click into a text box takes focus off the button row.
-        self.button_focus = None;
+        self.leave_button_row();
         match self.stack.last_mut()? {
             // Clicking the name field takes focus off the shared toggle.
             Modal::Prompt { input, kind, .. } if i == 0 => {
@@ -884,6 +885,14 @@ impl ModalStack {
     /// focus sits on its Cancel/Confirm row rather than in a field.
     pub fn button_focus(&self) -> Option<FormButton> {
         self.button_focus
+    }
+
+    /// Takes the keyboard off the button row, leaving the modal's own
+    /// field focus to own it again. The one place the aim is cleared:
+    /// every click that moves focus into a modal's body calls it, and
+    /// so does `focus_input`.
+    pub fn leave_button_row(&mut self) {
+        self.button_focus = None;
     }
 
     /// The top modal's cancel: closes with no actions — except the
@@ -1489,7 +1498,10 @@ impl ModalStack {
                     }
                     None // swallowed: modals capture all input
                 }
-                KeyCode::Char('G') if key.modifiers.is_empty() => {
+                // Unguarded, like every other surface's `G`: crossterm
+                // reports an uppercase char with `SHIFT` set, so an
+                // `is_empty()` guard would never match in a real terminal.
+                KeyCode::Char('G') => {
                     if let Some(i) = state.last_enabled() {
                         state.selected = i;
                     }
@@ -3738,7 +3750,10 @@ mod tests {
             (key(KeyCode::Char('j')), key(KeyCode::Down)),
             (key(KeyCode::Char('k')), key(KeyCode::Up)),
             (key(KeyCode::Char('g')), key(KeyCode::Home)),
-            (key(KeyCode::Char('G')), key(KeyCode::End)),
+            (
+                KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT),
+                key(KeyCode::End),
+            ),
         ];
         for (alias, canonical) in pairs {
             let (mut a, mut b) = (menu(), menu());

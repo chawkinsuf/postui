@@ -1310,6 +1310,13 @@ impl VarManager {
                 _ => None,
             },
             KeyCode::Char('u') if ev.modifiers.is_empty() => Some(Action::Undo),
+            // Claimed here for the same reason as in `manage_list`: this
+            // screen swallows plain keys it does not name.
+            KeyCode::Char(':')
+                if !ev.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                Some(Action::OpenPalette)
+            }
             _ => None,
         }
     }
@@ -1436,6 +1443,13 @@ impl VarManager {
             KeyCode::Char('a') => Some(Action::PromptNewSelector),
             KeyCode::Char('q') => Some(Action::Quit),
             KeyCode::Char('u') if ev.modifiers.is_empty() => Some(Action::Undo),
+            // Claimed here for the same reason as in `manage_list`: this
+            // screen swallows plain keys it does not name.
+            KeyCode::Char(':')
+                if !ev.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                Some(Action::OpenPalette)
+            }
             _ => None,
         }
     }
@@ -2913,7 +2927,10 @@ fields = ["user_id", "customer_id"]
             (key(KeyCode::Char('j')), key(KeyCode::Down)),
             (key(KeyCode::Char('k')), key(KeyCode::Up)),
             (key(KeyCode::Char('g')), key(KeyCode::Home)),
-            (key(KeyCode::Char('G')), key(KeyCode::End)),
+            (
+                KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT),
+                key(KeyCode::End),
+            ),
             (ctrl('d'), key(KeyCode::PageDown)),
             (ctrl('u'), key(KeyCode::PageUp)),
             (key(KeyCode::Char('l')), key(KeyCode::Right)),
@@ -2958,7 +2975,10 @@ fields = ["user_id", "customer_id"]
             (key(KeyCode::Char('h')), key(KeyCode::Left)),
             (key(KeyCode::Char('l')), key(KeyCode::Right)),
             (key(KeyCode::Char('g')), key(KeyCode::Home)),
-            (key(KeyCode::Char('G')), key(KeyCode::End)),
+            (
+                KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT),
+                key(KeyCode::End),
+            ),
         ];
         for (alias, canonical) in pairs {
             let (mut a, mut b) = (VarManager::default(), VarManager::default());

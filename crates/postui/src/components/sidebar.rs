@@ -1449,7 +1449,10 @@ mod tests {
             (key(KeyCode::Char('h')), key(KeyCode::Left)),
             (key(KeyCode::Char('l')), key(KeyCode::Right)),
             (key(KeyCode::Char('g')), key(KeyCode::Home)),
-            (key(KeyCode::Char('G')), key(KeyCode::End)),
+            (
+                KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT),
+                key(KeyCode::End),
+            ),
             (ctrl('d'), key(KeyCode::PageDown)),
             (ctrl('u'), key(KeyCode::PageUp)),
         ];

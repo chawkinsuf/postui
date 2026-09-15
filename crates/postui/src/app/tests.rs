@@ -435,6 +435,50 @@ fn u_undoes_from_every_list_surface() {
     assert_eq!(app.history.undo_len(), steps - 1, "manage list: u is undo");
 }
 
+/// `:` is a global alias of ctrl+p, and the Manage screens swallow every
+/// plain key they do not claim — so, like `u`, each of their four key
+/// handlers has to claim `:` itself or the alias stops being strict there.
+/// Pressed as a terminal sends it: shift+semicolon carries `SHIFT`.
+#[test]
+fn colon_opens_the_palette_from_every_manage_surface() {
+    use crate::components::manage::ManageTab;
+    use crate::components::varmanager::VmFocus;
+    let colon = KeyEvent::new(KeyCode::Char(':'), KeyModifiers::SHIFT);
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+
+    let opens = |app: &mut App, what: &str| {
+        app.handle_key(colon);
+        assert!(
+            matches!(app.modals.top(), Some(Modal::Palette(_))),
+            "{what}: `:` must open the palette"
+        );
+        app.update(Action::Close);
+    };
+
+    app.update(Action::OpenManage {
+        tab: Some(ManageTab::Spaces),
+    });
+    opens(&mut app, "the Spaces list");
+
+    app.update(Action::OpenManage {
+        tab: Some(ManageTab::Variables),
+    });
+    app.sync_varmanager();
+    opens(&mut app, "the Variables list");
+
+    goto_group(&mut app, "user");
+    app.varmanager.focus = VmFocus::Grid;
+    opens(&mut app, "the options grid");
+
+    app.update(Action::OpenManage {
+        tab: Some(ManageTab::Settings),
+    });
+    opens(&mut app, "the Settings tab");
+}
+
 /// ctrl+d is unbound at the global keymap, so it must reach the focused
 /// sidebar's own `handle_key` through the app router (app.rs "step 5").
 #[test]
@@ -1588,6 +1632,31 @@ fn field_open_agrees_with_the_open_text_field() {
     agree(&mut app, false, "the Settings tab, no edit");
     app.settings.begin_edit(SettingsField::AiCmd, "claude -p");
     agree(&mut app, true, "a Settings edit");
+    app.update(Action::CloseField);
+
+    // A form modal on top: its focused field is the open field, and once
+    // Esc puts the keyboard on the button row no field is open at all.
+    // Both answers must come from the modal branch, which is why it is
+    // checked before the Settings edit in both twins.
+    app.modals.push(Modal::MultiPrompt {
+        title: "New group".into(),
+        fields: vec![
+            crate::components::modal::PromptField::text("name", "Name", ""),
+            crate::components::modal::PromptField::text("fields", "Fields", ""),
+        ],
+        focus: 0,
+        kind: crate::components::modal::PromptKind::NewSelector {
+            shared: false,
+            on_toggle: false,
+        },
+    });
+    agree(&mut app, true, "a form modal with its field focused");
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(
+        app.modals.button_focus().is_some(),
+        "Esc from the field lands on the button row"
+    );
+    agree(&mut app, false, "a form modal aimed at its button row");
 }
 
 /// The footer's chips are pane-local: a field left open on one pane must
@@ -7945,7 +8014,8 @@ fn ctrl_c_copies_a_table_cell_selection_and_keeps_the_edit_live() {
     app.editor.table.editing = Some(CellEdit {
         row: 0,
         col: Col::Key,
-        input,    });
+        input,
+    });
 
     app.handle_key(ctrl('c'));
 
@@ -11820,6 +11890,53 @@ fn confirming_the_value_popup_on_the_request_scope_sets_a_request_var() {
     });
     assert_eq!(app.editor.variables["base_url"].value, "http://req.local");
     assert!(app.editor.variables["base_url"].enabled);
+}
+
+/// Review finding: after Esc parked the keyboard on the button row, a
+/// click on a *non-input* field (the Write-to chooser has no caret, so it
+/// registers `ModalField`, not `ModalInput`) moved the modal's own focus
+/// but left the aim on the row — ←/→ still swung between Cancel and
+/// Confirm and the row still painted as the focus. Every click that moves
+/// focus into a modal's body now leaves the row.
+#[test]
+fn clicking_a_choice_field_takes_the_keyboard_off_the_button_row() {
+    let (mut app, _dir) = token_popup_app();
+    app.update(Action::OpenVarTokenPopup("base_url".into()));
+    app.handle_key(plain('x'));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(
+        app.modals.button_focus().is_some(),
+        "Esc from the value field parks on the button row"
+    );
+
+    rendered_text(&mut app);
+    let r = app
+        .hits
+        .rect_of(&crate::hit::Hit::ModalField(1))
+        .expect("the choice field takes clicks");
+    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    assert_eq!(
+        app.modals.button_focus(),
+        None,
+        "the click moved focus into the body, so the row is no longer aimed"
+    );
+
+    let scope_text = |app: &App| {
+        let Some(Modal::MultiPrompt { fields, focus, .. }) = app.modals.top() else {
+            panic!("popup still open")
+        };
+        (fields[1].input.text().to_string(), *focus)
+    };
+    let (after_click, focus) = scope_text(&app);
+    assert_eq!(focus, 1, "the click focused the choice field");
+    // ← now steps the chooser back instead of swinging the button aim.
+    app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+    assert_eq!(app.modals.button_focus(), None);
+    assert_ne!(
+        scope_text(&app).0,
+        after_click,
+        "Left aimed the field, not the buttons"
+    );
 }
 
 #[test]
@@ -18671,7 +18788,8 @@ fn right_click_on_the_edited_table_cell_offers_the_text_menu_and_keeps_the_edit_
     app.editor.table.editing = Some(CellEdit {
         row: 0,
         col: Col::Key,
-        input,    });
+        input,
+    });
     render_once(&mut app);
     let cell = app
         .hits
@@ -18720,7 +18838,8 @@ fn right_click_elsewhere_on_the_row_keeps_the_row_menu_and_commits_the_edit() {
     app.editor.table.editing = Some(CellEdit {
         row: 0,
         col: Col::Key,
-        input: crate::components::line_input::LineInput::new("pages"),    });
+        input: crate::components::line_input::LineInput::new("pages"),
+    });
     render_once(&mut app);
     // The value cell of the same row is not the cell under edit.
     let value = app
@@ -19034,7 +19153,8 @@ fn extracting_a_table_cell_selection_replaces_the_part_and_commits_the_cell() {
     app.editor.table.editing = Some(CellEdit {
         row: 0,
         col: Col::Value,
-        input,    });
+        input,
+    });
 
     app.update(Action::ConfirmExtractSelection {
         name: "token".into(),
@@ -24732,6 +24852,25 @@ fn ctrl_z_in_a_settings_field_undoes_the_typing() {
     assert!(app.settings.editing.is_some(), "the field stays open");
 }
 
+/// The field rule on the Settings tab: `Esc` closes the edit and keeps
+/// what was typed — it commits, exactly as `Enter` does.
+#[test]
+fn esc_in_a_settings_field_keeps_the_text() {
+    let mut app = App::new_for_test();
+    app.update(Action::OpenManage {
+        tab: Some(crate::components::manage::ManageTab::Settings),
+    });
+    app.settings
+        .begin_edit(crate::components::settings::SettingsField::AiCmd, "");
+    type_chars(&mut app, "my-ai --go");
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(app.settings.editing.is_none(), "Esc closed the field");
+    assert_eq!(
+        app.ui_settings.ai_cmd, "my-ai --go",
+        "and the typed text was committed, not reverted"
+    );
+}
+
 #[test]
 fn settings_vim_aliases_are_strict_synonyms() {
     fn fresh() -> App {
@@ -24746,7 +24885,12 @@ fn settings_vim_aliases_are_strict_synonyms() {
         (plain('j'), KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
         (plain('k'), KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)),
         (plain('g'), KeyEvent::new(KeyCode::Home, KeyModifiers::NONE)),
-        (plain('G'), KeyEvent::new(KeyCode::End, KeyModifiers::NONE)),
+        // Shaped as a terminal sends it: crossterm sets SHIFT on every
+        // uppercase char.
+        (
+            KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT),
+            KeyEvent::new(KeyCode::End, KeyModifiers::NONE),
+        ),
     ];
     for (alias, canonical) in pairs {
         let (mut a, mut b) = (fresh(), fresh());
