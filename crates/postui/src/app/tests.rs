@@ -1426,6 +1426,66 @@ fn type_chars(app: &mut App, s: &str) {
     }
 }
 
+/// The footer's `esc done` chip: whichever field is open closes, keeping
+/// its text — and with nothing open the action is inert.
+#[test]
+fn the_close_field_action_closes_whichever_field_is_open() {
+    let mut app = app_with_one_param();
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+    type_chars(&mut app, "2");
+    app.update(Action::CloseField);
+    assert!(app.editor.table.editing.is_none());
+    assert_eq!(app.editor.params["page"].value, "12");
+    assert!(!app.update(Action::CloseField), "nothing open: a no-op");
+}
+
+/// `App::field_open` is the immutable twin of `open_text_field_mut` (plus
+/// the Settings tab's private edit): the two must agree everywhere.
+#[test]
+fn field_open_agrees_with_the_open_text_field() {
+    use crate::components::manage::ManageTab;
+    use crate::components::settings::SettingsField;
+    use crate::components::varmanager::VmField;
+    fn agree(app: &mut App, expected: bool, what: &str) {
+        let open = app.open_text_field_mut().is_some() || app.settings_edit_live();
+        assert_eq!(app.field_open(), open, "{what}: the two disagree");
+        assert_eq!(app.field_open(), expected, "{what}");
+    }
+
+    let mut app = app_with_one_param();
+    // A fresh app starts on the URL line, which *is* an open field.
+    app.editor.sub_focus = SubFocus::Content;
+    agree(&mut app, false, "nothing open");
+
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+    agree(&mut app, true, "a table cell edit");
+    app.update(Action::CloseField);
+
+    app.focus = PaneId::Editor;
+    app.editor.sub_focus = SubFocus::Url;
+    agree(&mut app, true, "the URL line");
+    app.editor.sub_focus = SubFocus::Content;
+
+    app.focus = PaneId::Response;
+    ready_response(&mut app, JQ_BODY);
+    assert!(app.session.response.set_jq_focus(true));
+    agree(&mut app, true, "the jq bar");
+    app.session.response.set_jq_focus(false);
+    agree(&mut app, false, "the response pane with no field");
+
+    app.screen = Screen::Manage;
+    app.manage.tab = ManageTab::Variables;
+    agree(&mut app, false, "the Variables tab, no edit");
+    app.varmanager.form.editing = Some((VmField::Description, LineInput::new("")));
+    agree(&mut app, true, "a Variable Manager form field");
+    app.varmanager.form.editing = None;
+
+    app.manage.tab = ManageTab::Settings;
+    agree(&mut app, false, "the Settings tab, no edit");
+    app.settings.begin_edit(SettingsField::AiCmd, "claude -p");
+    agree(&mut app, true, "a Settings edit");
+}
+
 #[test]
 fn click_cell_edits_in_place_and_click_away_commits() {
     let mut app = app_with_one_param();
@@ -15784,6 +15844,7 @@ fn every_named_action_is_mouse_reachable() {
                 false,
                 None,
                 crate::components::footer::JqBarState::Closed,
+                false,
             )
             .into_iter()
             .filter_map(|(_, _, a)| a),
@@ -15799,6 +15860,7 @@ fn every_named_action_is_mouse_reachable() {
                 true,
                 None,
                 crate::components::footer::JqBarState::Closed,
+                false,
             )
             .into_iter()
             .filter_map(|(_, _, a)| a),
@@ -15814,6 +15876,7 @@ fn every_named_action_is_mouse_reachable() {
                 false,
                 None,
                 crate::components::footer::JqBarState::Focused,
+                false,
             )
             .into_iter()
             .filter_map(|(_, _, a)| a),
@@ -19576,6 +19639,7 @@ fn the_focused_bar_advertises_enter_apply_and_esc_done() {
         false,
         None,
         crate::components::footer::JqBarState::Focused,
+        false,
     );
     let keys: Vec<(&str, &str)> = chips.iter().map(|(k, l, _)| (*k, *l)).collect();
     assert_eq!(
@@ -19588,8 +19652,9 @@ fn the_focused_bar_advertises_enter_apply_and_esc_done() {
         ],
         "{chips:?}"
     );
-    // Task 11 gives the esc chip `Action::CloseField` to click.
-    assert_eq!(chips[1].2, None);
+    // The esc chip is clickable: it closes the bar's field, keeping
+    // the filter, exactly as the key does.
+    assert_eq!(chips[1].2, Some(Action::CloseField));
 }
 
 #[test]
@@ -19945,6 +20010,7 @@ fn the_footer_and_palette_reach_the_jq_bar() {
         false,
         None,
         crate::components::footer::JqBarState::Closed,
+        false,
     );
     assert!(
         chips
@@ -20233,6 +20299,7 @@ fn the_response_footer_always_offers_alt_q_filter_and_close_only_while_open() {
             false,
             None,
             state,
+            false,
         )
     };
     let find = |state: JqBarState, key: &str| {

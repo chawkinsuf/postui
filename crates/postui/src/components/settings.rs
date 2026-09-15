@@ -350,7 +350,12 @@ impl SettingsTab {
     /// types into the field and the row chips would all be dead.
     pub fn footer_chips(&self) -> Vec<(&'static str, &'static str, Option<Action>)> {
         if self.editing.is_some() {
-            return vec![("enter", "save", None), ("esc", "cancel", None)];
+            // Esc commits the edit and closes the field (the field rule,
+            // spec 2026-09-15) — the chip names that, and dispatches it.
+            return vec![
+                ("enter", "save", None),
+                ("esc", "done", Some(Action::CloseField)),
+            ];
         }
         let mut chips = vec![("↑↓", "move", None), ("enter", "change", None)];
         if matches!(self.row(), SettingsRow::File(_)) {
@@ -808,16 +813,21 @@ mod tests {
     }
 
     /// A live edit owns the keyboard, so the chips advertise its keys
-    /// instead -- the same pair the Manage grid already shows.
+    /// instead -- the same pair the Manage grid already shows. Esc keeps
+    /// what was typed (the field rule), so the chip says "done".
     #[test]
-    fn a_live_edit_advertises_commit_and_cancel() {
+    fn a_live_edit_advertises_commit_and_close() {
         let tab = SettingsTab {
             editing: Some(SettingsField::AiCmd),
             ..Default::default()
         };
         let chips = tab.footer_chips();
         assert!(chips.iter().any(|(k, l, _)| *k == "enter" && *l == "save"));
-        assert!(chips.iter().any(|(k, l, _)| *k == "esc" && *l == "cancel"));
+        assert!(
+            chips
+                .iter()
+                .any(|(k, l, a)| *k == "esc" && *l == "done" && *a == Some(Action::CloseField))
+        );
     }
 
     /// A File row's two buttons are keyboard-aimed, so the footer says so

@@ -334,6 +334,10 @@ pub enum Action {
     /// Cancel the in-flight request, if any: aborts its task and marks the
     /// response pane `Cancelled`.
     CancelSend,
+    /// Close the open text field keeping its text — what Esc does there
+    /// (spec 2026-09-15). The footer's `esc done` chip dispatches it; a
+    /// no-op when nothing is open.
+    CloseField,
     /// Confirmed the send-time secret prompt (spec §3): writes `name`'s
     /// value to `secrets.toml` under the active environment, then re-runs
     /// `Action::ForceSend` on success (prompting for the next missing

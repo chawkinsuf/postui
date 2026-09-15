@@ -38,6 +38,7 @@ pub enum JqBarState {
 /// (see `PALETTE_CHIP` / `draw_footer`). `pub(crate)` so `app::tests`'s
 /// mouse-parity sweep (spec §5) can enumerate the same actions
 /// `draw_footer` paints as chips, rather than a copy of this list.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn footer_chips(
     focus: PaneId,
     shift_enter_send: bool,
@@ -54,6 +55,12 @@ pub(crate) fn footer_chips(
     // The response pane's jq bar: focused swaps the chip set for the bar's
     // own (apply/cancel/unfilter/describe); open adds the `close` chip.
     jq_bar: JqBarState,
+    // A text field owns the caret (`App::field_open`): Esc closes it
+    // keeping the text (the field rule, spec 2026-09-15), so the pane
+    // advertises `esc done` and never `esc cancel` — an open field owns
+    // Esc whatever else is going on. On the response pane it also picks
+    // out the search box's own pair, the field the jq bar isn't.
+    field_open: bool,
 ) -> Vec<(&'static str, &'static str, Option<Action>)> {
     let chips: Vec<(&'static str, &'static str, Option<Action>)> = match focus {
         PaneId::Sidebar => vec![
@@ -73,8 +80,10 @@ pub(crate) fn footer_chips(
                 // protocol; where the terminal can't deliver it, ^R is the
                 // advertised send key (both bindings stay active regardless).
                 // While the open request is in flight the send shortcuts go
-                // dead, and esc — the cancel shortcut — is advertised instead.
-                if sending {
+                // dead, and esc — the cancel shortcut — is advertised
+                // instead, unless a field is open: Esc is then the field's,
+                // and the send chip stays (^R still sends from a field).
+                if sending && !field_open {
                     ("esc", "cancel", Some(Action::CancelSend))
                 } else {
                     (
@@ -121,6 +130,11 @@ pub(crate) fn footer_chips(
                 chips.insert(pos, ("␣", toggle_label, Some(Action::ToggleTableRow(i))));
                 chips.insert(pos + 1, ("d", "delete", Some(Action::DeleteTableRow(i))));
             }
+            if field_open {
+                // Inserted last so the row/address-bar chips above land
+                // where they mean to; it leads the row all the same.
+                chips.insert(0, ("esc", "done", Some(Action::CloseField)));
+            }
             chips
         }
         PaneId::Response => {
@@ -160,7 +174,7 @@ pub(crate) fn footer_chips(
                         },
                         None,
                     ),
-                    ("esc", "done", None),
+                    ("esc", "done", Some(Action::CloseField)),
                     ("alt+shift+q", "unfilter", Some(Action::ToggleJqBar)),
                     (
                         crate::glyph::CREATION,
@@ -169,6 +183,15 @@ pub(crate) fn footer_chips(
                     ),
                 ]);
                 chips
+            } else if field_open {
+                // The jq bar isn't focused, so the open field is the
+                // search box: Enter runs the search, Esc leaves with the
+                // term kept. Its pair takes the pane — the view chips
+                // below are all single letters that would just type.
+                vec![
+                    ("enter", "search", None),
+                    ("esc", "done", Some(Action::CloseField)),
+                ]
             } else {
                 let mut chips = vec![
                     (
@@ -234,6 +257,8 @@ pub fn draw_footer(
     table_row_selected: Option<(usize, bool)>,
     // See `footer_chips`: where the response pane's jq bar is.
     jq_bar: JqBarState,
+    // See `footer_chips`: a text field owns the caret, so Esc is its.
+    field_open: bool,
     // Replaces the per-pane chips wholesale when `Some` — a modal's own
     // chip set, or the Variable Manager screen's
     // (`VarManager::footer_chips`), whose actions target
@@ -332,6 +357,7 @@ pub fn draw_footer(
             url_focused,
             table_row_selected,
             jq_bar,
+            field_open,
         ),
     };
     let start_x = area.x + 1;
@@ -581,6 +607,7 @@ mod tests {
                     false,
                     None,
                     JqBarState::Closed,
+                    false,
                     None,
                     true,
                     true,
@@ -710,7 +737,7 @@ mod tests {
     #[test]
     fn a_completion_ghost_advertises_tab_and_accept() {
         let chips = |state: JqBarState| {
-            footer_chips(PaneId::Response, false, false, None, false, None, state)
+            footer_chips(PaneId::Response, false, false, None, false, None, state, false)
                 .into_iter()
                 .map(|(k, l, _)| format!("{k} {l}"))
                 .collect::<Vec<_>>()
@@ -761,6 +788,7 @@ mod tests {
                     false,
                     None,
                     JqBarState::Closed,
+                    false,
                     None,
                     true,
                     true,
@@ -784,6 +812,7 @@ mod tests {
             false,
             None,
             JqBarState::Closed,
+            false,
         );
         assert!(with.iter().any(|(k, l, _)| *k == "⇧enter" && *l == "send"));
         let without = footer_chips(
@@ -794,6 +823,7 @@ mod tests {
             false,
             None,
             JqBarState::Closed,
+            false,
         );
         assert!(without.iter().any(|(k, l, _)| *k == "^R" && *l == "send"));
     }
@@ -811,6 +841,7 @@ mod tests {
             false,
             None,
             JqBarState::Closed,
+            false,
         );
         assert!(
             sending
@@ -820,6 +851,66 @@ mod tests {
         assert!(
             !sending.iter().any(|(_, l, _)| *l == "send"),
             "a dead send key must not be advertised"
+        );
+    }
+
+    /// An open text field owns Esc (the field rule, spec 2026-09-15): the
+    /// footer says `esc done` and never `esc cancel` on that surface —
+    /// sending or not.
+    #[test]
+    fn an_open_field_advertises_esc_done_and_never_esc_cancel() {
+        let chips = footer_chips(
+            PaneId::Editor,
+            false,
+            true,
+            Some("add header"),
+            true,
+            None,
+            JqBarState::Closed,
+            true,
+        );
+        assert!(
+            chips
+                .iter()
+                .any(|(k, l, a)| *k == "esc" && *l == "done" && *a == Some(Action::CloseField))
+        );
+        assert!(
+            !chips.iter().any(|(k, l, _)| *k == "esc" && *l == "cancel"),
+            "sending or not, an open field owns Esc"
+        );
+        let chips = footer_chips(
+            PaneId::Response,
+            false,
+            false,
+            None,
+            false,
+            None,
+            JqBarState::Focused,
+            true,
+        );
+        assert!(
+            chips
+                .iter()
+                .any(|(k, l, a)| *k == "esc" && *l == "done" && *a == Some(Action::CloseField))
+        );
+        // The search box is a field too, and the jq bar is not focused
+        // while it is: its own pair takes the pane.
+        let chips = footer_chips(
+            PaneId::Response,
+            false,
+            false,
+            None,
+            false,
+            None,
+            JqBarState::Closed,
+            true,
+        );
+        assert_eq!(
+            chips
+                .iter()
+                .map(|(k, l, _)| format!("{k} {l}"))
+                .collect::<Vec<_>>(),
+            vec!["enter search".to_string(), "esc done".to_string()]
         );
     }
 
@@ -855,6 +946,7 @@ mod tests {
             false,
             None,
             JqBarState::Closed,
+            false,
         );
         assert!(chips.iter().any(|(k, l, a)| *k == "alt+shift+v"
             && *l == "vars"
@@ -880,6 +972,7 @@ mod tests {
             true,
             None,
             JqBarState::Closed,
+            false,
         );
         assert!(
             !chips
@@ -904,6 +997,7 @@ mod tests {
             false,
             None,
             JqBarState::Closed,
+            false,
         );
         assert!(
             chips
@@ -934,6 +1028,7 @@ mod tests {
                     url_focused,
                     None,
                     JqBarState::Closed,
+                    false,
                 );
                 assert!(
                     !chips.iter().any(|(_, _, a)| *a == Some(Action::CycleSplit)),
@@ -958,6 +1053,7 @@ mod tests {
             false,
             Some((2, true)),
             JqBarState::Closed,
+            false,
         );
         assert!(chips.iter().any(|(k, l, a)| *k == "␣"
             && *l == "disable"
@@ -976,6 +1072,7 @@ mod tests {
             false,
             Some((2, false)),
             JqBarState::Closed,
+            false,
         );
         assert!(
             chips
@@ -991,6 +1088,7 @@ mod tests {
             false,
             None,
             JqBarState::Closed,
+            false,
         );
         assert!(
             !chips
@@ -1043,6 +1141,7 @@ mod tests {
                     false,
                     None,
                     JqBarState::Closed,
+                    false,
                     None,
                     true,
                     true,
@@ -1089,6 +1188,7 @@ mod tests {
                     false,
                     None,
                     JqBarState::Closed,
+                    false,
                     None,
                     true,
                     true,
@@ -1138,6 +1238,7 @@ mod tests {
                     false,
                     None,
                     JqBarState::Closed,
+                    false,
                     None,
                     true,
                     true,
@@ -1176,6 +1277,7 @@ mod tests {
                     false,
                     None,
                     JqBarState::Closed,
+                    false,
                     None,
                     true,
                     true,
@@ -1248,6 +1350,7 @@ mod tests {
                     false,
                     None,
                     JqBarState::Closed,
+                    false,
                     None,
                     true,
                     true,
@@ -1306,6 +1409,7 @@ mod tests {
                     false,
                     None,
                     JqBarState::Closed,
+                    false,
                     None,
                     true,
                     true,
@@ -1406,6 +1510,7 @@ mod tests {
                     false,
                     None,
                     JqBarState::Closed,
+                    false,
                     None,
                     true,
                     true,

@@ -1371,6 +1371,17 @@ impl Response {
         search.active.then_some(&mut search.input)
     }
 
+    /// Whether [`Self::open_text_field_mut`] would hand one back — the
+    /// immutable twin, for `App::field_open` and the footer.
+    pub fn field_open(&self) -> bool {
+        self.jq.focused
+            || self
+                .view
+                .as_ref()
+                .and_then(|v| v.search.as_ref())
+                .is_some_and(|s| s.active)
+    }
+
     /// Focuses (or blurs) the jq bar. Returns whether it took: focusing
     /// fails with no ready view or a body jq can't run against.
     pub fn set_jq_focus(&mut self, focused: bool) -> bool {

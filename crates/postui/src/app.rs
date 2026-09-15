@@ -2282,7 +2282,8 @@ impl App {
     /// below: the Settings tab's live edit (its input is private, see
     /// [`SettingsTab::field_undo`](crate::components::settings::SettingsTab::field_undo))
     /// and a picker's filter box (private behind `undo_filter`, because
-    /// stepping it has to re-run the filter too).
+    /// stepping it has to re-run the filter too). [`Self::field_open`] is
+    /// the immutable twin of this routing and must agree with it.
     pub(crate) fn open_text_field_mut(&mut self) -> Option<&mut LineInput> {
         if !self.modals.is_empty() {
             return self.modals.focused_input_mut();
@@ -2310,6 +2311,32 @@ impl App {
                 None
             }
             Screen::Testbed => None,
+        }
+    }
+
+    /// Whether a text field owns the caret right now — the immutable twin
+    /// of [`Self::open_text_field_mut`], for callers that only need the
+    /// question answered (the footer's `esc done` chip, `Action::CloseField`).
+    /// The two must agree: this is `open_text_field_mut().is_some()` plus
+    /// the Settings tab's edit, which that one special-cases away because
+    /// its input is private.
+    pub(crate) fn field_open(&self) -> bool {
+        if self.settings_edit_live() {
+            return true;
+        }
+        if !self.modals.is_empty() {
+            return self.modals.focused_input().is_some();
+        }
+        match self.screen {
+            Screen::Manage => {
+                self.varmanager.form.editing.is_some() || self.varmanager.grid.editing.is_some()
+            }
+            Screen::Main => {
+                self.editor.table.editing.is_some()
+                    || (self.focus == PaneId::Editor && self.editor.sub_focus == SubFocus::Url)
+                    || (self.focus == PaneId::Response && self.session.response.field_open())
+            }
+            Screen::Testbed => false,
         }
     }
 
@@ -3671,6 +3698,14 @@ impl App {
                 true
             }
             Action::CancelSend => self.session.cancel(),
+            Action::CloseField => {
+                // The field rule, dispatched rather than typed: with a
+                // field open this is exactly the Esc it would have taken.
+                if !self.field_open() {
+                    return false;
+                }
+                self.handle_key_inner(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            }
             Action::SetSecret { name, value } => {
                 let result = match self.project.as_mut() {
                     Some(p) => p.set_secret(&name, value).map_err(|e| e.to_string()),

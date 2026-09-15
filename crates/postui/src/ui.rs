@@ -401,6 +401,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         } else {
             crate::components::footer::JqBarState::Closed
         },
+        // An open text field owns Esc: the pane says `esc done`.
+        app.field_open(),
         vm_chips,
         globals_live,
         plain_q_quits,

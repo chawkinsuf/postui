@@ -202,6 +202,7 @@ fn fallback_description(action: &Action) -> Option<String> {
         Action::Quit => "Quit postui".to_string(),
         Action::OpenPalette => "Open the command palette".to_string(),
         Action::CancelSend => "Cancel the request in flight".to_string(),
+        Action::CloseField => "Close the field, keeping what you typed".to_string(),
         Action::CycleSplit => "Step the editor/response split".to_string(),
         Action::CycleSplitBack => "Step the split back".to_string(),
         Action::DeleteTableRow(_) => "Delete this row".to_string(),
@@ -706,24 +707,27 @@ mod tests {
                             JqBarState::Completing { cycle: true },
                             JqBarState::Completing { cycle: false },
                         ] {
-                            let chips = footer_chips(
-                                focus,
-                                false,
-                                sending,
-                                Some("add param"),
-                                url_focused,
-                                row,
-                                jq,
-                            );
-                            for (_, _, action) in chips {
-                                let Some(action) = action else { continue };
-                                let hit = Hit::FooterChip(action.clone());
-                                let h = hint_for(&hit, &keymap, &ctx()).unwrap();
-                                assert_ne!(
-                                    h,
-                                    format!("{action:?}"),
-                                    "{action:?} has no wording of its own"
+                            for field_open in [false, true] {
+                                let chips = footer_chips(
+                                    focus,
+                                    false,
+                                    sending,
+                                    Some("add param"),
+                                    url_focused,
+                                    row,
+                                    jq,
+                                    field_open,
                                 );
+                                for (_, _, action) in chips {
+                                    let Some(action) = action else { continue };
+                                    let hit = Hit::FooterChip(action.clone());
+                                    let h = hint_for(&hit, &keymap, &ctx()).unwrap();
+                                    assert_ne!(
+                                        h,
+                                        format!("{action:?}"),
+                                        "{action:?} has no wording of its own"
+                                    );
+                                }
                             }
                         }
                     }

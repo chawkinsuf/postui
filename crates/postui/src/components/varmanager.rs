@@ -828,7 +828,13 @@ impl VarManager {
         // commit/revert have no single dispatchable `Action` (they run
         // through `commit_grid_edit`/`commit_var_form`).
         if self.grid.editing.is_some() || self.form.editing.is_some() {
-            return vec![("enter", "save", None), ("esc", "cancel", None)];
+            // Esc commits and closes the field keeping its text (the field
+            // rule, spec 2026-09-15), so the chip says so — and dispatches
+            // it, since the pointer has no Esc key.
+            return vec![
+                ("enter", "save", None),
+                ("esc", "done", Some(Action::CloseField)),
+            ];
         }
         // Form focus advertises the form's own quick actions — the
         // keyboard twins of its inline controls (secret toggle, the
@@ -3811,8 +3817,8 @@ fields = ["user_id", "customer_id"]
 
     /// While a cell or form-field edit is live, every letter key types
     /// into the input — the single-key chips would all be dead, so the
-    /// footer shows the edit's own keys instead (plain hints: enter/esc
-    /// have no single dispatchable Action here).
+    /// footer shows the edit's own keys instead. Esc keeps what was typed
+    /// (the field rule), so the chip says "done" and dispatches it.
     #[test]
     fn a_live_cell_edit_replaces_the_grid_chips_with_commit_hints() {
         let (_dir, ctx) = fixture_with_description();
@@ -3830,7 +3836,9 @@ fields = ["user_id", "customer_id"]
         assert!(
             chips
                 .iter()
-                .any(|(k, l, a)| *k == "esc" && *l == "cancel" && a.is_none()),
+                .any(|(k, l, a)| *k == "esc"
+                    && *l == "done"
+                    && *a == Some(Action::CloseField)),
             "{chips:?}"
         );
     }
