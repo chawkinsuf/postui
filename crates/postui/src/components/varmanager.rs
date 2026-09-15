@@ -246,11 +246,11 @@ pub enum VmField {
 }
 
 /// The detail pane's variable form (spec §3.4). Editing is always in place
-/// (Task 8's model, exactly): a click seeds `editing` with the clicked
-/// field's current text and a caret at the end; another click, `Enter`, or
-/// `Esc` all leave it — the caller (`App`) commits or reverts, since a
-/// commit writes through `ctx.edit_variables`/`edit_env` and only `App` can
-/// reach those.
+/// (the field rule): a click seeds `editing` with the clicked field's
+/// current text and a caret at the end; another click, `Enter`, or `Esc`
+/// all leave it, committing — the caller (`App`) does the commit, since it
+/// writes through `ctx.edit_variables`/`edit_env` and only `App` can reach
+/// those.
 #[derive(Debug, Default)]
 pub struct VarFormState {
     /// The field under edit and its live `LineInput`, or `None` when
@@ -1129,10 +1129,11 @@ impl VarManager {
     /// text input) — `esc` and the arrows still work.
     ///
     /// This is never reached while a form field is under edit — `App`
-    /// intercepts Esc (revert)/Enter (commit)/plain typing itself first,
-    /// since a commit needs write access to the project that this method's
-    /// `&Project` (shared, not mutable) can't give it. `form.editing`
-    /// is still consulted below, for the single-letter command gate.
+    /// intercepts Esc/Enter (both commit, the field rule)/plain typing
+    /// itself first, since a commit needs write access to the project that
+    /// this method's `&Project` (shared, not mutable) can't give it.
+    /// `form.editing` is still consulted below, for the single-letter
+    /// command gate.
     ///
     /// # Keyboard focus (spec §4's keyboard parity)
     ///
