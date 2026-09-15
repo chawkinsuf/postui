@@ -1244,11 +1244,18 @@ impl Response {
     /// switches a closed bar back on: a verb or the AI landing a filter
     /// means "show me this". The text goes in through `set_text`, not a
     /// fresh line, so a tee-up into a focused bar keeps the session's
-    /// history and is undoable in the bar.
+    /// history and is undoable in the bar. Landing in an unfocused bar
+    /// ends the session again: a verb or an AI reply that arrives while
+    /// the bar is closed belongs to the app history alone, and leaving a
+    /// step behind would let a later ctrl+z — after a bare focus, nothing
+    /// typed — walk back an action the app history already owns.
     pub fn set_jq_text_with_cursor(&mut self, text: &str, cursor: usize) {
         self.jq.menu = None;
         self.jq.input.set_text(text);
         self.jq.input.set_cursor(cursor);
+        if !self.jq.focused {
+            self.jq.input.end_edit();
+        }
         self.jq.enabled = true;
         self.jq.edited = true;
     }
@@ -2175,9 +2182,10 @@ impl Response {
         // stays on; Enter on an entered menu row first confirms it), Esc
         // does the same — it leaves the bar with the text kept (the field
         // rule; ctrl+z, not Esc, is what walks an edit back) — unless an
-        // AI request is pending, in which case it cancels that instead. Runs before the view is borrowed, so it works even
-        // with no ready view (it never should, in practice: the bar can't
-        // focus without one).
+        // AI request is pending, in which case it cancels that instead.
+        // Runs before the view is borrowed, so it works even with no ready
+        // view (it never should, in practice: the bar can't focus without
+        // one).
         if self.jq.focused {
             // Menu mode's candidate row is entered: Tab and shift+Tab step
             // through it, Enter confirms the selected chip and leaves the
@@ -2288,6 +2296,7 @@ impl Response {
                     let search = view.search.as_mut().expect("checked above");
                     search.active = false;
                     search.query = search.input.text().to_string();
+                    search.input.end_edit();
                     view.recompute_matches();
                     view.jump_to_match();
                 }
@@ -2422,10 +2431,12 @@ impl Response {
                 view.search = None;
                 Some(Action::Render)
             }
-            // Esc from the tree stops at the selection and the search: it
-            // never touches the jq filter (that is saved with the request;
-            // the 󰈲 button/alt+shift+q are its switch, and only the bar's own
-            // Esc cancels an edit in it).
+            // Esc from the tree stops at the selection and the search —
+            // clearing the search is its job, since the box's own Esc only
+            // runs the query and hands the caret back. It never touches
+            // the jq filter (that is saved with the request; the 󰈲
+            // button/alt+shift+q are its switch, and ctrl+z in the bar is
+            // what walks an edit back).
             _ => None,
         }
     }

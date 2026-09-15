@@ -19259,6 +19259,39 @@ fn a_jq_edit_is_one_app_history_step_per_close() {
     assert_eq!(app.editor.jq, ".data");
 }
 
+/// A filter that lands while the bar is closed — a tree verb, an AI
+/// reply — is the app history's, not the field's: focusing the bar
+/// afterwards must not hand ctrl+z a step the app history already owns.
+#[test]
+fn a_filter_landed_in_a_closed_bar_stays_the_app_historys() {
+    let mut app = App::new_for_test();
+    app.update(Action::CreateRequest("r".into()));
+    ready_response(&mut app, JQ_BODY);
+    let full = app.session.response.view().unwrap().view_text();
+    app.capture_undo(); // seed the shadow
+    let steps = app.history.undo_len();
+    // The verb path: fired from the tree (the pane has focus, the bar
+    // does not), so nothing blurs the bar on the way through.
+    app.focus = PaneId::Response;
+    app.update(Action::JqApply(".data.total".into()));
+    app.sync_jq();
+    assert!(!app.session.response.jq_focused());
+    assert!(app.capture_undo(), "the app history takes it");
+    assert_eq!(app.history.undo_len(), steps + 1);
+    // Focusing the bar without typing starts an empty session.
+    app.handle_key(alt('q'));
+    assert!(app.session.response.jq_focused());
+    assert!(
+        !app.session.response.jq_field_edited(),
+        "nothing typed: the gate is off"
+    );
+    app.handle_key(ctrl('z'));
+    app.sync_jq();
+    assert_eq!(app.editor.jq, "", "ctrl+z stepped the app history");
+    assert_eq!(app.history.undo_len(), steps);
+    assert_eq!(app.session.response.view().unwrap().view_text(), full);
+}
+
 #[test]
 fn ctrl_z_in_the_jq_bar_walks_the_filter_back() {
     let mut app = App::new_for_test();
