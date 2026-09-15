@@ -17751,7 +17751,7 @@ mod undo_tests {
 
     /// The picker opens filtered to the applied theme's polarity: on the
     /// (dark) default, light themes are not reachable by browsing, so no
-    /// bright flashes. Left/Right flips to the light set, the preview
+    /// bright flashes. Tab/BackTab flips to the light set, the preview
     /// follows, and Esc still restores the original theme.
     #[test]
     fn theme_picker_polarity_toggle_flips_sets_and_esc_still_reverts() {
@@ -17782,17 +17782,17 @@ mod undo_tests {
         }
         // Terminal has no light/dark counterpart: the switch is inert
         // while it's highlighted.
-        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         assert_eq!(app.theme_name, "terminal", "unpaired: flip does nothing");
-        // Move to the paired "dark" builtin; Right now lands on its
+        // Move to the paired "dark" builtin; Tab now lands on its
         // counterpart in the light set, and the preview follows.
         app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         assert_eq!(app.theme_name, "dark");
-        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         assert_eq!(app.theme_name, "light", "flip follows the counterpart");
         assert_ne!(app.theme.page, original);
         // Flip back: counterpart again — the same family, dark side.
-        app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE));
         assert_eq!(app.theme_name, "dark");
         app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert_eq!(app.theme_name, original_name, "esc restores after toggling");
@@ -17808,15 +17808,15 @@ mod undo_tests {
         let mut app = App::new_for_test();
         app.update(Action::ApplyTheme("gruvbox-dark".into()));
         app.update(Action::OpenThemeChooser);
-        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         assert_eq!(app.theme_name, "gruvbox-light");
-        app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE));
         assert_eq!(app.theme_name, "gruvbox-dark");
         // Catppuccin pairs across its own names, not the stem convention.
         app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         app.update(Action::ApplyTheme("catppuccin-mocha".into()));
         app.update(Action::OpenThemeChooser);
-        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         assert_eq!(app.theme_name, "catppuccin-latte");
     }
 

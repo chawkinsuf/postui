@@ -1,4 +1,5 @@
 use super::chooser::clip;
+use super::line_input::LineInput;
 use super::palette::fuzzy_match;
 use crate::action::Action;
 use crate::components::toast::ToastKind;
@@ -7,10 +8,9 @@ use crate::paint::{self, ControlState, FIELD_HEIGHT, ListRow, RowHighlight, Text
 use crate::theme::Theme;
 use indexmap::IndexMap;
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
-use ratatui::style::Style;
-use ratatui::text::{Line, Span};
+use ratatui::text::Span;
 
 /// Which of the three name sources an Insert-mode [`VarEntry`] comes from
 /// (spec §6: "scope-badged (request / project / selector member)"). A name
@@ -163,7 +163,7 @@ pub struct SelectOption {
 /// `Esc` always just closes — a typed `{{` that triggered the picker is
 /// left as literal text in that case.
 pub struct VarPickerState {
-    input: String,
+    input: LineInput,
     selected: usize,
     entries: Vec<VarEntry>,
     select_entries: Vec<SelectOption>,
@@ -184,7 +184,7 @@ impl VarPickerState {
     pub fn new(entries: Vec<VarEntry>, completing: bool) -> Self {
         let filtered = (0..entries.len()).collect();
         Self {
-            input: String::new(),
+            input: LineInput::new(""),
             selected: 0,
             entries,
             select_entries: Vec::new(),
@@ -204,7 +204,7 @@ impl VarPickerState {
     /// The current filter text (test-visible: the click-a-token flow seeds
     /// it, spec §7).
     pub fn input(&self) -> &str {
-        &self.input
+        self.input.text()
     }
 
     /// Pastes into the fuzzy filter (the bracketed-paste/ctrl+v path),
@@ -215,8 +215,7 @@ impl VarPickerState {
         if self.mode != PickerMode::Insert {
             return false;
         }
-        self.input
-            .push_str(&crate::components::line_input::flatten_paste(text));
+        self.input.paste(text);
         self.refilter();
         true
     }
@@ -225,7 +224,7 @@ impl VarPickerState {
     /// already narrowed — clicking an inline `{{token}}` seeds it with that
     /// token's name (spec §7).
     pub fn seed_filter(&mut self, text: &str) {
-        self.input = text.to_string();
+        self.input.set_text(text);
         self.refilter();
     }
 
@@ -240,7 +239,7 @@ impl VarPickerState {
         // carrying the ◉ mark), not row 0.
         let selected = entries.iter().position(|o| o.selected).unwrap_or(0);
         Self {
-            input: String::new(),
+            input: LineInput::new(""),
             selected,
             entries: Vec::new(),
             select_entries: entries,
@@ -288,7 +287,7 @@ impl VarPickerState {
             return match &self.mode {
                 PickerMode::Insert => Some(super::modal::ModalResult {
                     actions: vec![Action::OpenNewVariablePrompt {
-                        prefill: self.input.clone(),
+                        prefill: self.input.text().to_string(),
                         completing: self.completing,
                     }],
                     close: true,
@@ -365,7 +364,7 @@ impl VarPickerState {
                         Some(desc) => format!("{} {}", entry.name, desc),
                         None => entry.name.clone(),
                     };
-                    fuzzy_match(&self.input, &haystack)
+                    fuzzy_match(self.input.text(), &haystack)
                 })
                 .map(|(i, _)| i)
                 .collect(),
@@ -402,20 +401,24 @@ impl VarPickerState {
             // SelectOption mode has no filter (its option lists are a
             // handful of rows; the detail pane owns the freed space), so
             // typed text is inert there — only Insert mode edits `input`.
-            KeyCode::Backspace if self.mode == PickerMode::Insert => {
-                self.input.pop();
-                self.refilter();
-            }
-            KeyCode::Char(c)
-                if self.mode == PickerMode::Insert
-                    && key.modifiers.difference(KeyModifiers::SHIFT).is_empty() =>
-            {
-                self.input.push(c);
-                self.refilter();
+            _ if self.mode == PickerMode::Insert => {
+                let before = self.input.text().to_string();
+                self.input.handle_key(key);
+                if self.input.text() != before {
+                    self.refilter();
+                }
             }
             _ => {}
         }
         None
+    }
+
+    /// Undoes one step in the filter's edit history and re-runs the
+    /// filter, mirroring what typing that step forward did.
+    pub(crate) fn undo_filter(&mut self) {
+        if self.input.undo() {
+            self.refilter();
+        }
     }
 
     pub fn draw(
@@ -489,10 +492,9 @@ impl VarPickerState {
                     width: area.width.saturating_sub(2),
                     height: FIELD_HEIGHT,
                 };
-                let content = Line::from(vec![
-                    Span::raw(self.input.clone()),
-                    Span::styled("▏", Style::default().fg(theme.accent)),
-                ]);
+                let content = self
+                    .input
+                    .draw_line_windowed(true, theme, field_area.width.saturating_sub(2));
                 TextField {
                     content,
                     state: ControlState::Focused,
@@ -826,6 +828,7 @@ fn pane_line_count(o: &SelectOption) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::crossterm::event::KeyModifiers;
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
@@ -905,6 +908,24 @@ mod tests {
         let mut p = VarPickerState::new(vec![var_entry("a", None, None)], true);
         let res = p.handle_key(key(KeyCode::Esc)).unwrap();
         assert!(res.close && res.actions.is_empty());
+    }
+
+    #[test]
+    fn seed_filter_then_typing_and_undo_walk_the_filter_back() {
+        let mut p = VarPickerState::new(
+            vec![
+                var_entry("base", Some("api root"), None),
+                var_entry("tok", None, Some("secret")),
+            ],
+            false,
+        );
+        p.seed_filter("base");
+        p.handle_key(key(KeyCode::Char('_')));
+        assert_eq!(p.input(), "base_");
+        p.undo_filter();
+        assert_eq!(p.input(), "base");
+        p.undo_filter();
+        assert_eq!(p.input(), "", "the seed itself was one step");
     }
 
     #[test]

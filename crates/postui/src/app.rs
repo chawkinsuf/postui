@@ -3720,7 +3720,7 @@ impl App {
                 }
                 // The picker opens filtered to the current theme's
                 // polarity: browsing themes must not flash the opposite
-                // polarity's (much brighter/darker) palettes. Left/Right
+                // polarity's (much brighter/darker) palettes. Tab/BackTab
                 // or the title-row toggle flips to the other set.
                 self.theme_picker_dark = self.theme.is_dark();
                 let mut state = ChooserState::new("Theme", self.theme_picker_items()).with_toggle(

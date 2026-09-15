@@ -1,12 +1,11 @@
+use super::line_input::LineInput;
 use super::palette::fuzzy_match;
 use crate::action::Action;
 use crate::paint::{self, ControlState, FIELD_HEIGHT, ListRow, RowHighlight, TextField};
 use crate::theme::Theme;
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
-use ratatui::style::Style;
-use ratatui::text::{Line, Span};
 
 /// One selectable entry in a `ChooserState`: a label, an optional detail
 /// string shown dimmed after the label, and the actions dispatched on
@@ -38,7 +37,7 @@ pub struct ChooserToggle {
 /// selected item's actions and closes; `Esc` closes with no actions.
 pub struct ChooserState {
     pub(crate) title: String,
-    input: String,
+    input: LineInput,
     selected: usize,
     pub(crate) items: Vec<ChooserItem>,
     filtered: Vec<usize>,
@@ -58,7 +57,7 @@ impl ChooserState {
         let filtered = (0..items.len()).collect();
         Self {
             title: title.to_string(),
-            input: String::new(),
+            input: LineInput::new(""),
             selected: 0,
             items,
             filtered,
@@ -116,8 +115,7 @@ impl ChooserState {
     /// Pastes into the filter query (the bracketed-paste/ctrl+v path),
     /// flattened to one line like every single-line surface.
     pub fn paste(&mut self, text: &str) {
-        self.input
-            .push_str(&crate::components::line_input::flatten_paste(text));
+        self.input.paste(text);
         self.refilter();
     }
 
@@ -126,7 +124,7 @@ impl ChooserState {
     }
 
     pub fn input(&self) -> &str {
-        &self.input
+        self.input.text()
     }
 
     pub fn selected(&self) -> usize {
@@ -188,7 +186,7 @@ impl ChooserState {
                     Some(detail) => format!("{} {}", item.label, detail),
                     None => item.label.clone(),
                 };
-                fuzzy_match(&self.input, &haystack)
+                fuzzy_match(self.input.text(), &haystack)
             })
             .map(|(i, _)| i)
             .collect();
@@ -207,10 +205,10 @@ impl ChooserState {
                 });
             }
             KeyCode::Enter => return self.confirm(),
-            // Left/Right fire the toggle (when one is attached) without
-            // closing — the filter input has no caret to move, so these
-            // keys are otherwise unused here.
-            KeyCode::Left | KeyCode::Right => {
+            // Tab fires the toggle (when one is attached) without closing;
+            // the arrows move the caret now that the filter is a real
+            // input.
+            KeyCode::Tab | KeyCode::BackTab => {
                 if let Some(t) = &self.toggle {
                     return Some(super::modal::ModalResult {
                         actions: vec![t.action.clone()],
@@ -229,17 +227,23 @@ impl ChooserState {
                 }
                 self.ensure_visible = true;
             }
-            KeyCode::Backspace => {
-                self.input.pop();
-                self.refilter();
+            _ => {
+                let before = self.input.text().to_string();
+                self.input.handle_key(key);
+                if self.input.text() != before {
+                    self.refilter();
+                }
             }
-            KeyCode::Char(c) if key.modifiers.difference(KeyModifiers::SHIFT).is_empty() => {
-                self.input.push(c);
-                self.refilter();
-            }
-            _ => {}
         }
         None
+    }
+
+    /// Undoes one step in the filter's edit history and re-runs the
+    /// filter, mirroring what typing that step forward did.
+    pub(crate) fn undo_filter(&mut self) {
+        if self.input.undo() {
+            self.refilter();
+        }
     }
 
     pub fn draw(
@@ -309,10 +313,9 @@ impl ChooserState {
             width: area.width.saturating_sub(2),
             height: FIELD_HEIGHT,
         };
-        let content = Line::from(vec![
-            Span::raw(self.input.clone()),
-            Span::styled("▏", Style::default().fg(theme.accent)),
-        ]);
+        let content = self
+            .input
+            .draw_line_windowed(true, theme, field_area.width.saturating_sub(2));
         TextField {
             content,
             state: ControlState::Focused,
@@ -430,6 +433,7 @@ mod tests {
     use super::*;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use ratatui::crossterm::event::KeyModifiers;
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
@@ -463,6 +467,20 @@ mod tests {
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(!content.contains("enter select"), "{content}");
         assert!(!content.contains("esc cancel"), "{content}");
+    }
+
+    #[test]
+    fn left_and_right_move_the_caret_and_tab_fires_the_toggle() {
+        let mut c = ChooserState::new("Pick", vec![]).with_toggle("dark", Action::ToggleThemePickerPolarity);
+        for ch in "ab".chars() {
+            c.handle_key(key(KeyCode::Char(ch)));
+        }
+        assert!(c.handle_key(key(KeyCode::Left)).is_none(), "Left moves the caret, fires nothing");
+        c.handle_key(key(KeyCode::Char('X')));
+        assert_eq!(c.input(), "aXb");
+        let res = c.handle_key(key(KeyCode::Tab)).expect("tab fires the toggle");
+        assert_eq!(res.actions, vec![Action::ToggleThemePickerPolarity]);
+        assert!(!res.close);
     }
 
     #[test]
@@ -603,15 +621,15 @@ mod tests {
     }
 
     #[test]
-    fn left_right_fire_the_toggle_without_closing_and_are_inert_without_one() {
+    fn tab_fires_the_toggle_without_closing_and_is_inert_without_one() {
         let mut plain = ChooserState::new("t", items(&["a", "b"]));
         assert!(
-            plain.handle_key(key(KeyCode::Left)).is_none(),
-            "no toggle: Left is ignored"
+            plain.handle_key(key(KeyCode::Tab)).is_none(),
+            "no toggle: Tab is ignored"
         );
         let mut c =
             ChooserState::new("t", items(&["a", "b"])).with_toggle("◂ dark ▸", Action::Quit);
-        for code in [KeyCode::Left, KeyCode::Right] {
+        for code in [KeyCode::Tab, KeyCode::BackTab] {
             let res = c.handle_key(key(code)).unwrap();
             assert!(!res.close, "toggle must not close the modal");
             assert_eq!(res.actions, vec![Action::Quit]);
