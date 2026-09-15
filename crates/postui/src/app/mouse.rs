@@ -1228,6 +1228,7 @@ impl App {
             )),
             Hit::ManageRow(i) => {
                 self.manage.list.cursor = i;
+                self.manage.list.leave_detail();
                 // A press on a Spaces or Environments row also arms a
                 // possible row drag; the click itself still just selects
                 // (the drag only starts once the pointer leaves the row).

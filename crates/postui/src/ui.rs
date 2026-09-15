@@ -1,4 +1,5 @@
 use crate::app::{App, Screen};
+use crate::components::footer::FooterChip;
 use crate::components::{Component, DrawCtx};
 use crate::hit::Hit;
 use crate::layout::{PaneId, compute_layout};
@@ -314,36 +315,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 });
     let vm_chips = modal_chips.or_else(|| {
         (app.screen == Screen::Manage).then(|| {
-            // Settings publishes its own chips and works with no project
-            // open, so it is answered before the project-scoped tabs.
-            if app.manage.tab == crate::components::manage::ManageTab::Settings {
-                return app
-                    .settings
-                    .footer_chips()
-                    .into_iter()
-                    .map(|(k, l, a)| (k.to_string(), l.to_string(), a))
-                    .collect();
-            }
-            if app.manage.tab != crate::components::manage::ManageTab::Variables {
-                return app
-                    .project()
-                    .map(|p| app.manage.list.footer_chips(app.manage.tab, p))
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|(k, l, a)| (k.to_string(), l.to_string(), a))
-                    .collect();
-            }
-            let open_request = app
-                .editor
-                .slug
-                .is_some()
-                .then(|| app.editor.current_request());
-            app.project()
-                .map(|p| app.varmanager.footer_chips(p, open_request.as_ref()))
-                .unwrap_or_default()
-                .into_iter()
-                .map(|(k, l, a)| (k.to_string(), l.to_string(), a))
-                .collect()
+            let mut chips: Vec<FooterChip> = manage_tab_chips(app);
+            // The tab strip belongs to the shell, not to any tab, and its
+            // chord runs above every tab body's keys (`handle_key_inner`),
+            // so it is the one chip every Manage tab shares -- last, so
+            // nothing shifts as the tab's own chips come and go.
+            chips.push(("alt+←→".to_string(), "switch tab".to_string(), None));
+            chips
         })
     });
     let vm_chips = if drag_live {
@@ -768,6 +746,40 @@ fn draw_manage_without_a_project(
         theme.page,
         false,
     );
+}
+
+/// The Manage screen's per-tab chips: the tab body's own keys.
+fn manage_tab_chips(app: &App) -> Vec<FooterChip> {
+    // Settings publishes its own chips and works with no project open, so
+    // it is answered before the project-scoped tabs.
+    if app.manage.tab == crate::components::manage::ManageTab::Settings {
+        return app
+            .settings
+            .footer_chips()
+            .into_iter()
+            .map(|(k, l, a)| (k.to_string(), l.to_string(), a))
+            .collect();
+    }
+    if app.manage.tab != crate::components::manage::ManageTab::Variables {
+        return app
+            .project()
+            .map(|p| app.manage.list.footer_chips(app.manage.tab, p))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(k, l, a)| (k.to_string(), l.to_string(), a))
+            .collect();
+    }
+    let open_request = app
+        .editor
+        .slug
+        .is_some()
+        .then(|| app.editor.current_request());
+    app.project()
+        .map(|p| app.varmanager.footer_chips(p, open_request.as_ref()))
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(k, l, a)| (k.to_string(), l.to_string(), a))
+        .collect()
 }
 
 #[cfg(test)]
