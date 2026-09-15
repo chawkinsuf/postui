@@ -610,6 +610,11 @@ pub enum Action {
     },
     /// Switch the response pane's view (the tabs row's click target).
     ResponseViewMode(crate::components::response::ViewMode),
+    /// `t` walks the response pane's views: Pretty → Raw → Headers →
+    /// Pretty, or Raw ↔ Headers when there is no tree to show. Dispatched
+    /// as an action (not a direct view mutation) so the tab underline
+    /// retargets like a click.
+    CycleResponseView,
     /// Opens the response pane's in-pane search (Task 17, spec §5): the
     /// dispatchable form of the `Find` button / `/` key, so the footer's
     /// Response-pane search chip and the palette can reach it too.

@@ -204,20 +204,7 @@ pub(crate) fn footer_chips(
                 ]
             } else {
                 let mut chips = vec![
-                    (
-                        "r",
-                        "raw",
-                        Some(Action::ResponseViewMode(
-                            crate::components::response::ViewMode::Raw,
-                        )),
-                    ),
-                    (
-                        "h",
-                        "headers",
-                        Some(Action::ResponseViewMode(
-                            crate::components::response::ViewMode::Headers,
-                        )),
-                    ),
+                    ("t", "view", Some(Action::CycleResponseView)),
                     ("/", "search", Some(Action::OpenResponseSearch)),
                     ("alt+q", "filter", Some(Action::OpenJqBar)),
                 ];
@@ -1130,11 +1117,11 @@ mod tests {
     #[test]
     fn response_focus_shows_response_hints() {
         let content = render(PaneId::Response);
-        assert!(content.contains("r  raw"));
+        assert!(content.contains("t  view"));
         assert!(content.contains("/  search"));
     }
 
-    /// Task 17, spec §5: the Response pane's `r`/`h`/`/` chips used to be
+    /// Task 17, spec §5: the Response pane's `t`/`/` chips used to be
     /// plain unregistered text (`None` action) — they must now be clickable
     /// like every other chip.
     #[test]
@@ -1167,16 +1154,9 @@ mod tests {
                 )
             })
             .unwrap();
-        use crate::components::response::ViewMode;
         assert!(
-            hits.rect_of(&Hit::FooterChip(Action::ResponseViewMode(ViewMode::Raw)))
+            hits.rect_of(&Hit::FooterChip(Action::CycleResponseView))
                 .is_some()
-        );
-        assert!(
-            hits.rect_of(&Hit::FooterChip(Action::ResponseViewMode(
-                ViewMode::Headers
-            )))
-            .is_some()
         );
         assert!(
             hits.rect_of(&Hit::FooterChip(Action::OpenResponseSearch))

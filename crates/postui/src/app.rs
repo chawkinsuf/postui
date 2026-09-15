@@ -2757,6 +2757,13 @@ impl App {
                 self.retarget_response_tab_underline(prev_mode);
                 true
             }
+            Action::CycleResponseView => {
+                if let Some(next) = self.session.response.next_view_mode() {
+                    self.update(Action::ResponseViewMode(next))
+                } else {
+                    false
+                }
+            }
             Action::OpenResponseSearch => {
                 self.update(Action::FocusPane(PaneId::Response));
                 self.session.response.open_search();

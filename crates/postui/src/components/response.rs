@@ -705,6 +705,17 @@ impl ReadyView {
         self.parsing && self.generation == generation
     }
 
+    /// The view `t` steps to: Pretty → Raw → Headers → Pretty, with Pretty
+    /// skipped when there is no tree to show.
+    fn next_view_mode(&self) -> ViewMode {
+        match self.mode {
+            ViewMode::Pretty => ViewMode::Raw,
+            ViewMode::Raw => ViewMode::Headers,
+            ViewMode::Headers if self.has_tree_view() => ViewMode::Pretty,
+            ViewMode::Headers => ViewMode::Raw,
+        }
+    }
+
     /// The tree the `Pretty` view actually shows: the filtered tree while a
     /// jq filter is applied, otherwise the body tree.
     pub fn active_tree(&self) -> Option<&JsonTree> {
@@ -1217,6 +1228,12 @@ impl Response {
 
     pub fn view(&self) -> Option<&ReadyView> {
         self.view.as_ref()
+    }
+
+    /// The view `t` steps to, or `None` when there is no ready view (the
+    /// key is a no-op then). See `ReadyView::next_view_mode`.
+    pub fn next_view_mode(&self) -> Option<ViewMode> {
+        self.view.as_ref().map(|v| v.next_view_mode())
     }
 
     /// The jq bar's current text.
@@ -2320,31 +2337,36 @@ impl Response {
         }
 
         match ev.code {
-            KeyCode::Char('r') => {
-                if view.has_tree_view() {
-                    let next = match view.body_mode {
-                        ViewMode::Pretty => ViewMode::Raw,
-                        _ => ViewMode::Pretty,
-                    };
-                    // Dispatched as an action rather than mutated here so it
-                    // funnels through `app.rs`'s `Action::ResponseViewMode`
-                    // arm — the one place the animated tab underline is
-                    // retargeted — exactly like a tab click.
-                    Some(Action::ResponseViewMode(next))
-                } else {
-                    Some(Action::Render)
-                }
-            }
+            // One key walks the three views (spec 2026-09-15: it replaces
+            // `r` and `h`, freeing `h` for the motion). Dispatched as an
+            // action so the tab underline retargets like a click.
+            KeyCode::Char('t') if ev.modifiers.is_empty() => Some(Action::CycleResponseView),
             KeyCode::Char('c') if view.mode == ViewMode::Headers => Some(Action::CopyToClipboard(
                 CopyTarget::ResponseHeader(view.cursor),
             )),
-            KeyCode::Char('h') => {
-                let next = if view.mode == ViewMode::Headers {
-                    view.body_mode
-                } else {
-                    ViewMode::Headers
-                };
-                Some(Action::ResponseViewMode(next))
+            KeyCode::Char('h') if ev.modifiers.is_empty() => {
+                view.scroll_h((-H_SCROLL_STEP).into());
+                Some(Action::Render)
+            }
+            KeyCode::Char('l') if ev.modifiers.is_empty() => {
+                view.scroll_h(H_SCROLL_STEP.into());
+                Some(Action::Render)
+            }
+            KeyCode::Char('d') if ev.modifiers == KeyModifiers::CONTROL => {
+                view.move_cursor((view.height / 2).max(1) as i32);
+                Some(Action::Render)
+            }
+            KeyCode::Char('u') if ev.modifiers == KeyModifiers::CONTROL => {
+                view.move_cursor(-((view.height / 2).max(1) as i32));
+                Some(Action::Render)
+            }
+            KeyCode::Char('f') if ev.modifiers == KeyModifiers::CONTROL => {
+                view.move_cursor(view.height.max(1) as i32);
+                Some(Action::Render)
+            }
+            KeyCode::Char('b') if ev.modifiers == KeyModifiers::CONTROL => {
+                view.move_cursor(-(view.height.max(1) as i32));
+                Some(Action::Render)
             }
             KeyCode::Down if ev.modifiers.contains(KeyModifiers::SHIFT) => {
                 view.select_line_extend(1);
@@ -2459,17 +2481,26 @@ impl Component for Response {
             ResponseState::InFlight { .. } if ev.code == KeyCode::Esc => Some(Action::CancelSend),
             // Modified combos belong to the global keymap, not the pane —
             // except ctrl+Home/ctrl+End, the standard document-top/bottom
-            // jumps, which nothing global binds — unless the jq bar has
-            // the caret: then, like the URL field, it gets every combo
-            // the keymap left unbound (ctrl+arrows, ctrl+a, ctrl/alt+
-            // backspace…), since those are text editing, not navigation.
+            // jumps, and ctrl+d/u/f/b, the vim-alias paging keys, which
+            // nothing global binds — unless the jq bar has the caret: then,
+            // like the URL field, it gets every combo the keymap left
+            // unbound (ctrl+arrows, ctrl+a, ctrl/alt+backspace…), since
+            // those are text editing, not navigation.
             ResponseState::Ready(_)
                 if self.jq.focused
                     || !ev
                         .modifiers
                         .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
                     || (ev.modifiers == KeyModifiers::CONTROL
-                        && matches!(ev.code, KeyCode::Home | KeyCode::End)) =>
+                        && matches!(
+                            ev.code,
+                            KeyCode::Home
+                                | KeyCode::End
+                                | KeyCode::Char('d')
+                                | KeyCode::Char('u')
+                                | KeyCode::Char('f')
+                                | KeyCode::Char('b')
+                        )) =>
             {
                 self.ready_key(ev)
             }
@@ -3832,11 +3863,18 @@ mod tests {
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
-    /// Presses a key and applies a resulting `ResponseViewMode` action the
-    /// way `app.rs` would — the component itself no longer mutates the mode.
+    /// Presses a key and applies a resulting `ResponseViewMode` or
+    /// `CycleResponseView` action the way `app.rs` would — the component
+    /// itself no longer mutates the mode.
     fn press(r: &mut Response, ev: KeyEvent) {
-        if let Some(Action::ResponseViewMode(mode)) = r.handle_key(ev) {
-            r.set_view_mode(mode);
+        match r.handle_key(ev) {
+            Some(Action::ResponseViewMode(mode)) => r.set_view_mode(mode),
+            Some(Action::CycleResponseView) => {
+                if let Some(next) = r.next_view_mode() {
+                    r.set_view_mode(next);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -4394,21 +4432,22 @@ mod tests {
     }
 
     #[test]
-    fn r_toggles_between_pretty_and_raw_verbatim() {
+    fn t_cycles_to_raw_verbatim_and_back_to_pretty() {
         let body = "{\"a\": 1,\n     \"b\": 2}";
         let mut r = ready(body);
         assert!(render(&mut r).contains("  \"a\": 1,"), "pretty re-indents");
-        press(&mut r, ch('r'));
+        press(&mut r, ch('t'));
         let out = render(&mut r);
         assert!(out.contains("{\"a\": 1,"), "raw is verbatim: {out}");
         assert!(
             out.contains("     \"b\": 2}"),
             "raw keeps original spacing: {out}"
         );
-        press(&mut r, ch('r'));
+        press(&mut r, ch('t')); // Raw -> Headers
+        press(&mut r, ch('t')); // Headers -> Pretty
         assert!(
             render(&mut r).contains("  \"a\": 1,"),
-            "toggles back to pretty"
+            "cycles back to pretty"
         );
     }
 
@@ -4416,8 +4455,8 @@ mod tests {
     fn non_json_defaults_to_raw() {
         let mut r = ready("<html>hi</html>");
         assert!(render(&mut r).contains("<html>hi</html>"));
-        // No tree, so `r` has nothing to toggle to.
-        assert_eq!(r.handle_key(ch('r')), Some(Action::Render));
+        // `r` no longer binds anything in the response pane.
+        assert_eq!(r.handle_key(ch('r')), None);
         assert!(render(&mut r).contains("<html>hi</html>"));
     }
 
@@ -4516,13 +4555,14 @@ mod tests {
     #[test]
     fn headers_view_toggles_and_renders_a_header() {
         let mut r = ready(r#"{"a": 1}"#);
-        press(&mut r, ch('h'));
+        press(&mut r, ch('t')); // Pretty -> Raw
+        press(&mut r, ch('t')); // Raw -> Headers
         let out = render(&mut r);
         assert!(out.contains("content-type: application/json"), "{out}");
-        press(&mut r, ch('h'));
+        press(&mut r, ch('t')); // Headers -> Pretty
         assert!(
             render(&mut r).contains("\"a\""),
-            "h again returns to the body view"
+            "t cycles back to the body view"
         );
     }
 
@@ -4650,6 +4690,66 @@ mod tests {
     }
 
     #[test]
+    fn t_cycles_pretty_raw_headers_and_skips_pretty_without_a_tree() {
+        let mut r = ready(r#"{"a":1}"#);
+        render(&mut r);
+        assert_eq!(r.view().unwrap().mode, ViewMode::Pretty);
+        press(&mut r, ch('t'));
+        assert_eq!(r.view().unwrap().mode, ViewMode::Raw);
+        press(&mut r, ch('t'));
+        assert_eq!(r.view().unwrap().mode, ViewMode::Headers);
+        press(&mut r, ch('t'));
+        assert_eq!(r.view().unwrap().mode, ViewMode::Pretty);
+        let mut r = ready("not json");
+        render(&mut r);
+        assert_eq!(r.view().unwrap().mode, ViewMode::Raw);
+        press(&mut r, ch('t'));
+        assert_eq!(r.view().unwrap().mode, ViewMode::Headers);
+        press(&mut r, ch('t'));
+        assert_eq!(r.view().unwrap().mode, ViewMode::Raw, "no tree: Raw and Headers only");
+        assert!(
+            !matches!(r.handle_key(ch('r')), Some(Action::ResponseViewMode(_))),
+            "r no longer switches views"
+        );
+        assert!(
+            !matches!(r.handle_key(ch('h')), Some(Action::ResponseViewMode(_))),
+            "h no longer switches views (it scrolls)"
+        );
+        assert_eq!(
+            r.handle_key(ch('h')),
+            Some(Action::Render),
+            "h scrolls instead"
+        );
+    }
+
+    #[test]
+    fn h_and_l_scroll_like_the_arrows_and_ctrl_keys_page() {
+        let body = (0..100).map(|i| format!("{:>200}", i)).collect::<Vec<_>>().join("\n");
+        let mut a = ready(&body);
+        let mut b = ready(&body);
+        render(&mut a);
+        render(&mut b);
+        a.handle_key(key(KeyCode::Right));
+        b.handle_key(ch('l'));
+        assert_eq!(a.view().unwrap().h_scroll, b.view().unwrap().h_scroll);
+        a.handle_key(key(KeyCode::Left));
+        b.handle_key(ch('h'));
+        assert_eq!(a.view().unwrap().h_scroll, b.view().unwrap().h_scroll);
+        let height = a.view().unwrap().height;
+        a.handle_key(key(KeyCode::PageDown));
+        b.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL));
+        assert_eq!(a.view().unwrap().cursor, b.view().unwrap().cursor);
+        assert_eq!(b.view().unwrap().cursor, height);
+        b.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        assert_eq!(b.view().unwrap().cursor, height - (height / 2).max(1));
+        b.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL));
+        assert_eq!(b.view().unwrap().cursor, height);
+        a.handle_key(key(KeyCode::PageUp));
+        b.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
+        assert_eq!(a.view().unwrap().cursor, b.view().unwrap().cursor);
+    }
+
+    #[test]
     fn end_key_jumps_to_the_widest_line_end() {
         let mut r = wide_raw();
         render(&mut r);
@@ -4759,7 +4859,7 @@ mod tests {
         render(&mut r);
         r.handle_scroll_h(20);
         assert!(r.view().unwrap().h_scroll > 0);
-        press(&mut r, ch('h'));
+        press(&mut r, ch('t'));
         assert_eq!(
             r.view().unwrap().h_scroll,
             0,
@@ -5031,20 +5131,13 @@ mod tests {
     }
 
     #[test]
-    fn r_and_h_dispatch_response_view_mode_actions() {
+    fn t_dispatches_cycle_response_view_action() {
         // Through the action, not a direct mutation: `app.rs`'s
-        // `Action::ResponseViewMode` arm is what retargets the animated
+        // `Action::CycleResponseView` arm is what retargets the animated
         // tab underline, so the keyboard path must funnel through it
         // exactly like a tab click does.
         let mut r = ready(r#"{"a": 1}"#);
-        assert_eq!(
-            r.handle_key(ch('r')),
-            Some(Action::ResponseViewMode(ViewMode::Raw))
-        );
-        assert_eq!(
-            r.handle_key(ch('h')),
-            Some(Action::ResponseViewMode(ViewMode::Headers))
-        );
+        assert_eq!(r.handle_key(ch('t')), Some(Action::CycleResponseView));
     }
 
     #[test]
@@ -5547,7 +5640,7 @@ mod tests {
         let mut r = ready("{\"a\": 1,\n \"b\": 2}");
         r.handle_key(ch('G'));
         assert_eq!(r.view().unwrap().cursor, 3, "last pretty line");
-        press(&mut r, ch('r'));
+        press(&mut r, ch('t'));
         assert_eq!(
             r.view().unwrap().cursor,
             0,

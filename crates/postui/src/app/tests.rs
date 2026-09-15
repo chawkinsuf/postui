@@ -8005,8 +8005,8 @@ fn click_footer_response_chips_toggle_view_and_open_search() {
 
     let r = app
         .hits
-        .rect_of(&Hit::FooterChip(Action::ResponseViewMode(ViewMode::Raw)))
-        .expect("the 'r' chip is registered");
+        .rect_of(&Hit::FooterChip(Action::CycleResponseView))
+        .expect("the 't' chip is registered");
     app.handle_mouse(left_down(r.x + 1, r.y));
     assert_eq!(app.session.response.view().unwrap().mode, ViewMode::Raw);
 

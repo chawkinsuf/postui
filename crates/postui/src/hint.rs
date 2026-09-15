@@ -210,6 +210,7 @@ fn fallback_description(action: &Action) -> Option<String> {
         Action::ResponseViewMode(ViewMode::Raw) => "Show the raw response body".to_string(),
         Action::ResponseViewMode(ViewMode::Headers) => "Show the response headers".to_string(),
         Action::ResponseViewMode(ViewMode::Pretty) => "Show the body as a JSON tree".to_string(),
+        Action::CycleResponseView => "Show the next response view".to_string(),
         Action::CloseScreen => "Go back to the request screen".to_string(),
         Action::SelectManageTab(tab) => format!("Show the {} tab", tab.label()),
         _ => return None,
