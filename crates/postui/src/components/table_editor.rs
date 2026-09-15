@@ -37,9 +37,7 @@ impl Col {
 /// The cell currently being typed into. Editing is always in place: the
 /// clicked (or Enter'd) cell turns into a `LineInput` right where it sits.
 ///
-/// The map is never mutated before the edit commits, so `original` — the
-/// cell's text when the edit began — is still what the map holds; `Esc`
-/// simply drops the edit (and, defensively, writes `original` back).
+/// Esc commits like Enter; the cell's history is the input's own.
 #[derive(Debug, Clone)]
 pub struct CellEdit {
     /// Index into the map — or `map.len()`, the always-present ghost row
@@ -47,8 +45,6 @@ pub struct CellEdit {
     pub row: usize,
     pub col: Col,
     pub input: LineInput,
-    /// The cell's pre-edit text, for `Esc`-revert.
-    pub original: String,
 }
 
 /// Result of a `TableEditorState` interaction.
@@ -187,11 +183,11 @@ impl TableEditorState {
     }
 
     /// Puts `row`/`col` under edit, seeded with its current text and the
-    /// caret at the end. Any previous edit must already have been committed
-    /// or reverted.
+    /// caret at the end. Any previous edit must already have been
+    /// committed.
     fn start_edit(&mut self, row: usize, col: Col, map: &IndexMap<String, Entry>) {
         let row = row.min(map.len());
-        let original = if row == map.len() && col == Col::Value {
+        let text = if row == map.len() && col == Col::Value {
             // Re-entering the ghost's value cell resumes the stashed text.
             self.pending_ghost_value.clone().unwrap_or_default()
         } else {
@@ -205,8 +201,7 @@ impl TableEditorState {
         self.editing = Some(CellEdit {
             row,
             col,
-            input: LineInput::new(&original),
-            original,
+            input: LineInput::new(&text),
         });
     }
 
@@ -250,28 +245,6 @@ impl TableEditorState {
         let (row, warning) = self.commit_cell(map, &edit);
         self.selected = Some(row.unwrap_or(map.len()).min(map.len()));
         TableOutcome::maybe_warn(warning)
-    }
-
-    /// `Esc`: reverts the active cell to its pre-edit text and leaves
-    /// editing. A row that existed survives; a ghost row that was being
-    /// typed simply never happened.
-    pub fn revert(&mut self, map: &mut IndexMap<String, Entry>) {
-        let Some(edit) = self.editing.take() else {
-            return;
-        };
-        // The map is only ever written on commit, so the pre-edit text is
-        // still in place; restoring it is belt-and-braces against any path
-        // that wrote through the map mid-edit.
-        if edit.col == Col::Value
-            && let Some((_, e)) = map.get_index_mut(edit.row)
-        {
-            e.value.clone_from(&edit.original);
-        }
-        if edit.row >= map.len() {
-            // Reverting a ghost edit: the row never happened, stash and all.
-            self.pending_ghost_value = None;
-        }
-        self.selected = Some(edit.row.min(map.len()));
     }
 
     /// Writes one cell into the map. Returns the row index the edit
@@ -489,10 +462,13 @@ impl TableEditorState {
     ) -> TableOutcome {
         let shift = ev.modifiers.contains(KeyModifiers::SHIFT);
         match ev.code {
+            // The field rule: Esc closes the cell keeping its text, and the
+            // cursor stays on the row (Enter is "done with this row" and
+            // drops the selection too). Discard is undo.
             KeyCode::Esc => {
-                self.editing = Some(edit);
-                self.revert(map);
-                TableOutcome::consumed()
+                let (row, warning) = self.commit_cell(map, &edit);
+                self.exit_editing(row.unwrap_or(edit.row), map);
+                TableOutcome::maybe_warn(warning)
             }
             KeyCode::Enter => {
                 self.editing = Some(edit);
@@ -1170,7 +1146,6 @@ mod tests {
         assert_eq!(edit.col, Col::Value);
         assert_eq!(edit.input.text(), "2", "seeded with the cell's own text");
         assert_eq!(edit.input.cursor(), 1, "caret at the end");
-        assert_eq!(edit.original, "2");
         assert_eq!(t.selected, Some(0), "the clicked row is the selected row");
     }
 
@@ -1219,16 +1194,16 @@ mod tests {
     }
 
     #[test]
-    fn revert_restores_the_cell_and_leaves_the_row_alone() {
-        let mut map = map_of(&[("page", "2")]);
+    fn esc_on_a_ghost_key_cell_creates_the_row_like_enter() {
+        let mut map = map_of(&[]);
         let mut t = TableEditorState::default();
-        t.click_cell(0, Col::Value, &mut map);
-        type_str(&mut t, &mut map, "999");
-        t.revert(&mut map);
-        assert!(t.editing.is_none());
-        assert_eq!(map["page"].value, "2", "the pre-edit value is back");
-        assert_eq!(map.len(), 1, "the row survives");
-        assert_eq!(t.selected, Some(0), "the row stays selected");
+        t.begin_add(&map);
+        for c in "k".chars() {
+            t.handle_key(key(KeyCode::Char(c)), &mut map);
+        }
+        t.handle_key(key(KeyCode::Esc), &mut map);
+        assert!(map.contains_key("k"));
+        assert_eq!(t.selected, Some(0));
     }
 
     #[test]
@@ -1327,17 +1302,20 @@ mod tests {
     }
 
     #[test]
-    fn esc_on_the_ghost_key_also_discards_a_stashed_value() {
+    fn esc_on_the_empty_ghost_key_keeps_the_stashed_value_for_next_time() {
         let mut map = IndexMap::new();
         let mut t = TableEditorState::default();
         t.click_cell(0, Col::Value, &mut map);
         type_str(&mut t, &mut map, "42");
         t.click_cell(0, Col::Key, &mut map);
-        t.revert(&mut map); // Esc: the ghost row never happened
+        // Esc on an empty key commits nothing (no key to create a row
+        // with), but it's still just a commit — the earlier stash is not
+        // typed text in this field, and Esc never discards typed text.
+        t.handle_key(key(KeyCode::Esc), &mut map);
         t.click_cell(0, Col::Key, &mut map);
         type_str(&mut t, &mut map, "id");
         t.commit(&mut map);
-        assert_eq!(map["id"].value, "", "Esc wiped the stash too");
+        assert_eq!(map["id"].value, "42", "Esc did not discard the stashed value");
     }
 
     // --- keyboard: navigation --------------------------------------------
@@ -1568,36 +1546,39 @@ mod tests {
     }
 
     #[test]
-    fn esc_reverts_the_cell_and_exits_editing_without_touching_the_row() {
+    fn esc_commits_the_cell_and_exits_editing_leaving_the_row_selected() {
         let mut map = map_of(&[("a", "1")]);
         let mut t = TableEditorState::default();
         t.click_cell(0, Col::Value, &mut map);
         type_str(&mut t, &mut map, "9");
         assert!(t.handle_key(key(KeyCode::Esc), &mut map).consumed);
         assert!(t.editing.is_none());
-        assert_eq!(map["a"].value, "1", "the cell reverted");
+        assert_eq!(map["a"].value, "19", "the typed text stands");
         assert_eq!(map.len(), 1, "the row survives");
+        assert_eq!(t.selected, Some(0), "the row stays selected");
 
-        // Esc after a Tab reverts only the cell it is in: the already
-        // committed key cell keeps its new text.
+        // Esc after a Tab commits only the cell it is in: the already
+        // committed key cell keeps its new text too.
         t.click_cell(0, Col::Key, &mut map);
         type_str(&mut t, &mut map, "x");
         t.handle_key(key(KeyCode::Tab), &mut map);
         type_str(&mut t, &mut map, "8");
         t.handle_key(key(KeyCode::Esc), &mut map);
         assert_eq!(map.get_index(0).unwrap().0, "ax", "the rename stands");
-        assert_eq!(map["ax"].value, "1", "the value cell reverted");
+        assert_eq!(map["ax"].value, "198", "the value cell's edit stands");
     }
 
     #[test]
-    fn esc_on_a_ghost_row_being_typed_discards_it() {
+    fn esc_on_a_ghost_row_being_typed_creates_it_like_enter() {
         let mut map = map_of(&[("a", "1")]);
         let mut t = TableEditorState::default();
         t.click_cell(1, Col::Key, &mut map);
         type_str(&mut t, &mut map, "new");
         t.handle_key(key(KeyCode::Esc), &mut map);
         assert!(t.editing.is_none());
-        assert_eq!(map.len(), 1, "the abandoned ghost added nothing");
+        assert_eq!(map.len(), 2, "the ghost became a real row");
+        assert!(map.contains_key("new"));
+        assert_eq!(t.selected, Some(1), "the new row stays selected");
     }
 
     // --- renames, duplicates, warnings ------------------------------------

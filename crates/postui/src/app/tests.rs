@@ -1566,14 +1566,18 @@ fn a_ghost_row_left_empty_creates_nothing() {
 }
 
 #[test]
-fn esc_mid_edit_puts_the_original_cell_text_back() {
+fn esc_mid_edit_commits_the_cell_and_keeps_the_row_selected() {
     let mut app = app_with_one_param();
+    app.capture_undo(); // seed the shadow before the edit
     click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
     type_chars(&mut app, "999");
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(app.editor.table.editing.is_none());
-    assert_eq!(app.editor.params["page"].value, "1", "the edit reverted");
-    assert_eq!(app.editor.params.len(), 1, "the row survives");
+    assert_eq!(app.editor.params["page"].value, "1999", "Esc keeps the text");
+    assert_eq!(app.editor.table.selected, Some(0), "…and stays on the row");
+    app.capture_undo();
+    app.update(Action::Undo);
+    assert_eq!(app.editor.params["page"].value, "1", "discard is undo");
 }
 
 #[test]
@@ -7729,9 +7733,7 @@ fn ctrl_c_copies_a_table_cell_selection_and_keeps_the_edit_live() {
     app.editor.table.editing = Some(CellEdit {
         row: 0,
         col: Col::Key,
-        input,
-        original: "page".into(),
-    });
+        input,    });
 
     app.handle_key(ctrl('c'));
 
@@ -18321,9 +18323,7 @@ fn right_click_on_the_edited_table_cell_offers_the_text_menu_and_keeps_the_edit_
     app.editor.table.editing = Some(CellEdit {
         row: 0,
         col: Col::Key,
-        input,
-        original: "page".into(),
-    });
+        input,    });
     render_once(&mut app);
     let cell = app
         .hits
@@ -18372,9 +18372,7 @@ fn right_click_elsewhere_on_the_row_keeps_the_row_menu_and_commits_the_edit() {
     app.editor.table.editing = Some(CellEdit {
         row: 0,
         col: Col::Key,
-        input: crate::components::line_input::LineInput::new("pages"),
-        original: "page".into(),
-    });
+        input: crate::components::line_input::LineInput::new("pages"),    });
     render_once(&mut app);
     // The value cell of the same row is not the cell under edit.
     let value = app
@@ -18688,9 +18686,7 @@ fn extracting_a_table_cell_selection_replaces_the_part_and_commits_the_cell() {
     app.editor.table.editing = Some(CellEdit {
         row: 0,
         col: Col::Value,
-        input,
-        original: "Bearer abc".into(),
-    });
+        input,    });
 
     app.update(Action::ConfirmExtractSelection {
         name: "token".into(),
