@@ -28,8 +28,9 @@ One branch. User-visible changes:
   single-line inputs (caret, word navigation, undo).
 - Vim navigation aliases in every list surface, as strict synonyms of
   the arrow and page keys already there.
-- Two relabels: the response headers view moves from `h` to `H`, and the
-  Variable Manager's new selector moves from `g` to `a`.
+- Two relabels: the response pane's `r` (raw⇄pretty) and `h`
+  (headers⇄body) collapse into one `t` that cycles the three views, and
+  the Variable Manager's new selector moves from `g` to `a`.
 
 Out of scope, and listed under "Deferred": the vim mode itself (modal
 editing, first-launch choice, Settings row), a footer label profile, a
@@ -165,21 +166,54 @@ is a type swap plus using the existing `draw_line_*` helpers.
 - The stack is bounded (the app history's `MAX_STEPS` is fine) but in
   practice a field's life is short.
 
+### Two histories, one handover
+
+The model, for every single-line field:
+
+- **While the field is open**, ctrl+z / ctrl+shift+z walk the field's
+  own step history. The app history records nothing for that field's
+  edits during this time.
+- **When the field closes** (Esc or Enter), its final state becomes
+  **one** step in the app history, whatever the surface's commit path
+  is. Open it again, change it, close it: a second step. Cancelling a
+  modal produces no step.
+- **The field's own history is dropped on close.** A later ctrl+z
+  outside the field steps through closes, never through keystrokes.
+
+This holds for fields that write into the request live, too. The jq
+bar and the URL line sync into the request on every keystroke (the jq
+bar so the filter stays live, `sync_jq`), and today `capture_undo`
+turns those live writes into app-history steps in two-second bursts.
+That capture is **gated while the field is open**: the shadow copy the
+diff runs against stays at the pre-edit state, and the close triggers a
+single capture, which yields exactly one step. The live view keeps
+updating; only the recording waits. Consequences:
+
+- `Action::CancelJqEdit` (Esc reverts the bar to the text at focus
+  time) is deleted; ctrl+z inside the bar replaces it.
+- An in-field undo that returns the text to where it started, followed
+  by a close, is a no-op diff and records nothing.
+- A send fired while the URL line is open (ctrl+enter) uses the live
+  text as today; the undo step still lands on close.
+
+**Exception: the body editor.** It is a document, not a field, and has
+no close. It keeps its current burst coalescing in the app history; one
+step per blur would make a long editing session a single undo. When the
+vim mode lands, `u` in the body is edtui's own undo.
+
 ### Lifetime
 
-History lives as long as the `LineInput` instance:
+The field history lives as long as the `LineInput` instance holds an
+open edit:
 
 - A table cell, grid cell, Settings edit or Variable Manager field
-  creates its input when the edit opens and drops it on close, so the
-  history goes with it and the commit becomes one step in the app
-  history.
+  creates its input when the edit opens and drops it on close.
 - A form modal's inputs live as long as the modal. Tab out to the
   buttons, come back, and undo still works. Cancel or confirm the modal
   and the history is gone. Nothing in a modal touches the app history
-  until Confirm dispatches its action.
-- The URL line and jq bar inputs are long-lived. Their history is reset
-  when the field closes, so a later edit cannot undo into a previous
-  session's text (that is the app history's job).
+  until Confirm dispatches its action, which is one step as today.
+- The URL line and jq bar inputs are long-lived; their history is
+  cleared on close, per the handover above.
 
 ### Routing
 
@@ -251,8 +285,13 @@ kill-to-start in a text box.
 
 ### Relabels
 
-- **Response headers view**: `h` → `H`. Shift+h is a vim screen motion
-  nobody will miss. The footer chip and hover hint follow.
+- **Response views**: `r` (raw⇄pretty) and `h` (headers⇄body) are
+  replaced by a single `t` that cycles Pretty → Raw → Headers → Pretty.
+  The tabs stay clickable and the palette's response-toggle command
+  stays, so this is the keyboard's one path rather than two, and it
+  frees `h` for the motion without a shifted letter. The two footer
+  chips (`r raw`, `h headers`) become one `t view` chip; hover hints
+  follow.
 - **Variable Manager new selector**: `g` → `a`, matching the table's
   `a add row`. Footer chip and hint follow.
 
@@ -275,7 +314,12 @@ needed in this round.
   deletion run, paste, cursor move splits), redo cleared by a new edit,
   and the bound; router tests that ctrl+z with an open cell does not pop
   the app history, and that it does once the cell has closed; the
-  modal carve-out mirrors the existing paste carve-out test.
+  modal carve-out mirrors the existing paste carve-out test. For the
+  live-synced fields: typing in the jq bar across more than two seconds
+  then closing yields exactly one app-history step, a second open/edit/
+  close yields a second, and an in-field undo back to the original
+  followed by close yields none. The body editor's burst test is
+  unchanged.
 - **Aliases**: one table-driven parity test per surface, each row an
   (alias, canonical key) pair asserted to produce identical state from
   the same starting state, including the clamps at the ends.
@@ -304,5 +348,3 @@ needed in this round.
 - **Keyboard access to context menus**: no key opens one today.
 - **`gg`, counts, operator+motion**: need a pending-key buffer in the
   router and a sequence-aware keymap; only worth it with the vim mode.
-- **Response `H` relabel alternative**: a plain digit, if the shifted
-  letter proves awkward.
