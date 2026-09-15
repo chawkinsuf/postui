@@ -55,11 +55,13 @@ pub(crate) fn footer_chips(
     // The response pane's jq bar: focused swaps the chip set for the bar's
     // own (apply/cancel/unfilter/describe); open adds the `close` chip.
     jq_bar: JqBarState,
-    // A text field owns the caret (`App::field_open`): Esc closes it
-    // keeping the text (the field rule, spec 2026-09-15), so the pane
-    // advertises `esc done` and never `esc cancel` — an open field owns
-    // Esc whatever else is going on. On the response pane it also picks
-    // out the search box's own pair, the field the jq bar isn't.
+    // *This pane's* own text field owns the caret — `App::pane_field_open`,
+    // not the app-wide `field_open` (a live cell edit survives a jump to
+    // the response pane, and must not put the editor's chips on its row).
+    // Esc closes such a field keeping its text (the field rule, spec
+    // 2026-09-15), so the pane advertises `esc done` and never `esc
+    // cancel`. On the response pane it also picks out the search box's own
+    // pair, the field the jq bar isn't.
     field_open: bool,
 ) -> Vec<(&'static str, &'static str, Option<Action>)> {
     let chips: Vec<(&'static str, &'static str, Option<Action>)> = match focus {
@@ -75,23 +77,26 @@ pub(crate) fn footer_chips(
             ("alt+\u{2191}\u{2193}", "reorder", None),
         ],
         PaneId::Editor => {
-            let mut chips = vec![
-                // Shift+Enter is only reportable under the kitty keyboard
-                // protocol; where the terminal can't deliver it, ^R is the
-                // advertised send key (both bindings stay active regardless).
-                // While the open request is in flight the send shortcuts go
-                // dead, and esc — the cancel shortcut — is advertised
-                // instead, unless a field is open: Esc is then the field's,
-                // and the send chip stays (^R still sends from a field).
-                if sending && !field_open {
-                    ("esc", "cancel", Some(Action::CancelSend))
-                } else {
-                    (
-                        if shift_enter_send { "⇧enter" } else { "^R" },
-                        "send",
-                        Some(Action::Send),
-                    )
-                },
+            let mut chips: Vec<(&'static str, &'static str, Option<Action>)> = Vec::new();
+            // Shift+Enter is only reportable under the kitty keyboard
+            // protocol; where the terminal can't deliver it, ^R is the
+            // advertised send key (both bindings stay active regardless).
+            // While the open request is in flight the send shortcuts go
+            // dead, and esc — the cancel shortcut — is advertised instead.
+            // With a field open there is nothing honest to put in that
+            // slot: Esc belongs to the field, and the send keys are dead
+            // too (`Action::Send` refuses while the open request is in
+            // flight), so the slot goes empty and `esc done` leads the row.
+            match (sending, field_open) {
+                (true, true) => {}
+                (true, false) => chips.push(("esc", "cancel", Some(Action::CancelSend))),
+                _ => chips.push((
+                    if shift_enter_send { "⇧enter" } else { "^R" },
+                    "send",
+                    Some(Action::Send),
+                )),
+            }
+            chips.extend([
                 (
                     "alt+shift+v",
                     "vars",
@@ -102,25 +107,30 @@ pub(crate) fn footer_chips(
                 // Arrows are the primary route (method ← URL ↓ tabs ↓ content);
                 // alt+left/right cycle tabs; ctrl-digits now switch spaces.
                 ("↑↓←→", "navigate", None),
-            ];
+            ]);
+            // Every insert below lands before the trailing vars + navigate
+            // pair, so it keeps its place whether or not the leading
+            // send/cancel slot is there.
             if url_focused {
                 // "tls" leans on context (the padlock sits in the focused
                 // bar); labels stay tight so the vars chip survives the
                 // 120-col dirty footer.
+                let at = chips.len() - 2;
                 chips.insert(
-                    1,
+                    at,
                     (
                         "alt+y",
                         "copy url",
                         Some(Action::CopyToClipboard(crate::action::CopyTarget::Url)),
                     ),
                 );
-                chips.insert(2, ("alt+i", "tls", Some(Action::ToggleInsecure)));
+                chips.insert(at + 1, ("alt+i", "tls", Some(Action::ToggleInsecure)));
             } else if let Some(label) = add_row_label {
                 // Named for what it adds on the active tab ("add header" on
                 // Headers, …); hidden on the Body tab, where the action is
                 // inert.
-                chips.insert(1, ("alt+a", label, Some(Action::TableAddRow)));
+                let at = chips.len() - 2;
+                chips.insert(at, ("alt+a", label, Some(Action::TableAddRow)));
             }
             if let Some((i, enabled)) = table_row_selected {
                 // Keyboard twins of the expanded row's ● toggle and 󰆴
@@ -257,7 +267,8 @@ pub fn draw_footer(
     table_row_selected: Option<(usize, bool)>,
     // See `footer_chips`: where the response pane's jq bar is.
     jq_bar: JqBarState,
-    // See `footer_chips`: a text field owns the caret, so Esc is its.
+    // See `footer_chips`: this pane's own text field owns the caret, so
+    // Esc is its.
     field_open: bool,
     // Replaces the per-pane chips wholesale when `Some` — a modal's own
     // chip set, or the Variable Manager screen's
@@ -877,6 +888,10 @@ mod tests {
         assert!(
             !chips.iter().any(|(k, l, _)| *k == "esc" && *l == "cancel"),
             "sending or not, an open field owns Esc"
+        );
+        assert!(
+            !chips.iter().any(|(_, l, _)| *l == "send"),
+            "the send keys are dead in flight: {chips:?}"
         );
         let chips = footer_chips(
             PaneId::Response,

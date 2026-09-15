@@ -1486,6 +1486,49 @@ fn field_open_agrees_with_the_open_text_field() {
     agree(&mut app, true, "a Settings edit");
 }
 
+/// The footer's chips are pane-local: a field left open on one pane must
+/// not put its keys on another pane's row. A live cell edit survives
+/// `alt+q`'s jump to the response pane — where there is no field at all
+/// once the bar blurs, so no `esc done` and no search pair.
+#[test]
+fn the_footer_field_flag_is_pane_local() {
+    let mut app = app_with_one_param();
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+    ready_response(&mut app, JQ_BODY);
+    assert!(app.session.response.set_jq_focus(true));
+    app.session.response.set_jq_focus(false); // the bar is open, not focused
+    app.focus = PaneId::Response;
+
+    assert!(
+        app.field_open(),
+        "the cell edit is still the app's open field — that is what Esc would close"
+    );
+    assert!(
+        !app.pane_field_open(PaneId::Response),
+        "the response pane has no field of its own"
+    );
+    assert!(app.pane_field_open(PaneId::Editor));
+
+    let chips = crate::components::footer::footer_chips(
+        PaneId::Response,
+        false,
+        false,
+        None,
+        false,
+        None,
+        crate::components::footer::JqBarState::Open,
+        app.pane_field_open(PaneId::Response),
+    );
+    assert!(
+        !chips.iter().any(|(k, l, _)| *k == "enter" && *l == "search"),
+        "no search box is open: {chips:?}"
+    );
+    assert!(
+        !chips.iter().any(|(k, l, _)| *k == "esc" && *l == "done"),
+        "no field of this pane's is open: {chips:?}"
+    );
+}
+
 #[test]
 fn click_cell_edits_in_place_and_click_away_commits() {
     let mut app = app_with_one_param();

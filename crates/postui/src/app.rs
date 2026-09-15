@@ -2316,7 +2316,8 @@ impl App {
 
     /// Whether a text field owns the caret right now — the immutable twin
     /// of [`Self::open_text_field_mut`], for callers that only need the
-    /// question answered (the footer's `esc done` chip, `Action::CloseField`).
+    /// question answered (`Action::CloseField`; the footer asks the
+    /// pane-local [`Self::pane_field_open`] instead).
     /// The two must agree: this is `open_text_field_mut().is_some()` plus
     /// the Settings tab's edit, which that one special-cases away because
     /// its input is private.
@@ -2337,6 +2338,24 @@ impl App {
                     || (self.focus == PaneId::Response && self.session.response.field_open())
             }
             Screen::Testbed => false,
+        }
+    }
+
+    /// Whether the field that owns the caret is *`pane`'s own* — what the
+    /// footer's per-pane chips ask, as against [`Self::field_open`]'s
+    /// app-wide question (which only `Action::CloseField` needs). The two
+    /// differ: a live cell edit survives a jump to the response pane, and
+    /// an active search box survives one back to the editor, so a field on
+    /// one pane must never put `esc done` on another's chip row.
+    pub(crate) fn pane_field_open(&self, pane: PaneId) -> bool {
+        match pane {
+            PaneId::Sidebar => false,
+            PaneId::Editor => {
+                self.editor.table.editing.is_some() || self.editor.sub_focus == SubFocus::Url
+            }
+            PaneId::Response => {
+                self.focus == PaneId::Response && self.session.response.field_open()
+            }
         }
     }
 
