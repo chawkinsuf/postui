@@ -435,7 +435,7 @@ pub struct App {
     shadow_cursor: crate::undo::CursorPos,
     /// Whether the last `capture_undo` call was held back by an open
     /// live-synced field (see [`Self::field_gate`]); the call that finds
-    /// the gate open again is the field's close and records without
+    /// the gate off again is the field's close and records without
     /// coalescing, so two closes are two steps.
     field_gate_was_on: bool,
     /// Set by wholesale-change arms (format/minify, discard, method change,
@@ -2224,12 +2224,16 @@ impl App {
     pub fn capture_undo(&mut self) -> bool {
         let current_slug = self.editor.slug.clone();
         let cursor = self.editor.cursor_pos();
-        // A field that has left the URL line closes its session here too,
-        // so a mouse blur or alt+u is as good as Esc.
-        if self.editor.sub_focus != SubFocus::Url {
+        // A caret that has left the URL line closes its session here too,
+        // so a mouse blur, alt+u or a Tab out of the pane is as good as Esc
+        // — focus counts, since a pane switch moves it without touching
+        // `sub_focus`.
+        if self.focus != PaneId::Editor || self.editor.sub_focus != SubFocus::Url {
             self.editor.url.end_edit();
         }
         if self.field_gate() {
+            // A wholesale change taken mid-field (`no_coalesce`, e.g. alt+j
+            // format) is still pending here: it joins the close as one step.
             self.field_gate_was_on = true;
             return false;
         }

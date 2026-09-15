@@ -16893,6 +16893,34 @@ mod undo_tests {
         );
     }
 
+    /// A pane switch moves the focus without touching `sub_focus`, and it
+    /// closes the URL line's edit session all the same: the edit lands as
+    /// one app step, and a ctrl+z after coming back is the app history's,
+    /// not the field's — an in-field undo never steps across the boundary.
+    #[test]
+    fn tabbing_out_of_the_editor_closes_the_url_lines_edit_session() {
+        let mut app = App::new_for_test();
+        app.update(Action::CreateRequest("r".into()));
+        app.capture_undo();
+        let steps = app.history.undo_len();
+        app.focus = PaneId::Editor;
+        app.editor.sub_focus = SubFocus::Url;
+        type_chars(&mut app, "/a");
+        app.update(Action::FocusNext);
+        assert_ne!(app.focus, PaneId::Editor, "the focus left the editor");
+        app.capture_undo();
+        assert_eq!(app.history.undo_len(), steps + 1, "close: one step");
+        assert!(!app.editor.url.edited(), "the line's session ended");
+
+        app.focus = PaneId::Editor;
+        app.editor.sub_focus = SubFocus::Url;
+        app.handle_key(ctrl('z'));
+        assert!(
+            !app.editor.url.text().ends_with("/a"),
+            "ctrl+z is the app history's, not the closed field's"
+        );
+    }
+
     /// An in-field undo that returns the text to where it started, then a
     /// close, records nothing.
     #[test]
@@ -19142,10 +19170,11 @@ fn esc_cancels_the_edit_and_a_bar_opened_onto_no_filter_closes_with_nothing_to_u
     let mut app = App::new_for_test();
     ready_response(&mut app, JQ_BODY);
     let full = app.session.response.view().unwrap().view_text();
+    app.capture_undo(); // seed the shadow
+    let steps = app.history.undo_len();
     app.handle_key(alt('q'));
     type_str(&mut app, ".data.total");
     app.capture_undo();
-    app.no_coalesce = true;
     assert_eq!(app.session.response.view().unwrap().view_text(), "2");
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert_eq!(app.editor.jq, "", "esc drops what was typed");
@@ -19159,7 +19188,8 @@ fn esc_cancels_the_edit_and_a_bar_opened_onto_no_filter_closes_with_nothing_to_u
     // The app history waited for the bar to close, and the cancel closed it
     // on the filter it opened with: there is no step, and undo has nothing
     // of this edit to take off.
-    app.capture_undo();
+    assert!(!app.capture_undo(), "the close has nothing to record");
+    assert_eq!(app.history.undo_len(), steps);
     app.update(Action::Undo);
     assert_eq!(app.editor.jq, "");
     assert_eq!(app.session.response.view().unwrap().view_text(), full);
