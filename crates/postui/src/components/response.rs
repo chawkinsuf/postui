@@ -1359,6 +1359,48 @@ impl Response {
         self.jq.focused
     }
 
+    /// Routes an undo (or `redo`) into the pane's open text field. The bar
+    /// cannot be stepped through [`Self::open_text_field_mut`] alone: a
+    /// bare `LineInput::undo` leaves `jq.edited` clear, and the reconcile
+    /// at the end of the same `update` would write the editor's filter
+    /// straight back over it. So the jq branch marks the edit exactly as a
+    /// keystroke into the bar does. `false` when there was nothing to step.
+    pub fn field_undo(&mut self, redo: bool) -> bool {
+        if self.jq.focused {
+            let stepped = if redo {
+                self.jq.input.redo()
+            } else {
+                self.jq.input.undo()
+            };
+            if stepped {
+                self.jq.edited = true;
+            }
+            return stepped;
+        }
+        match self.open_text_field_mut() {
+            Some(f) => {
+                if redo {
+                    f.redo()
+                } else {
+                    f.undo()
+                }
+            }
+            None => false,
+        }
+    }
+
+    /// The pane's open text field, if any: the jq bar while it has the
+    /// caret, else the search box while its input is live. What the app's
+    /// undo routing acts on.
+    pub fn open_text_field_mut(&mut self) -> Option<&mut LineInput> {
+        if self.jq.focused {
+            return Some(&mut self.jq.input);
+        }
+        let view = self.view.as_mut()?;
+        let search = view.search.as_mut()?;
+        search.active.then_some(&mut search.input)
+    }
+
     /// Focuses (or blurs) the jq bar. Returns whether it took: focusing
     /// fails with no ready view or a body jq can't run against.
     pub fn set_jq_focus(&mut self, focused: bool) -> bool {

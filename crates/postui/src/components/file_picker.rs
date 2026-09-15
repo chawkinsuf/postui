@@ -597,6 +597,22 @@ impl FilePickerState {
         self.rebuild_rows();
     }
 
+    /// Steps the field's edit history one place (back, or forward when
+    /// `redo`) and rebuilds the listing from it, exactly as a keystroke
+    /// into the field does. Returns whether there was a step to take.
+    pub(crate) fn undo_filter(&mut self, redo: bool) -> bool {
+        let stepped = if redo {
+            self.input.redo()
+        } else {
+            self.input.undo()
+        };
+        if stepped {
+            self.filter_active = true;
+            self.rebuild_rows();
+        }
+        stepped
+    }
+
     /// Moves the row selection by `delta` (`-1` = Up, `1` = Down), clamped
     /// to the row list, same as the arrow keys and their ctrl+p/ctrl+n
     /// aliases.

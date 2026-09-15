@@ -689,6 +689,70 @@ impl ModalStack {
         }
     }
 
+    /// [`Self::focused_input`], mutably — for the undo/redo keys, which dig
+    /// past the modal into its live field exactly as paste does.
+    pub fn focused_input_mut(&mut self) -> Option<&mut LineInput> {
+        match self.stack.last_mut()? {
+            Modal::Prompt { input, .. } => Some(input),
+            Modal::NewProject {
+                name,
+                path,
+                on_path,
+                ..
+            } => Some(if *on_path { path } else { name }),
+            Modal::MultiPrompt { fields, focus, .. } => {
+                fields.get_mut(*focus).map(|f| &mut f.input)
+            }
+            Modal::FieldsEditor(state) => {
+                let focus = state.focus;
+                state
+                    .rows
+                    .get_mut(focus)
+                    .filter(|r| !r.removed)
+                    .map(|r| &mut r.input)
+            }
+            Modal::FilePicker(state) => Some(state.input_mut()),
+            _ => None,
+        }
+    }
+
+    /// Whether the top modal's live field has keystrokes of its own to
+    /// step — the condition under which the undo keys belong to it. The
+    /// three filter pickers keep their input private behind
+    /// `undo_filter`, so they answer for themselves; everything else (the
+    /// file picker included) answers through [`Self::focused_input`].
+    pub fn field_edited(&self) -> bool {
+        match self.stack.last() {
+            Some(Modal::Palette(state)) => state.filter_edited(),
+            Some(Modal::Chooser(state)) => state.filter_edited(),
+            Some(Modal::VarPicker(state)) => state.filter_edited(),
+            _ => self.focused_input().is_some_and(|f| f.edited()),
+        }
+    }
+
+    /// Routes an undo (or `redo`) into the top modal's live field. A
+    /// picker goes through its own `undo_filter`, which re-runs the filter
+    /// so the rows never lag the query; everything else steps its
+    /// `LineInput` directly. `false` when there was nothing to step.
+    pub fn field_undo(&mut self, redo: bool) -> bool {
+        match self.stack.last_mut() {
+            Some(Modal::Palette(state)) => state.undo_filter(redo),
+            Some(Modal::Chooser(state)) => state.undo_filter(redo),
+            Some(Modal::VarPicker(state)) => state.undo_filter(redo),
+            Some(Modal::FilePicker(state)) => state.undo_filter(redo),
+            _ => match self.focused_input_mut() {
+                Some(f) if f.edited() => {
+                    if redo {
+                        f.redo()
+                    } else {
+                        f.undo()
+                    }
+                }
+                _ => false,
+            },
+        }
+    }
+
     /// The `Hit::ModalInput` index of the text box that currently holds
     /// the top modal's field focus, if any — what a click-time window
     /// mapping needs to know *before* `focus_input` moves the focus.

@@ -901,6 +901,104 @@ fn ctrl_v_pastes_into_an_open_modal_prompt_input() {
     assert_eq!(input.text(), "pasted-name");
 }
 
+/// ctrl+z inside an open table cell undoes the cell's own keystrokes and
+/// leaves the app history alone; once the cell has closed, ctrl+z is the
+/// app history again.
+#[test]
+fn ctrl_z_in_an_open_cell_undoes_in_the_cell_not_the_history() {
+    let mut app = app_with_one_param();
+    app.capture_undo();
+    let steps = app.history.undo_len();
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+    type_chars(&mut app, "999");
+    app.capture_undo();
+    assert_eq!(
+        app.history.undo_len(),
+        steps,
+        "an open cell records nothing yet"
+    );
+    app.handle_key(ctrl('z'));
+    let edit = app.editor.table.editing.as_ref().expect("the cell stays open");
+    assert_eq!(edit.input.text(), "1", "the typing run came off inside the cell");
+    assert_eq!(app.history.undo_len(), steps, "the app history was not touched");
+}
+
+/// ctrl+z digs past a modal into its focused field, like ctrl+v does.
+#[test]
+fn ctrl_z_in_a_modal_prompt_undoes_the_prompts_typing() {
+    let mut app = App::new_for_test();
+    app.modals.push(Modal::Prompt {
+        title: "Name".into(),
+        input: crate::components::line_input::LineInput::new(""),
+        kind: PromptKind::NewRequest,
+        revealed: false,
+    });
+    type_chars(&mut app, "abc");
+    app.handle_key(ctrl('z'));
+    let Some(Modal::Prompt { input, .. }) = app.modals.top() else {
+        panic!("the prompt stays open");
+    };
+    assert_eq!(input.text(), "");
+    app.handle_key(KeyEvent::new(
+        KeyCode::Char('z'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    ));
+    let Some(Modal::Prompt { input, .. }) = app.modals.top() else {
+        panic!("the prompt stays open");
+    };
+    assert_eq!(input.text(), "abc", "ctrl+shift+z redoes inside the prompt");
+}
+
+/// With a field open but nothing typed, ctrl+z is the app history as
+/// before (spec: "otherwise today's behaviour").
+#[test]
+fn ctrl_z_in_an_untouched_open_cell_is_the_app_history() {
+    let mut app = app_with_one_param();
+    // One step for the app history to walk back: a keystroke into the URL,
+    // closed with Esc so the URL line is not the open field any more.
+    app.capture_undo();
+    app.editor.sub_focus = SubFocus::Url;
+    app.handle_key(plain('/'));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.capture_undo();
+    let steps = app.history.undo_len();
+    assert!(steps > 0);
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+    app.handle_key(ctrl('z'));
+    assert_eq!(
+        app.history.undo_len(),
+        steps - 1,
+        "the app history stepped back"
+    );
+}
+
+/// A picker's filter box is not just a `LineInput`: undoing in it has to
+/// re-run the filter, or the rows would go on showing the old query's
+/// matches under a query that no longer says so.
+#[test]
+fn ctrl_z_in_the_palette_walks_the_filter_back_and_refilters() {
+    let mut app = App::new_for_test();
+    app.update(Action::OpenPalette);
+    let all = {
+        let Some(Modal::Palette(p)) = app.modals.top() else {
+            panic!("palette open");
+        };
+        p.filtered().len()
+    };
+    type_chars(&mut app, "quit");
+    let Some(Modal::Palette(p)) = app.modals.top() else {
+        panic!("palette open");
+    };
+    assert!(p.filtered().len() < all, "the query narrowed the list");
+    app.handle_key(ctrl('z'));
+    let Some(Modal::Palette(p)) = app.modals.top() else {
+        panic!("the palette stays open");
+    };
+    assert_eq!(p.input(), "", "the typing run came off");
+    assert_eq!(p.filtered().len(), all, "and the rows refiltered with it");
+    assert!(p.selected() < p.filtered().len());
+}
+
 /// With the body caret live, ctrl+v pastes multi-line text verbatim.
 #[test]
 fn ctrl_v_pastes_multiline_text_into_the_body_editor() {
@@ -4253,6 +4351,9 @@ fn a_dissolved_burst_with_an_edit_between_its_halves_records_no_second_marker() 
         delta: 1,
     });
     dirty_the_editor(&mut app);
+    // Close the URL field: with it still live, ctrl+z would be its own
+    // undo and this test is about the app history.
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.capture_undo();
     let url_after_edit = app.editor.url.text().to_string();
     assert_eq!(
@@ -19198,6 +19299,11 @@ fn undo_restores_the_previous_filter_text_in_the_bar() {
     app.no_coalesce = true;
     type_str(&mut app, ".total");
     app.capture_undo();
+    // Take the caret off the bar: while it has the caret ctrl+z is the
+    // bar's own undo, and this test is about the app history flowing back
+    // into it.
+    app.focus = PaneId::Editor;
+    app.update(Action::Render);
     app.update(Action::Undo);
     assert_eq!(app.editor.jq, ".data");
     assert_eq!(

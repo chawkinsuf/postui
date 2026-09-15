@@ -277,6 +277,26 @@ impl SettingsTab {
         self.field_text = self.input.text().to_string();
     }
 
+    /// Undo (or redo) inside the live edit, re-syncing the buffer. `false`
+    /// when there is no live edit or nothing to step.
+    pub fn field_undo(&mut self, redo: bool) -> bool {
+        if self.editing.is_none() {
+            return false;
+        }
+        let stepped = if redo {
+            self.input.redo()
+        } else {
+            self.input.undo()
+        };
+        self.field_text = self.input.text().to_string();
+        stepped
+    }
+
+    /// Whether the live edit has recorded any keystrokes.
+    pub fn field_edited(&self) -> bool {
+        self.editing.is_some() && self.input.edited()
+    }
+
     /// Where the live edit's caret sits, as a character index.
     pub fn caret(&self) -> usize {
         self.input.cursor()

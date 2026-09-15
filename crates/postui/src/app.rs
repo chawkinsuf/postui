@@ -2243,6 +2243,93 @@ impl App {
         false
     }
 
+    /// The text field that currently owns the caret, if any — the one
+    /// place the field rule's routing lives (spec 2026-09-15). Two fields
+    /// are not reachable here and are special-cased by their neighbours
+    /// below: the Settings tab's live edit (its input is private, see
+    /// [`SettingsTab::field_undo`](crate::components::settings::SettingsTab::field_undo))
+    /// and a picker's filter box (private behind `undo_filter`, because
+    /// stepping it has to re-run the filter too).
+    pub(crate) fn open_text_field_mut(&mut self) -> Option<&mut LineInput> {
+        if !self.modals.is_empty() {
+            return self.modals.focused_input_mut();
+        }
+        match self.screen {
+            Screen::Manage => {
+                if let Some((_, input)) = self.varmanager.form.editing.as_mut() {
+                    return Some(input);
+                }
+                if let Some(edit) = self.varmanager.grid.editing.as_mut() {
+                    return Some(&mut edit.input);
+                }
+                None
+            }
+            Screen::Main => {
+                if let Some(edit) = self.editor.table.editing.as_mut() {
+                    return Some(&mut edit.input);
+                }
+                if self.focus == PaneId::Editor && self.editor.sub_focus == SubFocus::Url {
+                    return Some(&mut self.editor.url);
+                }
+                if self.focus == PaneId::Response {
+                    return self.session.response.open_text_field_mut();
+                }
+                None
+            }
+            Screen::Testbed => None,
+        }
+    }
+
+    /// Whether an open text field has keystrokes of its own to undo — the
+    /// condition under which the undo keys belong to it.
+    pub(crate) fn open_text_field_edited(&mut self) -> bool {
+        if self.settings_edit_live() {
+            return self.settings.field_edited();
+        }
+        if !self.modals.is_empty() {
+            return self.modals.field_edited();
+        }
+        self.open_text_field_mut().is_some_and(|f| f.edited())
+    }
+
+    /// Whether the Settings tab's live edit is the field on screen.
+    fn settings_edit_live(&self) -> bool {
+        self.screen == Screen::Manage
+            && self.manage.tab == crate::components::manage::ManageTab::Settings
+            && self.settings.editing.is_some()
+    }
+
+    /// Routes an undo/redo key into the open text field. `true` when a
+    /// field with history took it; `false` leaves the key to the app
+    /// history.
+    fn undo_in_open_field(&mut self, redo: bool) -> bool {
+        if self.settings_edit_live() {
+            return self.settings.field_edited() && self.settings.field_undo(redo);
+        }
+        if !self.modals.is_empty() {
+            return self.modals.field_undo(redo);
+        }
+        // The response pane's fields go through the pane, not the raw
+        // accessor: stepping the jq bar has to mark the edit or `sync_jq`
+        // writes the editor's filter back over it.
+        if self.screen == Screen::Main
+            && self.focus == PaneId::Response
+            && self.editor.table.editing.is_none()
+        {
+            return self.session.response.field_undo(redo);
+        }
+        match self.open_text_field_mut() {
+            Some(f) if f.edited() => {
+                if redo {
+                    f.redo()
+                } else {
+                    f.undo()
+                }
+            }
+            _ => false,
+        }
+    }
+
     fn apply(&mut self, action: Action) -> bool {
         match action {
             // An unsaved request gates quitting behind the same confirm as
@@ -4151,6 +4238,9 @@ impl App {
                 true
             }
             Action::Undo => {
+                if self.undo_in_open_field(false) {
+                    return true;
+                }
                 if !self.modals.is_empty() {
                     return true;
                 }
@@ -4181,6 +4271,9 @@ impl App {
                 true
             }
             Action::Redo => {
+                if self.undo_in_open_field(true) {
+                    return true;
+                }
                 if !self.modals.is_empty() {
                     return true;
                 }
@@ -9539,6 +9632,17 @@ impl App {
         // `paste_text` (via `Action::Paste`) does the routing.
         if modified && global == Some(Action::Paste) {
             return self.update(Action::Paste);
+        }
+
+        // 1c. A bound undo/redo combo digs past the same layers when a text
+        // field is open with keystrokes of its own: ctrl+z means "undo what
+        // I typed here" wherever the caret is (spec 2026-09-15, "Routing").
+        // With nothing typed, the key falls through to today's routing.
+        if modified
+            && matches!(global, Some(Action::Undo | Action::Redo))
+            && self.open_text_field_edited()
+        {
+            return self.update(global.expect("matched above"));
         }
 
         // 2. Modals capture all remaining input.

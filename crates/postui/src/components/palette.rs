@@ -537,12 +537,25 @@ impl PaletteState {
         None
     }
 
-    /// Undoes one step in the filter's edit history and re-runs the
-    /// filter, mirroring what typing that step forward did.
-    pub(crate) fn undo_filter(&mut self) {
-        if self.input.undo() {
+    /// Whether the filter box has keystrokes of its own to step — what
+    /// the app's undo routing asks before handing it the key.
+    pub(crate) fn filter_edited(&self) -> bool {
+        self.input.edited()
+    }
+
+    /// Steps the filter's edit history one place (back, or forward when
+    /// `redo`) and re-runs the filter, mirroring what typing that step
+    /// forward did. Returns whether there was a step to take.
+    pub(crate) fn undo_filter(&mut self, redo: bool) -> bool {
+        let stepped = if redo {
+            self.input.redo()
+        } else {
+            self.input.undo()
+        };
+        if stepped {
             self.refilter();
         }
+        stepped
     }
 
     #[cfg(test)]
@@ -793,7 +806,7 @@ mod tests {
         p.handle_key(key(KeyCode::Left));
         p.handle_key(key(KeyCode::Char('X')));
         assert_eq!(p.input(), "senXd", "the caret moved before the last char");
-        p.undo_filter();
+        p.undo_filter(false);
         assert_eq!(p.input(), "send");
         assert!(!p.filtered_is_empty_for_test() || p.input().is_empty());
     }
