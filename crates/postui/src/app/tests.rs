@@ -12441,9 +12441,18 @@ fn remove_marks_the_default_when_it_is_the_supplier_and_confirm_clears_it() {
 #[test]
 fn editing_a_secret_token_opens_the_masked_secret_prompt() {
     let (mut app, _dir) = token_popup_app();
+    app.proj_mut()
+        .set_secret_for("qa", "api_key", "sk-live-abc123".into())
+        .unwrap();
     app.update(Action::OpenVarTokenPopup("api_key".into()));
 
-    let Some(Modal::Prompt { kind, .. }) = app.modals.top() else {
+    let Some(Modal::Prompt {
+        kind,
+        input,
+        revealed,
+        ..
+    }) = app.modals.top()
+    else {
         panic!("a secret token must open the masked secret prompt")
     };
     assert_eq!(
@@ -12453,6 +12462,22 @@ fn editing_a_secret_token_opens_the_masked_secret_prompt() {
             env: "qa".into(),
         }
     );
+    // Editing starts from what is stored (like the Manager's env-value
+    // field), masked until ctrl+r reveals it.
+    assert_eq!(input.text(), "sk-live-abc123");
+    assert!(!revealed);
+}
+
+#[test]
+fn editing_a_missing_secret_token_opens_an_empty_secret_prompt() {
+    let (mut app, _dir) = token_popup_app();
+    app.update(Action::OpenVarTokenPopup("api_key".into()));
+
+    let Some(Modal::Prompt { kind, input, .. }) = app.modals.top() else {
+        panic!("a secret token must open the masked secret prompt")
+    };
+    assert!(matches!(kind, PromptKind::SecretValue { .. }));
+    assert_eq!(input.text(), "", "nothing stored yet, nothing to seed");
 }
 
 #[test]
@@ -13835,6 +13860,34 @@ fn auto_header_copy_icon_is_the_shared_copy_glyph() {
     );
 }
 
+/// The pill's hover fill must not butt up against the value text: one
+/// plain cell separates the value from the three-cell ` 󰆏 ` pill.
+#[test]
+fn auto_header_copy_pill_keeps_a_cell_of_padding_from_the_value() {
+    let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Headers;
+    app.editor.url = LineInput::new("https://example.com/foo");
+    app.update(Action::Render);
+
+    let backend = ratatui::backend::TestBackend::new(100, 70);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    let rect = app
+        .hits
+        .rect_of(&Hit::AutoHeaderCopy(0))
+        .expect("the Host row's copy icon is registered");
+    let buf = terminal.backend().buffer();
+    let cell = |x: u16| buf[(x, rect.y)].symbol().to_string();
+    assert_eq!(rect.width, 3, "the hit covers the whole pill");
+    assert_eq!(
+        (cell(rect.x), cell(rect.x + 1), cell(rect.x + 2)),
+        (" ".into(), "\u{F018F}".into(), " ".into()),
+        "the pill is one plain cell each side of the glyph"
+    );
+    assert_eq!(cell(rect.x - 1), " ", "a gap cell before the pill");
+    assert_eq!(cell(rect.x - 2), "m", "…right after the value `example.com`");
+}
+
 #[test]
 fn auto_header_copy_icon_puts_the_resolved_value_on_the_clipboard() {
     let mut app = App::new_for_test();
@@ -14105,6 +14158,45 @@ fn computed_headers_mask_a_secret_by_default_and_the_reveal_toggle_unmasks() {
     // The toggle itself must survive the round trip (still present, now
     // reading "hide") rather than vanishing once nothing is masked.
     assert!(app.hits.rect_of(&Hit::AutoHeaderReveal).is_some());
+}
+
+#[test]
+fn computed_headers_reveal_toggle_hides_when_only_the_request_table_uses_a_secret() {
+    // The auto section draws only non-`Request` rows, and the request's
+    // own header is the editable table above (tokens, not values). With no
+    // masked value in the section, a reveal toggle would toggle nothing.
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::VarEdit(VarEditOp::SetSecretValue {
+        env: "qa".into(),
+        name: "api_key".into(),
+        value: "sk-live-abc123".into(),
+    }));
+    app.editor.headers.insert(
+        "X-Ignore".into(),
+        postui_core::model::Entry {
+            value: "{{api_key}}".into(),
+            enabled: true,
+        },
+    );
+    // A URL gives the section a (secret-free) Host row to draw.
+    app.editor.url = LineInput::new("https://example.com/foo");
+    app.editor.active_tab = EditorTab::Headers;
+    app.update(Action::Render);
+
+    let backend = ratatui::backend::TestBackend::new(100, 70);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    assert!(
+        app.hits.rect_of(&Hit::AutoHeaderCopy(0)).is_some(),
+        "sanity: the auto section is drawn (Host row)"
+    );
+    assert!(
+        app.hits.rect_of(&Hit::AutoHeaderReveal).is_none(),
+        "nothing in the auto section is masked, so there is nothing to reveal"
+    );
 }
 
 #[test]

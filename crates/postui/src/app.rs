@@ -4864,13 +4864,21 @@ impl App {
                         return self.open_select_picker(name, selector);
                     }
                     Some(VarMeta::Secret) | Some(VarMeta::MissingSecret) => {
+                        let env = self.active_env().map(str::to_string).unwrap_or_default();
+                        // Editing starts from the stored value (masked
+                        // until ctrl+r), like the Manager's env-value
+                        // field; a missing secret has nothing to seed.
+                        let current = self
+                            .project
+                            .as_ref()
+                            .and_then(|p| p.secrets().get(&env))
+                            .and_then(|m| m.get(&name))
+                            .cloned()
+                            .unwrap_or_default();
                         self.push_modal(Modal::Prompt {
                             title: format!("Secret {{{{{name}}}}}"),
-                            input: LineInput::new(""),
-                            kind: PromptKind::SecretValue {
-                                name,
-                                env: self.active_env().map(str::to_string).unwrap_or_default(),
-                            },
+                            input: LineInput::new(&current),
+                            kind: PromptKind::SecretValue { name, env },
                             revealed: false,
                         });
                         return true;

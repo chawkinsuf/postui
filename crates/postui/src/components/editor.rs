@@ -462,13 +462,19 @@ impl Editor {
     /// `has_secret` is a second, always-masked pass used only to decide
     /// whether the reveal/hide toggle should draw at all — it must stay
     /// independent of `revealed`, or revealing would make the toggle that
-    /// un-reveals it disappear.
+    /// un-reveals it disappear. It counts only the rows the section draws
+    /// (`draw_computed_headers` skips `Request`-origin rows: the editable
+    /// table above already shows those, as typed), so a secret used only
+    /// in the request's own headers never offers a toggle with nothing to
+    /// reveal.
     pub fn recompute_computed_headers(&mut self, ctx: &postui_core::prepare::PrepareContext) {
+        use postui_core::prepare::HeaderOrigin;
         let req = self.current_request();
         self.computed.rows =
             postui_core::prepare::computed_headers(&req, ctx, !self.computed.revealed);
         self.computed.has_secret = postui_core::prepare::computed_headers(&req, ctx, true)
             .iter()
+            .filter(|r| r.origin != HeaderOrigin::Request)
             .any(|r| r.value.contains(postui_core::prepare::SECRET_MASK));
     }
 
@@ -3027,7 +3033,9 @@ impl Editor {
             }
             let name_piece = format!("  {}: ", row.name);
             let value_x = area.x.saturating_add(name_piece.chars().count() as u16);
-            let value_piece = row.value.clone();
+            // One plain cell between the value and the pill, so the pill's
+            // hover fill never touches the text.
+            let value_piece = format!("{} ", row.value);
             let text_len = name_piece.chars().count() + value_piece.chars().count();
             let glyph_hovered = ctx.hovered == Some(&crate::hit::Hit::AutoHeaderCopy(i));
             let glyph_style = if glyph_hovered {

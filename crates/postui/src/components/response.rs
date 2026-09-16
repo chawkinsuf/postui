@@ -3210,7 +3210,9 @@ fn body_lines(
             for (i, line) in view.header_lines.iter().enumerate().take(end).skip(start) {
                 let (name, value) = line.split_once(':').unwrap_or((line.as_str(), ""));
                 let name_piece = format!("{name}:");
-                let value_piece = value.to_string();
+                // One plain cell between the value and the pill, so the
+                // pill's hover fill never touches the text.
+                let value_piece = format!("{value} ");
                 let text_len = name_piece.chars().count() + value_piece.chars().count();
                 let glyph_hovered = hovered == Some(&crate::hit::Hit::HeaderCopy(i));
                 let glyph_style = if glyph_hovered {
