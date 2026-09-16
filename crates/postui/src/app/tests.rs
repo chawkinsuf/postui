@@ -435,10 +435,54 @@ fn u_undoes_from_every_list_surface() {
     assert_eq!(app.history.undo_len(), steps - 1, "manage list: u is undo");
 }
 
+/// The Manage aliases come from the keymap, not from letters in the
+/// screen handlers: unbind `u` in `keys.toml` and it is dead on the
+/// Manage list exactly as on Main.
+#[test]
+fn the_manage_aliases_follow_keys_toml() {
+    let mut app = App::new_for_test();
+    for n in ["auth", "billing"] {
+        app.update(Action::CreateSpace(n.into()));
+    }
+    app.update(Action::OpenManage {
+        tab: Some(crate::components::manage::ManageTab::Spaces),
+    });
+    app.capture_undo();
+    let steps = app.history.undo_len();
+    assert!(steps > 0);
+    app.handle_key(plain('u'));
+    assert_eq!(app.history.undo_len(), steps - 1, "bound: u undoes here");
+    app.update(Action::Redo);
+    app.keymap.apply_overrides("undo = [\"ctrl+z\"]").unwrap();
+    app.handle_key(plain('u'));
+    assert_eq!(app.history.undo_len(), steps, "unbound in keys.toml: u is dead here too");
+    app.handle_key(ctrl('z'));
+    assert_eq!(app.history.undo_len(), steps - 1, "the remaining combo still works");
+}
+
+/// A Manage tab with no project open still swallows plain keys — but the
+/// whitelisted aliases work there as their chords do.
+#[test]
+fn colon_opens_the_palette_on_a_manage_tab_with_no_project() {
+    let mut app = App::new_for_test();
+    app.project = None;
+    app.update(Action::OpenManage {
+        tab: Some(crate::components::manage::ManageTab::Environments),
+    });
+    app.handle_key(plain('x'));
+    assert!(app.modals.is_empty(), "an unclaimed letter is swallowed");
+    app.handle_key(KeyEvent::new(KeyCode::Char(':'), KeyModifiers::SHIFT));
+    assert!(
+        matches!(app.modals.top(), Some(Modal::Palette(_))),
+        "`:` reaches the palette with no project open"
+    );
+}
+
 /// `:` is a global alias of ctrl+p, and the Manage screens swallow every
-/// plain key they do not claim — so, like `u`, each of their four key
-/// handlers has to claim `:` itself or the alias stops being strict there.
-/// Pressed as a terminal sends it: shift+semicolon carries `SHIFT`.
+/// plain key they do not claim — the alias reaches them through the
+/// router's keymap whitelist, so it stays strict on each of their four
+/// surfaces. Pressed as a terminal sends it: shift+semicolon carries
+/// `SHIFT`.
 #[test]
 fn colon_opens_the_palette_from_every_manage_surface() {
     use crate::components::manage::ManageTab;
@@ -1071,6 +1115,57 @@ fn ctrl_z_in_an_open_cell_undoes_in_the_cell_not_the_history() {
     assert_eq!(app.history.undo_len(), steps, "the app history was not touched");
 }
 
+/// The caret decides which field the undo keys belong to. A cell edit
+/// that survived a jump to the response pane is live but caretless: with
+/// the jq bar focused, ctrl+z steps the bar and leaves the cell alone.
+#[test]
+fn ctrl_z_with_the_caret_in_the_jq_bar_steps_the_bar_not_a_live_cell_behind_it() {
+    let mut app = app_with_one_param();
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+    type_chars(&mut app, "abc");
+    let cell_text = app.editor.table.editing.as_ref().unwrap().input.text().to_string();
+    ready_response(&mut app, JQ_BODY);
+    app.update(Action::OpenJqBar);
+    assert_eq!(app.focus, PaneId::Response);
+    assert!(app.session.response.jq_focused());
+    assert!(
+        app.editor.table.editing.is_some(),
+        "the cell edit survives the jump"
+    );
+    type_chars(&mut app, ".foo");
+    app.handle_key(ctrl('z'));
+    assert_ne!(app.session.response.jq_text(), ".foo", "the bar stepped");
+    assert_eq!(
+        app.editor.table.editing.as_ref().unwrap().input.text(),
+        cell_text,
+        "the caretless cell is untouched"
+    );
+}
+
+/// …and a modal over a live Settings edit owns the caret: ctrl+z steps
+/// the palette's filter, not the field hidden under it.
+#[test]
+fn ctrl_z_in_a_palette_over_a_live_settings_edit_steps_the_palette() {
+    use crate::components::settings::SettingsField;
+    let mut app = App::new_for_test();
+    app.update(Action::OpenManage {
+        tab: Some(crate::components::manage::ManageTab::Settings),
+    });
+    app.settings.begin_edit(SettingsField::Osc52Limit, "");
+    type_chars(&mut app, "5");
+    app.handle_key(ctrl('p'));
+    assert!(matches!(app.modals.top(), Some(Modal::Palette(_))));
+    type_chars(&mut app, "th");
+    app.handle_key(ctrl('z'));
+    assert_eq!(
+        app.settings.field_text(),
+        "5",
+        "the Settings field under the modal is untouched"
+    );
+    let filter = app.modals.focused_input().map(|i| i.text().to_string());
+    assert_ne!(filter.as_deref(), Some("th"), "the palette filter stepped");
+}
+
 /// ctrl+z digs past a modal into its focused field, like ctrl+v does.
 #[test]
 fn ctrl_z_in_a_modal_prompt_undoes_the_prompts_typing() {
@@ -1673,8 +1768,8 @@ fn the_footer_field_flag_is_pane_local() {
     app.focus = PaneId::Response;
 
     assert!(
-        app.field_open(),
-        "the cell edit is still the app's open field — that is what Esc would close"
+        !app.field_open(),
+        "the cell edit is live but the caret is on the response pane: no field is open there, and an Esc would not reach the cell"
     );
     assert!(
         !app.pane_field_open(PaneId::Response),
@@ -2886,6 +2981,104 @@ fn discard_is_itself_undoable() {
         dirty_url,
         "undo brings the discarded edit back"
     );
+}
+
+/// [`dirty_app`] with the shadow seeded on the opened request before the
+/// typing, as the main loop's per-event `capture_undo` would have done —
+/// so the typing has a "before" to diff against and can become a step.
+fn dirty_app_seeded() -> App {
+    let mut app = App::new_for_test();
+    postui_core::fixtures::save_request(app.proj().root(), "main/r", &req("https://x/r")).unwrap();
+    app.update(Action::RefreshSidebar);
+    app.update(Action::ForceOpenRequest("main/r".into()));
+    app.capture_undo();
+    app.focus = PaneId::Editor;
+    app.editor.sub_focus = SubFocus::Url;
+    app.handle_key(plain('/'));
+    assert!(app.editor.is_dirty());
+    app
+}
+
+/// The URL line's open edit is a step of its own *before* the discard:
+/// the typing was gated (the app history waits for the field to close),
+/// and a discard that replaced the buffer wholesale used to drop it —
+/// the toast promised "undoes" of an edit no step held.
+#[test]
+fn discarding_with_the_url_line_still_open_records_the_typing_first() {
+    let mut app = dirty_app_seeded(); // the caret is still in the URL line
+    app.capture_undo(); // gated: nothing recorded yet
+    let steps = app.history.undo_len();
+    let dirty_url = app.editor.url.text().to_string();
+    app.update(Action::DiscardChanges);
+    app.capture_undo();
+    assert_eq!(
+        app.history.undo_len(),
+        steps + 2,
+        "the typing closed as one step, then the discard"
+    );
+    assert_eq!(app.editor.url.text(), "https://x/r");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.url.text(), dirty_url, "undo brings the edit back");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.url.text(), "https://x/r", "…and the next undoes the typing");
+}
+
+/// Reload is the other wholesale replacement: same handover.
+#[test]
+fn reloading_with_the_url_line_still_open_records_the_typing_first() {
+    let mut app = dirty_app_seeded();
+    app.capture_undo();
+    let steps = app.history.undo_len();
+    let dirty_url = app.editor.url.text().to_string();
+    app.update(Action::ReloadOpenRequest);
+    app.capture_undo();
+    assert_eq!(app.history.undo_len(), steps + 2, "typing, then the reload");
+    assert_eq!(app.editor.url.text(), "https://x/r");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.url.text(), dirty_url);
+}
+
+/// Opening another request with the URL line still open records the
+/// outgoing request's edit exactly as if the field had been closed
+/// first: the history ends up the same length either way, and the
+/// undo-follow brings the edit back.
+#[test]
+fn switching_requests_with_the_url_line_open_records_the_edit_before_the_load() {
+    let run = |close_first: bool| {
+        let mut app = dirty_app_seeded();
+        postui_core::fixtures::save_request(app.proj().root(), "main/s", &req("https://x/s"))
+            .unwrap();
+        app.update(Action::RefreshSidebar);
+        if close_first {
+            app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        }
+        app.capture_undo();
+        let dirty_url = app.editor.url.text().to_string();
+        app.update(Action::SaveRequestThen(Box::new(Action::ForceOpenRequest(
+            "main/s".into(),
+        ))));
+        app.capture_undo();
+        assert_eq!(app.editor.slug.as_deref(), Some("main/s"));
+        (app, dirty_url)
+    };
+    let (closed, _) = run(true);
+    let (mut open, dirty_url) = run(false);
+    assert_eq!(
+        open.history.undo_len(),
+        closed.history.undo_len(),
+        "an open field adds the same steps a closed one did"
+    );
+    // The typing is on the history as `r`'s own editor step (under the
+    // save's disk step), not lost in the load.
+    while let Some(step) = open.history.pop_undo() {
+        if let crate::undo::StepKind::EditorDelta { slug, after, .. } = &step.kind
+            && slug.as_deref() == Some("main/r")
+            && after.url == dirty_url
+        {
+            return;
+        }
+    }
+    panic!("no editor step holds the edit to r");
 }
 
 #[test]
@@ -25029,6 +25222,35 @@ fn a_bad_osc52_limit_is_rejected_and_the_stored_value_stands() {
     app.commit_settings_edit();
     assert_eq!(app.ui_settings.osc52_limit, 1024);
     assert!(app.settings.editing.is_none());
+}
+
+/// Esc is a commit here like Enter, and a value that will not commit
+/// cannot close: the edit stays open with what was typed and the toast
+/// says why. No key reverts a field on the way out — the way back is
+/// ctrl+z in the field, or a value that parses.
+#[test]
+fn esc_on_a_rejected_settings_value_keeps_the_edit_open_like_enter() {
+    use crate::components::settings::SettingsField;
+    let mut app = App::new_for_test();
+    app.update(Action::OpenManage {
+        tab: Some(crate::components::manage::ManageTab::Settings),
+    });
+    app.ui_settings.osc52_limit = 65536;
+    app.settings.begin_edit(SettingsField::Osc52Limit, "abc");
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(app.settings.editing, Some(SettingsField::Osc52Limit));
+    assert_eq!(app.settings.field_text(), "abc", "what was typed is still there");
+    assert_eq!(app.ui_settings.osc52_limit, 65536, "the stored value stands");
+    assert!(
+        app.toasts.messages().iter().any(|m| m.contains("65536")),
+        "{:?}",
+        app.toasts.messages()
+    );
+    // The chip is the same Esc.
+    app.toasts = Default::default();
+    app.update(Action::CloseField);
+    assert_eq!(app.settings.editing, Some(SettingsField::Osc52Limit));
+    assert!(!app.toasts.is_empty(), "refused again, and said so");
 }
 
 /// The field rule's discard route for a Settings field: Esc commits (it

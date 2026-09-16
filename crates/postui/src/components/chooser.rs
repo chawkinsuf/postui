@@ -23,7 +23,7 @@ pub struct ChooserItem {
 
 /// An optional two-state switch on a chooser (the theme picker's
 /// dark/light filter): `label` renders right-aligned on the title row,
-/// and Left/Right (or a click on the label) dispatch `action` without
+/// and Tab/BackTab (or a click on the label) dispatch `action` without
 /// closing the modal — the action's handler is expected to swap the
 /// chooser's items via [`ChooserState::set_items`].
 pub struct ChooserToggle {
@@ -68,6 +68,12 @@ impl ChooserState {
     }
 
     /// Attaches a [`ChooserToggle`] (builder-style, for construction).
+    /// Whether a title-row toggle is attached — the footer advertises its
+    /// key (`tab`) only then.
+    pub fn has_toggle(&self) -> bool {
+        self.toggle.is_some()
+    }
+
     pub fn with_toggle(mut self, label: impl Into<String>, action: Action) -> Self {
         self.toggle = Some(ChooserToggle {
             label: label.into(),
@@ -307,7 +313,7 @@ impl ChooserState {
         // paint nothing and register no hit.
         if let Some(t) = self.toggle.as_ref().filter(|t| !t.label.is_empty()) {
             // Right-aligned on the title row, clickable and flippable with
-            // Left/Right — mirrored by `handle_key`.
+            // Tab/BackTab — mirrored by `handle_key`.
             let w = t.label.chars().count() as u16;
             let x = (area.x + area.width).saturating_sub(w + 2);
             paint::text(

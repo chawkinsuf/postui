@@ -1032,7 +1032,7 @@ impl ModalStack {
                         None,
                     ),
                     ("enter", "apply", None),
-                    ("esc", "done", None),
+                    ("esc", "done", Some(Action::CloseField)),
                 ]
             }
             Modal::MultiPrompt { fields, kind, .. } => {
@@ -1055,7 +1055,7 @@ impl ModalStack {
                     chips.push(("tab", "next field", None));
                 }
                 chips.push(("enter", "save", None));
-                chips.push(("esc", "done", None));
+                chips.push(("esc", "done", Some(Action::CloseField)));
                 chips
             }
             Modal::Message { .. } => vec![("enter", "close", None)],
@@ -1085,7 +1085,7 @@ impl ModalStack {
                     chips.push(("space", "toggle", None));
                 }
                 chips.push(("enter", "save", None));
-                chips.push(("esc", "done", None));
+                chips.push(("esc", "done", Some(Action::CloseField)));
                 chips
             }
             // The secret prompt's reveal chord: the eye button beside the
@@ -1094,13 +1094,13 @@ impl ModalStack {
             Modal::Prompt { revealed, kind, .. } if kind.is_secret() => vec![
                 ("ctrl+r", if *revealed { "hide" } else { "reveal" }, None),
                 ("enter", "save", None),
-                ("esc", "done", None),
+                ("esc", "done", Some(Action::CloseField)),
             ],
-            Modal::Prompt { .. } => vec![("enter", "save", None), ("esc", "done", None)],
+            Modal::Prompt { .. } => vec![("enter", "save", None), ("esc", "done", Some(Action::CloseField))],
             Modal::NewProject { .. } => vec![
                 ("alt+b", "browse folder", None),
                 ("enter", "save", None),
-                ("esc", "done", None),
+                ("esc", "done", Some(Action::CloseField)),
             ],
             Modal::FilePicker(state) => {
                 use crate::components::file_picker::PickerMode;
@@ -1117,11 +1117,17 @@ impl ModalStack {
                 chips.push(("esc", "close", None));
                 chips
             }
-            Modal::Chooser(_) => vec![
-                ("↑↓", "navigate", None),
-                ("enter", "select", None),
-                ("esc", "close", None),
-            ],
+            Modal::Chooser(state) => {
+                let mut chips = vec![("↑↓", "navigate", None)];
+                // The theme picker's dark/light switch: Tab flips it (the
+                // label on the title row is its mouse twin).
+                if state.has_toggle() {
+                    chips.push(("tab", "toggle", None));
+                }
+                chips.push(("enter", "select", None));
+                chips.push(("esc", "close", None));
+                chips
+            }
             // Only the Insert-mode picker has a typed filter to advertise;
             // SelectOption mode is arrow-and-click only.
             Modal::VarPicker(state)
@@ -1175,7 +1181,7 @@ impl ModalStack {
                 | KeyCode::Tab
                 | KeyCode::BackTab
                 | KeyCode::Char('h')
-                | KeyCode::Char('l') => {
+                | KeyCode::Char('l') if crate::keys::plain_letter(&key) => {
                     self.button_focus = Some(aimed.other());
                     None
                 }
@@ -1184,7 +1190,7 @@ impl ModalStack {
                     FormButton::Cancel => self.cancel_top(),
                 },
                 KeyCode::Esc => self.cancel_top(),
-                KeyCode::Up | KeyCode::Char('k') => {
+                KeyCode::Up | KeyCode::Char('k') if crate::keys::plain_letter(&key) => {
                     self.button_focus = None;
                     None
                 }
@@ -4350,6 +4356,20 @@ mod tests {
             Some(FormButton::Confirm),
             "still on the row, Confirm still aimed"
         );
+    }
+
+    /// The row's `h`/`l` are plain letters only: ctrl+h — what a legacy
+    /// parser sends for ctrl+backspace — must not flip the aim onto
+    /// Cancel, or a reflexive word-delete followed by Enter cancels.
+    #[test]
+    fn ctrl_h_on_the_button_row_does_not_flip_the_aim() {
+        let mut m = prompt_stack();
+        m.handle_key(key(KeyCode::Esc));
+        assert_eq!(m.button_focus(), Some(FormButton::Confirm));
+        m.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL));
+        assert_eq!(m.button_focus(), Some(FormButton::Confirm), "swallowed");
+        m.handle_key(key(KeyCode::Char('h')));
+        assert_eq!(m.button_focus(), Some(FormButton::Cancel), "plain h aims");
     }
 
     /// In a field Esc no longer cancels — it commits the field onto the

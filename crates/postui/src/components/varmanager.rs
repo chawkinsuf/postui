@@ -1069,19 +1069,19 @@ impl VarManager {
         // the grid: no field is live while the cursor rests, so they are
         // free (spec 2026-09-15).
         match ev.code {
-            KeyCode::Esc | KeyCode::BackTab | KeyCode::Left | KeyCode::Char('h') => {
+            KeyCode::Esc | KeyCode::BackTab | KeyCode::Left | KeyCode::Char('h') if crate::keys::plain_letter(&ev) => {
                 self.focus = VmFocus::List;
                 None
             }
-            KeyCode::Up | KeyCode::Char('k') => {
+            KeyCode::Up | KeyCode::Char('k') if crate::keys::plain_letter(&ev) => {
                 self.form_cursor = fields[at.saturating_sub(1)];
                 None
             }
-            KeyCode::Down | KeyCode::Char('j') => {
+            KeyCode::Down | KeyCode::Char('j') if crate::keys::plain_letter(&ev) => {
                 self.form_cursor = fields[(at + 1).min(fields.len() - 1)];
                 None
             }
-            KeyCode::Home | KeyCode::Char('g') => {
+            KeyCode::Home | KeyCode::Char('g') if crate::keys::plain_letter(&ev) => {
                 self.form_cursor = fields[0];
                 None
             }
@@ -1094,8 +1094,12 @@ impl VarManager {
                     self.start_field_edit(ctx, field);
                     None
                 }
-                // The toggle has no text: Enter flips it, as a click does.
-                FormStop::Secret => Some(Action::ToggleSecretVar { name }),
+                // The toggle has no text: Enter flips it, as a click does —
+                // gated like `s` and the chip on the variable being declared.
+                FormStop::Secret if ctx.variables().vars.contains_key(&name) => {
+                    Some(Action::ToggleSecretVar { name })
+                }
+                FormStop::Secret => None,
             },
             // The form's quick actions — the keyboard twins of its
             // inline controls, advertised by the footer's Form chips.
@@ -1117,14 +1121,8 @@ impl VarManager {
                 Some(Action::Render)
             }
             KeyCode::Char('q') => Some(Action::Quit),
-            KeyCode::Char('u') if ev.modifiers.is_empty() => Some(Action::Undo),
-            // Claimed here for the same reason as in the list and grid:
-            // this screen swallows plain keys it does not name.
-            KeyCode::Char(':')
-                if !ev.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-            {
-                Some(Action::OpenPalette)
-            }
+            // `u` / `:` are not named here (nor in the list and grid): an
+            // unclaimed plain key reaches the router's keymap whitelist.
             _ => None,
         }
     }
@@ -1276,11 +1274,11 @@ impl VarManager {
             // manager keeps the app-wide quit (the footer's quit chip
             // advertises it); live edits never reach here.
             KeyCode::Char('q') => return Some(Action::Quit),
-            KeyCode::Char('k') | KeyCode::Up => {
+            KeyCode::Char('k') | KeyCode::Up if crate::keys::plain_letter(&ev) => {
                 self.move_cursor(-1);
                 return None;
             }
-            KeyCode::Char('j') | KeyCode::Down => {
+            KeyCode::Char('j') | KeyCode::Down if crate::keys::plain_letter(&ev) => {
                 self.move_cursor(1);
                 return None;
             }
@@ -1297,11 +1295,11 @@ impl VarManager {
                 return None;
             }
             KeyCode::PageDown => {
-                self.move_cursor_n(1, (self.page() / 2).max(1));
+                self.move_cursor_n(1, self.page());
                 return None;
             }
             KeyCode::PageUp => {
-                self.move_cursor_n(-1, (self.page() / 2).max(1));
+                self.move_cursor_n(-1, self.page());
                 return None;
             }
             KeyCode::Char('d') if ev.modifiers == KeyModifiers::CONTROL => {
@@ -1321,7 +1319,7 @@ impl VarManager {
                 return None;
             }
             // Into the grid or the form, whichever the detail pane shows.
-            KeyCode::Char('l') | KeyCode::Right | KeyCode::Tab => {
+            KeyCode::Char('l') | KeyCode::Right | KeyCode::Tab if crate::keys::plain_letter(&ev) => {
                 if self.form.editing.is_none() && self.grid.editing.is_none() {
                     match &self.detail {
                         VmDetail::Group(g)
@@ -1364,7 +1362,7 @@ impl VarManager {
             KeyCode::Char('n') => Some(Action::PromptNewVar),
             KeyCode::Char('a') => Some(Action::PromptNewSelector),
             KeyCode::Char('e') | KeyCode::F(2) => self.rename_action(),
-            KeyCode::Char('d') | KeyCode::Delete => Some(Action::DeleteVar {
+            KeyCode::Char('d') | KeyCode::Delete if ev.modifiers.is_empty() => Some(Action::DeleteVar {
                 name: self.selected_row()?.name()?.to_string(),
             }),
             KeyCode::Char('s') => match self.selected_row()? {
@@ -1373,14 +1371,6 @@ impl VarManager {
                 }
                 _ => None,
             },
-            KeyCode::Char('u') if ev.modifiers.is_empty() => Some(Action::Undo),
-            // Claimed here for the same reason as in `manage_list`: this
-            // screen swallows plain keys it does not name.
-            KeyCode::Char(':')
-                if !ev.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-            {
-                Some(Action::OpenPalette)
-            }
             _ => None,
         }
     }
@@ -1415,15 +1405,15 @@ impl VarManager {
                 self.focus = VmFocus::List;
                 None
             }
-            KeyCode::Char('k') | KeyCode::Up => {
+            KeyCode::Char('k') | KeyCode::Up if crate::keys::plain_letter(&ev) => {
                 *row = row.saturating_sub(1);
                 None
             }
-            KeyCode::Char('j') | KeyCode::Down => {
+            KeyCode::Char('j') | KeyCode::Down if crate::keys::plain_letter(&ev) => {
                 *row = (*row + 1).min(last_row);
                 None
             }
-            KeyCode::Char('h') | KeyCode::Left => {
+            KeyCode::Char('h') | KeyCode::Left if crate::keys::plain_letter(&ev) => {
                 if *col == 0 {
                     self.focus = VmFocus::List;
                 } else {
@@ -1431,11 +1421,11 @@ impl VarManager {
                 }
                 None
             }
-            KeyCode::Char('l') | KeyCode::Right | KeyCode::Tab => {
+            KeyCode::Char('l') | KeyCode::Right | KeyCode::Tab if crate::keys::plain_letter(&ev) => {
                 *col = (*col + 1).min(last_col);
                 None
             }
-            KeyCode::Char('g') | KeyCode::Home => {
+            KeyCode::Char('g') | KeyCode::Home if crate::keys::plain_letter(&ev) => {
                 *row = 0;
                 None
             }
@@ -1498,7 +1488,9 @@ impl VarManager {
                 self.start_cell_edit(ctx, self.grid.cursor.0, 0);
                 None
             }
-            KeyCode::Char('d') | KeyCode::Delete => Some(Action::DeleteEntry {
+            // Plain only: ctrl+d is the list's half-page motion one `h`
+            // away, and must never delete here.
+            KeyCode::Char('d') | KeyCode::Delete if ev.modifiers.is_empty() => Some(Action::DeleteEntry {
                 env: op_env(ctx, selector)?,
                 selector: selector.to_string(),
                 name: self.entry_at(ctx, self.grid.cursor.0)?,
@@ -1506,14 +1498,6 @@ impl VarManager {
             KeyCode::Char('n') => Some(Action::PromptNewVar),
             KeyCode::Char('a') => Some(Action::PromptNewSelector),
             KeyCode::Char('q') => Some(Action::Quit),
-            KeyCode::Char('u') if ev.modifiers.is_empty() => Some(Action::Undo),
-            // Claimed here for the same reason as in `manage_list`: this
-            // screen swallows plain keys it does not name.
-            KeyCode::Char(':')
-                if !ev.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-            {
-                Some(Action::OpenPalette)
-            }
             _ => None,
         }
     }
@@ -3003,8 +2987,8 @@ fields = ["user_id", "customer_id"]
                 KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT),
                 key(KeyCode::End),
             ),
-            (ctrl('d'), key(KeyCode::PageDown)),
-            (ctrl('u'), key(KeyCode::PageUp)),
+            (ctrl('f'), key(KeyCode::PageDown)),
+            (ctrl('b'), key(KeyCode::PageUp)),
             (key(KeyCode::Char('l')), key(KeyCode::Right)),
         ];
         for (alias, canonical) in pairs {
@@ -3215,22 +3199,17 @@ fields = ["user_id", "customer_id"]
         assert_eq!(painted, focused);
     }
 
-    /// The Manage screen swallows unclaimed plain keys, so the form has to
-    /// claim the two global aliases itself, as the list and grid do.
+    /// The two global aliases (`u` undo, `:` palette) are the router's,
+    /// from the keymap: the form leaves them unclaimed rather than
+    /// hard-coding letters `keys.toml` could not rebind.
     #[test]
-    fn u_and_colon_reach_undo_and_the_palette_from_the_variable_form() {
+    fn u_and_colon_are_left_to_the_router_from_the_variable_form() {
         let (_dir, ctx) = fixture();
         let mut vm = VarManager::default();
         select_var(&mut vm, &ctx, "base_url");
         vm.focus = VmFocus::Form;
-        assert_eq!(
-            vm.handle_key(key(KeyCode::Char('u')), &ctx, None),
-            Some(Action::Undo)
-        );
-        assert_eq!(
-            vm.handle_key(key(KeyCode::Char(':')), &ctx, None),
-            Some(Action::OpenPalette)
-        );
+        assert_eq!(vm.handle_key(key(KeyCode::Char('u')), &ctx, None), None);
+        assert_eq!(vm.handle_key(key(KeyCode::Char(':')), &ctx, None), None);
         assert_eq!(vm.focus, VmFocus::Form);
     }
 
@@ -4374,6 +4353,23 @@ fields = ["user_id", "customer_id"]
             "{action:?}"
         );
         assert!(vm.grid.editing.is_none(), "e no longer starts a cell edit");
+    }
+
+    /// ctrl+d is the left list's half-page motion, one `h` away: in the
+    /// grid it must be inert, never the option delete that plain `d` is.
+    #[test]
+    fn ctrl_d_in_the_grid_never_deletes() {
+        let (_dir, ctx) = fixture_with_description();
+        let mut vm = VarManager::default();
+        select_group(&mut vm, &ctx, "creds");
+        vm.focus = VmFocus::Grid;
+        vm.grid.cursor.0 = 1;
+        let ctrl_d = KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL);
+        assert_eq!(vm.handle_key(ctrl_d, &ctx, None), None);
+        assert!(matches!(
+            vm.handle_key(key(KeyCode::Char('d')), &ctx, None),
+            Some(Action::DeleteEntry { .. })
+        ));
     }
 
     #[test]

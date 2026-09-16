@@ -525,15 +525,15 @@ impl ManageList {
             }
             KeyCode::Up if alt => Some(Self::move_action(tab, self.selected(tab, ctx)?, -1)),
             KeyCode::Down if alt => Some(Self::move_action(tab, self.selected(tab, ctx)?, 1)),
-            KeyCode::Char('j') | KeyCode::Down => {
+            KeyCode::Char('j') | KeyCode::Down if crate::keys::plain_letter(&ev) => {
                 self.step(1, len);
                 None
             }
-            KeyCode::Char('k') | KeyCode::Up => {
+            KeyCode::Char('k') | KeyCode::Up if crate::keys::plain_letter(&ev) => {
                 self.step(-1, len);
                 None
             }
-            KeyCode::Char('g') | KeyCode::Home => {
+            KeyCode::Char('g') | KeyCode::Home if crate::keys::plain_letter(&ev) => {
                 self.step(i32::MIN / 2, len);
                 None
             }
@@ -542,11 +542,11 @@ impl ManageList {
                 None
             }
             KeyCode::PageDown => {
-                self.step((self.page() / 2).max(1), len);
+                self.step(self.page(), len);
                 None
             }
             KeyCode::PageUp => {
-                self.step(-(self.page() / 2).max(1), len);
+                self.step(-self.page(), len);
                 None
             }
             KeyCode::Char('d') if ev.modifiers == KeyModifiers::CONTROL => {
@@ -576,15 +576,10 @@ impl ManageList {
             KeyCode::Char('d') | KeyCode::Delete if ev.modifiers.is_empty() => {
                 Some(Self::delete_action(tab, self.selected(tab, ctx)?))
             }
-            KeyCode::Char('u') if ev.modifiers.is_empty() => Some(Action::Undo),
-            // A Manage screen swallows unclaimed plain keys, so the two
-            // global aliases (`u` for undo, `:` for the palette) have to
-            // be claimed here to stay strict synonyms.
-            KeyCode::Char(':')
-                if !ev.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-            {
-                Some(Action::OpenPalette)
-            }
+            // `u` / `:` (undo, palette) are deliberately not named: an
+            // unclaimed plain key reaches the router's whitelist from the
+            // keymap (`App::unclaimed_screen_key`), so `keys.toml` governs
+            // them here as everywhere.
             _ => None,
         }
     }
@@ -1090,8 +1085,8 @@ mod tests {
                 KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT),
                 key(KeyCode::End),
             ),
-            (ctrl('d'), key(KeyCode::PageDown)),
-            (ctrl('u'), key(KeyCode::PageUp)),
+            (ctrl('f'), key(KeyCode::PageDown)),
+            (ctrl('b'), key(KeyCode::PageUp)),
         ];
         for (alias, canonical) in pairs {
             let (mut a, mut b) = (ManageList::default(), ManageList::default());
@@ -1111,6 +1106,11 @@ mod tests {
         l.handle_key(ctrl('f'), ManageTab::Spaces, &ctx);
         assert_eq!(l.cursor, 2, "three spaces: clamped to the last");
         l.handle_key(ctrl('b'), ManageTab::Spaces, &ctx);
+        assert_eq!(l.cursor, 0);
+        // Half pages: ctrl+d/ctrl+u move by half the visible rows.
+        l.handle_key(ctrl('d'), ManageTab::Spaces, &ctx);
+        assert_eq!(l.cursor, 1, "half of a 2-row page");
+        l.handle_key(ctrl('u'), ManageTab::Spaces, &ctx);
         assert_eq!(l.cursor, 0);
     }
 
@@ -1281,7 +1281,8 @@ mod tests {
         );
         assert_eq!(
             l.handle_key(key(KeyCode::Char('u')), ManageTab::Spaces, &ctx),
-            Some(Action::Undo)
+            None,
+            "`u` is the router's (keymap) alias, left unclaimed here"
         );
         let alt_down = KeyEvent::new(KeyCode::Down, KeyModifiers::ALT);
         assert!(matches!(

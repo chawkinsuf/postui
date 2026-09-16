@@ -27,6 +27,10 @@ pub enum JqBarState {
     },
     /// Focused with menu mode's candidate row open: Tab/shift+Tab step it.
     Menu,
+    /// Focused with an AI "describe" request outstanding: Esc cancels
+    /// that request (the bar's own Esc arm), so the chip must say so
+    /// rather than promise `done`.
+    Describing,
 }
 
 /// The context-sensitive chips for the focused pane. Each entry is `(key,
@@ -148,7 +152,14 @@ pub(crate) fn footer_chips(
             chips
         }
         PaneId::Response => {
-            if let JqBarState::Focused | JqBarState::Completing { .. } | JqBarState::Menu = jq_bar {
+            if jq_bar == JqBarState::Describing {
+                // The bar keeps the caret while the AI request runs, but
+                // its Esc is the request's cancel — the chip names that
+                // action, not the field close it would otherwise be.
+                vec![("esc", "cancel describe", Some(Action::CancelJqDescribe))]
+            } else if let JqBarState::Focused | JqBarState::Completing { .. } | JqBarState::Menu =
+                jq_bar
+            {
                 // Enter commits (the filter is live already; Enter just
                 // hands focus back to the tree with the filter on), Esc
                 // does the same — it leaves with the edit kept (the field
@@ -761,6 +772,26 @@ mod tests {
             ]
         );
         assert_eq!(&menu[3..], &focused[1..], "enter reads select, not apply");
+    }
+
+    /// With an AI describe outstanding the bar's Esc cancels the request,
+    /// so the chip names that action — never a `done` that would abort it.
+    #[test]
+    fn a_pending_describe_advertises_its_cancel_instead_of_done() {
+        let chips = footer_chips(
+            PaneId::Response,
+            false,
+            false,
+            None,
+            false,
+            None,
+            JqBarState::Describing,
+            true,
+        );
+        assert_eq!(
+            chips,
+            vec![("esc", "cancel describe", Some(Action::CancelJqDescribe))]
+        );
     }
 
     fn render(focus: PaneId) -> String {

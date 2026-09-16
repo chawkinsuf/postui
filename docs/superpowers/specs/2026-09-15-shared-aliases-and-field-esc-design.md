@@ -255,10 +255,14 @@ character.
 Both are named actions already, so they appear in `keys.toml` as extra
 combos and can be unbound.
 
-The Manage screens swallow every plain key they do not name, so they
-claim `:` and `u` themselves — in `manage_list`'s `handle_key`, the
-Variable Manager's list and grid handlers, and `handle_settings_key` —
-rather than letting them fall through to the global keymap.
+The Manage screens swallow every plain key they do not name — except
+that a plain key their handler leaves unclaimed is checked against the
+same whitelist of on-top-of-any-screen actions the modified combos get
+(`App::unclaimed_screen_key`), so `:` and `u` reach the palette and undo
+there from the keymap, not from letters hard-coded in `manage_list`,
+the Variable Manager or `handle_settings_key`. That keeps the promise
+above: a `keys.toml` rebind or unbind holds on every screen, and the
+aliases work on a Manage tab with no project open.
 
 ### Per surface
 

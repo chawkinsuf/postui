@@ -424,13 +424,16 @@ impl LineInput {
                 self.cursor += 1;
                 true
             }
+            // Both deletes record only once there is something to remove:
+            // a Backspace on an empty field (or a Delete at the end) that
+            // recorded first would push a phantom snapshot, drop the redo
+            // branch, and flip `edited()` on a pristine field — which is
+            // what decides whether ctrl+z belongs to this field or to the
+            // app history.
             KeyCode::Backspace => {
-                self.record(if self.selection().is_some() {
-                    EditKind::Whole
-                } else {
-                    EditKind::DeleteBack
-                });
-                if self.delete_selection() {
+                if self.selection().is_some() {
+                    self.record(EditKind::Whole);
+                    self.delete_selection();
                     return true;
                 }
                 // ctrl/alt+backspace removes the whole word behind the
@@ -441,6 +444,7 @@ impl LineInput {
                     self.cursor.saturating_sub(1)
                 };
                 if self.cursor > target {
+                    self.record(EditKind::DeleteBack);
                     let start = self.byte_offset(target);
                     let end = self.byte_offset(self.cursor);
                     self.text.replace_range(start..end, "");
@@ -449,15 +453,13 @@ impl LineInput {
                 true
             }
             KeyCode::Delete => {
-                self.record(if self.selection().is_some() {
-                    EditKind::Whole
-                } else {
-                    EditKind::DeleteForward
-                });
-                if self.delete_selection() {
+                if self.selection().is_some() {
+                    self.record(EditKind::Whole);
+                    self.delete_selection();
                     return true;
                 }
                 if self.cursor < self.len_chars() {
+                    self.record(EditKind::DeleteForward);
                     let start = self.byte_offset(self.cursor);
                     let end = self.byte_offset(self.cursor + 1);
                     self.text.replace_range(start..end, "");
@@ -1125,6 +1127,32 @@ mod tests {
         assert_eq!(input.text(), "xc");
         assert_eq!(input.cursor(), 1);
         assert_eq!(input.selection(), None);
+    }
+
+    /// A delete with nothing to remove is not an edit: it records no
+    /// snapshot, keeps the redo branch, and leaves a pristine field
+    /// pristine (so the undo keys still belong to the app history).
+    #[test]
+    fn a_no_op_backspace_or_delete_records_nothing() {
+        let mut input = LineInput::new("");
+        assert!(input.handle_key(code(KeyCode::Backspace)));
+        assert!(input.handle_key(code(KeyCode::Delete)));
+        assert!(!input.edited(), "an untouched field stays untouched");
+
+        let mut input = LineInput::new("");
+        for c in "abc".chars() {
+            input.handle_key(key(c));
+        }
+        assert!(input.undo());
+        assert_eq!(input.text(), "");
+        input.handle_key(code(KeyCode::Backspace));
+        assert!(input.redo(), "the redo branch survives a no-op delete");
+        assert_eq!(input.text(), "abc");
+        input.handle_key(code(KeyCode::End));
+        input.handle_key(code(KeyCode::Delete));
+        assert!(input.undo(), "the typing step is still the one to undo");
+        assert_eq!(input.text(), "");
+        assert!(!input.undo(), "and no phantom step sits under it");
     }
 
     #[test]

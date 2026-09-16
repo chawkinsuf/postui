@@ -1346,6 +1346,14 @@ impl Response {
         self.jq.focused && self.jq.input.edited()
     }
 
+    /// Ends the bar's edit session in place — the caret stays, the text
+    /// stays, only the keystroke history closes — so the app history can
+    /// take the edit as a step before something replaces the request
+    /// under it (`App::flush_field_session`).
+    pub fn end_jq_edit_session(&mut self) {
+        self.jq.input.end_edit();
+    }
+
     /// Routes an undo (or `redo`) into the pane's open text field. The bar
     /// cannot be stepped through [`Self::open_text_field_mut`] alone: a
     /// bare `LineInput::undo` leaves `jq.edited` clear, and the reconcile
@@ -2376,12 +2384,12 @@ impl Response {
                 view.select_line_extend(-1);
                 Some(Action::Render)
             }
-            KeyCode::Char('j') | KeyCode::Down => {
+            KeyCode::Char('j') | KeyCode::Down if crate::keys::plain_letter(&ev) => {
                 view.clear_sel();
                 view.move_cursor(1);
                 Some(Action::Render)
             }
-            KeyCode::Char('k') | KeyCode::Up => {
+            KeyCode::Char('k') | KeyCode::Up if crate::keys::plain_letter(&ev) => {
                 view.clear_sel();
                 view.move_cursor(-1);
                 Some(Action::Render)
@@ -2422,7 +2430,7 @@ impl Response {
                 view.scroll_h(i32::MAX);
                 Some(Action::Render)
             }
-            KeyCode::Char('g') => {
+            KeyCode::Char('g') if ev.modifiers.is_empty() => {
                 view.cursor = 0;
                 view.follow_cursor();
                 Some(Action::Render)

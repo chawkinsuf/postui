@@ -638,11 +638,11 @@ impl Component for Sidebar {
                 .map(|slug| Action::MoveRequest { slug, delta });
         }
         match ev.code {
-            KeyCode::Char('j') | KeyCode::Down => {
+            KeyCode::Char('j') | KeyCode::Down if crate::keys::plain_letter(&ev) => {
                 self.move_selection(1);
                 Some(Action::Render)
             }
-            KeyCode::Char('k') | KeyCode::Up => {
+            KeyCode::Char('k') | KeyCode::Up if crate::keys::plain_letter(&ev) => {
                 self.move_selection(-1);
                 Some(Action::Render)
             }
@@ -667,19 +667,21 @@ impl Component for Sidebar {
                 self.handle_key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE))
             }
             KeyCode::Char('G') => self.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE)),
+            // ctrl+d/u are the half page; ctrl+f/b and PageDown/PageUp the
+            // full one — the same two distances on every list surface.
             KeyCode::Char('d') if ev.modifiers == KeyModifiers::CONTROL => {
-                self.handle_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE))
+                self.move_selection((self.page() / 2).max(1));
+                Some(Action::Render)
             }
             KeyCode::Char('u') if ev.modifiers == KeyModifiers::CONTROL => {
-                self.handle_key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE))
+                self.move_selection(-(self.page() / 2).max(1));
+                Some(Action::Render)
             }
             KeyCode::Char('f') if ev.modifiers == KeyModifiers::CONTROL => {
-                self.move_selection(self.page());
-                Some(Action::Render)
+                self.handle_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE))
             }
             KeyCode::Char('b') if ev.modifiers == KeyModifiers::CONTROL => {
-                self.move_selection(-self.page());
-                Some(Action::Render)
+                self.handle_key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE))
             }
             KeyCode::Home => {
                 self.move_selection(i32::MIN / 2);
@@ -690,11 +692,11 @@ impl Component for Sidebar {
                 Some(Action::Render)
             }
             KeyCode::PageDown => {
-                self.move_selection((self.page() / 2).max(1));
+                self.move_selection(self.page());
                 Some(Action::Render)
             }
             KeyCode::PageUp => {
-                self.move_selection(-(self.page() / 2).max(1));
+                self.move_selection(-self.page());
                 Some(Action::Render)
             }
             KeyCode::Right => matches!(
@@ -1453,8 +1455,8 @@ mod tests {
                 KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT),
                 key(KeyCode::End),
             ),
-            (ctrl('d'), key(KeyCode::PageDown)),
-            (ctrl('u'), key(KeyCode::PageUp)),
+            (ctrl('f'), key(KeyCode::PageDown)),
+            (ctrl('b'), key(KeyCode::PageUp)),
         ];
         for (alias, canonical) in pairs {
             let (mut a, mut b) = (fresh(), fresh());
@@ -1463,11 +1465,16 @@ mod tests {
             assert_eq!(ra, rb, "{alias:?} vs {canonical:?}: action");
             assert_eq!(a.selected, b.selected, "{alias:?} vs {canonical:?}: selection");
         }
-        // Full pages: ctrl+f/ctrl+b move by the list height.
+        // Full pages: ctrl+f/ctrl+b (PageDown/PageUp) move by the list
+        // height; ctrl+d/ctrl+u by half of it.
         let mut s = fresh();
         s.handle_key(ctrl('f'));
         assert_eq!(s.selected, Some(5), "clamped at the last row");
         s.handle_key(ctrl('b'));
+        assert_eq!(s.selected, Some(1));
+        s.handle_key(ctrl('d'));
+        assert_eq!(s.selected, Some(3), "half of the 4-row page");
+        s.handle_key(ctrl('u'));
         assert_eq!(s.selected, Some(1));
     }
 

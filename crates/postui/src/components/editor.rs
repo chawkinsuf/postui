@@ -1351,11 +1351,11 @@ impl Component for Editor {
             // so the letters are free (spec 2026-09-15).
             SubFocus::Method => match ev.code {
                 KeyCode::Enter | KeyCode::Char(' ') => Some(Action::OpenMethodDropdown),
-                KeyCode::Right | KeyCode::Char('l') => {
+                KeyCode::Right | KeyCode::Char('l') if crate::keys::plain_letter(&ev) => {
                     self.sub_focus = SubFocus::Url;
                     Some(Action::Render)
                 }
-                KeyCode::Down | KeyCode::Char('j') => {
+                KeyCode::Down | KeyCode::Char('j') if crate::keys::plain_letter(&ev) => {
                     self.sub_focus = SubFocus::Tabs;
                     Some(Action::Render)
                 }
@@ -1401,9 +1401,9 @@ impl Component for Editor {
             // back to the URL line. h/l and j/k are strict synonyms of the
             // arrows here (a resting stop, spec 2026-09-15).
             SubFocus::Tabs => match ev.code {
-                KeyCode::Left | KeyCode::Char('h') => Some(Action::EditorTabCycle(-1)),
-                KeyCode::Right | KeyCode::Char('l') => Some(Action::EditorTabCycle(1)),
-                KeyCode::Down | KeyCode::Char('j') | KeyCode::Enter => {
+                KeyCode::Left | KeyCode::Char('h') if crate::keys::plain_letter(&ev) => Some(Action::EditorTabCycle(-1)),
+                KeyCode::Right | KeyCode::Char('l') if crate::keys::plain_letter(&ev) => Some(Action::EditorTabCycle(1)),
+                KeyCode::Down | KeyCode::Char('j') | KeyCode::Enter if crate::keys::plain_letter(&ev) => {
                     self.sub_focus = SubFocus::Content;
                     // Entering a table tab must land somewhere visible:
                     // select its first row — or, on an empty table, its
@@ -1418,7 +1418,7 @@ impl Component for Editor {
                     }
                     Some(Action::Render)
                 }
-                KeyCode::Up | KeyCode::Char('k') => {
+                KeyCode::Up | KeyCode::Char('k') if crate::keys::plain_letter(&ev) => {
                     self.sub_focus = SubFocus::Url;
                     Some(Action::Render)
                 }
@@ -1469,7 +1469,10 @@ impl Component for Editor {
                     // Leaving the table also drops its selection — the mouse
                     // click-away path clears it, and a row that stays lit
                     // while keys land in the URL line misstates focus.
-                    if ev.code == KeyCode::Up {
+                    // `k` is Up's strict synonym, clamp included.
+                    if matches!(ev.code, KeyCode::Up | KeyCode::Char('k'))
+                        && crate::keys::plain_letter(&ev)
+                    {
                         self.table.selected = None;
                         self.sub_focus = SubFocus::Tabs;
                         return Some(Action::Render);
@@ -3787,6 +3790,48 @@ mod tests {
             e.table.selected,
             Some(0),
             "an empty table's entry point is its ghost + Add row"
+        );
+    }
+
+    /// `k` is Up's strict synonym at the table's top clamp too: it climbs
+    /// out to the tab strip rather than dying. A modified `k` is neither.
+    #[test]
+    fn k_at_row_zero_climbs_out_like_up_and_ctrl_k_does_not() {
+        let mut e = Editor::default();
+        e.params.insert(
+            "a".into(),
+            Entry {
+                value: "1".into(),
+                enabled: true,
+            },
+        );
+        e.sub_focus = SubFocus::Content;
+        e.table.selected = Some(0);
+        assert_eq!(
+            e.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL)),
+            None
+        );
+        assert_eq!(e.sub_focus, SubFocus::Content, "ctrl+k is not a motion");
+        assert_eq!(e.handle_key(key(KeyCode::Char('k'))), Some(Action::Render));
+        assert_eq!(e.sub_focus, SubFocus::Tabs);
+        assert_eq!(e.table.selected, None);
+    }
+
+    /// The tab strip's `h` is a plain letter only: ctrl+h (the legacy
+    /// ctrl+backspace byte) must not switch tabs.
+    #[test]
+    fn ctrl_h_on_the_tab_strip_is_not_a_tab_cycle() {
+        let mut e = Editor {
+            sub_focus: SubFocus::Tabs,
+            ..Editor::default()
+        };
+        assert_eq!(
+            e.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL)),
+            None
+        );
+        assert_eq!(
+            e.handle_key(key(KeyCode::Char('h'))),
+            Some(Action::EditorTabCycle(-1))
         );
     }
 

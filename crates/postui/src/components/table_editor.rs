@@ -384,7 +384,7 @@ impl TableEditorState {
 
     fn handle_nav_key(&mut self, ev: KeyEvent, map: &mut IndexMap<String, Entry>) -> TableOutcome {
         match ev.code {
-            KeyCode::Char('j') | KeyCode::Down => {
+            KeyCode::Char('j') | KeyCode::Down if crate::keys::plain_letter(&ev) => {
                 // The cursor's range is the data rows plus one: index
                 // `map.len()` is the ghost row, so the keyboard can reach it
                 // the same way the mouse can (and an empty table still has
@@ -395,7 +395,7 @@ impl TableEditorState {
                 });
                 TableOutcome::consumed()
             }
-            KeyCode::Char('k') | KeyCode::Up => {
+            KeyCode::Char('k') | KeyCode::Up if crate::keys::plain_letter(&ev) => {
                 // Row 0 and no selection leave Up unconsumed so the caller
                 // (Editor) can fall back to climbing out to the tab strip
                 // instead of leaving the user stuck with no way back.

@@ -363,7 +363,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         ),
         table_row_selected,
         if app.session.response.jq_focused() {
-            if app.session.response.jq_menu_open() {
+            if app.session.response.jq_bar().ai_pending {
+                crate::components::footer::JqBarState::Describing
+            } else if app.session.response.jq_menu_open() {
                 crate::components::footer::JqBarState::Menu
             } else if app.session.response.jq_ghost().is_some()
                 || app.session.response.jq_menu_offered()
