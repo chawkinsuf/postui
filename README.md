@@ -10,7 +10,7 @@ Requests are grouped into **spaces** — top-level folders under `requests/`
 that you switch between with `ctrl+1`…`ctrl+9` (or `alt+c` / `alt+shift+c`). One
 space is visible at a time and each remembers the request you had open.
 Spaces, environments and variables are all edited on the Manage screen
-(`alt+v`). Every project has at least one environment — a new one starts with
+(`alt+r`). Every project has at least one environment — a new one starts with
 `default`, which you can rename; the last environment can't be deleted.
 
 ## Build and run

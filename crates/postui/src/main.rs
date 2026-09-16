@@ -517,7 +517,7 @@ fn edit_config_externally(
         return Ok(());
     }
     postui::hostfs::remove_tempfile(&path);
-    // Apply through the same path alt+r uses, so a tab edit and a
+    // Apply through the same path alt+shift+r uses, so a tab edit and a
     // hand-edit converge on one code path. `Action::ReloadFromDisk`
     // already surfaces `keymap.caret_warnings` itself (it compares the
     // freshly-read keymap against the live one), so a keys.toml apply's

@@ -3684,7 +3684,7 @@ impl App {
                         );
                         // Name the first (alphabetically — `causes` is a
                         // `BTreeMap`) variable that just needs a pick, not
-                        // a fix, so `alt+shift+v` is a visible next step
+                        // a fix, so `alt+v` is a visible next step
                         // rather than a dead end.
                         if let Some(name) = causes.iter().find_map(|(name, cause)| {
                             (*cause == postui_core::prepare::UnresolvedCause::NeedsSelection)
@@ -5052,7 +5052,7 @@ impl App {
                     } else {
                         tab
                     };
-                // A toggle: alt+v (and the header Manage chip) close the
+                // A toggle: alt+r (and the header Manage chip) close the
                 // screen they opened. A request for the tab that's already
                 // up toggles too; a request for a different tab switches.
                 let target = tab.unwrap_or(self.manage.tab);
@@ -10885,10 +10885,10 @@ impl App {
 /// palette and the theme chooser — the spec's "the modal stack works on
 /// top unchanged"), the
 /// screen open/close actions themselves, quit, re-reading the project and
-/// config from disk (alt+r — the files a non-`Main` screen shows are
+/// config from disk (alt+shift+r — the files a non-`Main` screen shows are
 /// exactly the ones a user edits in another window, and the Environments
-/// and Spaces tabs bind a bare `r` to Rename, which is what alt+r would
-/// otherwise reach), cycling the active
+/// and Spaces tabs bind a bare `r` to Rename, and alt+r toggles the screen
+/// itself), cycling the active
 /// environment (alt+x) — the one Main shortcut whose target state, the
 /// active env, is also meaningful inside the Variable Manager (it shows
 /// per-env values; `SwitchEnv` re-syncs the Manager) — and the space

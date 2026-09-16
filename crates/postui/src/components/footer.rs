@@ -98,7 +98,7 @@ pub(crate) fn footer_chips(
             }
             chips.extend([
                 (
-                    "alt+shift+v",
+                    "alt+v",
                     "vars",
                     Some(Action::OpenVarPicker { completing: false }),
                 ),
@@ -935,7 +935,7 @@ mod tests {
         }
     }
 
-    /// The editor's context chips advertise vars (alt+shift+v — ctrl+v is
+    /// The editor's context chips advertise vars (alt+v — ctrl+v is
     /// paste now) since save moved to the global right-side group — and no
     /// longer a second ^S.
     #[test]
@@ -950,7 +950,7 @@ mod tests {
             JqBarState::Closed,
             false,
         );
-        assert!(chips.iter().any(|(k, l, a)| *k == "alt+shift+v"
+        assert!(chips.iter().any(|(k, l, a)| *k == "alt+v"
             && *l == "vars"
             && *a == Some(Action::OpenVarPicker { completing: false })));
         assert!(

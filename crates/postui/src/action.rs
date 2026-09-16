@@ -528,7 +528,7 @@ pub enum Action {
     /// that could have changed out from under the app (sending, opening a
     /// chooser). A no-op, redraw-wise, when nothing changed.
     ReloadProjectFiles,
-    /// The user-triggered reload (`alt+r`, the palette's "Reload from
+    /// The user-triggered reload (`alt+shift+r`, the palette's "Reload from
     /// disk", the Manage bar's Reload All button): a forced re-read of the
     /// open project's files *and* of the user-editable XDG config files —
     /// `config.toml`, `keys.toml` and `themes/` — applied live. `ui.toml`
@@ -659,7 +659,7 @@ pub enum Action {
     /// `Action::CloseScreen` can restore it, then switches `App::screen`
     /// to `Screen::Manage` on `tab` — `None` meaning the last-used tab.
     /// Toggles the screen closed when it is already open on that tab, so
-    /// `alt+v` and the header chip both work as an on/off switch.
+    /// `alt+r` and the header chip both work as an on/off switch.
     OpenManage {
         tab: Option<crate::components::manage::ManageTab>,
     },

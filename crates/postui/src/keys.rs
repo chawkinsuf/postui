@@ -31,7 +31,7 @@ pub fn alt_label() -> &'static str {
 
 /// Rewrites a display label's leading `alt+` to the platform spelling
 /// (`opt+` on macOS — same width, so precomputed keycap layouts hold).
-/// Prefix-only on purpose: keycap labels are app-authored (`alt+shift+v`),
+/// Prefix-only on purpose: keycap labels are app-authored (`alt+shift+r`),
 /// and the other labels that share the chip painter (methods, statuses,
 /// counts) never start with `alt+`.
 pub fn display_keycap(label: &str) -> Cow<'_, str> {
@@ -380,7 +380,7 @@ impl Keymap {
                 Action::CopyToClipboard(crate::action::CopyTarget::Url),
             ),
             ("ctrl+s", Action::SaveRequest),
-            ("alt+r", Action::ReloadFromDisk),
+            ("alt+shift+r", Action::ReloadFromDisk),
             ("alt+d", Action::DiscardChanges),
             ("ctrl+r", Action::Send),
             ("ctrl+enter", Action::Send),
@@ -388,12 +388,12 @@ impl Keymap {
             ("ctrl+o", Action::OpenProjectChooser),
             ("alt+e", Action::OpenBodyInEditor),
             ("ctrl+v", Action::Paste),
-            ("alt+shift+v", Action::OpenVarPicker { completing: false }),
+            ("alt+v", Action::OpenVarPicker { completing: false }),
             ("alt+a", Action::TableAddRow),
             ("alt+p", Action::ToggleTableCollapse),
             ("alt+w", Action::CycleSplit),
             ("shift+alt+w", Action::CycleSplitBack),
-            ("alt+v", Action::OpenManage { tab: None }),
+            ("alt+r", Action::OpenManage { tab: None }),
             ("ctrl+shift+e", Action::ExtractToVariable),
             ("ctrl+shift+d", Action::DuplicateRequest),
             ("ctrl+z", Action::Undo),
@@ -933,9 +933,9 @@ mod tests {
         );
         assert_eq!(get("ctrl+r"), Some(Action::Send));
         assert_eq!(
-            get("alt+r"),
+            get("alt+shift+r"),
             Some(Action::ReloadFromDisk),
-            "the user-triggered reload has a default binding"
+            "the user-triggered reload lives on a shifted chord; it is rare"
         );
         assert_eq!(get("ctrl+enter"), Some(Action::Send));
         assert_eq!(get("shift+enter"), Some(Action::Send));
@@ -947,11 +947,11 @@ mod tests {
         );
         assert_eq!(get("ctrl+v"), Some(Action::Paste), "ctrl+v pastes now");
         assert_eq!(
-            get("alt+shift+v"),
+            get("alt+v"),
             Some(Action::OpenVarPicker { completing: false }),
-            "the variable picker moved off the OS paste chord"
+            "the variable picker sits on alt+v; ctrl+v is the OS paste chord"
         );
-        assert_eq!(get("alt+v"), Some(Action::OpenManage { tab: None }));
+        assert_eq!(get("alt+r"), Some(Action::OpenManage { tab: None }));
         assert_eq!(get("ctrl+z"), Some(Action::Undo));
         assert_eq!(get("u"), Some(Action::Undo), "vim alias");
         assert_eq!(get("ctrl+shift+z"), Some(Action::Redo));
@@ -1191,9 +1191,9 @@ mod tests {
             KeyCombo::parse("f9").unwrap(),
             Action::OpenManage { tab: None },
         );
-        // f9 is a second combo alongside the default alt+v; both resolve.
+        // f9 is a second combo alongside the default alt+r; both resolve.
         let combo = m.combo_for("manage_open").unwrap();
-        assert!(combo == "f9" || combo == "alt+v", "got {combo:?}");
+        assert!(combo == "f9" || combo == "alt+r", "got {combo:?}");
     }
 
     #[test]

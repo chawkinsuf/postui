@@ -760,7 +760,7 @@ mod tests {
     }
 
     /// The user-triggered reload is reachable from the palette, and its
-    /// row shows the same `alt+r` the key path uses — which only works if
+    /// row shows the same `alt+shift+r` the key path uses — which only works if
     /// the keys name table knows the "reload" action name.
     #[test]
     fn palette_carries_reload_from_disk_with_its_binding() {
@@ -773,7 +773,7 @@ mod tests {
         let keymap = crate::keys::Keymap::default_bindings();
         assert_eq!(
             keymap_action_name("reload-from-disk").and_then(|n| keymap.combo_for(n)),
-            Some("alt+r".to_string())
+            Some("alt+shift+r".to_string())
         );
     }
 

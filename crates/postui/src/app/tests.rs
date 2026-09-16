@@ -1016,7 +1016,7 @@ fn app_with_clipboard_text(text: &str) -> App {
 }
 
 /// ctrl+v is paste now (GUI muscle memory — the variable picker moved to
-/// alt+shift+v): with the URL bar focused it reads the clipboard and
+/// alt+v): with the URL bar focused it reads the clipboard and
 /// inserts at the caret, flattening any line break.
 #[test]
 fn ctrl_v_pastes_clipboard_text_into_the_url_bar() {
@@ -1197,18 +1197,18 @@ fn ctrl_v_pastes_multiline_text_into_the_body_editor() {
     assert_eq!(app.editor.body_text(), "{\n  \"a\": 1\n}");
 }
 
-/// The variable picker's new home: alt+shift+v (ctrl+v now pastes).
+/// The variable picker's new home: alt+v (ctrl+v pastes).
 #[test]
-fn alt_shift_v_opens_the_variable_picker() {
+fn alt_v_opens_the_variable_picker() {
     let mut app = App::new_for_test();
     app.update(Action::FocusUrl);
     app.handle_key(KeyEvent::new(
         KeyCode::Char('v'),
-        KeyModifiers::ALT | KeyModifiers::SHIFT,
+        KeyModifiers::ALT,
     ));
     assert!(
         matches!(app.modals.top(), Some(Modal::VarPicker(_))),
-        "alt+shift+v opens the picker"
+        "alt+v opens the picker"
     );
 }
 
@@ -2185,7 +2185,7 @@ fn no_project_opens_on_settings_but_alt_v_still_closes() {
     assert_ne!(
         app.screen,
         Screen::Manage,
-        "alt+v closes the screen it opened"
+        "alt+r closes the screen it opened"
     );
 
     // The scenario above alone doesn't pin the opening-path-only guard:
@@ -2207,7 +2207,7 @@ fn no_project_opens_on_settings_but_alt_v_still_closes() {
     assert_ne!(
         app.screen,
         Screen::Manage,
-        "alt+v closes; it does not re-target the tab"
+        "alt+r closes; it does not re-target the tab"
     );
 }
 
@@ -9430,9 +9430,9 @@ fn address_bar_copy_chip_is_clickable_and_copies_url() {
 // --- Task 9: Screen enum + Variable Manager shell (spec §5) ---------------
 
 #[test]
-fn alt_v_opens_the_manager_and_renders_its_title() {
+fn alt_r_opens_the_manager_and_renders_its_title() {
     let mut app = App::new_for_test();
-    app.handle_key(alt('v'));
+    app.handle_key(alt('r'));
     assert_eq!(app.screen, crate::app::Screen::Manage);
     let content = rendered_text(&mut app);
     assert!(content.contains("VARIABLES"), "the left list's own heading");
@@ -9465,7 +9465,7 @@ fn palette_manage_command_opens_the_manage_screen() {
 fn esc_returns_to_main_with_prior_focus_restored() {
     let mut app = App::new_for_test();
     app.focus = PaneId::Response;
-    app.handle_key(alt('v'));
+    app.handle_key(alt('r'));
     assert_eq!(app.screen, crate::app::Screen::Manage);
 
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
@@ -9476,7 +9476,7 @@ fn esc_returns_to_main_with_prior_focus_restored() {
 #[test]
 fn modals_still_open_and_close_on_top_of_the_manager_screen() {
     let mut app = App::new_for_test();
-    app.handle_key(alt('v'));
+    app.handle_key(alt('r'));
     assert_eq!(app.screen, crate::app::Screen::Manage);
 
     // ctrl+p still opens the palette on top of the Manager screen.
@@ -9542,7 +9542,7 @@ fn manager_screen_replaces_the_three_panes_but_keeps_header_and_footer() {
 #[test]
 fn ctrl_r_and_ctrl_enter_do_not_send_from_the_manager_screen() {
     let mut app = App::new_for_test();
-    app.handle_key(alt('v'));
+    app.handle_key(alt('r'));
     assert_eq!(app.screen, crate::app::Screen::Manage);
     assert!(app.toasts.is_empty());
 
@@ -9570,7 +9570,7 @@ fn ctrl_r_and_ctrl_enter_do_not_send_from_the_manager_screen() {
 fn alt_u_does_not_move_focus_from_the_manager_screen() {
     let mut app = App::new_for_test();
     app.focus = PaneId::Response;
-    app.handle_key(alt('v'));
+    app.handle_key(alt('r'));
     assert_eq!(app.screen, crate::app::Screen::Manage);
 
     app.handle_key(alt('u'));
@@ -9597,7 +9597,7 @@ fn alt_u_does_not_move_focus_from_the_manager_screen() {
 #[test]
 fn other_unwhitelisted_global_shortcuts_are_swallowed_by_the_manager_screen() {
     let mut app = App::new_for_test();
-    app.handle_key(alt('v'));
+    app.handle_key(alt('r'));
     assert_eq!(app.screen, crate::app::Screen::Manage);
     assert!(app.toasts.is_empty());
 
@@ -9616,7 +9616,7 @@ fn other_unwhitelisted_global_shortcuts_are_swallowed_by_the_manager_screen() {
 #[test]
 fn alt_x_cycles_env_from_the_manager_screen() {
     let (mut app, _dir) = app_with_envs();
-    app.handle_key(alt('v'));
+    app.handle_key(alt('r'));
     assert_eq!(app.screen, crate::app::Screen::Manage);
     assert_eq!(app.env_label(), "prod");
 
@@ -9638,7 +9638,7 @@ fn alt_x_cycles_env_from_the_manager_screen() {
 #[test]
 fn ctrl_p_still_opens_the_palette_on_top_of_the_manager_screen() {
     let mut app = App::new_for_test();
-    app.handle_key(alt('v'));
+    app.handle_key(alt('r'));
     assert_eq!(app.screen, crate::app::Screen::Manage);
 
     app.handle_key(ctrl('p'));
@@ -9663,7 +9663,7 @@ fn alt_t_opens_the_theme_chooser_on_main_and_the_manager_screen() {
     );
     app.update(Action::Close);
 
-    app.handle_key(alt('v'));
+    app.handle_key(alt('r'));
     assert_eq!(app.screen, crate::app::Screen::Manage);
     app.handle_key(alt('t'));
     assert!(
@@ -11292,7 +11292,7 @@ fn keyboard_n_and_a_open_the_new_var_and_new_group_prompts() {
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    app.handle_key(alt('v'));
+    app.handle_key(alt('r'));
     rendered_text(&mut app);
 
     app.handle_key(plain('n'));
@@ -13365,12 +13365,12 @@ fn clicking_off_the_quick_add_option_prompt_still_cancels() {
 fn alt_v_toggles_the_variable_manager_closed_and_restores_focus() {
     let mut app = App::new_for_test();
     app.update(Action::FocusPane(PaneId::Response));
-    let alt_v = KeyEvent::new(KeyCode::Char('v'), KeyModifiers::ALT);
+    let alt_r = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::ALT);
 
-    app.handle_key(alt_v);
+    app.handle_key(alt_r);
     assert_eq!(app.screen, Screen::Manage);
-    app.handle_key(alt_v);
-    assert_eq!(app.screen, Screen::Main, "alt+v closes the open manager");
+    app.handle_key(alt_r);
+    assert_eq!(app.screen, Screen::Main, "alt+r closes the open manager");
     assert_eq!(app.focus, PaneId::Response, "prior focus restored");
 }
 
@@ -16773,7 +16773,7 @@ fn manage_opens_on_the_requested_tab_and_alt_arrows_cycle_tabs() {
     app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::ALT));
     assert_eq!(app.manage.tab, crate::components::manage::ManageTab::Spaces);
     app.update(Action::OpenManage { tab: None });
-    assert_eq!(app.screen, Screen::Main, "alt+v toggles closed");
+    assert_eq!(app.screen, Screen::Main, "alt+r toggles closed");
     app.update(Action::OpenManage { tab: None });
     assert_eq!(
         app.manage.tab,
@@ -16846,7 +16846,7 @@ fn header_cycle_pills_yield_at_eighty_columns_so_the_manage_chip_fits() {
         .rect_of(&Hit::HeaderManage)
         .expect("the Manage chip must be on the bar at 80 columns");
     // Whatever of the chip survives the yield order (here the fixture's
-    // 10-character tempdir project name also costs it the `alt+v` keycap),
+    // 10-character tempdir project name also costs it the `alt+r` keycap),
     // the whole painted chip lies within the bar.
     assert!(
         manage.x + manage.width <= 80,
@@ -21967,7 +21967,7 @@ fn dragging_an_environment_row_reorders_and_persists() {
 #[test]
 fn reopening_the_manage_screen_on_another_tab_mid_drag_cancels_it() {
     // `OpenManage { tab: Some(other) }` while the screen is already up
-    // (the palette, or a second alt+v with a tab) resets the list — the
+    // (the palette, or a second alt+r with a tab) resets the list — the
     // drag has to be cancelled first, or it is dropped on the floor with
     // `manage_press` still armed.
     let (mut app, dir) = manage_spaces_app();
@@ -23903,10 +23903,10 @@ fn reload_from_disk_applies_a_new_keys_toml_end_to_end() {
     );
 }
 
-/// alt+r has to reach the reload from *every* screen, not just Main: the
+/// alt+shift+r has to reach the reload from *every* screen, not just Main: the
 /// Manage screen captures all input except the escape whitelist, and the
 /// Environments tab's own `r` opens the Rename prompt — so an unwhitelisted
-/// alt+r would silently rename instead of reloading.
+/// a bare alt+r would silently rename instead of reloading.
 #[test]
 fn alt_r_reloads_from_every_manage_tab() {
     for tab in [
@@ -23922,11 +23922,11 @@ fn alt_r_reloads_from_every_manage_tab() {
         app.update(Action::OpenManage { tab: Some(tab) });
         app.toasts = Default::default();
 
-        app.handle_key(alt('r'));
+        app.handle_key(alt_shift('r'));
 
         assert!(
             app.modals.is_empty(),
-            "{tab:?}: alt+r opened a modal instead of reloading"
+            "{tab:?}: alt+shift+r opened a modal instead of reloading"
         );
         assert!(
             app.toasts
