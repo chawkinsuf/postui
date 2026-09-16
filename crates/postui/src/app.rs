@@ -1134,6 +1134,10 @@ impl App {
                 .is_some_and(|v| v.mode == crate::components::response::ViewMode::Headers),
             Hit::TipReveal(name) => self.tip_revealed.as_ref().is_some_and(|(n, _)| n == name),
             Hit::VmRevealToggle => self.varmanager.form.revealed,
+            Hit::ModalRevealToggle => matches!(
+                self.modals.top(),
+                Some(Modal::Prompt { revealed: true, .. })
+            ),
             Hit::VmSecretToggle => match (&self.varmanager.detail, self.project()) {
                 (VmDetail::Var(name), Some(p)) => {
                     p.variables().vars.get(name).is_some_and(|d| d.secret)

@@ -1107,6 +1107,7 @@ impl App {
                 | Hit::ModalRowToggle(_)
                 | Hit::ModalAddRow
                 | Hit::ModalSharedToggle
+                | Hit::ModalRevealToggle
                 | Hit::ModalRemove
                 | Hit::ModalOutside
                 | Hit::DropdownRow(_)
@@ -1744,6 +1745,16 @@ impl App {
                     return self.update(Action::Render);
                 }
                 false
+            }
+            // The mouse twin of ctrl+r: flips the mask and nothing else
+            // (focus stays wherever it was, so typing carries on).
+            Hit::ModalRevealToggle => {
+                if let Some(crate::components::modal::Modal::Prompt { revealed, .. }) =
+                    self.modals.top_mut()
+                {
+                    *revealed = !*revealed;
+                }
+                self.update(Action::Render)
             }
             Hit::ModalSharedToggle => {
                 self.modals.leave_button_row();

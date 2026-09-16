@@ -306,6 +306,9 @@ pub enum Hit {
     /// toggle row: clicking it both focuses the row and flips it (the
     /// mouse twin of ↓ then space).
     ModalSharedToggle,
+    /// The secret prompt's `󰈈 reveal`/`󰈉 hide` button beside its field:
+    /// the mouse twin of ctrl+r, flipping whether the typed text shows.
+    ModalRevealToggle,
     /// The value popup's "Remove" button: deletes the stored value at the
     /// chosen Write-to scope, so the next wider scope shows through.
     ModalRemove,

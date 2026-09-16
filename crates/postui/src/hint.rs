@@ -485,6 +485,11 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         }),
         Hit::ModalAddRow => text("Add another field"),
         Hit::ModalSharedToggle => text("Use the same options in every environment"),
+        Hit::ModalRevealToggle => text(if ctx.on {
+            "Hide the secret you're typing"
+        } else {
+            "Show the secret you're typing"
+        }),
         // Names the scope the chosen Write-to row would clear, the way
         // the modal's own remove chip does — "this scope" makes the
         // reader look back up at the popup to find out which.
@@ -808,6 +813,7 @@ mod tests {
             Hit::ModalRowToggle(0),
             Hit::TipReveal("tok".into()),
             Hit::VmRevealToggle,
+            Hit::ModalRevealToggle,
             Hit::VmSecretToggle,
             Hit::CopyBodyButton,
             Hit::SaveBodyButton,
@@ -887,6 +893,7 @@ mod tests {
             Hit::AutoHeaderReveal,
             Hit::ChooserToggle,
             Hit::ModalSharedToggle,
+            Hit::ModalRevealToggle,
             Hit::ModalRowToggle(0),
             Hit::ModalRemove,
             Hit::PickerPrimary,

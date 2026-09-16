@@ -1088,6 +1088,14 @@ impl ModalStack {
                 chips.push(("esc", "done", None));
                 chips
             }
+            // The secret prompt's reveal chord: the eye button beside the
+            // field is its mouse twin, so the key is advertised here and
+            // nowhere inside the modal.
+            Modal::Prompt { revealed, kind, .. } if kind.is_secret() => vec![
+                ("ctrl+r", if *revealed { "hide" } else { "reveal" }, None),
+                ("enter", "save", None),
+                ("esc", "done", None),
+            ],
             Modal::Prompt { .. } => vec![("enter", "save", None), ("esc", "done", None)],
             Modal::NewProject { .. } => vec![
                 ("alt+b", "browse folder", None),
@@ -2102,9 +2110,8 @@ impl ModalStack {
                 revealed,
             } => {
                 let masked = kind.is_secret() && !*revealed;
-                // Height unchanged from the hint-row days — the secret
-                // prompt still uses that row for its reveal toggle hint,
-                // and everywhere else the space keeps the shell airy.
+                // Height unchanged from the hint-row days: the space keeps
+                // the shell airy.
                 let area = centered_rect(screen, 60.min(screen.width), 14.min(screen.height));
                 hits.register(area, crate::hit::Hit::ModalBody);
                 paint::floating_panel_settling(frame.buffer_mut(), area, screen, theme, t);
@@ -2126,10 +2133,25 @@ impl ModalStack {
                     true,
                 );
 
+                // A secret prompt keeps a reveal button beside its field,
+                // the same block height (field and button share one
+                // register), so the field gives up that width plus a gap.
+                let reveal_label = if kind.is_secret() {
+                    Some(if *revealed {
+                        format!("{} hide", crate::glyph::EYE_OFF)
+                    } else {
+                        format!("{} reveal", crate::glyph::EYE)
+                    })
+                } else {
+                    None
+                };
+                let reveal_w = reveal_label
+                    .as_deref()
+                    .map_or(0, |l| crate::paint::button_min_width(l) + 1);
                 let field_area = Rect {
                     x: area.x + 2,
                     y: title_y + 2,
-                    width: area.width.saturating_sub(4),
+                    width: area.width.saturating_sub(4 + reveal_w),
                     height: FIELD_HEIGHT,
                 };
                 // The new-selector prompt's shared toggle is the only
@@ -2167,22 +2189,25 @@ impl ModalStack {
                 .paint(frame.buffer_mut(), field_area, theme);
                 hits.register(field_area, crate::hit::Hit::ModalInput(0));
 
-                if kind.is_secret() {
-                    let hint_y = field_area.y + FIELD_HEIGHT + 1;
-                    let hint = if *revealed {
-                        "ctrl+r hide"
-                    } else {
-                        "ctrl+r reveal"
+                if let Some(label) = &reveal_label {
+                    let reveal_hit = crate::hit::Hit::ModalRevealToggle;
+                    let rect = Rect {
+                        x: field_area.x + field_area.width + 1,
+                        y: field_area.y,
+                        width: crate::paint::button_min_width(label).min(reveal_w),
+                        height: FIELD_HEIGHT,
                     };
-                    paint::text(
-                        frame.buffer_mut(),
-                        area.x + 2,
-                        hint_y,
-                        hint,
-                        theme.text_muted,
-                        theme.panel,
-                        false,
-                    );
+                    let rect = crate::paint::Button {
+                        label,
+                        kind: ButtonKind::Secondary,
+                        state: if hovered == Some(&reveal_hit) {
+                            ControlState::Hover
+                        } else {
+                            ControlState::Normal
+                        },
+                    }
+                    .paint(frame.buffer_mut(), rect, theme);
+                    hits.register(rect, reveal_hit);
                 }
 
                 // The new-selector prompt's one option: shared, i.e. the
@@ -3303,6 +3328,29 @@ mod tests {
         format!("{:?}", terminal.backend().buffer())
     }
 
+    fn draw_modal_with_hits(m: &mut ModalStack) -> (String, crate::hit::HitMap) {
+        let theme = Theme::dark();
+        let keymap = crate::keys::Keymap::default_bindings();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| {
+                m.draw(
+                    f,
+                    f.area(),
+                    &theme,
+                    &mut hits,
+                    None,
+                    &keymap,
+                    test_anims(),
+                    std::time::Instant::now(),
+                )
+            })
+            .unwrap();
+        (format!("{:?}", terminal.backend().buffer()), hits)
+    }
+
     #[test]
     fn prompts_and_confirms_show_no_key_hint_row() {
         // Enter/Esc/Tab behavior is implied; the hint rows are gone.
@@ -3398,9 +3446,10 @@ mod tests {
         );
     }
 
+    /// The reveal gesture is a button beside the field (the mouse) and a
+    /// footer chip (the ctrl+r chord) — never a hint line inside the modal.
     #[test]
-    fn secret_prompt_keeps_the_reveal_hint_only() {
-        // ctrl+r reveal is not discoverable, so that hint alone survives.
+    fn secret_prompt_has_a_reveal_button_and_a_footer_chip_not_a_hint_line() {
         let mut m = ModalStack::default();
         m.push(Modal::Prompt {
             title: "Secret".into(),
@@ -3412,10 +3461,43 @@ mod tests {
             },
             revealed: false,
         });
-        let content = draw_modal(&mut m);
-        assert!(content.contains("ctrl+r reveal"), "{content}");
-        assert!(!content.contains("esc cancel"), "{content}");
-        assert!(!content.contains("enter confirm"), "{content}");
+        let (content, hits) = draw_modal_with_hits(&mut m);
+        assert!(!content.contains("ctrl+r"), "{content}");
+        assert!(content.contains(crate::glyph::EYE), "{content}");
+        assert!(content.contains("reveal"), "{content}");
+        assert!(hits.rect_of(&crate::hit::Hit::ModalRevealToggle).is_some());
+        let chips = m.footer_chips().unwrap();
+        assert!(
+            chips.iter().any(|(k, l, _)| k == "ctrl+r" && l == "reveal"),
+            "{chips:?}"
+        );
+
+        if let Some(Modal::Prompt { revealed, .. }) = m.top_mut() {
+            *revealed = true;
+        }
+        let (content, _) = draw_modal_with_hits(&mut m);
+        assert!(content.contains(crate::glyph::EYE_OFF), "{content}");
+        assert!(content.contains("hide"), "{content}");
+        let chips = m.footer_chips().unwrap();
+        assert!(
+            chips.iter().any(|(k, l, _)| k == "ctrl+r" && l == "hide"),
+            "{chips:?}"
+        );
+    }
+
+    /// A plain (non-secret) prompt gets neither the button nor the chip.
+    #[test]
+    fn plain_prompt_has_no_reveal_control() {
+        let mut m = ModalStack::default();
+        m.push(Modal::Prompt {
+            title: "New request".into(),
+            input: LineInput::new(""),
+            kind: PromptKind::NewRequest,
+            revealed: false,
+        });
+        let (_, hits) = draw_modal_with_hits(&mut m);
+        assert!(hits.rect_of(&crate::hit::Hit::ModalRevealToggle).is_none());
+        assert!(!m.footer_chips().unwrap().iter().any(|(k, _, _)| k == "ctrl+r"));
     }
 
     fn draw_modal_buf(m: &mut ModalStack) -> ratatui::buffer::Buffer {
