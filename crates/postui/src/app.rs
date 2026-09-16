@@ -10112,7 +10112,11 @@ impl App {
                 self.settings.file_button = usize::from(matches!(ev.code, KeyCode::Char('l')));
                 true
             }
-            KeyCode::Enter | KeyCode::Char(' ') => self.activate_settings_row(),
+            KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Char('i')
+                if crate::keys::opens_field(&ev) =>
+            {
+                self.activate_settings_row()
+            }
             // `u` / `:` (undo, palette) are not named here: they reach the
             // router's whitelist from the keymap, like on every screen.
             _ => return None,

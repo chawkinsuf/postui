@@ -1089,18 +1089,23 @@ impl VarManager {
                 self.form_cursor = fields[fields.len() - 1];
                 None
             }
-            KeyCode::Enter | KeyCode::Char(' ') => match self.form_cursor {
-                FormStop::Field(field) => {
-                    self.start_field_edit(ctx, field);
-                    None
+            KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Char('i')
+                if crate::keys::opens_field(&ev) =>
+            {
+                match self.form_cursor {
+                    FormStop::Field(field) => {
+                        self.start_field_edit(ctx, field);
+                        None
+                    }
+                    // The toggle has no text: Enter flips it, as a click
+                    // does — gated like `s` and the chip on the variable
+                    // being declared.
+                    FormStop::Secret if ctx.variables().vars.contains_key(&name) => {
+                        Some(Action::ToggleSecretVar { name })
+                    }
+                    FormStop::Secret => None,
                 }
-                // The toggle has no text: Enter flips it, as a click does —
-                // gated like `s` and the chip on the variable being declared.
-                FormStop::Secret if ctx.variables().vars.contains_key(&name) => {
-                    Some(Action::ToggleSecretVar { name })
-                }
-                FormStop::Secret => None,
-            },
+            }
             // The form's quick actions — the keyboard twins of its
             // inline controls, advertised by the footer's Form chips.
             KeyCode::Char('s') if ctx.variables().vars.contains_key(&name) => {
@@ -1433,7 +1438,7 @@ impl VarManager {
                 *row = last_row;
                 None
             }
-            KeyCode::Enter => {
+            KeyCode::Enter | KeyCode::Char('i') if crate::keys::opens_field(&ev) => {
                 let (row, col) = self.grid.cursor;
                 self.start_cell_edit(ctx, row, col);
                 None
@@ -3149,6 +3154,21 @@ fields = ["user_id", "customer_id"]
         );
     }
 
+    /// `i` opens a focused form field exactly as Enter/Space do (spec
+    /// 2026-09-16): the shared field-open key, not just another vim
+    /// motion alias.
+    #[test]
+    fn i_opens_the_focused_form_field_like_enter() {
+        let (_dir, ctx) = fixture();
+        let mut vm = VarManager::default();
+        select_var(&mut vm, &ctx, "base_url");
+        vm.focus = VmFocus::Form;
+        vm.form_cursor = FormStop::Field(VmField::Default);
+        let action = vm.handle_key(key(KeyCode::Char('i')), &ctx, None);
+        assert!(action.is_none());
+        assert!(vm.form.editing.is_some());
+    }
+
     /// A secret's Default row is not painted, so the cursor never stops
     /// on it: ↓ from Description goes straight to the Secret toggle.
     #[test]
@@ -4280,6 +4300,21 @@ fields = ["user_id", "customer_id"]
             vm.handle_key(key(KeyCode::Char('q')), &ctx, None),
             Some(Action::Quit)
         );
+    }
+
+    /// `i` opens the focused grid cell exactly as Enter does (spec
+    /// 2026-09-16). Unlike the form, the grid never had a `Char(' ')`
+    /// alias here and still does not -- only `i` is new.
+    #[test]
+    fn i_opens_the_focused_grid_cell_like_enter() {
+        let (_dir, ctx) = fixture_with_shared_selector();
+        let mut vm = VarManager::default();
+        select_group(&mut vm, &ctx, "creds");
+        vm.focus = VmFocus::Grid;
+        vm.grid.cursor = (0, 1);
+        let action = vm.handle_key(key(KeyCode::Char('i')), &ctx, None);
+        assert!(action.is_none());
+        assert!(vm.grid.editing.is_some());
     }
 
     #[test]

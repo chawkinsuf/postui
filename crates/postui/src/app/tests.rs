@@ -25383,6 +25383,24 @@ fn settings_vim_aliases_are_strict_synonyms() {
     assert_eq!(a.settings.file_button, 1);
 }
 
+/// `i` opens a Settings text row exactly as Enter/Space do (spec
+/// 2026-09-16): it is not just another vim alias for motion here, it is
+/// the shared field-open key.
+#[test]
+fn i_opens_a_settings_text_row_like_enter() {
+    use crate::components::settings::{SettingsField, SettingsRow, SettingsTab};
+    let mut app = App::new_for_test();
+    app.update(Action::OpenManage {
+        tab: Some(crate::components::manage::ManageTab::Settings),
+    });
+    app.settings.cursor = SettingsTab::rows()
+        .iter()
+        .position(|r| matches!(r, SettingsRow::Setting(SettingsField::AiCmd)))
+        .expect("ai_cmd row exists");
+    app.handle_key(plain('i'));
+    assert!(app.settings.editing.is_some(), "i opens the text row");
+}
+
 /// A refused `osc52_limit` keeps its edit open, so a click landing on
 /// another row must not move the cursor out from under it -- `editing`
 /// and `cursor` would then name different rows and the painted well
