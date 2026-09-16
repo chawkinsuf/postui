@@ -367,7 +367,16 @@ impl ManageList {
                 let n = Self::buttons(tab).len();
                 (n - self.painted_buttons.min(n), n.saturating_sub(1))
             }
-            DetailRow::Tls => (0, self.painted_tls.saturating_sub(1)),
+            // Segments drop from the right, so the painted ones are the
+            // first `painted_tls`; none painted is the same empty range
+            // the buttons arm collapses to.
+            DetailRow::Tls => {
+                let n = TLS_SEGMENTS.len();
+                match self.painted_tls.min(n) {
+                    0 => (n, n.saturating_sub(1)),
+                    painted => (0, painted - 1),
+                }
+            }
         }
     }
 
@@ -1115,8 +1124,12 @@ mod tests {
     }
 
     fn draw_at(l: &mut ManageList, tab: ManageTab, ctx: &Project, w: u16) -> HitMap {
+        draw_sized(l, tab, ctx, w, 20)
+    }
+
+    fn draw_sized(l: &mut ManageList, tab: ManageTab, ctx: &Project, w: u16, h: u16) -> HitMap {
         let theme = Theme::dark();
-        let backend = ratatui::backend::TestBackend::new(w, 20);
+        let backend = ratatui::backend::TestBackend::new(w, h);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let mut hits = HitMap::default();
         let requests = BTreeMap::new();
@@ -1194,6 +1207,29 @@ mod tests {
             assert_eq!(a.detail_row, b.detail_row, "{alias:?}");
             assert_eq!(a.detail_col, b.detail_col, "{alias:?}");
         }
+    }
+
+    /// A terminal too short for the TLS row paints none of its segments;
+    /// `j` onto that row must aim at nothing (as the buttons row does with
+    /// nothing painted), so Enter never fires an invisible control.
+    #[test]
+    fn an_unpainted_tls_row_has_no_aim() {
+        let (ctx, _dir) = ctx();
+        let mut l = ManageList::default();
+        // Tall enough for the title row and its buttons, not the TLS row.
+        draw_sized(&mut l, ManageTab::Environments, &ctx, 100, 3);
+        assert_eq!(l.painted_tls, 0, "precondition: no TLS segment painted");
+        assert_ne!(l.painted_buttons, 0, "precondition: the buttons row is");
+        l.handle_key(key(KeyCode::Char('l')), ManageTab::Environments, &ctx);
+        assert_eq!(l.focus, ListFocus::Detail);
+        l.handle_key(key(KeyCode::Char('j')), ManageTab::Environments, &ctx);
+        assert_eq!(l.detail_row, DetailRow::Tls);
+        assert_eq!(l.aimed(ManageTab::Environments), None);
+        assert_eq!(
+            l.handle_key(key(KeyCode::Enter), ManageTab::Environments, &ctx),
+            None,
+            "Enter dispatches nothing"
+        );
     }
 
     /// ↑/↓ walk the pane's rows (buttons, then TLS) on the Environments

@@ -2219,6 +2219,12 @@ impl App {
     /// keystrokes, and the close lands as one step (spec 2026-09-15, "Two
     /// histories, one handover").
     fn field_gate(&self) -> bool {
+        // Another screen takes the caret without touching `focus` or
+        // `sub_focus`; there the field is not open (`open_text_field_mut`
+        // agrees), so the gate must not hold either.
+        if self.screen != Screen::Main {
+            return false;
+        }
         let url = self.focus == PaneId::Editor
             && self.editor.sub_focus == SubFocus::Url
             && self.editor.url.edited();
@@ -2232,9 +2238,15 @@ impl App {
         // A caret that has left the URL line closes its session here too,
         // so a mouse blur, alt+u or a Tab out of the pane is as good as Esc
         // — focus counts, since a pane switch moves it without touching
-        // `sub_focus`.
-        if self.focus != PaneId::Editor || self.editor.sub_focus != SubFocus::Url {
+        // `sub_focus`, and so does the screen, since Manage moves neither.
+        let off_screen = self.screen != Screen::Main;
+        if off_screen || self.focus != PaneId::Editor || self.editor.sub_focus != SubFocus::Url {
             self.editor.url.end_edit();
+        }
+        // The jq bar keeps its caret across a screen change (the pane is
+        // still the focused one underneath), so only its session closes.
+        if off_screen {
+            self.session.response.end_jq_edit_session();
         }
         if self.field_gate() {
             // A wholesale change taken mid-field (`no_coalesce`, e.g. alt+j

@@ -17751,6 +17751,35 @@ mod undo_tests {
         );
     }
 
+    /// The Manage screen takes the caret away without touching `focus` or
+    /// `sub_focus`: the URL line's session must close there too, so the
+    /// typing lands as an app step instead of sitting behind a gate the
+    /// undo router can no longer see (and then being thrown away).
+    #[test]
+    fn opening_the_manage_screen_closes_the_url_lines_edit_session() {
+        let mut app = App::new_for_test();
+        app.update(Action::CreateRequest("r".into()));
+        app.capture_undo();
+        let steps = app.history.undo_len();
+        app.focus = PaneId::Editor;
+        app.editor.sub_focus = SubFocus::Url;
+        type_chars(&mut app, "/a");
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        app.capture_undo();
+        assert_eq!(app.history.undo_len(), steps + 1);
+        app.editor.sub_focus = SubFocus::Url;
+        type_chars(&mut app, "/b");
+        app.capture_undo();
+        app.update(Action::OpenManage { tab: None });
+        assert_eq!(app.screen, Screen::Manage);
+        assert!(app.capture_undo(), "leaving for Manage closes the edit");
+        assert_eq!(app.history.undo_len(), steps + 2, "…as one step");
+        app.update(Action::Undo);
+        assert!(app.editor.url.text().ends_with("/a"), "u on Manage undoes the /b step");
+        app.update(Action::Redo);
+        assert!(app.editor.url.text().ends_with("/a/b"), "and redo brings it back");
+    }
+
     /// A pane switch moves the focus without touching `sub_focus`, and it
     /// closes the URL line's edit session all the same: the edit lands as
     /// one app step, and a ctrl+z after coming back is the app history's,
@@ -20112,6 +20141,32 @@ fn a_jq_edit_is_one_app_history_step_per_close() {
     app.capture_undo();
     assert_eq!(app.history.undo_len(), steps + 1);
     assert_eq!(app.editor.jq, ".data");
+}
+
+/// The jq bar's twin of the URL case: the Manage screen leaves `focus`
+/// on the response pane, so the bar's session has to close on the screen
+/// change itself, or the gate stays on with no field for `u` to step.
+#[test]
+fn opening_the_manage_screen_closes_the_jq_bars_edit_session() {
+    let mut app = App::new_for_test();
+    app.update(Action::CreateRequest("r".into()));
+    ready_response(&mut app, JQ_BODY);
+    app.update(Action::OpenJqBar);
+    app.sync_jq();
+    app.capture_undo();
+    let steps = app.history.undo_len();
+    type_str(&mut app, ".data");
+    app.sync_jq();
+    app.capture_undo();
+    assert_eq!(app.history.undo_len(), steps, "open: nothing recorded");
+    app.update(Action::OpenManage { tab: None });
+    assert!(app.capture_undo(), "leaving for Manage closes the edit");
+    assert_eq!(app.history.undo_len(), steps + 1);
+    assert_eq!(app.editor.jq, ".data");
+    app.update(Action::Undo);
+    app.sync_jq();
+    assert_eq!(app.editor.jq, "", "u on Manage undoes the filter step");
+    assert_eq!(app.history.undo_len(), steps);
 }
 
 /// A filter that lands while the bar is closed — a tree verb, an AI

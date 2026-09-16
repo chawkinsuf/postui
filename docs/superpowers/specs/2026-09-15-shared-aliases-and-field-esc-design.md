@@ -298,9 +298,8 @@ kill-to-start in a text box.
 
 - **Response views**: `r` (raw⇄pretty) and `h` (headers⇄body) are
   replaced by a single `t` that cycles Pretty → Raw → Headers → Pretty.
-  The tabs stay clickable and the palette's response-toggle command
-  stays, so this is the keyboard's one path rather than two, and it
-  frees `h` for the motion without a shifted letter. The two footer
+  The tabs stay clickable, so this is the keyboard's one path rather
+  than two, and it frees `h` for the motion without a shifted letter. The two footer
   chips (`r raw`, `h headers`) become one `t view` chip; hover hints
   follow.
 - **Variable Manager new selector**: `g` → `a`, matching the table's

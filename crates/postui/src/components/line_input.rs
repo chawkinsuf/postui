@@ -436,6 +436,12 @@ impl LineInput {
                     self.delete_selection();
                     return true;
                 }
+                // A click plants the anchor on the caret and leaves it
+                // there; the caret moving off it would read as a selection.
+                // Not `clear_selection`: that breaks the run, and a burst
+                // of backspaces is one step.
+                self.anchor = None;
+                self.word_anchor = None;
                 // ctrl/alt+backspace removes the whole word behind the
                 // caret, the same hop word-left would make.
                 let target = if word {
@@ -458,6 +464,8 @@ impl LineInput {
                     self.delete_selection();
                     return true;
                 }
+                self.anchor = None;
+                self.word_anchor = None;
                 if self.cursor < self.len_chars() {
                     self.record(EditKind::DeleteForward);
                     let start = self.byte_offset(self.cursor);
@@ -1172,6 +1180,33 @@ mod tests {
         assert!(input.handle_key(code(KeyCode::Delete)));
         assert_eq!(input.text(), "bcd");
         assert_eq!(input.cursor(), 0);
+    }
+
+    /// A plain click plants the anchor on the caret (a drag may follow)
+    /// and nothing clears it on release. Backspace/Delete with no
+    /// selection must drop that stale anchor, or the caret moving off it
+    /// reads back as a selection the next keystroke silently eats.
+    #[test]
+    fn backspace_and_delete_drop_a_stale_click_anchor() {
+        let mut input = LineInput::new("abcd");
+        input.set_cursor(2);
+        input.begin_mouse_selection();
+        assert_eq!(input.selection(), None, "anchor == cursor is no selection");
+        assert!(input.handle_key(code(KeyCode::Backspace)));
+        assert_eq!(input.text(), "acd");
+        assert_eq!(input.selection(), None, "no phantom selection after Backspace");
+        input.handle_key(code(KeyCode::Char('x')));
+        assert_eq!(input.text(), "axcd", "typing inserts, it does not replace");
+
+        let mut input = LineInput::new("abcd");
+        input.set_cursor(1);
+        input.begin_mouse_selection();
+        assert!(input.handle_key(code(KeyCode::Delete)));
+        assert_eq!(input.text(), "acd");
+        assert_eq!(input.selection(), None, "no phantom selection after Delete");
+        input.handle_key(code(KeyCode::Right));
+        input.handle_key(shifted(KeyCode::Left));
+        assert_eq!(input.selection(), Some((1, 2)), "a fresh selection still works");
     }
 
     #[test]
