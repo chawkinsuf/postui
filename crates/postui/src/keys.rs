@@ -29,6 +29,15 @@ pub fn alt_label() -> &'static str {
     }
 }
 
+/// The keys that open a *selected* field into an editable one, on every
+/// surface that has the two-state field model (spec 2026-09-16): Enter,
+/// Space, or the vim `i` (plain only — `plain_letter` keeps ctrl+i and
+/// alt+i free for their own bindings, and `I`/shift+i is deferred).
+pub(crate) fn opens_field(ev: &KeyEvent) -> bool {
+    matches!(ev.code, KeyCode::Enter | KeyCode::Char(' '))
+        || (ev.code == KeyCode::Char('i') && plain_letter(ev))
+}
+
 /// Guard for a key arm that pairs a named key with its vim letter
 /// (`Left | Char('h')`, spec 2026-09-15): the letter counts only
 /// unmodified — ctrl+h is the legacy ctrl+backspace byte, ctrl+j/k and
@@ -1336,5 +1345,20 @@ mod tests {
         for (name, _) in named_actions() {
             assert_eq!(applied.combos_for(name), defaults.combos_for(name));
         }
+    }
+
+    #[test]
+    fn opens_field_matches_enter_space_and_plain_i() {
+        let key = |code: KeyCode, mods: KeyModifiers| KeyEvent::new(code, mods);
+        assert!(opens_field(&key(KeyCode::Enter, KeyModifiers::NONE)));
+        assert!(opens_field(&key(KeyCode::Char(' '), KeyModifiers::NONE)));
+        assert!(opens_field(&key(KeyCode::Char('i'), KeyModifiers::NONE)));
+        assert!(!opens_field(&key(KeyCode::Char('I'), KeyModifiers::SHIFT)));
+        assert!(!opens_field(&key(
+            KeyCode::Char('i'),
+            KeyModifiers::CONTROL
+        )));
+        assert!(!opens_field(&key(KeyCode::Char('j'), KeyModifiers::NONE)));
+        assert!(!opens_field(&key(KeyCode::Esc, KeyModifiers::NONE)));
     }
 }
