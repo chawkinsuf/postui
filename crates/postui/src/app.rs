@@ -2568,6 +2568,16 @@ impl App {
             }
             Action::ForceResetConfigFile(file) => {
                 use crate::action::ConfigFile;
+                let name = match file {
+                    ConfigFile::Config => crate::config::CONFIG_TOML,
+                    ConfigFile::Keys => crate::config::KEYS_TOML,
+                };
+                // Folded the same way `Config::read`'s error already is
+                // for a Reset's undo: a file that is there but unreadable
+                // has nothing sane to restore to, so undoing this reset
+                // removes the file instead, which is the least surprising
+                // outcome.
+                let before = self.read_config_file(name).ok().flatten();
                 let result = match file {
                     // `reset_ui_settings` refuses (leaving the file
                     // untouched) when config.toml does not parse -- exactly
@@ -2590,7 +2600,18 @@ impl App {
                     ),
                 };
                 match result {
-                    Ok(()) => self.update(Action::ReloadFromDisk),
+                    Ok(()) => {
+                        let after = self.read_config_file(name).ok().flatten().unwrap_or_default();
+                        self.history.record_no_coalesce(crate::undo::Step {
+                            kind: crate::undo::StepKind::ConfigFile { file, before, after },
+                            context: crate::undo::Context {
+                                slug: None,
+                                cursor_before: crate::undo::CursorPos::None,
+                                cursor_after: crate::undo::CursorPos::None,
+                            },
+                        });
+                        self.update(Action::ReloadFromDisk)
+                    }
                     Err(e) => {
                         self.toasts.push(
                             format!("could not reset {}: {e}", file.name()),
@@ -2601,8 +2622,11 @@ impl App {
                 }
             }
             Action::SetUiFlag { key, value } => {
+                use crate::undo::UiValue;
+                let before = self.ui_flag(key);
                 let saved = self.config.save_ui_flag(key, value);
-                self.apply_ui_write(saved, |ui| match key {
+                let landed = saved.is_ok();
+                let redraw = self.apply_ui_write(saved, |ui| match key {
                     "animations" => ui.animations = value,
                     "hover_hints" => ui.hover_hints = value,
                     "ai_confirmed" => ui.ai_confirmed = value,
@@ -2611,15 +2635,23 @@ impl App {
                     // other shoe. Keys are `&'static str` from
                     // `SettingsField::key`, so this can only be a typo.
                     other => debug_assert!(false, "no boolean setting named {other:?}"),
-                })
+                });
+                if landed {
+                    self.record_config_step(key, UiValue::Flag(before), UiValue::Flag(value));
+                }
+                redraw
             }
             Action::SetUiString { key, value } => {
+                use crate::undo::UiValue;
+                let before = self.ui_string(key);
                 let saved = self.config.save_ui_string(key, &value);
+                let landed = saved.is_ok();
                 // An empty commit removed the key (see
                 // `Config::save_ui_string`), so what applies is the
                 // default, not an empty command.
                 let default = crate::config::UiSettings::default();
-                self.apply_ui_write(saved, move |ui| match key {
+                let after = value.clone();
+                let redraw = self.apply_ui_write(saved, move |ui| match key {
                     "ai_cmd" => {
                         ui.ai_cmd = if value.is_empty() {
                             default.ai_cmd
@@ -2636,14 +2668,25 @@ impl App {
                         }
                     }
                     other => debug_assert!(false, "no string setting named {other:?}"),
-                })
+                });
+                if landed {
+                    self.record_config_step(key, UiValue::Text(before), UiValue::Text(after));
+                }
+                redraw
             }
             Action::SetUiInt { key, value } => {
+                use crate::undo::UiValue;
+                let before = self.ui_int(key);
                 let saved = self.config.save_ui_int(key, value);
-                self.apply_ui_write(saved, |ui| match key {
+                let landed = saved.is_ok();
+                let redraw = self.apply_ui_write(saved, |ui| match key {
                     "osc52_limit" => ui.osc52_limit = value,
                     other => debug_assert!(false, "no integer setting named {other:?}"),
-                })
+                });
+                if landed {
+                    self.record_config_step(key, UiValue::Int(before), UiValue::Int(value));
+                }
+                redraw
             }
             Action::Quit | Action::ForceQuit => {
                 let slug = self.editor.slug.clone();
@@ -10254,6 +10297,67 @@ impl App {
         true
     }
 
+    /// The Settings tab's current value for `key`, read straight from
+    /// `ui_settings` — the "before" half of a `Config` undo step. Panics
+    /// only on a typo `Action::SetUi*` can't otherwise reach (same
+    /// contract as `apply_ui_write`'s `debug_assert!` arms).
+    fn ui_flag(&self, key: &'static str) -> bool {
+        match key {
+            "animations" => self.ui_settings.animations,
+            "hover_hints" => self.ui_settings.hover_hints,
+            "ai_confirmed" => self.ui_settings.ai_confirmed,
+            other => {
+                debug_assert!(false, "no boolean setting named {other:?}");
+                false
+            }
+        }
+    }
+
+    fn ui_string(&self, key: &'static str) -> String {
+        match key {
+            "ai_cmd" => self.ui_settings.ai_cmd.clone(),
+            "clipboard_cmd" => self.ui_settings.clipboard_cmd.clone().unwrap_or_default(),
+            "jq_tab" => crate::components::settings::jq_tab_spelling(self.ui_settings.jq_tab)
+                .to_string(),
+            other => {
+                debug_assert!(false, "no string setting named {other:?}");
+                String::new()
+            }
+        }
+    }
+
+    fn ui_int(&self, key: &'static str) -> usize {
+        match key {
+            "osc52_limit" => self.ui_settings.osc52_limit,
+            other => {
+                debug_assert!(false, "no integer setting named {other:?}");
+                0
+            }
+        }
+    }
+
+    /// Records a Settings write as one undo step, once it has landed —
+    /// `before`/`after` already computed by the caller so a refused write
+    /// (which changes nothing) never reaches here.
+    fn record_config_step(
+        &mut self,
+        key: &'static str,
+        before: crate::undo::UiValue,
+        after: crate::undo::UiValue,
+    ) {
+        if before == after {
+            return; // no-op commit: nothing to undo, matching the field rule
+        }
+        self.history.record_no_coalesce(crate::undo::Step {
+            kind: crate::undo::StepKind::Config { key, before, after },
+            context: crate::undo::Context {
+                slug: None,
+                cursor_before: crate::undo::CursorPos::None,
+                cursor_after: crate::undo::CursorPos::None,
+            },
+        });
+    }
+
     /// Keys while a variable-form field owns the keyboard (the field rule):
     /// `Esc` and `Enter` both commit via `commit_var_form` — discard is
     /// undo, in the field or after close — everything else goes to the
@@ -10948,9 +11052,101 @@ impl App {
                     }
                 }
             }
-            StepKind::Config { .. } | StepKind::ConfigFile { .. } => {
-                // Task 6 implements the real consumer code.
-                false
+            StepKind::Config { key, before, after } => {
+                use crate::undo::UiValue;
+                let value = if redo { after } else { before };
+                let saved = match value {
+                    UiValue::Flag(v) => self.config.save_ui_flag(key, *v),
+                    UiValue::Text(v) => self.config.save_ui_string(key, v),
+                    UiValue::Int(v) => self.config.save_ui_int(key, *v),
+                };
+                match saved {
+                    Ok(()) => {
+                        let mut ui = self.ui_settings.clone();
+                        match value {
+                            UiValue::Flag(v) => match *key {
+                                "animations" => ui.animations = *v,
+                                "hover_hints" => ui.hover_hints = *v,
+                                "ai_confirmed" => ui.ai_confirmed = *v,
+                                _ => {}
+                            },
+                            UiValue::Text(v) => match *key {
+                                "ai_cmd" => ui.ai_cmd = v.clone(),
+                                "clipboard_cmd" => {
+                                    ui.clipboard_cmd = (!v.is_empty()).then(|| v.clone())
+                                }
+                                "jq_tab" => {
+                                    ui.jq_tab = if v == "menu" {
+                                        crate::config::JqTab::Menu
+                                    } else {
+                                        crate::config::JqTab::Cycle
+                                    }
+                                }
+                                _ => {}
+                            },
+                            UiValue::Int(v) => {
+                                if *key == "osc52_limit" {
+                                    ui.osc52_limit = *v;
+                                }
+                            }
+                        }
+                        self.reapply_ui_settings(ui);
+                        let verb = if redo { "Redid" } else { "Undid" };
+                        let label = crate::components::settings::SettingsField::from_key(key)
+                            .map(crate::components::settings::SettingsField::label)
+                            .unwrap_or(key);
+                        self.toasts
+                            .push(format!("{verb} change to {label}"), ToastKind::Info);
+                        if redo {
+                            self.history.push_undo_no_coalesce(step.clone());
+                        } else {
+                            self.history.push_redo(step.clone());
+                        }
+                        true
+                    }
+                    Err(e) => {
+                        self.toasts
+                            .push(format!("could not undo: {e}"), ToastKind::Error);
+                        false
+                    }
+                }
+            }
+            StepKind::ConfigFile { file, before, after } => {
+                let bytes = if redo {
+                    after.clone()
+                } else {
+                    before.clone().unwrap_or_default()
+                };
+                let name = match file {
+                    crate::action::ConfigFile::Config => crate::config::CONFIG_TOML,
+                    crate::action::ConfigFile::Keys => crate::config::KEYS_TOML,
+                };
+                let result = if !redo && before.is_none() {
+                    self.config.write_validated(name, "")
+                } else {
+                    self.config.write_validated(name, &bytes)
+                };
+                match result {
+                    Ok(()) => {
+                        self.update(Action::ReloadFromDisk);
+                        let verb = if redo { "Redid" } else { "Undid" };
+                        self.toasts.push(
+                            format!("{verb} reset of {}", file.name()),
+                            ToastKind::Info,
+                        );
+                        if redo {
+                            self.history.push_undo_no_coalesce(step.clone());
+                        } else {
+                            self.history.push_redo(step.clone());
+                        }
+                        true
+                    }
+                    Err(e) => {
+                        self.toasts
+                            .push(format!("could not undo: {e}"), ToastKind::Error);
+                        false
+                    }
+                }
             }
         }
     }

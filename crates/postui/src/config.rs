@@ -823,9 +823,17 @@ impl Config {
         })
     }
 
-    /// Persists one top-level integer of `config.toml`.
+    /// Persists one top-level integer of `config.toml`. `config.toml`
+    /// stores integers as TOML i64s, so a `value` past `i64::MAX` is
+    /// refused here rather than silently written back as a negative
+    /// number (the same rule `parse_osc52_limit` already enforces at the
+    /// field's edit boundary; this is the write boundary's own copy of
+    /// it, so any caller -- not just a validated field commit -- gets
+    /// the same refusal).
     pub fn save_ui_int(&mut self, key: &str, value: usize) -> Result<(), String> {
-        self.edit(CONFIG_TOML, |doc| doc[key] = toml_edit::value(value as i64))
+        let value = i64::try_from(value)
+            .map_err(|_| format!("too large to store; the most is {}", i64::MAX))?;
+        self.edit(CONFIG_TOML, |doc| doc[key] = toml_edit::value(value))
     }
 
     /// Clears the UI settings from `config.toml` by *removing* their

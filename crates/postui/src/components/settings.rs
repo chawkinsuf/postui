@@ -62,6 +62,24 @@ impl SettingsField {
         }
     }
 
+    /// The inverse of [`Self::key`] -- used only to spell out a Settings
+    /// undo/redo toast's field name from the `&'static str` a `Config`
+    /// step carries. `None` for a key no row writes (shouldn't happen:
+    /// every `Config` step's key came from `Self::key` in the first
+    /// place).
+    pub fn from_key(key: &str) -> Option<Self> {
+        match key {
+            "animations" => Some(SettingsField::Animations),
+            "hover_hints" => Some(SettingsField::HoverHints),
+            "jq_tab" => Some(SettingsField::JqTab),
+            "ai_cmd" => Some(SettingsField::AiCmd),
+            "ai_confirmed" => Some(SettingsField::AiConfirmed),
+            "clipboard_cmd" => Some(SettingsField::ClipboardCmd),
+            "osc52_limit" => Some(SettingsField::Osc52Limit),
+            _ => None,
+        }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             SettingsField::Animations => "Animations",

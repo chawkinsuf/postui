@@ -25689,6 +25689,94 @@ fn resetting_keys_writes_the_seed_with_or_without_an_existing_file() {
     assert_eq!(text, seed, "a present file resets to the same seed");
 }
 
+/// A Settings flag commit is one undo step, like every other field: ctrl+z
+/// reverts it, ctrl+shift+z (redo) reapplies it.
+#[test]
+fn ctrl_z_reverts_a_settings_flag_commit_and_redo_reapplies() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = App::new_for_test();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+    assert!(app.ui_settings.hover_hints, "default is on");
+
+    app.update(Action::SetUiFlag {
+        key: "hover_hints",
+        value: false,
+    });
+    assert!(!app.ui_settings.hover_hints);
+
+    app.update(Action::Undo);
+    assert!(app.ui_settings.hover_hints, "undo restored the flag");
+
+    app.update(Action::Redo);
+    assert!(!app.ui_settings.hover_hints, "redo reapplied it");
+}
+
+/// Same undo/redo contract for a text setting, not just a flag.
+#[test]
+fn ctrl_z_reverts_a_settings_text_commit() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = App::new_for_test();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+    let before = app.ui_settings.ai_cmd.clone();
+
+    app.update(Action::SetUiString {
+        key: "ai_cmd",
+        value: "my-cmd".to_string(),
+    });
+    assert_eq!(app.ui_settings.ai_cmd, "my-cmd");
+
+    app.update(Action::Undo);
+    assert_eq!(app.ui_settings.ai_cmd, before);
+}
+
+/// A write that never lands records nothing to undo -- `osc52_limit` past
+/// `i64::MAX` is refused by `Config::save_ui_int` itself, so the follow-up
+/// `Undo` has no Settings step waiting for it (or anything else).
+#[test]
+fn a_refused_settings_write_records_no_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = App::new_for_test();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+
+    app.update(Action::SetUiInt {
+        key: "osc52_limit",
+        value: usize::MAX,
+    });
+    app.update(Action::Undo);
+
+    assert!(
+        app.toasts
+            .messages()
+            .iter()
+            .any(|m| m.contains("Nothing to undo")),
+        "nothing else changed, so there is nothing to undo: {:?}",
+        app.toasts.messages()
+    );
+}
+
+/// A config.toml Reset is itself one undo step: undoing it puts back the
+/// file as it stood before the reset, not just the defaults the reset
+/// wrote.
+#[test]
+fn undo_of_a_config_reset_restores_the_previous_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = App::new_for_test();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+
+    app.update(Action::SetUiFlag {
+        key: "animations",
+        value: false,
+    });
+    app.update(Action::ForceResetConfigFile(crate::action::ConfigFile::Config));
+    assert!(app.ui_settings.animations, "reset restored the default");
+
+    app.update(Action::Undo);
+    assert!(
+        !app.ui_settings.animations,
+        "undo of the reset restored the pre-reset value"
+    );
+}
+
 /// A Files row is aimed with left/right and run with enter -- the same
 /// two keys every other row uses, so the section is not mouse-only.
 #[test]
