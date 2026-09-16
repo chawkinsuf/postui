@@ -10948,6 +10948,10 @@ impl App {
                     }
                 }
             }
+            StepKind::Config { .. } | StepKind::ConfigFile { .. } => {
+                // Task 6 implements the real consumer code.
+                false
+            }
         }
     }
 }

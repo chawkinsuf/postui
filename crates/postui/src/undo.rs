@@ -20,6 +20,13 @@ pub struct Step {
     pub context: Context,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum UiValue {
+    Flag(bool),
+    Text(String),
+    Int(usize),
+}
+
 #[derive(Debug, Clone)]
 pub enum StepKind {
     EditorDelta {
@@ -39,6 +46,25 @@ pub enum StepKind {
         /// the deleted one for a delete.
         slug: Option<String>,
         noun: ProjectNoun,
+    },
+    /// One Settings-tab write (`Action::SetUiFlag` / `SetUiString` /
+    /// `SetUiInt`), spec 2026-09-16: undoing writes `before` back through
+    /// `Config::save_ui_*` and reapplies it; redoing writes `after`. Never
+    /// coalesced — each commit (a field close, a toggle, a segment flip)
+    /// is its own step.
+    Config {
+        key: &'static str,
+        before: UiValue,
+        after: UiValue,
+    },
+    /// A `config.toml` / `keys.toml` Reset (`Action::ForceResetConfigFile`).
+    /// `before` is the file's bytes before the reset (`None` when the file
+    /// did not exist); undo writes `before` back (or removes the file) and
+    /// reloads, redo writes `after`.
+    ConfigFile {
+        file: crate::action::ConfigFile,
+        before: Option<String>,
+        after: String,
     },
 }
 
@@ -409,6 +435,32 @@ mod tests {
         h.push_redo(s);
         h.record_no_coalesce(delta("", "x"));
         assert!(h.pop_redo().is_none());
+    }
+
+    #[test]
+    fn a_config_step_round_trips_through_a_history_record() {
+        let mut h = History::new();
+        h.record_no_coalesce(Step {
+            kind: StepKind::Config {
+                key: "hover_hints",
+                before: UiValue::Flag(true),
+                after: UiValue::Flag(false),
+            },
+            context: Context {
+                slug: None,
+                cursor_before: CursorPos::None,
+                cursor_after: CursorPos::None,
+            },
+        });
+        let popped = h.pop_undo().expect("the step is there");
+        assert!(matches!(
+            popped.kind,
+            StepKind::Config {
+                key: "hover_hints",
+                before: UiValue::Flag(true),
+                after: UiValue::Flag(false),
+            }
+        ));
     }
 
     #[test]
