@@ -423,7 +423,7 @@ impl TableEditorState {
                 self.begin_add(map);
                 TableOutcome::consumed()
             }
-            KeyCode::Enter => {
+            KeyCode::Enter | KeyCode::Char('i') if crate::keys::opens_field(&ev) => {
                 if self.selected.is_none() {
                     return TableOutcome::not_consumed();
                 }
@@ -496,8 +496,8 @@ impl TableEditorState {
         let shift = ev.modifiers.contains(KeyModifiers::SHIFT);
         match ev.code {
             // The field rule: Esc closes the cell keeping its text, and the
-            // cursor stays on the row (Enter is "done with this row" and
-            // drops the selection too). Discard is undo.
+            // cursor stays on the row — Enter does the same (spec
+            // 2026-09-16), it just also commits. Discard is undo.
             KeyCode::Esc => {
                 let (row, warning) = self.commit_cell(map, &edit);
                 self.exit_editing(row.unwrap_or(edit.row), map);
@@ -505,15 +505,12 @@ impl TableEditorState {
             }
             KeyCode::Enter => {
                 self.editing = Some(edit);
-                let outcome = self.commit(map);
-                // Enter is "I'm done editing": the selection drops too, so
-                // the row collapses back to its compact line — unless the
-                // commit warned (e.g. a duplicate key resolving to another
-                // row), where the selection is the warning's pointer.
-                if outcome.warning.is_none() {
-                    self.selected = None;
-                }
-                outcome
+                // The field rule (spec 2026-09-16): Enter closes the cell
+                // like Esc does, keeping the row selected — it no longer
+                // drops the selection. `commit` already leaves `selected`
+                // parked on the row (or on the warning's pointer row), so
+                // no explicit set is needed here either way.
+                self.commit(map)
             }
             // Up/Down leave the cell rather than falling through to
             // `LineInput` (which ignores them): they commit it and move the
@@ -1444,16 +1441,43 @@ mod tests {
     }
 
     #[test]
-    fn enter_committing_an_edit_deselects_the_row() {
+    fn enter_committing_an_edit_keeps_the_row_selected() {
         let mut map = map_of(&[("a", "1")]);
         let mut t = TableEditorState {
             selected: Some(0),
             ..TableEditorState::default()
         };
         t.handle_key(key(KeyCode::Enter), &mut map); // begin editing the key
-        t.handle_key(key(KeyCode::Enter), &mut map); // commit — "I'm done"
+        t.handle_key(key(KeyCode::Enter), &mut map); // commit, like Esc
         assert!(t.editing.is_none());
-        assert_eq!(t.selected, None, "Enter after editing drops the selection");
+        assert_eq!(t.selected, Some(0), "Enter keeps the row selected, like Esc");
+    }
+
+    #[test]
+    fn enter_in_an_open_cell_commits_and_keeps_the_row_selected() {
+        let mut map = map_of(&[("a", "1")]);
+        let mut t = TableEditorState {
+            selected: Some(0),
+            ..TableEditorState::default()
+        };
+        t.begin_edit_selected(&map);
+        t.handle_key(key(KeyCode::Char('x')), &mut map);
+        let outcome = t.handle_key(key(KeyCode::Enter), &mut map);
+        assert!(outcome.warning.is_none());
+        assert_eq!(t.selected, Some(0), "Enter keeps the row selected, like Esc");
+        assert!(t.editing.is_none());
+    }
+
+    #[test]
+    fn i_opens_the_selected_row_like_enter() {
+        let mut map = map_of(&[("a", "1")]);
+        let mut t = TableEditorState {
+            selected: Some(0),
+            ..TableEditorState::default()
+        };
+        let outcome = t.handle_key(key(KeyCode::Char('i')), &mut map);
+        assert!(outcome.consumed);
+        assert!(t.editing.is_some());
     }
 
     #[test]
@@ -1614,7 +1638,7 @@ mod tests {
                 enabled: true
             }
         );
-        assert_eq!(t.selected, None, "Enter is 'done editing': deselects too");
+        assert_eq!(t.selected, Some(0), "Enter keeps the row selected, like Esc");
     }
 
     #[test]
