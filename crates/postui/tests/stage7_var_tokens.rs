@@ -416,7 +416,11 @@ fn tokens_in_table_cells_are_tinted_and_hoverable_without_disturbing_the_table()
 }
 
 #[test]
-fn a_cell_under_edit_keeps_its_caret_instead_of_registering_tokens() {
+fn a_cell_under_edit_still_tints_its_tokens_and_keeps_its_caret() {
+    // The URL bar's rule, applied to a table cell: a token stays a token
+    // while it is being typed (tint, tooltip), and a click inside it is
+    // still caret placement — left clicks resolve past the token span to
+    // the cell beneath, so the edit is never disturbed.
     let mut app = app_with_vars();
     app.editor.params.insert(
         "q".into(),
@@ -427,19 +431,33 @@ fn a_cell_under_edit_keeps_its_caret_instead_of_registering_tokens() {
     );
     app.editor.active_tab = EditorTab::Params;
     app.update(Action::Render);
-    // Straight through the table's own click entry point: the cell's own
-    // hit is covered by the token, which is the point of the next assert.
     app.editor
         .click_table_cell(0, postui::components::table_editor::Col::Value);
     assert!(app.editor.table.editing.is_some(), "the cell is under edit");
 
     draw(&mut app);
-    assert!(
-        app.hits
-            .rect_of(&Hit::VarToken("base_url".into()))
-            .is_none(),
-        "the cell being typed into must stay a plain text field"
+    let r = app
+        .hits
+        .rect_of(&Hit::VarToken("base_url".into()))
+        .expect("the cell being typed into keeps its token span");
+    let cell = app
+        .hits
+        .rect_of(&Hit::TableCell { row: 0, col: 1 })
+        .expect("the cell hit is registered beneath the token");
+
+    app.handle_mouse(left_down(r.x + 3, r.y));
+    let edit = app
+        .editor
+        .table
+        .editing
+        .as_ref()
+        .expect("the click keeps the cell under edit");
+    assert_eq!(
+        edit.input.cursor(),
+        usize::from(r.x + 3 - cell.x),
+        "the caret follows the pointer into the token"
     );
+    assert!(app.modals.top().is_none(), "a plain click is caret placement");
 }
 
 #[test]

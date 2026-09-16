@@ -942,26 +942,33 @@ impl TableEditorState {
 
         hits.register(Rect::new(area.x, y, area.width, 1), Hit::TableRow(i));
         Self::register_cells(hits, cols_span(&cols, value_right), y, i);
-        // Only the cells drawn as plain text get token treatment: a cell
-        // under edit is showing a live `LineInput` (caret and all), and
-        // registering a `VarToken` over it would turn the next click into a
-        // picker instead of a caret move. The ghost's add label is not a
-        // value, so it gets none either.
+        // Token treatment over whatever each cell drew: the stored text,
+        // or for the cell under edit the live input's visible window —
+        // the URL bar's rule, so a token stays a token while it is being
+        // typed. A left click resolves past `VarToken` spans, so the
+        // caret move underneath is undisturbed. The ghost's add label is
+        // not a value, so it gets none.
+        let edited = |col: Col, w: u16| {
+            (editing_col == Some(col))
+                .then(|| self.editing.as_ref().map(|e| e.input.visible_window(true, w)))
+                .flatten()
+        };
+        let key_window = edited(Col::Key, name_w);
+        let value_window = edited(Col::Value, value_w);
         paint_cell_tokens(
             buf,
             hits,
             &cols,
             value_right,
             y,
-            if real && editing_col != Some(Col::Key) {
-                key
-            } else {
-                ""
+            match &key_window {
+                Some(k) => k.as_str(),
+                None if real => key,
+                None => "",
             },
-            if editing_col == Some(Col::Value) {
-                ""
-            } else {
-                entry.value.as_str()
+            match &value_window {
+                Some(v) => v.as_str(),
+                None => entry.value.as_str(),
             },
             vars,
             theme,

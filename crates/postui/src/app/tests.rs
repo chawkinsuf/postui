@@ -12519,6 +12519,30 @@ fn escaping_the_popup_secret_prompt_does_not_claim_a_canceled_send() {
     assert!(!rendered_text(&mut app).contains("send canceled"));
 }
 
+/// The eye button beside the field is the mouse's reveal: a click unmasks
+/// the seeded value and flips itself to "hide"; another re-masks.
+#[test]
+fn the_secret_prompts_eye_button_reveals_and_hides_the_value() {
+    let (mut app, _dir) = token_popup_app();
+    app.proj_mut()
+        .set_secret_for("qa", "api_key", "sk-live-abc123".into())
+        .unwrap();
+    app.update(Action::OpenVarTokenPopup("api_key".into()));
+    assert!(!rendered_text(&mut app).contains("sk-live-abc123"));
+
+    click_hit(&mut app, Hit::ModalRevealToggle);
+    assert!(matches!(
+        app.modals.top(),
+        Some(Modal::Prompt { revealed: true, .. })
+    ));
+    let shown = rendered_text(&mut app);
+    assert!(shown.contains("sk-live-abc123"), "{shown}");
+    assert!(shown.contains("hide"), "{shown}");
+
+    click_hit(&mut app, Hit::ModalRevealToggle);
+    assert!(!rendered_text(&mut app).contains("sk-live-abc123"));
+}
+
 #[test]
 fn editing_a_missing_secret_token_opens_an_empty_secret_prompt() {
     let (mut app, _dir) = token_popup_app();
@@ -13077,6 +13101,35 @@ fn focus_header_value_cell(app: &mut App) {
     app.editor
         .table
         .handle_key(tab_key(), &mut app.editor.headers);
+}
+
+/// A `{{token}}` in a cell under edit is still a token: tinted, hoverable
+/// for its tooltip, and a click inside it just moves the caret (left
+/// clicks resolve past token spans, so the edit is never disturbed).
+#[test]
+fn a_token_in_a_header_cell_under_edit_is_tinted_and_hoverable() {
+    let mut app = App::new_for_test();
+    app.editor.headers.insert(
+        "X-Base".into(),
+        postui_core::model::Entry {
+            value: "{{base_url}}".into(),
+            enabled: true,
+        },
+    );
+    focus_header_value_cell(&mut app);
+    assert!(app.editor.table.editing.is_some());
+    render_once(&mut app);
+
+    let r = app
+        .hits
+        .rect_of(&Hit::VarToken("base_url".into()))
+        .expect("the edited cell's token registers its span");
+    app.handle_mouse(left_down(r.x + 2, r.y));
+    assert!(
+        app.editor.table.editing.is_some(),
+        "the click lands in the cell as a caret move, not a picker"
+    );
+    assert!(app.modals.is_empty());
 }
 
 #[test]
