@@ -2226,7 +2226,7 @@ impl App {
             return false;
         }
         let url = self.focus == PaneId::Editor
-            && self.editor.sub_focus == SubFocus::Url
+            && self.editor.url_open()
             && self.editor.url.edited();
         let jq = self.focus == PaneId::Response && self.session.response.jq_field_edited();
         url || jq
@@ -2240,7 +2240,7 @@ impl App {
         // — focus counts, since a pane switch moves it without touching
         // `sub_focus`, and so does the screen, since Manage moves neither.
         let off_screen = self.screen != Screen::Main;
-        if off_screen || self.focus != PaneId::Editor || self.editor.sub_focus != SubFocus::Url {
+        if off_screen || self.focus != PaneId::Editor || !self.editor.url_open() {
             self.editor.url.end_edit();
         }
         // The jq bar keeps its caret across a screen change (the pane is
@@ -2338,10 +2338,10 @@ impl App {
             // the caret).
             Screen::Main => match self.focus {
                 PaneId::Editor => {
-                    if let Some(edit) = self.editor.table.editing.as_mut() {
-                        return Some(&mut edit.input);
+                    if self.editor.table.editing.is_some() {
+                        return self.editor.table.editing.as_mut().map(|e| &mut e.input);
                     }
-                    if self.editor.sub_focus == SubFocus::Url {
+                    if self.editor.url_open() {
                         return Some(&mut self.editor.url);
                     }
                     None
@@ -2375,9 +2375,7 @@ impl App {
                 self.varmanager.form.editing.is_some() || self.varmanager.grid.editing.is_some()
             }
             Screen::Main => match self.focus {
-                PaneId::Editor => {
-                    self.editor.table.editing.is_some() || self.editor.sub_focus == SubFocus::Url
-                }
+                PaneId::Editor => self.editor.table.editing.is_some() || self.editor.url_open(),
                 PaneId::Response => self.session.response.field_open(),
                 PaneId::Sidebar => false,
             },
@@ -2394,9 +2392,7 @@ impl App {
     pub(crate) fn pane_field_open(&self, pane: PaneId) -> bool {
         match pane {
             PaneId::Sidebar => false,
-            PaneId::Editor => {
-                self.editor.table.editing.is_some() || self.editor.sub_focus == SubFocus::Url
-            }
+            PaneId::Editor => self.editor.table.editing.is_some() || self.editor.url_open(),
             PaneId::Response => {
                 self.focus == PaneId::Response && self.session.response.field_open()
             }
@@ -3074,10 +3070,9 @@ impl App {
                 // re-focusing the already-focused URL bar (clicking the
                 // well the caret is in) would snap the fill to its
                 // unfocused color for a frame — a visible blink.
-                let already =
-                    self.focus == PaneId::Editor && self.editor.sub_focus == SubFocus::Url;
+                let already = self.focus == PaneId::Editor && self.editor.url_open();
                 self.focus = PaneId::Editor;
-                self.editor.sub_focus = SubFocus::Url;
+                self.editor.open_url_from_app();
                 if !already {
                     self.begin_focus_fade();
                 }
@@ -5057,7 +5052,7 @@ impl App {
             }
             Action::InsertVarText(text) => {
                 self.no_coalesce = true;
-                if self.focus == PaneId::Editor && self.editor.sub_focus == SubFocus::Url {
+                if self.focus == PaneId::Editor && self.editor.url_open() {
                     self.editor.url.insert_str(&text);
                 } else if self.focus == PaneId::Editor
                     && matches!(
@@ -6418,7 +6413,7 @@ impl App {
         if self.focus != PaneId::Editor {
             return None;
         }
-        if self.editor.sub_focus == SubFocus::Url {
+        if self.editor.url_open() {
             return Some((self.editor.url.text(), self.editor.url.cursor()));
         }
         if self.editor.sub_focus == SubFocus::Content
@@ -6865,7 +6860,7 @@ impl App {
     /// dirty/save path as any other row commit.
     fn replace_focused_field_with_token(&mut self, name: &str) {
         let token = format!("{{{{{name}}}}}");
-        if self.editor.sub_focus == SubFocus::Url {
+        if self.editor.url_open() {
             self.editor.url = LineInput::new(&token);
             return;
         }
@@ -9172,7 +9167,7 @@ impl App {
             return self.update(Action::Render);
         }
         match self.editor.sub_focus {
-            SubFocus::Url => {
+            SubFocus::Url if self.editor.url_open() => {
                 self.editor.url.paste(text);
                 self.update(Action::Render)
             }
@@ -9236,7 +9231,7 @@ impl App {
         {
             return Some(text);
         }
-        if self.editor.sub_focus == SubFocus::Url
+        if self.editor.url_open()
             && let Some(text) = self.editor.url.selected_text()
         {
             return Some(text);

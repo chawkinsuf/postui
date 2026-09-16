@@ -146,7 +146,7 @@ async fn stage4_mouse_only_acceptance_flow() {
 
     // --- step 4: URL is keyboard-only (no mouse affordance) -------------
     app.focus = postui::layout::PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     app.editor.url = postui::components::line_input::LineInput::new("");
     type_text(&mut app, &format!("{}/items", server.uri()));
     assert_eq!(app.editor.url.text(), format!("{}/items", server.uri()));

@@ -13,7 +13,6 @@
 use indexmap::IndexMap;
 use postui::action::Action;
 use postui::app::App;
-use postui::components::editor::SubFocus;
 use postui::components::line_input::LineInput;
 use postui::components::modal::{Modal, PromptKind};
 use postui::components::varmanager::{VarEditOp, VarStructOp};
@@ -48,7 +47,7 @@ fn focus_url_with_cursor_on(app: &mut App, url: &str, token: &str) {
     input.set_cursor(mid);
     app.editor.url = input;
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
 }
 
 /// Drains `rx`, applying every action through `app.update` as the main loop

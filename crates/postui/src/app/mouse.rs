@@ -1552,7 +1552,7 @@ impl App {
                 self.update(Action::SplitStep(delta))
             }
             Hit::UrlBar => {
-                let was_focused = self.editor.sub_focus == SubFocus::Url;
+                let was_focused = self.editor.url_open();
                 // `Action::FocusUrl` is exactly "focus Editor, sub-focus
                 // Url" (see its handler) — dispatching it here rather than
                 // setting both fields by hand is what makes the mouse-parity

@@ -174,6 +174,12 @@ pub struct Editor {
     /// switching requests never loses the user's place.
     pub preferred_tab: EditorTab,
     pub sub_focus: SubFocus,
+    /// Whether the URL line has the caret (open) or is merely the
+    /// keyboard's resting stop (selected) — spec 2026-09-16. Always
+    /// `false` when `sub_focus != SubFocus::Url`; `select_url`/`open_url`/
+    /// `close_url` and every `Url` transition in `handle_key` keep the two
+    /// in sync.
+    url_open: bool,
     /// Shared cursor/edit state for the key/value table, reused by both the
     /// Params and Headers tabs (never holds the entry data itself).
     pub table: TableEditorState,
@@ -284,6 +290,7 @@ impl Default for Editor {
             active_tab: EditorTab::Headers,
             preferred_tab: EditorTab::Headers,
             sub_focus: SubFocus::Url,
+            url_open: false,
             table: TableEditorState::default(),
             last_body_area: None,
             sending: false,
@@ -307,10 +314,39 @@ impl Editor {
     /// from them, and the footer's quit chip can say so.
     pub fn plain_keys_type(&self) -> bool {
         match self.sub_focus {
-            SubFocus::Url => true,
+            SubFocus::Url => self.url_open,
             SubFocus::Content => self.active_tab == EditorTab::Body || self.table.editing.is_some(),
             SubFocus::Method | SubFocus::Tabs | SubFocus::None => false,
         }
+    }
+
+    /// Whether the URL line has the caret right now (spec 2026-09-16).
+    pub fn url_open(&self) -> bool {
+        self.sub_focus == SubFocus::Url && self.url_open
+    }
+
+    /// `Action::FocusUrl` and a click on the bar both open the line
+    /// directly, rather than merely selecting it: a shortcut or a click
+    /// names the field to type into.
+    pub fn open_url_from_app(&mut self) {
+        self.open_url();
+    }
+
+    fn select_url(&mut self) {
+        self.sub_focus = SubFocus::Url;
+        self.url_open = false;
+    }
+
+    fn open_url(&mut self) {
+        self.sub_focus = SubFocus::Url;
+        self.url_open = true;
+    }
+
+    /// Ends any open edit and leaves the URL line, wherever `sub_focus`
+    /// goes next.
+    fn close_url(&mut self) {
+        self.url.end_edit();
+        self.url_open = false;
     }
 
     /// Loads `req` into the editor for editing, and records it as the
@@ -398,7 +434,10 @@ impl Editor {
         use crate::undo::CursorPos;
         match pos {
             CursorPos::Url(i) => {
-                self.sub_focus = SubFocus::Url;
+                // An undo/redo restore always lands on the closed line,
+                // selected — the field was already closed (its own
+                // session flushed) by the time this step was captured.
+                self.select_url();
                 self.url.set_cursor(*i);
             }
             CursorPos::Body { row, col } => {
@@ -516,7 +555,7 @@ impl Editor {
     /// anywhere else, and whenever the caret is outside every token.
     pub fn caret_token(&self) -> Option<String> {
         let (text, byte_off) = match self.sub_focus {
-            SubFocus::Url => {
+            SubFocus::Url if self.url_open => {
                 let text = self.url.text().to_string();
                 let off = char_byte_offset(&text, self.url.cursor());
                 (text, off)
@@ -1352,7 +1391,7 @@ impl Component for Editor {
             SubFocus::Method => match ev.code {
                 KeyCode::Enter | KeyCode::Char(' ') => Some(Action::OpenMethodDropdown),
                 KeyCode::Right | KeyCode::Char('l') if crate::keys::plain_letter(&ev) => {
-                    self.sub_focus = SubFocus::Url;
+                    self.select_url();
                     Some(Action::Render)
                 }
                 KeyCode::Down | KeyCode::Char('j') if crate::keys::plain_letter(&ev) => {
@@ -1365,12 +1404,36 @@ impl Component for Editor {
                 }
                 _ => None,
             },
+            // Selected, not open: a resting stop like the method badge or
+            // tab strip — arrow/hjkl navigate, and Enter/Space/i open the
+            // line so the next key types into it (spec 2026-09-16).
+            SubFocus::Url if !self.url_open => match ev.code {
+                _ if crate::keys::opens_field(&ev) => {
+                    self.open_url();
+                    Some(Action::Render)
+                }
+                KeyCode::Left | KeyCode::Char('h') if crate::keys::plain_letter(&ev) => {
+                    self.sub_focus = SubFocus::Method;
+                    Some(Action::Render)
+                }
+                KeyCode::Down | KeyCode::Char('j') if crate::keys::plain_letter(&ev) => {
+                    self.close_url();
+                    self.sub_focus = SubFocus::Tabs;
+                    Some(Action::Render)
+                }
+                KeyCode::Esc => {
+                    self.close_url();
+                    self.sub_focus = SubFocus::None;
+                    Some(Action::Render)
+                }
+                _ => None,
+            },
             SubFocus::Url => {
                 // Left with the caret already at the start of the line has
                 // no text to move over; it steps out onto the method badge
-                // instead (the only keyboard route to it).
+                // instead (the only keyboard route to it), closed.
                 if ev.code == KeyCode::Left && self.url.cursor() == 0 {
-                    self.url.end_edit();
+                    self.close_url();
                     self.sub_focus = SubFocus::Method;
                     return Some(Action::Render);
                 }
@@ -1381,16 +1444,17 @@ impl Component for Editor {
                     return Some(Action::Render);
                 }
                 if ev.code == KeyCode::Down {
-                    self.url.end_edit();
+                    self.close_url();
                     self.sub_focus = SubFocus::Tabs;
                     return Some(Action::Render);
                 }
-                // Enter and Esc both close the line with the text kept
-                // (the field rule): the caret leaves, the edit session ends,
-                // and the app history records the close as one step.
+                // Enter and Esc both close the field with the text kept
+                // (the field rule): the caret leaves, the edit session
+                // ends, and the URL line stays selected — Esc only blurs
+                // to `SubFocus::None` from the already-selected state
+                // above.
                 if matches!(ev.code, KeyCode::Enter | KeyCode::Esc) {
-                    self.url.end_edit();
-                    self.sub_focus = SubFocus::None;
+                    self.close_url();
                     return Some(Action::Render);
                 }
                 None
@@ -1398,8 +1462,9 @@ impl Component for Editor {
             // The tab strip: Left/Right switch tabs (the tab-change action
             // resets table state, so it goes through App like a click),
             // Down/Enter descend into the active tab's content, Up climbs
-            // back to the URL line. h/l and j/k are strict synonyms of the
-            // arrows here (a resting stop, spec 2026-09-15).
+            // back to the URL line (selected, not open). h/l and j/k are
+            // strict synonyms of the arrows here (a resting stop, spec
+            // 2026-09-15).
             SubFocus::Tabs => match ev.code {
                 KeyCode::Left | KeyCode::Char('h') if crate::keys::plain_letter(&ev) => Some(Action::EditorTabCycle(-1)),
                 KeyCode::Right | KeyCode::Char('l') if crate::keys::plain_letter(&ev) => Some(Action::EditorTabCycle(1)),
@@ -1419,7 +1484,7 @@ impl Component for Editor {
                     Some(Action::Render)
                 }
                 KeyCode::Up | KeyCode::Char('k') if crate::keys::plain_letter(&ev) => {
-                    self.sub_focus = SubFocus::Url;
+                    self.select_url();
                     Some(Action::Render)
                 }
                 KeyCode::Esc => {
@@ -1608,8 +1673,10 @@ impl Component for Editor {
             // line, mirroring the Url -> Down -> Content chain, so keyboard
             // users aren't stranded (alt+u and clicking work too).
             SubFocus::None => {
-                if ev.code == KeyCode::Down {
-                    self.sub_focus = SubFocus::Url;
+                if matches!(ev.code, KeyCode::Down | KeyCode::Char('j'))
+                    && crate::keys::plain_letter(&ev)
+                {
+                    self.select_url();
                     return Some(Action::Render);
                 }
                 None
@@ -3204,6 +3271,7 @@ mod tests {
         );
         assert!(!e.is_dirty());
         assert_eq!(e.sub_focus, SubFocus::Url, "load must not change sub_focus");
+        e.handle_key(key(KeyCode::Enter)); // open the selected URL line
         e.handle_key(key(KeyCode::Char('/')));
         assert_eq!(e.current_request().url, "https://x/");
         assert!(e.is_dirty());
@@ -3222,6 +3290,7 @@ mod tests {
             Some("a".into()),
             HttpRequest::from_toml_str(r#"url = "https://x""#).unwrap(),
         );
+        e.handle_key(key(KeyCode::Enter)); // open the selected URL line
         e.handle_key(key(KeyCode::Char('/')));
         assert!(e.is_dirty());
         e.mark_saved();
@@ -3667,6 +3736,7 @@ mod tests {
         let mut e = Editor {
             url: LineInput::new("x"), // caret starts at the end, after "x"
             sub_focus: SubFocus::Url,
+            url_open: true,
             ..Editor::default()
         };
         // With the caret mid-text, Left is caret movement, not navigation.
@@ -3760,6 +3830,74 @@ mod tests {
                 assert_eq!(a.table.selected, b.table.selected, "{stop:?} {alias:?}");
             }
         }
+    }
+
+    /// An `Editor` with `sub_focus == SubFocus::Tabs`, the fixture
+    /// `up_down_walks_url_tabs_content_and_back` builds inline — the URL
+    /// line starts selected by default, and `Down` walks that to the tab
+    /// strip.
+    fn editor_on_tabs() -> Editor {
+        let mut e = Editor::default();
+        e.handle_key(key(KeyCode::Down));
+        assert_eq!(e.sub_focus, SubFocus::Tabs, "fixture lands on the tab strip");
+        e
+    }
+
+    #[test]
+    fn k_from_the_tab_strip_selects_the_url_without_opening_it() {
+        let mut ed = editor_on_tabs();
+        ed.handle_key(key(KeyCode::Char('k')));
+        assert_eq!(ed.sub_focus, SubFocus::Url);
+        assert!(!ed.plain_keys_type(), "selected, not open");
+        // j/k still navigate from here instead of typing:
+        ed.handle_key(key(KeyCode::Char('j')));
+        assert_eq!(ed.sub_focus, SubFocus::Tabs, "j moved focus, was not typed");
+    }
+
+    #[test]
+    fn enter_space_or_i_opens_the_selected_url_line() {
+        for opener in [KeyCode::Enter, KeyCode::Char(' '), KeyCode::Char('i')] {
+            let mut ed = editor_on_tabs();
+            ed.handle_key(key(KeyCode::Char('k'))); // select the URL line
+            ed.handle_key(key(opener));
+            assert!(ed.plain_keys_type(), "{opener:?} should have opened the field");
+            ed.handle_key(key(KeyCode::Char('x')));
+            assert!(ed.url.text().contains('x'), "{opener:?}: typed text landed");
+        }
+    }
+
+    #[test]
+    fn esc_and_enter_close_the_url_line_back_to_selected_not_blurred() {
+        for closer in [KeyCode::Esc, KeyCode::Enter] {
+            let mut ed = editor_on_tabs();
+            ed.handle_key(key(KeyCode::Char('k')));
+            ed.handle_key(key(KeyCode::Enter));
+            ed.handle_key(key(KeyCode::Char('x')));
+            let text_before = ed.url.text().to_string();
+            ed.handle_key(key(closer));
+            assert_eq!(
+                ed.sub_focus,
+                SubFocus::Url,
+                "{closer:?}: stays on the URL line, selected"
+            );
+            assert!(!ed.plain_keys_type(), "{closer:?}: field is closed");
+            assert_eq!(ed.url.text(), text_before, "{closer:?}: text kept");
+        }
+    }
+
+    #[test]
+    fn esc_from_a_selected_url_line_blurs_and_j_reselects_it() {
+        let mut ed = editor_on_tabs();
+        ed.handle_key(key(KeyCode::Char('k'))); // select
+        ed.handle_key(key(KeyCode::Esc)); // blur
+        assert_eq!(ed.sub_focus, SubFocus::None);
+        ed.handle_key(key(KeyCode::Char('j')));
+        assert_eq!(
+            ed.sub_focus,
+            SubFocus::Url,
+            "j is the alias 1a000de missed, beside Down"
+        );
+        assert!(!ed.plain_keys_type(), "lands selected, not open");
     }
 
     #[test]

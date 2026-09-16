@@ -527,7 +527,7 @@ fn body_editor_tokens_are_tinted_and_hoverable() {
 fn a_resting_caret_raises_the_same_tooltip_after_two_ticks() {
     let mut app = app_with_vars();
     set_url(&mut app, "{{base_url}}/x");
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     app.editor.url.set_cursor(4);
     draw(&mut app);
 

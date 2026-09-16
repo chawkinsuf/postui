@@ -323,7 +323,7 @@ fn ctrl_c_copies_the_url_selection_instead_of_quitting() {
         false,
     ));
     app.editor.url = crate::components::line_input::LineInput::new("https://example.com");
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     app.editor.url.select_all();
 
     app.handle_key(ctrl('c'));
@@ -411,7 +411,7 @@ fn colon_opens_the_palette_from_a_list_and_types_in_a_field() {
     assert!(matches!(app.modals.top(), Some(Modal::Palette(_))));
     app.modals.pop();
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     app.handle_key(plain(':'));
     assert!(app.modals.is_empty(), "in a text field ':' is a character");
     assert!(app.editor.url.text().ends_with(':'));
@@ -1200,7 +1200,7 @@ fn ctrl_z_in_an_untouched_open_cell_is_the_app_history() {
     // One step for the app history to walk back: a keystroke into the URL,
     // closed with Esc so the URL line is not the open field any more.
     app.capture_undo();
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     app.handle_key(plain('/'));
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.capture_undo();
@@ -1225,7 +1225,7 @@ fn an_exhausted_settings_field_undo_never_reaches_the_app_history() {
     let mut app = app_with_one_param();
     // One app-history step to notice being spent.
     app.capture_undo();
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     app.handle_key(plain('/'));
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.capture_undo();
@@ -1705,7 +1705,7 @@ fn field_open_agrees_with_the_open_text_field() {
     app.update(Action::CloseField);
 
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     agree(&mut app, true, "the URL line");
     app.editor.sub_focus = SubFocus::Content;
 
@@ -2910,7 +2910,7 @@ fn dirty_app() -> App {
     app.update(Action::RefreshSidebar);
     app.update(Action::ForceOpenRequest("main/r".into()));
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     app.handle_key(plain('/'));
     assert!(app.editor.is_dirty());
     app
@@ -2993,7 +2993,7 @@ fn dirty_app_seeded() -> App {
     app.update(Action::ForceOpenRequest("main/r".into()));
     app.capture_undo();
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     app.handle_key(plain('/'));
     assert!(app.editor.is_dirty());
     app
@@ -3671,7 +3671,7 @@ fn opening_over_dirty_editor_prompts_save_discard_cancel() {
     // Open "a", then edit its URL so the editor becomes dirty.
     app.update(Action::ForceOpenRequest("main/a".into()));
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     app.handle_key(plain('/'));
     assert!(app.editor.is_dirty());
 
@@ -3693,7 +3693,7 @@ fn opening_over_dirty_editor_prompts_save_discard_cancel() {
     let mut app = App::with_root(app.tx.clone(), dir.path().to_path_buf());
     app.update(Action::ForceOpenRequest("main/a".into()));
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     app.handle_key(plain('/'));
     assert!(app.editor.is_dirty());
     app.update(Action::OpenRequest("main/b".into()));
@@ -3795,7 +3795,7 @@ fn switching_to_an_empty_space_clears_the_editor() {
 /// into the URL field.
 fn dirty_the_editor(app: &mut App) {
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     app.handle_key(plain('/'));
     assert!(app.editor.is_dirty());
 }
@@ -6010,7 +6010,7 @@ fn clicking_another_row_over_dirty_editor_is_gated_by_confirm() {
     app.refresh_sidebar();
     app.update(Action::ForceOpenRequest("main/top".into()));
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     app.handle_key(plain('/'));
     assert!(app.editor.is_dirty());
 
@@ -6079,7 +6079,7 @@ fn dirty_dot_renders_in_sidebar() {
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     app.update(Action::ForceOpenRequest("main/a".into()));
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     app.handle_key(plain('/'));
     assert!(app.editor.is_dirty());
 
@@ -6261,7 +6261,7 @@ fn saving_a_legacy_request_does_not_invent_a_name() {
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     app.update(Action::ForceOpenRequest("main/legacy".into()));
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     app.handle_key(plain('/'));
     app.update(Action::SaveRequest);
     let loaded = postui_core::fixtures::load_request(dir.path(), "main/legacy").unwrap();
@@ -6788,7 +6788,7 @@ fn cycle_with_dirty_editor_shows_no_switch_toast_until_discard() {
     app.update(Action::RefreshSidebar);
     app.update(Action::ForceOpenRequest("main/r".into()));
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     app.handle_key(plain('/'));
     assert!(app.editor.is_dirty());
 
@@ -6815,7 +6815,7 @@ fn switch_with_dirty_editor_prompts_and_discard_proceeds() {
     app.update(Action::RefreshSidebar);
     app.update(Action::ForceOpenRequest("main/r".into()));
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     app.handle_key(plain('/'));
     assert!(app.editor.is_dirty());
     app.update(Action::SwitchProject(b.path().to_path_buf()));
@@ -7123,7 +7123,7 @@ fn create_project_with_dirty_editor_defers_last_until_dirty_gate_resolves() {
     app.update(Action::RefreshSidebar);
     app.update(Action::ForceOpenRequest("main/r".into()));
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     app.handle_key(plain('/'));
     assert!(app.editor.is_dirty());
 
@@ -7887,7 +7887,7 @@ fn app_with_vars() -> App {
 fn typing_double_brace_in_url_opens_completing_picker_and_insert_lands_in_url() {
     let mut app = app_with_vars();
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     app.handle_key(plain('{'));
     assert!(app.modals.is_empty(), "one brace: no picker");
     app.handle_key(plain('{'));
@@ -8057,7 +8057,7 @@ fn insert_picker_marks_secret_vars_with_the_lock_badge_and_never_shows_the_value
 fn insert_picker_new_variable_row_opens_prompt_prefilled_with_typed_filter() {
     let mut app = app_with_vars();
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     app.update(Action::OpenVarPicker { completing: false });
     for c in "brand_new".chars() {
         app.handle_key(plain(c));
@@ -8084,7 +8084,7 @@ fn insert_picker_new_variable_row_opens_prompt_prefilled_with_typed_filter() {
 fn insert_picker_new_variable_confirm_creates_the_var_and_inserts_at_the_original_cursor() {
     let mut app = app_with_vars();
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     app.editor.url = crate::components::line_input::LineInput::new("https://x/?a=1");
     app.editor.url.set_cursor(10);
     app.update(Action::OpenVarPicker { completing: false });
@@ -8120,7 +8120,7 @@ fn insert_picker_new_variable_confirm_with_a_reserved_name_toasts_and_inserts_no
     // referencing a variable that was never declared.
     let mut app = app_with_vars();
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     app.editor.url = crate::components::line_input::LineInput::new("https://x/?a=1");
     app.editor.url.set_cursor(10);
     app.update(Action::OpenVarPicker { completing: false });
@@ -11148,7 +11148,7 @@ fn extract_to_request_saves_the_request_file_to_disk() {
     app.update(Action::ForceOpenRequest("main/ping".into()));
     app.editor.url = crate::components::line_input::LineInput::new("https://x/ping/abc-123");
     app.focus = crate::layout::PaneId::Editor;
-    app.editor.sub_focus = crate::components::editor::SubFocus::Url;
+    app.editor.open_url_from_app();
 
     app.update(Action::ConfirmExtractVariable {
         name: "trace_id".into(),
@@ -11876,7 +11876,7 @@ fn focus_url_with_cursor_on(app: &mut App, url: &str, token: &str) {
     input.set_cursor(mid);
     app.editor.url = input;
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
 }
 
 #[test]
@@ -13453,7 +13453,7 @@ fn right_key() -> KeyEvent {
 fn extract_url(app: &mut App, url: &str, name: &str, rights: u8) {
     app.editor.url = LineInput::new(url);
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
 
     app.update(Action::ExtractToVariable);
     assert!(
@@ -15334,7 +15334,7 @@ fn the_quit_chip_shows_ctrl_c_wherever_plain_q_would_type() {
     let content = rendered_text(&mut app);
     assert!(content.contains("q  quit"), "{content}");
     // The URL line and the body editor type it.
-    app.editor.sub_focus = crate::components::editor::SubFocus::Url;
+    app.editor.open_url_from_app();
     let content = rendered_text(&mut app);
     assert!(content.contains("^C  quit"), "{content}");
     assert!(!content.contains("q  quit"), "{content}");
@@ -17119,7 +17119,7 @@ fn switching_to_the_body_tab_keeps_a_hidden_editor_hidden() {
 #[test]
 fn caret_resting_in_a_token_shows_its_tooltip_only_after_the_wall_clock_dwell() {
     let mut app = App::new_for_test();
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     app.editor.url = crate::components::line_input::LineInput::new("{{base}}");
     app.editor.url.set_cursor(3); // inside the token
     // The tooltip's anchor comes from `Hit::VarToken`, registered by a real
@@ -17641,7 +17641,7 @@ mod undo_tests {
     #[test]
     fn cursor_roundtrip_url() {
         let mut app = App::new_for_test();
-        app.editor.sub_focus = SubFocus::Url;
+        app.editor.open_url_from_app();
         app.editor.url = LineInput::new("hello");
         app.editor.url.set_cursor(3);
         let pos = app.editor.cursor_pos();
@@ -17689,7 +17689,7 @@ mod undo_tests {
         app.update(Action::CreateRequest("cap".into()));
         app.capture_undo(); // seed shadow
         app.focus = PaneId::Editor;
-        app.editor.sub_focus = SubFocus::Url;
+        app.editor.open_url_from_app();
         for c in ['h', 't', 't', 'p'] {
             app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
             app.capture_undo();
@@ -17724,17 +17724,22 @@ mod undo_tests {
         app.capture_undo();
         let steps = app.history.undo_len();
         app.focus = PaneId::Editor;
-        app.editor.sub_focus = SubFocus::Url;
+        app.editor.open_url_from_app();
         type_chars(&mut app, "/a");
         app.capture_undo();
         assert_eq!(app.history.undo_len(), steps, "open: nothing recorded");
         app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        assert_eq!(app.editor.sub_focus, SubFocus::None);
+        assert_eq!(
+            app.editor.sub_focus,
+            SubFocus::Url,
+            "Esc closes to selected, not blurred"
+        );
+        assert!(!app.editor.url_open());
         app.capture_undo();
         assert_eq!(app.history.undo_len(), steps + 1, "close: one step");
         assert!(app.editor.url.text().ends_with("/a"), "Esc kept the text");
 
-        app.editor.sub_focus = SubFocus::Url;
+        app.editor.open_url_from_app();
         type_chars(&mut app, "/b");
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         app.capture_undo();
@@ -17762,12 +17767,12 @@ mod undo_tests {
         app.capture_undo();
         let steps = app.history.undo_len();
         app.focus = PaneId::Editor;
-        app.editor.sub_focus = SubFocus::Url;
+        app.editor.open_url_from_app();
         type_chars(&mut app, "/a");
         app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         app.capture_undo();
         assert_eq!(app.history.undo_len(), steps + 1);
-        app.editor.sub_focus = SubFocus::Url;
+        app.editor.open_url_from_app();
         type_chars(&mut app, "/b");
         app.capture_undo();
         app.update(Action::OpenManage { tab: None });
@@ -17791,7 +17796,7 @@ mod undo_tests {
         app.capture_undo();
         let steps = app.history.undo_len();
         app.focus = PaneId::Editor;
-        app.editor.sub_focus = SubFocus::Url;
+        app.editor.open_url_from_app();
         type_chars(&mut app, "/a");
         app.update(Action::FocusNext);
         assert_ne!(app.focus, PaneId::Editor, "the focus left the editor");
@@ -17800,7 +17805,7 @@ mod undo_tests {
         assert!(!app.editor.url.edited(), "the line's session ended");
 
         app.focus = PaneId::Editor;
-        app.editor.sub_focus = SubFocus::Url;
+        app.editor.open_url_from_app();
         app.handle_key(ctrl('z'));
         assert!(
             !app.editor.url.text().ends_with("/a"),
@@ -17817,7 +17822,7 @@ mod undo_tests {
         app.capture_undo();
         let steps = app.history.undo_len();
         app.focus = PaneId::Editor;
-        app.editor.sub_focus = SubFocus::Url;
+        app.editor.open_url_from_app();
         type_chars(&mut app, "zzz");
         app.handle_key(ctrl('z'));
         app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
@@ -17879,7 +17884,7 @@ mod undo_tests {
         app.update(Action::CreateRequest("uz".into()));
         app.capture_undo();
         app.focus = PaneId::Editor;
-        app.editor.sub_focus = SubFocus::Url;
+        app.editor.open_url_from_app();
         for c in "abc".chars() {
             app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
             app.capture_undo();
@@ -17914,7 +17919,7 @@ mod undo_tests {
         let mut app = App::new_for_test();
         app.update(Action::CreateRequest("modal".into()));
         app.capture_undo();
-        app.editor.sub_focus = SubFocus::Url;
+        app.editor.open_url_from_app();
         app.editor
             .handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
         app.capture_undo();
@@ -17928,11 +17933,15 @@ mod undo_tests {
         let mut app = App::new_for_test();
         app.update(Action::CreateRequest("lin".into()));
         app.capture_undo();
-        app.editor.sub_focus = SubFocus::Url;
+        app.editor.open_url_from_app();
         app.editor
             .handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
         app.capture_undo();
         app.update(Action::Undo);
+        // The undo landed the line on the reverted text, selected (spec
+        // 2026-09-16) — typing again needs the field reopened, same as a
+        // keyboard user would with Enter/i.
+        app.editor.open_url_from_app();
         app.editor
             .handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
         app.capture_undo();
@@ -17945,7 +17954,7 @@ mod undo_tests {
         let mut app = App::new_for_test();
         app.update(Action::CreateRequest("aaa".into()));
         app.capture_undo();
-        app.editor.sub_focus = SubFocus::Url;
+        app.editor.open_url_from_app();
         app.editor
             .handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
         app.capture_undo();
@@ -17972,7 +17981,7 @@ mod undo_tests {
         let mut app = App::new_for_test();
         app.update(Action::CreateRequest("jb1".into()));
         app.capture_undo();
-        app.editor.sub_focus = SubFocus::Url;
+        app.editor.open_url_from_app();
         app.editor
             .handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
         app.capture_undo();
@@ -18003,7 +18012,7 @@ mod undo_tests {
         let mut app = App::new_for_test();
         app.update(Action::CreateRequest("del-me".into()));
         app.capture_undo();
-        app.editor.sub_focus = SubFocus::Url;
+        app.editor.open_url_from_app();
         app.editor
             .handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
         app.capture_undo();
@@ -18125,7 +18134,7 @@ mod undo_tests {
         let mut app = App::new_for_test();
         app.update(Action::CreateRequest("sv".into()));
         app.capture_undo();
-        app.editor.sub_focus = SubFocus::Url;
+        app.editor.open_url_from_app();
         app.editor
             .handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
         app.editor
@@ -18167,7 +18176,7 @@ mod undo_tests {
         let mut app = App::new_for_test();
         app.update(Action::CreateRequest("sv2".into()));
         app.capture_undo();
-        app.editor.sub_focus = SubFocus::Url;
+        app.editor.open_url_from_app();
         app.editor
             .handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
         app.capture_undo();
@@ -18192,7 +18201,7 @@ mod undo_tests {
         let mut app = App::new_for_test();
         app.update(Action::CreateRequest("sv3".into()));
         app.capture_undo();
-        app.editor.sub_focus = SubFocus::Url;
+        app.editor.open_url_from_app();
         app.editor
             .handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
         app.capture_undo();
@@ -18245,7 +18254,7 @@ mod undo_tests {
             // Dirty the open editor without recapturing: `is_dirty()` goes
             // true and the shadow (still "two"'s saved snapshot) no longer
             // matches `editor.current_request()`.
-            app.editor.sub_focus = SubFocus::Url;
+            app.editor.open_url_from_app();
             app.editor
                 .handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
             assert!(app.editor.is_dirty());
@@ -18686,7 +18695,7 @@ mod undo_tests {
             "alt+Right word-jumps instead"
         );
         // Anywhere else, alt+Right still cycles tabs.
-        app.editor.sub_focus = SubFocus::Url;
+        app.editor.open_url_from_app();
         app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
         assert_ne!(
             app.editor.active_tab,
@@ -19112,7 +19121,7 @@ fn right_click_on_the_url_bar_offers_copy_and_paste_and_copy_copies_the_selectio
     let mut app = App::new_for_test();
     app.set_clipboard_for_test(file_clipboard(&out, ""));
     app.editor.url = crate::components::line_input::LineInput::new("https://example.com");
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     app.editor.url.select_all();
     render_once(&mut app);
     let area = app.editor.last_url_text_area.expect("url area recorded");
@@ -19522,7 +19531,7 @@ fn extracting_a_url_selection_replaces_only_the_selected_part() {
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     app.update(Action::ForceOpenRequest("main/ping".into()));
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     select_in_url(&mut app, "abc-123");
 
     app.update(Action::ConfirmExtractSelection {
@@ -19756,7 +19765,7 @@ fn extract_selector_option_seed_is_blank_for_a_long_or_unsafe_value() {
         "https://x/ping/3f2504e0-4f89-11d3-9a0c-0305e82c3301",
     );
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     select_in_url(&mut app, "3f2504e0-4f89-11d3-9a0c-0305e82c3301");
     app.update(Action::ExtractSelectionToSelector(TextSurface::Url));
     let Some(Modal::MultiPrompt { fields, .. }) = app.modals.top() else {
@@ -19776,7 +19785,7 @@ fn extract_selector_from_a_url_selection_creates_the_selector_its_option_and_sel
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     app.update(Action::ForceOpenRequest("main/ping".into()));
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     select_in_url(&mut app, "east");
 
     app.update(Action::ConfirmExtractToSelector {
@@ -19822,7 +19831,7 @@ fn extract_selector_shared_puts_the_option_in_variables_toml() {
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     app.editor.url = LineInput::new("v2");
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
 
     app.update(Action::ExtractToSelector);
     assert!(matches!(
@@ -19867,7 +19876,7 @@ fn extract_selector_refuses_a_taken_name_and_leaves_everything_alone() {
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     app.editor.url = LineInput::new("https://x/ping/east");
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     select_in_url(&mut app, "east");
     let vars_before = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
     let env_before = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
@@ -24015,7 +24024,7 @@ fn extract_to_request_over_an_outside_edit_asks_instead_of_overwriting() {
     app.update(Action::ForceOpenRequest("main/ping".into()));
     app.editor.url = crate::components::line_input::LineInput::new("https://x/ping/abc-123");
     app.focus = crate::layout::PaneId::Editor;
-    app.editor.sub_focus = crate::components::editor::SubFocus::Url;
+    app.editor.open_url_from_app();
     postui_core::fixtures::save_request(
         dir.path(),
         "main/ping",
@@ -24075,7 +24084,7 @@ fn a_reload_from_disk_is_its_own_undo_step_and_says_so() {
 
     // Type immediately afterwards, inside the coalesce window.
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     app.handle_key(plain('!'));
     app.capture_undo();
     app.update(Action::Undo);
@@ -24335,7 +24344,7 @@ fn reload_from_disk_applies_a_new_keys_toml_end_to_end() {
     app.update(Action::RefreshSidebar);
     app.update(Action::OpenRequest("main/ping".into()));
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     type_chars(&mut app, "/edited");
     assert!(app.editor.is_dirty());
 
@@ -24551,7 +24560,7 @@ fn reload_from_disk_never_touches_the_editor_buffer() {
     app.update(Action::RefreshSidebar);
     app.update(Action::OpenRequest("main/ping".into()));
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     type_chars(&mut app, "/edited");
     let url_before = app.editor.url.text().to_string();
     assert!(app.editor.is_dirty());

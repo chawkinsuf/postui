@@ -1,6 +1,5 @@
 use postui::action::Action;
 use postui::app::App;
-use postui::components::editor::SubFocus;
 use postui::components::line_input::LineInput;
 use postui::components::modal::Modal;
 use postui::components::sidebar::Row;
@@ -281,7 +280,7 @@ async fn stage3_acceptance_flow() {
 
     // --- `{{` in the URL pops the picker; picking inserts the token --
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     app.editor.url = LineInput::new("");
     app.handle_key(plain('{'));
     app.handle_key(plain('{'));
