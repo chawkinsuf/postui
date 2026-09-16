@@ -80,14 +80,19 @@ pub enum PromptKind {
         from: String,
         note: Option<String>,
     },
-    /// Send-time secret prompt (spec §3): `prepare()` reported `name`
-    /// missing for the active environment (`env`, display only — never a
-    /// secret value). Confirming dispatches `Action::SetSecret`. The
-    /// modal's `revealed` flag (not part of this enum — see
-    /// `Modal::Prompt`) controls whether the input renders masked.
+    /// The masked secret prompt, for `name` in the active environment
+    /// (`env`, display only — never a secret value). With `then_send`
+    /// (spec §3's send-time prompt: `prepare()` reported the secret
+    /// missing), confirming dispatches `Action::SetSecret`, which resumes
+    /// the send, and Esc cancels that send. Without it (a token popup's
+    /// edit) confirming is an ordinary undoable `VarEditOp::SetSecretValue`
+    /// and Esc just closes. The modal's `revealed` flag (not part of this
+    /// enum — see `Modal::Prompt`) controls whether the input renders
+    /// masked.
     SecretValue {
         name: String,
         env: String,
+        then_send: bool,
     },
     /// `Action::OpenJqDescribe`: a sentence describing the filter to write.
     /// Confirming emits `Action::ConfirmJqDescribe`, which asks for
@@ -900,7 +905,10 @@ impl ModalStack {
     pub fn cancel_top(&mut self) -> Option<ModalResult> {
         let top = self.stack.last()?;
         let actions = match top {
-            Modal::Prompt { kind, .. } if kind.is_secret() => vec![Action::ShowToast(
+            Modal::Prompt {
+                kind: PromptKind::SecretValue { then_send: true, .. },
+                ..
+            } => vec![Action::ShowToast(
                 "send canceled".to_string(),
                 crate::components::toast::ToastKind::Warning,
             )],
@@ -1353,9 +1361,21 @@ impl ModalStack {
                                 shared: *shared,
                             })])
                         }
-                        PromptKind::SecretValue { name, .. } => Some(vec![Action::SetSecret {
-                            name: name.clone(),
-                            value: text.to_string(),
+                        PromptKind::SecretValue {
+                            name,
+                            env,
+                            then_send,
+                        } => Some(vec![if *then_send {
+                            Action::SetSecret {
+                                name: name.clone(),
+                                value: text.to_string(),
+                            }
+                        } else {
+                            Action::VarEdit(super::varmanager::VarEditOp::SetSecretValue {
+                                env: env.clone(),
+                                name: name.clone(),
+                                value: text.to_string(),
+                            })
                         }]),
                         PromptKind::JqDescribe => {
                             Some(vec![Action::ConfirmJqDescribe(text.to_string())])
@@ -3388,6 +3408,7 @@ mod tests {
             kind: PromptKind::SecretValue {
                 name: "token".into(),
                 env: "dev".into(),
+                then_send: true,
             },
             revealed: false,
         });
@@ -4331,6 +4352,7 @@ mod tests {
             kind: PromptKind::SecretValue {
                 name: "k".into(),
                 env: "dev".into(),
+                then_send: true,
             },
             revealed: false,
         });

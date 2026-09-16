@@ -317,6 +317,7 @@ async fn stage6_acceptance_flow() {
         PromptKind::SecretValue {
             name: "api_key".into(),
             env: "qa".into(),
+            then_send: true,
         }
     );
     assert!(!*revealed, "the secret prompt must render masked");

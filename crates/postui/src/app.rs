@@ -3672,6 +3672,7 @@ impl App {
                                 kind: PromptKind::SecretValue {
                                     name,
                                     env: self.env_label(),
+                                    then_send: true,
                                 },
                                 revealed: false,
                             });
@@ -4878,7 +4879,11 @@ impl App {
                         self.push_modal(Modal::Prompt {
                             title: format!("Secret {{{{{name}}}}}"),
                             input: LineInput::new(&current),
-                            kind: PromptKind::SecretValue { name, env },
+                            kind: PromptKind::SecretValue {
+                                name,
+                                env,
+                                then_send: false,
+                            },
                             revealed: false,
                         });
                         return true;

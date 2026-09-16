@@ -12460,12 +12460,63 @@ fn editing_a_secret_token_opens_the_masked_secret_prompt() {
         PromptKind::SecretValue {
             name: "api_key".into(),
             env: "qa".into(),
+            then_send: false,
         }
     );
     // Editing starts from what is stored (like the Manager's env-value
     // field), masked until ctrl+r reveals it.
     assert_eq!(input.text(), "sk-live-abc123");
     assert!(!revealed);
+}
+
+/// The popup's prompt is an edit, not the send-time chain: confirming
+/// writes the secret (undoably, like the Manager's field) and sends
+/// nothing; Esc just closes it.
+#[test]
+fn confirming_the_popup_secret_prompt_saves_without_sending() {
+    let (mut app, _dir) = token_popup_app();
+    app.proj_mut()
+        .set_secret_for("qa", "api_key", "old".into())
+        .unwrap();
+    app.editor.url = LineInput::new("http://example.invalid/{{api_key}}");
+    app.update(Action::OpenVarTokenPopup("api_key".into()));
+    assert!(matches!(
+        app.modals.top(),
+        Some(Modal::Prompt {
+            kind: PromptKind::SecretValue { then_send: false, .. },
+            ..
+        })
+    ));
+
+    // The seeded text is replaced wholesale.
+    app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
+    type_and_confirm(&mut app, "new");
+
+    assert!(app.modals.is_empty());
+    assert!(app.session.in_flight.is_empty(), "editing a secret never sends");
+    assert_eq!(app.proj().secrets()["qa"]["api_key"], "new");
+    assert!(
+        !rendered_text(&mut app).contains("send canceled"),
+        "no send was in play"
+    );
+
+    app.update(Action::Undo);
+    assert_eq!(
+        app.proj().secrets()["qa"]["api_key"],
+        "old",
+        "the edit is one undo step, like the Manager's"
+    );
+}
+
+#[test]
+fn escaping_the_popup_secret_prompt_does_not_claim_a_canceled_send() {
+    let (mut app, _dir) = token_popup_app();
+    app.update(Action::OpenVarTokenPopup("api_key".into()));
+    // First Esc drops to the button row, the second closes (field Esc rule).
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(app.modals.is_empty());
+    assert!(!rendered_text(&mut app).contains("send canceled"));
 }
 
 #[test]
@@ -12694,7 +12745,7 @@ async fn missing_secrets_prompt_sequentially_then_the_request_sends() {
         "title must never carry a value: {title}"
     );
     assert!(
-        matches!(kind, PromptKind::SecretValue { name, env } if name == "api_key" && env == "qa")
+        matches!(kind, PromptKind::SecretValue { name, env, then_send: true } if name == "api_key" && env == "qa")
     );
 
     type_and_confirm(&mut app, "key-val");
