@@ -1901,7 +1901,14 @@ impl Editor {
         // Focus styling must track where keys actually go: the URL only
         // counts as focused while its pane is, or the lifted fill/caret
         // would keep painting after Tab moves the keyboard elsewhere.
+        // The fill lift is the resting-stop highlight -- it applies while
+        // the line is merely *selected* too, same as the method badge and
+        // tab strip get a lifted fill without a caret. The caret itself
+        // (and the window scroll that follows it) is a stronger claim: it
+        // must track whether the line actually has the caret, not just
+        // whether it's the keyboard's current stop (spec 2026-09-16).
         let url_focused = ctx.focused && self.sub_focus == SubFocus::Url;
+        let url_caret_live = ctx.focused && self.url_open();
         let method_focused = ctx.focused && self.sub_focus == SubFocus::Method;
 
         // No margin above: the bar's block starts on `area`'s first row.
@@ -2055,7 +2062,7 @@ impl Editor {
         };
         let mut url_line = self
             .url
-            .draw_line_windowed(url_focused, theme, url_text_area.width);
+            .draw_line_windowed(url_caret_live, theme, url_text_area.width);
         url_line.style = Style::default().bg(url_fill).patch(url_line.style);
         buf.set_line(url_text_area.x, text_y, &url_line, url_text_area.width);
         // Token tinting paints over the text just drawn, and registers its
@@ -2063,7 +2070,7 @@ impl Editor {
         crate::components::var_tokens::paint_var_tokens(
             buf,
             Rect::new(url_text_area.x, text_y, url_text_area.width, 1),
-            &self.url.visible_window(url_focused, url_text_area.width),
+            &self.url.visible_window(url_caret_live, url_text_area.width),
             url_text_area.x,
             &self.vars,
             theme,
@@ -5533,6 +5540,52 @@ url = "https://api.example.com/users""#,
             .cell((url_area.x, text_y))
             .unwrap();
         assert_eq!(well.bg, theme.control, "unhovered well rests: {well:?}");
+    }
+
+    /// A selected-but-closed URL line (spec 2026-09-16) keeps the fill
+    /// lift — it's still the keyboard's resting stop — but must not paint
+    /// a live caret: `k` from the tab strip lands here, and a reversed
+    /// cell wherever the cursor last sat would be exactly the caret the
+    /// spec says a merely-selected field does not have.
+    #[test]
+    fn a_selected_url_line_keeps_the_fill_lift_but_paints_no_caret() {
+        let (mut e, url_area) = editor_with_url_well();
+        // `editor_with_url_well` loads a request without touching
+        // `sub_focus`/`url_open`, so the line starts selected, matching
+        // `k` from the tab strip.
+        assert_eq!(e.sub_focus, SubFocus::Url);
+        assert!(!e.url_open());
+        let theme = Theme::dark();
+        let text_y = url_area.y + 1;
+        let (terminal, _) = draw_for_bar_test(&mut e);
+        let buf = terminal.backend().buffer();
+        let text_area = e.last_url_text_area.unwrap();
+        let reversed_cells = |buf: &ratatui::buffer::Buffer| {
+            (text_area.x..text_area.right())
+                .filter(|&x| buf[(x, text_y)].modifier.contains(Modifier::REVERSED))
+                .count()
+        };
+        assert_eq!(
+            reversed_cells(buf),
+            0,
+            "selected, not open: no caret cell should paint"
+        );
+        let well = buf.cell((url_area.x, text_y)).unwrap();
+        assert_eq!(
+            well.bg,
+            crate::theme::lift_color(theme.control, URL_FOCUS_LIFT),
+            "the resting-stop fill lift still applies while merely selected: {well:?}"
+        );
+
+        // Opening the line (Enter/Space/i, or `Action::FocusUrl`) puts the
+        // caret live, and the reversed cell shows up.
+        e.open_url_from_app();
+        let (terminal2, _) = draw_for_bar_test(&mut e);
+        let buf2 = terminal2.backend().buffer();
+        assert!(
+            reversed_cells(buf2) > 0,
+            "open: the caret cell renders reversed"
+        );
     }
 
     #[test]
