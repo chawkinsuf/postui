@@ -1491,11 +1491,29 @@ impl ModalStack {
             && self.top().is_some_and(Modal::is_form)
             && !self.field_open()
         {
-            let mut chips: Vec<crate::components::footer::FooterChip> = vec![
+            let mut chips: Vec<crate::components::footer::FooterChip> = Vec::new();
+            // The fields editor's alt chords work on a selected row too
+            // (they never depend on the caret), so a selected row keeps
+            // advertising them ahead of the generic field chips.
+            if let Some(Modal::FieldsEditor(state)) = self.top() {
+                let removed = state.rows.get(state.focus).is_some_and(|r| r.removed);
+                chips.push(("alt+a".to_string(), "add field".to_string(), None));
+                chips.push((
+                    "alt+d".to_string(),
+                    if removed {
+                        "restore field"
+                    } else {
+                        "remove field"
+                    }
+                    .to_string(),
+                    None,
+                ));
+            }
+            chips.extend([
                 ("enter".to_string(), "edit".to_string(), None),
                 ("⇧enter".to_string(), "confirm".to_string(), None),
                 ("esc".to_string(), "buttons".to_string(), None),
-            ];
+            ]);
             if !self.steps.is_empty() {
                 chips.push(("u".to_string(), "undo".to_string(), None));
             }
@@ -1807,15 +1825,23 @@ impl ModalStack {
                 // is one of those opener keys too, and without this
                 // ordering it would always reopen the field instead of
                 // ever reaching the toggle flip.
-                KeyCode::Down | KeyCode::Up | KeyCode::Tab | KeyCode::BackTab
-                    if matches!(kind, PromptKind::NewSelector { .. }) && !*field_open =>
+                // ↓ / `j` from the toggle (the prompt's last stop) go on
+                // to the button row, the bottom stop of every form modal
+                // (ruling 2026-09-17).
+                KeyCode::Down | KeyCode::Up | KeyCode::Tab | KeyCode::BackTab | KeyCode::Char('j')
+                    if matches!(kind, PromptKind::NewSelector { .. })
+                        && !*field_open
+                        && crate::keys::plain_letter(&key) =>
                 {
                     if let PromptKind::NewSelector { on_toggle, .. } = kind {
-                        *on_toggle = match key.code {
-                            KeyCode::Down => true,
-                            KeyCode::Up => false,
-                            _ => !*on_toggle,
-                        };
+                        match key.code {
+                            KeyCode::Down | KeyCode::Char('j') if *on_toggle => {
+                                *button_focus = Some(FormButton::Confirm);
+                            }
+                            KeyCode::Down | KeyCode::Char('j') => *on_toggle = true,
+                            KeyCode::Up => *on_toggle = false,
+                            _ => *on_toggle = !*on_toggle,
+                        }
                     }
                     None // swallowed: modals capture all input
                 }
@@ -1856,6 +1882,24 @@ impl ModalStack {
                     ) =>
                 {
                     *field_open = true;
+                    None
+                }
+                // The prompt's single field is its last one: ↓ closes it
+                // (if open) and lands on the button row, the form's
+                // bottom stop; plain `j` does the same from selected
+                // only, since open it is typed. The NewSelector prompt's
+                // toggle stop took its own ↓ above.
+                KeyCode::Down | KeyCode::Char('j')
+                    if key.code == KeyCode::Down || !*field_open && crate::keys::plain_letter(&key) =>
+                {
+                    if *field_open {
+                        let before = input.text_at_open();
+                        input.end_edit();
+                        let after = input.text().to_string();
+                        Self::record_field_close(&mut self.steps, &mut self.redo, 0, before, after);
+                        *field_open = false;
+                    }
+                    *button_focus = Some(FormButton::Confirm);
                     None
                 }
                 _ if *field_open => {
@@ -2005,7 +2049,14 @@ impl ModalStack {
                         let after = input.text().to_string();
                         Self::record_field_close(&mut self.steps, &mut self.redo, idx, before, after);
                     }
-                    if !*on_path && !*prefilled {
+                    if *on_path {
+                        // Already on the last field: the button row is
+                        // the bottom stop (ruling 2026-09-17).
+                        *field_open = false;
+                        *button_focus = Some(FormButton::Confirm);
+                        return None;
+                    }
+                    if !*prefilled {
                         *prefilled = true;
                         let slug = slugify(name.text());
                         if path.text().ends_with('/') && !slug.is_empty() {
@@ -2162,12 +2213,26 @@ impl ModalStack {
                 // walk focus off it — otherwise Down below (guarded on
                 // `field_open`) would swallow it. Checked ahead of the
                 // generic Tab/BackTab and Down/Up arms.
-                KeyCode::Tab | KeyCode::Down if !fields[*focus].choices.is_empty() => {
+                KeyCode::Tab if !fields[*focus].choices.is_empty() => {
                     *focus = (*focus + 1) % fields.len();
                     None
                 }
-                KeyCode::BackTab | KeyCode::Up if !fields[*focus].choices.is_empty() => {
+                KeyCode::BackTab if !fields[*focus].choices.is_empty() => {
                     *focus = (*focus + fields.len() - 1) % fields.len();
+                    None
+                }
+                // Arrows never wrap (ruling 2026-09-17): ↓ from the last
+                // field lands on the button row, ↑ from the first stays.
+                KeyCode::Down if !fields[*focus].choices.is_empty() => {
+                    if *focus + 1 < fields.len() {
+                        *focus += 1;
+                    } else {
+                        *button_focus = Some(FormButton::Confirm);
+                    }
+                    None
+                }
+                KeyCode::Up if !fields[*focus].choices.is_empty() => {
+                    *focus = focus.saturating_sub(1);
                     None
                 }
                 // Tab keeps the state it started in (spec 2026-09-16): an
@@ -2236,8 +2301,15 @@ impl ModalStack {
                         let after = fields[idx].input.text().to_string();
                         Self::record_field_close(&mut self.steps, &mut self.redo, idx, before, after);
                     }
-                    *focus = (*focus + 1) % fields.len();
                     *field_open = false;
+                    if *focus + 1 < fields.len() {
+                        *focus += 1;
+                    } else {
+                        // The last field: the button row is the bottom
+                        // stop (ruling 2026-09-17); `focus` is kept so
+                        // ↑ from the row comes back here.
+                        *button_focus = Some(FormButton::Confirm);
+                    }
                     None
                 }
                 KeyCode::Up | KeyCode::Char('k')
@@ -2253,7 +2325,7 @@ impl ModalStack {
                         let after = fields[idx].input.text().to_string();
                         Self::record_field_close(&mut self.steps, &mut self.redo, idx, before, after);
                     }
-                    *focus = (*focus + fields.len() - 1) % fields.len();
+                    *focus = focus.saturating_sub(1); // the first field stays
                     *field_open = false;
                     None
                 }
@@ -2329,9 +2401,11 @@ impl ModalStack {
                     *field_open = false;
                     None
                 }
-                // This surface has no arrow-vs-tab distinction (one row
-                // per `focus_step`), so Tab/Down and BackTab/Up stay the
-                // same pair they always were.
+                // One row per `focus_step`, so Tab and ↓ (BackTab and ↑)
+                // close an open row the same way; they part only at the
+                // ends, where Tab/BackTab wrap and the arrows stop — ↓
+                // from the last row on the button row (ruling
+                // 2026-09-17), ↑ from the first row where it is.
                 KeyCode::Tab | KeyCode::Down => {
                     if *field_open {
                         let idx = state.focus;
@@ -2348,7 +2422,16 @@ impl ModalStack {
                             );
                         }
                     }
-                    state.focus_step(1);
+                    if key.code == KeyCode::Down {
+                        *field_open = false;
+                        if state.focus + 1 >= state.rows.len() {
+                            *button_focus = Some(FormButton::Confirm);
+                        } else {
+                            state.focus_step(1);
+                        }
+                    } else {
+                        state.focus_step(1);
+                    }
                     None // swallowed: modals capture all input
                 }
                 KeyCode::BackTab | KeyCode::Up => {
@@ -2367,7 +2450,14 @@ impl ModalStack {
                             );
                         }
                     }
-                    state.focus_step(-1);
+                    if key.code == KeyCode::Up {
+                        *field_open = false;
+                        if state.focus > 0 {
+                            state.focus_step(-1);
+                        } // the first row stays
+                    } else {
+                        state.focus_step(-1);
+                    }
                     None // swallowed: modals capture all input
                 }
                 // The keyboard mirrors of the "+ Add field" button and a
@@ -5596,10 +5686,11 @@ mod tests {
         assert_eq!(*focus, 1, "Tab moved onto the choice field");
         assert!(!m.field_open(), "choice fields never open");
         m.handle_key(key(KeyCode::Down));
-        let Some(Modal::MultiPrompt { focus, .. }) = m.top() else {
-            panic!("still a MultiPrompt");
-        };
-        assert_eq!(*focus, 0, "Down must still walk off a selected choice field");
+        assert_eq!(
+            m.button_focus(),
+            Some(FormButton::Confirm),
+            "Down must still walk off a selected choice field — it is the last one, so onto the button row"
+        );
     }
 
     /// Same split as `Prompt`'s field (spec 2026-09-16): a selected but
@@ -5891,5 +5982,215 @@ mod tests {
             crate::components::chooser::ChooserState::new("Pick", vec![]),
         ));
         assert!(m.handle_key(key(KeyCode::Esc)).unwrap().close);
+    }
+
+    /// The button row is the bottom stop of every form modal (ruling
+    /// 2026-09-17): ↓ / `j` from the last field land on Confirm, the
+    /// mirror of the row's ↑ / `k` back to the field. From an open
+    /// field ↓ closes it first (a close step is recorded); `j` there is
+    /// typed, as everywhere. `Prompt` has one field, so its only field
+    /// is the last one.
+    #[test]
+    fn down_and_j_from_a_prompt_field_reach_the_button_row() {
+        for down_key in [KeyCode::Down, KeyCode::Char('j')] {
+            let mut m = prompt_stack();
+            m.handle_key(key(KeyCode::Esc)); // close to selected
+            assert!(m.button_focus().is_none());
+            m.handle_key(key(down_key));
+            assert_eq!(
+                m.button_focus(),
+                Some(FormButton::Confirm),
+                "{down_key:?} from the selected field lands on Confirm"
+            );
+            assert!(!m.field_open());
+            m.handle_key(key(KeyCode::Up));
+            assert!(m.button_focus().is_none(), "↑ returns to the field");
+            assert!(!m.field_open(), "selected, not open");
+        }
+        // ↓ from an open field closes it first and records the close.
+        let mut m = prompt_stack();
+        m.handle_key(key(KeyCode::Char('x')));
+        assert!(m.field_open());
+        m.handle_key(key(KeyCode::Down));
+        assert_eq!(m.button_focus(), Some(FormButton::Confirm));
+        assert!(!m.field_open());
+        assert!(!m.steps.is_empty(), "the close was recorded as a step");
+        // `j` in an open field is typed, never navigation.
+        let mut m = prompt_stack();
+        m.handle_key(key(KeyCode::Char('j')));
+        assert!(m.button_focus().is_none());
+        let Some(Modal::Prompt { input, .. }) = m.top() else { panic!() };
+        assert_eq!(input.text(), "j");
+    }
+
+    /// The new-selector prompt's toggle row sits between the field and
+    /// the buttons: ↓ from the toggle stop reaches the row.
+    #[test]
+    fn down_from_the_new_selector_toggle_reaches_the_button_row() {
+        let mut m = ModalStack::default();
+        m.push(Modal::Prompt {
+            title: "New selector".into(),
+            input: LineInput::new(""),
+            kind: PromptKind::NewSelector {
+                shared: false,
+                on_toggle: false,
+            },
+            revealed: false,
+        });
+        m.handle_key(key(KeyCode::Esc));
+        m.handle_key(key(KeyCode::Down)); // name -> toggle
+        assert!(m.button_focus().is_none(), "the toggle stop comes first");
+        m.handle_key(key(KeyCode::Down)); // toggle -> buttons
+        assert_eq!(m.button_focus(), Some(FormButton::Confirm));
+        m.handle_key(key(KeyCode::Up)); // back to the toggle, still aimed there
+        let Some(Modal::Prompt {
+            kind: PromptKind::NewSelector { on_toggle, .. },
+            ..
+        }) = m.top()
+        else {
+            panic!("stays a NewSelector prompt");
+        };
+        assert!(m.button_focus().is_none());
+        assert!(*on_toggle, "↑ from the row lands where focus left: the toggle");
+    }
+
+    /// `NewProject`: ↓ from the path (its last field) reaches the row;
+    /// ↑ from the name (its first field) stays put — arrows never wrap.
+    #[test]
+    fn down_from_new_project_path_reaches_the_button_row_and_up_never_wraps() {
+        let fresh = || Modal::NewProject {
+            name: LineInput::new("demo"),
+            path: LineInput::new("/tmp/demo"),
+            on_path: false,
+            prefilled: true,
+        };
+        for down_key in [KeyCode::Down, KeyCode::Char('j')] {
+            let mut m = ModalStack::default();
+            m.push(fresh());
+            m.handle_key(key(KeyCode::Esc));
+            m.handle_key(key(KeyCode::Down)); // name -> path
+            assert!(m.button_focus().is_none());
+            m.handle_key(key(down_key)); // path -> buttons
+            assert_eq!(m.button_focus(), Some(FormButton::Confirm), "{down_key:?}");
+            m.handle_key(key(KeyCode::Up));
+            let Some(Modal::NewProject { on_path, .. }) = m.top() else { panic!() };
+            assert!(*on_path && m.button_focus().is_none(), "↑ returns to the path");
+        }
+        // ↓ from the open path closes it and lands on the row.
+        let mut m = ModalStack::default();
+        m.push(fresh());
+        m.handle_key(key(KeyCode::Tab)); // name -> path, open
+        assert!(m.field_open());
+        m.handle_key(key(KeyCode::Down));
+        assert_eq!(m.button_focus(), Some(FormButton::Confirm));
+        assert!(!m.field_open());
+        // ↑ / `k` from the selected name stay on the name.
+        for up_key in [KeyCode::Up, KeyCode::Char('k')] {
+            let mut m = ModalStack::default();
+            m.push(fresh());
+            m.handle_key(key(KeyCode::Esc));
+            m.handle_key(key(up_key));
+            let Some(Modal::NewProject { on_path, .. }) = m.top() else { panic!() };
+            assert!(!*on_path && m.button_focus().is_none(), "{up_key:?} stays on the name");
+        }
+    }
+
+    /// `MultiPrompt`: ↓ from the last field (a choice field here, which
+    /// never opens) reaches the row instead of wrapping to the first;
+    /// ↑ from the first stays. Tab / BackTab keep cycling the fields.
+    #[test]
+    fn multi_prompt_arrows_stop_at_the_button_row_while_tab_still_wraps() {
+        let mut m = ModalStack::default();
+        m.push(sample_multi_prompt());
+        m.handle_key(key(KeyCode::Esc)); // close field 0 to selected
+        m.handle_key(key(KeyCode::Down)); // field 0 -> 1 (choice)
+        let Some(Modal::MultiPrompt { focus, .. }) = m.top() else { panic!() };
+        assert_eq!(*focus, 1);
+        m.handle_key(key(KeyCode::Down)); // last field -> buttons
+        assert_eq!(m.button_focus(), Some(FormButton::Confirm));
+        let Some(Modal::MultiPrompt { focus, .. }) = m.top() else { panic!() };
+        assert_eq!(*focus, 1, "the field index is kept for ↑ back");
+        m.handle_key(key(KeyCode::Up));
+        assert!(m.button_focus().is_none());
+        m.handle_key(key(KeyCode::Up)); // 1 -> 0
+        m.handle_key(key(KeyCode::Up)); // first field: stays
+        let Some(Modal::MultiPrompt { focus, .. }) = m.top() else { panic!() };
+        assert_eq!(*focus, 0, "↑ from the first field never wraps");
+        assert!(m.button_focus().is_none());
+        m.handle_key(key(KeyCode::BackTab)); // 0 -> 1, Tab wraps
+        let Some(Modal::MultiPrompt { focus, .. }) = m.top() else { panic!() };
+        assert_eq!(*focus, 1);
+        m.handle_key(key(KeyCode::Tab)); // 1 -> 0, Tab wraps
+        let Some(Modal::MultiPrompt { focus, .. }) = m.top() else { panic!() };
+        assert_eq!(*focus, 0);
+        assert!(m.button_focus().is_none(), "Tab cycles fields only");
+        // Same from a text field that is last.
+        let mut m = ModalStack::default();
+        m.push(Modal::MultiPrompt {
+            title: "Two fields".into(),
+            fields: vec![
+                PromptField::text("name", "Name", "seed"),
+                PromptField::text("dest", "Destination", "here"),
+            ],
+            focus: 0,
+            kind: PromptKind::NewRequest,
+        });
+        m.handle_key(key(KeyCode::Tab)); // 0 -> 1, open
+        assert!(m.field_open());
+        m.handle_key(key(KeyCode::Char('j'))); // typed, not navigation
+        assert!(m.button_focus().is_none());
+        m.handle_key(key(KeyCode::Down)); // closes, lands on the row
+        assert_eq!(m.button_focus(), Some(FormButton::Confirm));
+        assert!(!m.field_open());
+    }
+
+    /// `FieldsEditor`: the same bottom stop on its rows, and Tab keeps
+    /// its wrap even though it used to share an arm with ↓.
+    #[test]
+    fn fields_editor_arrows_stop_at_the_button_row_while_tab_still_wraps() {
+        let mut m = ModalStack::default();
+        m.push(sample_fields_editor()); // two rows, row 0 open
+        m.handle_key(key(KeyCode::Down)); // 0 -> 1, selected
+        assert!(!m.field_open());
+        m.handle_key(key(KeyCode::Down)); // last row -> buttons
+        assert_eq!(m.button_focus(), Some(FormButton::Confirm));
+        m.handle_key(key(KeyCode::Up));
+        assert!(m.button_focus().is_none());
+        let Some(Modal::FieldsEditor(state)) = m.top() else { panic!() };
+        assert_eq!(state.focus, 1, "↑ returns to the last row");
+        m.handle_key(key(KeyCode::Up)); // 1 -> 0
+        m.handle_key(key(KeyCode::Up)); // first row: stays
+        let Some(Modal::FieldsEditor(state)) = m.top() else { panic!() };
+        assert_eq!(state.focus, 0, "↑ from the first row never wraps");
+        m.handle_key(key(KeyCode::BackTab)); // wraps to 1
+        m.handle_key(key(KeyCode::Tab)); // wraps to 0
+        let Some(Modal::FieldsEditor(state)) = m.top() else { panic!() };
+        assert_eq!(state.focus, 0);
+        assert!(m.button_focus().is_none(), "Tab cycles rows only");
+    }
+
+    /// A selected fields-editor row still answers alt+a / alt+d, so its
+    /// footer keeps advertising them — with the remove/restore verb
+    /// tracking the row — alongside the generic selected-field chips.
+    #[test]
+    fn a_selected_fields_editor_row_keeps_its_alt_chords_in_the_footer() {
+        let mut m = ModalStack::default();
+        m.push(sample_fields_editor());
+        m.handle_key(key(KeyCode::Esc)); // row 0 selected
+        let labels = |m: &ModalStack| -> Vec<String> {
+            m.footer_chips()
+                .unwrap()
+                .into_iter()
+                .map(|(k, l, _)| format!("{k} {l}"))
+                .collect()
+        };
+        let chips = labels(&m);
+        assert!(chips.contains(&"alt+a add field".to_string()), "{chips:?}");
+        assert!(chips.contains(&"alt+d remove field".to_string()), "{chips:?}");
+        assert!(chips.contains(&"enter edit".to_string()), "{chips:?}");
+        m.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::ALT)); // remove, focus steps to row 1
+        m.handle_key(key(KeyCode::Up)); // back onto the removed row, selected
+        let chips = labels(&m);
+        assert!(chips.contains(&"alt+d restore field".to_string()), "{chips:?}");
     }
 }

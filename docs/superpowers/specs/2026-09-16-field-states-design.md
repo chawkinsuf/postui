@@ -57,7 +57,7 @@ Transitions, the same on every surface:
 | `i` | opens (same as Enter) | types `i` |
 | Esc | leaves the field level: the surface's existing "one level out" | closes, keeps text, runs the commit, stays selected |
 | Tab / BackTab | next / previous stop, **selected** | closes, then next / previous stop, **open** (a Tab-fill keeps the state it started in) |
-| ↑ / ↓, `j` / `k` (plain) | neighbouring stop, selected | ↑/↓ close and select the neighbour; `j`/`k` are typed |
+| ↑ / ↓, `j` / `k` (plain) | neighbouring stop, selected (in a form modal the button row is the stop below the last field; arrows never wrap) | ↑/↓ close and select the neighbour; `j`/`k` are typed |
 | shift+Enter, ctrl+Enter | the container's confirm (send, or confirm the modal) | same |
 | ctrl+z, ctrl+shift+z, `u` | the container's commit history | the field's step history (`u` is typed) |
 
@@ -164,6 +164,21 @@ history (next section); every other key is swallowed.
 Keys in `Buttons(_)`: unchanged from the last round: ← / → / `h` / `l`
 / Tab / BackTab aim, Enter activates, Esc cancels, ↑ / `k` return to
 the field, **selected**; ctrl+z and `u` step the modal's history.
+
+**The button row is the bottom stop** (ruling 2026-09-17, after the
+round shipped: "↑ gets from the buttons to the input, but ↓ doesn't get
+from the input to the buttons"). ↓ / `j` from the last field — the
+prompt's only field, the new-selector prompt's toggle, `NewProject`'s
+path, `MultiPrompt`'s last field, the fields editor's last row — land
+on `Buttons(Confirm)`, closing an open field first (a close step is
+recorded; `j` in an open field is still typed). ↑ / `k` from the row
+return to that field, selected, as before. Arrows never wrap: ↑ from
+the first field stays put. Tab / BackTab keep cycling within the
+fields and never reach the row, so the 2026-09-15 spec's "Tab / BackTab
+still cycle among the fields only" holds. The fields editor's ↑ / ↓
+now land selected like every other surface (they used to share Tab's
+keep-the-state arm), and a selected row keeps its `alt+a` / `alt+d`
+footer chips, which never needed the caret.
 
 **Confirm from a field.** The keymap's `Send` bindings (shift+Enter and
 ctrl+Enter by default) are the "confirm the container" keys: on the
