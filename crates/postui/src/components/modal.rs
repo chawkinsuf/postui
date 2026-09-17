@@ -1473,6 +1473,28 @@ impl ModalStack {
                 .collect(),
             );
         }
+        // A form modal's field, selected but not open (the resting stop
+        // between an edit and the button row): the field rule's other
+        // half offers "enter edit" to reopen it, the shift+Enter/ctrl+Enter
+        // confirm chord (Task 10, spec 2026-09-16) that submits from right
+        // here, and the Esc that reaches the button row. `u undo` joins
+        // them only while the modal's own field-close stack (Task 11) has
+        // something to undo — reaching for it with nothing recorded would
+        // just type nowhere.
+        if self.button_focus.is_none()
+            && self.top().is_some_and(Modal::is_form)
+            && !self.field_open()
+        {
+            let mut chips: Vec<crate::components::footer::FooterChip> = vec![
+                ("enter".to_string(), "edit".to_string(), None),
+                ("⇧enter".to_string(), "confirm".to_string(), None),
+                ("esc".to_string(), "buttons".to_string(), None),
+            ];
+            if !self.steps.is_empty() {
+                chips.push(("u".to_string(), "undo".to_string(), None));
+            }
+            return Some(chips);
+        }
         // The confirm's chips are its own answer keys — runtime values, so
         // they're built owned here rather than in the static list below.
         if let Modal::Confirm { choices, .. } = self.top()? {
@@ -1620,12 +1642,18 @@ impl ModalStack {
             // own chips stay put (and nothing dims).
             Modal::Dropdown(_) => return None,
         };
-        Some(
-            chips
-                .into_iter()
-                .map(|(k, l, a)| (k.to_string(), l.to_string(), a))
-                .collect(),
-        )
+        let mut chips: Vec<crate::components::footer::FooterChip> = chips
+            .into_iter()
+            .map(|(k, l, a)| (k.to_string(), l.to_string(), a))
+            .collect();
+        // Reaching here with the top modal a form means the field is open
+        // (the button-row and selected-field cases both returned above):
+        // the confirm chord (Task 10) works from a field too, so its chip
+        // joins the field's own "esc done".
+        if self.top().is_some_and(Modal::is_form) {
+            chips.push(("⇧enter".to_string(), "confirm".to_string(), None));
+        }
+        Some(chips)
     }
 
     /// Every modal on the stack, bottom first — for asking "is one of
@@ -5511,6 +5539,47 @@ mod tests {
         assert!(chips.iter().any(|(k, l, _)| k == "esc" && l == "cancel"));
         assert!(chips.iter().any(|(k, l, _)| k == "\u{2191}" && l == "back"));
         assert!(chips.iter().any(|(k, l, _)| k == "enter" && l == "save"));
+    }
+
+    /// A selected form-modal field (closed to the resting stop, not yet
+    /// on the button row) offers the field rule's other half — Enter
+    /// reopens it — plus the shift+Enter/ctrl+Enter confirm chord (Task
+    /// 10) and the Esc that reaches the button row.
+    #[test]
+    fn a_selected_modal_field_advertises_edit_and_confirm_and_buttons() {
+        let mut m = prompt_stack();
+        m.handle_key(key(KeyCode::Esc)); // closes the field to selected
+        let chips = m.footer_chips().expect("form modal always has chips");
+        assert!(chips.iter().any(|(k, l, _)| k == "enter" && l == "edit"));
+        assert!(
+            chips
+                .iter()
+                .any(|(k, l, _)| k.contains("enter") && l == "confirm")
+        );
+        assert!(chips.iter().any(|(k, l, _)| k == "esc" && l == "buttons"));
+    }
+
+    /// The `u undo` chip on a selected field only shows up once the
+    /// modal's own step stack (Task 11) actually has a close to undo —
+    /// an empty stack would just make `u` type nowhere.
+    #[test]
+    fn the_selected_fields_undo_chip_tracks_the_step_stack() {
+        let mut m = prompt_stack();
+        m.handle_key(key(KeyCode::Esc)); // closes the (unedited) field
+        let chips = m.footer_chips().unwrap();
+        assert!(
+            !chips.iter().any(|(k, l, _)| k == "u" && l == "undo"),
+            "nothing recorded yet: {chips:?}"
+        );
+
+        let mut m = prompt_stack();
+        m.handle_key(key(KeyCode::Char('a')));
+        m.handle_key(key(KeyCode::Esc)); // closes the edited field, records a step
+        let chips = m.footer_chips().unwrap();
+        assert!(
+            chips.iter().any(|(k, l, _)| k == "u" && l == "undo"),
+            "a step was recorded: {chips:?}"
+        );
     }
 
     /// Only form modals re-label their Esc: a picker's Esc still closes

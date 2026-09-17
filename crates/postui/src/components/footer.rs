@@ -148,6 +148,14 @@ pub(crate) fn footer_chips(
                 // Inserted last so the row/address-bar chips above land
                 // where they mean to; it leads the row all the same.
                 chips.insert(0, ("esc", "done", Some(Action::CloseField)));
+            } else if url_focused {
+                // Selected, not open: the field rule's other half — Enter
+                // opens it, matching every other surface (spec
+                // 2026-09-16). `Action::FocusUrl` both focuses the bar and
+                // opens it (`Editor::open_url_from_app`), so it is the
+                // right action here too, not just for a jump from another
+                // pane.
+                chips.insert(0, ("enter", "edit", Some(Action::FocusUrl)));
             }
             chips
         }
@@ -1043,6 +1051,29 @@ mod tests {
                 .iter()
                 .any(|(_, _, a)| *a == Some(Action::ToggleInsecure)),
             "address-bar chips stay off the content-focus footer"
+        );
+    }
+
+    /// The URL line, selected but not open (no caret live), advertises
+    /// the field rule's other half: Enter opens it. `Action::FocusUrl`
+    /// both focuses the address bar and opens it, so it doubles as this
+    /// chip's action.
+    #[test]
+    fn a_selected_url_line_advertises_enter_edit() {
+        let chips = footer_chips(
+            PaneId::Editor,
+            false,
+            false,
+            None,
+            true,
+            None,
+            JqBarState::Closed,
+            false,
+        );
+        assert!(
+            chips
+                .iter()
+                .any(|(k, l, a)| *k == "enter" && *l == "edit" && *a == Some(Action::FocusUrl))
         );
     }
 

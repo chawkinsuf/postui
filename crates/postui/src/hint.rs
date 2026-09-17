@@ -203,6 +203,7 @@ fn fallback_description(action: &Action) -> Option<String> {
         Action::OpenPalette => "Open the command palette".to_string(),
         Action::CancelSend => "Cancel the request in flight".to_string(),
         Action::CloseField => "Close the field, keeping what you typed".to_string(),
+        Action::FocusUrl => "Edit the URL".to_string(),
         Action::CycleSplit => "Step the editor/response split".to_string(),
         Action::CycleSplitBack => "Step the split back".to_string(),
         Action::DeleteTableRow(_) => "Delete this row".to_string(),
