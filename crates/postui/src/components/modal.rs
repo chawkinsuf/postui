@@ -1888,7 +1888,18 @@ impl ModalStack {
                 KeyCode::Tab => {
                     let was_open = *field_open;
                     if was_open {
-                        if *on_path { path.end_edit() } else { name.end_edit() };
+                        let idx = usize::from(*on_path);
+                        let input = if *on_path { &mut *path } else { &mut *name };
+                        let before = input.text_at_open();
+                        input.end_edit();
+                        let after = input.text().to_string();
+                        Self::record_field_close(
+                            &mut self.steps,
+                            &mut self.redo,
+                            idx,
+                            before,
+                            after,
+                        );
                     }
                     if !*on_path && !*prefilled {
                         *prefilled = true;
@@ -1906,7 +1917,18 @@ impl ModalStack {
                 KeyCode::BackTab => {
                     let was_open = *field_open;
                     if was_open {
-                        if *on_path { path.end_edit() } else { name.end_edit() };
+                        let idx = usize::from(*on_path);
+                        let input = if *on_path { &mut *path } else { &mut *name };
+                        let before = input.text_at_open();
+                        input.end_edit();
+                        let after = input.text().to_string();
+                        Self::record_field_close(
+                            &mut self.steps,
+                            &mut self.redo,
+                            idx,
+                            before,
+                            after,
+                        );
                     }
                     *on_path = false;
                     *field_open = was_open;
@@ -2088,7 +2110,17 @@ impl ModalStack {
                 KeyCode::Tab => {
                     let was_open = *field_open;
                     if was_open {
-                        fields[*focus].input.end_edit();
+                        let idx = *focus;
+                        let before = fields[idx].input.text_at_open();
+                        fields[idx].input.end_edit();
+                        let after = fields[idx].input.text().to_string();
+                        Self::record_field_close(
+                            &mut self.steps,
+                            &mut self.redo,
+                            idx,
+                            before,
+                            after,
+                        );
                     }
                     *focus = (*focus + 1) % fields.len();
                     *field_open = was_open && fields[*focus].choices.is_empty();
@@ -2097,7 +2129,17 @@ impl ModalStack {
                 KeyCode::BackTab => {
                     let was_open = *field_open;
                     if was_open {
-                        fields[*focus].input.end_edit();
+                        let idx = *focus;
+                        let before = fields[idx].input.text_at_open();
+                        fields[idx].input.end_edit();
+                        let after = fields[idx].input.text().to_string();
+                        Self::record_field_close(
+                            &mut self.steps,
+                            &mut self.redo,
+                            idx,
+                            before,
+                            after,
+                        );
                     }
                     *focus = (*focus + fields.len() - 1) % fields.len();
                     *field_open = was_open && fields[*focus].choices.is_empty();
@@ -5072,6 +5114,25 @@ mod tests {
         m.handle_key(key(KeyCode::Char('x'))); // name: "oldx"
         m.handle_key(key(KeyCode::Down)); // closes name to selected on path — not Esc
         assert!(m.undo_field_step(false), "Down closed a changed field too");
+        assert_eq!(m.focused_input().unwrap().text(), "old");
+    }
+
+    #[test]
+    fn tab_off_an_open_new_project_field_still_records_a_step() {
+        let mut m = ModalStack::default();
+        m.push(Modal::NewProject {
+            name: LineInput::new("old"),
+            path: LineInput::new("~/postui-projects/"),
+            on_path: false,
+            prefilled: true, // keeps Tab's own slug-fill from touching path
+        });
+        m.handle_key(key(KeyCode::Char('x'))); // name: "oldx"
+        // Tab keeps the state it started in (open field's Tab closes it
+        // and opens the next), unlike Down which always drops to
+        // selected — a distinct close-point of its own.
+        m.handle_key(key(KeyCode::Tab));
+        assert!(m.field_open(), "Tab reopens on the next field");
+        assert!(m.undo_field_step(false), "Tab closed a changed field too");
         assert_eq!(m.focused_input().unwrap().text(), "old");
     }
 
