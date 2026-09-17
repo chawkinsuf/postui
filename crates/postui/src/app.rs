@@ -9866,15 +9866,18 @@ impl App {
         // same "confirm the container" chord Send already is on the main
         // screen (spec 2026-09-16). Closes an open field first, so its
         // edit lands as one undo step before the modal's own action
-        // dispatches. Plain Enter is never bound to Send (only
-        // ctrl+r/ctrl+enter/shift+enter are), so it never takes this
-        // path. This deliberately does not gate on `modified` (CONTROL |
-        // ALT only) the way 1b/1c do: shift+enter is one of Send's own
-        // bindings and carries no CONTROL/ALT modifier, so that gate
-        // would silently exclude it. `global == Some(Action::Send)`
-        // alone is already the precise check — the keymap only maps
-        // that combo set to Send.
+        // dispatches. This deliberately does not gate on `modified`
+        // (CONTROL | ALT only) the way 1b/1c do: shift+enter is one of
+        // Send's default bindings and carries no CONTROL/ALT modifier,
+        // so that gate would silently exclude it. Instead it checks the
+        // real key event's own modifiers directly (CONTROL or SHIFT) —
+        // not just what the keymap happens to map to `Send` — so a
+        // hostile or careless `keys.toml` binding bare `enter` to `send`
+        // still cannot make plain Enter take this path: it falls through
+        // to the ordinary per-variant Enter-closes-the-field handling
+        // instead, same as today.
         if global == Some(Action::Send)
+            && ev.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::SHIFT)
             && self
                 .modals
                 .top()

@@ -6571,6 +6571,32 @@ fn plain_enter_never_confirms_a_form_modal() {
     assert!(!app.modals.is_empty(), "plain Enter only closed the field");
 }
 
+/// A hostile or careless `keys.toml` can bind bare `enter` to `send`
+/// (`KeyCombo::parse` accepts a modifierless combo, and
+/// `apply_overrides` only rejects unknown actions/combos and the
+/// reserved ctrl+c). The confirm dig-past in `handle_key_inner` (step
+/// 1d) must not trust the keymap alone for that — it checks the real
+/// key event's own modifiers, so even under this override plain Enter
+/// still only closes the field, exactly as it does under the default
+/// keymap.
+#[test]
+fn plain_enter_never_confirms_a_form_modal_even_if_keys_toml_binds_it_to_send() {
+    use crate::components::modal::{Modal, PromptKind};
+    let mut app = App::new_for_test();
+    app.keymap.apply_overrides(r#"send = ["enter"]"#).unwrap();
+    app.modals.push(Modal::Prompt {
+        title: "New request".into(),
+        input: crate::components::line_input::LineInput::new("my-req"),
+        kind: PromptKind::NewRequest,
+        revealed: false,
+    });
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(
+        !app.modals.is_empty(),
+        "plain Enter must not confirm even when keys.toml maps it to send"
+    );
+}
+
 #[tokio::test]
 async fn force_send_spawns_a_task_and_marks_response_in_flight() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
