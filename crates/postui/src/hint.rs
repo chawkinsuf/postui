@@ -721,6 +721,7 @@ mod tests {
                                     sending,
                                     Some("add param"),
                                     url_focused,
+                                    false,
                                     row,
                                     jq,
                                     field_open,

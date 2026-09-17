@@ -4443,7 +4443,10 @@ impl App {
                     return true;
                 }
                 // A live cell edit is part of what's being undone: commit it
-                // so it becomes a step, then capture any pending delta.
+                // so it becomes a step, then capture any pending delta. A
+                // live Settings field edit closes the same way (spec
+                // 2026-09-16): the close becomes the step the undo pops.
+                self.commit_settings_edit();
                 self.commit_table_edit();
                 self.capture_undo();
                 loop {

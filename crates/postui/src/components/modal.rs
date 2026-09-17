@@ -951,7 +951,7 @@ impl ModalStack {
     /// so this split leaves their behavior exactly as it was.
     pub fn field_edited(&self) -> bool {
         if self.stack.last().is_some_and(Modal::is_form) && !self.field_open() {
-            return !self.steps.is_empty();
+            return !self.steps.is_empty() || !self.redo.is_empty();
         }
         // `button_focus` is only ever `Some` inside a form-modal arm —
         // already answered above — so it can never be true here.
@@ -1025,8 +1025,14 @@ impl ModalStack {
     /// mouse path's counterpart to Tab/Down field switching. `None` when
     /// the top modal has no text box `i`.
     pub fn focus_input(&mut self, i: usize) -> Option<&mut LineInput> {
-        // A click into a text box takes focus off the button row.
+        // A click into a text box takes focus off the button row and
+        // opens the field it lands on (spec 2026-09-16: "A click on a
+        // field's input opens it at the click, from any focus"). Callers
+        // only reach this through a `Hit::ModalInput`/`Hit::ModalField`
+        // that already named a real field, so it is safe to open before
+        // knowing the match below succeeds.
         self.leave_button_row();
+        self.field_open = true;
         match self.stack.last_mut()? {
             // Clicking the name field takes focus off the shared toggle.
             Modal::Prompt { input, kind, .. } if i == 0 => {
@@ -1813,14 +1819,20 @@ impl ModalStack {
                     }
                     None // swallowed: modals capture all input
                 }
-                KeyCode::Char(' ')
-                    if matches!(
+                // A non-text stop is never open (spec 2026-09-16): Enter,
+                // Space and plain `i` all flip the toggle here — the same
+                // keys that would open a text field elsewhere — rather
+                // than falling through to the generic opener below, which
+                // must never see this stop selected with `on_toggle: true`.
+                _ if crate::keys::opens_field(&key)
+                    && matches!(
                         kind,
                         PromptKind::NewSelector {
                             on_toggle: true,
                             ..
                         }
-                    ) && !*field_open =>
+                    )
+                    && !*field_open =>
                 {
                     if let PromptKind::NewSelector { shared, .. } = kind {
                         *shared = !*shared;
@@ -1829,9 +1841,20 @@ impl ModalStack {
                 }
                 // Enter/Space/plain-i reopen a selected field (spec
                 // 2026-09-16's shared rule) — but only while it's actually
-                // selected, and only once the two NewSelector-specific arms
-                // above have had first refusal on Space.
-                _ if crate::keys::opens_field(&key) && !*field_open => {
+                // selected, only once the two NewSelector-specific arms
+                // above have had first refusal, and never while the
+                // toggle stop has focus: that stop is never open (the arm
+                // above answers Enter/Space/i for it instead).
+                _ if crate::keys::opens_field(&key)
+                    && !*field_open
+                    && !matches!(
+                        kind,
+                        PromptKind::NewSelector {
+                            on_toggle: true,
+                            ..
+                        }
+                    ) =>
+                {
                     *field_open = true;
                     None
                 }
@@ -1963,14 +1986,25 @@ impl ModalStack {
                     None
                 }
                 // Down/Up always drop to selected on the neighbouring
-                // field, distinct from Tab/BackTab above.
-                KeyCode::Down if *field_open => {
-                    let idx = usize::from(*on_path);
-                    let input = if *on_path { &mut *path } else { &mut *name };
-                    let before = input.text_at_open();
-                    input.end_edit();
-                    let after = input.text().to_string();
-                    Self::record_field_close(&mut self.steps, &mut self.redo, idx, before, after);
+                // field, distinct from Tab/BackTab above — from any focus
+                // (spec 2026-09-16's transition table), not just an open
+                // field. A close step is only recorded when the field
+                // actually was open. `j`/`k` are their plain vim aliases,
+                // but only while the field is selected (not open) —
+                // otherwise the letter belongs to the field's own text,
+                // same reasoning as the editor's `SubFocus::Url` arms.
+                KeyCode::Down
+                | KeyCode::Char('j')
+                    if key.code == KeyCode::Down || !*field_open && crate::keys::plain_letter(&key) =>
+                {
+                    if *field_open {
+                        let idx = usize::from(*on_path);
+                        let input = if *on_path { &mut *path } else { &mut *name };
+                        let before = input.text_at_open();
+                        input.end_edit();
+                        let after = input.text().to_string();
+                        Self::record_field_close(&mut self.steps, &mut self.redo, idx, before, after);
+                    }
                     if !*on_path && !*prefilled {
                         *prefilled = true;
                         let slug = slugify(name.text());
@@ -1984,13 +2018,18 @@ impl ModalStack {
                     *field_open = false;
                     None
                 }
-                KeyCode::Up if *field_open => {
-                    let idx = usize::from(*on_path);
-                    let input = if *on_path { &mut *path } else { &mut *name };
-                    let before = input.text_at_open();
-                    input.end_edit();
-                    let after = input.text().to_string();
-                    Self::record_field_close(&mut self.steps, &mut self.redo, idx, before, after);
+                KeyCode::Up
+                | KeyCode::Char('k')
+                    if key.code == KeyCode::Up || !*field_open && crate::keys::plain_letter(&key) =>
+                {
+                    if *field_open {
+                        let idx = usize::from(*on_path);
+                        let input = if *on_path { &mut *path } else { &mut *name };
+                        let before = input.text_at_open();
+                        input.end_edit();
+                        let after = input.text().to_string();
+                        Self::record_field_close(&mut self.steps, &mut self.redo, idx, before, after);
+                    }
                     *on_path = false;
                     *field_open = false;
                     None
@@ -2174,23 +2213,46 @@ impl ModalStack {
                     None
                 }
                 // Down/Up always drop to selected on the neighbouring
-                // field, distinct from Tab/BackTab above.
-                KeyCode::Down if *field_open => {
-                    let idx = *focus;
-                    let before = fields[idx].input.text_at_open();
-                    fields[idx].input.end_edit();
-                    let after = fields[idx].input.text().to_string();
-                    Self::record_field_close(&mut self.steps, &mut self.redo, idx, before, after);
+                // field, distinct from Tab/BackTab above — from any focus
+                // (spec 2026-09-16's transition table), not just an open
+                // field. A close step is only recorded when the field
+                // actually was open. `j`/`k` are their plain vim aliases,
+                // guarded the same way the choice-field Tab/Down arm above
+                // is: only while selected (not open, so the letter isn't
+                // swallowed by typing) and only on a text field (a choice
+                // field's Down is already handled above, unconditionally,
+                // and never gets a `j`/`k` alias — the letter might collide
+                // with something else there).
+                KeyCode::Down | KeyCode::Char('j')
+                    if key.code == KeyCode::Down
+                        || !*field_open
+                            && fields[*focus].choices.is_empty()
+                            && crate::keys::plain_letter(&key) =>
+                {
+                    if *field_open {
+                        let idx = *focus;
+                        let before = fields[idx].input.text_at_open();
+                        fields[idx].input.end_edit();
+                        let after = fields[idx].input.text().to_string();
+                        Self::record_field_close(&mut self.steps, &mut self.redo, idx, before, after);
+                    }
                     *focus = (*focus + 1) % fields.len();
                     *field_open = false;
                     None
                 }
-                KeyCode::Up if *field_open => {
-                    let idx = *focus;
-                    let before = fields[idx].input.text_at_open();
-                    fields[idx].input.end_edit();
-                    let after = fields[idx].input.text().to_string();
-                    Self::record_field_close(&mut self.steps, &mut self.redo, idx, before, after);
+                KeyCode::Up | KeyCode::Char('k')
+                    if key.code == KeyCode::Up
+                        || !*field_open
+                            && fields[*focus].choices.is_empty()
+                            && crate::keys::plain_letter(&key) =>
+                {
+                    if *field_open {
+                        let idx = *focus;
+                        let before = fields[idx].input.text_at_open();
+                        fields[idx].input.end_edit();
+                        let after = fields[idx].input.text().to_string();
+                        Self::record_field_close(&mut self.steps, &mut self.redo, idx, before, after);
+                    }
                     *focus = (*focus + fields.len() - 1) % fields.len();
                     *field_open = false;
                     None
@@ -5260,6 +5322,133 @@ mod tests {
             row_has_a_reversed_cell(&buf, field),
             "the caret paints again once the field reopens"
         );
+    }
+
+    /// Final-review finding 4: the spec's transition table gives every
+    /// selected field Down/Up and j/k to reach a neighbouring stop —
+    /// `NewProject` swallowed them entirely (guarded on `field_open`,
+    /// which is `false` while merely selected).
+    #[test]
+    fn a_selected_new_project_field_moves_with_down_up_j_k() {
+        let fresh = || Modal::NewProject {
+            name: LineInput::new("demo"),
+            path: LineInput::new("/tmp/demo"),
+            on_path: false,
+            prefilled: true,
+        };
+        for down_key in [KeyCode::Down, KeyCode::Char('j')] {
+            let mut m = ModalStack::default();
+            m.push(fresh());
+            m.handle_key(key(KeyCode::Esc)); // close name to selected
+            assert!(!m.field_open(), "selected, not open, before the move");
+            m.handle_key(key(down_key));
+            let Some(Modal::NewProject { on_path, .. }) = m.top() else {
+                panic!("stays a NewProject modal");
+            };
+            assert!(*on_path, "{down_key:?} moved focus to path");
+            assert!(!m.field_open(), "landed selected, not open");
+        }
+        for up_key in [KeyCode::Up, KeyCode::Char('k')] {
+            let mut m = ModalStack::default();
+            m.push(fresh());
+            m.handle_key(key(KeyCode::Tab)); // name -> path, open (Tab keeps state)
+            m.handle_key(key(KeyCode::Esc)); // close path to selected
+            assert!(!m.field_open());
+            let Some(Modal::NewProject { on_path, .. }) = m.top() else {
+                panic!("stays a NewProject modal");
+            };
+            assert!(*on_path, "starts selected on path");
+            m.handle_key(key(up_key));
+            let Some(Modal::NewProject { on_path, .. }) = m.top() else {
+                panic!("stays a NewProject modal");
+            };
+            assert!(!*on_path, "{up_key:?} moved focus back to name");
+            assert!(!m.field_open(), "landed selected, not open");
+        }
+    }
+
+    /// The same gap, on `MultiPrompt`'s text fields.
+    #[test]
+    fn a_selected_multi_prompt_field_moves_with_down_up_j_k() {
+        let fresh = || Modal::MultiPrompt {
+            title: "Two fields".into(),
+            fields: vec![
+                PromptField::text("name", "Name", "seed"),
+                PromptField::text("dest", "Destination", "here"),
+            ],
+            focus: 0,
+            kind: PromptKind::NewRequest,
+        };
+        for down_key in [KeyCode::Down, KeyCode::Char('j')] {
+            let mut m = ModalStack::default();
+            m.push(fresh());
+            m.handle_key(key(KeyCode::Esc)); // close field 0 to selected
+            assert!(!m.field_open());
+            m.handle_key(key(down_key));
+            let Some(Modal::MultiPrompt { focus, .. }) = m.top() else {
+                panic!("stays a MultiPrompt modal");
+            };
+            assert_eq!(*focus, 1, "{down_key:?} moved focus to the next field");
+            assert!(!m.field_open(), "landed selected, not open");
+        }
+        for up_key in [KeyCode::Up, KeyCode::Char('k')] {
+            let mut m = ModalStack::default();
+            m.push(fresh());
+            m.handle_key(key(KeyCode::Tab)); // field 0 -> 1, open
+            m.handle_key(key(KeyCode::Esc)); // close field 1 to selected
+            assert!(!m.field_open());
+            m.handle_key(key(up_key));
+            let Some(Modal::MultiPrompt { focus, .. }) = m.top() else {
+                panic!("stays a MultiPrompt modal");
+            };
+            assert_eq!(*focus, 0, "{up_key:?} moved focus back to the first field");
+            assert!(!m.field_open(), "landed selected, not open");
+        }
+    }
+
+    /// Final-review finding 5: the shared toggle is a non-text stop —
+    /// spec 2026-09-16 says it "is never open: Enter / Space activate
+    /// it." Enter and plain `i` must flip `shared` like Space already
+    /// does, and must never fall through to the generic opener (which
+    /// would set `field_open` on a stop that never renders as focused).
+    #[test]
+    fn enter_and_i_flip_the_new_selector_toggle_without_opening_it() {
+        for opener in [KeyCode::Enter, KeyCode::Char('i')] {
+            let mut m = ModalStack::default();
+            // Reached the way the real prompt does: pushed with the name
+            // field open and `on_toggle: false`, Esc closes it to
+            // selected, then Down walks onto the toggle stop — the only
+            // path that ever produces `on_toggle: true`.
+            m.push(Modal::Prompt {
+                title: "New selector".into(),
+                input: LineInput::new(""),
+                kind: PromptKind::NewSelector {
+                    shared: false,
+                    on_toggle: false,
+                },
+                revealed: false,
+            });
+            m.handle_key(key(KeyCode::Esc));
+            m.handle_key(key(KeyCode::Down));
+            assert!(!m.field_open(), "on the toggle stop, selected");
+            m.handle_key(key(opener));
+            let Some(Modal::Prompt {
+                kind: PromptKind::NewSelector { shared, on_toggle },
+                ..
+            }) = m.top()
+            else {
+                panic!("stays a NewSelector prompt");
+            };
+            assert!(*shared, "{opener:?} must flip shared like Space does");
+            assert!(
+                *on_toggle,
+                "{opener:?} must not move focus off the toggle"
+            );
+            assert!(
+                !m.field_open(),
+                "{opener:?} must not open the name field behind the toggle"
+            );
+        }
     }
 
     #[test]

@@ -1206,6 +1206,53 @@ fn ctrl_z_in_a_modal_prompt_undoes_the_prompts_typing() {
     assert_eq!(input.text(), "abc", "ctrl+shift+z redoes inside the prompt");
 }
 
+/// Final-review finding 2: once the last recorded close is undone,
+/// `self.steps` empties out but the redo entry it produced must still be
+/// reachable through the normal key path (not just `undo_field_step`
+/// called directly, which is what the fix's regression is disguised
+/// behind). `field_edited()` gates the router's ctrl+z/ctrl+shift+z
+/// carve-out (app.rs step 1c) — it must stay true while `redo` holds
+/// anything, not just while `steps` does.
+#[test]
+fn redo_reaches_a_modal_field_close_after_its_last_undo_empties_the_step_stack() {
+    let mut app = App::new_for_test();
+    app.modals.push(Modal::Prompt {
+        title: "Name".into(),
+        input: crate::components::line_input::LineInput::new(""),
+        kind: PromptKind::NewRequest,
+        revealed: false,
+    });
+    type_chars(&mut app, "abc");
+    // Esc closes the field to selected, recording one step (the text
+    // changed) — the only step on the stack.
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(!app.modals.field_open());
+
+    // Undo through the normal key path: pops the one step, so `steps` is
+    // now empty and `redo` holds the entry it just popped.
+    app.handle_key(ctrl('z'));
+    let Some(Modal::Prompt { input, .. }) = app.modals.top() else {
+        panic!("the prompt stays open");
+    };
+    assert_eq!(input.text(), "", "undo restored the pre-close text");
+
+    // Redo through the SAME normal key path — ctrl+shift+z via
+    // `App::handle_key`, not a direct `undo_field_step(true)` call — must
+    // still reach the modal's redo stack.
+    app.handle_key(KeyEvent::new(
+        KeyCode::Char('z'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    ));
+    let Some(Modal::Prompt { input, .. }) = app.modals.top() else {
+        panic!("the prompt stays open");
+    };
+    assert_eq!(
+        input.text(),
+        "abc",
+        "ctrl+shift+z must redo the field close even after `steps` emptied out"
+    );
+}
+
 /// With a field open but nothing typed, ctrl+z is the app history as
 /// before (spec: "otherwise today's behaviour").
 #[test]
@@ -1806,6 +1853,7 @@ fn the_footer_field_flag_is_pane_local() {
         false,
         false,
         None,
+        false,
         false,
         None,
         crate::components::footer::JqBarState::Open,
@@ -6501,6 +6549,63 @@ fn modal_prompt_field_supports_click_to_place_drag_select_and_double_click() {
         input.selection(),
         Some((0, 5)),
         "double click selects the word"
+    );
+}
+
+/// Final-review finding 1: Esc closes a modal field to selected, then a
+/// click on it (`Hit::ModalInput` -> `ModalStack::focus_input`) must open
+/// it again — spec 2026-09-16, "A click on a field's input opens it at
+/// the click, from any focus." Before the fix, `focus_input` placed the
+/// caret without setting `field_open`, so the caret never rendered and
+/// every typed character was swallowed.
+#[test]
+fn clicking_a_field_closed_to_selected_reopens_it_for_typing() {
+    let mut app = App::new_for_test();
+    app.anims.enabled = false;
+    app.update(Action::PromptNewRequest);
+    for c in "hello".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    // Esc closes the field, keeping the text, and lands on the selected
+    // state (not the button row on the first Esc from a live field).
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(
+        !app.modals.field_open(),
+        "Esc must close the field to selected"
+    );
+
+    render_once(&mut app);
+    let r = app
+        .hits
+        .rect_of(&crate::hit::Hit::ModalInput(0))
+        .expect("prompt input hit");
+    app.handle_mouse(left_down(r.x + 2 + 2, r.y + 1));
+    assert!(
+        app.modals.field_open(),
+        "a click on a closed-to-selected field must reopen it"
+    );
+
+    // Caret must actually render now, not just the flag: draw once more
+    // and look for the input's own REVERSED cell (the caret's styling).
+    let backend = ratatui::backend::TestBackend::new(120, 40);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    let buf = terminal.backend().buffer();
+    let has_caret = (r.x..r.x + r.width).any(|x| {
+        (r.y..r.y + r.height).any(|y| {
+            buf.cell((x, y))
+                .is_some_and(|c| c.modifier.contains(ratatui::style::Modifier::REVERSED))
+        })
+    });
+    assert!(has_caret, "the caret must render once the field is open");
+
+    // And a typed character must land in the field, not be swallowed.
+    app.handle_key(KeyEvent::new(KeyCode::Char('!'), KeyModifiers::NONE));
+    let input = app.modals.focused_input().expect("prompt input");
+    assert!(
+        input.text().contains('!'),
+        "a typed character must reach the reopened field: {:?}",
+        input.text()
     );
 }
 
@@ -16712,6 +16817,7 @@ fn every_named_action_is_mouse_reachable() {
                 false,
                 Some("add header"),
                 false,
+                false,
                 None,
                 crate::components::footer::JqBarState::Closed,
                 false,
@@ -16728,6 +16834,7 @@ fn every_named_action_is_mouse_reachable() {
                 false,
                 Some("add header"),
                 true,
+                false,
                 None,
                 crate::components::footer::JqBarState::Closed,
                 false,
@@ -16743,6 +16850,7 @@ fn every_named_action_is_mouse_reachable() {
                 false,
                 false,
                 Some("add header"),
+                false,
                 false,
                 None,
                 crate::components::footer::JqBarState::Focused,
@@ -20631,6 +20739,7 @@ fn the_focused_bar_advertises_enter_apply_and_esc_done() {
         false,
         None,
         false,
+        false,
         None,
         crate::components::footer::JqBarState::Focused,
         false,
@@ -21002,6 +21111,7 @@ fn the_footer_and_palette_reach_the_jq_bar() {
         false,
         None,
         false,
+        false,
         None,
         crate::components::footer::JqBarState::Closed,
         false,
@@ -21290,6 +21400,7 @@ fn the_response_footer_always_offers_alt_q_filter_and_close_only_while_open() {
             false,
             false,
             None,
+            false,
             false,
             None,
             state,
@@ -25959,6 +26070,49 @@ fn a_refused_settings_write_records_no_step() {
             .any(|m| m.contains("Nothing to undo")),
         "nothing else changed, so there is nothing to undo: {:?}",
         app.toasts.messages()
+    );
+}
+
+/// Final-review finding 6: the spec turns `Action::Undo`'s "commit the
+/// open table edit" prelude into "close any open field on the current
+/// screen" — a live, untouched Settings field must commit (as one step,
+/// in the same order the table already gets) before the pop, so ctrl+z
+/// reaches the earlier app-history step instead of getting stuck behind
+/// a field that never released the caret.
+#[test]
+fn undo_closes_a_live_untouched_settings_field_before_popping_app_history() {
+    use crate::components::settings::SettingsField;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = App::new_for_test();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+    let before = app.ui_settings.ai_cmd.clone();
+
+    // An earlier, already-recorded app-history step: the one ctrl+z
+    // should reach.
+    app.update(Action::SetUiString {
+        key: "ai_cmd",
+        value: "my-cmd".to_string(),
+    });
+    assert_eq!(app.ui_settings.ai_cmd, "my-cmd");
+
+    // A live Settings field, open on the Settings tab, showing exactly
+    // what's already stored — untouched, nothing of its own to undo.
+    app.screen = Screen::Manage;
+    app.manage.tab = ManageTab::Settings;
+    app.settings.begin_edit(SettingsField::AiCmd, "my-cmd");
+    assert!(app.settings.editing.is_some());
+
+    app.update(Action::Undo);
+
+    assert!(
+        app.settings.editing.is_none(),
+        "the prelude must close the live field, untouched or not"
+    );
+    assert_eq!(
+        app.ui_settings.ai_cmd, before,
+        "an untouched field commits nothing of its own, so ctrl+z falls \
+         through to the earlier app-history step"
     );
 }
 

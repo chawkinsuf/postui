@@ -52,6 +52,13 @@ pub(crate) fn footer_chips(
     // There alt+a targets no visible table, so its chip gives way to the
     // address bar's own actions: copy url + tls verify.
     url_focused: bool,
+    // Precisely the URL line, selected (not open) — narrower than
+    // `url_focused` (which also covers the Method badge). Gates the
+    // "enter edit" chip alone: that chip names `Action::FocusUrl`, which
+    // is right only when the URL line itself, not the method badge, has
+    // focus (spec 2026-09-16, "the hint must name the action actually
+    // dispatched").
+    url_selected: bool,
     // A data row of the active table is selected (content focus, no cell
     // edit live): advertise its toggle/delete keys. `(index, enabled)` —
     // the toggle chip names the state change it would make.
@@ -148,13 +155,15 @@ pub(crate) fn footer_chips(
                 // Inserted last so the row/address-bar chips above land
                 // where they mean to; it leads the row all the same.
                 chips.insert(0, ("esc", "done", Some(Action::CloseField)));
-            } else if url_focused {
+            } else if url_selected {
                 // Selected, not open: the field rule's other half — Enter
                 // opens it, matching every other surface (spec
                 // 2026-09-16). `Action::FocusUrl` both focuses the bar and
                 // opens it (`Editor::open_url_from_app`), so it is the
                 // right action here too, not just for a jump from another
-                // pane.
+                // pane. Gated on `url_selected`, not `url_focused`: the
+                // method badge's Enter opens the method dropdown, not
+                // this action.
                 chips.insert(0, ("enter", "edit", Some(Action::FocusUrl)));
             }
             chips
@@ -269,6 +278,8 @@ pub fn draw_footer(
     add_row_label: Option<&'static str>,
     // See `footer_chips`: the editor pane's focus sits on the address bar.
     url_focused: bool,
+    // See `footer_chips`: precisely the URL line, selected (not open).
+    url_selected: bool,
     // See `footer_chips`: a data row of the active table is selected.
     table_row_selected: Option<(usize, bool)>,
     // See `footer_chips`: where the response pane's jq bar is.
@@ -372,6 +383,7 @@ pub fn draw_footer(
             sending,
             add_row_label,
             url_focused,
+            url_selected,
             table_row_selected,
             jq_bar,
             field_open,
@@ -622,6 +634,7 @@ mod tests {
                     false,
                     Some("add header"),
                     false,
+                    false,
                     None,
                     JqBarState::Closed,
                     false,
@@ -754,7 +767,7 @@ mod tests {
     #[test]
     fn a_completion_ghost_advertises_tab_and_accept() {
         let chips = |state: JqBarState| {
-            footer_chips(PaneId::Response, false, false, None, false, None, state, false)
+            footer_chips(PaneId::Response, false, false, None, false, false, None, state, false)
                 .into_iter()
                 .map(|(k, l, _)| format!("{k} {l}"))
                 .collect::<Vec<_>>()
@@ -792,6 +805,7 @@ mod tests {
             false,
             None,
             false,
+            false,
             None,
             JqBarState::Describing,
             true,
@@ -823,6 +837,7 @@ mod tests {
                     false,
                     Some("add header"),
                     false,
+                    false,
                     None,
                     JqBarState::Closed,
                     false,
@@ -847,6 +862,7 @@ mod tests {
             false,
             Some("add header"),
             false,
+            false,
             None,
             JqBarState::Closed,
             false,
@@ -857,6 +873,7 @@ mod tests {
             false,
             false,
             Some("add header"),
+            false,
             false,
             None,
             JqBarState::Closed,
@@ -875,6 +892,7 @@ mod tests {
             false,
             true,
             Some("add header"),
+            false,
             false,
             None,
             JqBarState::Closed,
@@ -902,6 +920,7 @@ mod tests {
             true,
             Some("add header"),
             true,
+            false,
             None,
             JqBarState::Closed,
             true,
@@ -925,6 +944,7 @@ mod tests {
             false,
             None,
             false,
+            false,
             None,
             JqBarState::Focused,
             true,
@@ -941,6 +961,7 @@ mod tests {
             false,
             false,
             None,
+            false,
             false,
             None,
             JqBarState::Closed,
@@ -985,6 +1006,7 @@ mod tests {
             false,
             Some("add header"),
             false,
+            false,
             None,
             JqBarState::Closed,
             false,
@@ -1011,6 +1033,7 @@ mod tests {
             false,
             Some("add header"),
             true,
+            false,
             None,
             JqBarState::Closed,
             false,
@@ -1035,6 +1058,7 @@ mod tests {
             false,
             false,
             Some("add header"),
+            false,
             false,
             None,
             JqBarState::Closed,
@@ -1066,6 +1090,7 @@ mod tests {
             false,
             None,
             true,
+            true,
             None,
             JqBarState::Closed,
             false,
@@ -1074,6 +1099,32 @@ mod tests {
             chips
                 .iter()
                 .any(|(k, l, a)| *k == "enter" && *l == "edit" && *a == Some(Action::FocusUrl))
+        );
+    }
+
+    /// The method badge sits in the same address-bar area as the URL line
+    /// (`url_focused` covers both), but its Enter opens the method
+    /// dropdown, not `Action::FocusUrl` — so the "enter edit" chip must not
+    /// appear there (final-review finding 3: the chip must name the
+    /// action actually dispatched).
+    #[test]
+    fn the_method_badge_does_not_advertise_enter_edit() {
+        let chips = footer_chips(
+            PaneId::Editor,
+            false,
+            false,
+            None,
+            true,
+            false,
+            None,
+            JqBarState::Closed,
+            false,
+        );
+        assert!(
+            !chips
+                .iter()
+                .any(|(_, l, a)| *l == "edit" && *a == Some(Action::FocusUrl)),
+            "the method badge must not advertise the URL line's enter-edit chip: {chips:?}"
         );
     }
 
@@ -1090,6 +1141,7 @@ mod tests {
                     false,
                     Some("add header"),
                     url_focused,
+                    false,
                     None,
                     JqBarState::Closed,
                     false,
@@ -1115,6 +1167,7 @@ mod tests {
             false,
             Some("add header"),
             false,
+            false,
             Some((2, true)),
             JqBarState::Closed,
             false,
@@ -1134,6 +1187,7 @@ mod tests {
             false,
             Some("add header"),
             false,
+            false,
             Some((2, false)),
             JqBarState::Closed,
             false,
@@ -1149,6 +1203,7 @@ mod tests {
             false,
             false,
             Some("add header"),
+            false,
             false,
             None,
             JqBarState::Closed,
@@ -1203,6 +1258,7 @@ mod tests {
                     false,
                     Some("add header"),
                     false,
+                    false,
                     None,
                     JqBarState::Closed,
                     false,
@@ -1242,6 +1298,7 @@ mod tests {
                     false,
                     false,
                     Some("add header"),
+                    false,
                     false,
                     None,
                     JqBarState::Closed,
@@ -1293,6 +1350,7 @@ mod tests {
                     false,
                     Some("add header"),
                     false,
+                    false,
                     None,
                     JqBarState::Closed,
                     false,
@@ -1331,6 +1389,7 @@ mod tests {
                     false,
                     false,
                     Some("add header"),
+                    false,
                     false,
                     None,
                     JqBarState::Closed,
@@ -1405,6 +1464,7 @@ mod tests {
                     false,
                     Some("add header"),
                     false,
+                    false,
                     None,
                     JqBarState::Closed,
                     false,
@@ -1463,6 +1523,7 @@ mod tests {
                     false,
                     false,
                     Some("add header"),
+                    false,
                     false,
                     None,
                     JqBarState::Closed,
@@ -1564,6 +1625,7 @@ mod tests {
                     false,
                     false,
                     Some("add header"),
+                    false,
                     false,
                     None,
                     JqBarState::Closed,

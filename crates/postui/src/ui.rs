@@ -361,6 +361,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             app.editor.sub_focus,
             crate::components::editor::SubFocus::Method | crate::components::editor::SubFocus::Url
         ),
+        // Precisely the URL line, selected (not open) — the "enter edit"
+        // chip's own gate. The `url_focused` arg above covers the whole
+        // address bar (method or URL), which is too broad for a chip that
+        // names `Action::FocusUrl`: the method badge's Enter opens the
+        // method dropdown, not the URL line.
+        app.editor.sub_focus == crate::components::editor::SubFocus::Url
+            && !app.editor.url_open(),
         table_row_selected,
         if app.session.response.jq_focused() {
             if app.session.response.jq_bar().ai_pending {
