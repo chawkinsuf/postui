@@ -299,6 +299,18 @@ fn alt(c: char) -> KeyEvent {
     KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT)
 }
 
+/// Submits the top form modal's open field the long way (spec
+/// 2026-09-16): Enter no longer submits directly — the first Esc closes
+/// the field to selected, the second reaches the button row (Confirm
+/// aimed), and only then does Enter confirm. Replaces the single
+/// Enter-submits keypress these tests used before the field-open/selected
+/// split landed.
+fn submit_prompt(app: &mut App) {
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+}
+
 fn alt_shift(c: char) -> KeyEvent {
     KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT | KeyModifiers::SHIFT)
 }
@@ -3141,7 +3153,7 @@ fn saving_a_scratch_through_the_gate_chains_the_quit() {
     for c in "fresh".chars() {
         app.handle_key(plain(c));
     }
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    submit_prompt(&mut app);
     let saved = postui_core::fixtures::load_request(app.proj().root(), "main/fresh").unwrap();
     assert_eq!(saved.url, "https://x/scratch");
     assert!(app.should_quit, "the deferred quit ran after the save");
@@ -3166,8 +3178,10 @@ fn escaping_the_gates_save_prompt_cancels_everything() {
     let mut app = scratch_app();
     app.update(Action::Quit);
     app.handle_key(plain('s'));
-    // The field rule: the first Esc leaves the name field for the
-    // prompt's button row, the second one cancels the prompt.
+    // The field rule (spec 2026-09-16): the first Esc closes the name
+    // field to selected, the second reaches the prompt's button row, and
+    // the third — from there — cancels the prompt.
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(app.modals.is_empty());
@@ -4102,7 +4116,7 @@ fn new_space_prompt_creates_and_switches() {
     for c in "billing".chars() {
         app.handle_key(plain(c));
     }
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    submit_prompt(&mut app);
     assert!(app.modals.is_empty());
     assert!(dir.path().join("requests/billing").is_dir());
     assert_eq!(app.proj().spaces(), ["main", "auth", "billing"]);
@@ -6108,7 +6122,7 @@ fn new_request_prompt_flow_creates_file_and_opens_it() {
     for c in "api/ping".chars() {
         app.handle_key(plain(c));
     }
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    submit_prompt(&mut app);
     assert!(app.modals.is_empty());
     assert_eq!(app.editor.slug.as_deref(), Some("main/api/ping"));
     assert!(postui_core::fixtures::load_request(app.proj().root(), "main/api/ping").is_ok());
@@ -6129,7 +6143,7 @@ fn new_request_accepts_free_form_names_and_derives_the_slug() {
     for c in "My Request!".chars() {
         app.handle_key(plain(c));
     }
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    submit_prompt(&mut app);
     assert_eq!(app.editor.slug.as_deref(), Some("main/my-request"));
     assert_eq!(app.editor.name.as_deref(), Some("My Request!"));
     let loaded = postui_core::fixtures::load_request(app.proj().root(), "main/my-request").unwrap();
@@ -6147,7 +6161,7 @@ fn new_request_blank_name_toasts_and_creates_nothing() {
     for c in "folder/   ".chars() {
         app.handle_key(plain(c));
     }
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    submit_prompt(&mut app);
     assert!(!app.toasts.is_empty(), "a blank name must toast");
     assert!(
         postui_core::fixtures::list_requests(app.proj().root())
@@ -6282,7 +6296,7 @@ fn new_request_duplicate_name_toasts_and_leaves_existing_file_alone() {
     for c in "api/ping".chars() {
         app.handle_key(plain(c));
     }
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    submit_prompt(&mut app);
     // The rejected name keeps the prompt open (typed text intact) so it
     // can be corrected instead of retyped.
     let Some(Modal::Prompt { input, .. }) = app.modals.top() else {
@@ -6321,7 +6335,7 @@ fn rename_request_updates_disk_and_open_slug() {
     for c in "new".chars() {
         app.handle_key(plain(c));
     }
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    submit_prompt(&mut app);
     assert!(app.modals.is_empty());
     assert!(postui_core::fixtures::load_request(app.proj().root(), "main/old").is_err());
     assert!(postui_core::fixtures::load_request(app.proj().root(), "main/new").is_ok());
@@ -6361,7 +6375,7 @@ fn save_with_no_slug_opens_save_as_prompt() {
     for c in "fresh".chars() {
         app.handle_key(plain(c));
     }
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    submit_prompt(&mut app);
     assert!(app.modals.is_empty());
     assert_eq!(app.editor.slug.as_deref(), Some("main/fresh"));
     let saved = postui_core::fixtures::load_request(app.proj().root(), "main/fresh").unwrap();
@@ -7758,7 +7772,7 @@ fn create_env_prompt_flow_creates_empty_file_and_switches() {
     for c in "dev".chars() {
         app.handle_key(plain(c));
     }
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    submit_prompt(&mut app);
     assert!(app.modals.is_empty());
     let path = dir.path().join("environments/dev.toml");
     assert!(path.is_file());
@@ -8095,7 +8109,7 @@ fn insert_picker_new_variable_confirm_creates_the_var_and_inserts_at_the_origina
     // Confirming the ghost row swaps the picker for the prompt — same
     // focus, no separate stacked modal to dismiss.
     assert!(matches!(app.modals.top(), Some(Modal::Prompt { .. })));
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    submit_prompt(&mut app);
 
     assert!(app.modals.is_empty(), "both modals closed");
     assert_eq!(
@@ -8129,7 +8143,7 @@ fn insert_picker_new_variable_confirm_with_a_reserved_name_toasts_and_inserts_no
     }
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(matches!(app.modals.top(), Some(Modal::Prompt { .. })));
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    submit_prompt(&mut app);
 
     // The refused name keeps the prompt open (typed text intact) so it
     // can be fixed rather than retyped.
@@ -9052,7 +9066,8 @@ fn the_aimed_modal_button_paints_focused_and_the_field_does_not() {
     }
     let confirm_in_field = bg_of(&mut app, Hit::ModalConfirm);
     let field_in_field = bg_of(&mut app, Hit::ModalInput(0));
-    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)); // field to selected
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)); // to the button row
     assert_eq!(
         app.modals.button_focus(),
         Some(crate::components::modal::FormButton::Confirm)
@@ -10672,8 +10687,12 @@ fn new_selector_prompt_arrows_focus_the_toggle_and_space_flips_shared() {
     // Space while the name field still has focus types a space, it does
     // not reach the toggle.
     app.handle_key(plain(' '));
+    // The toggle row is only reachable once the field is selected, not
+    // open for typing (spec 2026-09-16).
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     app.handle_key(plain(' '));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)); // to the button row
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
     assert!(
@@ -10726,10 +10745,17 @@ fn new_selector_prompt_tab_cycles_between_the_name_field_and_the_toggle() {
     for c in "locale".chars() {
         app.handle_key(plain(c));
     }
+    // The toggle row is only reachable once the field is selected, not
+    // open for typing (spec 2026-09-16).
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.handle_key(tab); // onto the toggle
     app.handle_key(plain(' ')); // shared on
-    app.handle_key(tab); // back to the field
-    app.handle_key(plain(' ')); // a typed space, not a second flip
+    app.handle_key(tab); // back to the field stop
+    // Space no longer types here directly — the field is still selected,
+    // not open, so an opener key reopens it instead of a second flip.
+    app.handle_key(plain(' '));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)); // close the reopened field
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)); // to the button row
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
     assert!(
@@ -10750,10 +10776,15 @@ fn new_selector_prompt_up_returns_focus_to_the_name_field() {
     for c in "locale".chars() {
         app.handle_key(plain(c));
     }
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     app.handle_key(plain(' ')); // shared on
     app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
-    app.handle_key(plain(' ')); // back in the field: a typed space
+    // Back at the field stop (still selected, not open): an opener key
+    // reopens the field rather than typing directly into it.
+    app.handle_key(plain(' '));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)); // close the reopened field
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)); // to the button row
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
     assert!(
@@ -11496,7 +11527,9 @@ fn keyboard_n_and_a_open_the_new_var_and_new_group_prompts() {
             ..
         })
     ));
-    // The field rule: Esc leaves the field for the button row, then cancels.
+    // The field rule (spec 2026-09-16): the first Esc closes the field to
+    // selected, the second reaches the button row, the third cancels.
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
@@ -11531,7 +11564,9 @@ fn keyboard_f2_d_s_open_the_matching_var_row_actions() {
             ..
         })
     ));
-    // The field rule: Esc leaves the field for the button row, then cancels.
+    // The field rule (spec 2026-09-16): the first Esc closes the field to
+    // selected, the second reaches the button row, the third cancels.
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
@@ -11738,7 +11773,7 @@ fn prompt_new_selector_takes_a_name_and_defaults_its_field() {
     for c in "creds".chars() {
         app.handle_key(plain(c));
     }
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    submit_prompt(&mut app);
 
     // Creating the selector is the whole gesture: no follow-up prompt
     // opens, the new declaration is simply selected in the manager.
@@ -11774,7 +11809,7 @@ fn add_and_remove_group_members_one_at_a_time() {
         for c in member.chars() {
             app.handle_key(plain(c));
         }
-        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        submit_prompt(&mut app);
     }
     assert_eq!(
         app.proj()
@@ -11794,7 +11829,7 @@ fn add_and_remove_group_members_one_at_a_time() {
     for c in "user_id".chars() {
         app.handle_key(plain(c));
     }
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    submit_prompt(&mut app);
     assert!(app.toasts.messages().len() > toasts_before);
     assert_eq!(
         app.proj()
@@ -11808,7 +11843,9 @@ fn add_and_remove_group_members_one_at_a_time() {
     );
 
     // the failed duplicate keeps its prompt open for a retry; drop it
-    // The field rule: Esc leaves the field for the button row, then cancels.
+    // The field rule (spec 2026-09-16): the first Esc closes the field to
+    // selected, the second reaches the button row, the third cancels.
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
@@ -12171,7 +12208,7 @@ fn a_taken_name_keeps_the_new_variable_prompt_open_with_the_typed_text() {
     for c in "base_url".chars() {
         app.handle_key(plain(c));
     }
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    submit_prompt(&mut app);
 
     assert!(!app.toasts.is_empty(), "the refusal is surfaced");
     let Some(Modal::Prompt { input, kind, .. }) = app.modals.top() else {
@@ -12189,7 +12226,7 @@ fn a_taken_name_keeps_the_new_selector_prompt_open() {
         // "user" is already a selector in the fixture.
         app.handle_key(plain(c));
     }
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    submit_prompt(&mut app);
 
     assert!(!app.toasts.is_empty());
     let Some(Modal::Prompt { input, kind, .. }) = app.modals.top() else {
@@ -12705,7 +12742,10 @@ fn confirming_the_popup_secret_prompt_saves_without_sending() {
 fn escaping_the_popup_secret_prompt_does_not_claim_a_canceled_send() {
     let (mut app, _dir) = token_popup_app();
     app.update(Action::OpenVarTokenPopup("api_key".into()));
-    // First Esc drops to the button row, the second closes (field Esc rule).
+    // The field rule (spec 2026-09-16): the first Esc closes the field to
+    // selected, the second reaches the button row, and the third — from
+    // there — closes the modal.
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(app.modals.is_empty());
@@ -12927,7 +12967,7 @@ fn type_and_confirm(app: &mut App, text: &str) {
     for c in text.chars() {
         app.handle_key(plain(c));
     }
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    submit_prompt(app);
 }
 
 #[tokio::test]
@@ -13012,7 +13052,9 @@ async fn esc_mid_chain_cancels_the_send_and_keeps_only_confirmed_secrets() {
             ..
         }) if name == "api_secret"
     ));
-    // The field rule: Esc leaves the field for the button row, then cancels.
+    // The field rule (spec 2026-09-16): the first Esc closes the field to
+    // selected, the second reaches the button row, the third cancels.
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
@@ -15074,7 +15116,9 @@ fn keyboard_e_and_s_still_work_with_the_form_on_screen() {
             ..
         })
     ));
-    // The field rule: Esc leaves the field for the button row, then cancels.
+    // The field rule (spec 2026-09-16): the first Esc closes the field to
+    // selected, the second reaches the button row, the third cancels.
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
@@ -15348,7 +15392,9 @@ fn the_quit_chip_shows_ctrl_c_wherever_plain_q_would_type() {
     app.update(Action::PromptNewRequest);
     let content = rendered_text(&mut app);
     assert!(content.contains("^C  quit"), "{content}");
-    // The field rule: Esc leaves the field for the button row, then cancels.
+    // The field rule (spec 2026-09-16): the first Esc closes the field to
+    // selected, the second reaches the button row, the third cancels.
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
@@ -21281,7 +21327,7 @@ async fn describe_a_filter_sends_the_shape_and_lands_the_reply_in_the_bar() {
         panic!("prompt")
     };
     type_str(&mut app, "just the total");
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    submit_prompt(&mut app);
     assert!(app.session.response.jq_bar().ai_pending);
     let action = drain_ai(&mut app).await;
     app.update(action);

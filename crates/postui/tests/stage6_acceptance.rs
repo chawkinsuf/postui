@@ -37,6 +37,19 @@ fn plain(c: char) -> KeyEvent {
 fn enter() -> KeyEvent {
     KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
 }
+fn esc() -> KeyEvent {
+    KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)
+}
+
+/// Submits the top form modal's open field the long way (spec
+/// 2026-09-16): Enter no longer submits directly — the first Esc closes
+/// the field to selected, the second reaches the button row (Confirm
+/// aimed), and only then does Enter confirm.
+fn submit_prompt(app: &mut App) {
+    app.handle_key(esc());
+    app.handle_key(esc());
+    app.handle_key(enter());
+}
 
 /// Puts the caret inside the first occurrence of `token` in `url`, focuses
 /// the editor's URL field — the state `ctrl+v`'s selection-picker redirect
@@ -328,7 +341,7 @@ async fn stage6_acceptance_flow() {
     for c in "sk-qa-999".chars() {
         app.handle_key(plain(c));
     }
-    app.handle_key(enter());
+    submit_prompt(&mut app);
 
     assert!(app.modals.is_empty(), "confirming the secret closes it");
     let secrets = postui_core::fixtures::load_secrets(dir.path()).unwrap();

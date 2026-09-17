@@ -697,17 +697,34 @@ pub struct ModalStack {
     /// click that moves focus into the modal's body, and by `↑` — all
     /// through `leave_button_row`.
     button_focus: Option<FormButton>,
+    /// Whether the top form modal's field has the caret (spec
+    /// 2026-09-16). `true` whenever a form modal is pushed — a prompt
+    /// exists to be typed into — and irrelevant once `button_focus` is
+    /// `Some` (the button row has no field). Ignored for modals that are
+    /// not `Modal::is_form()`.
+    field_open: bool,
 }
 
 impl ModalStack {
     pub fn push(&mut self, modal: Modal) {
         self.leave_button_row();
+        self.field_open = true;
         self.stack.push(modal);
     }
 
     pub fn pop(&mut self) -> Option<Modal> {
         self.leave_button_row();
+        self.field_open = true;
         self.stack.pop()
+    }
+
+    /// Whether the top form modal's field has the caret right now. `false`
+    /// for a non-form modal, and for a form modal whose focus is on the
+    /// button row.
+    pub fn field_open(&self) -> bool {
+        self.button_focus.is_none()
+            && self.stack.last().is_some_and(Modal::is_form)
+            && self.field_open
     }
 
     pub fn is_empty(&self) -> bool {
@@ -921,20 +938,141 @@ impl ModalStack {
         })
     }
 
-    /// The top modal's confirm, from wherever focus sits: Enter in a field
-    /// already confirms, so this only has to leave the button row first.
+    /// The top modal's confirm, from wherever focus sits — the button
+    /// row's own Confirm action, and (spec 2026-09-16) the only path that
+    /// submits a `Prompt` now that Enter in its field just closes it to
+    /// selected instead.
     ///
-    /// A modal may swallow that Enter (an empty name has nothing to
-    /// confirm), and then nothing has happened — so the aim goes back on
-    /// the button row it came from rather than silently dropping into the
-    /// field on a frame the caller may not repaint.
+    /// `Prompt` goes straight to [`Self::confirm_prompt`]. Everything else
+    /// still confirms the old way — synthesizing an `Enter` and routing it
+    /// through that modal's own (as yet unchanged) `Enter` arm — because
+    /// that path is not `Prompt`'s alone: `NewProject`/`MultiPrompt`/
+    /// `FieldsEditor` still submit on their own `Enter` arm until Tasks
+    /// 8-9 give them the same split, and non-form modals lean on it too
+    /// (`Modal::Message`'s OK button reaches `Hit::ModalConfirm` in
+    /// `app/mouse.rs`, which calls this and relies on `Enter` closing a
+    /// message exactly as it always did). `button_focus` is taken first
+    /// so the synthesized key skips the button-row intercept at the top
+    /// of `handle_key` (which would otherwise call back into this very
+    /// method) and reaches the modal's own arm directly; a swallowed
+    /// confirm (e.g. an empty name) restores it, so the aim doesn't
+    /// silently drop into the field on a frame nothing asked to repaint.
     pub fn confirm_top(&mut self) -> Option<ModalResult> {
+        if let Some(Modal::Prompt { input, kind, .. }) = self.stack.last() {
+            return Self::confirm_prompt(input, kind);
+        }
         let aimed = self.button_focus.take();
         let res = self.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         if res.is_none() {
             self.button_focus = aimed;
         }
         res
+    }
+
+    /// Builds the `Prompt` modal's confirm result from its current text —
+    /// exactly the body `KeyCode::Enter` used to run inline before the
+    /// field-open/selected split (spec 2026-09-16). Called by
+    /// `confirm_top`, never by `handle_key` directly: Enter now toggles
+    /// the field instead of submitting.
+    fn confirm_prompt(input: &LineInput, kind: &PromptKind) -> Option<ModalResult> {
+        let text = input.text().trim();
+        if text.is_empty() {
+            return None; // nothing to confirm yet
+        }
+        let actions: Option<Vec<Action>> = match kind {
+            PromptKind::NewRequest => Some(vec![Action::CreateRequest(text.to_string())]),
+            PromptKind::RenameRequest { from } => Some(vec![Action::RenameRequest {
+                from: from.clone(),
+                to: text.to_string(),
+            }]),
+            PromptKind::SaveAs => Some(vec![Action::SaveRequestAs(text.to_string())]),
+            PromptKind::SaveAsThen(then) => Some(vec![Action::SaveRequestAsThen(
+                text.to_string(),
+                then.clone(),
+            )]),
+            PromptKind::NewEnvironment => Some(vec![Action::CreateEnv(text.to_string())]),
+            PromptKind::NewSpace => Some(vec![Action::CreateSpace(text.to_string())]),
+            PromptKind::RenameSpace { from } => Some(vec![Action::RenameSpace {
+                from: from.clone(),
+                to: text.to_string(),
+            }]),
+            PromptKind::RenameEnvironment { from } => Some(vec![Action::RenameEnv {
+                from: from.clone(),
+                to: text.to_string(),
+            }]),
+            PromptKind::NewVariable => Some(vec![Action::VarStruct(VarStructOp::NewVar {
+                name: text.to_string(),
+                description: None,
+            })]),
+            PromptKind::NewVariableAndInsert { completing } => {
+                let name = text.to_string();
+                let insert_text = if *completing {
+                    format!("{name}}}}}")
+                } else {
+                    format!("{{{{{name}}}}}")
+                };
+                Some(vec![
+                    Action::VarStruct(VarStructOp::NewVar {
+                        name,
+                        description: None,
+                    }),
+                    Action::InsertVarText(insert_text),
+                ])
+            }
+            PromptKind::AddSelectorField { selector } => Some(vec![Action::AddSelectorField {
+                selector: selector.clone(),
+                field: text.to_string(),
+            }]),
+            PromptKind::RenameVariable { from, .. } => {
+                Some(vec![Action::VarStruct(VarStructOp::Rename {
+                    from: from.clone(),
+                    to: text.to_string(),
+                })])
+            }
+            PromptKind::NewSelector { shared, .. } => {
+                Some(vec![Action::VarStruct(VarStructOp::NewSelector {
+                    name: text.to_string(),
+                    fields: vec![text.to_string()],
+                    shared: *shared,
+                })])
+            }
+            PromptKind::SecretValue {
+                name,
+                env,
+                then_send,
+            } => Some(vec![if *then_send {
+                Action::SetSecret {
+                    name: name.clone(),
+                    value: text.to_string(),
+                }
+            } else {
+                Action::VarEdit(super::varmanager::VarEditOp::SetSecretValue {
+                    env: env.clone(),
+                    name: name.clone(),
+                    value: text.to_string(),
+                })
+            }]),
+            PromptKind::JqDescribe => Some(vec![Action::ConfirmJqDescribe(text.to_string())]),
+            // These kinds are `Modal::MultiPrompt` only — never a
+            // single-input `Modal::Prompt`.
+            PromptKind::NewOptionInline { .. }
+            | PromptKind::EditOption { .. }
+            | PromptKind::ExtractVariable
+            | PromptKind::ExtractSelection(_)
+            | PromptKind::ExtractSelector(_)
+            | PromptKind::EditVarValue { .. } => {
+                unreachable!("multi-field prompt kinds only ever back Modal::MultiPrompt")
+            }
+        };
+        // A well-formed-but-incomplete comma prompt (e.g. a selector
+        // option still missing a field) swallows confirm rather than
+        // closing on nonsense — same "not ready yet" treatment as the
+        // empty-text case above.
+        actions.map(|actions| ModalResult {
+            actions,
+            close: true,
+            ..Default::default()
+        })
     }
 
     /// Whether the top modal may be dismissed without choosing one of its
@@ -1198,6 +1336,7 @@ impl ModalStack {
             };
         }
         let button_focus = &mut self.button_focus;
+        let field_open = &mut self.field_open;
         let top = self.stack.last_mut()?;
         match top {
             // No `Esc` arm: this modal blocks until one of its four
@@ -1261,12 +1400,27 @@ impl ModalStack {
                 revealed,
                 ..
             } => match key.code {
-                // The field rule: Esc closes the field onto the button
-                // row (Confirm aimed); Esc there is the cancel — and for
-                // the send-time secret prompt (spec §3) that cancel is
-                // the whole send, which `cancel_top` says out loud.
+                // The field rule: the first Esc closes an open field to
+                // selected (caret gone, text kept); a second Esc, from
+                // selected, is what lands on the button row (Confirm
+                // aimed) — Esc there is the cancel, and for the send-time
+                // secret prompt (spec §3) that cancel is the whole send,
+                // which `cancel_top` says out loud.
+                KeyCode::Esc if *field_open => {
+                    input.end_edit();
+                    *field_open = false;
+                    None
+                }
                 KeyCode::Esc => {
                     *button_focus = Some(FormButton::Confirm);
+                    None
+                }
+                // Enter used to submit; now it only closes an open field to
+                // selected, same as Esc — submitting is `confirm_top`'s job
+                // alone (the button row's Confirm, or Task 10's chord).
+                KeyCode::Enter if *field_open => {
+                    input.end_edit();
+                    *field_open = false;
                     None
                 }
                 KeyCode::Char('r' | 'R')
@@ -1278,9 +1432,15 @@ impl ModalStack {
                 // The new-selector prompt's two stops: the name field and
                 // the shared toggle. ↓/↑ walk between them, tab/shift-tab
                 // cycle (two stops, so either direction just flips), and
-                // space flips the toggle once it's focused.
+                // space flips the toggle once it's focused — all reachable
+                // only once the field is selected, not open for typing.
+                // These two arms must be checked before the generic
+                // "opens_field reopens a selected field" arm below: Space
+                // is one of those opener keys too, and without this
+                // ordering it would always reopen the field instead of
+                // ever reaching the toggle flip.
                 KeyCode::Down | KeyCode::Up | KeyCode::Tab | KeyCode::BackTab
-                    if matches!(kind, PromptKind::NewSelector { .. }) =>
+                    if matches!(kind, PromptKind::NewSelector { .. }) && !*field_open =>
                 {
                     if let PromptKind::NewSelector { on_toggle, .. } = kind {
                         *on_toggle = match key.code {
@@ -1298,126 +1458,22 @@ impl ModalStack {
                             on_toggle: true,
                             ..
                         }
-                    ) =>
+                    ) && !*field_open =>
                 {
                     if let PromptKind::NewSelector { shared, .. } = kind {
                         *shared = !*shared;
                     }
                     None // swallowed: modals capture all input
                 }
-                KeyCode::Enter => {
-                    let text = input.text().trim();
-                    if text.is_empty() {
-                        return None; // swallowed: nothing to confirm yet
-                    }
-                    let actions: Option<Vec<Action>> = match kind {
-                        PromptKind::NewRequest => {
-                            Some(vec![Action::CreateRequest(text.to_string())])
-                        }
-                        PromptKind::RenameRequest { from } => Some(vec![Action::RenameRequest {
-                            from: from.clone(),
-                            to: text.to_string(),
-                        }]),
-                        PromptKind::SaveAs => Some(vec![Action::SaveRequestAs(text.to_string())]),
-                        PromptKind::SaveAsThen(then) => Some(vec![Action::SaveRequestAsThen(
-                            text.to_string(),
-                            then.clone(),
-                        )]),
-                        PromptKind::NewEnvironment => {
-                            Some(vec![Action::CreateEnv(text.to_string())])
-                        }
-                        PromptKind::NewSpace => Some(vec![Action::CreateSpace(text.to_string())]),
-                        PromptKind::RenameSpace { from } => Some(vec![Action::RenameSpace {
-                            from: from.clone(),
-                            to: text.to_string(),
-                        }]),
-                        PromptKind::RenameEnvironment { from } => Some(vec![Action::RenameEnv {
-                            from: from.clone(),
-                            to: text.to_string(),
-                        }]),
-                        PromptKind::NewVariable => {
-                            Some(vec![Action::VarStruct(VarStructOp::NewVar {
-                                name: text.to_string(),
-                                description: None,
-                            })])
-                        }
-                        PromptKind::NewVariableAndInsert { completing } => {
-                            let name = text.to_string();
-                            let insert_text = if *completing {
-                                format!("{name}}}}}")
-                            } else {
-                                format!("{{{{{name}}}}}")
-                            };
-                            Some(vec![
-                                Action::VarStruct(VarStructOp::NewVar {
-                                    name,
-                                    description: None,
-                                }),
-                                Action::InsertVarText(insert_text),
-                            ])
-                        }
-                        PromptKind::AddSelectorField { selector } => {
-                            Some(vec![Action::AddSelectorField {
-                                selector: selector.clone(),
-                                field: text.to_string(),
-                            }])
-                        }
-                        PromptKind::RenameVariable { from, .. } => {
-                            Some(vec![Action::VarStruct(VarStructOp::Rename {
-                                from: from.clone(),
-                                to: text.to_string(),
-                            })])
-                        }
-                        PromptKind::NewSelector { shared, .. } => {
-                            Some(vec![Action::VarStruct(VarStructOp::NewSelector {
-                                name: text.to_string(),
-                                fields: vec![text.to_string()],
-                                shared: *shared,
-                            })])
-                        }
-                        PromptKind::SecretValue {
-                            name,
-                            env,
-                            then_send,
-                        } => Some(vec![if *then_send {
-                            Action::SetSecret {
-                                name: name.clone(),
-                                value: text.to_string(),
-                            }
-                        } else {
-                            Action::VarEdit(super::varmanager::VarEditOp::SetSecretValue {
-                                env: env.clone(),
-                                name: name.clone(),
-                                value: text.to_string(),
-                            })
-                        }]),
-                        PromptKind::JqDescribe => {
-                            Some(vec![Action::ConfirmJqDescribe(text.to_string())])
-                        }
-                        // These kinds are `Modal::MultiPrompt` only — never a
-                        // single-input `Modal::Prompt`.
-                        PromptKind::NewOptionInline { .. }
-                        | PromptKind::EditOption { .. }
-                        | PromptKind::ExtractVariable
-                        | PromptKind::ExtractSelection(_)
-                        | PromptKind::ExtractSelector(_)
-                        | PromptKind::EditVarValue { .. } => {
-                            unreachable!(
-                                "multi-field prompt kinds only ever back Modal::MultiPrompt"
-                            )
-                        }
-                    };
-                    // A well-formed-but-incomplete comma prompt (e.g. a
-                    // selector option still missing a field) swallows Enter
-                    // rather than closing on nonsense — same "not ready
-                    // yet" treatment as the empty-text case above.
-                    actions.map(|actions| ModalResult {
-                        actions,
-                        close: true,
-                        ..Default::default()
-                    })
+                // Enter/Space/plain-i reopen a selected field (spec
+                // 2026-09-16's shared rule) — but only while it's actually
+                // selected, and only once the two NewSelector-specific arms
+                // above have had first refusal on Space.
+                _ if crate::keys::opens_field(&key) && !*field_open => {
+                    *field_open = true;
+                    None
                 }
-                _ => {
+                _ if *field_open => {
                     // Anything the text box owns walks focus back to it —
                     // typing is never silently swallowed by the toggle row.
                     if let PromptKind::NewSelector { on_toggle, .. } = kind {
@@ -1426,6 +1482,7 @@ impl ModalStack {
                     input.handle_key(key);
                     None // swallowed: modals capture all input
                 }
+                _ => None, // selected, not a recognized nav/open key: swallowed
             },
             Modal::Palette(state) => state.handle_key(key),
             Modal::Chooser(state) => state.handle_key(key),
@@ -4249,6 +4306,75 @@ mod tests {
     }
 
     #[test]
+    fn a_prompt_opens_on_push_and_types_at_once() {
+        let mut m = ModalStack::default();
+        m.push(Modal::Prompt {
+            title: "Rename".into(),
+            input: LineInput::new("old"),
+            kind: PromptKind::RenameRequest { from: "old".into() },
+            revealed: false,
+        });
+        assert!(m.field_open(), "the first field opens automatically");
+        m.handle_key(key(KeyCode::Char('x')));
+        // `LineInput::new` starts the cursor at the end of the prefilled
+        // text (no select-all here), so typing appends rather than
+        // prepends — the field being open, not the cursor position, is
+        // what this test is checking.
+        assert_eq!(m.focused_input().unwrap().text(), "oldx");
+    }
+
+    #[test]
+    fn esc_closes_the_prompt_field_to_selected_before_leaving_to_buttons() {
+        let mut m = ModalStack::default();
+        m.push(Modal::Prompt {
+            title: "Rename".into(),
+            input: LineInput::new("old"),
+            kind: PromptKind::RenameRequest { from: "old".into() },
+            revealed: false,
+        });
+        m.handle_key(key(KeyCode::Esc));
+        assert!(!m.field_open(), "first Esc closes the field");
+        assert!(m.button_focus().is_none(), "still on the field, selected");
+        m.handle_key(key(KeyCode::Esc));
+        assert_eq!(
+            m.button_focus(),
+            Some(FormButton::Confirm),
+            "second Esc reaches the buttons"
+        );
+    }
+
+    #[test]
+    fn enter_space_or_i_reopens_a_selected_prompt_field() {
+        for opener in [KeyCode::Enter, KeyCode::Char(' '), KeyCode::Char('i')] {
+            let mut m = ModalStack::default();
+            m.push(Modal::Prompt {
+                title: "Rename".into(),
+                input: LineInput::new("old"),
+                kind: PromptKind::RenameRequest { from: "old".into() },
+                revealed: false,
+            });
+            m.handle_key(key(KeyCode::Esc)); // close to selected
+            assert!(!m.field_open());
+            m.handle_key(key(opener));
+            assert!(m.field_open(), "{opener:?} reopened it");
+        }
+    }
+
+    #[test]
+    fn plain_u_on_a_selected_prompt_field_does_not_type() {
+        let mut m = ModalStack::default();
+        m.push(Modal::Prompt {
+            title: "Rename".into(),
+            input: LineInput::new("old"),
+            kind: PromptKind::RenameRequest { from: "old".into() },
+            revealed: false,
+        });
+        m.handle_key(key(KeyCode::Esc)); // close to selected
+        m.handle_key(key(KeyCode::Char('u')));
+        assert_eq!(m.focused_input().unwrap().text(), "old", "u did not type");
+    }
+
+    #[test]
     fn esc_in_a_form_field_lands_on_confirm_and_esc_again_cancels() {
         let mut m = prompt_stack();
         m.handle_key(key(KeyCode::Char('a')));
@@ -4256,9 +4382,19 @@ mod tests {
             m.handle_key(key(KeyCode::Esc)).is_none(),
             "first Esc closes the field, not the modal"
         );
+        assert!(!m.field_open(), "field now selected, not open");
+        assert_eq!(
+            m.button_focus(),
+            None,
+            "still on the field, not the buttons yet"
+        );
+        assert!(
+            m.handle_key(key(KeyCode::Esc)).is_none(),
+            "second Esc reaches the button row"
+        );
         assert_eq!(m.button_focus(), Some(FormButton::Confirm));
         assert!(m.focused_input().is_none(), "no caret while on the buttons");
-        let res = m.handle_key(key(KeyCode::Esc)).expect("second Esc cancels");
+        let res = m.handle_key(key(KeyCode::Esc)).expect("third Esc cancels");
         assert!(res.close);
         assert!(res.actions.is_empty());
     }
@@ -4267,7 +4403,8 @@ mod tests {
     fn the_button_row_aims_activates_and_goes_back_up() {
         let mut m = prompt_stack();
         m.handle_key(key(KeyCode::Char('a')));
-        m.handle_key(key(KeyCode::Esc));
+        m.handle_key(key(KeyCode::Esc)); // closes the field to selected
+        m.handle_key(key(KeyCode::Esc)); // reaches the button row
         m.handle_key(key(KeyCode::Left));
         assert_eq!(m.button_focus(), Some(FormButton::Cancel));
         m.handle_key(key(KeyCode::Char('l')));
@@ -4297,7 +4434,8 @@ mod tests {
     fn k_from_the_button_row_returns_to_the_field_like_up() {
         let mut m = prompt_stack();
         m.handle_key(key(KeyCode::Char('a')));
-        m.handle_key(key(KeyCode::Esc));
+        m.handle_key(key(KeyCode::Esc)); // closes the field to selected
+        m.handle_key(key(KeyCode::Esc)); // reaches the button row
         assert_eq!(m.button_focus(), Some(FormButton::Confirm));
         m.handle_key(key(KeyCode::Char('k')));
         assert_eq!(m.button_focus(), None);
@@ -4345,7 +4483,8 @@ mod tests {
     #[test]
     fn a_swallowed_confirm_keeps_the_aim_on_the_button_row() {
         let mut m = prompt_stack();
-        m.handle_key(key(KeyCode::Esc));
+        m.handle_key(key(KeyCode::Esc)); // closes the (empty) field to selected
+        m.handle_key(key(KeyCode::Esc)); // reaches the button row
         assert_eq!(m.button_focus(), Some(FormButton::Confirm));
         assert!(
             m.handle_key(key(KeyCode::Enter)).is_none(),
@@ -4364,7 +4503,8 @@ mod tests {
     #[test]
     fn ctrl_h_on_the_button_row_does_not_flip_the_aim() {
         let mut m = prompt_stack();
-        m.handle_key(key(KeyCode::Esc));
+        m.handle_key(key(KeyCode::Esc)); // closes the (empty) field to selected
+        m.handle_key(key(KeyCode::Esc)); // reaches the button row
         assert_eq!(m.button_focus(), Some(FormButton::Confirm));
         m.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL));
         assert_eq!(m.button_focus(), Some(FormButton::Confirm), "swallowed");
@@ -4381,7 +4521,8 @@ mod tests {
         let chips = m.footer_chips().unwrap();
         assert!(chips.iter().any(|(k, l, _)| k == "esc" && l == "done"));
         assert!(!chips.iter().any(|(k, l, _)| k == "esc" && l == "cancel"));
-        m.handle_key(key(KeyCode::Esc));
+        m.handle_key(key(KeyCode::Esc)); // closes the field to selected
+        m.handle_key(key(KeyCode::Esc)); // reaches the button row
         let chips = m.footer_chips().unwrap();
         assert!(chips.iter().any(|(k, l, _)| k == "esc" && l == "cancel"));
         assert!(chips.iter().any(|(k, l, _)| k == "\u{2191}" && l == "back"));
@@ -4439,7 +4580,8 @@ mod tests {
         for c in "ping".chars() {
             m.handle_key(key(KeyCode::Char(c)));
         }
-        m.handle_key(key(KeyCode::Esc));
+        m.handle_key(key(KeyCode::Esc)); // closes the field to selected
+        m.handle_key(key(KeyCode::Esc)); // reaches the button row
         let res = m.handle_key(key(KeyCode::Enter)).expect("confirm");
         assert_eq!(res.actions, vec![Action::CreateRequest("ping".into())]);
         assert!(res.close);
@@ -4458,7 +4600,14 @@ mod tests {
             },
             revealed: false,
         });
-        assert!(m.handle_key(key(KeyCode::Esc)).is_none());
+        assert!(
+            m.handle_key(key(KeyCode::Esc)).is_none(),
+            "first Esc closes the field to selected"
+        );
+        assert!(
+            m.handle_key(key(KeyCode::Esc)).is_none(),
+            "second Esc reaches the button row"
+        );
         let res = m.handle_key(key(KeyCode::Esc)).unwrap();
         assert!(res.close);
         assert!(matches!(res.actions.as_slice(), [Action::ShowToast(msg, _)] if msg == "send canceled"));
@@ -4468,7 +4617,8 @@ mod tests {
     fn the_button_row_hides_the_field_from_paste_and_undo() {
         let mut m = prompt_stack();
         m.handle_key(key(KeyCode::Char('a')));
-        m.handle_key(key(KeyCode::Esc));
+        m.handle_key(key(KeyCode::Esc)); // closes the field to selected
+        m.handle_key(key(KeyCode::Esc)); // reaches the button row
         assert!(
             m.focused_input_mut().is_none(),
             "paste must not dig into a blurred field"

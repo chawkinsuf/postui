@@ -422,6 +422,16 @@ fn key(app: &mut App, code: KeyCode) {
     app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
 }
 
+/// Submits the top form modal's open field the long way (spec
+/// 2026-09-16): Enter no longer submits directly — the first Esc closes
+/// the field to selected, the second reaches the button row (Confirm
+/// aimed), and only then does Enter confirm.
+fn submit_prompt(app: &mut App) {
+    key(app, KeyCode::Esc);
+    key(app, KeyCode::Esc);
+    key(app, KeyCode::Enter);
+}
+
 // --- goal 2: saving is mouse-reachable -----------------------------------
 
 #[test]
@@ -658,7 +668,7 @@ fn a_legacy_project_migrates_then_grows_a_group_whose_selection_drives_resolutio
     // defaults the field to it ---
     click(&mut app, Hit::VmNewSelector);
     type_text(&mut app, "region");
-    key(&mut app, KeyCode::Enter);
+    submit_prompt(&mut app);
     assert!(
         app.modals.is_empty(),
         "creating a selector opens nothing else"

@@ -30,6 +30,19 @@ fn alt(c: char) -> KeyEvent {
 fn enter() -> KeyEvent {
     KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
 }
+fn esc() -> KeyEvent {
+    KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)
+}
+
+/// Submits the top form modal's open field the long way (spec
+/// 2026-09-16): Enter no longer submits directly — the first Esc closes
+/// the field to selected, the second reaches the button row (Confirm
+/// aimed), and only then does Enter confirm.
+fn submit_prompt(app: &mut App) {
+    app.handle_key(esc());
+    app.handle_key(esc());
+    app.handle_key(enter());
+}
 
 fn dummy_request(url: &str) -> HttpRequest {
     HttpRequest::from_toml_str(&format!("url = \"{url}\"")).unwrap()
@@ -157,7 +170,7 @@ async fn stage3_acceptance_flow() {
     for c in "users/list".chars() {
         app.handle_key(plain(c));
     }
-    app.handle_key(enter());
+    submit_prompt(&mut app);
     assert_eq!(app.editor.slug.as_deref(), Some("main/users/list"));
 
     app.editor.url = LineInput::new("{{base}}/users?tok={{tok}}");
