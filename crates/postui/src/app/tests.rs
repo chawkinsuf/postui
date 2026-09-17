@@ -6527,6 +6527,50 @@ async fn shift_enter_sends_even_while_the_body_editor_has_focus() {
     );
 }
 
+#[test]
+fn shift_enter_confirms_a_prompt_modal_while_its_field_is_open() {
+    use crate::components::modal::{Modal, PromptKind};
+    let mut app = App::new_for_test();
+    app.modals.push(Modal::Prompt {
+        title: "New request".into(),
+        input: crate::components::line_input::LineInput::new("my-req"),
+        kind: PromptKind::NewRequest,
+        revealed: false,
+    });
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+    assert!(app.modals.is_empty(), "the modal confirmed and closed");
+}
+
+#[test]
+fn ctrl_enter_confirms_a_prompt_modal_from_the_button_row() {
+    use crate::components::modal::{Modal, PromptKind};
+    let mut app = App::new_for_test();
+    app.modals.push(Modal::Prompt {
+        title: "New request".into(),
+        input: crate::components::line_input::LineInput::new("my-req"),
+        kind: PromptKind::NewRequest,
+        revealed: false,
+    });
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)); // close to selected
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)); // to the button row
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL));
+    assert!(app.modals.is_empty());
+}
+
+#[test]
+fn plain_enter_never_confirms_a_form_modal() {
+    use crate::components::modal::{Modal, PromptKind};
+    let mut app = App::new_for_test();
+    app.modals.push(Modal::Prompt {
+        title: "New request".into(),
+        input: crate::components::line_input::LineInput::new("my-req"),
+        kind: PromptKind::NewRequest,
+        revealed: false,
+    });
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)); // closes the field, does not confirm
+    assert!(!app.modals.is_empty(), "plain Enter only closed the field");
+}
+
 #[tokio::test]
 async fn force_send_spawns_a_task_and_marks_response_in_flight() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();

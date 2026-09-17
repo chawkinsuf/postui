@@ -727,6 +727,40 @@ impl ModalStack {
             && self.field_open
     }
 
+    /// Closes the top form modal's open field, keeping its text (the
+    /// field rule) — used by the shift+Enter/ctrl+Enter confirm dig-past,
+    /// which must close the field before dispatching so the edit becomes
+    /// one undo step ahead of the modal's own action.
+    pub fn close_top_field(&mut self) {
+        if !self.field_open {
+            return;
+        }
+        self.field_open = false;
+        match self.stack.last_mut() {
+            Some(Modal::Prompt { input, .. }) => input.end_edit(),
+            Some(Modal::NewProject {
+                name, path, on_path, ..
+            }) => {
+                if *on_path {
+                    path.end_edit()
+                } else {
+                    name.end_edit()
+                }
+            }
+            Some(Modal::MultiPrompt { fields, focus, .. }) => {
+                if let Some(f) = fields.get_mut(*focus) {
+                    f.input.end_edit();
+                }
+            }
+            Some(Modal::FieldsEditor(state)) => {
+                if let Some(row) = state.rows.get_mut(state.focus) {
+                    row.input.end_edit();
+                }
+            }
+            _ => {}
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.stack.is_empty()
     }

@@ -9861,6 +9861,36 @@ impl App {
             return self.update(global.expect("matched above"));
         }
 
+        // 1d. A combo bound to Send confirms the top form modal from any
+        // focus — field open, field selected, or the button row — the
+        // same "confirm the container" chord Send already is on the main
+        // screen (spec 2026-09-16). Closes an open field first, so its
+        // edit lands as one undo step before the modal's own action
+        // dispatches. Plain Enter is never bound to Send (only
+        // ctrl+r/ctrl+enter/shift+enter are), so it never takes this
+        // path. This deliberately does not gate on `modified` (CONTROL |
+        // ALT only) the way 1b/1c do: shift+enter is one of Send's own
+        // bindings and carries no CONTROL/ALT modifier, so that gate
+        // would silently exclude it. `global == Some(Action::Send)`
+        // alone is already the precise check — the keymap only maps
+        // that combo set to Send.
+        if global == Some(Action::Send)
+            && self
+                .modals
+                .top()
+                .is_some_and(crate::components::modal::Modal::is_form)
+        {
+            if self.modals.field_open() {
+                self.modals.close_top_field();
+            }
+            let Some(res) = self.modals.confirm_top() else {
+                return true; // swallowed: nothing to confirm yet (e.g. empty text)
+            };
+            let changed = self.apply_modal_result(res);
+            self.sync_theme_preview();
+            return changed;
+        }
+
         // 2. Modals capture all remaining input.
         if !self.modals.is_empty() {
             // alt+b is a toggle: over the open theme picker it closes it
