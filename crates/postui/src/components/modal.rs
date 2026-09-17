@@ -769,13 +769,12 @@ impl ModalStack {
         }
         self.field_open = false;
         let idx = self.field_index();
-        let Some((before, after)) = self.field_value_before_and_after() else {
+        let Some((FieldValue::Text(before), FieldValue::Text(after))) =
+            self.field_value_before_and_after()
+        else {
             return;
         };
-        if before != after {
-            self.redo.clear();
-            self.steps.push(FieldStep { idx, before, after });
-        }
+        Self::record_field_close(&mut self.steps, &mut self.redo, idx, before, after);
     }
 
     /// The current focus's field index, for the step it is about to
@@ -954,9 +953,8 @@ impl ModalStack {
         if self.stack.last().is_some_and(Modal::is_form) && !self.field_open() {
             return !self.steps.is_empty();
         }
-        if self.button_focus.is_some() {
-            return false; // the button row has no field to step
-        }
+        // `button_focus` is only ever `Some` inside a form-modal arm —
+        // already answered above — so it can never be true here.
         match self.stack.last() {
             Some(Modal::Palette(state)) => state.filter_edited(),
             Some(Modal::Chooser(state)) => state.filter_edited(),
@@ -979,9 +977,8 @@ impl ModalStack {
         if self.stack.last().is_some_and(Modal::is_form) && !self.field_open() {
             return self.undo_field_step(redo);
         }
-        if self.button_focus.is_some() {
-            return false; // nothing to step while the field is blurred
-        }
+        // `button_focus` is only ever `Some` inside a form-modal arm —
+        // already answered above — so it can never be true here.
         match self.stack.last_mut() {
             Some(Modal::Palette(state)) => state.undo_filter(redo),
             Some(Modal::Chooser(state)) => state.undo_filter(redo),
@@ -1918,7 +1915,12 @@ impl ModalStack {
                 // Down/Up always drop to selected on the neighbouring
                 // field, distinct from Tab/BackTab above.
                 KeyCode::Down if *field_open => {
-                    if *on_path { path.end_edit() } else { name.end_edit() };
+                    let idx = usize::from(*on_path);
+                    let input = if *on_path { &mut *path } else { &mut *name };
+                    let before = input.text_at_open();
+                    input.end_edit();
+                    let after = input.text().to_string();
+                    Self::record_field_close(&mut self.steps, &mut self.redo, idx, before, after);
                     if !*on_path && !*prefilled {
                         *prefilled = true;
                         let slug = slugify(name.text());
@@ -1933,7 +1935,12 @@ impl ModalStack {
                     None
                 }
                 KeyCode::Up if *field_open => {
-                    if *on_path { path.end_edit() } else { name.end_edit() };
+                    let idx = usize::from(*on_path);
+                    let input = if *on_path { &mut *path } else { &mut *name };
+                    let before = input.text_at_open();
+                    input.end_edit();
+                    let after = input.text().to_string();
+                    Self::record_field_close(&mut self.steps, &mut self.redo, idx, before, after);
                     *on_path = false;
                     *field_open = false;
                     None
@@ -2099,13 +2106,21 @@ impl ModalStack {
                 // Down/Up always drop to selected on the neighbouring
                 // field, distinct from Tab/BackTab above.
                 KeyCode::Down if *field_open => {
-                    fields[*focus].input.end_edit();
+                    let idx = *focus;
+                    let before = fields[idx].input.text_at_open();
+                    fields[idx].input.end_edit();
+                    let after = fields[idx].input.text().to_string();
+                    Self::record_field_close(&mut self.steps, &mut self.redo, idx, before, after);
                     *focus = (*focus + 1) % fields.len();
                     *field_open = false;
                     None
                 }
                 KeyCode::Up if *field_open => {
-                    fields[*focus].input.end_edit();
+                    let idx = *focus;
+                    let before = fields[idx].input.text_at_open();
+                    fields[idx].input.end_edit();
+                    let after = fields[idx].input.text().to_string();
+                    Self::record_field_close(&mut self.steps, &mut self.redo, idx, before, after);
                     *focus = (*focus + fields.len() - 1) % fields.len();
                     *field_open = false;
                     None
@@ -2186,19 +2201,39 @@ impl ModalStack {
                 // per `focus_step`), so Tab/Down and BackTab/Up stay the
                 // same pair they always were.
                 KeyCode::Tab | KeyCode::Down => {
-                    if *field_open
-                        && let Some(row) = state.rows.get_mut(state.focus)
-                    {
-                        row.input.end_edit();
+                    if *field_open {
+                        let idx = state.focus;
+                        if let Some(row) = state.rows.get_mut(idx) {
+                            let before = row.input.text_at_open();
+                            row.input.end_edit();
+                            let after = row.input.text().to_string();
+                            Self::record_field_close(
+                                &mut self.steps,
+                                &mut self.redo,
+                                idx,
+                                before,
+                                after,
+                            );
+                        }
                     }
                     state.focus_step(1);
                     None // swallowed: modals capture all input
                 }
                 KeyCode::BackTab | KeyCode::Up => {
-                    if *field_open
-                        && let Some(row) = state.rows.get_mut(state.focus)
-                    {
-                        row.input.end_edit();
+                    if *field_open {
+                        let idx = state.focus;
+                        if let Some(row) = state.rows.get_mut(idx) {
+                            let before = row.input.text_at_open();
+                            row.input.end_edit();
+                            let after = row.input.text().to_string();
+                            Self::record_field_close(
+                                &mut self.steps,
+                                &mut self.redo,
+                                idx,
+                                before,
+                                after,
+                            );
+                        }
                     }
                     state.focus_step(-1);
                     None // swallowed: modals capture all input
@@ -5023,6 +5058,21 @@ mod tests {
             revealed: false,
         });
         assert!(!m.undo_field_step(false), "a new modal starts with an empty stack");
+    }
+
+    #[test]
+    fn tab_away_from_a_changed_new_project_field_still_records_a_step() {
+        let mut m = ModalStack::default();
+        m.push(Modal::NewProject {
+            name: LineInput::new("old"),
+            path: LineInput::new("~/postui-projects/"),
+            on_path: false,
+            prefilled: true, // keeps Tab's own slug-fill from touching path
+        });
+        m.handle_key(key(KeyCode::Char('x'))); // name: "oldx"
+        m.handle_key(key(KeyCode::Down)); // closes name to selected on path — not Esc
+        assert!(m.undo_field_step(false), "Down closed a changed field too");
+        assert_eq!(m.focused_input().unwrap().text(), "old");
     }
 
     /// A selected prompt field (spec 2026-09-16) is highlighted, not
