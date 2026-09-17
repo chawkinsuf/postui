@@ -961,12 +961,35 @@ impl ModalStack {
         if let Some(Modal::Prompt { input, kind, .. }) = self.stack.last() {
             return Self::confirm_prompt(input, kind);
         }
+        if let Some(Modal::NewProject { name, path, .. }) = self.stack.last() {
+            return Self::confirm_new_project(name, path);
+        }
         let aimed = self.button_focus.take();
         let res = self.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         if res.is_none() {
             self.button_focus = aimed;
         }
         res
+    }
+
+    /// Builds the `NewProject` modal's confirm result from its current
+    /// name/path text — exactly the body `KeyCode::Enter` used to run
+    /// inline before the field-open/selected split (spec 2026-09-16).
+    /// Called by `confirm_top`, never by `handle_key` directly: Enter now
+    /// toggles the field instead of submitting.
+    fn confirm_new_project(name: &LineInput, path: &LineInput) -> Option<ModalResult> {
+        let name_text = name.text().trim();
+        if name_text.is_empty() {
+            return None; // nothing to confirm yet
+        }
+        Some(ModalResult {
+            actions: vec![Action::CreateProject {
+                name: name_text.to_string(),
+                path: path.text().trim().to_string(),
+            }],
+            close: true,
+            ..Default::default()
+        })
     }
 
     /// Builds the `Prompt` modal's confirm result from its current text —
@@ -1494,26 +1517,32 @@ impl ModalStack {
                 on_path,
                 prefilled,
             } => match key.code {
-                // The field rule: Esc closes the field onto the button
-                // row (Confirm aimed); Esc there is the cancel.
+                // Enter/Space/plain-i reopen a selected field (spec
+                // 2026-09-16's shared rule), same as `Prompt`.
+                _ if crate::keys::opens_field(&key) && !*field_open => {
+                    *field_open = true;
+                    None
+                }
+                // The field rule: the first Esc closes an open field to
+                // selected (caret gone, text kept); a second Esc, from
+                // selected, lands on the button row (Confirm aimed) — Esc
+                // there is the cancel.
+                KeyCode::Esc if *field_open => {
+                    if *on_path { path.end_edit() } else { name.end_edit() };
+                    *field_open = false;
+                    None
+                }
                 KeyCode::Esc => {
                     *button_focus = Some(FormButton::Confirm);
                     None
                 }
-                KeyCode::Enter => {
-                    let name_text = name.text().trim();
-                    if name_text.is_empty() {
-                        None // swallowed: nothing to confirm yet
-                    } else {
-                        Some(ModalResult {
-                            actions: vec![Action::CreateProject {
-                                name: name_text.to_string(),
-                                path: path.text().trim().to_string(),
-                            }],
-                            close: true,
-                            ..Default::default()
-                        })
-                    }
+                // Enter used to submit; now it only closes an open field
+                // to selected, same as Esc — submitting is `confirm_top`'s
+                // job alone (the button row's Confirm, or a chord).
+                KeyCode::Enter if *field_open => {
+                    if *on_path { path.end_edit() } else { name.end_edit() };
+                    *field_open = false;
+                    None
                 }
                 KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::ALT) => {
                     Some(ModalResult {
@@ -1522,7 +1551,14 @@ impl ModalStack {
                         ..Default::default()
                     })
                 }
-                KeyCode::Tab | KeyCode::Down => {
+                // Tab keeps the state it started in (spec 2026-09-16): an
+                // open field's Tab closes it and opens the next; a
+                // selected field's Tab just moves the selection.
+                KeyCode::Tab => {
+                    let was_open = *field_open;
+                    if was_open {
+                        if *on_path { path.end_edit() } else { name.end_edit() };
+                    }
                     if !*on_path && !*prefilled {
                         *prefilled = true;
                         let slug = slugify(name.text());
@@ -1533,13 +1569,42 @@ impl ModalStack {
                         }
                     }
                     *on_path = true;
-                    None // swallowed: modals capture all input
+                    *field_open = was_open;
+                    None
                 }
-                KeyCode::BackTab | KeyCode::Up => {
+                KeyCode::BackTab => {
+                    let was_open = *field_open;
+                    if was_open {
+                        if *on_path { path.end_edit() } else { name.end_edit() };
+                    }
                     *on_path = false;
-                    None // swallowed: modals capture all input
+                    *field_open = was_open;
+                    None
                 }
-                _ => {
+                // Down/Up always drop to selected on the neighbouring
+                // field, distinct from Tab/BackTab above.
+                KeyCode::Down if *field_open => {
+                    if *on_path { path.end_edit() } else { name.end_edit() };
+                    if !*on_path && !*prefilled {
+                        *prefilled = true;
+                        let slug = slugify(name.text());
+                        if path.text().ends_with('/') && !slug.is_empty() {
+                            let mut new_path = path.text().to_string();
+                            new_path.push_str(&slug);
+                            *path = LineInput::new(&new_path);
+                        }
+                    }
+                    *on_path = true;
+                    *field_open = false;
+                    None
+                }
+                KeyCode::Up if *field_open => {
+                    if *on_path { path.end_edit() } else { name.end_edit() };
+                    *on_path = false;
+                    *field_open = false;
+                    None
+                }
+                _ if *field_open => {
                     if *on_path {
                         path.handle_key(key);
                     } else {
@@ -1547,6 +1612,7 @@ impl ModalStack {
                     }
                     None // swallowed: modals capture all input
                 }
+                _ => None,
             },
             Modal::Dropdown(state) => match key.code {
                 // Arrows step over disabled rows rather than parking the
@@ -2400,12 +2466,20 @@ impl ModalStack {
                     height: FIELD_HEIGHT,
                 };
                 // Either field keeps the keyboard only while the button
-                // row doesn't have it.
+                // row doesn't have it. That's the resting-stop highlight
+                // (the fill lift below) — it applies while the field is
+                // merely *selected* too. The caret itself (and the window
+                // scroll that follows it) is a stronger claim: it must
+                // track whether the field actually has the caret, i.e.
+                // `field_open` too, same split as `Prompt`'s own field
+                // (spec 2026-09-16).
                 let name_focused = button_focus.is_none() && !*on_path;
                 let path_focused = button_focus.is_none() && *on_path;
+                let name_caret_live = name_focused && field_open;
+                let path_caret_live = path_focused && field_open;
                 TextField {
                     content: name.draw_line_windowed(
-                        name_focused,
+                        name_caret_live,
                         theme,
                         field_w.saturating_sub(2),
                     ),
@@ -2440,7 +2514,11 @@ impl ModalStack {
                     height: FIELD_HEIGHT,
                 };
                 TextField {
-                    content: path.draw_line_windowed(path_focused, theme, path_w.saturating_sub(2)),
+                    content: path.draw_line_windowed(
+                        path_caret_live,
+                        theme,
+                        path_w.saturating_sub(2),
+                    ),
                     state: if path_focused {
                         ControlState::Focused
                     } else {
@@ -3379,6 +3457,60 @@ mod tests {
             .unwrap();
         assert!(!res.close);
         assert_eq!(res.actions, vec![Action::BrowseNewProjectDir]);
+    }
+
+    #[test]
+    fn tab_from_an_open_name_field_opens_the_path_field() {
+        let mut m = ModalStack::default();
+        m.push(Modal::NewProject {
+            name: LineInput::new(""),
+            path: LineInput::new("/projects/"),
+            on_path: false,
+            prefilled: false,
+        });
+        assert!(m.field_open());
+        m.handle_key(key(KeyCode::Char('x')));
+        m.handle_key(key(KeyCode::Tab));
+        assert!(m.field_open(), "Tab keeps the state it started in");
+        m.handle_key(key(KeyCode::Char('y')));
+        assert!(m.focused_input().unwrap().text().contains('y'));
+    }
+
+    #[test]
+    fn down_from_an_open_name_field_selects_the_path_field() {
+        let mut m = ModalStack::default();
+        m.push(Modal::NewProject {
+            name: LineInput::new(""),
+            path: LineInput::new("/projects/"),
+            on_path: false,
+            prefilled: false,
+        });
+        m.handle_key(key(KeyCode::Down));
+        assert!(!m.field_open(), "Down drops to selected");
+        m.handle_key(key(KeyCode::Char('u')));
+        assert_eq!(
+            m.focused_input().unwrap().text(),
+            "/projects/",
+            "u did not type while selected"
+        );
+    }
+
+    #[test]
+    fn confirm_top_submits_new_project_from_any_focus() {
+        let mut m = ModalStack::default();
+        m.push(Modal::NewProject {
+            name: LineInput::new("demo"),
+            path: LineInput::new("/tmp/demo"),
+            on_path: false,
+            prefilled: true,
+        });
+        m.handle_key(key(KeyCode::Esc)); // close to selected
+        m.handle_key(key(KeyCode::Esc)); // to the button row
+        let res = m.confirm_top().expect("submits from the button row");
+        assert!(matches!(
+            res.actions.as_slice(),
+            [Action::CreateProject { .. }]
+        ));
     }
 
     fn draw_modal(m: &mut ModalStack) -> String {
@@ -4437,6 +4569,54 @@ mod tests {
             input: LineInput::new("old"),
             kind: PromptKind::RenameRequest { from: "old".into() },
             revealed: false,
+        });
+
+        // Open (fresh push): the caret paints.
+        let (buf, hits) = draw_modal_buf_with_hits(&mut m);
+        let field = hits.rect_of(&crate::hit::Hit::ModalInput(0)).unwrap();
+        assert!(
+            row_has_a_reversed_cell(&buf, field),
+            "the caret paints while the field is open"
+        );
+
+        // Esc closes the field to selected: no caret, but the fill is
+        // still the lifted (focused) one, not the resting one.
+        m.handle_key(key(KeyCode::Esc));
+        let (buf, hits) = draw_modal_buf_with_hits(&mut m);
+        let field = hits.rect_of(&crate::hit::Hit::ModalInput(0)).unwrap();
+        assert!(
+            !row_has_a_reversed_cell(&buf, field),
+            "no caret while merely selected"
+        );
+        let focused_fill = TextField::face(ControlState::Focused, &theme);
+        assert_eq!(
+            buf[(field.x + crate::paint::FIELD_PAD, field.y + 1)].bg,
+            focused_fill,
+            "still the resting stop: the highlight stays lifted"
+        );
+
+        // Enter/Space/i reopen it: the caret comes back.
+        m.handle_key(key(KeyCode::Enter));
+        let (buf, hits) = draw_modal_buf_with_hits(&mut m);
+        let field = hits.rect_of(&crate::hit::Hit::ModalInput(0)).unwrap();
+        assert!(
+            row_has_a_reversed_cell(&buf, field),
+            "the caret paints again once the field reopens"
+        );
+    }
+
+    /// Same split as `Prompt`'s field (spec 2026-09-16), but `NewProject`
+    /// has two fields: a selected-but-closed name field keeps its
+    /// highlight, loses only its caret.
+    #[test]
+    fn a_selected_new_project_field_keeps_its_highlight_but_not_its_caret() {
+        let theme = Theme::dark();
+        let mut m = ModalStack::default();
+        m.push(Modal::NewProject {
+            name: LineInput::new("demo"),
+            path: LineInput::new("/tmp/demo"),
+            on_path: false,
+            prefilled: true,
         });
 
         // Open (fresh push): the caret paints.

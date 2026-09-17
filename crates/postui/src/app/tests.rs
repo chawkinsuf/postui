@@ -6910,6 +6910,7 @@ fn project_chooser_lists_known_and_open_by_path_creates() {
 #[test]
 fn new_project_modal_prefills_path_from_name_and_creates() {
     let mut app = App::new_for_test();
+    app.anims.enabled = false;
     let root = tempfile::tempdir().unwrap();
     app.registry.root = Some(root.path().to_path_buf());
     app.update(Action::PromptNewProject);
@@ -6925,7 +6926,11 @@ fn new_project_modal_prefills_path_from_name_and_creates() {
         "slugified prefill: {}",
         path.text()
     );
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    // Enter now only closes the open field to selected (spec 2026-09-16);
+    // submitting is the button row's Confirm click, same as clicking OK.
+    render_once(&mut app);
+    let confirm = app.hits.rect_of(&Hit::ModalConfirm).unwrap();
+    assert!(app.handle_mouse(left_down(confirm.x, confirm.y)));
     let expected = root.path().join("my-svc");
     assert!(postui_core::project::Project::is_project(&expected));
     assert_eq!(app.proj().root(), expected);
