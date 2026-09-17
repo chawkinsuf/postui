@@ -162,6 +162,14 @@ impl LineInput {
         self.run = None;
     }
 
+    /// The text as it stood when this open began — the bottom of the undo
+    /// stack, or the current text if nothing was edited. Used by a
+    /// container (a form modal) that needs "what changed across this
+    /// whole open", not step-by-step history.
+    pub fn text_at_open(&self) -> String {
+        self.undo.first().map(|s| s.text.clone()).unwrap_or_else(|| self.text.clone())
+    }
+
     /// Replaces the whole text (caret at the end) as one undoable step.
     /// For owners that reseed a live field — a picker's `seed_filter`, a
     /// choice cycle — rather than constructing a fresh `LineInput`, which

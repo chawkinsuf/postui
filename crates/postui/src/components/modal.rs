@@ -689,6 +689,20 @@ impl Modal {
     }
 }
 
+/// One field close on the top form modal's stack (spec 2026-09-16):
+/// undo/redo here never touch the app `History` — Confirm is the only
+/// door from a modal's edits into it, as one step, same as today.
+struct FieldStep {
+    idx: usize,
+    before: FieldValue,
+    after: FieldValue,
+}
+
+#[derive(Clone, PartialEq)]
+enum FieldValue {
+    Text(String),
+}
+
 #[derive(Default)]
 pub struct ModalStack {
     stack: Vec<Modal>,
@@ -703,18 +717,29 @@ pub struct ModalStack {
     /// `Some` (the button row has no field). Ignored for modals that are
     /// not `Modal::is_form()`.
     field_open: bool,
+    /// Field closes recorded on the top form modal, newest last (spec
+    /// 2026-09-16, "Per-modal field-close undo stack"). Scoped to one
+    /// modal's lifetime: `push`/`pop` both clear it, and it is never seen
+    /// by the app `History`.
+    steps: Vec<FieldStep>,
+    /// Steps undone, newest last; cleared by any new field close.
+    redo: Vec<FieldStep>,
 }
 
 impl ModalStack {
     pub fn push(&mut self, modal: Modal) {
         self.leave_button_row();
         self.field_open = true;
+        self.steps.clear();
+        self.redo.clear();
         self.stack.push(modal);
     }
 
     pub fn pop(&mut self) -> Option<Modal> {
         self.leave_button_row();
         self.field_open = true;
+        self.steps.clear();
+        self.redo.clear();
         self.stack.pop()
     }
 
@@ -730,31 +755,121 @@ impl ModalStack {
     /// Closes the top form modal's open field, keeping its text (the
     /// field rule) — used by the shift+Enter/ctrl+Enter confirm dig-past,
     /// which must close the field before dispatching so the edit becomes
-    /// one undo step ahead of the modal's own action.
+    /// one undo step ahead of the modal's own action, and by every form
+    /// modal's own Esc/Enter close arm (routed through this method's
+    /// sibling helper `record_field_close` — see those arms below, which
+    /// hold split borrows of `self.stack`/`field_open`/`button_focus` and
+    /// so cannot call this `&mut self` method directly). A field close
+    /// that actually changed the text (spec 2026-09-16, "Per-modal
+    /// field-close undo stack") is recorded as one step on `self.steps`,
+    /// clearing `self.redo` — an unchanged close records nothing.
     pub fn close_top_field(&mut self) {
         if !self.field_open {
             return;
         }
         self.field_open = false;
+        let idx = self.field_index();
+        let Some((before, after)) = self.field_value_before_and_after() else {
+            return;
+        };
+        if before != after {
+            self.redo.clear();
+            self.steps.push(FieldStep { idx, before, after });
+        }
+    }
+
+    /// The current focus's field index, for the step it is about to
+    /// record — `0` for `Prompt` (single field), `NewProject`'s `on_path`
+    /// as `0`/`1`, `MultiPrompt`/`FieldsEditor`'s own `focus`.
+    fn field_index(&self) -> usize {
+        match self.stack.last() {
+            Some(Modal::NewProject { on_path, .. }) => usize::from(*on_path),
+            Some(Modal::MultiPrompt { focus, .. }) => *focus,
+            Some(Modal::FieldsEditor(state)) => state.focus,
+            _ => 0,
+        }
+    }
+
+    /// Ends the live field's edit and reports its text before and after,
+    /// as a `FieldValue` pair — `None` when the top modal has no live
+    /// text field to close (a `MultiPrompt` choice field, or a non-form
+    /// modal).
+    fn field_value_before_and_after(&mut self) -> Option<(FieldValue, FieldValue)> {
+        let input = self.focused_input_mut()?;
+        let before = input.text_at_open();
+        input.end_edit();
+        let after = input.text().to_string();
+        Some((FieldValue::Text(before), FieldValue::Text(after)))
+    }
+
+    /// Records one field close as an undo step, if the text actually
+    /// changed (spec 2026-09-16) — shared by every form modal's own
+    /// Esc/Enter close arm. Those arms each hold their own split borrows
+    /// of `self.stack`/`field_open`/`button_focus` (the pattern already
+    /// used throughout `handle_key`) and so cannot call a `&mut self`
+    /// method here; this takes exactly the two fields (`steps`/`redo`)
+    /// that need touching, plus the already-computed before/after text.
+    fn record_field_close(
+        steps: &mut Vec<FieldStep>,
+        redo: &mut Vec<FieldStep>,
+        idx: usize,
+        before: String,
+        after: String,
+    ) {
+        if before != after {
+            redo.clear();
+            steps.push(FieldStep {
+                idx,
+                before: FieldValue::Text(before),
+                after: FieldValue::Text(after),
+            });
+        }
+    }
+
+    /// Pops the newest field-close step (or, with `redo`, the newest
+    /// undone one) and writes it back into the field at that step's
+    /// index, selecting it (never reopening it for typing). `false` when
+    /// the stack asked of is empty.
+    pub fn undo_field_step(&mut self, redo: bool) -> bool {
+        let step = if redo { self.redo.pop() } else { self.steps.pop() };
+        let Some(step) = step else { return false };
+        let value = if redo { step.after.clone() } else { step.before.clone() };
+        let idx = step.idx;
+        self.set_field_value(idx, value);
+        if redo {
+            self.steps.push(step);
+        } else {
+            self.redo.push(step);
+        }
+        self.button_focus = None;
+        self.field_open = false;
+        true
+    }
+
+    fn set_field_value(&mut self, idx: usize, value: FieldValue) {
+        let FieldValue::Text(text) = value;
         match self.stack.last_mut() {
-            Some(Modal::Prompt { input, .. }) => input.end_edit(),
+            Some(Modal::Prompt { input, .. }) => *input = LineInput::new(&text),
             Some(Modal::NewProject {
                 name, path, on_path, ..
             }) => {
-                if *on_path {
-                    path.end_edit()
+                *on_path = idx == 1;
+                if idx == 1 {
+                    *path = LineInput::new(&text);
                 } else {
-                    name.end_edit()
+                    *name = LineInput::new(&text);
                 }
             }
             Some(Modal::MultiPrompt { fields, focus, .. }) => {
-                if let Some(f) = fields.get_mut(*focus) {
-                    f.input.end_edit();
+                *focus = idx;
+                if let Some(f) = fields.get_mut(idx) {
+                    f.input = LineInput::new(&text);
                 }
             }
             Some(Modal::FieldsEditor(state)) => {
-                if let Some(row) = state.rows.get_mut(state.focus) {
-                    row.input.end_edit();
+                state.focus = idx;
+                if let Some(row) = state.rows.get_mut(idx) {
+                    row.input = LineInput::new(&text);
                 }
             }
             _ => {}
@@ -828,7 +943,17 @@ impl ModalStack {
     /// three filter pickers keep their input private behind
     /// `undo_filter`, so they answer for themselves; everything else (the
     /// file picker included) answers through [`Self::focused_input`].
+    ///
+    /// A form modal whose field is closed (selected, or focus on the
+    /// button row) has no live field to step — but it may have a field
+    /// close of its own to undo (spec 2026-09-16), so it answers from
+    /// `self.steps` instead. Non-form modals never populate `self.steps`
+    /// (only a form modal's own Esc/Enter/`close_top_field` push to it),
+    /// so this split leaves their behavior exactly as it was.
     pub fn field_edited(&self) -> bool {
+        if self.stack.last().is_some_and(Modal::is_form) && !self.field_open() {
+            return !self.steps.is_empty();
+        }
         if self.button_focus.is_some() {
             return false; // the button row has no field to step
         }
@@ -844,7 +969,16 @@ impl ModalStack {
     /// picker goes through its own `undo_filter`, which re-runs the filter
     /// so the rows never lag the query; everything else steps its
     /// `LineInput` directly. `false` when there was nothing to step.
+    ///
+    /// A form modal whose field is closed (selected, or the button row)
+    /// reaches into `self.steps`/`self.redo` instead (spec 2026-09-16) —
+    /// reachable from any selected stop, ctrl+z and `u`, plus the button
+    /// row. Non-form modals are unaffected, same reasoning as
+    /// `field_edited`.
     pub fn field_undo(&mut self, redo: bool) -> bool {
+        if self.stack.last().is_some_and(Modal::is_form) && !self.field_open() {
+            return self.undo_field_step(redo);
+        }
         if self.button_focus.is_some() {
             return false; // nothing to step while the field is blurred
         }
@@ -1604,7 +1738,10 @@ impl ModalStack {
                 // secret prompt (spec §3) that cancel is the whole send,
                 // which `cancel_top` says out loud.
                 KeyCode::Esc if *field_open => {
+                    let before = input.text_at_open();
                     input.end_edit();
+                    let after = input.text().to_string();
+                    Self::record_field_close(&mut self.steps, &mut self.redo, 0, before, after);
                     *field_open = false;
                     None
                 }
@@ -1616,7 +1753,10 @@ impl ModalStack {
                 // selected, same as Esc — submitting is `confirm_top`'s job
                 // alone (the button row's Confirm, or Task 10's chord).
                 KeyCode::Enter if *field_open => {
+                    let before = input.text_at_open();
                     input.end_edit();
+                    let after = input.text().to_string();
+                    Self::record_field_close(&mut self.steps, &mut self.redo, 0, before, after);
                     *field_open = false;
                     None
                 }
@@ -1702,7 +1842,17 @@ impl ModalStack {
                 // selected, lands on the button row (Confirm aimed) — Esc
                 // there is the cancel.
                 KeyCode::Esc if *field_open => {
-                    if *on_path { path.end_edit() } else { name.end_edit() };
+                    let input = if *on_path { &mut *path } else { &mut *name };
+                    let before = input.text_at_open();
+                    input.end_edit();
+                    let after = input.text().to_string();
+                    Self::record_field_close(
+                        &mut self.steps,
+                        &mut self.redo,
+                        usize::from(*on_path),
+                        before,
+                        after,
+                    );
                     *field_open = false;
                     None
                 }
@@ -1714,7 +1864,17 @@ impl ModalStack {
                 // to selected, same as Esc — submitting is `confirm_top`'s
                 // job alone (the button row's Confirm, or a chord).
                 KeyCode::Enter if *field_open => {
-                    if *on_path { path.end_edit() } else { name.end_edit() };
+                    let input = if *on_path { &mut *path } else { &mut *name };
+                    let before = input.text_at_open();
+                    input.end_edit();
+                    let after = input.text().to_string();
+                    Self::record_field_close(
+                        &mut self.steps,
+                        &mut self.redo,
+                        usize::from(*on_path),
+                        before,
+                        after,
+                    );
                     *field_open = false;
                     None
                 }
@@ -1877,7 +2037,11 @@ impl ModalStack {
                 // selected, lands on the button row (Confirm aimed) — Esc
                 // there is the cancel.
                 KeyCode::Esc if *field_open => {
-                    fields[*focus].input.end_edit();
+                    let idx = *focus;
+                    let before = fields[idx].input.text_at_open();
+                    fields[idx].input.end_edit();
+                    let after = fields[idx].input.text().to_string();
+                    Self::record_field_close(&mut self.steps, &mut self.redo, idx, before, after);
                     *field_open = false;
                     None
                 }
@@ -1889,7 +2053,11 @@ impl ModalStack {
                 // to selected, same as Esc — submitting is `confirm_top`'s
                 // job alone (the button row's Confirm, or a chord).
                 KeyCode::Enter if *field_open => {
-                    fields[*focus].input.end_edit();
+                    let idx = *focus;
+                    let before = fields[idx].input.text_at_open();
+                    fields[idx].input.end_edit();
+                    let after = fields[idx].input.text().to_string();
+                    Self::record_field_close(&mut self.steps, &mut self.redo, idx, before, after);
                     *field_open = false;
                     None
                 }
@@ -1974,8 +2142,18 @@ impl ModalStack {
                 // selected, lands on the button row (Confirm aimed) — Esc
                 // there is the cancel.
                 KeyCode::Esc if *field_open => {
-                    if let Some(row) = state.rows.get_mut(state.focus) {
+                    let idx = state.focus;
+                    if let Some(row) = state.rows.get_mut(idx) {
+                        let before = row.input.text_at_open();
                         row.input.end_edit();
+                        let after = row.input.text().to_string();
+                        Self::record_field_close(
+                            &mut self.steps,
+                            &mut self.redo,
+                            idx,
+                            before,
+                            after,
+                        );
                     }
                     *field_open = false;
                     None
@@ -1988,8 +2166,18 @@ impl ModalStack {
                 // selected, same as Esc — submitting is `confirm_top`'s
                 // job alone (the button row's Confirm, or a chord).
                 KeyCode::Enter if *field_open => {
-                    if let Some(row) = state.rows.get_mut(state.focus) {
+                    let idx = state.focus;
+                    if let Some(row) = state.rows.get_mut(idx) {
+                        let before = row.input.text_at_open();
                         row.input.end_edit();
+                        let after = row.input.text().to_string();
+                        Self::record_field_close(
+                            &mut self.steps,
+                            &mut self.redo,
+                            idx,
+                            before,
+                            after,
+                        );
                     }
                     *field_open = false;
                     None
@@ -4749,6 +4937,94 @@ mod tests {
         assert_eq!(m.focused_input().unwrap().text(), "old", "u did not type");
     }
 
+    #[test]
+    fn closing_a_changed_field_pushes_one_undo_step() {
+        let mut m = ModalStack::default();
+        m.push(Modal::Prompt {
+            title: "Rename".into(),
+            input: LineInput::new("old"),
+            kind: PromptKind::RenameRequest { from: "old".into() },
+            revealed: false,
+        });
+        m.handle_key(key(KeyCode::Char('x')));
+        m.handle_key(key(KeyCode::Esc)); // close: "oldx"
+        assert!(m.undo_field_step(false));
+        assert_eq!(m.focused_input().unwrap().text(), "old");
+        assert!(!m.field_open(), "undo selects the field, does not reopen it");
+    }
+
+    #[test]
+    fn closing_an_unchanged_field_pushes_nothing() {
+        let mut m = ModalStack::default();
+        m.push(Modal::Prompt {
+            title: "Rename".into(),
+            input: LineInput::new("old"),
+            kind: PromptKind::RenameRequest { from: "old".into() },
+            revealed: false,
+        });
+        m.handle_key(key(KeyCode::Esc)); // close unchanged
+        assert!(!m.undo_field_step(false), "nothing to undo");
+    }
+
+    #[test]
+    fn undo_from_the_button_row_reaches_the_stack() {
+        let mut m = ModalStack::default();
+        m.push(Modal::Prompt {
+            title: "Rename".into(),
+            input: LineInput::new("old"),
+            kind: PromptKind::RenameRequest { from: "old".into() },
+            revealed: false,
+        });
+        m.handle_key(key(KeyCode::Char('x')));
+        m.handle_key(key(KeyCode::Esc));
+        m.handle_key(key(KeyCode::Esc)); // button row
+        assert!(m.undo_field_step(false));
+        assert_eq!(m.focused_input().unwrap().text(), "old");
+    }
+
+    #[test]
+    fn redo_restores_the_closed_edit_and_a_new_close_clears_redo() {
+        let mut m = ModalStack::default();
+        m.push(Modal::Prompt {
+            title: "Rename".into(),
+            input: LineInput::new("old"),
+            kind: PromptKind::RenameRequest { from: "old".into() },
+            revealed: false,
+        });
+        m.handle_key(key(KeyCode::Char('x')));
+        m.handle_key(key(KeyCode::Esc));
+        let closed_text = m.focused_input().unwrap().text().to_string();
+        m.undo_field_step(false);
+        assert!(m.undo_field_step(true), "redo restores it");
+        assert_eq!(m.focused_input().unwrap().text(), closed_text);
+        m.handle_key(key(KeyCode::Enter)); // reopen
+        m.handle_key(key(KeyCode::Char('y')));
+        m.handle_key(key(KeyCode::Esc)); // close: "y" + closed_text
+        assert!(!m.undo_field_step(true), "redo cleared by the new close");
+    }
+
+    #[test]
+    fn cancel_discards_the_stack() {
+        let mut m = ModalStack::default();
+        m.push(Modal::Prompt {
+            title: "Rename".into(),
+            input: LineInput::new("old"),
+            kind: PromptKind::RenameRequest { from: "old".into() },
+            revealed: false,
+        });
+        m.handle_key(key(KeyCode::Char('x')));
+        m.handle_key(key(KeyCode::Esc));
+        m.handle_key(key(KeyCode::Esc));
+        m.cancel_top();
+        m.push(Modal::Prompt {
+            title: "Rename".into(),
+            input: LineInput::new("fresh"),
+            kind: PromptKind::RenameRequest { from: "fresh".into() },
+            revealed: false,
+        });
+        assert!(!m.undo_field_step(false), "a new modal starts with an empty stack");
+    }
+
     /// A selected prompt field (spec 2026-09-16) is highlighted, not
     /// captioned with a live caret: the fill stays lifted (it's still the
     /// resting stop), but the reversed caret cell — and the window scroll
@@ -5211,7 +5487,7 @@ mod tests {
     }
 
     #[test]
-    fn the_button_row_hides_the_field_from_paste_and_undo() {
+    fn the_button_row_hides_the_field_from_paste_but_reaches_its_undo_stack() {
         let mut m = prompt_stack();
         m.handle_key(key(KeyCode::Char('a')));
         m.handle_key(key(KeyCode::Esc)); // closes the field to selected
@@ -5220,13 +5496,15 @@ mod tests {
             m.focused_input_mut().is_none(),
             "paste must not dig into a blurred field"
         );
-        assert!(!m.field_edited(), "the row has no field to step");
-        assert!(!m.field_undo(false), "ctrl+z does nothing on the row");
-        m.handle_key(key(KeyCode::Up));
+        // Task 11 (spec 2026-09-16): the button row still has no live
+        // field of its own, but the close it just recorded lives on the
+        // modal's own step stack — ctrl+z from here reaches that.
+        assert!(m.field_edited(), "the row has a field-close step to undo");
+        assert!(m.field_undo(false), "ctrl+z from the row reaches the stack");
         assert_eq!(
             m.focused_input().map(|i| i.text()),
-            Some("a"),
-            "the field is untouched underneath"
+            Some(""),
+            "the close is undone, back to the field's value before it"
         );
     }
 

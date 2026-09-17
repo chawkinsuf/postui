@@ -18094,6 +18094,44 @@ mod undo_tests {
     }
 
     #[test]
+    fn ctrl_z_steps_a_modals_field_stack_instead_of_the_app_history() {
+        use crate::components::line_input::LineInput;
+        use crate::components::modal::{Modal, PromptKind};
+        let mut app = App::new_for_test();
+        app.editor
+            .url
+            .handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE)); // an app-history edit, unrelated
+        app.push_modal(Modal::Prompt {
+            title: "Rename".into(),
+            input: LineInput::new("old"),
+            kind: PromptKind::RenameRequest { from: "old".into() },
+            revealed: false,
+        });
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL));
+        assert_eq!(app.modals.focused_input().unwrap().text(), "old");
+        assert!(!app.modals.is_empty(), "the modal is still open — app history untouched");
+    }
+
+    #[test]
+    fn plain_u_undoes_a_modals_field_step_from_a_selected_field() {
+        use crate::components::line_input::LineInput;
+        use crate::components::modal::{Modal, PromptKind};
+        let mut app = App::new_for_test();
+        app.push_modal(Modal::Prompt {
+            title: "Rename".into(),
+            input: LineInput::new("old"),
+            kind: PromptKind::RenameRequest { from: "old".into() },
+            revealed: false,
+        });
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)); // close to selected
+        app.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
+        assert_eq!(app.modals.focused_input().unwrap().text(), "old");
+    }
+
+    #[test]
     fn edit_after_undo_clears_redo() {
         let mut app = App::new_for_test();
         app.update(Action::CreateRequest("lin".into()));

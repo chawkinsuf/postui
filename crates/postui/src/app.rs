@@ -9894,6 +9894,19 @@ impl App {
             return changed;
         }
 
+        // 1e. A plain key bound to Undo or OpenPalette reaches the top
+        // form modal's selected field/button row the same way `u`/`:`
+        // reach a Manage screen's unclaimed keys (`unclaimed_screen_key`):
+        // the modal's own handler swallows every key it does not name,
+        // so without this carve-out `u` inside a modal is only ever typed.
+        if !modified
+            && matches!(global, Some(Action::Undo | Action::Redo | Action::OpenPalette))
+            && self.modals.top().is_some_and(crate::components::modal::Modal::is_form)
+            && !self.modals.field_open()
+        {
+            return self.update(global.expect("matched above"));
+        }
+
         // 2. Modals capture all remaining input.
         if !self.modals.is_empty() {
             // alt+b is a toggle: over the open theme picker it closes it
