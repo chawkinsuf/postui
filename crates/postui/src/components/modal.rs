@@ -1884,6 +1884,10 @@ impl ModalStack {
         // Read before the modal is borrowed mutably below: the aim the
         // button row paints, and the reason a field paints unfocused.
         let button_focus = self.button_focus;
+        // Same reason `field_open` is read here rather than through
+        // `self` inside the match arm below: `top` borrows `self.stack`
+        // mutably a few lines down.
+        let field_open = self.field_open;
         let Some(top) = self.stack.last_mut() else {
             return;
         };
@@ -2219,7 +2223,15 @@ impl ModalStack {
                 };
                 // The new-selector prompt's shared toggle is the only
                 // thing that can take focus off the name field — that,
-                // and Esc having moved focus down to the button row.
+                // and Esc having moved focus down to the button row. This
+                // is the resting-stop highlight (the fill lift below): it
+                // applies while the field is merely *selected* too, same
+                // as the button row's own aimed button. The caret itself
+                // (and the window scroll that follows it) is a stronger
+                // claim — it must track whether the field actually has
+                // the caret, i.e. `field_open` too, not just whether it's
+                // the resting stop (spec 2026-09-16, same split as the
+                // editor's URL bar).
                 let field_focused = button_focus.is_none()
                     && !matches!(
                         kind,
@@ -2228,15 +2240,16 @@ impl ModalStack {
                             ..
                         }
                     );
+                let field_caret_live = field_focused && field_open;
                 let content = if masked {
                     input.draw_line_windowed_masked(
-                        field_focused,
+                        field_caret_live,
                         theme,
                         field_area.width.saturating_sub(2),
                     )
                 } else {
                     input.draw_line_windowed(
-                        field_focused,
+                        field_caret_live,
                         theme,
                         field_area.width.saturating_sub(2),
                     )
@@ -3585,6 +3598,42 @@ mod tests {
         terminal.backend().buffer().clone()
     }
 
+    /// [`draw_modal_buf`], plus the `HitMap` from the same draw — for a
+    /// test that needs to locate a control (e.g. `Hit::ModalInput(0)`'s
+    /// rect) before inspecting the cells painted there.
+    fn draw_modal_buf_with_hits(m: &mut ModalStack) -> (ratatui::buffer::Buffer, crate::hit::HitMap) {
+        let theme = Theme::dark();
+        let keymap = crate::keys::Keymap::default_bindings();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| {
+                m.draw(
+                    f,
+                    f.area(),
+                    &theme,
+                    &mut hits,
+                    None,
+                    &keymap,
+                    test_anims(),
+                    std::time::Instant::now(),
+                )
+            })
+            .unwrap();
+        (terminal.backend().buffer().clone(), hits)
+    }
+
+    /// Whether any cell in `rect` is drawn REVERSED — the caret's own
+    /// styling (see [`crate::components::line_input::LineInput::render`]).
+    fn row_has_a_reversed_cell(buf: &ratatui::buffer::Buffer, rect: Rect) -> bool {
+        (rect.x..rect.x + rect.width).any(|x| {
+            (rect.y..rect.y + rect.height).any(|y| {
+                buf.cell((x, y))
+                    .is_some_and(|c| c.modifier.contains(ratatui::style::Modifier::REVERSED))
+            })
+        })
+    }
+
     /// The panel is 60 wide centred in 80 columns, so these are the
     /// backdrop columns either side of it: nothing the modal paints may
     /// land there.
@@ -4372,6 +4421,56 @@ mod tests {
         m.handle_key(key(KeyCode::Esc)); // close to selected
         m.handle_key(key(KeyCode::Char('u')));
         assert_eq!(m.focused_input().unwrap().text(), "old", "u did not type");
+    }
+
+    /// A selected prompt field (spec 2026-09-16) is highlighted, not
+    /// captioned with a live caret: the fill stays lifted (it's still the
+    /// resting stop), but the reversed caret cell — and the window scroll
+    /// that follows it — must not paint until the field reopens. Same
+    /// split as the editor's URL bar (`url_focused` vs `url_caret_live`).
+    #[test]
+    fn a_selected_prompt_field_keeps_its_highlight_but_not_its_caret() {
+        let theme = Theme::dark();
+        let mut m = ModalStack::default();
+        m.push(Modal::Prompt {
+            title: "Rename".into(),
+            input: LineInput::new("old"),
+            kind: PromptKind::RenameRequest { from: "old".into() },
+            revealed: false,
+        });
+
+        // Open (fresh push): the caret paints.
+        let (buf, hits) = draw_modal_buf_with_hits(&mut m);
+        let field = hits.rect_of(&crate::hit::Hit::ModalInput(0)).unwrap();
+        assert!(
+            row_has_a_reversed_cell(&buf, field),
+            "the caret paints while the field is open"
+        );
+
+        // Esc closes the field to selected: no caret, but the fill is
+        // still the lifted (focused) one, not the resting one.
+        m.handle_key(key(KeyCode::Esc));
+        let (buf, hits) = draw_modal_buf_with_hits(&mut m);
+        let field = hits.rect_of(&crate::hit::Hit::ModalInput(0)).unwrap();
+        assert!(
+            !row_has_a_reversed_cell(&buf, field),
+            "no caret while merely selected"
+        );
+        let focused_fill = TextField::face(ControlState::Focused, &theme);
+        assert_eq!(
+            buf[(field.x + crate::paint::FIELD_PAD, field.y + 1)].bg,
+            focused_fill,
+            "still the resting stop: the highlight stays lifted"
+        );
+
+        // Enter/Space/i reopen it: the caret comes back.
+        m.handle_key(key(KeyCode::Enter));
+        let (buf, hits) = draw_modal_buf_with_hits(&mut m);
+        let field = hits.rect_of(&crate::hit::Hit::ModalInput(0)).unwrap();
+        assert!(
+            row_has_a_reversed_cell(&buf, field),
+            "the caret paints again once the field reopens"
+        );
     }
 
     #[test]
