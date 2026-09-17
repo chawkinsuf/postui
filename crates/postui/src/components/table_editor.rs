@@ -1114,6 +1114,9 @@ mod tests {
             ),
             (ctrl('f'), key(KeyCode::PageDown)),
             (ctrl('b'), key(KeyCode::PageUp)),
+            // `i` opens the selected row's cell exactly as Enter does
+            // (spec 2026-09-16).
+            (key(KeyCode::Char('i')), key(KeyCode::Enter)),
         ];
         for (alias, canonical) in pairs {
             let mut ma = map_of(&[("a", "1"), ("b", "2"), ("c", "3")]);

@@ -25580,6 +25580,9 @@ fn settings_vim_aliases_are_strict_synonyms() {
             KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT),
             KeyEvent::new(KeyCode::End, KeyModifiers::NONE),
         ),
+        // `i` opens a selected settings row exactly as Enter does (spec
+        // 2026-09-16).
+        (plain('i'), KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
     ];
     for (alias, canonical) in pairs {
         let (mut a, mut b) = (fresh(), fresh());

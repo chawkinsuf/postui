@@ -3040,6 +3040,9 @@ fields = ["user_id", "customer_id"]
                 KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT),
                 key(KeyCode::End),
             ),
+            // `i` opens the selected cell exactly as Enter does (spec
+            // 2026-09-16).
+            (key(KeyCode::Char('i')), key(KeyCode::Enter)),
         ];
         for (alias, canonical) in pairs {
             let (mut a, mut b) = (VarManager::default(), VarManager::default());
@@ -3074,6 +3077,9 @@ fields = ["user_id", "customer_id"]
                 KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT),
                 key(KeyCode::End),
             ),
+            // `i` opens the selected field exactly as Enter does (spec
+            // 2026-09-16).
+            (key(KeyCode::Char('i')), key(KeyCode::Enter)),
         ];
         for (alias, canonical) in pairs {
             let (mut a, mut b) = (VarManager::default(), VarManager::default());
