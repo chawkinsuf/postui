@@ -1625,20 +1625,28 @@ impl App {
                         self.modals.top(),
                         Some(crate::components::modal::Modal::Chooser(_))
                     );
-                if theme_picker
-                    || matches!(
-                        self.modals.top(),
-                        Some(crate::components::modal::Modal::MultiPrompt {
-                            kind: crate::components::modal::PromptKind::EditOption { .. },
-                            ..
-                        })
-                    )
-                {
+                if theme_picker {
                     let enter = ratatui::crossterm::event::KeyEvent::new(
                         ratatui::crossterm::event::KeyCode::Enter,
                         ratatui::crossterm::event::KeyModifiers::NONE,
                     );
                     if let Some(res) = self.modals.handle_key(enter) {
+                        return self.apply_modal_result(res);
+                    }
+                    return true;
+                }
+                if matches!(
+                    self.modals.top(),
+                    Some(crate::components::modal::Modal::MultiPrompt {
+                        kind: crate::components::modal::PromptKind::EditOption { .. },
+                        ..
+                    })
+                ) {
+                    // `MultiPrompt`'s own Enter arm only closes a field to
+                    // selected now (spec 2026-09-16) — submitting is
+                    // `confirm_top`'s job alone, same path the button
+                    // row's Confirm click takes.
+                    if let Some(res) = self.modals.confirm_top() {
                         return self.apply_modal_result(res);
                     }
                     return true;

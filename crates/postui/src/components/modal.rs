@@ -943,26 +943,38 @@ impl ModalStack {
     /// submits a `Prompt` now that Enter in its field just closes it to
     /// selected instead.
     ///
-    /// `Prompt` goes straight to [`Self::confirm_prompt`]. Everything else
-    /// still confirms the old way — synthesizing an `Enter` and routing it
-    /// through that modal's own (as yet unchanged) `Enter` arm — because
-    /// that path is not `Prompt`'s alone: `NewProject`/`MultiPrompt`/
-    /// `FieldsEditor` still submit on their own `Enter` arm until Tasks
-    /// 8-9 give them the same split, and non-form modals lean on it too
-    /// (`Modal::Message`'s OK button reaches `Hit::ModalConfirm` in
-    /// `app/mouse.rs`, which calls this and relies on `Enter` closing a
-    /// message exactly as it always did). `button_focus` is taken first
-    /// so the synthesized key skips the button-row intercept at the top
-    /// of `handle_key` (which would otherwise call back into this very
-    /// method) and reaches the modal's own arm directly; a swallowed
-    /// confirm (e.g. an empty name) restores it, so the aim doesn't
-    /// silently drop into the field on a frame nothing asked to repaint.
+    /// `Prompt`, `NewProject`, `MultiPrompt` and `FieldsEditor` each go
+    /// straight to their own confirm helper. Everything else still
+    /// confirms the old way — synthesizing an `Enter` and routing it
+    /// through that modal's own `Enter` arm — because non-form modals
+    /// lean on it too (`Modal::Message`'s OK button reaches
+    /// `Hit::ModalConfirm` in `app/mouse.rs`, which calls this and relies
+    /// on `Enter` closing a message exactly as it always did).
+    /// `button_focus` is taken first so the synthesized key skips the
+    /// button-row intercept at the top of `handle_key` (which would
+    /// otherwise call back into this very method) and reaches the
+    /// modal's own arm directly; a swallowed confirm (e.g. an empty name)
+    /// restores it, so the aim doesn't silently drop into the field on a
+    /// frame nothing asked to repaint.
     pub fn confirm_top(&mut self) -> Option<ModalResult> {
         if let Some(Modal::Prompt { input, kind, .. }) = self.stack.last() {
             return Self::confirm_prompt(input, kind);
         }
         if let Some(Modal::NewProject { name, path, .. }) = self.stack.last() {
             return Self::confirm_new_project(name, path);
+        }
+        if let Some(Modal::MultiPrompt { fields, kind, .. }) = self.stack.last() {
+            return Self::confirm_multi_prompt(fields, kind);
+        }
+        if let Some(Modal::FieldsEditor(state)) = self.stack.last() {
+            return Some(ModalResult {
+                actions: vec![Action::ApplyGroupFields {
+                    selector: state.selector.clone(),
+                    slots: state.slots(),
+                }],
+                close: true,
+                ..Default::default()
+            });
         }
         let aimed = self.button_focus.take();
         let res = self.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -987,6 +999,134 @@ impl ModalStack {
                 name: name_text.to_string(),
                 path: path.text().trim().to_string(),
             }],
+            close: true,
+            ..Default::default()
+        })
+    }
+
+    /// Builds the `MultiPrompt` modal's confirm result from its fields —
+    /// exactly the body `KeyCode::Enter` used to run inline before the
+    /// field-open/selected split (spec 2026-09-16), relocated verbatim.
+    /// Called by `confirm_top`, never by `handle_key` directly: Enter now
+    /// toggles the field instead of submitting.
+    fn confirm_multi_prompt(fields: &[PromptField], kind: &PromptKind) -> Option<ModalResult> {
+        let get = |k: &str| {
+            fields
+                .iter()
+                .find(|f| f.key == k)
+                .map(|f| f.input.text().trim())
+        };
+        let actions = match kind {
+            PromptKind::NewOptionInline { owner } => {
+                let key_text = get("key").filter(|s| !s.is_empty())?.to_string();
+                let mut values = IndexMap::new();
+                for f in fields.iter() {
+                    if let Some(field) = f.key.strip_prefix(NEW_OPTION_FIELD) {
+                        values.insert(field.to_string(), f.input.text().to_string());
+                    }
+                }
+                let description = get("description")
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string);
+                vec![Action::ConfirmNewOptionInline {
+                    owner: owner.clone(),
+                    key: key_text,
+                    values,
+                    description,
+                }]
+            }
+            PromptKind::EditOption { owner, key } => {
+                let mut values = IndexMap::new();
+                for f in fields.iter() {
+                    if f.key != "description" {
+                        values.insert(f.key.clone(), f.input.text().to_string());
+                    }
+                }
+                let description = get("description")
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string);
+                vec![Action::ConfirmEditOption {
+                    owner: owner.clone(),
+                    key: key.clone(),
+                    values,
+                    description,
+                }]
+            }
+            PromptKind::ExtractVariable => {
+                let name = get("name").filter(|s| !s.is_empty())?.to_string();
+                let destination = match get("destination") {
+                    Some("Active env value") => ExtractDestination::ActiveEnv,
+                    Some("This request") => ExtractDestination::Request,
+                    _ => ExtractDestination::ProjectDefault,
+                };
+                vec![Action::ConfirmExtractVariable { name, destination }]
+            }
+            PromptKind::ExtractSelection(surface) => {
+                let name = get("name").filter(|s| !s.is_empty())?.to_string();
+                let destination = match get("destination") {
+                    Some("Active env value") => ExtractDestination::ActiveEnv,
+                    Some("This request") => ExtractDestination::Request,
+                    _ => ExtractDestination::ProjectDefault,
+                };
+                vec![Action::ConfirmExtractSelection {
+                    name,
+                    destination,
+                    surface: *surface,
+                }]
+            }
+            PromptKind::ExtractSelector(source) => {
+                let name = get("name").filter(|s| !s.is_empty())?.to_string();
+                let option = get("option").filter(|s| !s.is_empty())?.to_string();
+                vec![Action::ConfirmExtractToSelector {
+                    name,
+                    option,
+                    shared: get("scope") == Some("Shared"),
+                    source: *source,
+                }]
+            }
+            PromptKind::EditVarValue {
+                name,
+                pending_removals,
+                ..
+            } => {
+                // An emptied value is a legitimate edit, so no
+                // non-empty filter here; removing the stored
+                // value outright is the Remove button.
+                let value = fields
+                    .iter()
+                    .find(|f| f.key == "value")
+                    .map(|f| f.input.text().to_string())?;
+                let chosen = get("destination").unwrap_or_default();
+                let destination = destination_from_label(chosen);
+                // Pending removals land first. The chosen scope
+                // is the one exception: cycling back onto a
+                // removed scope and typing a value means "set
+                // it after all" (the write replaces the
+                // removal); leaving its box empty means the
+                // removal stands and nothing blank is written.
+                let chosen_pending = pending_removals.iter().any(|l| l == chosen);
+                let keep_write = !(chosen_pending && value.is_empty());
+                let mut actions: Vec<Action> = pending_removals
+                    .iter()
+                    .filter(|l| !(keep_write && *l == chosen))
+                    .map(|l| Action::RemoveVarValue {
+                        name: name.clone(),
+                        destination: destination_from_label(l),
+                    })
+                    .collect();
+                if keep_write {
+                    actions.push(Action::ConfirmEditVarValue {
+                        name: name.clone(),
+                        value,
+                        destination,
+                    });
+                }
+                actions
+            }
+            _ => return None, // not a MultiPrompt kind
+        };
+        Some(ModalResult {
+            actions,
             close: true,
             ..Default::default()
         })
@@ -1688,20 +1828,89 @@ impl ModalStack {
                 focus,
                 ..
             } => match key.code {
-                // The field rule: Esc closes the field onto the button
-                // row (Confirm aimed); Esc there is the cancel.
+                // Enter/Space/plain-i reopen a selected field (spec
+                // 2026-09-16's shared rule) — a choice field never opens,
+                // it only cycles via Left/Right.
+                _ if crate::keys::opens_field(&key)
+                    && !*field_open
+                    && fields[*focus].choices.is_empty() =>
+                {
+                    *field_open = true;
+                    None
+                }
+                // The field rule: the first Esc closes an open field to
+                // selected (caret gone, text kept); a second Esc, from
+                // selected, lands on the button row (Confirm aimed) — Esc
+                // there is the cancel.
+                KeyCode::Esc if *field_open => {
+                    fields[*focus].input.end_edit();
+                    *field_open = false;
+                    None
+                }
                 KeyCode::Esc => {
                     *button_focus = Some(FormButton::Confirm);
                     None
                 }
-                KeyCode::Tab | KeyCode::Down => {
+                // Enter used to submit; now it only closes an open field
+                // to selected, same as Esc — submitting is `confirm_top`'s
+                // job alone (the button row's Confirm, or a chord).
+                KeyCode::Enter if *field_open => {
+                    fields[*focus].input.end_edit();
+                    *field_open = false;
+                    None
+                }
+                // Tab/Down off a selected choice field (which never opens,
+                // so `field_open` is already `false` there) must still
+                // walk focus off it — otherwise Down below (guarded on
+                // `field_open`) would swallow it. Checked ahead of the
+                // generic Tab/BackTab and Down/Up arms.
+                KeyCode::Tab | KeyCode::Down if !fields[*focus].choices.is_empty() => {
                     *focus = (*focus + 1) % fields.len();
-                    None // swallowed: modals capture all input
+                    None
                 }
-                KeyCode::BackTab | KeyCode::Up => {
+                KeyCode::BackTab | KeyCode::Up if !fields[*focus].choices.is_empty() => {
                     *focus = (*focus + fields.len() - 1) % fields.len();
-                    None // swallowed: modals capture all input
+                    None
                 }
+                // Tab keeps the state it started in (spec 2026-09-16): an
+                // open field's Tab closes it and opens the next (unless
+                // the next is a choice field, which never opens); a
+                // selected field's Tab just moves the selection.
+                KeyCode::Tab => {
+                    let was_open = *field_open;
+                    if was_open {
+                        fields[*focus].input.end_edit();
+                    }
+                    *focus = (*focus + 1) % fields.len();
+                    *field_open = was_open && fields[*focus].choices.is_empty();
+                    None
+                }
+                KeyCode::BackTab => {
+                    let was_open = *field_open;
+                    if was_open {
+                        fields[*focus].input.end_edit();
+                    }
+                    *focus = (*focus + fields.len() - 1) % fields.len();
+                    *field_open = was_open && fields[*focus].choices.is_empty();
+                    None
+                }
+                // Down/Up always drop to selected on the neighbouring
+                // field, distinct from Tab/BackTab above.
+                KeyCode::Down if *field_open => {
+                    fields[*focus].input.end_edit();
+                    *focus = (*focus + 1) % fields.len();
+                    *field_open = false;
+                    None
+                }
+                KeyCode::Up if *field_open => {
+                    fields[*focus].input.end_edit();
+                    *focus = (*focus + fields.len() - 1) % fields.len();
+                    *field_open = false;
+                    None
+                }
+                // A choice field's Left/Right cycle regardless of
+                // open/selected — choice fields never open, so this is
+                // unaffected by the split.
                 KeyCode::Left if !fields[*focus].choices.is_empty() => {
                     fields[*focus].cycle(-1);
                     resync_after_choice_cycle(kind, fields);
@@ -1712,155 +1921,63 @@ impl ModalStack {
                     resync_after_choice_cycle(kind, fields);
                     None // swallowed: modals capture all input
                 }
-                KeyCode::Enter => {
-                    let get = |k: &str| {
-                        fields
-                            .iter()
-                            .find(|f| f.key == k)
-                            .map(|f| f.input.text().trim())
-                    };
-                    let actions = match kind {
-                        PromptKind::NewOptionInline { owner } => {
-                            let key_text = get("key").filter(|s| !s.is_empty())?.to_string();
-                            let mut values = IndexMap::new();
-                            for f in fields.iter() {
-                                if let Some(field) = f.key.strip_prefix(NEW_OPTION_FIELD) {
-                                    values.insert(field.to_string(), f.input.text().to_string());
-                                }
-                            }
-                            let description = get("description")
-                                .filter(|s| !s.is_empty())
-                                .map(str::to_string);
-                            vec![Action::ConfirmNewOptionInline {
-                                owner: owner.clone(),
-                                key: key_text,
-                                values,
-                                description,
-                            }]
-                        }
-                        PromptKind::EditOption { owner, key } => {
-                            let mut values = IndexMap::new();
-                            for f in fields.iter() {
-                                if f.key != "description" {
-                                    values.insert(f.key.clone(), f.input.text().to_string());
-                                }
-                            }
-                            let description = get("description")
-                                .filter(|s| !s.is_empty())
-                                .map(str::to_string);
-                            vec![Action::ConfirmEditOption {
-                                owner: owner.clone(),
-                                key: key.clone(),
-                                values,
-                                description,
-                            }]
-                        }
-                        PromptKind::ExtractVariable => {
-                            let name = get("name").filter(|s| !s.is_empty())?.to_string();
-                            let destination = match get("destination") {
-                                Some("Active env value") => ExtractDestination::ActiveEnv,
-                                Some("This request") => ExtractDestination::Request,
-                                _ => ExtractDestination::ProjectDefault,
-                            };
-                            vec![Action::ConfirmExtractVariable { name, destination }]
-                        }
-                        PromptKind::ExtractSelection(surface) => {
-                            let name = get("name").filter(|s| !s.is_empty())?.to_string();
-                            let destination = match get("destination") {
-                                Some("Active env value") => ExtractDestination::ActiveEnv,
-                                Some("This request") => ExtractDestination::Request,
-                                _ => ExtractDestination::ProjectDefault,
-                            };
-                            vec![Action::ConfirmExtractSelection {
-                                name,
-                                destination,
-                                surface: *surface,
-                            }]
-                        }
-                        PromptKind::ExtractSelector(source) => {
-                            let name = get("name").filter(|s| !s.is_empty())?.to_string();
-                            let option = get("option").filter(|s| !s.is_empty())?.to_string();
-                            vec![Action::ConfirmExtractToSelector {
-                                name,
-                                option,
-                                shared: get("scope") == Some("Shared"),
-                                source: *source,
-                            }]
-                        }
-                        PromptKind::EditVarValue {
-                            name,
-                            pending_removals,
-                            ..
-                        } => {
-                            // An emptied value is a legitimate edit, so no
-                            // non-empty filter here; removing the stored
-                            // value outright is the Remove button.
-                            let value = fields
-                                .iter()
-                                .find(|f| f.key == "value")
-                                .map(|f| f.input.text().to_string())?;
-                            let chosen = get("destination").unwrap_or_default();
-                            let destination = destination_from_label(chosen);
-                            // Pending removals land first. The chosen scope
-                            // is the one exception: cycling back onto a
-                            // removed scope and typing a value means "set
-                            // it after all" (the write replaces the
-                            // removal); leaving its box empty means the
-                            // removal stands and nothing blank is written.
-                            let chosen_pending = pending_removals.iter().any(|l| l == chosen);
-                            let keep_write = !(chosen_pending && value.is_empty());
-                            let mut actions: Vec<Action> = pending_removals
-                                .iter()
-                                .filter(|l| !(keep_write && *l == chosen))
-                                .map(|l| Action::RemoveVarValue {
-                                    name: name.clone(),
-                                    destination: destination_from_label(l),
-                                })
-                                .collect();
-                            if keep_write {
-                                actions.push(Action::ConfirmEditVarValue {
-                                    name: name.clone(),
-                                    value,
-                                    destination,
-                                });
-                            }
-                            actions
-                        }
-                        _ => return None, // not a MultiPrompt kind
-                    };
-                    Some(ModalResult {
-                        actions,
-                        close: true,
-                        ..Default::default()
-                    })
-                }
-                _ => {
-                    if fields[*focus].choices.is_empty() {
-                        fields[*focus].input.handle_key(key);
-                    }
+                _ if *field_open && fields[*focus].choices.is_empty() => {
+                    fields[*focus].input.handle_key(key);
                     None // swallowed: modals capture all input
                 }
+                _ => None, // selected, not a recognized nav/open key: swallowed
             },
             Modal::FieldsEditor(state) => match key.code {
-                // The field rule: Esc closes the field onto the button
-                // row (Confirm aimed); Esc there is the cancel.
+                // Enter/Space/plain-i reopen a selected row (spec
+                // 2026-09-16's shared rule), same as every other form
+                // modal.
+                _ if crate::keys::opens_field(&key) && !*field_open => {
+                    *field_open = true;
+                    None
+                }
+                // The field rule: the first Esc closes an open row to
+                // selected (caret gone, text kept); a second Esc, from
+                // selected, lands on the button row (Confirm aimed) — Esc
+                // there is the cancel.
+                KeyCode::Esc if *field_open => {
+                    if let Some(row) = state.rows.get_mut(state.focus) {
+                        row.input.end_edit();
+                    }
+                    *field_open = false;
+                    None
+                }
                 KeyCode::Esc => {
                     *button_focus = Some(FormButton::Confirm);
                     None
                 }
-                KeyCode::Enter => Some(ModalResult {
-                    actions: vec![Action::ApplyGroupFields {
-                        selector: state.selector.clone(),
-                        slots: state.slots(),
-                    }],
-                    close: true,
-                    ..Default::default()
-                }),
+                // Enter used to submit; now it only closes an open row to
+                // selected, same as Esc — submitting is `confirm_top`'s
+                // job alone (the button row's Confirm, or a chord).
+                KeyCode::Enter if *field_open => {
+                    if let Some(row) = state.rows.get_mut(state.focus) {
+                        row.input.end_edit();
+                    }
+                    *field_open = false;
+                    None
+                }
+                // This surface has no arrow-vs-tab distinction (one row
+                // per `focus_step`), so Tab/Down and BackTab/Up stay the
+                // same pair they always were.
                 KeyCode::Tab | KeyCode::Down => {
+                    if *field_open
+                        && let Some(row) = state.rows.get_mut(state.focus)
+                    {
+                        row.input.end_edit();
+                    }
                     state.focus_step(1);
                     None // swallowed: modals capture all input
                 }
                 KeyCode::BackTab | KeyCode::Up => {
+                    if *field_open
+                        && let Some(row) = state.rows.get_mut(state.focus)
+                    {
+                        row.input.end_edit();
+                    }
                     state.focus_step(-1);
                     None // swallowed: modals capture all input
                 }
@@ -1876,7 +1993,7 @@ impl ModalStack {
                     state.toggle(state.focus);
                     None
                 }
-                _ => {
+                _ if *field_open => {
                     if let Some(row) = state.rows.get_mut(state.focus)
                         && !row.removed
                     {
@@ -1884,6 +2001,7 @@ impl ModalStack {
                     }
                     None // swallowed: modals capture all input
                 }
+                _ => None,
             },
         }
     }
@@ -2617,6 +2735,16 @@ impl ModalStack {
                         crate::hit::Hit::ModalField(i),
                     );
                     if field.choices.is_empty() {
+                        // The resting-stop highlight (the fill lift below)
+                        // applies while the field is merely *selected*
+                        // too. The caret itself (and the reversed
+                        // placeholder cell) is a stronger claim — it must
+                        // track whether the field actually has the caret,
+                        // i.e. `field_open` too, same split as `Prompt`'s
+                        // own field (spec 2026-09-16). Choice fields never
+                        // reach here — they render as static text with
+                        // arrows in the `else` branch below.
+                        let field_caret_live = focused && field_open;
                         // The value popup's empty value box reads "(not
                         // set)" (the variable form's own wording) — the
                         // chosen scope stores nothing, and typing replaces
@@ -2625,10 +2753,10 @@ impl ModalStack {
                             && field.key == "value"
                             && field.input.text().is_empty();
                         let content = if placeholder {
-                            value_placeholder_line(focused, theme)
+                            value_placeholder_line(field_caret_live, theme)
                         } else {
                             field.input.draw_line_windowed(
-                                focused,
+                                field_caret_live,
                                 theme,
                                 field_w.saturating_sub(2),
                             )
@@ -2786,9 +2914,14 @@ impl ModalStack {
                         }
                         .paint(frame.buffer_mut(), field_area, theme);
                     } else {
+                        // Same split as `Prompt`/`MultiPrompt`'s own
+                        // field (spec 2026-09-16): the resting-stop
+                        // highlight applies while merely selected, but
+                        // the caret must track `field_open` too.
+                        let row_caret_live = focused && field_open;
                         TextField {
                             content: row.input.draw_line_windowed(
-                                focused,
+                                row_caret_live,
                                 theme,
                                 field_w.saturating_sub(2),
                             ),
@@ -4486,6 +4619,33 @@ mod tests {
         m
     }
 
+    /// A `MultiPrompt` fixture matching what `Action::ExtractToVariable`
+    /// actually builds (`app.rs`): a plain text field plus a choice field,
+    /// seeded non-empty so `confirm_top` has something to submit.
+    fn sample_multi_prompt() -> Modal {
+        Modal::MultiPrompt {
+            title: "Extract to variable".into(),
+            fields: vec![
+                PromptField::text("name", "Name", "seed"),
+                PromptField::choice(
+                    "destination",
+                    "Destination",
+                    &["Project default", "Active env value", "This request"],
+                ),
+            ],
+            focus: 0,
+            kind: PromptKind::ExtractVariable,
+        }
+    }
+
+    /// A `FieldsEditor` fixture matching the selector pane's "Fields of X".
+    fn sample_fields_editor() -> Modal {
+        Modal::FieldsEditor(FieldsEditorState::new(
+            "sel".into(),
+            &["a".to_string(), "b".to_string()],
+        ))
+    }
+
     #[test]
     fn a_prompt_opens_on_push_and_types_at_once() {
         let mut m = ModalStack::default();
@@ -4739,7 +4899,9 @@ mod tests {
         // Move to the second field and type into it.
         m.handle_key(key(KeyCode::Tab));
         m.handle_key(key(KeyCode::Char('b')));
-        // Esc lands on the button row from the second field…
+        // The first Esc closes the field to selected; the second lands
+        // on the button row from the second field…
+        m.handle_key(key(KeyCode::Esc));
         m.handle_key(key(KeyCode::Esc));
         assert_eq!(m.button_focus(), Some(FormButton::Confirm));
         // …and ↑ hands the caret back to that same field, not the first.
@@ -4754,6 +4916,128 @@ mod tests {
             panic!("still a MultiPrompt");
         };
         assert_eq!(*focus, 1, "focus stayed on the second field");
+    }
+
+    /// Same field-open/selected split as `Prompt`/`NewProject` (spec
+    /// 2026-09-16): the second Esc from a `MultiPrompt` reaches the button
+    /// row, and `confirm_top` is the only thing left that submits.
+    #[test]
+    fn multiprompt_esc_then_esc_reaches_the_buttons_and_confirm_top_submits() {
+        let mut m = ModalStack::default();
+        m.push(sample_multi_prompt());
+        m.handle_key(key(KeyCode::Esc));
+        assert!(!m.field_open());
+        m.handle_key(key(KeyCode::Esc));
+        assert_eq!(m.button_focus(), Some(FormButton::Confirm));
+        assert!(m.confirm_top().is_some());
+    }
+
+    /// Enter/Space/plain-i reopen a selected `FieldsEditor` row, same rule
+    /// as every other form modal.
+    #[test]
+    fn fields_editor_i_reopens_a_selected_row() {
+        let mut m = ModalStack::default();
+        m.push(sample_fields_editor());
+        m.handle_key(key(KeyCode::Esc));
+        assert!(!m.field_open());
+        m.handle_key(key(KeyCode::Char('i')));
+        assert!(m.field_open());
+    }
+
+    /// Tab/Down off a selected choice field (which never opens, so
+    /// `field_open` is always `false` there) must still walk focus off it
+    /// — `ExtractVariable`'s destination field is exactly this case.
+    #[test]
+    fn tab_and_down_walk_off_a_selected_choice_field() {
+        let mut m = ModalStack::default();
+        m.push(sample_multi_prompt());
+        m.handle_key(key(KeyCode::Tab));
+        let Some(Modal::MultiPrompt { focus, .. }) = m.top() else {
+            panic!("still a MultiPrompt");
+        };
+        assert_eq!(*focus, 1, "Tab moved onto the choice field");
+        assert!(!m.field_open(), "choice fields never open");
+        m.handle_key(key(KeyCode::Down));
+        let Some(Modal::MultiPrompt { focus, .. }) = m.top() else {
+            panic!("still a MultiPrompt");
+        };
+        assert_eq!(*focus, 0, "Down must still walk off a selected choice field");
+    }
+
+    /// Same split as `Prompt`'s field (spec 2026-09-16): a selected but
+    /// closed `MultiPrompt` field keeps its highlight, loses only its
+    /// caret.
+    #[test]
+    fn a_selected_multi_prompt_field_keeps_its_highlight_but_not_its_caret() {
+        let theme = Theme::dark();
+        let mut m = ModalStack::default();
+        m.push(sample_multi_prompt());
+
+        let (buf, hits) = draw_modal_buf_with_hits(&mut m);
+        let field = hits.rect_of(&crate::hit::Hit::ModalInput(0)).unwrap();
+        assert!(
+            row_has_a_reversed_cell(&buf, field),
+            "the caret paints while the field is open"
+        );
+
+        m.handle_key(key(KeyCode::Esc));
+        let (buf, hits) = draw_modal_buf_with_hits(&mut m);
+        let field = hits.rect_of(&crate::hit::Hit::ModalInput(0)).unwrap();
+        assert!(
+            !row_has_a_reversed_cell(&buf, field),
+            "no caret while merely selected"
+        );
+        let focused_fill = TextField::face(ControlState::Focused, &theme);
+        assert_eq!(
+            buf[(field.x + crate::paint::FIELD_PAD, field.y + 1)].bg,
+            focused_fill,
+            "still the resting stop: the highlight stays lifted"
+        );
+
+        m.handle_key(key(KeyCode::Enter));
+        let (buf, hits) = draw_modal_buf_with_hits(&mut m);
+        let field = hits.rect_of(&crate::hit::Hit::ModalInput(0)).unwrap();
+        assert!(
+            row_has_a_reversed_cell(&buf, field),
+            "the caret paints again once the field reopens"
+        );
+    }
+
+    /// Same split, on `FieldsEditor`'s rows.
+    #[test]
+    fn a_selected_fields_editor_row_keeps_its_highlight_but_not_its_caret() {
+        let theme = Theme::dark();
+        let mut m = ModalStack::default();
+        m.push(sample_fields_editor());
+
+        let (buf, hits) = draw_modal_buf_with_hits(&mut m);
+        let field = hits.rect_of(&crate::hit::Hit::ModalInput(0)).unwrap();
+        assert!(
+            row_has_a_reversed_cell(&buf, field),
+            "the caret paints while the row is open"
+        );
+
+        m.handle_key(key(KeyCode::Esc));
+        let (buf, hits) = draw_modal_buf_with_hits(&mut m);
+        let field = hits.rect_of(&crate::hit::Hit::ModalInput(0)).unwrap();
+        assert!(
+            !row_has_a_reversed_cell(&buf, field),
+            "no caret while merely selected"
+        );
+        let focused_fill = TextField::face(ControlState::Focused, &theme);
+        assert_eq!(
+            buf[(field.x + crate::paint::FIELD_PAD, field.y + 1)].bg,
+            focused_fill,
+            "still the resting stop: the highlight stays lifted"
+        );
+
+        m.handle_key(key(KeyCode::Char('i')));
+        let (buf, hits) = draw_modal_buf_with_hits(&mut m);
+        let field = hits.rect_of(&crate::hit::Hit::ModalInput(0)).unwrap();
+        assert!(
+            row_has_a_reversed_cell(&buf, field),
+            "the caret paints again once the row reopens"
+        );
     }
 
     /// A swallowed confirm (empty name) must leave the aim where it was:

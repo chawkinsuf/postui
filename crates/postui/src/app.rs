@@ -2364,6 +2364,10 @@ impl App {
         // Modals first, in the same order as `open_text_field_mut`: a
         // modal over the Settings tab captures the keyboard, and with a
         // form modal's focus on its button row no field is open at all.
+        // A form modal's field merely *selected* (spec 2026-09-16, no
+        // caret painted) still counts as open here — it's still the
+        // field paste/`Action::CloseField` target; only `ModalStack`'s
+        // own `field_open` cares about the caret specifically.
         if !self.modals.is_empty() {
             return self.modals.focused_input().is_some();
         }

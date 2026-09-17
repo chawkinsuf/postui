@@ -823,7 +823,9 @@ fn table_row_context_menu_duplicate_delete_extract_end_to_end() {
     };
     assert!(matches!(kind, PromptKind::ExtractVariable));
     type_into_field(&mut app, "page_num");
-    app.handle_key(enter_key());
+    // Enter now only closes the open field to selected (spec 2026-09-16);
+    // submitting is the button row's Confirm click, same as clicking OK.
+    click_modal_confirm(&mut app);
     assert!(app.modals.is_empty());
     assert_eq!(app.editor.params["page"].value, "{{page_num}}");
 
@@ -1758,10 +1760,20 @@ fn field_open_agrees_with_the_open_text_field() {
         },
     });
     agree(&mut app, true, "a form modal with its field focused");
+    // The first Esc closes the field to selected (spec 2026-09-16, no
+    // caret) — still the paste/`CloseField` target, so `field_open`
+    // agrees with `open_text_field_mut` here too; the second Esc is what
+    // actually leaves the field, landing on the button row.
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(
+        app.modals.button_focus().is_none(),
+        "the first Esc only closes the field to selected"
+    );
+    agree(&mut app, true, "a form modal field closed to selected");
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(
         app.modals.button_focus().is_some(),
-        "Esc from the field lands on the button row"
+        "the second Esc lands on the button row"
     );
     agree(&mut app, false, "a form modal aimed at its button row");
 }
@@ -12085,7 +12097,9 @@ fn confirming_the_value_popup_writes_the_env_scope_and_re_resolves() {
     for c in "https://qa2.example.com".chars() {
         app.handle_key(plain(c));
     }
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    // Enter now only closes the open field to selected (spec 2026-09-16);
+    // submitting is the button row's Confirm click, same as clicking OK.
+    click_modal_confirm(&mut app);
 
     assert!(app.modals.is_empty(), "confirm closes the popup");
     let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
@@ -12138,6 +12152,9 @@ fn clicking_a_choice_field_takes_the_keyboard_off_the_button_row() {
     let (mut app, _dir) = token_popup_app();
     app.update(Action::OpenVarTokenPopup("base_url".into()));
     app.handle_key(plain('x'));
+    // The first Esc closes the field to selected (spec 2026-09-16); the
+    // second parks on the button row.
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(
         app.modals.button_focus().is_some(),
@@ -12251,7 +12268,9 @@ fn a_refused_apply_keeps_the_fields_editor_open() {
     for c in "customer_id".chars() {
         app.handle_key(plain(c));
     }
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    // Enter now only closes the open row to selected (spec 2026-09-16);
+    // submitting is the button row's Confirm click, same as clicking OK.
+    click_modal_confirm(&mut app);
 
     assert!(!app.toasts.is_empty(), "the refusal is surfaced");
     let Some(Modal::FieldsEditor(fe)) = app.modals.top() else {
@@ -12613,6 +12632,9 @@ fn typing_a_value_on_a_marked_scope_writes_it_instead_of_removing() {
     let scope = fields.iter().find(|f| f.key == "destination").unwrap();
     assert_eq!(scope.input.text(), "Active env value");
     app.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+    // BackTab off a choice field lands on the value field merely
+    // *selected* (spec 2026-09-16) — Enter reopens it before typing.
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     for c in "http://new.qa".chars() {
         app.handle_key(plain(c));
     }
@@ -13158,7 +13180,9 @@ fn add_new_entry_writes_to_the_active_envs_entries_table_selects_it_and_restores
     type_into_field(&mut app, "carol");
     app.handle_key(tab_key());
     type_into_field(&mut app, "3003");
-    app.handle_key(enter_key());
+    // Enter now only closes the open field to selected (spec 2026-09-16);
+    // submitting is the button row's Confirm click, same as clicking OK.
+    click_modal_confirm(&mut app);
 
     assert!(app.modals.is_empty(), "closes back to the field");
     assert_eq!(app.focus, PaneId::Editor, "focus restored to where it was");
@@ -13199,7 +13223,9 @@ fn inline_create_accepts_a_free_form_entry_name_with_a_space() {
     type_into_field(&mut app, "user 1");
     app.handle_key(tab_key());
     type_into_field(&mut app, "9009");
-    app.handle_key(enter_key());
+    // Enter now only closes the open field to selected (spec 2026-09-16);
+    // submitting is the button row's Confirm click, same as clicking OK.
+    click_modal_confirm(&mut app);
 
     assert!(
         app.modals.is_empty(),
@@ -13243,7 +13269,9 @@ fn inline_create_on_a_multi_field_group_takes_one_input_per_field() {
     type_into_field(&mut app, "u-3");
     app.handle_key(tab_key());
     type_into_field(&mut app, "c-3");
-    app.handle_key(enter_key());
+    // Enter now only closes the open field to selected (spec 2026-09-16);
+    // submitting is the button row's Confirm click, same as clicking OK.
+    click_modal_confirm(&mut app);
 
     assert!(app.modals.is_empty(), "{:?}", app.toasts.messages());
     let carol = &app.proj().env_data().options["identity"]["carol"].values;
@@ -13316,7 +13344,9 @@ fn the_option_menus_edit_opens_the_prompt_in_the_environment_that_holds_it() {
         app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
     }
     type_into_field(&mut app, "9999");
-    app.handle_key(enter_key());
+    // Enter now only closes the open field to selected (spec 2026-09-16);
+    // submitting is the button row's Confirm click, same as clicking OK.
+    click_modal_confirm(&mut app);
 
     assert!(app.modals.is_empty());
     let env_doc = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
@@ -13396,7 +13426,9 @@ fn extract_to_variable_prompts_writes_and_replaces_field_text_dirty_saved() {
     assert!(matches!(kind, PromptKind::ExtractVariable));
 
     type_into_field(&mut app, "api_key");
-    app.handle_key(enter_key());
+    // Enter now only closes the open field to selected (spec 2026-09-16);
+    // submitting is the button row's Confirm click, same as clicking OK.
+    click_modal_confirm(&mut app);
 
     assert!(app.modals.is_empty());
     let content = rendered_text(&mut app);
@@ -13512,7 +13544,9 @@ fn extract_url(app: &mut App, url: &str, name: &str, rights: u8) {
     for _ in 0..rights {
         app.handle_key(right_key());
     }
-    app.handle_key(enter_key());
+    // Enter now only closes an open field to selected (spec 2026-09-16);
+    // submitting is the button row's Confirm click, same as clicking OK.
+    click_modal_confirm(app);
 }
 
 #[test]
@@ -15218,13 +15252,15 @@ fn fields_editor_remove_button_marks_the_row_and_confirm_deletes_the_field() {
     assert!(!fe.rows[1].removed);
 
     // ...remove it again and apply: the removal lands at once (undoable).
+    // Enter now only closes the open row to selected (spec 2026-09-16);
+    // submitting is the button row's Confirm click, same as clicking OK.
     rendered_text(&mut app);
     let r = app
         .hits
         .rect_of(&crate::hit::Hit::ModalRowToggle(1))
         .unwrap();
     app.handle_mouse(left_down(r.x, r.y));
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    click_modal_confirm(&mut app);
     assert!(app.modals.is_empty(), "removal is undoable, no confirm");
     assert_eq!(
         app.proj().variables().selectors["creds"].fields,
@@ -15242,7 +15278,9 @@ fn fields_editor_rename_types_into_the_row() {
     for c in "uid".chars() {
         app.handle_key(plain(c));
     }
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    // Enter now only closes the open row to selected (spec 2026-09-16);
+    // submitting is the button row's Confirm click, same as clicking OK.
+    click_modal_confirm(&mut app);
     assert!(app.modals.is_empty(), "apply closes the editor");
     assert_eq!(
         app.proj().variables().selectors["creds"].fields,
@@ -15265,7 +15303,9 @@ fn fields_editor_add_button_appends_a_focused_row() {
     for c in "region".chars() {
         app.handle_key(plain(c));
     }
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    // Enter now only closes the open row to selected (spec 2026-09-16);
+    // submitting is the button row's Confirm click, same as clicking OK.
+    click_modal_confirm(&mut app);
     assert!(app.modals.is_empty());
     assert_eq!(
         app.proj().variables().selectors["creds"].fields,
@@ -15288,7 +15328,9 @@ fn fields_editor_alt_a_appends_a_focused_row() {
     for c in "region".chars() {
         app.handle_key(plain(c));
     }
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    // Enter now only closes the open row to selected (spec 2026-09-16);
+    // submitting is the button row's Confirm click, same as clicking OK.
+    click_modal_confirm(&mut app);
     assert!(app.modals.is_empty());
     assert_eq!(
         app.proj().variables().selectors["creds"].fields,
@@ -15326,10 +15368,12 @@ fn fields_editor_alt_d_toggles_removal_of_the_focused_row() {
     assert!(!fe.rows[0].removed, "alt+d on a removed row restores it");
 
     // Remove the second field and apply: the removal lands at once
-    // (undoable).
+    // (undoable). Enter now only closes the open row to selected (spec
+    // 2026-09-16); submitting is the button row's Confirm click, same as
+    // clicking OK.
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     app.handle_key(alt('d'));
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    click_modal_confirm(&mut app);
     assert!(app.modals.is_empty(), "removal is undoable, no confirm");
     assert_eq!(
         app.proj().variables().selectors["creds"].fields,
@@ -19896,7 +19940,9 @@ fn extract_selector_shared_puts_the_option_in_variables_toml() {
     app.handle_key(tab_key()); // option, seeded "v2"
     app.handle_key(tab_key()); // scope
     app.handle_key(right_key()); // Shared
-    app.handle_key(enter_key());
+    // Enter now only closes an open field to selected (spec 2026-09-16);
+    // submitting is the button row's Confirm click, same as clicking OK.
+    click_modal_confirm(&mut app);
 
     assert!(app.modals.is_empty(), "{:?}", app.toasts.messages());
     assert_eq!(app.editor.url.text(), "{{api_version}}");

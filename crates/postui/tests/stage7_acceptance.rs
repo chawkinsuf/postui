@@ -692,7 +692,7 @@ fn a_legacy_project_migrates_then_grows_a_group_whose_selection_drives_resolutio
     type_text(&mut app, "zone");
     click(&mut app, Hit::ModalAddRow);
     type_text(&mut app, "dc");
-    key(&mut app, KeyCode::Enter);
+    submit_prompt(&mut app);
     assert_eq!(
         app.proj().variables().selectors["region"].fields,
         ["zone", "dc"],
