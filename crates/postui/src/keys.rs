@@ -257,6 +257,11 @@ pub(crate) fn named_actions() -> Vec<(&'static str, Action)> {
         ("tab_vars", Action::EditorTabSelect(2)),
         ("editor_tab_next", Action::EditorTabCycle(1)),
         ("editor_tab_prev", Action::EditorTabCycle(-1)),
+        // The one tab chord every pane shares: resolved against the
+        // focused pane (editor strip, response views, Manage strip) in
+        // `App::update`.
+        ("tab_next", Action::CycleTabs(1)),
+        ("tab_prev", Action::CycleTabs(-1)),
         ("cycle_method", Action::CycleMethod),
         ("method_choose", Action::OpenMethodDropdown),
         ("focus_url", Action::FocusUrl),
@@ -376,8 +381,8 @@ impl Keymap {
             ("alt+shift+x", Action::CycleEnv(-1)),
             ("alt+c", Action::CycleSpace(1)),
             ("alt+shift+c", Action::CycleSpace(-1)),
-            ("alt+right", Action::EditorTabCycle(1)),
-            ("alt+left", Action::EditorTabCycle(-1)),
+            ("alt+right", Action::CycleTabs(1)),
+            ("alt+left", Action::CycleTabs(-1)),
             ("alt+m", Action::CycleMethod),
             ("alt+shift+m", Action::OpenMethodDropdown),
             ("alt+u", Action::FocusUrl),
@@ -915,8 +920,8 @@ mod tests {
         assert_eq!(get("alt+["), None);
         assert_eq!(get("alt+shift+s"), None);
         assert_eq!(get("alt+shift+e"), None);
-        assert_eq!(get("alt+right"), Some(Action::EditorTabCycle(1)));
-        assert_eq!(get("alt+left"), Some(Action::EditorTabCycle(-1)));
+        assert_eq!(get("alt+right"), Some(Action::CycleTabs(1)));
+        assert_eq!(get("alt+left"), Some(Action::CycleTabs(-1)));
         assert_eq!(get("alt+m"), Some(Action::CycleMethod));
         assert_eq!(get("alt+shift+m"), Some(Action::OpenMethodDropdown));
         assert_eq!(get("alt+u"), Some(Action::FocusUrl));

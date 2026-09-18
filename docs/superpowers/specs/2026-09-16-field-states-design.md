@@ -96,6 +96,13 @@ whenever `sub_focus != Url`). `Editor::plain_keys_type` becomes
 - Selected: Enter / Space / `i` open. ← / `h` → `Method`. ↓ / `j` →
   `Tabs`. Esc → `None` (blur, as the method badge and tab strip do).
   `:` and `u` fall through to the keymap; other letters do nothing.
+
+  *Amended 2026-09-18:* `SubFocus::Tabs` is gone — the strip is
+  switched by alt+←/→ (`Action::CycleTabs`) or a click, never focused.
+  ↓ / `j` from the URL line or the method badge lands in the content
+  (first row, or the ghost `+ Add` row, selected); ↑ / `k` from the
+  content's top row (or the body's first line) lands on `Url`,
+  selected. Esc still blurs to `None`.
 - Open: as today. ← at caret 0 → `Method` (closes first). ↓ closes
   and lands on `Tabs`. Enter / Esc close to selected, sub-focus stays
   `Url`. ↑ closes and stays selected (there is nothing above).

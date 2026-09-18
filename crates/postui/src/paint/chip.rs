@@ -66,9 +66,6 @@ pub struct TabStrip<'a> {
     pub active: usize,
     /// The index of the tab currently under the mouse, if any.
     pub hovered: Option<usize>,
-    /// Whether the strip itself holds keyboard focus (arrow keys switch
-    /// tabs). Recolors the underline segment in the focus-ring color.
-    pub focused: bool,
     /// The underline segment in fractional columns relative to `area.x`:
     /// `(left, width)`. Callers animate this (Task 10); pass the active
     /// tab's own span (from [`TabStrip::spans`]) for a static strip.
@@ -198,11 +195,10 @@ impl TabStrip<'_> {
                 cell.set_bg(on);
             }
         }
-        let accent = if self.focused {
-            theme.focus_ring
-        } else {
-            theme.accent
-        };
+        // No strip is ever the keyboard cursor (tabs switch by alt+←/→ or
+        // a click), so the segment is always the accent — never the
+        // focus ring.
+        let accent = theme.accent;
         let (left, width) = self.underline;
         if width > 0.0 {
             let right = left + width;
@@ -436,7 +432,6 @@ mod tests {
                 tabs: &tabs,
                 active: 0,
                 hovered: None,
-                focused: false,
                 underline: (spans[0].0 as f32, spans[0].1 as f32),
                 disabled: None,
                 right_anchored: 0,
@@ -461,33 +456,10 @@ mod tests {
     }
 
     #[test]
-    fn focused_tabstrip_recolors_underline_and_mid_slide_underline_straddles_tabs() {
+    fn mid_slide_underline_straddles_tabs() {
         let theme = Theme::dark();
         let tabs = vec![("Params".to_string(), None), ("Headers".to_string(), None)];
         let spans = TabStrip::spans(&tabs);
-
-        // focused: segment fg == theme.focus_ring
-        let mut term = Terminal::new(TestBackend::new(40, 2)).unwrap();
-        let mut rects = Vec::new();
-        term.draw(|f| {
-            rects = TabStrip {
-                tabs: &tabs,
-                active: 0,
-                hovered: None,
-                focused: true,
-                underline: (spans[0].0 as f32, spans[0].1 as f32),
-                disabled: None,
-                right_anchored: 0,
-            }
-            .paint(f.buffer_mut(), Rect::new(0, 0, 40, 2), theme.panel, &theme);
-        })
-        .unwrap();
-        let under_active = buf_cell(&term, rects[0].x + 1, 1);
-        assert_eq!(under_active.symbol(), "━");
-        assert_eq!(
-            under_active.fg, theme.focus_ring,
-            "focus recolors the segment"
-        );
 
         // underline (spans[0].0 + 3.0, w): segment paints at the given
         // offset, not under either tab exactly — proves the caller-driven
@@ -501,7 +473,6 @@ mod tests {
                     tabs: &tabs,
                     active: 0,
                     hovered: None,
-                    focused: false,
                     underline: (left0 as f32 + 3.0, width0 as f32),
                     disabled: None,
                     right_anchored: 0,
@@ -549,7 +520,6 @@ mod tests {
                 tabs: &tabs,
                 active: 0,
                 hovered: None,
-                focused: false,
                 // Left edge at column 2.5, right edge at column 6.5: both
                 // boundaries land mid-cell.
                 underline: (2.5, 4.0),
@@ -597,7 +567,6 @@ mod tests {
                 tabs: &tabs,
                 active: 0,
                 hovered: None,
-                focused: false,
                 underline: (spans[0].0 as f32, spans[0].1 as f32),
                 disabled: None,
                 right_anchored: 0,
@@ -624,7 +593,6 @@ mod tests {
                 tabs: &tabs,
                 active: 0,
                 hovered: Some(1),
-                focused: false,
                 underline: (spans[0].0 as f32, spans[0].1 as f32),
                 disabled: None,
                 right_anchored: 0,

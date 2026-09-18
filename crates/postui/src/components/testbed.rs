@@ -270,7 +270,6 @@ pub fn draw_testbed(frame: &mut Frame, area: Rect, ctx: &DrawCtx) {
         tabs: &tabs,
         active: 0,
         hovered: None,
-        focused: false,
         underline: (spans[0].0 as f32, spans[0].1 as f32),
         disabled: None,
         right_anchored: 0,
@@ -307,7 +306,6 @@ pub fn draw_testbed(frame: &mut Frame, area: Rect, ctx: &DrawCtx) {
         tabs: &tabs,
         active: 0,
         hovered: None,
-        focused: false,
         underline: (mid_left, spans[0].1 as f32),
         disabled: None,
         right_anchored: 0,
@@ -454,7 +452,6 @@ fn draw_motion_section(buf: &mut Buffer, area: Rect, x0: u16, y: &mut u16, ctx: 
             tabs: &motion_tabs,
             active: 0,
             hovered: None,
-            focused: false,
             disabled: None,
             underline: (
                 lerp(spans[0].0, spans[1].0, t),

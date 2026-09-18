@@ -705,15 +705,18 @@ impl ReadyView {
         self.parsing && self.generation == generation
     }
 
-    /// The view `t` steps to: Pretty → Raw → Headers → Pretty, with Pretty
+    /// The view `delta` tabs away along the strip's on-screen order
+    /// (Pretty, Raw, Headers), wrapping at either end, with Pretty
     /// skipped when there is no tree to show.
-    fn next_view_mode(&self) -> ViewMode {
-        match self.mode {
-            ViewMode::Pretty => ViewMode::Raw,
-            ViewMode::Raw => ViewMode::Headers,
-            ViewMode::Headers if self.has_tree_view() => ViewMode::Pretty,
-            ViewMode::Headers => ViewMode::Raw,
-        }
+    fn cycle_view_mode(&self, delta: i8) -> ViewMode {
+        const ORDER: [ViewMode; 3] = [ViewMode::Pretty, ViewMode::Raw, ViewMode::Headers];
+        let order: Vec<ViewMode> = ORDER
+            .into_iter()
+            .filter(|m| *m != ViewMode::Pretty || self.has_tree_view())
+            .collect();
+        let at = order.iter().position(|m| *m == self.mode).unwrap_or(0);
+        let len = order.len() as i8;
+        order[(at as i8 + delta).rem_euclid(len) as usize]
     }
 
     /// The tree the `Pretty` view actually shows: the filtered tree while a
@@ -1230,10 +1233,11 @@ impl Response {
         self.view.as_ref()
     }
 
-    /// The view `t` steps to, or `None` when there is no ready view (the
-    /// key is a no-op then). See `ReadyView::next_view_mode`.
-    pub fn next_view_mode(&self) -> Option<ViewMode> {
-        self.view.as_ref().map(|v| v.next_view_mode())
+    /// The view `delta` tabs away (alt+←/→ with the pane focused), or
+    /// `None` when there is no ready view (the chord is a no-op then). See
+    /// `ReadyView::cycle_view_mode`.
+    pub fn cycle_view_mode(&self, delta: i8) -> Option<ViewMode> {
+        self.view.as_ref().map(|v| v.cycle_view_mode(delta))
     }
 
     /// The jq bar's current text.
@@ -2345,10 +2349,9 @@ impl Response {
         }
 
         match ev.code {
-            // One key walks the three views (spec 2026-09-15: it replaces
-            // `r` and `h`, freeing `h` for the motion). Dispatched as an
-            // action so the tab underline retargets like a click.
-            KeyCode::Char('t') if ev.modifiers.is_empty() => Some(Action::CycleResponseView),
+            // No pane-local view key: the strip is walked by the tab chord
+            // every pane shares (alt+←/→ → `Action::CycleTabs`, resolved
+            // against the focused pane in `app.rs`).
             KeyCode::Char('c') if view.mode == ViewMode::Headers => Some(Action::CopyToClipboard(
                 CopyTarget::ResponseHeader(view.cursor),
             )),
@@ -2925,9 +2928,6 @@ fn draw_header_strip(
         tabs: &tabs,
         active,
         hovered,
-        // Response tabs are switched by plain keys (r/h), not by focusing
-        // the strip, so it never claims keyboard focus of its own.
-        focused: false,
         underline,
         disabled: None,
         right_anchored: 0,
@@ -3873,18 +3873,11 @@ mod tests {
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
-    /// Presses a key and applies a resulting `ResponseViewMode` or
-    /// `CycleResponseView` action the way `app.rs` would — the component
-    /// itself no longer mutates the mode.
-    fn press(r: &mut Response, ev: KeyEvent) {
-        match r.handle_key(ev) {
-            Some(Action::ResponseViewMode(mode)) => r.set_view_mode(mode),
-            Some(Action::CycleResponseView) => {
-                if let Some(next) = r.next_view_mode() {
-                    r.set_view_mode(next);
-                }
-            }
-            _ => {}
+    /// Steps the view forward the way `app.rs`'s `CycleResponseView(1)`
+    /// arm does (alt+→ with the pane focused).
+    fn cycle(r: &mut Response) {
+        if let Some(next) = r.cycle_view_mode(1) {
+            r.set_view_mode(next);
         }
     }
 
@@ -4446,15 +4439,15 @@ mod tests {
         let body = "{\"a\": 1,\n     \"b\": 2}";
         let mut r = ready(body);
         assert!(render(&mut r).contains("  \"a\": 1,"), "pretty re-indents");
-        press(&mut r, ch('t'));
+        cycle(&mut r);
         let out = render(&mut r);
         assert!(out.contains("{\"a\": 1,"), "raw is verbatim: {out}");
         assert!(
             out.contains("     \"b\": 2}"),
             "raw keeps original spacing: {out}"
         );
-        press(&mut r, ch('t')); // Raw -> Headers
-        press(&mut r, ch('t')); // Headers -> Pretty
+        cycle(&mut r); // Raw -> Headers
+        cycle(&mut r); // Headers -> Pretty
         assert!(
             render(&mut r).contains("  \"a\": 1,"),
             "cycles back to pretty"
@@ -4565,11 +4558,11 @@ mod tests {
     #[test]
     fn headers_view_toggles_and_renders_a_header() {
         let mut r = ready(r#"{"a": 1}"#);
-        press(&mut r, ch('t')); // Pretty -> Raw
-        press(&mut r, ch('t')); // Raw -> Headers
+        cycle(&mut r); // Pretty -> Raw
+        cycle(&mut r); // Raw -> Headers
         let out = render(&mut r);
         assert!(out.contains("content-type: application/json"), "{out}");
-        press(&mut r, ch('t')); // Headers -> Pretty
+        cycle(&mut r); // Headers -> Pretty
         assert!(
             render(&mut r).contains("\"a\""),
             "t cycles back to the body view"
@@ -4704,18 +4697,18 @@ mod tests {
         let mut r = ready(r#"{"a":1}"#);
         render(&mut r);
         assert_eq!(r.view().unwrap().mode, ViewMode::Pretty);
-        press(&mut r, ch('t'));
+        cycle(&mut r);
         assert_eq!(r.view().unwrap().mode, ViewMode::Raw);
-        press(&mut r, ch('t'));
+        cycle(&mut r);
         assert_eq!(r.view().unwrap().mode, ViewMode::Headers);
-        press(&mut r, ch('t'));
+        cycle(&mut r);
         assert_eq!(r.view().unwrap().mode, ViewMode::Pretty);
         let mut r = ready("not json");
         render(&mut r);
         assert_eq!(r.view().unwrap().mode, ViewMode::Raw);
-        press(&mut r, ch('t'));
+        cycle(&mut r);
         assert_eq!(r.view().unwrap().mode, ViewMode::Headers);
-        press(&mut r, ch('t'));
+        cycle(&mut r);
         assert_eq!(r.view().unwrap().mode, ViewMode::Raw, "no tree: Raw and Headers only");
         assert!(
             !matches!(r.handle_key(ch('r')), Some(Action::ResponseViewMode(_))),
@@ -4869,7 +4862,7 @@ mod tests {
         render(&mut r);
         r.handle_scroll_h(20);
         assert!(r.view().unwrap().h_scroll > 0);
-        press(&mut r, ch('t'));
+        cycle(&mut r);
         assert_eq!(
             r.view().unwrap().h_scroll,
             0,
@@ -5140,14 +5133,36 @@ mod tests {
         assert_eq!(r.handle_key(ch('j')), None);
     }
 
+    /// The view strip is switched by the one tab chord every pane shares
+    /// (alt+←/→ → `Action::CycleTabs`, resolved by `app.rs`), not by a
+    /// pane-local letter: `t` is unclaimed here.
     #[test]
-    fn t_dispatches_cycle_response_view_action() {
-        // Through the action, not a direct mutation: `app.rs`'s
-        // `Action::CycleResponseView` arm is what retargets the animated
-        // tab underline, so the keyboard path must funnel through it
-        // exactly like a tab click does.
+    fn t_is_not_a_response_key() {
         let mut r = ready(r#"{"a": 1}"#);
-        assert_eq!(r.handle_key(ch('t')), Some(Action::CycleResponseView));
+        assert_eq!(r.handle_key(ch('t')), None);
+        assert_eq!(r.view().unwrap().mode, ViewMode::Pretty);
+    }
+
+    /// `cycle_view_mode` walks Pretty → Raw → Headers and wraps in both
+    /// directions, skipping Pretty when there is no tree to show.
+    #[test]
+    fn cycle_view_mode_walks_both_ways_and_skips_pretty_without_a_tree() {
+        let r = ready(r#"{"a": 1}"#);
+        assert_eq!(r.cycle_view_mode(1), Some(ViewMode::Raw));
+        assert_eq!(r.cycle_view_mode(-1), Some(ViewMode::Headers), "wraps backward");
+        let mut r = ready(r#"{"a": 1}"#);
+        r.set_view_mode(ViewMode::Headers);
+        assert_eq!(r.cycle_view_mode(1), Some(ViewMode::Pretty), "wraps forward");
+        assert_eq!(r.cycle_view_mode(-1), Some(ViewMode::Raw));
+
+        let mut r = ready("not json");
+        assert_eq!(r.view().unwrap().mode, ViewMode::Raw);
+        assert_eq!(r.cycle_view_mode(-1), Some(ViewMode::Headers), "no Pretty to land on");
+        r.set_view_mode(ViewMode::Headers);
+        assert_eq!(r.cycle_view_mode(1), Some(ViewMode::Raw));
+
+        let r = Response::default();
+        assert_eq!(r.cycle_view_mode(1), None, "no ready view: nothing to cycle");
     }
 
     #[test]
@@ -5650,7 +5665,7 @@ mod tests {
         let mut r = ready("{\"a\": 1,\n \"b\": 2}");
         r.handle_key(ch('G'));
         assert_eq!(r.view().unwrap().cursor, 3, "last pretty line");
-        press(&mut r, ch('t'));
+        cycle(&mut r);
         assert_eq!(
             r.view().unwrap().cursor,
             0,

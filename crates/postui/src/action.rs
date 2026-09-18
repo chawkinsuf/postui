@@ -166,6 +166,14 @@ pub enum Action {
     },
     EditorTabSelect(usize),
     EditorTabCycle(i8),
+    /// The one tab chord every pane shares (alt+←/→ by default): steps
+    /// the tab strip of whatever has focus — the request editor's tabs,
+    /// the response pane's views, or the Manage screen's strip — by
+    /// `delta`, wrapping. Resolved in `App::update` to `EditorTabCycle`,
+    /// `CycleResponseView` or `SelectManageTab`; with the sidebar focused
+    /// it falls back to the editor's strip, the only one on screen with
+    /// no pane of its own.
+    CycleTabs(i8),
     CycleMethod,
     FocusUrl,
     /// Toggles `App::table_collapsed` (params/headers table body vs. tab
@@ -610,11 +618,12 @@ pub enum Action {
     },
     /// Switch the response pane's view (the tabs row's click target).
     ResponseViewMode(crate::components::response::ViewMode),
-    /// `t` walks the response pane's views: Pretty → Raw → Headers →
-    /// Pretty, or Raw ↔ Headers when there is no tree to show. Dispatched
-    /// as an action (not a direct view mutation) so the tab underline
-    /// retargets like a click.
-    CycleResponseView,
+    /// Walks the response pane's views `delta` tabs along the strip:
+    /// Pretty, Raw, Headers, wrapping, or Raw ↔ Headers when there is no
+    /// tree to show. Reached through `CycleTabs` with the pane focused,
+    /// and dispatched as an action (not a direct view mutation) so the
+    /// tab underline retargets like a click.
+    CycleResponseView(i8),
     /// Opens the response pane's in-pane search (Task 17, spec §5): the
     /// dispatchable form of the `Find` button / `/` key, so the footer's
     /// Response-pane search chip and the palette can reach it too.
