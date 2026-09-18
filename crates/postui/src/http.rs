@@ -524,4 +524,53 @@ mod tests {
         assert_eq!(host.value, "s3cret.example.com:8443");
         assert_eq!(host.display, format!("{mask}.example.com:8443"));
     }
+
+    /// The editor's auto section (`computed_headers`, minus the suppressed
+    /// defaults it strikes through) and the response's sent section
+    /// (`SentHeader::wire`) describe the same send: same names, same
+    /// values, same order. Neither may learn a client row the other
+    /// doesn't.
+    #[test]
+    fn the_auto_section_and_the_sent_section_agree() {
+        use postui_core::model::{Body, Entry, Method};
+        use postui_core::prepare::{HeaderOrigin, PrepareContext, computed_headers, prepare};
+        let mut req = postui_core::model::HttpRequest {
+            url: "https://{{host}}:8443/v1/things?q=1".into(),
+            ..Default::default()
+        };
+        req.method = Method::Post;
+        req.body = Some(Body::Json {
+            text: "{\"k\": \"{{api_key}}\"}".into(),
+        });
+        req.substitute_body = true;
+        req.headers.insert(
+            "Authorization".into(),
+            Entry {
+                value: "Bearer {{api_key}}".into(),
+                enabled: true,
+            },
+        );
+        let mut ctx = PrepareContext::default();
+        ctx.vars.insert("host".into(), "api.example.com".into());
+        ctx.vars.insert("api_key".into(), "s3cret".into());
+        ctx.default_headers.insert(
+            "X-Trace".into(),
+            Entry {
+                value: "on".into(),
+                enabled: true,
+            },
+        );
+
+        let auto: Vec<(String, String)> = computed_headers(&req, &ctx, false)
+            .into_iter()
+            .filter(|r| r.origin != HeaderOrigin::DefaultHeader { suppressed: true })
+            .map(|r| (r.name.to_ascii_lowercase(), r.value))
+            .collect();
+        let (prepared, _) = prepare(&req, &ctx).unwrap();
+        let sent: Vec<(String, String)> = SentHeader::wire(&prepared)
+            .into_iter()
+            .map(|h| (h.name, h.value))
+            .collect();
+        assert_eq!(auto, sent);
+    }
 }

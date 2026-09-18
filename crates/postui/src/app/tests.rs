@@ -14604,9 +14604,10 @@ fn auto_header_copy_pill_keeps_a_cell_of_padding_from_the_value() {
     let backend = ratatui::backend::TestBackend::new(100, 70);
     let mut terminal = ratatui::Terminal::new(backend).unwrap();
     terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    // Row 0 is the client's Accept row; the Host row is row 1.
     let rect = app
         .hits
-        .rect_of(&Hit::AutoHeaderCopy(0))
+        .rect_of(&Hit::AutoHeaderCopy(1))
         .expect("the Host row's copy icon is registered");
     let buf = terminal.backend().buffer();
     let cell = |x: u16| buf[(x, rect.y)].symbol().to_string();
@@ -14633,11 +14634,12 @@ fn auto_header_copy_icon_puts_the_resolved_value_on_the_clipboard() {
     let backend = ratatui::backend::TestBackend::new(100, 70);
     let mut terminal = ratatui::Terminal::new(backend).unwrap();
     terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
-    // The scratch request has no default headers and no body, so the Host
-    // row (from the URL) is the only computed row, at index 0.
+    // The scratch request has no default headers and no body, so the
+    // computed rows are the client's Accept (index 0) and the Host row
+    // from the URL (index 1).
     let rect = app
         .hits
-        .rect_of(&Hit::AutoHeaderCopy(0))
+        .rect_of(&Hit::AutoHeaderCopy(1))
         .expect("the Host row's copy icon is registered");
 
     app.handle_mouse(left_down(rect.x, rect.y));

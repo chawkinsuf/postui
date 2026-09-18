@@ -457,7 +457,23 @@ pub fn computed_headers(
         });
     }
 
-    // Client-generated rows. `Host` comes from the substituted URL:
+    // Client-generated rows, in the order the client sends them. `Accept`
+    // is the client's default (`*/*`), sent unless a header that actually
+    // goes out — a suppressed default doesn't — already names it.
+    let sends_accept = rows.iter().any(|r| {
+        r.origin != HeaderOrigin::DefaultHeader { suppressed: true }
+            && r.name.eq_ignore_ascii_case("accept")
+    });
+    if !sends_accept {
+        rows.push(ComputedHeader {
+            name: "Accept".to_string(),
+            value: "*/*".to_string(),
+            origin: HeaderOrigin::Client,
+            unresolved: Vec::new(),
+        });
+    }
+
+    // `Host` comes from the substituted URL:
     // scheme stripped, then everything up to the path/query/fragment. The
     // URL is masked like every other displayed value — a secret in the host
     // must not leak through this row — while an unresolved token keeps its
@@ -1144,6 +1160,43 @@ mod tests {
         );
     }
 
+    /// The client sends `Accept: */*` on its own unless a header names
+    /// `accept` — so the auto section says so, in wire order: after the
+    /// prepared rows, before `Host`.
+    #[test]
+    fn computed_headers_client_rows_carry_accept_unless_a_header_names_it() {
+        let req = base("https://api.example.com/v1");
+        let rows = computed_headers(&req, &PrepareContext::default(), false);
+        let accept = row(&rows, "Accept");
+        assert_eq!(accept.value, "*/*");
+        assert_eq!(accept.origin, HeaderOrigin::Client);
+        let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["Accept", "Host"], "wire order");
+
+        let mut req = base("https://api.example.com/v1");
+        req.headers.insert("accept".into(), on("text/plain"));
+        let rows = computed_headers(&req, &PrepareContext::default(), false);
+        assert!(
+            !rows
+                .iter()
+                .any(|r| r.origin == HeaderOrigin::Client && r.name.eq_ignore_ascii_case("accept")),
+            "a request row named accept replaces the client's: {rows:?}"
+        );
+
+        // A default header names it too — unless that default is suppressed.
+        let req = base("https://api.example.com/v1");
+        let with_default = ctx(&[], &[("Accept", "text/plain", true)]);
+        let rows = computed_headers(&req, &with_default, false);
+        assert!(!rows.iter().any(|r| r.origin == HeaderOrigin::Client && r.name == "Accept"));
+        let mut req = base("https://api.example.com/v1");
+        req.headers.insert("Accept".into(), on("x"));
+        let rows = computed_headers(&req, &with_default, false);
+        assert!(
+            !rows.iter().any(|r| r.origin == HeaderOrigin::Client && r.name == "Accept"),
+            "the request row still names it even though the default is suppressed"
+        );
+    }
+
     #[test]
     fn computed_headers_content_length_ignores_masking_and_the_substitution_flag() {
         let mut req = base("https://x.test");
@@ -1214,7 +1267,7 @@ mod tests {
         let rows = computed_headers(&req, &ctx, false);
         assert_eq!(
             rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
-            ["X-D", "X-A", "Content-Type", "Host", "Content-Length"]
+            ["X-D", "X-A", "Content-Type", "Accept", "Host", "Content-Length"]
         );
     }
 }
