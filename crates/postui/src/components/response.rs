@@ -3551,7 +3551,8 @@ fn highlighted(pieces: Vec<(String, Style)>, hits: &LineMatches) -> Line<'static
 /// spinner while an AI request is pending), and the `󰙴` AI button
 /// right-aligned. A second row — when the bar reserved one — shows the
 /// last error's message, with its span (when known) underlined in the bar
-/// text above it.
+/// text above it. An incomplete filter with the caret at its end is drawn
+/// muted, since it is still being typed.
 fn draw_jq_bar(
     frame: &mut Frame,
     hits: &mut crate::hit::HitMap,
@@ -3685,10 +3686,21 @@ fn draw_jq_bar(
             height: 1,
             ..area
         };
+        // An unfinished filter (an unclosed bracket, a trailing pipe) is
+        // what every filter looks like while it is being typed: with the
+        // caret at its end it is a note in the muted colour, not an
+        // error. Once the caret moves back into the text or the bar is
+        // left, the filter as it stands is what runs, and it is broken.
+        let typing = bar.focused && bar.caret_at_end();
+        let color = if err.incomplete() && typing {
+            t.text_muted
+        } else {
+            t.error
+        };
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 format!("   {}", err.message()),
-                Style::default().fg(t.error),
+                Style::default().fg(color),
             ))),
             err_row,
         );
@@ -7200,6 +7212,75 @@ mod tests {
             theme.text,
             "typed text keeps its color"
         );
+    }
+
+    /// The bar's second row for a filter, and the colour it is drawn in:
+    /// the first row under the bar text whose symbols hold `needle`.
+    fn error_row(r: &mut Response, needle: &str) -> (String, ratatui::style::Color) {
+        let (_, buf) = render_buf(r);
+        let w = buf.area.width;
+        let row = (0..buf.area.height)
+            .find(|&y| {
+                (0..w)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+                    .contains(needle)
+            })
+            .unwrap_or_else(|| panic!("no row holds {needle:?}"));
+        let line: String = (0..w).map(|x| buf[(x, row)].symbol()).collect();
+        let x = line.find(needle).unwrap() as u16;
+        (line.trim_end().to_string(), buf[(x, row)].fg)
+    }
+
+    #[test]
+    fn an_unfinished_filter_being_typed_is_drawn_muted_with_no_red_character() {
+        let mut r = ready(ITEMS);
+        r.set_jq_tab(JqTab::Cycle);
+        type_jq(&mut r, ".data.items | sort_by(.id");
+        let theme = Theme::dark();
+        let (line, color) = error_row(&mut r, "unclosed (");
+        assert_eq!(line.trim(), "unclosed (", "the message says what is missing");
+        assert_eq!(color, theme.text_muted, "typing: not an error yet");
+        let (_, buf) = render_buf(&mut r);
+        let w = buf.area.width;
+        let row = (0..buf.area.height)
+            .find(|&y| {
+                (0..w)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+                    .contains("sort_by(.id")
+            })
+            .expect("bar row");
+        assert!(
+            (0..w).all(|x| buf[(x, row)].fg != theme.error),
+            "no character of the bar text is painted red"
+        );
+    }
+
+    #[test]
+    fn an_unfinished_filter_is_an_error_once_the_caret_leaves_the_end_or_the_bar() {
+        let mut r = ready(ITEMS);
+        r.set_jq_tab(JqTab::Cycle);
+        type_jq(&mut r, ".data.items | sort_by(.id");
+        let theme = Theme::dark();
+        r.jq_bar_mut().input.set_cursor(3);
+        r.refresh_jq_completion(SYNC_PRETTY_BYTES);
+        let (_, color) = error_row(&mut r, "unclosed (");
+        assert_eq!(color, theme.error, "caret mid-text: the filter as it stands is broken");
+        r.jq_bar_mut().input.set_cursor(".data.items | sort_by(.id".len());
+        r.set_jq_focus(false);
+        let (_, color) = error_row(&mut r, "unclosed (");
+        assert_eq!(color, theme.error, "blurred: the filter as it stands is broken");
+    }
+
+    #[test]
+    fn a_real_syntax_error_stays_red_while_typing() {
+        let mut r = ready(ITEMS);
+        r.set_jq_tab(JqTab::Cycle);
+        type_jq(&mut r, ".data.items )");
+        let theme = Theme::dark();
+        let (_, color) = error_row(&mut r, "unexpected");
+        assert_eq!(color, theme.error);
     }
 
     #[test]
