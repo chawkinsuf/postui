@@ -1934,7 +1934,7 @@ fn field_open_agrees_with_the_open_text_field() {
     app.screen = Screen::Manage;
     app.manage.tab = ManageTab::Variables;
     agree(&mut app, false, "the Variables tab, no edit");
-    app.varmanager.form.editing = Some((VmField::Description, LineInput::new("")));
+    app.varmanager.form.editing = Some(form_edit(VmField::Description, ""));
     agree(&mut app, true, "a Variable Manager form field");
     app.varmanager.form.editing = None;
 
@@ -8604,9 +8604,9 @@ fn ctrl_c_copies_a_var_form_selection_on_the_varmanager_screen() {
         false,
     ));
     app.screen = Screen::Manage;
-    let mut input = crate::components::line_input::LineInput::new("token value");
-    input.select_all();
-    app.varmanager.form.editing = Some((VmField::Default, input));
+    let mut edit = form_edit(VmField::Default, "token value");
+    edit.input.select_all();
+    app.varmanager.form.editing = Some(edit);
 
     app.handle_key(ctrl('c'));
 
@@ -15063,6 +15063,18 @@ fn rendered_text_tall(app: &mut App) -> String {
     rendered_text_at(app, 100, 46)
 }
 
+/// A live form edit seeded from `text` — the state
+/// `VarManager::start_field_edit` leaves behind after a click on a field
+/// holding `text`. Typing is then modelled by keying into it, so
+/// `original` stays the text the edit began from.
+fn form_edit(field: VmField, text: &str) -> crate::components::varmanager::FormEdit {
+    crate::components::varmanager::FormEdit {
+        field,
+        input: crate::components::line_input::LineInput::new(text),
+        original: text.to_string(),
+    }
+}
+
 fn field_rect(app: &mut App, field: VmField) -> ratatui::layout::Rect {
     rendered_text_tall(app);
     app.hits
@@ -15186,13 +15198,13 @@ fn ctrl_z_in_the_vm_form_field_restores_the_original() {
     app.handle_mouse(left_down(r.x + r.width - 2, r.y));
     app.handle_key(plain('!'));
     app.handle_key(ctrl('z'));
-    let (_, input) = app
+    let edit = app
         .varmanager
         .form
         .editing
         .as_ref()
         .expect("the field stays open");
-    assert_eq!(input.text(), "API root", "ctrl+z undid the typing");
+    assert_eq!(edit.input.text(), "API root", "ctrl+z undid the typing");
 }
 
 /// Clicking straight from one form field into a *different* one (no
@@ -15229,7 +15241,7 @@ fn clicking_directly_from_one_field_into_another_commits_the_first() {
         "the description field must have committed, not been discarded"
     );
     assert_eq!(
-        app.varmanager.form.editing.as_ref().map(|(f, _)| *f),
+        app.varmanager.form.editing.as_ref().map(|e| e.field),
         Some(VmField::EnvValue),
         "the click landed in the newly clicked field"
     );
@@ -15262,7 +15274,7 @@ fn clicking_into_another_field_after_a_failed_commit_keeps_the_original_edit_liv
     app.handle_mouse(left_down(r.x + 1, r.y));
 
     assert_eq!(
-        app.varmanager.form.editing.as_ref().map(|(f, _)| *f),
+        app.varmanager.form.editing.as_ref().map(|e| e.field),
         Some(VmField::EnvValue),
         "the failed commit's field stays live rather than switching to the click"
     );
@@ -15271,7 +15283,7 @@ fn clicking_into_another_field_after_a_failed_commit_keeps_the_original_edit_liv
             .form
             .editing
             .as_ref()
-            .map(|(_, i)| i.text().to_string()),
+            .map(|e| e.input.text().to_string()),
         Some("sk-typed-secret".to_string()),
         "its typed text is untouched"
     );
@@ -15324,7 +15336,7 @@ fn clicking_a_different_left_row_after_a_failed_commit_keeps_the_original_edit_l
             .form
             .editing
             .as_ref()
-            .map(|(_, i)| i.text().to_string()),
+            .map(|e| e.input.text().to_string()),
         Some("sk-typed-secret".to_string()),
         "the typed text must survive the click on another row"
     );
@@ -15362,7 +15374,7 @@ fn a_write_failure_keeps_the_typed_text_and_toasts_without_the_secret_value() {
             .form
             .editing
             .as_ref()
-            .map(|(_, i)| i.text().to_string()),
+            .map(|e| e.input.text().to_string()),
         Some("sk-typed-secret".to_string())
     );
     assert!(!app.toasts.is_empty(), "the failure must toast");
@@ -16082,28 +16094,28 @@ fn form_field_double_click_selects_the_word_and_drag_sweeps() {
     let r = field_rect(&mut app, VmField::Description);
     app.handle_mouse(left_down(r.x + WELL_PAD, r.y));
     app.handle_mouse(left_down(r.x + WELL_PAD, r.y)); // within 400ms => clicks == 2
-    let (_, input) = app.varmanager.form.editing.as_ref().expect("editing");
-    assert_eq!(input.selected_text().as_deref(), Some("API"));
+    let edit = app.varmanager.form.editing.as_ref().expect("editing");
+    assert_eq!(edit.input.selected_text().as_deref(), Some("API"));
 
     // Dragging on from the double click extends the selection word by
     // word — onto "root" grows it to the whole phrase, back onto the
     // anchored word shrinks it again (the body editor's word sweep).
     assert!(app.handle_mouse(dragged(r.x + WELL_PAD + 6, r.y)));
-    let (_, input) = app.varmanager.form.editing.as_ref().unwrap();
-    assert_eq!(input.selected_text().as_deref(), Some("API root"));
+    let edit = app.varmanager.form.editing.as_ref().unwrap();
+    assert_eq!(edit.input.selected_text().as_deref(), Some("API root"));
     assert!(app.handle_mouse(dragged(r.x + WELL_PAD + 1, r.y)));
-    let (_, input) = app.varmanager.form.editing.as_ref().unwrap();
-    assert_eq!(input.selected_text().as_deref(), Some("API"));
+    let edit = app.varmanager.form.editing.as_ref().unwrap();
+    assert_eq!(edit.input.selected_text().as_deref(), Some("API"));
     app.handle_mouse(left_up(r.x + WELL_PAD + 1, r.y));
 
     // A fresh click collapses the selection; a drag sweeps a new one.
     app.last_click = None;
     app.handle_mouse(left_down(r.x + WELL_PAD, r.y));
-    let (_, input) = app.varmanager.form.editing.as_ref().unwrap();
-    assert_eq!(input.selection(), None);
+    let edit = app.varmanager.form.editing.as_ref().unwrap();
+    assert_eq!(edit.input.selection(), None);
     assert!(app.handle_mouse(dragged(r.x + WELL_PAD + 8, r.y)));
-    let (_, input) = app.varmanager.form.editing.as_ref().unwrap();
-    assert_eq!(input.selected_text().as_deref(), Some("API root"));
+    let edit = app.varmanager.form.editing.as_ref().unwrap();
+    assert_eq!(edit.input.selected_text().as_deref(), Some("API root"));
 }
 
 /// The Variable Manager screen's footer advertises its own verbs (the main
@@ -16169,9 +16181,9 @@ fn keyboard_enters_the_variable_form_and_edits_its_fields() {
     // edit clicking the field would.
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    let (field, input) = app.varmanager.form.editing.as_ref().expect("editing");
-    assert_eq!(*field, crate::components::varmanager::VmField::Default);
-    assert_eq!(input.text(), "http://localhost:8080");
+    let edit = app.varmanager.form.editing.as_ref().expect("editing");
+    assert_eq!(edit.field, crate::components::varmanager::VmField::Default);
+    assert_eq!(edit.input.text(), "http://localhost:8080");
 
     app.handle_key(plain('9'));
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -19066,6 +19078,92 @@ mod undo_tests {
         assert_eq!(std::fs::read_to_string(&env_path).unwrap(), with_9);
     }
 
+    /// User finding: clicking from field to field in the variable form,
+    /// never typing, put steps on the undo stack. A commit whose text is
+    /// exactly the seed it started from must write nothing and record
+    /// nothing — the same "a commit that changed nothing is skipped" rule
+    /// the grid's `GridEdit::original` already keeps.
+    #[test]
+    fn clicking_around_the_var_form_without_typing_records_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        var_project(dir.path());
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::with_root(tx, dir.path().to_path_buf());
+        goto_row(&mut app, |r| {
+            r == &crate::components::varmanager::VmRow::Var("base_url".into())
+        });
+
+        let env_path = dir.path().join("environments/qa.toml");
+        let vars_path = dir.path().join("variables.toml");
+        let env_before = std::fs::read_to_string(&env_path).unwrap();
+        let vars_before = std::fs::read_to_string(&vars_path).unwrap();
+        let undo_before = app.history.undo_len();
+
+        for field in [
+            VmField::EnvValue,
+            VmField::Default,
+            VmField::Description,
+            VmField::EnvValue,
+        ] {
+            let r = field_rect(&mut app, field);
+            app.handle_mouse(left_down(r.x + 1, r.y));
+        }
+        app.commit_var_form();
+
+        assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
+        assert_eq!(std::fs::read_to_string(&env_path).unwrap(), env_before);
+        assert_eq!(std::fs::read_to_string(&vars_path).unwrap(), vars_before);
+        assert_eq!(
+            app.history.undo_len(),
+            undo_before,
+            "clicking between fields records no undo step"
+        );
+    }
+
+    /// The same, for a variable whose fields are unset: the empty seed
+    /// must not materialise `description = ""` / `default = ""` rows.
+    #[test]
+    fn clicking_around_an_empty_var_form_records_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        var_project(dir.path());
+        std::fs::write(
+            dir.path().join("variables.toml"),
+            "[base_url]\ndescription = \"API root\"\ndefault = \"http://localhost:8080\"\n\n[selectors.user]\ndescription = \"acting user\"\nfields = [\"user\"]\n\n[bare]\n",
+        )
+        .unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::with_root(tx, dir.path().to_path_buf());
+        goto_row(&mut app, |r| {
+            r == &crate::components::varmanager::VmRow::Var("bare".into())
+        });
+
+        let env_path = dir.path().join("environments/qa.toml");
+        let vars_path = dir.path().join("variables.toml");
+        let env_before = std::fs::read_to_string(&env_path).unwrap();
+        let vars_before = std::fs::read_to_string(&vars_path).unwrap();
+        let undo_before = app.history.undo_len();
+
+        for field in [
+            VmField::EnvValue,
+            VmField::Default,
+            VmField::Description,
+            VmField::EnvValue,
+        ] {
+            let r = field_rect(&mut app, field);
+            app.handle_mouse(left_down(r.x + 1, r.y));
+        }
+        app.commit_var_form();
+
+        assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
+        assert_eq!(std::fs::read_to_string(&env_path).unwrap(), env_before);
+        assert_eq!(std::fs::read_to_string(&vars_path).unwrap(), vars_before);
+        assert_eq!(
+            app.history.undo_len(),
+            undo_before,
+            "clicking between fields records no undo step"
+        );
+    }
+
     /// User finding: there was no way to remove an env value from the
     /// variable form. It gets an explicit `✕ remove` control beside the
     /// "Value in <env>" label (mirroring the value popup's Remove button)
@@ -19106,13 +19204,9 @@ mod undo_tests {
     }
 
     /// With nothing stored there is nothing to remove, so the control
-    /// isn't offered — and an emptied commit writes `name = ""` verbatim
-    /// (an explicit empty value, not a removal).
+    /// isn't offered.
     #[test]
     fn the_remove_control_is_absent_when_the_env_stores_nothing() {
-        use crate::components::line_input::LineInput;
-        use crate::components::varmanager::VmField;
-
         let dir = tempfile::tempdir().unwrap();
         var_project(dir.path());
         let qa_path = dir.path().join("environments/qa.toml");
@@ -19131,8 +19225,44 @@ mod undo_tests {
             "no stored value, no remove control"
         );
 
-        app.varmanager.form.editing = Some((VmField::EnvValue, LineInput::new("")));
+        assert_eq!(
+            std::fs::read_to_string(&qa_path).unwrap(),
+            "[options.user.alice]\nuser = \"1001\"\n",
+            "and looking at the empty field writes nothing"
+        );
+    }
+
+    /// Clearing a field that *did* hold a value writes `name = ""`
+    /// verbatim — an explicit empty value, deliberately not overloaded to
+    /// mean removal (that is the `✕ remove` control's job). The
+    /// seed-comparison guard only skips a field nobody touched.
+    #[test]
+    fn emptying_a_stored_env_value_writes_the_empty_value_verbatim() {
+        use crate::components::varmanager::VmField;
+
+        let dir = tempfile::tempdir().unwrap();
+        var_project(dir.path());
+        let qa_path = dir.path().join("environments/qa.toml");
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::with_root(tx, dir.path().to_path_buf());
+        goto_row(&mut app, |r| {
+            r == &crate::components::varmanager::VmRow::Var("base_url".into())
+        });
+
+        // Click the field, select it all, delete: the commit sees text
+        // that differs from the seed and writes it.
+        let r = field_rect(&mut app, VmField::EnvValue);
+        app.handle_mouse(left_down(r.x + 1, r.y));
+        app.varmanager
+            .form
+            .editing
+            .as_mut()
+            .expect("the field is live")
+            .input
+            .select_all();
+        app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
         app.commit_var_form();
+
         assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
         assert!(
             std::fs::read_to_string(&qa_path)
@@ -26480,12 +26610,12 @@ fn leaving_the_settings_tab_ends_a_live_field_edit() {
         app.settings.editing.is_none(),
         "the edit does not survive the tab switch"
     );
-    app.varmanager.form.editing = Some((VmField::Description, LineInput::new("")));
+    app.varmanager.form.editing = Some(form_edit(VmField::Description, ""));
 
     app.paste_text("pasted");
 
     assert_eq!(
-        app.varmanager.form.editing.as_ref().unwrap().1.text(),
+        app.varmanager.form.editing.as_ref().unwrap().input.text(),
         "pasted",
         "ctrl+v belongs to the tab that is up"
     );
@@ -26508,7 +26638,7 @@ fn a_stale_settings_edit_cannot_steal_the_caret_from_another_tab() {
     let mut app = App::new_for_test();
     app.screen = Screen::Manage;
     app.manage.tab = ManageTab::Variables;
-    app.varmanager.form.editing = Some((VmField::Description, LineInput::new("")));
+    app.varmanager.form.editing = Some(form_edit(VmField::Description, ""));
     // Set by hand: no route leaves an edit live off-tab any more, which
     // is exactly why this guard has to be tested directly.
     app.settings.begin_edit(SettingsField::AiCmd, "hidden");
@@ -26516,7 +26646,7 @@ fn a_stale_settings_edit_cannot_steal_the_caret_from_another_tab() {
     app.paste_text("pasted");
 
     assert_eq!(
-        app.varmanager.form.editing.as_ref().unwrap().1.text(),
+        app.varmanager.form.editing.as_ref().unwrap().input.text(),
         "pasted"
     );
     assert_eq!(app.settings.field_text(), "hidden", "untouched");

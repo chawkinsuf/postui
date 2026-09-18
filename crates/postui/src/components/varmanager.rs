@@ -267,12 +267,26 @@ impl Default for FormStop {
 /// all leave it, committing — the caller (`App`) does the commit, since it
 /// writes through `ctx.edit_variables`/`edit_env` and only `App` can reach
 /// those.
+/// One form field's in-progress edit — the [`GridEdit`] twin for the
+/// variable form: which field, the live buffer, and the text it started
+/// from so a commit that changed nothing is skipped.
+#[derive(Debug)]
+pub struct FormEdit {
+    pub field: VmField,
+    pub input: LineInput,
+    /// The seed the edit began from ([`field_seed_text`]), so clicking
+    /// from field to field without typing writes nothing and journals
+    /// nothing. An *emptied* field is still a verbatim `name = ""` write —
+    /// only text identical to the seed is skipped.
+    pub original: String,
+}
+
 #[derive(Debug, Default)]
 pub struct VarFormState {
     /// The field under edit and its live `LineInput`, or `None` when
     /// nothing in the form owns the keyboard — consulted by the
     /// command-key gate in [`VarManager::handle_key`].
-    pub editing: Option<(VmField, LineInput)>,
+    pub editing: Option<FormEdit>,
     /// Whether the env-value field currently shows a secret's plaintext
     /// instead of `\u{25cf}` dots. Reset to `false` whenever the detail
     /// selection changes (mirrors Task 10's per-context reset precedent) —
@@ -757,7 +771,11 @@ impl VarManager {
         // the form's field cursor, not back in the left list.
         self.focus = VmFocus::Form;
         self.form_cursor = FormStop::Field(field);
-        self.form.editing = Some((field, LineInput::new(&seed)));
+        self.form.editing = Some(FormEdit {
+            field,
+            input: LineInput::new(&seed),
+            original: seed,
+        });
     }
 
     /// Click option point for a grid cell (`Hit::VmEntryCell`): seeds
@@ -2401,7 +2419,7 @@ impl VarManager {
         masked: bool,
     ) {
         let hit = Hit::VmFormField(field);
-        let editing = self.form.editing.as_ref().filter(|(f, _)| *f == field);
+        let editing = self.form.editing.as_ref().filter(|e| e.field == field);
         // The keyboard field cursor paints exactly like a live edit or
         // hover — `ControlState::Focused` is the "you are here" the form
         // area's arrow keys move around.
@@ -2416,7 +2434,7 @@ impl VarManager {
             ControlState::Normal
         };
         let inner_w = slot.rect.width.saturating_sub(crate::paint::WELL_PAD * 2);
-        let content = if let Some((_, input)) = editing {
+        let content = if let Some(FormEdit { input, .. }) = editing {
             if masked {
                 input.draw_line_windowed_masked(true, theme, inner_w)
             } else {
@@ -3558,7 +3576,11 @@ fields = ["user_id", "customer_id"]
         let mut vm = VarManager::default();
         select_var(&mut vm, &ctx, "base_url");
         vm.form.revealed = true;
-        vm.form.editing = Some((VmField::Description, LineInput::new("typing...")));
+        vm.form.editing = Some(FormEdit {
+            field: VmField::Description,
+            input: LineInput::new("typing..."),
+            original: String::new(),
+        });
 
         // Re-selecting the same row must not disturb an in-progress edit.
         let same = vm

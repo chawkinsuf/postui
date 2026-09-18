@@ -912,20 +912,20 @@ impl App {
     /// [`WELL_PAD`] columns in, windowed to `width - WELL_PAD * 2`).
     fn vm_field_drag_to(&mut self, column: u16) -> bool {
         use crate::paint::WELL_PAD;
-        let Some((field, input)) = self.varmanager.form.editing.as_mut() else {
+        let Some(edit) = self.varmanager.form.editing.as_mut() else {
             return false;
         };
-        let Some(area) = self.hits.rect_of(&Hit::VmFormField(*field)) else {
+        let Some(area) = self.hits.rect_of(&Hit::VmFormField(edit.field)) else {
             return false;
         };
         let inner_w = area.width.saturating_sub(WELL_PAD * 2);
         if inner_w == 0 {
             return false;
         }
-        let start = input.window_start(true, inner_w);
+        let start = edit.input.window_start(true, inner_w);
         let text_x = area.x + WELL_PAD;
         let col = usize::from(column.clamp(text_x, text_x + inner_w - 1) - text_x);
-        input.extend_mouse_selection_to(start + col);
+        edit.input.extend_mouse_selection_to(start + col);
         true
     }
 
@@ -1143,7 +1143,7 @@ impl App {
         // *different* form field, which must never silently overwrite
         // `form.editing` out from under the field that was live.
         let editing_this_field = matches!(hit, Hit::VmFormField(field)
-            if self.varmanager.form.editing.as_ref().is_some_and(|(f, _)| *f == field));
+            if self.varmanager.form.editing.as_ref().is_some_and(|e| e.field == field));
         if !editing_this_field && !matches!(hit, Hit::VmRevealToggle) {
             self.commit_var_form();
         }
@@ -2081,7 +2081,7 @@ impl App {
                     .form
                     .editing
                     .as_ref()
-                    .is_some_and(|(f, _)| *f == field);
+                    .is_some_and(|e| e.field == field);
                 if !already_editing {
                     if self.varmanager.form.editing.is_some() {
                         return self.update(Action::Render);
@@ -2102,14 +2102,15 @@ impl App {
                 // clicked column, anchor a possible drag sweep, word
                 // select on double click.
                 if let Some(area) = self.hits.rect_of(&Hit::VmFormField(field))
-                    && let Some((_, input)) = self
+                    && let Some(edit) = self
                         .varmanager
                         .form
                         .editing
                         .as_mut()
-                        .filter(|(f, _)| *f == field)
+                        .filter(|e| e.field == field)
                 {
                     use crate::paint::WELL_PAD;
+                    let input = &mut edit.input;
                     let inner_w = area.width.saturating_sub(WELL_PAD * 2).max(1);
                     let start = input.window_start(already_editing, inner_w);
                     let col = usize::from(m.column.saturating_sub(area.x + WELL_PAD));

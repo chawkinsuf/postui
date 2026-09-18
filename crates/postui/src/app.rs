@@ -2311,8 +2311,8 @@ impl App {
         }
         match self.screen {
             Screen::Manage => {
-                if let Some((_, input)) = self.varmanager.form.editing.as_mut() {
-                    return Some(input);
+                if let Some(edit) = self.varmanager.form.editing.as_mut() {
+                    return Some(&mut edit.input);
                 }
                 if let Some(edit) = self.varmanager.grid.editing.as_mut() {
                     return Some(&mut edit.input);
@@ -7113,13 +7113,24 @@ impl App {
     /// (spec §5's general write-failure rule), and a secret's value never
     /// appears in the toast.
     pub(crate) fn commit_var_form(&mut self) {
-        let Some((field, input)) = self.varmanager.form.editing.take() else {
+        let Some(crate::components::varmanager::FormEdit {
+            field,
+            input,
+            original,
+        }) = self.varmanager.form.editing.take()
+        else {
             return;
         };
         let VmDetail::Var(name) = self.varmanager.detail.clone() else {
             return;
         };
         let value = input.text().to_string();
+        // Nothing was typed: clicking from field to field must not write
+        // (and so must not journal an entry that lands on the undo stack).
+        // The grid's `GridEdit::original` keeps the same rule.
+        if value == original {
+            return;
+        }
         let Some(op) = self
             .project()
             .map(|p| var_edit_op_for(p, &name, field, value))
@@ -7132,7 +7143,8 @@ impl App {
         match self.apply_var_edit(&op) {
             Ok(()) => self.record_project_step(),
             Err(msg) => {
-                self.varmanager.form.editing = Some((field, input));
+                self.varmanager.form.editing =
+                    Some(crate::components::varmanager::FormEdit { field, input, original });
                 self.toasts.push(msg, ToastKind::Error);
             }
         }
@@ -8625,7 +8637,7 @@ impl App {
                     .form
                     .editing
                     .as_ref()
-                    .is_some_and(|(f, _)| f == field);
+                    .is_some_and(|e| &e.field == field);
                 if !editing_this {
                     return None;
                 }
@@ -8816,7 +8828,7 @@ impl App {
             TextSurface::Body => self.editor.body_selected_text(),
             TextSurface::Response => self.session.response.selected_text(),
             TextSurface::TableCell => self.editor.table.editing.as_ref()?.input.selected_text(),
-            TextSurface::VmField => self.varmanager.form.editing.as_ref()?.1.selected_text(),
+            TextSurface::VmField => self.varmanager.form.editing.as_ref()?.input.selected_text(),
             TextSurface::VmCell => self.varmanager.grid.editing.as_ref()?.input.selected_text(),
             TextSurface::Jq => self.session.response.jq_bar().input.selected_text(),
             TextSurface::Settings => self.settings.selected_text(),
@@ -9190,8 +9202,8 @@ impl App {
                 self.settings.paste(text);
                 return self.update(Action::Render);
             }
-            if let Some((_, input)) = self.varmanager.form.editing.as_mut() {
-                input.paste(text);
+            if let Some(edit) = self.varmanager.form.editing.as_mut() {
+                edit.input.paste(text);
                 return self.update(Action::Render);
             }
             if let Some(edit) = self.varmanager.grid.editing.as_mut() {
@@ -9270,8 +9282,8 @@ impl App {
             {
                 return Some(text);
             }
-            if let Some((_, input)) = self.varmanager.form.editing.as_ref() {
-                return input.selected_text();
+            if let Some(edit) = self.varmanager.form.editing.as_ref() {
+                return edit.input.selected_text();
             }
             if let Some(edit) = self.varmanager.grid.editing.as_ref() {
                 return edit.input.selected_text();
@@ -10419,8 +10431,8 @@ impl App {
         match ev.code {
             KeyCode::Esc | KeyCode::Enter => self.commit_var_form(),
             _ => {
-                if let Some((_, input)) = self.varmanager.form.editing.as_mut() {
-                    input.handle_key(ev);
+                if let Some(edit) = self.varmanager.form.editing.as_mut() {
+                    edit.input.handle_key(ev);
                 }
             }
         }
