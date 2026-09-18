@@ -9294,6 +9294,17 @@ impl App {
         {
             return Some(text);
         }
+        // The response pane's own text boxes, in the order paste routes
+        // to them, and only while the pane has focus, as paste does: the
+        // focused jq bar, then the live search box.
+        if self.focus == PaneId::Response {
+            if let Some(text) = self.session.response.jq_selected_text() {
+                return Some(text);
+            }
+            if let Some(text) = self.session.response.search_selected_text() {
+                return Some(text);
+            }
+        }
         // Body and response selections are visible highlights — copyable
         // whenever they exist, not only while their pane owns the
         // keyboard.

@@ -716,6 +716,7 @@ mod tests {
                             JqBarState::Menu,
                             JqBarState::Completing { cycle: true },
                             JqBarState::Completing { cycle: false },
+                            JqBarState::Closer,
                         ] {
                             for field_open in [false, true] {
                                 let chips = footer_chips(

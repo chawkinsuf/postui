@@ -115,6 +115,11 @@ pub struct JqCompletion {
     /// What the caret is typing; `None` when nothing is offered there.
     ctx: Option<Context>,
     candidates: Vec<Candidate>,
+    /// The candidate list is the closing bracket offered by
+    /// [`Self::fall_back_to_closer`] rather than anything the context
+    /// yielded, so the chip is labelled by its ghost alone: a closer
+    /// does not continue the partial the way a key or builtin does.
+    closer: bool,
     /// Which candidate the ghost shows; reset whenever the context
     /// changes.
     index: usize,
@@ -140,6 +145,20 @@ impl JqCompletion {
         } else {
             (self.index + n - 1) % n
         };
+    }
+
+    /// With nothing else on offer at the caret, offers the closing
+    /// bracket of the innermost unclosed opener (see
+    /// [`complete::closer`]): a key or builtin that extends what is
+    /// typed always wins, so this only fills the gap once the token is
+    /// finished.
+    fn fall_back_to_closer(&mut self, text: &str) {
+        if !self.candidates.is_empty() {
+            self.closer = false;
+            return;
+        }
+        self.candidates = complete::closer(text).into_iter().collect();
+        self.closer = !self.candidates.is_empty();
     }
 }
 
@@ -247,9 +266,11 @@ impl JqBar {
     }
 
     /// The candidate the ghost shows, when one is showing. Menu mode has
-    /// no ghost: its row is the preview.
+    /// no ghost for a guess — its row is the preview — but a closer is
+    /// not a guess: there is exactly one bracket that can close the
+    /// innermost opener, so it ghosts in both modes.
     fn candidate(&self) -> Option<&Candidate> {
-        if self.tab == JqTab::Menu || !self.offering() {
+        if !self.offering() || (self.tab == JqTab::Menu && !self.completion.closer) {
             return None;
         }
         self.completion.candidates.get(self.completion.index)
@@ -273,7 +294,9 @@ impl JqBar {
             .candidates
             .iter()
             .map(|c| {
-                if c.replace_from.is_some() {
+                // A closer does not continue the partial — `sort_by(.id`
+                // offers `)`, not `id)` — so it is its own whole chip.
+                if c.replace_from.is_some() || self.completion.closer {
                     c.ghost.clone()
                 } else {
                     format!("{partial}{}", c.ghost)
@@ -285,7 +308,8 @@ impl JqBar {
     /// Menu mode's row as drawn: `(label, selected)` per chip. With Tab
     /// in the row, the entered row's chips and selection; before that,
     /// the live candidates for what is being typed with nothing
-    /// selected. `None` in cycle mode, or with nothing to offer.
+    /// selected. `None` in cycle mode, or with nothing to offer. A
+    /// closer is a ghost in menu mode too, never a row.
     pub fn menu_row(&self) -> Option<Vec<(String, bool)>> {
         if self.tab != JqTab::Menu {
             return None;
@@ -293,7 +317,7 @@ impl JqBar {
         if let Some(menu) = &self.menu {
             return Some(menu.chips().map(|(l, sel)| (l.to_string(), sel)).collect());
         }
-        if !self.offering() {
+        if !self.offering() || self.completion.closer {
             return None;
         }
         Some(
@@ -1549,6 +1573,17 @@ impl Response {
         true
     }
 
+    /// The focused bar's selection, for ctrl+c: the copy twin of
+    /// [`Self::paste_into_jq`]. `None` when the bar does not own the
+    /// keyboard, so an old highlight in a blurred bar never shadows the
+    /// tree's.
+    pub fn jq_selected_text(&self) -> Option<String> {
+        if !self.jq.focused {
+            return None;
+        }
+        self.jq.input.selected_text()
+    }
+
     /// The tree the `Pretty` view is showing: the filtered tree while a jq
     /// filter is applied, otherwise the body tree.
     pub fn active_tree(&self) -> Option<&JsonTree> {
@@ -1691,6 +1726,14 @@ impl Response {
         self.jq.ghost()
     }
 
+    /// Whether the showing ghost is the closing-bracket fallback rather
+    /// than a key or builtin continuation — Tab, Right and End all accept
+    /// it the same way menu mode's lone candidate does, so the footer
+    /// needs to tell the two apart.
+    pub fn jq_ghost_is_closer(&self) -> bool {
+        self.jq.ghost().is_some() && self.jq.completion.closer
+    }
+
     /// Recomputes the bar's completion for the caret's position. Runs
     /// after every `apply_jq` in the app's reconcile. Keys for a new
     /// context are fetched inline for a body under `sync_limit`, else
@@ -1705,6 +1748,7 @@ impl Response {
             c.ctx = None;
             c.candidates.clear();
             c.index = 0;
+            c.closer = false;
             return None;
         }
         let text = bar.input.text().to_string();
@@ -1714,19 +1758,25 @@ impl Response {
             c.index = 0;
         }
         c.ctx = ctx;
+        c.closer = false;
         let Some(ctx) = c.ctx.clone() else {
             c.candidates.clear();
+            c.fall_back_to_closer(&text);
             return None;
         };
         let expr = match ctx.kind {
             Kind::Word => {
                 c.candidates = complete::candidates(&ctx, &[]);
+                c.fall_back_to_closer(&text);
                 return None;
             }
-            Kind::Key { .. } => ctx.input_expr.clone().unwrap_or_else(|| ".".into()),
+            Kind::Key { .. } | Kind::Shorthand { .. } => {
+                ctx.input_expr.clone().unwrap_or_else(|| ".".into())
+            }
         };
         if c.cached_expr.as_deref() == Some(expr.as_str()) {
             c.candidates = complete::candidates(&ctx, &c.cached_keys);
+            c.fall_back_to_closer(&text);
             return None;
         }
         c.candidates.clear();
@@ -1749,6 +1799,7 @@ impl Response {
             c.cached_keys = complete::keys_at(&expr, &doc);
             c.cached_expr = Some(expr);
             c.candidates = complete::candidates(&ctx, &c.cached_keys);
+            c.fall_back_to_closer(&text);
             return None;
         }
         c.seq += 1;
@@ -1805,6 +1856,9 @@ impl Response {
             && ctx.input_expr.as_deref() == c.cached_expr.as_deref()
         {
             c.candidates = complete::candidates(ctx, &c.cached_keys);
+            let text = self.jq.input.text().to_string();
+            let c = &mut self.jq.completion;
+            c.fall_back_to_closer(&text);
             c.index = 0;
             return true;
         }
@@ -1938,6 +1992,26 @@ impl Response {
             }
             _ => false,
         }
+    }
+
+    /// The live search box's selection, for ctrl+c: the copy twin of
+    /// [`Self::paste_into_search`].
+    pub fn search_selected_text(&self) -> Option<String> {
+        let search = self.view.as_ref()?.search.as_ref()?;
+        if !search.active {
+            return None;
+        }
+        search.input.selected_text()
+    }
+
+    /// Test-only mutable reach into the live search box's input, so a test
+    /// can drive a selection the way `select_all` does — there is no
+    /// production path that needs to reach in and mutate the search input
+    /// directly (typing and pasting both go through dedicated methods).
+    #[cfg(test)]
+    pub fn search_input_mut(&mut self) -> Option<&mut LineInput> {
+        let search = self.view.as_mut()?.search.as_mut()?;
+        Some(&mut search.input)
     }
 
     /// The body view's scroll state, as of the last draw (the viewport height
@@ -2281,7 +2355,9 @@ impl Response {
                         }
                         return Some(Action::Render);
                     }
-                    KeyCode::Right | KeyCode::End if plain && cycle => {
+                    // Right/End accept a ghost. Menu mode has one only
+                    // for a closer, so there they accept exactly that.
+                    KeyCode::Right | KeyCode::End if plain && (cycle || self.jq.completion.closer) => {
                         self.accept_jq_completion();
                         return Some(Action::Render);
                     }
@@ -3551,7 +3627,8 @@ fn highlighted(pieces: Vec<(String, Style)>, hits: &LineMatches) -> Line<'static
 /// spinner while an AI request is pending), and the `󰙴` AI button
 /// right-aligned. A second row — when the bar reserved one — shows the
 /// last error's message, with its span (when known) underlined in the bar
-/// text above it.
+/// text above it. An incomplete filter with the caret at its end is drawn
+/// muted, since it is still being typed.
 fn draw_jq_bar(
     frame: &mut Frame,
     hits: &mut crate::hit::HitMap,
@@ -3685,10 +3762,21 @@ fn draw_jq_bar(
             height: 1,
             ..area
         };
+        // An unfinished filter (an unclosed bracket, a trailing pipe) is
+        // what every filter looks like while it is being typed: with the
+        // caret at its end it is a note in the muted colour, not an
+        // error. Once the caret moves back into the text or the bar is
+        // left, the filter as it stands is what runs, and it is broken.
+        let typing = bar.focused && bar.caret_at_end();
+        let color = if err.incomplete() && typing {
+            t.text_muted
+        } else {
+            t.error
+        };
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 format!("   {}", err.message()),
-                Style::default().fg(t.error),
+                Style::default().fg(color),
             ))),
             err_row,
         );
@@ -5766,6 +5854,143 @@ mod tests {
     }
 
     #[test]
+    fn a_finished_token_inside_a_bracket_ghosts_its_closer() {
+        let mut r = ready(ITEMS);
+        r.set_jq_tab(JqTab::Cycle);
+        type_jq(&mut r, ".data.items | sort_by(.i");
+        assert_eq!(r.jq_ghost(), Some("d"), "a key still extends: the key wins");
+        type_jq(&mut r, ".data.items | sort_by(.id");
+        assert_eq!(r.jq_ghost(), Some(")"), "nothing extends `id`: the closer");
+        type_jq(&mut r, ".data.items | map({s: .status");
+        assert_eq!(r.jq_ghost(), Some("}"));
+        type_jq(&mut r, ".data.items | map(select(.id == 1");
+        assert_eq!(r.jq_ghost(), Some(")"), "no key context at all: still the closer");
+        type_jq(&mut r, ".data.items | sort_by(");
+        assert_eq!(r.jq_ghost(), None, "nothing typed inside: nothing offered");
+        type_jq(&mut r, ".data.items | sort_by(.id)");
+        assert_eq!(r.jq_ghost(), None, "closed: nothing left to offer");
+        type_jq(&mut r, ".data.items | leng");
+        assert_eq!(r.jq_ghost(), Some("th"), "a builtin still wins over a closer");
+    }
+
+    #[test]
+    fn a_word_inside_braces_ghosts_the_shorthand_key_then_the_closer() {
+        let mut r = ready(ITEMS);
+        r.set_jq_tab(JqTab::Cycle);
+        type_jq(&mut r, ".data.items | map({s");
+        assert_eq!(r.jq_ghost(), Some("tatus"), "`{{status}}` is `{{status: .status}}`");
+        bar_key(&mut r, key(KeyCode::Right));
+        r.refresh_jq_completion(SYNC_PRETTY_BYTES);
+        assert_eq!(r.jq_text(), ".data.items | map({status");
+        assert_eq!(r.jq_ghost(), Some("}"), "the key is complete: the closer");
+        type_jq(&mut r, ".data.items | map({status, i");
+        assert_eq!(r.jq_ghost(), Some("d"), "after a comma the next key");
+        type_jq(&mut r, ".data.items | map({status: s");
+        assert_eq!(
+            r.jq_ghost(),
+            Some("calars"),
+            "after a colon a word is a builtin (`scalars`), not a key"
+        );
+    }
+
+    #[test]
+    fn a_shorthand_key_is_a_whole_word_chip_in_menu_mode() {
+        let mut r = ready(ITEMS);
+        r.set_jq_tab(JqTab::Menu);
+        type_jq(&mut r, ".data.items | map({s");
+        assert_eq!(
+            r.jq_bar().menu_row(),
+            Some(vec![("status".to_string(), false)])
+        );
+        bar_key(&mut r, key(KeyCode::Tab));
+        assert_eq!(r.jq_text(), ".data.items | map({status");
+    }
+
+    #[test]
+    fn accepting_the_closer_types_it_and_the_offer_moves_on() {
+        let mut r = ready(ITEMS);
+        r.set_jq_tab(JqTab::Cycle);
+        type_jq(&mut r, ".data.items | map({s: .status");
+        assert_eq!(r.jq_ghost(), Some("}"));
+        bar_key(&mut r, key(KeyCode::Right));
+        r.refresh_jq_completion(SYNC_PRETTY_BYTES);
+        assert_eq!(r.jq_text(), ".data.items | map({s: .status}");
+        assert_eq!(r.jq_ghost(), Some(")"), "the next unclosed opener is offered");
+        bar_key(&mut r, key(KeyCode::Right));
+        r.refresh_jq_completion(SYNC_PRETTY_BYTES);
+        assert_eq!(r.jq_text(), ".data.items | map({s: .status})");
+        assert_eq!(r.jq_ghost(), None);
+    }
+
+    #[test]
+    fn the_closer_is_a_ghost_in_menu_mode_too_and_tab_or_right_takes_it() {
+        let mut r = ready(ITEMS);
+        r.set_jq_tab(JqTab::Menu);
+        type_jq(&mut r, ".data.items | sort_by(.id");
+        assert_eq!(r.jq_bar().menu_row(), None, "one right answer needs no row");
+        assert_eq!(r.jq_ghost(), Some(")"), "it is a ghost, as in cycle mode");
+        bar_key(&mut r, key(KeyCode::Tab));
+        assert_eq!(r.jq_text(), ".data.items | sort_by(.id)");
+        assert!(r.jq_bar().menu().is_none());
+        type_jq(&mut r, ".data.items | map({s: .status");
+        assert_eq!(r.jq_ghost(), Some("}"));
+        bar_key(&mut r, key(KeyCode::Right));
+        assert_eq!(r.jq_text(), ".data.items | map({s: .status}", "Right accepts a closer ghost in menu mode");
+        r.refresh_jq_completion(SYNC_PRETTY_BYTES);
+        assert_eq!(r.jq_ghost(), Some(")"));
+        bar_key(&mut r, key(KeyCode::End));
+        assert_eq!(r.jq_text(), ".data.items | map({s: .status})", "End too");
+    }
+
+    #[test]
+    fn a_lone_key_candidate_is_still_a_chip_in_menu_mode() {
+        let mut r = ready(ITEMS);
+        r.set_jq_tab(JqTab::Menu);
+        type_jq(&mut r, ".data.items[] | .st");
+        assert_eq!(r.jq_ghost(), None, "a guess is never pushed as a ghost");
+        assert_eq!(
+            r.jq_bar().menu_row(),
+            Some(vec![("status".to_string(), false)])
+        );
+        bar_key(&mut r, key(KeyCode::Right));
+        assert_eq!(r.jq_text(), ".data.items[] | .st", "Right is a plain caret move on a chip row");
+    }
+
+    #[test]
+    fn the_muted_note_shows_under_a_closer_ghost_in_menu_mode() {
+        let mut r = ready(ITEMS);
+        r.set_jq_tab(JqTab::Menu);
+        type_jq(&mut r, ".data.items | sort_by(.id");
+        let theme = Theme::dark();
+        let (line, color) = error_row(&mut r, "unclosed (");
+        assert_eq!(line.trim(), "unclosed (");
+        assert_eq!(color, theme.text_muted);
+        let text = render(&mut r);
+        assert!(text.contains("sort_by(.id)"), "the ghost `)` is on the bar row: {text}");
+    }
+
+    #[test]
+    fn a_closer_is_offered_after_keys_land_from_the_pool_with_nothing_extending() {
+        let body = big_json();
+        let mut r = ready_gen(&body, 7);
+        r.set_jq_tab(JqTab::Cycle);
+        // A big body arrives unparsed, and the bar refuses focus with no
+        // tree to filter; land the parse as the app would.
+        r.attach_tree(7, crate::components::json_tree::JsonTree::parse(&body));
+        assert!(r.set_jq_focus(true));
+        r.jq_bar_mut().input = LineInput::new("map(.a");
+        r.apply_jq("map(.a", 0);
+        let req = r
+            .refresh_jq_completion(0)
+            .expect("big body: keys come from the pool");
+        assert_eq!(r.jq_ghost(), None, "nothing offered until the keys land");
+        let landed =
+            r.attach_jq_completion(7, req.seq, req.input_expr.clone(), vec!["a".into()], None);
+        assert!(landed, "the ghost changed");
+        assert_eq!(r.jq_ghost(), Some(")"), "`a` extends nothing: the closer");
+    }
+
+    #[test]
     fn the_ghost_hides_off_the_end_of_the_text_and_when_unfocused() {
         let mut r = ready(ITEMS);
         r.set_jq_tab(JqTab::Cycle);
@@ -6595,7 +6820,7 @@ mod tests {
     fn a_bad_filter_keeps_the_previous_tree_and_marks_the_bar_stale() {
         let mut r = ready(ITEMS);
         r.apply_jq(".data.items | length", SYNC_PRETTY_BYTES);
-        r.apply_jq(".data.items | select(", SYNC_PRETTY_BYTES);
+        r.apply_jq(".data.items )", SYNC_PRETTY_BYTES);
         assert_eq!(r.view().unwrap().view_text(), "2", "last good output stays");
         assert!(r.jq_bar().stale);
         let err = r.jq_bar().error.clone().expect("syntax error recorded");
@@ -6667,13 +6892,13 @@ mod tests {
     #[test]
     fn a_stale_error_is_cleared_when_the_body_becomes_non_json_and_the_bar_shrinks() {
         let mut r = ready(ITEMS);
-        r.apply_jq(".a | select(", SYNC_PRETTY_BYTES);
+        r.apply_jq(".a )", SYNC_PRETTY_BYTES);
         let err = r.jq_bar().error.clone().expect("syntax error recorded");
         assert!(err.span().is_some());
         // A re-send lands a non-JSON body: jq has nothing to run against.
         r.set_state(ResponseState::Ready(Box::new(data("plain text"))), 1);
         assert!(!r.jq_available());
-        r.apply_jq(".a | select(", SYNC_PRETTY_BYTES);
+        r.apply_jq(".a )", SYNC_PRETTY_BYTES);
         assert!(
             r.jq_bar().error.is_none(),
             "non-JSON response disables jq silently, no stale error"
@@ -7200,6 +7425,75 @@ mod tests {
             theme.text,
             "typed text keeps its color"
         );
+    }
+
+    /// The bar's second row for a filter, and the colour it is drawn in:
+    /// the first row under the bar text whose symbols hold `needle`.
+    fn error_row(r: &mut Response, needle: &str) -> (String, ratatui::style::Color) {
+        let (_, buf) = render_buf(r);
+        let w = buf.area.width;
+        let row = (0..buf.area.height)
+            .find(|&y| {
+                (0..w)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+                    .contains(needle)
+            })
+            .unwrap_or_else(|| panic!("no row holds {needle:?}"));
+        let line: String = (0..w).map(|x| buf[(x, row)].symbol()).collect();
+        let x = line.find(needle).unwrap() as u16;
+        (line.trim_end().to_string(), buf[(x, row)].fg)
+    }
+
+    #[test]
+    fn an_unfinished_filter_being_typed_is_drawn_muted_with_no_red_character() {
+        let mut r = ready(ITEMS);
+        r.set_jq_tab(JqTab::Cycle);
+        type_jq(&mut r, ".data.items | sort_by(.id");
+        let theme = Theme::dark();
+        let (line, color) = error_row(&mut r, "unclosed (");
+        assert_eq!(line.trim(), "unclosed (", "the message says what is missing");
+        assert_eq!(color, theme.text_muted, "typing: not an error yet");
+        let (_, buf) = render_buf(&mut r);
+        let w = buf.area.width;
+        let row = (0..buf.area.height)
+            .find(|&y| {
+                (0..w)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+                    .contains("sort_by(.id")
+            })
+            .expect("bar row");
+        assert!(
+            (0..w).all(|x| buf[(x, row)].fg != theme.error),
+            "no character of the bar text is painted red"
+        );
+    }
+
+    #[test]
+    fn an_unfinished_filter_is_an_error_once_the_caret_leaves_the_end_or_the_bar() {
+        let mut r = ready(ITEMS);
+        r.set_jq_tab(JqTab::Cycle);
+        type_jq(&mut r, ".data.items | sort_by(.id");
+        let theme = Theme::dark();
+        r.jq_bar_mut().input.set_cursor(3);
+        r.refresh_jq_completion(SYNC_PRETTY_BYTES);
+        let (_, color) = error_row(&mut r, "unclosed (");
+        assert_eq!(color, theme.error, "caret mid-text: the filter as it stands is broken");
+        r.jq_bar_mut().input.set_cursor(".data.items | sort_by(.id".len());
+        r.set_jq_focus(false);
+        let (_, color) = error_row(&mut r, "unclosed (");
+        assert_eq!(color, theme.error, "blurred: the filter as it stands is broken");
+    }
+
+    #[test]
+    fn a_real_syntax_error_stays_red_while_typing() {
+        let mut r = ready(ITEMS);
+        r.set_jq_tab(JqTab::Cycle);
+        type_jq(&mut r, ".data.items )");
+        let theme = Theme::dark();
+        let (_, color) = error_row(&mut r, "unexpected");
+        assert_eq!(color, theme.error);
     }
 
     #[test]

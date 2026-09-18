@@ -360,6 +360,67 @@ fn ctrl_c_copies_the_url_selection_instead_of_quitting() {
 }
 
 #[test]
+fn ctrl_c_copies_the_jq_bar_selection_instead_of_quitting() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.txt");
+    let cmd = format!("cat > {}", out.to_string_lossy());
+    let mut app = App::new_for_test();
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(
+        Some(cmd),
+        65536,
+        false,
+    ));
+    ready_response(&mut app, r#"{"data":{"items":[{"id":1}]}}"#);
+    app.update(Action::FocusPane(PaneId::Response));
+    assert!(app.session.response.set_jq_focus(true), "a JSON body: the bar can focus");
+    app.session.response.set_jq_text(".data.items");
+    app.session.response.jq_bar_mut().input.select_all();
+
+    app.handle_key(ctrl('c'));
+
+    assert!(!app.should_quit, "copy pre-empts quit");
+    assert!(app.modals.is_empty(), "no quit gate either");
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), ".data.items");
+    assert!(
+        app.session.response.jq_bar().input.selection().is_some(),
+        "copy keeps the selection"
+    );
+}
+
+/// The search box's copy twin of the jq-bar test above: opened the way
+/// `esc_in_the_search_box_runs_the_search_like_enter` opens it, typed
+/// into with the same `type_str` helper, then selected via the
+/// test-only `search_input_mut` accessor (no mutable path to the live
+/// search input exists outside tests).
+#[test]
+fn ctrl_c_copies_the_response_search_selection_instead_of_quitting() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.txt");
+    let cmd = format!("cat > {}", out.to_string_lossy());
+    let mut app = App::new_for_test();
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(
+        Some(cmd),
+        65536,
+        false,
+    ));
+    ready_response(&mut app, r#"{"data":{"items":[{"id":1}]}}"#);
+    app.focus = PaneId::Response;
+    app.handle_key(plain('/'));
+    type_str(&mut app, "id");
+    app.session
+        .response
+        .search_input_mut()
+        .expect("search is active")
+        .select_all();
+
+    app.handle_key(ctrl('c'));
+
+    assert!(!app.should_quit, "copy pre-empts quit");
+    assert!(app.modals.is_empty(), "no quit gate either");
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "id");
+}
+
+#[test]
 fn ctrl_c_copies_a_modal_prompt_selection_and_keeps_the_modal_open() {
     use crate::components::modal::{Modal, PromptKind};
     let dir = tempfile::tempdir().unwrap();

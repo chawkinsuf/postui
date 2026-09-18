@@ -110,10 +110,11 @@ pub struct Context {
     /// (`us` for `.us`, `sel` for `sel`, `my k` for `."my k`).
     pub partial: String,
     /// Byte offset in `text` where the token being completed starts —
-    /// the `.` for a key, the first letter for a word.
+    /// the `.` for a key, the first letter for a word or a shorthand
+    /// key, the `"` for a quoted one.
     pub token_start: usize,
-    /// For `Kind::Key`: the jq expression whose outputs the caret's `.`
-    /// refers to. `None` for `Kind::Word`.
+    /// For `Kind::Key` and `Kind::Shorthand`: the jq expression whose
+    /// outputs the caret's key belongs to. `None` for `Kind::Word`.
     pub input_expr: Option<String>,
 }
 
@@ -123,6 +124,11 @@ pub enum Kind {
     Key { quoted: bool },
     /// A bare word not preceded by `.`, `$` or `@`: a builtin name.
     Word,
+    /// (2026-09-18) A key of an object built by shorthand — `{name}` is
+    /// `{name: .name}` — so a bare word or a `"` string right after `{`
+    /// or after a `,` at the brace's own depth is a key of the object's
+    /// input, not a builtin. `quoted` as for `Key`.
+    Shorthand { quoted: bool },
 }
 ```
 
@@ -257,6 +263,27 @@ Rendering rules:
 - Quoted partial (`."my k`): only keys starting with the partial; ghost
   and insert are the rest of the key plus the closing `"`.
 - Builtin: the rest of the name, plus `(` when arity > 0.
+- **Shorthand key (2026-09-18).** As for a key, without the dot: an
+  identifier key ghosts its rest (`{na` → `me`); a key that is not an
+  identifier is rewritten from the word as `"my key"` with
+  `replace_from` at the word; a quoted partial (`{"my k`) gets the rest
+  plus `"`. The input expression is the object's input, resolved like a
+  key's through the enclosing brackets (`map({na` → `.[]`). After `:`
+  or a value a word is a builtin as before; `{$x` completes nothing.
+- **Closer (2026-09-18).** When the caret's context yields no candidate —
+  the typed key or builtin extends nothing, or there is no context at all
+  (`select(.id == 1`) — and the text ends in a token a closer can follow
+  (a name, `"`, `)`, `]`, `}`, `?`), the closing bracket of the innermost
+  unclosed opener is offered as the one candidate: `sort_by(.id` ghosts
+  `)`, `map({s: .status` ghosts `}`. Keys and builtins always win; the
+  closer only fills the gap once the token is finished. Nothing is
+  offered after an opener, an operator, a pipe, a comma or a `.`, and
+  never inside an unterminated string: there the next thing is an
+  operand, not the end. Engine: `complete::closer(text)`. A closer is a
+  ghost in both Tab modes: menu mode withholds ghosts because a guess
+  pushed at the user compounds, and a closer is not a guess — there is
+  exactly one. Tab, Right and End accept it; no chip row is shown for
+  it.
 
 ## UI (`postui::components::response`)
 
@@ -296,10 +323,15 @@ edit), so every edit keeps both in step:
 
 1. If the bar is not focused, the caret is not at the end, or there is
    a selection, clear `ctx` and `candidates` and return `None`.
-2. Compute `context(text)`. `None` → clear and return.
-3. `Kind::Word` → candidates from `builtins()`, no fetch.
-4. `Kind::Key` with `input_expr` equal to the cached one → rebuild
-   candidates from the cached keys (typing more of the partial).
+2. Compute `context(text)`. `None` → clear; then, as on every path that
+   ends with no candidate, offer the closer of the innermost unclosed
+   opener (`complete::closer`) if the text ends in something it can
+   follow.
+3. `Kind::Word` → candidates from `builtins()`, with the closer fallback
+   when none extend.
+4. `Kind::Key` or `Kind::Shorthand` with `input_expr` equal to the
+   cached one → rebuild candidates from the cached keys (typing more of
+   the partial), with the same fallback once keys are known.
 5. Otherwise a fetch is needed. Body under `sync_limit` → `keys_at`
    inline, cache, build candidates. Larger → bump `seq`, set `pending`,
    return `JqCompleteRequest { generation, seq, input_expr, doc }` for
@@ -326,7 +358,7 @@ In `ready_key`'s jq-focused branch, before the event reaches the
 |-----------------|-------------------------------|--------------------------------------------------|
 | Tab             | next candidate (wraps)        | enter the row at the first (entered: next, wraps) |
 | shift+Tab       | previous candidate (wraps)    | enter the row at the last (entered: previous)     |
-| Right, End      | accept                        | a plain caret move (entered: leaves the row first) |
+| Right, End      | accept                        | a plain caret move on a chip row; accept a closer ghost (entered: leaves the row first) |
 | Enter           | leave the bar, typed text kept | leave the bar (entered: confirm the chip, stay)   |
 | Esc             | cancel the edit               | cancel the edit (entered: un-pick, stay)          |
 | Down            | leave the bar                 | leave the bar                                    |

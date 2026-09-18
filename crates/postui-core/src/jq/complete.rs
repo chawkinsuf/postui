@@ -56,6 +56,11 @@ pub enum Kind {
     Key { quoted: bool },
     /// A bare word not preceded by `.`, `$` or `@`: a builtin name.
     Word,
+    /// A key of an object being built by shorthand — `{name}` means
+    /// `{name: .name}` — so a bare word (or a `"` string) right after
+    /// `{` or after a `,` at the brace's own depth is a key of the
+    /// object's input, not a builtin.
+    Shorthand { quoted: bool },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,10 +70,13 @@ pub struct Context {
     /// (`us` for `.us`, `sel` for `sel`, `my k` for `."my k`).
     pub partial: String,
     /// Byte offset in the text where the token starts — the `.` for a
-    /// key, the first letter for a word.
+    /// key, the first letter for a word, and for a shorthand key the
+    /// first letter or the opening `"`.
     pub token_start: usize,
-    /// For `Kind::Key`: the jq expression whose outputs the caret's `.`
-    /// refers to. `None` for `Kind::Word`.
+    /// For `Kind::Key` and `Kind::Shorthand`: the jq expression whose
+    /// outputs the key belongs to — what the caret's `.` refers to, or
+    /// the object's own input for a shorthand key. `None` for
+    /// `Kind::Word`.
     pub input_expr: Option<String>,
 }
 
@@ -119,6 +127,31 @@ fn unterminated_string(s: &str) -> Option<usize> {
     open
 }
 
+/// Whether the end of `before` is a place an object-shorthand key may
+/// start: directly inside an unclosed `{`, right after it or after a `,`
+/// at its own depth (whitespace allowed either way). After `:` or a
+/// value the next thing is not a key, and a `,` inside a nested bracket
+/// belongs to that bracket.
+///
+/// The `last_top_level(seg, b',') == Some(seg.len() - 1)` check can't
+/// actually fail here: once `unclosed.last()` names the `{` we're
+/// looking inside, a `seg` that ends with `,` has that comma at `seg`'s
+/// own top level by construction. It's kept anyway as defence against a
+/// future change to `scan`'s bracket accounting, not a case this
+/// function needs today.
+fn shorthand_slot(before: &str) -> bool {
+    let sc = scan(before);
+    let Some(&open) = sc.unclosed.last() else {
+        return false;
+    };
+    if before.as_bytes()[open] != b'{' {
+        return false;
+    }
+    let seg = before[open + 1..].trim_end();
+    seg.is_empty()
+        || (seg.ends_with(',') && last_top_level(seg, b',') == Some(seg.len() - 1))
+}
+
 /// Inspects the whole bar text (the caller guarantees the caret is at
 /// its end) and says what is being completed, or `None` when the text
 /// ends in something completion has nothing to offer for (whitespace, an
@@ -126,17 +159,22 @@ fn unterminated_string(s: &str) -> Option<usize> {
 pub fn context(text: &str) -> Option<Context> {
     let b = text.as_bytes();
     if let Some(open) = unterminated_string(text) {
-        // Only a string right after `.` is a key being typed.
-        if open == 0 || b[open - 1] != b'.' {
-            return None;
-        }
         let partial = &text[open + 1..];
         if partial.contains('\\') {
             return None;
         }
-        let token_start = open - 1;
+        // A string right after `.` is a key being typed; one in a
+        // shorthand slot is a quoted shorthand key. Any other string is
+        // a value, and completion has nothing to say inside it.
+        let (kind, token_start) = if open > 0 && b[open - 1] == b'.' {
+            (Kind::Key { quoted: true }, open - 1)
+        } else if shorthand_slot(&text[..open]) {
+            (Kind::Shorthand { quoted: true }, open)
+        } else {
+            return None;
+        };
         return Some(Context {
-            kind: Kind::Key { quoted: true },
+            kind,
             partial: partial.to_string(),
             token_start,
             input_expr: Some(input_expr(&text[..token_start])),
@@ -167,6 +205,14 @@ pub fn context(text: &str) -> Option<Context> {
     }
     if matches!(before.as_bytes().last(), Some(b'$') | Some(b'@')) {
         return None;
+    }
+    if shorthand_slot(before) {
+        return Some(Context {
+            kind: Kind::Shorthand { quoted: false },
+            partial: word.to_string(),
+            token_start: start,
+            input_expr: Some(input_expr(before)),
+        });
     }
     Some(Context {
         kind: Kind::Word,
@@ -322,6 +368,16 @@ fn last_top_level(s: &str, what: u8) -> Option<usize> {
     })
 }
 
+/// How many top-level occurrences of `what` sit in `s`, outside strings
+/// and nested brackets.
+fn top_level_count(s: &str, what: u8) -> usize {
+    let sc = scan(s);
+    let b = s.as_bytes();
+    (0..b.len())
+        .filter(|&i| b[i] == what && !sc.in_string[i] && sc.depth[i] == 0)
+        .count()
+}
+
 /// The path chain (`.a`, `."k"`, `[…]`, `?`, `$x`, a bare `.`) ending at
 /// the end of `tail`, or `""` when it ends in anything else.
 fn path_chain(tail: &str) -> &str {
@@ -435,8 +491,9 @@ fn quote(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
-/// The candidates for `ctx`: keys (for `Kind::Key`) or builtins (for
-/// `Kind::Word`) that start with the partial and are longer than it —
+/// The candidates for `ctx`: keys (for `Kind::Key` and
+/// `Kind::Shorthand`) or builtins (for `Kind::Word`) that start with the
+/// partial and are longer than it —
 /// a ghost is always a continuation — in body order for keys and
 /// alphabetical for builtins.
 pub fn candidates(ctx: &Context, keys: &[String]) -> Vec<Candidate> {
@@ -459,7 +516,11 @@ pub fn candidates(ctx: &Context, keys: &[String]) -> Vec<Candidate> {
                 plain(rest)
             })
             .collect(),
-        Kind::Key { quoted: true } => keys
+        // A key or shorthand key already inside an open quote: the same
+        // closing-quote continuation either way. Pre-existing gap, not
+        // this pass's to close: a key holding `"` or `\` isn't
+        // re-escaped when the quoted partial is closed.
+        Kind::Key { quoted: true } | Kind::Shorthand { quoted: true } => keys
             .iter()
             .filter(|k| extends(k))
             .map(|k| plain(format!("{}\"", &k[p.len()..])))
@@ -480,7 +541,77 @@ pub fn candidates(ctx: &Context, keys: &[String]) -> Vec<Candidate> {
                 }
             })
             .collect(),
+        Kind::Shorthand { quoted: false } => keys
+            .iter()
+            .filter(|k| extends(k))
+            .map(|k| {
+                if is_identifier(k) {
+                    plain(k[p.len()..].to_string())
+                } else {
+                    // `{my` → `{"my key"}`: the word is rewritten quoted,
+                    // with no dot — shorthand names the key, not a path.
+                    let q = quote(k);
+                    Candidate {
+                        insert: q.clone(),
+                        ghost: q,
+                        replace_from: Some(ctx.token_start),
+                    }
+                }
+            })
+            .collect(),
     }
+}
+
+/// The closing bracket of the innermost opener left unclosed in `text`,
+/// as a candidate — offered only when the text ends in something a
+/// closer can follow (a name, a closing quote, another closer, `?`), so
+/// `sort_by(.params` ghosts `)` but `sort_by(`, `select(.a ==` and
+/// `map(.a |` ghost nothing: there the next thing is an operand, not the
+/// end. `None` inside an unterminated string, with nothing unclosed, and
+/// when the opener is a builtin's `(` that still needs more arguments —
+/// `limit(3` ghosting `)` would produce `limit(3)`, which is the wrong
+/// arity, so a closer that makes the call wrong is a wrong offer.
+pub fn closer(text: &str) -> Option<Candidate> {
+    if unterminated_string(text).is_some() {
+        return None;
+    }
+    if text.ends_with(char::is_whitespace) {
+        return None;
+    }
+    let sc = scan(text);
+    let b = text.as_bytes();
+    let open = *sc.unclosed.last()?;
+    let close = match b[open] {
+        b'(' => ')',
+        b'[' => ']',
+        b'{' => '}',
+        _ => return None,
+    };
+    let last = *b.last()?;
+    let can_follow = is_ident_byte(last) || matches!(last, b'"' | b')' | b']' | b'}' | b'?');
+    if !can_follow {
+        return None;
+    }
+    if b[open] == b'(' {
+        // A space before `(` (`limit (3`) mustn't hide the builtin name
+        // from `ident_run_start`, which otherwise stops at the space and
+        // finds nothing — trim it off the head before hunting for the
+        // identifier run.
+        let head = text[..open].trim_end();
+        let name_start = ident_run_start(head);
+        let name = &head[name_start..];
+        if let Some(builtin) = builtins().iter().find(|bi| bi.name == name) {
+            let args_so_far = 1 + top_level_count(&text[open + 1..], b';');
+            if builtin.arity > args_so_far {
+                return None;
+            }
+        }
+    }
+    Some(Candidate {
+        ghost: close.to_string(),
+        insert: close.to_string(),
+        replace_from: None,
+    })
 }
 
 #[cfg(test)]
@@ -491,6 +622,67 @@ mod tests {
 
     fn doc() -> super::super::JqDocument {
         super::super::JqDocument::parse(DOC).expect("fixture is JSON")
+    }
+
+    fn closer_of(text: &str) -> Option<String> {
+        closer(text).map(|c| {
+            assert_eq!(c.ghost, c.insert, "a closer is inserted as shown");
+            assert_eq!(c.replace_from, None);
+            c.ghost
+        })
+    }
+
+    #[test]
+    fn the_closer_is_the_innermost_unclosed_bracket() {
+        assert_eq!(closer_of("sort_by(.params").as_deref(), Some(")"));
+        assert_eq!(closer_of("map({name: .name").as_deref(), Some("}"));
+        assert_eq!(closer_of("map({name: .name}").as_deref(), Some(")"));
+        assert_eq!(closer_of("[.a[0]").as_deref(), Some("]"));
+        assert_eq!(closer_of("select(.a == 1").as_deref(), Some(")"));
+        assert_eq!(closer_of("select(.a == \"x\"").as_deref(), Some(")"));
+        assert_eq!(closer_of("map(.a?").as_deref(), Some(")"));
+        assert_eq!(closer_of("map($x").as_deref(), Some(")"));
+        assert_eq!(closer_of("(.a | .b").as_deref(), Some(")"));
+        assert_eq!(closer_of("range(1").as_deref(), Some(")"));
+        assert_eq!(closer_of("limit(3; .[]").as_deref(), Some(")"));
+        assert_eq!(
+            closer_of("limit (3; .[]").as_deref(),
+            Some(")"),
+            "a space before `(` doesn't hide the builtin name"
+        );
+        assert_eq!(closer_of("sub(\"a\"; \"b\"").as_deref(), Some(")"));
+        assert_eq!(
+            closer_of("limit(3; .[]; 1").as_deref(),
+            Some(")"),
+            "3 args already meets limit/2's arity, not refused"
+        );
+    }
+
+    #[test]
+    fn no_closer_where_one_cannot_follow_or_nothing_is_open() {
+        for text in [
+            "",
+            ".a",
+            "sort_by(.params)",
+            "sort_by(",
+            "sort_by(.",
+            "map({",
+            "select(.a ==",
+            "select(.a == ",
+            "map(.a |",
+            "map(.a | ",
+            "map(.a,",
+            "limit(3;",
+            "limit(3",
+            "limit (3",
+            "sub(\"a\"",
+            "{a:",
+            "select(.a == \"abc",
+            ".a | \"abc",
+            "map(.a  ",
+        ] {
+            assert_eq!(closer_of(text), None, "for {text:?}");
+        }
     }
 
     #[test]
@@ -568,6 +760,93 @@ mod tests {
             (c.kind, c.partial.as_str(), c.token_start),
             (Kind::Word, "sel", 0)
         );
+    }
+
+    fn shorthand(text: &str) -> (String, usize, bool) {
+        let c = context(text).unwrap_or_else(|| panic!("{text:?} should complete a shorthand key"));
+        let Kind::Shorthand { quoted } = c.kind else {
+            panic!("{text:?} should be a shorthand key, got {:?}", c.kind);
+        };
+        assert!(c.input_expr.is_some(), "{text:?}: a shorthand key has an input");
+        (c.partial, c.token_start, quoted)
+    }
+
+    #[test]
+    fn a_bare_word_right_inside_braces_is_a_shorthand_key() {
+        assert_eq!(shorthand("map({n"), ("n".into(), 5, false));
+        assert_eq!(shorthand("map({ n"), ("n".into(), 6, false));
+        assert_eq!(shorthand("map({name, a"), ("a".into(), 11, false));
+        assert_eq!(shorthand("map({name,a"), ("a".into(), 10, false));
+        assert_eq!(shorthand(".[] | {n"), ("n".into(), 7, false));
+        assert_eq!(shorthand("{a: 1, n"), ("n".into(), 7, false));
+        assert_eq!(shorthand("{a: (.b | .c), n"), ("n".into(), 15, false));
+        assert_eq!(shorthand("{$x, n"), ("n".into(), 5, false));
+        assert_eq!(shorthand("map({\"my"), ("my".into(), 5, true));
+        assert_eq!(shorthand("{a, \"my k"), ("my k".into(), 4, true));
+    }
+
+    #[test]
+    fn a_word_elsewhere_in_braces_is_not_a_shorthand_key() {
+        for (text, want) in [
+            ("map({name: n", Kind::Word),
+            ("{a: b", Kind::Word),
+            ("{a: 1 | n", Kind::Word),
+            ("[n", Kind::Word),
+            ("map(n", Kind::Word),
+            ("{a: [n", Kind::Word),
+            ("{a: .n", Kind::Key { quoted: false }),
+            ("{a: .\"n", Kind::Key { quoted: true }),
+            ("{.n", Kind::Key { quoted: false }),
+        ] {
+            let c = context(text).unwrap_or_else(|| panic!("{text:?} should complete"));
+            assert_eq!(c.kind, want, "for {text:?}");
+        }
+        assert!(context("{a: \"x").is_none(), "a value string is not a key");
+        assert!(context("{$n").is_none(), "a variable shorthand completes nothing");
+        assert!(context("{\"a\\\"b").is_none(), "escapes are not completed");
+    }
+
+    #[test]
+    fn a_shorthand_key_s_input_is_the_object_s_input() {
+        assert_eq!(expr("map({na"), ".[]");
+        assert_eq!(expr(".data.items | map({na"), ".data.items | .[]");
+        assert_eq!(expr(".data.items[] | {na"), ".data.items[]");
+        assert_eq!(expr(".data.items[] | {id, na"), ".data.items[]");
+        assert_eq!(expr(".data | {to"), ".data");
+    }
+
+    #[test]
+    fn shorthand_candidates_are_keys_without_a_dot() {
+        let keys: Vec<String> = ["name", "my key", "nested"].iter().map(|k| k.to_string()).collect();
+        let ctx = context("map({n").unwrap();
+        let got: Vec<(String, String, Option<usize>)> = candidates(&ctx, &keys)
+            .into_iter()
+            .map(|c| (c.ghost, c.insert, c.replace_from))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("ame".into(), "ame".into(), None),
+                ("ested".into(), "ested".into(), None),
+            ]
+        );
+        assert!(
+            context("map({").is_none(),
+            "nothing typed after `{{` — an empty word is not a context"
+        );
+        let ctx = context("map({m").unwrap();
+        let got: Vec<(String, String, Option<usize>)> = candidates(&ctx, &keys)
+            .into_iter()
+            .map(|c| (c.ghost, c.insert, c.replace_from))
+            .collect();
+        assert_eq!(
+            got,
+            vec![("\"my key\"".into(), "\"my key\"".into(), Some(5))],
+            "a key that is not an identifier is rewritten from the word, quoted, no dot"
+        );
+        let ctx = context("map({\"my").unwrap();
+        let got: Vec<String> = candidates(&ctx, &keys).into_iter().map(|c| c.ghost).collect();
+        assert_eq!(got, vec![" key\"".to_string()]);
     }
 
     #[test]
@@ -653,9 +932,12 @@ mod tests {
                 s.push(alphabet[(seed % alphabet.len() as u64) as usize]);
             }
             let _ = context(&s);
+            let _ = closer(&s);
         }
         let _ = context("é.ü");
         let _ = context(".\"é");
+        let _ = closer("é.ü");
+        let _ = closer(".\"é");
     }
 
     fn builtin(name: &str) -> Option<&'static Builtin> {

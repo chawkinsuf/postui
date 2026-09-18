@@ -378,6 +378,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 crate::components::footer::JqBarState::Describing
             } else if app.session.response.jq_menu_open() {
                 crate::components::footer::JqBarState::Menu
+            } else if app.session.response.jq_ghost_is_closer() {
+                crate::components::footer::JqBarState::Closer
             } else if app.session.response.jq_ghost().is_some()
                 || app.session.response.jq_menu_offered()
             {
