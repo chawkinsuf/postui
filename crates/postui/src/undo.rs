@@ -3,7 +3,6 @@
 //! [`History::record`]; merging bursts of typing into one undo step happens
 //! here.
 
-use crate::components::editor::EditorTab;
 use postui_core::model::HttpRequest;
 use std::time::{Duration, Instant};
 
@@ -94,41 +93,13 @@ pub enum ProjectNoun {
     TrashNamed,
 }
 
-/// Where the cursor sat before/after a step, so undo/redo can restore it.
+/// Which request a step belongs to, so undo can jump back to it. No caret
+/// is stored: undo/redo leave focus and the caret exactly where they are
+/// (ruling 2026-09-18, matching the Manage screen) — `Editor::apply_snapshot`
+/// re-places the caret it already has against the swapped-in fields.
 #[derive(Debug, Clone)]
 pub struct Context {
     pub slug: Option<String>,
-    pub cursor_before: CursorPos,
-    pub cursor_after: CursorPos,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CursorPos {
-    Url(usize),
-    Body { row: usize, col: usize },
-    Cell { tab: EditorTab, key: String },
-    None,
-}
-
-impl CursorPos {
-    /// Whether the field this caret sits in is one the step changed
-    /// (ruling 2026-09-17: undo/redo place the caret only in an input the
-    /// step touches — restoring a stored caret into an unchanged field
-    /// would move focus to an input the undo never affected). The Body tab
-    /// is the body text; a table tab is its map.
-    pub fn touched_by(&self, before: &HttpRequest, after: &HttpRequest) -> bool {
-        match self {
-            CursorPos::Url(_) => before.url != after.url,
-            CursorPos::Body { .. } => before.body != after.body,
-            CursorPos::Cell { tab, .. } => match tab {
-                EditorTab::Params => before.params != after.params,
-                EditorTab::Headers => before.headers != after.headers,
-                EditorTab::Vars => before.variables != after.variables,
-                EditorTab::Body => before.body != after.body,
-            },
-            CursorPos::None => false,
-        }
-    }
 }
 
 /// Which single `HttpRequest` field changed, for burst-coalescing purposes.
@@ -190,8 +161,8 @@ impl History {
     /// hold: coalescing is active, `now` is within the coalesce window of
     /// the last record, and the two steps are mergeable — `EditorDelta`s
     /// with the same `slug` whose `coalesce_key`s agree (and are `Some`).
-    /// Merging keeps the top's `before`/`cursor_before` and takes `step`'s
-    /// `after`/`cursor_after`. Clears the redo stack either way and evicts
+    /// Merging keeps the top's `before` and takes `step`'s `after`. Clears
+    /// the redo stack either way and evicts
     /// the oldest step past the cap.
     pub fn record(&mut self, step: Step, now: Instant) {
         self.redo.clear();
@@ -253,7 +224,6 @@ impl History {
         }
 
         *top_after = new_after.clone();
-        top.context.cursor_after = new.context.cursor_after.clone();
         true
     }
 
@@ -349,31 +319,6 @@ impl Default for History {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_caret_is_touched_only_by_a_step_that_changes_its_field() {
-        let before = HttpRequest::default();
-        let mut url = before.clone();
-        url.url = "https://x".into();
-        let mut headers = before.clone();
-        headers.headers.insert(
-            "a".into(),
-            postui_core::model::Entry {
-                value: "1".into(),
-                enabled: true,
-            },
-        );
-        let caret = CursorPos::Url(0);
-        assert!(caret.touched_by(&before, &url));
-        assert!(!caret.touched_by(&before, &headers));
-        let cell = CursorPos::Cell {
-            tab: EditorTab::Headers,
-            key: "a".into(),
-        };
-        assert!(cell.touched_by(&before, &headers));
-        assert!(!cell.touched_by(&before, &url));
-        assert!(!CursorPos::None.touched_by(&before, &url));
-    }
-
     use postui_core::model::{HttpRequest, Method};
     use std::time::{Duration, Instant};
 
@@ -402,8 +347,6 @@ mod tests {
             },
             context: Context {
                 slug: Some("a".into()),
-                cursor_before: CursorPos::Url(before.len()),
-                cursor_after: CursorPos::Url(after.len()),
             },
         }
     }
@@ -451,8 +394,6 @@ mod tests {
                 },
                 context: Context {
                     slug: Some("a".into()),
-                    cursor_before: CursorPos::None,
-                    cursor_after: CursorPos::None,
                 },
             },
             t0 + Duration::from_millis(100),
@@ -494,8 +435,6 @@ mod tests {
             },
             context: Context {
                 slug: None,
-                cursor_before: CursorPos::None,
-                cursor_after: CursorPos::None,
             },
         });
         let popped = h.pop_undo().expect("the step is there");
@@ -572,14 +511,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn merged_step_keeps_before_cursor_takes_after_cursor() {
-        let mut h = History::new();
-        let t0 = Instant::now();
-        h.record(delta("ab", "abc"), t0);
-        h.record(delta("abc", "abcd"), t0 + Duration::from_millis(100));
-        let step = h.pop_undo().unwrap();
-        assert_eq!(step.context.cursor_before, CursorPos::Url(2));
-        assert_eq!(step.context.cursor_after, CursorPos::Url(4));
-    }
 }

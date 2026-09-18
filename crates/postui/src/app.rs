@@ -429,10 +429,6 @@ pub struct App {
     /// diffed against the live editor each call to detect edits that never
     /// went through an `Action`. `None` before the first request is open.
     shadow: Option<(Option<String>, postui_core::model::HttpRequest)>,
-    /// The cursor position captured alongside `shadow`, so a recorded step's
-    /// `cursor_before` reflects where the cursor sat before this burst of
-    /// edits began, not just before the immediately preceding keystroke.
-    shadow_cursor: crate::undo::CursorPos,
     /// Whether the last `capture_undo` call was held back by an open
     /// live-synced field (see [`Self::field_gate`]); the call that finds
     /// the gate off again is the field's close and records without
@@ -1623,7 +1619,6 @@ impl App {
             history: crate::undo::History::new(),
             marked_entry: None,
             shadow: None,
-            shadow_cursor: crate::undo::CursorPos::None,
             field_gate_was_on: false,
             no_coalesce: false,
             testbed_list_dir_plan: 1,
@@ -2234,7 +2229,6 @@ impl App {
 
     pub fn capture_undo(&mut self) -> bool {
         let current_slug = self.editor.slug.clone();
-        let cursor = self.editor.cursor_pos();
         // A caret that has left the URL line closes its session here too,
         // so a mouse blur, alt+u or a Tab out of the pane is as good as Esc
         // — focus counts, since a pane switch moves it without touching
@@ -2271,17 +2265,11 @@ impl App {
                         },
                         context: crate::undo::Context {
                             slug: current_slug.clone(),
-                            cursor_before: std::mem::replace(
-                                &mut self.shadow_cursor,
-                                cursor.clone(),
-                            ),
-                            cursor_after: cursor.clone(),
                         },
                     };
                     let coalesce = !std::mem::take(&mut self.no_coalesce) && !closing;
                     self.history.record_maybe_coalesce(step, coalesce);
                     self.shadow = Some((current_slug, current));
-                    self.shadow_cursor = cursor;
                     return true;
                 }
             }
@@ -2289,7 +2277,6 @@ impl App {
         }
         self.no_coalesce = false;
         self.shadow = Some((current_slug, self.editor.current_request()));
-        self.shadow_cursor = cursor;
         false
     }
 
@@ -2610,8 +2597,6 @@ impl App {
                             kind: crate::undo::StepKind::ConfigFile { file, before, after },
                             context: crate::undo::Context {
                                 slug: None,
-                                cursor_before: crate::undo::CursorPos::None,
-                                cursor_after: crate::undo::CursorPos::None,
                             },
                         });
                         self.update(Action::ReloadFromDisk)
@@ -8011,8 +7996,6 @@ impl App {
             },
             context: crate::undo::Context {
                 slug,
-                cursor_before: crate::undo::CursorPos::None,
-                cursor_after: crate::undo::CursorPos::None,
             },
         });
     }
@@ -10405,8 +10388,6 @@ impl App {
             kind: crate::undo::StepKind::Config { key, before, after },
             context: crate::undo::Context {
                 slug: None,
-                cursor_before: crate::undo::CursorPos::None,
-                cursor_after: crate::undo::CursorPos::None,
             },
         });
     }
@@ -10934,29 +10915,19 @@ impl App {
                     }
                     // fall through to the normal same-request apply below
                 }
-                let (target, cursor) = if redo {
-                    ((**after).clone(), step.context.cursor_after.clone())
+                let target = if redo {
+                    (**after).clone()
                 } else {
-                    ((**before).clone(), step.context.cursor_before.clone())
+                    (**before).clone()
                 };
-                // A stored caret lands only in a field this step changed;
-                // one that sits in an untouched field (the click that made
-                // the step also moved focus off it) leaves focus where it
-                // is — re-placed by key, since the snapshot swap drops the
-                // table selection.
-                let cursor = if cursor.touched_by(before, after) {
-                    cursor
-                } else {
-                    self.editor.cursor_pos()
-                };
+                // Focus and the caret stay where they are (the snapshot
+                // swap re-places the editor's own caret against the new
+                // fields) — undo never moves focus, as on the Manage screen.
                 self.editor.apply_snapshot(&target);
-                self.editor.restore_cursor(&cursor);
                 self.sync_active_tab();
-                self.focus = PaneId::Editor;
                 // The applied state IS the new shadow; without this the
                 // capture hook would record the undo as a fresh edit.
                 self.shadow = Some((self.editor.slug.clone(), target));
-                self.shadow_cursor = cursor;
                 if redo {
                     self.history.push_undo_no_coalesce(step.clone());
                 } else {
