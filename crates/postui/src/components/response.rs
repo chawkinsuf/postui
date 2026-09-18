@@ -1573,6 +1573,17 @@ impl Response {
         true
     }
 
+    /// The focused bar's selection, for ctrl+c: the copy twin of
+    /// [`Self::paste_into_jq`]. `None` when the bar does not own the
+    /// keyboard, so an old highlight in a blurred bar never shadows the
+    /// tree's.
+    pub fn jq_selected_text(&self) -> Option<String> {
+        if !self.jq.focused {
+            return None;
+        }
+        self.jq.input.selected_text()
+    }
+
     /// The tree the `Pretty` view is showing: the filtered tree while a jq
     /// filter is applied, otherwise the body tree.
     pub fn active_tree(&self) -> Option<&JsonTree> {
@@ -1973,6 +1984,26 @@ impl Response {
             }
             _ => false,
         }
+    }
+
+    /// The live search box's selection, for ctrl+c: the copy twin of
+    /// [`Self::paste_into_search`].
+    pub fn search_selected_text(&self) -> Option<String> {
+        let search = self.view.as_ref()?.search.as_ref()?;
+        if !search.active {
+            return None;
+        }
+        search.input.selected_text()
+    }
+
+    /// Test-only mutable reach into the live search box's input, so a test
+    /// can drive a selection the way `select_all` does — there is no
+    /// production path that needs to reach in and mutate the search input
+    /// directly (typing and pasting both go through dedicated methods).
+    #[cfg(test)]
+    pub fn search_input_mut(&mut self) -> Option<&mut LineInput> {
+        let search = self.view.as_mut()?.search.as_mut()?;
+        Some(&mut search.input)
     }
 
     /// The body view's scroll state, as of the last draw (the viewport height
