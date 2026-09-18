@@ -17,6 +17,11 @@ pub struct ResponseData {
     /// visible after a send.
     pub url: String,
     pub headers: Vec<(String, String)>,
+    /// The headers this request went out with, in send order — a snapshot
+    /// taken at send time, so it still says what was sent after the
+    /// request has been edited. Shown under the response headers as the
+    /// Headers tab's `sent` section.
+    pub sent_headers: Vec<SentHeader>,
     pub body: String,
     /// Time to first byte: send → response headers received.
     pub ttfb: Duration,
@@ -24,6 +29,32 @@ pub struct ResponseData {
     pub elapsed: Duration,
     pub size: usize,
     pub content_type: Option<String>,
+}
+
+/// One header as it was sent: the real `value` (what the copy pill
+/// yields) and its `display` form with secret values masked (what the
+/// screen shows — never the real value).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SentHeader {
+    pub name: String,
+    pub value: String,
+    pub display: String,
+}
+
+impl SentHeader {
+    /// Pairs a prepared request's wire headers with its masked display
+    /// headers (`PreparedRequest::display_headers`), row for row.
+    pub fn from_prepared(req: &PreparedRequest) -> Vec<Self> {
+        req.headers
+            .iter()
+            .zip(&req.display_headers)
+            .map(|((name, value), (_, display))| SentHeader {
+                name: name.clone(),
+                value: value.clone(),
+                display: display.clone(),
+            })
+            .collect()
+    }
 }
 
 /// Builds the client used for all requests. Deliberately no timeout of any
@@ -129,6 +160,7 @@ pub async fn send(client: &reqwest::Client, req: &PreparedRequest) -> Result<Res
         status,
         url: req.display_url.clone(),
         headers,
+        sent_headers: SentHeader::from_prepared(req),
         body,
         ttfb,
         elapsed,
@@ -264,6 +296,7 @@ mod tests {
             url: "https://x.test".into(),
             display_url: "https://x.test".into(),
             headers: vec![],
+            display_headers: vec![],
             body: None,
             insecure: false,
         };
@@ -306,6 +339,7 @@ mod tests {
             url: "http://127.0.0.1:1/v1/items?key=sk-live-REAL".into(),
             display_url: "http://127.0.0.1:1/v1/items?key=•••••".into(),
             headers: vec![],
+            display_headers: vec![],
             body: None,
             insecure: false,
         };
@@ -340,6 +374,7 @@ mod tests {
             url: format!("http://{addr}/"),
             display_url: format!("http://{addr}/"),
             headers: vec![],
+            display_headers: vec![],
             body: None,
             insecure: false,
         };

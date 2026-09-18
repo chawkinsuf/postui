@@ -583,7 +583,11 @@ pub struct ReadyView {
     parse_started: Instant,
     /// Verbatim body lines — never reformatted, never re-wrapped.
     raw_lines: Vec<String>,
+    /// The Headers tab's lines, one per `header_rows` entry: the response
+    /// headers, the `sent` divider, then the headers the request went out
+    /// with (secrets masked — the real values live in `ResponseData`).
     header_lines: Vec<String>,
+    header_rows: Vec<HeaderRow>,
     pub cursor: usize,
     pub scroll: usize,
     /// Column offset of the body viewport — verbatim lines are never
@@ -653,6 +657,36 @@ pub struct ReadyView {
     raw_marks: HashMap<usize, Vec<ColMark>>,
 }
 
+/// What a line of the Headers tab is: a header the server answered with
+/// (index into `ResponseData::headers`), one the request went out with
+/// (index into `ResponseData::sent_headers`), the divider between the
+/// two sections, or a note where a section has nothing to list. Only
+/// the two header kinds carry a copy pill.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeaderRow {
+    Received(usize),
+    Sent(usize),
+    Divider,
+    Note,
+}
+
+/// The Headers tab's divider text; the paint extends its rule to the
+/// pane's width.
+const SENT_DIVIDER: &str = "\u{2500}\u{2500} sent ";
+
+/// `name: value` rows with the values aligned past the widest name.
+fn aligned_header_lines<'a>(
+    rows: impl Iterator<Item = (&'a str, &'a str)> + Clone,
+) -> Vec<String> {
+    let width = rows
+        .clone()
+        .map(|(k, _)| k.chars().count())
+        .max()
+        .unwrap_or(0);
+    rows.map(|(k, v)| format!("{:<width$} {v}", format!("{k}:"), width = width + 1))
+        .collect()
+}
+
 impl ReadyView {
     fn new(data: &crate::http::ResponseData, generation: u64) -> Self {
         // A big body is parsed off-thread; until that lands there is no
@@ -674,12 +708,28 @@ impl ReadyView {
         } else {
             ViewMode::Raw
         };
-        let width = data
-            .headers
-            .iter()
-            .map(|(k, _)| k.chars().count())
-            .max()
-            .unwrap_or(0);
+        let mut header_lines = Vec::new();
+        let mut header_rows = Vec::new();
+        if data.headers.is_empty() {
+            header_lines.push("(no headers)".to_string());
+            header_rows.push(HeaderRow::Note);
+        }
+        header_lines.extend(aligned_header_lines(
+            data.headers.iter().map(|(k, v)| (k.as_str(), v.as_str())),
+        ));
+        header_rows.extend((0..data.headers.len()).map(HeaderRow::Received));
+        header_lines.push(SENT_DIVIDER.to_string());
+        header_rows.push(HeaderRow::Divider);
+        if data.sent_headers.is_empty() {
+            header_lines.push("(none)".to_string());
+            header_rows.push(HeaderRow::Note);
+        }
+        header_lines.extend(aligned_header_lines(
+            data.sent_headers
+                .iter()
+                .map(|h| (h.name.as_str(), h.display.as_str())),
+        ));
+        header_rows.extend((0..data.sent_headers.len()).map(HeaderRow::Sent));
         Self {
             mode,
             body_mode: mode,
@@ -690,11 +740,8 @@ impl ReadyView {
             awaiting_filter: false,
             parse_started: Instant::now(),
             raw_lines: data.body.split('\n').map(|l| l.to_string()).collect(),
-            header_lines: data
-                .headers
-                .iter()
-                .map(|(k, v)| format!("{:<width$} {v}", format!("{k}:"), width = width + 1))
-                .collect(),
+            header_lines,
+            header_rows,
             cursor: 0,
             scroll: 0,
             h_scroll: 0,
@@ -782,8 +829,14 @@ impl ReadyView {
         match self.mode {
             ViewMode::Pretty => self.active_tree().map_or(0, |t| t.visible_len()),
             ViewMode::Raw => self.raw_lines.len(),
-            ViewMode::Headers => self.header_lines.len().max(1),
+            ViewMode::Headers => self.header_lines.len(),
         }
+    }
+
+    /// What line `i` of the Headers tab is — how a copy on it finds the
+    /// header it names.
+    pub fn header_row(&self, i: usize) -> Option<HeaderRow> {
+        self.header_rows.get(i).copied()
     }
 
     /// Builds the column index of every raw line in `rows` that is long
@@ -2428,9 +2481,19 @@ impl Response {
             // No pane-local view key: the strip is walked by the tab chord
             // every pane shares (alt+←/→ → `Action::CycleTabs`, resolved
             // against the focused pane in `app.rs`).
-            KeyCode::Char('c') if view.mode == ViewMode::Headers => Some(Action::CopyToClipboard(
-                CopyTarget::ResponseHeader(view.cursor),
-            )),
+            // Only a header row has a value to copy: on the divider or a
+            // note the key dispatches nothing.
+            KeyCode::Char('c')
+                if view.mode == ViewMode::Headers
+                    && matches!(
+                        view.header_row(view.cursor),
+                        Some(HeaderRow::Received(_) | HeaderRow::Sent(_))
+                    ) =>
+            {
+                Some(Action::CopyToClipboard(CopyTarget::ResponseHeader(
+                    view.cursor,
+                )))
+            }
             KeyCode::Char('h') if ev.modifiers.is_empty() => {
                 view.scroll_h((-H_SCROLL_STEP).into());
                 Some(Action::Render)
@@ -3284,14 +3347,30 @@ fn body_lines(
             }
         }
         ViewMode::Headers => {
-            if view.header_lines.is_empty() {
-                out.push(Line::styled(
-                    "(no headers)",
-                    Style::default().fg(t.text_muted),
-                ));
-                return out;
-            }
+            let dim = Style::default().fg(t.text_muted);
             for (i, line) in view.header_lines.iter().enumerate().take(end).skip(start) {
+                let row = view.header_row(i).unwrap_or(HeaderRow::Note);
+                match row {
+                    HeaderRow::Divider => {
+                        let rule = "\u{2500}".repeat(
+                            (area.width as usize).saturating_sub(line.chars().count()),
+                        );
+                        push(i, i, vec![(format!("{line}{rule}"), dim)], true, (0, view.h_scroll));
+                        continue;
+                    }
+                    HeaderRow::Note => {
+                        push(i, i, vec![(line.clone(), dim)], true, (0, view.h_scroll));
+                        continue;
+                    }
+                    HeaderRow::Received(_) | HeaderRow::Sent(_) => {}
+                }
+                // A sent row reads dim, like the editor's computed rows: the
+                // record of the send, not the answer.
+                let text = if matches!(row, HeaderRow::Sent(_)) {
+                    dim
+                } else {
+                    text
+                };
                 let (name, value) = line.split_once(':').unwrap_or((line.as_str(), ""));
                 let name_piece = format!("{name}:");
                 // One plain cell between the value and the pill, so the
@@ -3986,6 +4065,11 @@ mod tests {
             status: 200,
             url: "https://api.example.com/things?page=2".into(),
             headers: vec![("content-type".into(), "application/json".into())],
+            sent_headers: vec![crate::http::SentHeader {
+                name: "authorization".into(),
+                value: "Bearer s3cret".into(),
+                display: format!("Bearer {}", postui_core::prepare::SECRET_MASK),
+            }],
             body: body.to_string(),
             ttfb: Duration::from_millis(38),
             elapsed: Duration::from_millis(342),
@@ -4278,6 +4362,46 @@ mod tests {
             "Headers tab yields the header list: {headers:?}"
         );
         assert!(!headers.contains("\"a\""), "no body on the Headers tab");
+    }
+
+    /// The Headers tab lists what the request went out with under the
+    /// response headers, past a `sent` divider — so the send is still on
+    /// record after the request's headers have been edited. A secret's
+    /// value shows as its mask, never in the clear.
+    #[test]
+    fn headers_tab_lists_the_sent_headers_masked_below_a_divider() {
+        let mut r = ready(r#"{"a": 1}"#);
+        r.set_view_mode(ViewMode::Headers);
+        let out = render(&mut r);
+        let received = out.find("content-type:").expect("response header row");
+        let divider = out.find("\u{2500} sent").expect("sent divider");
+        let sent = out.find("authorization:").expect("sent header row");
+        assert!(
+            received < divider && divider < sent,
+            "response headers, then the divider, then the sent headers: {out}"
+        );
+        assert!(
+            out.contains(&format!("Bearer {}", postui_core::prepare::SECRET_MASK)),
+            "the sent value is masked: {out}"
+        );
+        assert!(!out.contains("s3cret"), "the secret never renders: {out}");
+    }
+
+    /// `c` copies the header under the cursor; on the divider there is no
+    /// header, so it dispatches nothing at all.
+    #[test]
+    fn c_on_the_sent_divider_copies_nothing() {
+        let mut r = ready(r#"{"a": 1}"#);
+        r.set_view_mode(ViewMode::Headers);
+        let key = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+        assert_eq!(
+            r.handle_key(key('c')),
+            Some(Action::CopyToClipboard(CopyTarget::ResponseHeader(0))),
+            "row 0 is a response header"
+        );
+        r.view.as_mut().unwrap().cursor = 1;
+        assert_eq!(r.view().unwrap().header_row(1), Some(HeaderRow::Divider));
+        assert_eq!(r.handle_key(key('c')), None, "the divider has nothing to copy");
     }
 
     /// The timing chip pairs time-to-first-byte with the total as one

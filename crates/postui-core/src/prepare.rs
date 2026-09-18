@@ -13,6 +13,10 @@ pub struct PreparedRequest {
     /// wire.
     pub display_url: String,
     pub headers: Vec<(String, String)>,
+    /// `headers` with secret variable values rendered as [`SECRET_MASK`]:
+    /// same rows, same order, same names — the version screens show for
+    /// the sent request (the response pane's `sent` section).
+    pub display_headers: Vec<(String, String)>,
     pub body: Option<String>,
     /// Skip TLS certificate verification for this send (the request's
     /// `insecure` flag, carried through so the transport can pick a client).
@@ -252,6 +256,12 @@ pub fn prepare(
     // substituted result. Two defaults that resolve to the same
     // lowercase name after substitution are deduped: the first wins and
     // the rest are dropped with a warning.
+    // Each header is substituted twice: once for the wire and once with
+    // secrets masked for display. The masked pass records nothing in
+    // `missing` — the real pass already did.
+    let mut display_headers: Vec<(String, String)> = Vec::new();
+    let masked_sub =
+        |s: &str| substitute_masked(s, &vars, &secret_names, &mut BTreeSet::new());
     let mut headers: Vec<(String, String)> = Vec::new();
     let mut seen_default_names: BTreeSet<String> = BTreeSet::new();
     for (k, e) in ctx.default_headers.iter() {
@@ -273,14 +283,14 @@ pub fn prepare(
             warnings.push(PrepareWarning::DuplicateDefaultHeader { name: lower });
             continue;
         }
+        display_headers.push((name.clone(), masked_sub(&e.value)));
         headers.push((name, sub(&e.value)));
     }
-    headers.extend(
-        req.headers
-            .iter()
-            .filter(|(_, e)| e.enabled)
-            .map(|(k, e)| (sub(k), sub(&e.value))),
-    );
+    for (k, e) in req.headers.iter().filter(|(_, e)| e.enabled) {
+        let name = sub(k);
+        display_headers.push((name.clone(), masked_sub(&e.value)));
+        headers.push((name, sub(&e.value)));
+    }
 
     let mut body = req
         .method
@@ -312,6 +322,7 @@ pub fn prepare(
             .any(|(k, _)| k.eq_ignore_ascii_case("content-type"))
     {
         headers.push(("Content-Type".into(), "application/json".into()));
+        display_headers.push(("Content-Type".into(), "application/json".into()));
     }
     Ok((
         PreparedRequest {
@@ -319,6 +330,7 @@ pub fn prepare(
             url,
             display_url,
             headers,
+            display_headers,
             body,
             insecure: match ctx.tls_override {
                 Some(crate::project::TlsPolicy::Verify) => false,
@@ -954,6 +966,46 @@ mod tests {
         assert_eq!(
             p.display_url,
             format!("https://api.example.com/acme/things?key={SECRET_MASK}")
+        );
+    }
+
+    /// `display_headers` is the sent header list with secret values
+    /// masked — one entry per `headers` entry, in the same order, names
+    /// untouched, the auto `Content-Type` included — while `headers`
+    /// keeps the real values for the wire.
+    #[test]
+    fn display_headers_mask_secrets_that_headers_keep() {
+        let mut req = base("https://api.example.com/things");
+        req.method = Method::Post;
+        req.body = Some(Body::Json {
+            text: "{}".into(),
+        });
+        req.headers
+            .insert("Authorization".into(), on("Bearer {{api_key}}"));
+        req.headers.insert("X-Tenant".into(), on("{{tenant}}"));
+        let mut c = ctx(
+            &[("tenant", "acme"), ("api_key", "s3cret")],
+            &[("X-Trace", "{{api_key}}", true)],
+        );
+        c.meta.insert("api_key".into(), varmodel::VarMeta::Secret);
+        let (p, _) = prepare(&req, &c).unwrap();
+        assert_eq!(
+            p.headers,
+            vec![
+                ("X-Trace".to_string(), "s3cret".to_string()),
+                ("Authorization".to_string(), "Bearer s3cret".to_string()),
+                ("X-Tenant".to_string(), "acme".to_string()),
+                ("Content-Type".to_string(), "application/json".to_string()),
+            ]
+        );
+        assert_eq!(
+            p.display_headers,
+            vec![
+                ("X-Trace".to_string(), SECRET_MASK.to_string()),
+                ("Authorization".to_string(), format!("Bearer {SECRET_MASK}")),
+                ("X-Tenant".to_string(), "acme".to_string()),
+                ("Content-Type".to_string(), "application/json".to_string()),
+            ]
         );
     }
 
