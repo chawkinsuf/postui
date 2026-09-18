@@ -9333,13 +9333,26 @@ impl App {
                 };
                 Some((view.view_text(), format!("Copied {what}")))
             }
-            CopyTarget::ResponseHeader(i) => match self.session.response.state() {
-                ResponseState::Ready(d) => d
-                    .headers
-                    .get(*i)
-                    .map(|(name, value)| (value.clone(), format!("Copied {name}"))),
-                _ => None,
-            },
+            // `i` is a line of the Headers tab; the view says which header
+            // it is. A sent row copies the header's real value — the row
+            // shows the mask, but a copy is the user asking for the value.
+            CopyTarget::ResponseHeader(i) => {
+                use crate::components::response::HeaderRow;
+                let ResponseState::Ready(d) = self.session.response.state() else {
+                    return None;
+                };
+                match self.session.response.view()?.header_row(*i)? {
+                    HeaderRow::Received(j) => d
+                        .headers
+                        .get(j)
+                        .map(|(name, value)| (value.clone(), format!("Copied {name}"))),
+                    HeaderRow::Sent(j) => d
+                        .sent_headers
+                        .get(j)
+                        .map(|h| (h.value.clone(), format!("Copied {}", h.name))),
+                    HeaderRow::Divider | HeaderRow::Note => None,
+                }
+            }
             CopyTarget::Url => Some((self.editor.url.text().to_string(), "Copied URL".to_string())),
             CopyTarget::TableRow(i) => self
                 .editor

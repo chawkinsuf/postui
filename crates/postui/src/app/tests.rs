@@ -1630,6 +1630,7 @@ fn paste_reaches_the_response_search_only_while_its_input_is_live() {
             status: 200,
             url: "https://x.test/a".into(),
             headers: vec![],
+            sent_headers: vec![],
             body: r#"{"a": 1}"#.into(),
             ttfb: std::time::Duration::from_millis(5),
             elapsed: std::time::Duration::from_millis(5),
@@ -2766,6 +2767,7 @@ fn scrollbar_track_click_below_the_thumb_pages_the_response() {
             status: 200,
             url: "https://x.test/a".into(),
             headers: vec![],
+            sent_headers: vec![],
             size: body.len(),
             body,
             ttfb: std::time::Duration::from_millis(1),
@@ -3107,6 +3109,7 @@ fn horizontal_wheel_over_the_response_pane_scrolls_it_sideways() {
             status: 200,
             url: "https://x.test/a".into(),
             headers: vec![],
+            sent_headers: vec![],
             body: body.clone(),
             ttfb: std::time::Duration::from_millis(1),
             elapsed: std::time::Duration::from_millis(1),
@@ -3476,6 +3479,7 @@ fn app_with_wide_response() -> App {
             status: 200,
             url: "https://x.test/a".into(),
             headers: vec![],
+            sent_headers: vec![],
             body: body.clone(),
             ttfb: std::time::Duration::from_millis(1),
             elapsed: std::time::Duration::from_millis(1),
@@ -6963,6 +6967,7 @@ async fn cancelled_send_ignores_a_result_that_was_already_queued() {
         status: 200,
         url: "https://x.test/a".into(),
         headers: vec![],
+        sent_headers: vec![],
         body: "late".into(),
         ttfb: std::time::Duration::from_millis(1),
         elapsed: std::time::Duration::from_millis(1),
@@ -6996,6 +7001,7 @@ async fn response_arrived_with_current_generation_clears_in_flight() {
         status: 200,
         url: "https://x.test/a".into(),
         headers: vec![],
+        sent_headers: vec![],
         body: "ok".into(),
         ttfb: std::time::Duration::from_millis(1),
         elapsed: std::time::Duration::from_millis(1),
@@ -7034,6 +7040,7 @@ fn plain_keys_reach_the_focused_response_pane() {
             status: 200,
             url: "https://x.test/a".into(),
             headers: vec![],
+            sent_headers: vec![],
             body: r#"{"a": 1}"#.into(),
             ttfb: std::time::Duration::from_millis(5),
             elapsed: std::time::Duration::from_millis(5),
@@ -8539,6 +8546,11 @@ fn ready_response(app: &mut App, body: &str) {
             status: 200,
             url: "https://x.test/a".into(),
             headers: vec![("content-type".into(), "application/json".into())],
+            sent_headers: vec![crate::http::SentHeader {
+                name: "authorization".into(),
+                value: "Bearer s3cret".into(),
+                display: format!("Bearer {}", postui_core::prepare::SECRET_MASK),
+            }],
             body: body.to_string(),
             ttfb: std::time::Duration::from_millis(1),
             elapsed: std::time::Duration::from_millis(1),
@@ -9854,6 +9866,42 @@ fn header_copy_click_and_key_parity_both_copy_the_header() {
         action,
         Some(Action::CopyToClipboard(CopyTarget::ResponseHeader(0)))
     );
+}
+
+/// The sent section's copy pill yields the header's real value — the row
+/// itself shows the mask, but a copy is the user asking for the value.
+#[test]
+fn sent_header_copy_yields_the_real_value_behind_the_mask() {
+    let mut app = App::new_for_test();
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.txt");
+    let cmd = format!("cat > {}", out.to_string_lossy());
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(
+        Some(cmd),
+        65536,
+        false,
+    ));
+    ready_response(&mut app, r#"{"a": 1}"#);
+    app.update(Action::ResponseViewMode(
+        crate::components::response::ViewMode::Headers,
+    ));
+    render_once(&mut app);
+
+    // Row 0: content-type. Row 1: the divider (no pill). Row 2: the sent
+    // authorization header.
+    assert!(
+        app.hits.rect_of(&Hit::HeaderCopy(1)).is_none(),
+        "the divider has no copy pill"
+    );
+    let r = app.hits.rect_of(&Hit::HeaderCopy(2)).unwrap();
+    app.handle_mouse(left_down(r.x, r.y));
+
+    assert_eq!(
+        std::fs::read_to_string(&out).unwrap(),
+        "Bearer s3cret",
+        "the sent row's pill copies the real value"
+    );
+    assert!(rendered_text(&mut app).contains("Copied authorization"));
 }
 
 #[test]
@@ -25342,6 +25390,7 @@ fn the_response_toolbar_hints_follow_the_open_tab() {
             status: 200,
             url: "https://x.test/a".into(),
             headers: vec![("content-type".into(), "application/json".into())],
+            sent_headers: vec![],
             body: r#"{"a": 1}"#.into(),
             ttfb: std::time::Duration::from_millis(5),
             elapsed: std::time::Duration::from_millis(5),

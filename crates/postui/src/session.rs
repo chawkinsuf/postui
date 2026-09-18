@@ -308,6 +308,7 @@ mod tests {
             status: 200,
             url: "https://x.test/a".into(),
             headers: vec![],
+            sent_headers: vec![],
             body: body.to_string(),
             ttfb: Duration::from_millis(1),
             elapsed: Duration::from_millis(1),
