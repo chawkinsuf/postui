@@ -29,9 +29,27 @@ pub fn alt_label() -> &'static str {
     }
 }
 
+/// The keys that open a *selected* field into an editable one, on every
+/// surface that has the two-state field model (spec 2026-09-16): Enter,
+/// Space, or the vim `i` (plain only — `plain_letter` keeps ctrl+i and
+/// alt+i free for their own bindings, and `I`/shift+i is deferred).
+pub(crate) fn opens_field(ev: &KeyEvent) -> bool {
+    matches!(ev.code, KeyCode::Enter | KeyCode::Char(' '))
+        || (ev.code == KeyCode::Char('i') && plain_letter(ev))
+}
+
+/// Guard for a key arm that pairs a named key with its vim letter
+/// (`Left | Char('h')`, spec 2026-09-15): the letter counts only
+/// unmodified — ctrl+h is the legacy ctrl+backspace byte, ctrl+j/k and
+/// the alt+letters are chords of their own — while the named key matches
+/// as it always did. `G` arms stay unguarded (it arrives with SHIFT).
+pub(crate) fn plain_letter(ev: &KeyEvent) -> bool {
+    !matches!(ev.code, KeyCode::Char(_)) || ev.modifiers.is_empty()
+}
+
 /// Rewrites a display label's leading `alt+` to the platform spelling
 /// (`opt+` on macOS — same width, so precomputed keycap layouts hold).
-/// Prefix-only on purpose: keycap labels are app-authored (`alt+shift+v`),
+/// Prefix-only on purpose: keycap labels are app-authored (`alt+shift+r`),
 /// and the other labels that share the chip painter (methods, statuses,
 /// counts) never start with `alt+`.
 pub fn display_keycap(label: &str) -> Cow<'_, str> {
@@ -323,6 +341,10 @@ impl Keymap {
             ("tab", Action::FocusNext),
             ("shift+tab", Action::FocusPrev),
             ("ctrl+p", Action::OpenPalette),
+            // Vim spellings, as plain keys: a text field sees the character
+            // first (router step 5), and every list surface that leaves
+            // them unclaimed falls through to these (step 6).
+            (":", Action::OpenPalette),
             ("esc", Action::Close),
             // Spaces own the ctrl-digits (i3 style: the number swaps the
             // whole working set). ctrl, not alt: Ghostty on Linux takes
@@ -376,7 +398,7 @@ impl Keymap {
                 Action::CopyToClipboard(crate::action::CopyTarget::Url),
             ),
             ("ctrl+s", Action::SaveRequest),
-            ("alt+r", Action::ReloadFromDisk),
+            ("alt+shift+r", Action::ReloadFromDisk),
             ("alt+d", Action::DiscardChanges),
             ("ctrl+r", Action::Send),
             ("ctrl+enter", Action::Send),
@@ -384,15 +406,17 @@ impl Keymap {
             ("ctrl+o", Action::OpenProjectChooser),
             ("alt+e", Action::OpenBodyInEditor),
             ("ctrl+v", Action::Paste),
-            ("alt+shift+v", Action::OpenVarPicker { completing: false }),
+            ("alt+v", Action::OpenVarPicker { completing: false }),
             ("alt+a", Action::TableAddRow),
             ("alt+p", Action::ToggleTableCollapse),
             ("alt+w", Action::CycleSplit),
             ("shift+alt+w", Action::CycleSplitBack),
-            ("alt+v", Action::OpenManage { tab: None }),
+            ("alt+r", Action::OpenManage { tab: None }),
             ("ctrl+shift+e", Action::ExtractToVariable),
             ("ctrl+shift+d", Action::DuplicateRequest),
             ("ctrl+z", Action::Undo),
+            // Vim spelling, as a plain key: see the comment above ":".
+            ("u", Action::Undo),
             ("ctrl+shift+z", Action::Redo),
             ("alt+q", Action::OpenJqBar),
             ("alt+shift+q", Action::ToggleJqBar),
@@ -519,11 +543,28 @@ impl Keymap {
             .into_iter()
             .find(|(name, _)| *name == action_id)
             .map(|(_, action)| action)?;
-        self.bindings
+        let combos: Vec<&KeyCombo> = self
+            .bindings
             .iter()
             .filter(|(_, action)| **action == target)
-            .map(|(combo, _)| format_combo(combo))
-            .min()
+            .map(|(combo, _)| combo)
+            .collect();
+        // A vim alias is a bare key (":", "u") with no modifiers, and its
+        // formatted form (":", "U") can sort below the chord it's a
+        // synonym for ("^P", "^Z") -- e.g. ":" < "^P" -- which would flip
+        // the hint to the alias. Prefer a modified combo (a chord) over a
+        // bare key first, and only then take the minimum, so the footer
+        // hint keeps advertising the chord.
+        let modified: Vec<&&KeyCombo> = combos
+            .iter()
+            .filter(|c| !c.modifiers.is_empty())
+            .collect();
+        let pool: Vec<&KeyCombo> = if modified.is_empty() {
+            combos
+        } else {
+            modified.into_iter().copied().collect()
+        };
+        pool.into_iter().map(format_combo).min()
     }
 
     /// Every combo bound to `action_id`, in `keys.toml`'s input grammar
@@ -852,6 +893,7 @@ mod tests {
         assert_eq!(get("tab"), Some(Action::FocusNext));
         assert_eq!(get("shift+tab"), Some(Action::FocusPrev));
         assert_eq!(get("ctrl+p"), Some(Action::OpenPalette));
+        assert_eq!(get(":"), Some(Action::OpenPalette), "vim alias");
         assert_eq!(get("esc"), Some(Action::Close));
         // ctrl-digits, not alt-digits: Ghostty on Linux owns alt+1..9
         // for its own tabs. The header selectors take the bottom row in
@@ -909,9 +951,9 @@ mod tests {
         );
         assert_eq!(get("ctrl+r"), Some(Action::Send));
         assert_eq!(
-            get("alt+r"),
+            get("alt+shift+r"),
             Some(Action::ReloadFromDisk),
-            "the user-triggered reload has a default binding"
+            "the user-triggered reload lives on a shifted chord; it is rare"
         );
         assert_eq!(get("ctrl+enter"), Some(Action::Send));
         assert_eq!(get("shift+enter"), Some(Action::Send));
@@ -923,12 +965,13 @@ mod tests {
         );
         assert_eq!(get("ctrl+v"), Some(Action::Paste), "ctrl+v pastes now");
         assert_eq!(
-            get("alt+shift+v"),
+            get("alt+v"),
             Some(Action::OpenVarPicker { completing: false }),
-            "the variable picker moved off the OS paste chord"
+            "the variable picker sits on alt+v; ctrl+v is the OS paste chord"
         );
-        assert_eq!(get("alt+v"), Some(Action::OpenManage { tab: None }));
+        assert_eq!(get("alt+r"), Some(Action::OpenManage { tab: None }));
         assert_eq!(get("ctrl+z"), Some(Action::Undo));
+        assert_eq!(get("u"), Some(Action::Undo), "vim alias");
         assert_eq!(get("ctrl+shift+z"), Some(Action::Redo));
         assert_eq!(get("ctrl+y"), None, "ctrl+y is deliberately unbound");
         assert_eq!(get("alt+q"), Some(Action::OpenJqBar));
@@ -1166,9 +1209,9 @@ mod tests {
             KeyCombo::parse("f9").unwrap(),
             Action::OpenManage { tab: None },
         );
-        // f9 is a second combo alongside the default alt+v; both resolve.
+        // f9 is a second combo alongside the default alt+r; both resolve.
         let combo = m.combo_for("manage_open").unwrap();
-        assert!(combo == "f9" || combo == "alt+v", "got {combo:?}");
+        assert!(combo == "f9" || combo == "alt+r", "got {combo:?}");
     }
 
     #[test]
@@ -1302,5 +1345,20 @@ mod tests {
         for (name, _) in named_actions() {
             assert_eq!(applied.combos_for(name), defaults.combos_for(name));
         }
+    }
+
+    #[test]
+    fn opens_field_matches_enter_space_and_plain_i() {
+        let key = |code: KeyCode, mods: KeyModifiers| KeyEvent::new(code, mods);
+        assert!(opens_field(&key(KeyCode::Enter, KeyModifiers::NONE)));
+        assert!(opens_field(&key(KeyCode::Char(' '), KeyModifiers::NONE)));
+        assert!(opens_field(&key(KeyCode::Char('i'), KeyModifiers::NONE)));
+        assert!(!opens_field(&key(KeyCode::Char('I'), KeyModifiers::SHIFT)));
+        assert!(!opens_field(&key(
+            KeyCode::Char('i'),
+            KeyModifiers::CONTROL
+        )));
+        assert!(!opens_field(&key(KeyCode::Char('j'), KeyModifiers::NONE)));
+        assert!(!opens_field(&key(KeyCode::Esc, KeyModifiers::NONE)));
     }
 }

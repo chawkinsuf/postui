@@ -62,6 +62,24 @@ impl SettingsField {
         }
     }
 
+    /// The inverse of [`Self::key`] -- used only to spell out a Settings
+    /// undo/redo toast's field name from the `&'static str` a `Config`
+    /// step carries. `None` for a key no row writes (shouldn't happen:
+    /// every `Config` step's key came from `Self::key` in the first
+    /// place).
+    pub fn from_key(key: &str) -> Option<Self> {
+        match key {
+            "animations" => Some(SettingsField::Animations),
+            "hover_hints" => Some(SettingsField::HoverHints),
+            "jq_tab" => Some(SettingsField::JqTab),
+            "ai_cmd" => Some(SettingsField::AiCmd),
+            "ai_confirmed" => Some(SettingsField::AiConfirmed),
+            "clipboard_cmd" => Some(SettingsField::ClipboardCmd),
+            "osc52_limit" => Some(SettingsField::Osc52Limit),
+            _ => None,
+        }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             SettingsField::Animations => "Animations",
@@ -277,6 +295,26 @@ impl SettingsTab {
         self.field_text = self.input.text().to_string();
     }
 
+    /// Undo (or redo) inside the live edit, re-syncing the buffer. `false`
+    /// when there is no live edit or nothing to step.
+    pub fn field_undo(&mut self, redo: bool) -> bool {
+        if self.editing.is_none() {
+            return false;
+        }
+        let stepped = if redo {
+            self.input.redo()
+        } else {
+            self.input.undo()
+        };
+        self.field_text = self.input.text().to_string();
+        stepped
+    }
+
+    /// Whether the live edit has recorded any keystrokes.
+    pub fn field_edited(&self) -> bool {
+        self.editing.is_some() && self.input.edited()
+    }
+
     /// Where the live edit's caret sits, as a character index.
     pub fn caret(&self) -> usize {
         self.input.cursor()
@@ -330,7 +368,12 @@ impl SettingsTab {
     /// types into the field and the row chips would all be dead.
     pub fn footer_chips(&self) -> Vec<(&'static str, &'static str, Option<Action>)> {
         if self.editing.is_some() {
-            return vec![("enter", "save", None), ("esc", "cancel", None)];
+            // Esc commits the edit and closes the field (the field rule,
+            // spec 2026-09-15) — the chip names that, and dispatches it.
+            return vec![
+                ("enter", "save", None),
+                ("esc", "done", Some(Action::CloseField)),
+            ];
         }
         let mut chips = vec![("↑↓", "move", None), ("enter", "change", None)];
         if matches!(self.row(), SettingsRow::File(_)) {
@@ -788,16 +831,21 @@ mod tests {
     }
 
     /// A live edit owns the keyboard, so the chips advertise its keys
-    /// instead -- the same pair the Manage grid already shows.
+    /// instead -- the same pair the Manage grid already shows. Esc keeps
+    /// what was typed (the field rule), so the chip says "done".
     #[test]
-    fn a_live_edit_advertises_commit_and_cancel() {
+    fn a_live_edit_advertises_commit_and_close() {
         let tab = SettingsTab {
             editing: Some(SettingsField::AiCmd),
             ..Default::default()
         };
         let chips = tab.footer_chips();
         assert!(chips.iter().any(|(k, l, _)| *k == "enter" && *l == "save"));
-        assert!(chips.iter().any(|(k, l, _)| *k == "esc" && *l == "cancel"));
+        assert!(
+            chips
+                .iter()
+                .any(|(k, l, a)| *k == "esc" && *l == "done" && *a == Some(Action::CloseField))
+        );
     }
 
     /// A File row's two buttons are keyboard-aimed, so the footer says so

@@ -196,13 +196,6 @@ pub struct JqBar {
     /// an edge. Set by the draw (it needs the width), reset whenever the
     /// row is entered or left.
     menu_scroll: std::cell::Cell<u16>,
-    /// The filter text as it stood when the current edit began — what
-    /// Esc puts back. Taken just before the first change to a focused
-    /// bar's text (`begin_edit`), not when it took the caret: merely
-    /// landing in the bar and leaving again changes nothing, and the
-    /// on/off switch is never part of it. Dropped on blur; `None` while
-    /// unfocused or until something is typed.
-    edit_origin: Option<String>,
 }
 
 impl JqBar {
@@ -214,30 +207,19 @@ impl JqBar {
             && now.saturating_duration_since(self.pending_since) >= JQ_SPINNER_AFTER
     }
 
-    /// Gives the bar the caret. No edit has begun yet: the origin is
-    /// taken by the first change (`begin_edit`).
+    /// Gives the bar the caret. The line's own edit session starts with
+    /// the first keystroke and ends on [`Self::blur`].
     fn focus(&mut self) {
         self.focused = true;
     }
 
-    /// Takes the caret away; whatever was typed stands (the filter is
-    /// live already), so the origin is forgotten.
+    /// Takes the caret away. Whatever was typed stands (the filter is
+    /// live already) and the edit session ends: the app history records
+    /// the close as one step.
     fn blur(&mut self) {
         self.focused = false;
-        self.edit_origin = None;
         self.menu = None;
-    }
-
-    /// Called before every change to the focused bar's text — a key, a
-    /// paste, an accepted completion, a tee-up or an AI reply landing —
-    /// so the first of them remembers the text it started from. Later
-    /// changes in the same session leave that origin alone, and text
-    /// landed into an unfocused bar (a saved filter applied, a verb from
-    /// the tree) starts no session at all.
-    fn begin_edit(&mut self) {
-        if self.focused && self.edit_origin.is_none() {
-            self.edit_origin = Some(self.input.text().to_string());
-        }
+        self.input.end_edit();
     }
 
     /// See [`Response::jq_open`].
@@ -348,7 +330,6 @@ impl JqBar {
         let labels = self.candidate_labels();
         let index = index.min(items.len() - 1);
         let base = self.input.text().to_string();
-        self.begin_edit();
         Self::apply_candidate(&mut self.input, &items[index]);
         self.edited = true;
         if items.len() < 2 {
@@ -473,7 +454,6 @@ impl Default for JqBar {
             tab: JqTab::Menu,
             menu: None,
             menu_scroll: std::cell::Cell::new(0),
-            edit_origin: None,
         }
     }
 }
@@ -723,6 +703,17 @@ impl ReadyView {
     /// and is still expected.
     fn awaits_tree(&self, generation: u64) -> bool {
         self.parsing && self.generation == generation
+    }
+
+    /// The view `t` steps to: Pretty → Raw → Headers → Pretty, with Pretty
+    /// skipped when there is no tree to show.
+    fn next_view_mode(&self) -> ViewMode {
+        match self.mode {
+            ViewMode::Pretty => ViewMode::Raw,
+            ViewMode::Raw => ViewMode::Headers,
+            ViewMode::Headers if self.has_tree_view() => ViewMode::Pretty,
+            ViewMode::Headers => ViewMode::Raw,
+        }
     }
 
     /// The tree the `Pretty` view actually shows: the filtered tree while a
@@ -1239,6 +1230,12 @@ impl Response {
         self.view.as_ref()
     }
 
+    /// The view `t` steps to, or `None` when there is no ready view (the
+    /// key is a no-op then). See `ReadyView::next_view_mode`.
+    pub fn next_view_mode(&self) -> Option<ViewMode> {
+        self.view.as_ref().map(|v| v.next_view_mode())
+    }
+
     /// The jq bar's current text.
     pub fn jq_text(&self) -> &str {
         self.jq.input.text()
@@ -1259,40 +1256,23 @@ impl Response {
         self.jq.pending = None;
     }
 
-    /// Cancels the edit in progress: puts the text back to what it was
-    /// when the typing started and blurs. Nothing typed yet — the bar was
-    /// only entered — and it just blurs, the filter left exactly as it
-    /// was, on. The on/off switch is never touched: a filter opened from
-    /// off stays on (opening it was the user's doing, not the edit's).
-    /// Started from no filter, the bar is empty again and, unfocused,
-    /// hidden; the switch is left on then too, so the request never
-    /// persists `jq_enabled = false` without a filter. An edit whenever
-    /// the text actually changes, so undo brings the typed filter back.
-    pub fn cancel_jq_edit(&mut self) {
-        let origin = self.jq.edit_origin.take();
-        self.jq.blur();
-        let Some(origin) = origin else {
-            return;
-        };
-        if self.jq.input.text() != origin {
-            self.set_jq_text(&origin);
-            self.jq.edited = true;
-        }
-        if self.jq.input.text().is_empty() && !self.jq.enabled {
-            self.jq.enabled = true;
-            self.jq.edited = true;
-        }
-    }
-
     /// Sets the bar's text and cursor together (a tee-up from elsewhere —
     /// e.g. the AI describe flow seeding a filter). Counts as an edit, and
     /// switches a closed bar back on: a verb or the AI landing a filter
-    /// means "show me this".
+    /// means "show me this". The text goes in through `set_text`, not a
+    /// fresh line, so a tee-up into a focused bar keeps the session's
+    /// history and is undoable in the bar. Landing in an unfocused bar
+    /// ends the session again: a verb or an AI reply that arrives while
+    /// the bar is closed belongs to the app history alone, and leaving a
+    /// step behind would let a later ctrl+z — after a bare focus, nothing
+    /// typed — walk back an action the app history already owns.
     pub fn set_jq_text_with_cursor(&mut self, text: &str, cursor: usize) {
-        self.jq.begin_edit();
         self.jq.menu = None;
-        self.jq.input = LineInput::new(text);
+        self.jq.input.set_text(text);
         self.jq.input.set_cursor(cursor);
+        if !self.jq.focused {
+            self.jq.input.end_edit();
+        }
         self.jq.enabled = true;
         self.jq.edited = true;
     }
@@ -1357,6 +1337,74 @@ impl Response {
 
     pub fn jq_focused(&self) -> bool {
         self.jq.focused
+    }
+
+    /// Whether the jq bar has keystrokes of its own in flight — the bar is
+    /// open and its line has an edit session with history. The app history
+    /// waits while it does (see `App::field_gate`).
+    pub fn jq_field_edited(&self) -> bool {
+        self.jq.focused && self.jq.input.edited()
+    }
+
+    /// Ends the bar's edit session in place — the caret stays, the text
+    /// stays, only the keystroke history closes — so the app history can
+    /// take the edit as a step before something replaces the request
+    /// under it (`App::flush_field_session`).
+    pub fn end_jq_edit_session(&mut self) {
+        self.jq.input.end_edit();
+    }
+
+    /// Routes an undo (or `redo`) into the pane's open text field. The bar
+    /// cannot be stepped through [`Self::open_text_field_mut`] alone: a
+    /// bare `LineInput::undo` leaves `jq.edited` clear, and the reconcile
+    /// at the end of the same `update` would write the editor's filter
+    /// straight back over it. So the jq branch marks the edit exactly as a
+    /// keystroke into the bar does. `false` when there was nothing to step.
+    pub fn field_undo(&mut self, redo: bool) -> bool {
+        if self.jq.focused {
+            let stepped = if redo {
+                self.jq.input.redo()
+            } else {
+                self.jq.input.undo()
+            };
+            if stepped {
+                self.jq.edited = true;
+            }
+            return stepped;
+        }
+        match self.open_text_field_mut() {
+            Some(f) => {
+                if redo {
+                    f.redo()
+                } else {
+                    f.undo()
+                }
+            }
+            None => false,
+        }
+    }
+
+    /// The pane's open text field, if any: the jq bar while it has the
+    /// caret, else the search box while its input is live. What the app's
+    /// undo routing acts on.
+    pub fn open_text_field_mut(&mut self) -> Option<&mut LineInput> {
+        if self.jq.focused {
+            return Some(&mut self.jq.input);
+        }
+        let view = self.view.as_mut()?;
+        let search = view.search.as_mut()?;
+        search.active.then_some(&mut search.input)
+    }
+
+    /// Whether [`Self::open_text_field_mut`] would hand one back — the
+    /// immutable twin, for `App::field_open` and the footer.
+    pub fn field_open(&self) -> bool {
+        self.jq.focused
+            || self
+                .view
+                .as_ref()
+                .and_then(|v| v.search.as_ref())
+                .is_some_and(|s| s.active)
     }
 
     /// Focuses (or blurs) the jq bar. Returns whether it took: focusing
@@ -1491,7 +1539,6 @@ impl Response {
         if !self.jq.focused {
             return false;
         }
-        self.jq.begin_edit();
         self.jq.menu = None;
         self.jq.input.paste(text);
         self.jq.edited = true;
@@ -1767,7 +1814,6 @@ impl Response {
         let Some(cand) = self.jq.candidate().cloned() else {
             return;
         };
-        self.jq.begin_edit();
         JqBar::apply_candidate(&mut self.jq.input, &cand);
         self.jq.edited = true;
     }
@@ -1775,7 +1821,6 @@ impl Response {
     /// The bar's ctrl/alt+backspace: a path segment when the caret is in
     /// a path token and nothing is selected, else the input's own rule.
     fn jq_segment_backspace(&mut self, ev: KeyEvent) {
-        self.jq.begin_edit();
         self.jq.menu = None;
         match self.jq.segment_delete_target() {
             Some(target) if self.jq.input.selection().is_none() => {
@@ -2171,19 +2216,19 @@ impl Response {
         // keys go to its LineInput, Enter/Down blur (committing is
         // implicit — every edit re-runs the filter — so the filter
         // stays on; Enter on an entered menu row first confirms it), Esc
-        // cancels the edit — the text goes back to what it was when the
-        // typing started, and a bar opened onto no filter closes —
-        // unless an AI request is pending, in which case it cancels that
-        // instead. Runs before the view is borrowed, so it works even
-        // with no ready view (it never should, in practice: the bar can't
-        // focus without one).
+        // does the same — it leaves the bar with the text kept (the field
+        // rule; ctrl+z, not Esc, is what walks an edit back) — unless an
+        // AI request is pending, in which case it cancels that instead.
+        // Runs before the view is borrowed, so it works even with no ready
+        // view (it never should, in practice: the bar can't focus without
+        // one).
         if self.jq.focused {
             // Menu mode's candidate row is entered: Tab and shift+Tab step
             // through it, Enter confirms the selected chip and leaves the
             // row (staying in the bar — its text is already the chip's,
             // so there is nothing more to take), Esc un-picks it — the
             // text goes back to what was typed before Tab, the row closes,
-            // the caret stays (Esc again cancels the edit as usual) — and
+            // the caret stays (Esc again leaves the bar as usual) — and
             // any other key leaves the row keeping the selection and is
             // then handled as usual.
             if self.jq.menu.is_some() {
@@ -2263,10 +2308,11 @@ impl Response {
                     if self.jq.ai_pending {
                         return Some(Action::CancelJqDescribe);
                     }
-                    self.cancel_jq_edit();
+                    // The field rule: Esc closes the bar keeping its text,
+                    // exactly like Enter.
+                    self.jq.blur();
                 }
                 _ => {
-                    self.jq.begin_edit();
                     self.jq.input.handle_key(ev);
                     self.jq.edited = true;
                 }
@@ -2277,17 +2323,19 @@ impl Response {
         let view = self.view.as_mut()?;
 
         // An active search input swallows everything: chars and editing keys
-        // go to the LineInput, Enter commits, Esc closes.
+        // go to the LineInput; Enter and Esc both run the search and hand
+        // the caret back to the tree (the field rule) — Esc in the tree is
+        // what clears it.
         if view.search.as_ref().is_some_and(|s| s.active) {
             match ev.code {
-                KeyCode::Enter => {
+                KeyCode::Enter | KeyCode::Esc => {
                     let search = view.search.as_mut().expect("checked above");
                     search.active = false;
                     search.query = search.input.text().to_string();
+                    search.input.end_edit();
                     view.recompute_matches();
                     view.jump_to_match();
                 }
-                KeyCode::Esc => view.search = None,
                 _ => {
                     let search = view.search.as_mut().expect("checked above");
                     search.input.handle_key(ev);
@@ -2297,31 +2345,36 @@ impl Response {
         }
 
         match ev.code {
-            KeyCode::Char('r') => {
-                if view.has_tree_view() {
-                    let next = match view.body_mode {
-                        ViewMode::Pretty => ViewMode::Raw,
-                        _ => ViewMode::Pretty,
-                    };
-                    // Dispatched as an action rather than mutated here so it
-                    // funnels through `app.rs`'s `Action::ResponseViewMode`
-                    // arm — the one place the animated tab underline is
-                    // retargeted — exactly like a tab click.
-                    Some(Action::ResponseViewMode(next))
-                } else {
-                    Some(Action::Render)
-                }
-            }
+            // One key walks the three views (spec 2026-09-15: it replaces
+            // `r` and `h`, freeing `h` for the motion). Dispatched as an
+            // action so the tab underline retargets like a click.
+            KeyCode::Char('t') if ev.modifiers.is_empty() => Some(Action::CycleResponseView),
             KeyCode::Char('c') if view.mode == ViewMode::Headers => Some(Action::CopyToClipboard(
                 CopyTarget::ResponseHeader(view.cursor),
             )),
-            KeyCode::Char('h') => {
-                let next = if view.mode == ViewMode::Headers {
-                    view.body_mode
-                } else {
-                    ViewMode::Headers
-                };
-                Some(Action::ResponseViewMode(next))
+            KeyCode::Char('h') if ev.modifiers.is_empty() => {
+                view.scroll_h((-H_SCROLL_STEP).into());
+                Some(Action::Render)
+            }
+            KeyCode::Char('l') if ev.modifiers.is_empty() => {
+                view.scroll_h(H_SCROLL_STEP.into());
+                Some(Action::Render)
+            }
+            KeyCode::Char('d') if ev.modifiers == KeyModifiers::CONTROL => {
+                view.move_cursor((view.height / 2).max(1) as i32);
+                Some(Action::Render)
+            }
+            KeyCode::Char('u') if ev.modifiers == KeyModifiers::CONTROL => {
+                view.move_cursor(-((view.height / 2).max(1) as i32));
+                Some(Action::Render)
+            }
+            KeyCode::Char('f') if ev.modifiers == KeyModifiers::CONTROL => {
+                view.move_cursor(view.height.max(1) as i32);
+                Some(Action::Render)
+            }
+            KeyCode::Char('b') if ev.modifiers == KeyModifiers::CONTROL => {
+                view.move_cursor(-(view.height.max(1) as i32));
+                Some(Action::Render)
             }
             KeyCode::Down if ev.modifiers.contains(KeyModifiers::SHIFT) => {
                 view.select_line_extend(1);
@@ -2331,12 +2384,12 @@ impl Response {
                 view.select_line_extend(-1);
                 Some(Action::Render)
             }
-            KeyCode::Char('j') | KeyCode::Down => {
+            KeyCode::Char('j') | KeyCode::Down if crate::keys::plain_letter(&ev) => {
                 view.clear_sel();
                 view.move_cursor(1);
                 Some(Action::Render)
             }
-            KeyCode::Char('k') | KeyCode::Up => {
+            KeyCode::Char('k') | KeyCode::Up if crate::keys::plain_letter(&ev) => {
                 view.clear_sel();
                 view.move_cursor(-1);
                 Some(Action::Render)
@@ -2377,7 +2430,7 @@ impl Response {
                 view.scroll_h(i32::MAX);
                 Some(Action::Render)
             }
-            KeyCode::Char('g') => {
+            KeyCode::Char('g') if ev.modifiers.is_empty() => {
                 view.cursor = 0;
                 view.follow_cursor();
                 Some(Action::Render)
@@ -2419,10 +2472,12 @@ impl Response {
                 view.search = None;
                 Some(Action::Render)
             }
-            // Esc from the tree stops at the selection and the search: it
-            // never touches the jq filter (that is saved with the request;
-            // the 󰈲 button/alt+shift+q are its switch, and only the bar's own
-            // Esc cancels an edit in it).
+            // Esc from the tree stops at the selection and the search —
+            // clearing the search is its job, since the box's own Esc only
+            // runs the query and hands the caret back. It never touches
+            // the jq filter (that is saved with the request; the 󰈲
+            // button/alt+shift+q are its switch, and ctrl+z in the bar is
+            // what walks an edit back).
             _ => None,
         }
     }
@@ -2434,17 +2489,26 @@ impl Component for Response {
             ResponseState::InFlight { .. } if ev.code == KeyCode::Esc => Some(Action::CancelSend),
             // Modified combos belong to the global keymap, not the pane —
             // except ctrl+Home/ctrl+End, the standard document-top/bottom
-            // jumps, which nothing global binds — unless the jq bar has
-            // the caret: then, like the URL field, it gets every combo
-            // the keymap left unbound (ctrl+arrows, ctrl+a, ctrl/alt+
-            // backspace…), since those are text editing, not navigation.
+            // jumps, and ctrl+d/u/f/b, the vim-alias paging keys, which
+            // nothing global binds — unless the jq bar has the caret: then,
+            // like the URL field, it gets every combo the keymap left
+            // unbound (ctrl+arrows, ctrl+a, ctrl/alt+backspace…), since
+            // those are text editing, not navigation.
             ResponseState::Ready(_)
                 if self.jq.focused
                     || !ev
                         .modifiers
                         .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
                     || (ev.modifiers == KeyModifiers::CONTROL
-                        && matches!(ev.code, KeyCode::Home | KeyCode::End)) =>
+                        && matches!(
+                            ev.code,
+                            KeyCode::Home
+                                | KeyCode::End
+                                | KeyCode::Char('d')
+                                | KeyCode::Char('u')
+                                | KeyCode::Char('f')
+                                | KeyCode::Char('b')
+                        )) =>
             {
                 self.ready_key(ev)
             }
@@ -3154,7 +3218,9 @@ fn body_lines(
             for (i, line) in view.header_lines.iter().enumerate().take(end).skip(start) {
                 let (name, value) = line.split_once(':').unwrap_or((line.as_str(), ""));
                 let name_piece = format!("{name}:");
-                let value_piece = value.to_string();
+                // One plain cell between the value and the pill, so the
+                // pill's hover fill never touches the text.
+                let value_piece = format!("{value} ");
                 let text_len = name_piece.chars().count() + value_piece.chars().count();
                 let glyph_hovered = hovered == Some(&crate::hit::Hit::HeaderCopy(i));
                 let glyph_style = if glyph_hovered {
@@ -3807,11 +3873,18 @@ mod tests {
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
-    /// Presses a key and applies a resulting `ResponseViewMode` action the
-    /// way `app.rs` would — the component itself no longer mutates the mode.
+    /// Presses a key and applies a resulting `ResponseViewMode` or
+    /// `CycleResponseView` action the way `app.rs` would — the component
+    /// itself no longer mutates the mode.
     fn press(r: &mut Response, ev: KeyEvent) {
-        if let Some(Action::ResponseViewMode(mode)) = r.handle_key(ev) {
-            r.set_view_mode(mode);
+        match r.handle_key(ev) {
+            Some(Action::ResponseViewMode(mode)) => r.set_view_mode(mode),
+            Some(Action::CycleResponseView) => {
+                if let Some(next) = r.next_view_mode() {
+                    r.set_view_mode(next);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -4369,21 +4442,22 @@ mod tests {
     }
 
     #[test]
-    fn r_toggles_between_pretty_and_raw_verbatim() {
+    fn t_cycles_to_raw_verbatim_and_back_to_pretty() {
         let body = "{\"a\": 1,\n     \"b\": 2}";
         let mut r = ready(body);
         assert!(render(&mut r).contains("  \"a\": 1,"), "pretty re-indents");
-        press(&mut r, ch('r'));
+        press(&mut r, ch('t'));
         let out = render(&mut r);
         assert!(out.contains("{\"a\": 1,"), "raw is verbatim: {out}");
         assert!(
             out.contains("     \"b\": 2}"),
             "raw keeps original spacing: {out}"
         );
-        press(&mut r, ch('r'));
+        press(&mut r, ch('t')); // Raw -> Headers
+        press(&mut r, ch('t')); // Headers -> Pretty
         assert!(
             render(&mut r).contains("  \"a\": 1,"),
-            "toggles back to pretty"
+            "cycles back to pretty"
         );
     }
 
@@ -4391,8 +4465,8 @@ mod tests {
     fn non_json_defaults_to_raw() {
         let mut r = ready("<html>hi</html>");
         assert!(render(&mut r).contains("<html>hi</html>"));
-        // No tree, so `r` has nothing to toggle to.
-        assert_eq!(r.handle_key(ch('r')), Some(Action::Render));
+        // `r` no longer binds anything in the response pane.
+        assert_eq!(r.handle_key(ch('r')), None);
         assert!(render(&mut r).contains("<html>hi</html>"));
     }
 
@@ -4491,13 +4565,14 @@ mod tests {
     #[test]
     fn headers_view_toggles_and_renders_a_header() {
         let mut r = ready(r#"{"a": 1}"#);
-        press(&mut r, ch('h'));
+        press(&mut r, ch('t')); // Pretty -> Raw
+        press(&mut r, ch('t')); // Raw -> Headers
         let out = render(&mut r);
         assert!(out.contains("content-type: application/json"), "{out}");
-        press(&mut r, ch('h'));
+        press(&mut r, ch('t')); // Headers -> Pretty
         assert!(
             render(&mut r).contains("\"a\""),
-            "h again returns to the body view"
+            "t cycles back to the body view"
         );
     }
 
@@ -4625,6 +4700,66 @@ mod tests {
     }
 
     #[test]
+    fn t_cycles_pretty_raw_headers_and_skips_pretty_without_a_tree() {
+        let mut r = ready(r#"{"a":1}"#);
+        render(&mut r);
+        assert_eq!(r.view().unwrap().mode, ViewMode::Pretty);
+        press(&mut r, ch('t'));
+        assert_eq!(r.view().unwrap().mode, ViewMode::Raw);
+        press(&mut r, ch('t'));
+        assert_eq!(r.view().unwrap().mode, ViewMode::Headers);
+        press(&mut r, ch('t'));
+        assert_eq!(r.view().unwrap().mode, ViewMode::Pretty);
+        let mut r = ready("not json");
+        render(&mut r);
+        assert_eq!(r.view().unwrap().mode, ViewMode::Raw);
+        press(&mut r, ch('t'));
+        assert_eq!(r.view().unwrap().mode, ViewMode::Headers);
+        press(&mut r, ch('t'));
+        assert_eq!(r.view().unwrap().mode, ViewMode::Raw, "no tree: Raw and Headers only");
+        assert!(
+            !matches!(r.handle_key(ch('r')), Some(Action::ResponseViewMode(_))),
+            "r no longer switches views"
+        );
+        assert!(
+            !matches!(r.handle_key(ch('h')), Some(Action::ResponseViewMode(_))),
+            "h no longer switches views (it scrolls)"
+        );
+        assert_eq!(
+            r.handle_key(ch('h')),
+            Some(Action::Render),
+            "h scrolls instead"
+        );
+    }
+
+    #[test]
+    fn h_and_l_scroll_like_the_arrows_and_ctrl_keys_page() {
+        let body = (0..100).map(|i| format!("{:>200}", i)).collect::<Vec<_>>().join("\n");
+        let mut a = ready(&body);
+        let mut b = ready(&body);
+        render(&mut a);
+        render(&mut b);
+        a.handle_key(key(KeyCode::Right));
+        b.handle_key(ch('l'));
+        assert_eq!(a.view().unwrap().h_scroll, b.view().unwrap().h_scroll);
+        a.handle_key(key(KeyCode::Left));
+        b.handle_key(ch('h'));
+        assert_eq!(a.view().unwrap().h_scroll, b.view().unwrap().h_scroll);
+        let height = a.view().unwrap().height;
+        a.handle_key(key(KeyCode::PageDown));
+        b.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL));
+        assert_eq!(a.view().unwrap().cursor, b.view().unwrap().cursor);
+        assert_eq!(b.view().unwrap().cursor, height);
+        b.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        assert_eq!(b.view().unwrap().cursor, height - (height / 2).max(1));
+        b.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL));
+        assert_eq!(b.view().unwrap().cursor, height);
+        a.handle_key(key(KeyCode::PageUp));
+        b.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
+        assert_eq!(a.view().unwrap().cursor, b.view().unwrap().cursor);
+    }
+
+    #[test]
     fn end_key_jumps_to_the_widest_line_end() {
         let mut r = wide_raw();
         render(&mut r);
@@ -4734,7 +4869,7 @@ mod tests {
         render(&mut r);
         r.handle_scroll_h(20);
         assert!(r.view().unwrap().h_scroll > 0);
-        press(&mut r, ch('h'));
+        press(&mut r, ch('t'));
         assert_eq!(
             r.view().unwrap().h_scroll,
             0,
@@ -5006,20 +5141,13 @@ mod tests {
     }
 
     #[test]
-    fn r_and_h_dispatch_response_view_mode_actions() {
+    fn t_dispatches_cycle_response_view_action() {
         // Through the action, not a direct mutation: `app.rs`'s
-        // `Action::ResponseViewMode` arm is what retargets the animated
+        // `Action::CycleResponseView` arm is what retargets the animated
         // tab underline, so the keyboard path must funnel through it
         // exactly like a tab click does.
         let mut r = ready(r#"{"a": 1}"#);
-        assert_eq!(
-            r.handle_key(ch('r')),
-            Some(Action::ResponseViewMode(ViewMode::Raw))
-        );
-        assert_eq!(
-            r.handle_key(ch('h')),
-            Some(Action::ResponseViewMode(ViewMode::Headers))
-        );
+        assert_eq!(r.handle_key(ch('t')), Some(Action::CycleResponseView));
     }
 
     #[test]
@@ -5522,7 +5650,7 @@ mod tests {
         let mut r = ready("{\"a\": 1,\n \"b\": 2}");
         r.handle_key(ch('G'));
         assert_eq!(r.view().unwrap().cursor, 3, "last pretty line");
-        press(&mut r, ch('r'));
+        press(&mut r, ch('t'));
         assert_eq!(
             r.view().unwrap().cursor,
             0,
@@ -6020,12 +6148,11 @@ mod tests {
     }
 
     #[test]
-    fn esc_on_an_entered_row_unpicks_it_and_stays_and_a_second_esc_cancels() {
+    fn esc_on_an_entered_row_unpicks_it_and_stays_and_a_second_esc_leaves() {
         let mut r = ready(ITEMS);
         r.set_jq_tab(JqTab::Menu);
         r.set_jq_text(".data");
         assert!(r.set_jq_focus(true));
-        // Typed this session: `.items[] | .` — the origin is `.data`.
         for c in ".items[] | .".chars() {
             bar_key(&mut r, ch(c));
         }
@@ -6042,7 +6169,11 @@ mod tests {
         assert!(r.jq_menu_offered(), "…and shows again, unentered");
         assert!(r.jq_focused(), "the caret stays");
         bar_key(&mut r, key(KeyCode::Esc));
-        assert_eq!(r.jq_text(), ".data", "the second Esc cancels the edit");
+        assert_eq!(
+            r.jq_text(),
+            ".data.items[] | .",
+            "the second Esc leaves the bar, the text kept"
+        );
         assert!(!r.jq_focused());
     }
 
@@ -6699,13 +6830,13 @@ mod tests {
         assert!(r.take_jq_edited());
         assert!(!r.take_jq_edited());
         r.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        assert_eq!(r.jq_text(), ".a", "Esc cancels the edit");
+        assert_eq!(r.jq_text(), ".ab", "Esc keeps the edit");
         assert!(!r.jq_focused(), "…and leaves the bar");
-        assert!(r.take_jq_edited(), "a revert is an edit");
+        assert!(!r.take_jq_edited(), "…changing nothing on the way out");
         assert!(r.set_jq_focus(true));
         r.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert!(!r.jq_focused(), "Esc with nothing typed blurs");
-        assert_eq!(r.jq_text(), ".a");
+        assert_eq!(r.jq_text(), ".ab");
         assert!(!r.take_jq_edited(), "…which is not an edit");
         r.set_jq_text_with_cursor("map(select(.x == ))", 17);
         assert!(r.take_jq_edited(), "a tee-up counts as an edit");
@@ -6713,22 +6844,22 @@ mod tests {
     }
 
     #[test]
-    fn esc_on_a_bar_opened_onto_no_filter_closes_it() {
+    fn esc_on_a_bar_opened_onto_no_filter_keeps_the_typed_filter() {
         let mut r = ready(ITEMS);
         assert!(r.open_jq());
         r.handle_key(KeyEvent::new(KeyCode::Char('.'), KeyModifiers::NONE));
         r.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
         assert!(r.take_jq_edited());
         r.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        assert_eq!(r.jq_text(), "");
+        assert_eq!(r.jq_text(), ".a", "Esc keeps what was typed");
         assert!(!r.jq_focused());
-        assert!(!r.jq_open(), "empty and unfocused: the bar is gone");
-        assert!(r.jq_enabled(), "nothing left to switch off");
-        assert!(r.take_jq_edited(), "dropping the typed text is an edit");
+        assert!(r.jq_open(), "…so the bar stays, unfocused");
+        assert!(r.jq_enabled());
+        assert!(!r.take_jq_edited(), "leaving changes nothing");
     }
 
     #[test]
-    fn esc_on_a_bar_opened_from_off_reverts_the_text_but_leaves_it_on() {
+    fn esc_on_a_bar_opened_from_off_keeps_the_text_and_leaves_it_on() {
         let mut r = ready(ITEMS);
         r.set_jq_text(".a");
         assert!(r.open_jq());
@@ -6739,10 +6870,9 @@ mod tests {
         assert!(r.jq_enabled());
         r.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE));
         r.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        assert_eq!(r.jq_text(), ".a", "the typed char is gone");
+        assert_eq!(r.jq_text(), ".ab", "the typed char stands");
         assert!(r.jq_enabled(), "the switch is never part of the edit");
         assert!(r.jq_open() && !r.jq_focused());
-        assert!(r.take_jq_edited());
     }
 
     #[test]
@@ -6768,7 +6898,7 @@ mod tests {
     }
 
     #[test]
-    fn enter_keeps_the_edit_and_forgets_the_origin() {
+    fn enter_keeps_the_edit_and_ends_the_session() {
         let mut r = ready(ITEMS);
         r.set_jq_text(".a");
         assert!(r.set_jq_focus(true));
@@ -6776,22 +6906,32 @@ mod tests {
         r.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(r.jq_text(), ".ab");
         assert!(!r.jq_focused());
+        assert!(
+            !r.jq_bar().input.edited(),
+            "Enter ended the session: ctrl+z is the app history again"
+        );
         // A fresh edit session starts from the committed text.
         assert!(r.set_jq_focus(true));
         r.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
-        r.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(r.field_undo(false));
         assert_eq!(r.jq_text(), ".ab", "back to the last commit, not further");
+        assert!(!r.field_undo(false), "and no further: the session is its own");
     }
 
     #[test]
-    fn text_landing_in_a_focused_bar_cancels_back_to_before_it() {
+    fn text_landing_in_a_focused_bar_stands_and_is_one_step_in_the_bar() {
         let mut r = ready(ITEMS);
         r.set_jq_text(".a");
         assert!(r.set_jq_focus(true));
         // The AI reply / a tee-up lands text into the focused bar.
         r.set_jq_text_with_cursor(".data.items", 11);
         r.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        assert_eq!(r.jq_text(), ".a");
+        assert_eq!(r.jq_text(), ".data.items", "Esc keeps it");
+        // …and while the bar still has the caret it is one undoable step.
+        assert!(r.set_jq_focus(true));
+        r.set_jq_text_with_cursor(".data.total", 11);
+        assert!(r.field_undo(false));
+        assert_eq!(r.jq_text(), ".data.items");
     }
 
     #[test]

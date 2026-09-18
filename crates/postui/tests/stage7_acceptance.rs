@@ -422,6 +422,16 @@ fn key(app: &mut App, code: KeyCode) {
     app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
 }
 
+/// Submits the top form modal's open field the long way (spec
+/// 2026-09-16): Enter no longer submits directly — the first Esc closes
+/// the field to selected, the second reaches the button row (Confirm
+/// aimed), and only then does Enter confirm.
+fn submit_prompt(app: &mut App) {
+    key(app, KeyCode::Esc);
+    key(app, KeyCode::Esc);
+    key(app, KeyCode::Enter);
+}
+
 // --- goal 2: saving is mouse-reachable -----------------------------------
 
 #[test]
@@ -565,7 +575,7 @@ fn hovering_a_url_token_pops_its_value_and_scope() {
 // --- goal 6: in-place table editing --------------------------------------
 
 #[test]
-fn a_param_cell_commits_on_click_away_reverts_on_esc_and_the_ghost_row_creates() {
+fn a_param_cell_commits_on_click_away_and_on_esc_and_the_ghost_row_creates() {
     let mut app = App::new_for_test();
     seed(&mut app, &["ping"]);
     open_request(&mut app, "ping");
@@ -587,14 +597,14 @@ fn a_param_cell_commits_on_click_away_reverts_on_esc_and_the_ghost_row_creates()
         "the ghost row became a real param"
     );
 
-    // Esc reverts the active cell to its pre-edit value.
+    // Esc commits the active cell — like Enter, but the row stays selected.
     click(&mut app, Hit::TableCell { row: 0, col: 1 });
     type_text(&mut app, "99");
     key(&mut app, KeyCode::Esc);
     assert_eq!(
         app.editor.params.get("page").map(|e| e.value.as_str()),
-        Some("2"),
-        "Esc put the old value back"
+        Some("299"),
+        "Esc kept the typed text"
     );
 }
 
@@ -658,7 +668,7 @@ fn a_legacy_project_migrates_then_grows_a_group_whose_selection_drives_resolutio
     // defaults the field to it ---
     click(&mut app, Hit::VmNewSelector);
     type_text(&mut app, "region");
-    key(&mut app, KeyCode::Enter);
+    submit_prompt(&mut app);
     assert!(
         app.modals.is_empty(),
         "creating a selector opens nothing else"
@@ -682,7 +692,7 @@ fn a_legacy_project_migrates_then_grows_a_group_whose_selection_drives_resolutio
     type_text(&mut app, "zone");
     click(&mut app, Hit::ModalAddRow);
     type_text(&mut app, "dc");
-    key(&mut app, KeyCode::Enter);
+    submit_prompt(&mut app);
     assert_eq!(
         app.proj().variables().selectors["region"].fields,
         ["zone", "dc"],

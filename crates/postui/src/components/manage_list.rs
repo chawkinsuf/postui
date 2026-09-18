@@ -30,6 +30,22 @@ pub struct ManageList {
     pub scroll: usize,
     visible_rows: usize,
     ensure_visible: bool,
+    /// Which half of the screen the keyboard is in: the row list, or the
+    /// detail pane's controls (spec 2026-09-15 aliases round: `l`/Right
+    /// enters, `h`/Left on the first control or Esc leaves -- the
+    /// Variable Manager's list ⇄ detail rhythm).
+    pub focus: ListFocus,
+    /// The detail row the aim is on while `focus == Detail`.
+    pub detail_row: DetailRow,
+    /// The aimed control's visual index (left to right) within
+    /// `detail_row`: a title button, or a TLS segment.
+    pub detail_col: usize,
+    /// How many title buttons the last draw painted, counted from the
+    /// right (a narrow pane drops the leftmost first) -- the aim never
+    /// lands on a dropped one.
+    painted_buttons: usize,
+    /// How many TLS segments the last draw painted, from the left.
+    painted_tls: usize,
     /// A live row drag of the Spaces or Environments tab (spec §Space
     /// drag): while `Some`, `draw` lists `working` instead of the
     /// project's own list.
@@ -41,6 +57,74 @@ pub struct ManageList {
     /// How many items the last draw listed, for `row_at_y`'s clamp.
     last_len: usize,
 }
+
+/// The Environments/Spaces tabs' two keyboard stops.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ListFocus {
+    #[default]
+    List,
+    Detail,
+}
+
+/// The detail pane's rows of controls, top to bottom. `Tls` exists only
+/// on the Environments tab.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum DetailRow {
+    #[default]
+    Buttons,
+    Tls,
+}
+
+/// The detail pane's title buttons, in the order they read left to
+/// right. Painted from the right edge inward, so a pane too narrow for
+/// all of them drops the first of these first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DetailButton {
+    MoveAll,
+    Rename,
+    Delete,
+}
+
+impl DetailButton {
+    fn label(self) -> &'static str {
+        match self {
+            Self::MoveAll => "Move all requests\u{2026}",
+            Self::Rename => "Rename",
+            Self::Delete => "Delete",
+        }
+    }
+
+    fn hit(self) -> Hit {
+        match self {
+            Self::MoveAll => Hit::ManageMoveAll,
+            Self::Rename => Hit::ManageRename,
+            Self::Delete => Hit::ManageDelete,
+        }
+    }
+
+    /// The footer's verb for Enter on this button.
+    fn verb(self) -> &'static str {
+        match self {
+            Self::MoveAll => "move all",
+            Self::Rename => "rename",
+            Self::Delete => "delete",
+        }
+    }
+}
+
+/// What the detail pane's aim is on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AimedControl {
+    Button(DetailButton),
+    Tls(Option<postui_core::project::TlsPolicy>),
+}
+
+/// The TLS row's segments, left to right, with the policy each sets.
+const TLS_SEGMENTS: [(&str, Option<postui_core::project::TlsPolicy>); 3] = [
+    ("Per request", None),
+    ("Verify", Some(postui_core::project::TlsPolicy::Verify)),
+    ("Insecure", Some(postui_core::project::TlsPolicy::Insecure)),
+];
 
 /// A live drag of one list row: the working order the pointer has
 /// arranged so far, over the displayed names of the tab it started on.
@@ -255,6 +339,170 @@ impl ManageList {
         Some(menu)
     }
 
+    /// The title buttons `tab`'s pane shows, left to right.
+    fn buttons(tab: ManageTab) -> &'static [DetailButton] {
+        match tab {
+            ManageTab::Spaces => &[
+                DetailButton::MoveAll,
+                DetailButton::Rename,
+                DetailButton::Delete,
+            ],
+            _ => &[DetailButton::Rename, DetailButton::Delete],
+        }
+    }
+
+    /// The pane's rows of controls, top to bottom.
+    fn detail_rows(tab: ManageTab) -> &'static [DetailRow] {
+        match tab {
+            ManageTab::Environments => &[DetailRow::Buttons, DetailRow::Tls],
+            _ => &[DetailRow::Buttons],
+        }
+    }
+
+    /// The first and last aimable column of `row` -- only painted
+    /// controls count, so the aim never sits on something invisible.
+    fn col_range(&self, tab: ManageTab, row: DetailRow) -> (usize, usize) {
+        match row {
+            DetailRow::Buttons => {
+                let n = Self::buttons(tab).len();
+                (n - self.painted_buttons.min(n), n.saturating_sub(1))
+            }
+            // Segments drop from the right, so the painted ones are the
+            // first `painted_tls`; none painted is the same empty range
+            // the buttons arm collapses to.
+            DetailRow::Tls => {
+                let n = TLS_SEGMENTS.len();
+                match self.painted_tls.min(n) {
+                    0 => (n, n.saturating_sub(1)),
+                    painted => (0, painted - 1),
+                }
+            }
+        }
+    }
+
+    fn clamp_detail_col(&mut self, tab: ManageTab) {
+        let (first, last) = self.col_range(tab, self.detail_row);
+        self.detail_col = self.detail_col.clamp(first, last.max(first));
+    }
+
+    /// Moves the keyboard into the detail pane, aimed at its first
+    /// painted control. A no-op with nothing selected (the pane is empty).
+    fn enter_detail(&mut self, tab: ManageTab, ctx: &Project) {
+        if self.selected(tab, ctx).is_none() {
+            return;
+        }
+        self.focus = ListFocus::Detail;
+        self.detail_row = DetailRow::Buttons;
+        self.detail_col = 0;
+        self.clamp_detail_col(tab);
+    }
+
+    /// Hands the keyboard back to the row list (a click on a row does
+    /// this too, so the next arrow moves what the click just selected).
+    pub fn leave_detail(&mut self) {
+        self.focus = ListFocus::List;
+    }
+
+    /// The aimed control, as the button it stands for and the verb the
+    /// footer names Enter with.
+    fn aimed(&self, tab: ManageTab) -> Option<(&'static str, AimedControl)> {
+        match self.detail_row {
+            DetailRow::Buttons => {
+                let b = *Self::buttons(tab).get(self.detail_col)?;
+                Some((b.verb(), AimedControl::Button(b)))
+            }
+            DetailRow::Tls => {
+                let (label, policy) = TLS_SEGMENTS.get(self.detail_col)?;
+                Some((label, AimedControl::Tls(*policy)))
+            }
+        }
+    }
+
+    /// What Enter on the aim dispatches -- the click's action exactly.
+    fn aimed_action(&self, tab: ManageTab, ctx: &Project) -> Option<Action> {
+        let name = self.selected(tab, ctx)?;
+        Some(match self.aimed(tab)?.1 {
+            AimedControl::Button(DetailButton::MoveAll) => Self::move_all_action(name),
+            AimedControl::Button(DetailButton::Rename) => Self::rename_action(tab, name),
+            AimedControl::Button(DetailButton::Delete) => Self::delete_action(tab, name),
+            AimedControl::Tls(policy) => Action::SetEnvTls {
+                env: name.to_string(),
+                policy,
+            },
+        })
+    }
+
+    /// Keys while the detail pane has the keyboard. `Some` is a claimed
+    /// key (with the action it dispatches, if any); `None` falls through
+    /// to the list's command letters and the alt+↑/↓ reorder, which act
+    /// on the same selected row from either stop. Page keys are inert
+    /// here, as in the Variable Manager's grid.
+    fn handle_detail_key(
+        &mut self,
+        ev: KeyEvent,
+        tab: ManageTab,
+        ctx: &Project,
+    ) -> Option<Option<Action>> {
+        if ev.modifiers.contains(KeyModifiers::ALT) {
+            return None;
+        }
+        let plain = ev.modifiers.is_empty();
+        let ctrl = ev.modifiers == KeyModifiers::CONTROL;
+        let rows = Self::detail_rows(tab);
+        let at = rows
+            .iter()
+            .position(|r| *r == self.detail_row)
+            .unwrap_or(0);
+        // A row change lands on the row's first painted control (the
+        // Settings tab's rule): the columns of unrelated rows don't
+        // correspond, so carrying one across would aim at random.
+        let set_row = |this: &mut Self, i: usize| {
+            this.detail_row = rows[i.min(rows.len() - 1)];
+            this.detail_col = 0;
+            this.clamp_detail_col(tab);
+        };
+        match ev.code {
+            KeyCode::Esc | KeyCode::BackTab => {
+                self.focus = ListFocus::List;
+                Some(None)
+            }
+            KeyCode::Up | KeyCode::Char('k') if plain => {
+                set_row(self, at.saturating_sub(1));
+                Some(None)
+            }
+            KeyCode::Down | KeyCode::Char('j') if plain => {
+                set_row(self, at + 1);
+                Some(None)
+            }
+            KeyCode::Home | KeyCode::Char('g') if plain => {
+                set_row(self, 0);
+                Some(None)
+            }
+            KeyCode::End | KeyCode::Char('G') => {
+                set_row(self, rows.len() - 1);
+                Some(None)
+            }
+            KeyCode::Left | KeyCode::Char('h') if plain => {
+                let (first, _) = self.col_range(tab, self.detail_row);
+                if self.detail_col <= first {
+                    self.focus = ListFocus::List;
+                } else {
+                    self.detail_col -= 1;
+                }
+                Some(None)
+            }
+            KeyCode::Right | KeyCode::Tab | KeyCode::Char('l') if plain => {
+                self.detail_col += 1;
+                self.clamp_detail_col(tab);
+                Some(None)
+            }
+            KeyCode::PageUp | KeyCode::PageDown => Some(None),
+            KeyCode::Char('d' | 'u' | 'f' | 'b') if ctrl => Some(None),
+            KeyCode::Enter | KeyCode::Char(' ') if plain => Some(self.aimed_action(tab, ctx)),
+            _ => None,
+        }
+    }
+
     /// The list's own keys.
     pub fn handle_key(
         &mut self,
@@ -264,21 +512,66 @@ impl ManageList {
     ) -> Option<Action> {
         let len = Self::items(tab, ctx).len();
         let alt = ev.modifiers.contains(KeyModifiers::ALT);
+        if self.focus == ListFocus::Detail {
+            if self.selected(tab, ctx).is_none() {
+                // The pane emptied under the aim (its row was deleted):
+                // the keyboard goes home.
+                self.focus = ListFocus::List;
+            } else if let Some(claimed) = self.handle_detail_key(ev, tab, ctx) {
+                return claimed;
+            }
+        }
         match ev.code {
             KeyCode::Esc => Some(Action::CloseScreen),
             KeyCode::Char('q') => Some(Action::Quit),
-            KeyCode::Up if alt => Some(Self::move_action(tab, self.selected(tab, ctx)?, -1)),
-            KeyCode::Down if alt => Some(Self::move_action(tab, self.selected(tab, ctx)?, 1)),
-            KeyCode::Up => {
-                self.cursor = self.cursor.saturating_sub(1);
-                self.ensure_visible = true;
+            // Into the detail pane's controls (the Variable Manager's
+            // `l`/Right/Tab exactly).
+            KeyCode::Right | KeyCode::Tab | KeyCode::Char('l')
+                if ev.modifiers.is_empty() && self.focus == ListFocus::List =>
+            {
+                self.enter_detail(tab, ctx);
                 None
             }
-            KeyCode::Down => {
-                if self.cursor + 1 < len {
-                    self.cursor += 1;
-                }
-                self.ensure_visible = true;
+            KeyCode::Up if alt => Some(Self::move_action(tab, self.selected(tab, ctx)?, -1)),
+            KeyCode::Down if alt => Some(Self::move_action(tab, self.selected(tab, ctx)?, 1)),
+            KeyCode::Char('j') | KeyCode::Down if crate::keys::plain_letter(&ev) => {
+                self.step(1, len);
+                None
+            }
+            KeyCode::Char('k') | KeyCode::Up if crate::keys::plain_letter(&ev) => {
+                self.step(-1, len);
+                None
+            }
+            KeyCode::Char('g') | KeyCode::Home if crate::keys::plain_letter(&ev) => {
+                self.step(i32::MIN / 2, len);
+                None
+            }
+            KeyCode::Char('G') | KeyCode::End => {
+                self.step(i32::MAX / 2, len);
+                None
+            }
+            KeyCode::PageDown => {
+                self.step(self.page(), len);
+                None
+            }
+            KeyCode::PageUp => {
+                self.step(-self.page(), len);
+                None
+            }
+            KeyCode::Char('d') if ev.modifiers == KeyModifiers::CONTROL => {
+                self.step((self.page() / 2).max(1), len);
+                None
+            }
+            KeyCode::Char('u') if ev.modifiers == KeyModifiers::CONTROL => {
+                self.step(-(self.page() / 2).max(1), len);
+                None
+            }
+            KeyCode::Char('f') if ev.modifiers == KeyModifiers::CONTROL => {
+                self.step(self.page(), len);
+                None
+            }
+            KeyCode::Char('b') if ev.modifiers == KeyModifiers::CONTROL => {
+                self.step(-self.page(), len);
                 None
             }
             KeyCode::Char('n') => Some(Self::new_action(tab)),
@@ -289,11 +582,30 @@ impl ManageList {
             KeyCode::Char('t') if tab == ManageTab::Environments => {
                 Some(Self::cycle_tls_action(ctx, self.selected(tab, ctx)?))
             }
-            KeyCode::Char('d') | KeyCode::Delete => {
+            KeyCode::Char('d') | KeyCode::Delete if ev.modifiers.is_empty() => {
                 Some(Self::delete_action(tab, self.selected(tab, ctx)?))
             }
+            // `u` / `:` (undo, palette) are deliberately not named: an
+            // unclaimed plain key reaches the router's whitelist from the
+            // keymap (`App::unclaimed_screen_key`), so `keys.toml` governs
+            // them here as everywhere.
             _ => None,
         }
+    }
+
+    /// Moves `cursor` by `delta` rows, clamped to `0..len` (or the single
+    /// slot `0` when the list is empty), and marks it for scroll-into-view.
+    /// The shared body behind Up/Down and every g/G/page-key alias.
+    fn step(&mut self, delta: i32, len: usize) {
+        let bound = len.max(1) as i32 - 1;
+        self.cursor = (self.cursor as i32 + delta).clamp(0, bound.max(0)) as usize;
+        self.ensure_visible = true;
+    }
+
+    /// Height of the row list as of the last draw, as a page size for
+    /// ctrl+d/u/f/b and PageUp/PageDown (never zero, so a page always moves).
+    fn page(&self) -> i32 {
+        self.visible_rows.max(1) as i32
     }
 
     pub fn footer_chips(
@@ -302,6 +614,21 @@ impl ManageList {
         ctx: &Project,
     ) -> Vec<(&'static str, &'static str, Option<Action>)> {
         let selected = self.selected(tab, ctx);
+        if self.focus == ListFocus::Detail && selected.is_some() {
+            // The pane's stop: the arrows aim, Enter fires the aim (named
+            // by what it does, like the Settings tab's file buttons), Esc
+            // is back to the list rather than out of the screen.
+            let mut chips = Vec::new();
+            if Self::detail_rows(tab).len() > 1 {
+                chips.push(("↑↓", "move", None));
+            }
+            chips.push(("←→", "select", None));
+            if let Some((verb, _)) = self.aimed(tab) {
+                chips.push(("enter", verb, self.aimed_action(tab, ctx)));
+            }
+            chips.push(("esc", "back", None));
+            return chips;
+        }
         let mut chips = vec![
             ("n", "new", Some(Self::new_action(tab))),
             ("r", "rename", selected.map(|n| Self::rename_action(tab, n))),
@@ -367,7 +694,7 @@ impl ManageList {
     /// Clicking a segment sets the force (`Hit::ManageEnvTls`).
     #[allow(clippy::too_many_arguments)]
     fn draw_tls_control(
-        &self,
+        &mut self,
         buf: &mut ratatui::buffer::Buffer,
         hits: &mut HitMap,
         hovered: Option<&Hit>,
@@ -380,7 +707,7 @@ impl ManageList {
         ctx: &Project,
         name: &str,
     ) {
-        use postui_core::project::{TlsPolicy, env_tls};
+        use postui_core::project::env_tls;
         if y >= bottom {
             return;
         }
@@ -394,11 +721,7 @@ impl ManageList {
         }
         .paint(buf, hits, Rect::new(x0, y, row_w, 1), theme);
         let mut x = slot.rect.x;
-        for (seg, policy) in [
-            ("Per request", None),
-            ("Verify", Some(TlsPolicy::Verify)),
-            ("Insecure", Some(TlsPolicy::Insecure)),
-        ] {
+        for (col, (seg, policy)) in TLS_SEGMENTS.into_iter().enumerate() {
             let w = pill_min_width(seg);
             // A segment that would run past the row is dropped rather
             // than clipped; it stays reachable by key.
@@ -418,7 +741,12 @@ impl ManageList {
                 } else {
                     ButtonKind::Secondary
                 },
-                state: if hovered == Some(&hit) {
+                state: if self.focus == ListFocus::Detail
+                    && self.detail_row == DetailRow::Tls
+                    && self.detail_col == col
+                {
+                    ControlState::Focused
+                } else if hovered == Some(&hit) {
                     ControlState::Hover
                 } else {
                     ControlState::Normal
@@ -426,6 +754,7 @@ impl ManageList {
             }
             .paint(buf, rect, theme);
             hits.register(rect, hit);
+            self.painted_tls += 1;
             x += w + 1;
         }
     }
@@ -568,7 +897,10 @@ impl ManageList {
     ) {
         let buf = frame.buffer_mut();
         fill(buf, right, theme.page);
+        self.painted_buttons = 0;
+        self.painted_tls = 0;
         let Some(name) = items.get(self.cursor) else {
+            self.focus = ListFocus::List;
             let hint = match tab {
                 ManageTab::Spaces => "Select a space",
                 _ => "Select an environment",
@@ -616,13 +948,10 @@ impl ManageList {
                 _ => format!("Environment: {}", ctx.env_name(name)),
             };
             text(buf, x0, y, &title, theme.text, theme.page, true);
-            let mut buttons: Vec<(&str, Hit)> =
-                vec![("Delete", Hit::ManageDelete), ("Rename", Hit::ManageRename)];
-            if tab == ManageTab::Spaces {
-                buttons.push(("Move all requests\u{2026}", Hit::ManageMoveAll));
-            }
+            let buttons = Self::buttons(tab);
             let mut bx = right.x + right.width;
-            for (label, hit) in buttons {
+            for (col, button) in buttons.iter().enumerate().rev() {
+                let (label, hit) = (button.label(), button.hit());
                 let w = button_min_width(label);
                 if bx < x0 + title.chars().count() as u16 + w + 3 {
                     break;
@@ -634,7 +963,12 @@ impl ManageList {
                     width: w,
                     height: TALL_PILL_H,
                 };
-                let state = if hovered == Some(&hit) {
+                let state = if self.focus == ListFocus::Detail
+                    && self.detail_row == DetailRow::Buttons
+                    && self.detail_col == col
+                {
+                    ControlState::Focused
+                } else if hovered == Some(&hit) {
                     ControlState::Hover
                 } else {
                     ControlState::Normal
@@ -646,6 +980,7 @@ impl ManageList {
                 }
                 .paint(buf, rect, theme);
                 hits.register(painted, hit);
+                self.painted_buttons += 1;
             }
             y += 2;
         }
@@ -741,6 +1076,344 @@ mod tests {
         ctx.create_space("billing").unwrap();
         assert_eq!(ctx.spaces(), ["main", "auth", "billing"]);
         (ctx, dir)
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn vim_aliases_are_strict_synonyms_in_the_manage_list() {
+        let (ctx, _dir) = ctx();
+        let ctrl = |c: char| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+        let pairs = [
+            (key(KeyCode::Char('j')), key(KeyCode::Down)),
+            (key(KeyCode::Char('k')), key(KeyCode::Up)),
+            (key(KeyCode::Char('g')), key(KeyCode::Home)),
+            (
+                KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT),
+                key(KeyCode::End),
+            ),
+            (ctrl('f'), key(KeyCode::PageDown)),
+            (ctrl('b'), key(KeyCode::PageUp)),
+        ];
+        for (alias, canonical) in pairs {
+            let (mut a, mut b) = (ManageList::default(), ManageList::default());
+            a.cursor = 1;
+            b.cursor = 1;
+            a.visible_rows = 2;
+            b.visible_rows = 2;
+            let ra = a.handle_key(alias, ManageTab::Spaces, &ctx);
+            let rb = b.handle_key(canonical, ManageTab::Spaces, &ctx);
+            assert_eq!(ra, rb, "{alias:?}");
+            assert_eq!(a.cursor, b.cursor, "{alias:?}");
+        }
+        let mut l = ManageList {
+            visible_rows: 2,
+            ..Default::default()
+        };
+        l.handle_key(ctrl('f'), ManageTab::Spaces, &ctx);
+        assert_eq!(l.cursor, 2, "three spaces: clamped to the last");
+        l.handle_key(ctrl('b'), ManageTab::Spaces, &ctx);
+        assert_eq!(l.cursor, 0);
+        // Half pages: ctrl+d/ctrl+u move by half the visible rows.
+        l.handle_key(ctrl('d'), ManageTab::Spaces, &ctx);
+        assert_eq!(l.cursor, 1, "half of a 2-row page");
+        l.handle_key(ctrl('u'), ManageTab::Spaces, &ctx);
+        assert_eq!(l.cursor, 0);
+    }
+
+    fn draw_at(l: &mut ManageList, tab: ManageTab, ctx: &Project, w: u16) -> HitMap {
+        draw_sized(l, tab, ctx, w, 20)
+    }
+
+    fn draw_sized(l: &mut ManageList, tab: ManageTab, ctx: &Project, w: u16, h: u16) -> HitMap {
+        let theme = Theme::dark();
+        let backend = ratatui::backend::TestBackend::new(w, h);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut hits = HitMap::default();
+        let requests = BTreeMap::new();
+        terminal
+            .draw(|f| l.draw(f, f.area(), &theme, tab, ctx, &requests, &mut hits, None))
+            .unwrap();
+        hits
+    }
+
+    /// The detail pane is a focus stop like the Variable Manager's: `l`
+    /// (Right) enters it from the list, `h` (Left) on its first control
+    /// hands the keyboard back, and Esc there is "back", not "close".
+    #[test]
+    fn l_enters_the_detail_pane_and_h_on_its_first_control_leaves() {
+        let (ctx, _dir) = ctx();
+        let mut l = ManageList::default();
+        draw_at(&mut l, ManageTab::Environments, &ctx, 100);
+        assert_eq!(l.focus, ListFocus::List);
+        assert_eq!(l.handle_key(key(KeyCode::Char('l')), ManageTab::Environments, &ctx), None);
+        assert_eq!(l.focus, ListFocus::Detail);
+        // Environments: the buttons row reads Rename, Delete; the aim
+        // starts on the first one.
+        assert_eq!(l.detail_col, 0);
+        assert_eq!(l.handle_key(key(KeyCode::Char('l')), ManageTab::Environments, &ctx), None);
+        assert_eq!(l.detail_col, 1);
+        assert_eq!(l.handle_key(key(KeyCode::Char('l')), ManageTab::Environments, &ctx), None);
+        assert_eq!(l.detail_col, 1, "clamped to the last button");
+        l.handle_key(key(KeyCode::Char('h')), ManageTab::Environments, &ctx);
+        assert_eq!(l.detail_col, 0);
+        assert_eq!(l.focus, ListFocus::Detail);
+        l.handle_key(key(KeyCode::Char('h')), ManageTab::Environments, &ctx);
+        assert_eq!(l.focus, ListFocus::List, "h on the first control leaves");
+        l.handle_key(key(KeyCode::Right), ManageTab::Environments, &ctx);
+        assert_eq!(l.focus, ListFocus::Detail);
+        assert_eq!(
+            l.handle_key(key(KeyCode::Esc), ManageTab::Environments, &ctx),
+            None,
+            "Esc in the pane goes back to the list, not out of the screen"
+        );
+        assert_eq!(l.focus, ListFocus::List);
+        assert_eq!(
+            l.handle_key(key(KeyCode::Esc), ManageTab::Environments, &ctx),
+            Some(Action::CloseScreen)
+        );
+    }
+
+    #[test]
+    fn vim_aliases_are_strict_synonyms_in_the_detail_pane() {
+        let (ctx, _dir) = ctx();
+        let pairs = [
+            (key(KeyCode::Char('j')), key(KeyCode::Down)),
+            (key(KeyCode::Char('k')), key(KeyCode::Up)),
+            (key(KeyCode::Char('h')), key(KeyCode::Left)),
+            (key(KeyCode::Char('l')), key(KeyCode::Right)),
+            (key(KeyCode::Char('g')), key(KeyCode::Home)),
+            (
+                KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT),
+                key(KeyCode::End),
+            ),
+        ];
+        for (alias, canonical) in pairs {
+            let (mut a, mut b) = (ManageList::default(), ManageList::default());
+            for l in [&mut a, &mut b] {
+                draw_at(l, ManageTab::Environments, &ctx, 100);
+                l.focus = ListFocus::Detail;
+                l.detail_row = DetailRow::Tls;
+                l.detail_col = 1;
+            }
+            assert_eq!(
+                a.handle_key(alias, ManageTab::Environments, &ctx),
+                b.handle_key(canonical, ManageTab::Environments, &ctx),
+                "{alias:?}"
+            );
+            assert_eq!(a.focus, b.focus, "{alias:?}");
+            assert_eq!(a.detail_row, b.detail_row, "{alias:?}");
+            assert_eq!(a.detail_col, b.detail_col, "{alias:?}");
+        }
+    }
+
+    /// A terminal too short for the TLS row paints none of its segments;
+    /// `j` onto that row must aim at nothing (as the buttons row does with
+    /// nothing painted), so Enter never fires an invisible control.
+    #[test]
+    fn an_unpainted_tls_row_has_no_aim() {
+        let (ctx, _dir) = ctx();
+        let mut l = ManageList::default();
+        // Tall enough for the title row and its buttons, not the TLS row.
+        draw_sized(&mut l, ManageTab::Environments, &ctx, 100, 3);
+        assert_eq!(l.painted_tls, 0, "precondition: no TLS segment painted");
+        assert_ne!(l.painted_buttons, 0, "precondition: the buttons row is");
+        l.handle_key(key(KeyCode::Char('l')), ManageTab::Environments, &ctx);
+        assert_eq!(l.focus, ListFocus::Detail);
+        l.handle_key(key(KeyCode::Char('j')), ManageTab::Environments, &ctx);
+        assert_eq!(l.detail_row, DetailRow::Tls);
+        assert_eq!(l.aimed(ManageTab::Environments), None);
+        assert_eq!(
+            l.handle_key(key(KeyCode::Enter), ManageTab::Environments, &ctx),
+            None,
+            "Enter dispatches nothing"
+        );
+    }
+
+    /// ↑/↓ walk the pane's rows (buttons, then TLS) on the Environments
+    /// tab; the Spaces pane has only its buttons row, so they are inert.
+    #[test]
+    fn detail_rows_walk_between_the_buttons_and_the_tls_segments() {
+        let (ctx, _dir) = ctx();
+        let mut l = ManageList::default();
+        draw_at(&mut l, ManageTab::Environments, &ctx, 100);
+        l.handle_key(key(KeyCode::Right), ManageTab::Environments, &ctx);
+        assert_eq!(l.detail_row, DetailRow::Buttons);
+        l.handle_key(key(KeyCode::Down), ManageTab::Environments, &ctx);
+        assert_eq!(l.detail_row, DetailRow::Tls);
+        l.handle_key(key(KeyCode::Down), ManageTab::Environments, &ctx);
+        assert_eq!(l.detail_row, DetailRow::Tls, "clamped to the last row");
+        l.handle_key(key(KeyCode::Up), ManageTab::Environments, &ctx);
+        assert_eq!(l.detail_row, DetailRow::Buttons);
+        l.handle_key(key(KeyCode::End), ManageTab::Environments, &ctx);
+        assert_eq!(l.detail_row, DetailRow::Tls);
+        l.handle_key(key(KeyCode::Home), ManageTab::Environments, &ctx);
+        assert_eq!(l.detail_row, DetailRow::Buttons);
+
+        let mut s = ManageList::default();
+        draw_at(&mut s, ManageTab::Spaces, &ctx, 100);
+        s.handle_key(key(KeyCode::Right), ManageTab::Spaces, &ctx);
+        s.handle_key(key(KeyCode::Down), ManageTab::Spaces, &ctx);
+        assert_eq!(s.detail_row, DetailRow::Buttons);
+        assert_eq!(s.focus, ListFocus::Detail);
+    }
+
+    /// Enter (and space) fire whatever the aim is on: a title button, or a
+    /// TLS segment -- the very actions a click on them dispatches.
+    #[test]
+    fn enter_in_the_detail_pane_fires_the_aimed_control() {
+        use postui_core::project::TlsPolicy;
+        let (ctx, _dir) = ctx();
+        let env = ctx.environments()[0].clone();
+        let mut l = ManageList::default();
+        draw_at(&mut l, ManageTab::Environments, &ctx, 100);
+        l.handle_key(key(KeyCode::Right), ManageTab::Environments, &ctx);
+        assert_eq!(
+            l.handle_key(key(KeyCode::Enter), ManageTab::Environments, &ctx),
+            Some(Action::PromptRenameEnv(env.clone()))
+        );
+        l.handle_key(key(KeyCode::Right), ManageTab::Environments, &ctx);
+        assert_eq!(
+            l.handle_key(key(KeyCode::Char(' ')), ManageTab::Environments, &ctx),
+            Some(Action::DeleteEnv(env.clone()))
+        );
+        l.handle_key(key(KeyCode::Down), ManageTab::Environments, &ctx);
+        l.handle_key(key(KeyCode::Home), ManageTab::Environments, &ctx);
+        l.handle_key(key(KeyCode::Down), ManageTab::Environments, &ctx);
+        assert_eq!(l.detail_row, DetailRow::Tls);
+        assert_eq!(l.detail_col, 0);
+        l.handle_key(key(KeyCode::Right), ManageTab::Environments, &ctx);
+        assert_eq!(
+            l.handle_key(key(KeyCode::Enter), ManageTab::Environments, &ctx),
+            Some(Action::SetEnvTls {
+                env: env.clone(),
+                policy: Some(TlsPolicy::Verify)
+            })
+        );
+        // The Spaces pane: Move all, Rename, Delete from the left.
+        let mut s = ManageList::default();
+        draw_at(&mut s, ManageTab::Spaces, &ctx, 100);
+        s.handle_key(key(KeyCode::Right), ManageTab::Spaces, &ctx);
+        assert_eq!(
+            s.handle_key(key(KeyCode::Enter), ManageTab::Spaces, &ctx),
+            Some(Action::PromptMoveAllRequests("main".into()))
+        );
+    }
+
+    /// The command letters and the reorder chord keep working from the
+    /// pane: the aim is about *which* control Enter fires, not a mode.
+    #[test]
+    fn command_letters_and_reorder_still_work_from_the_detail_pane() {
+        let (ctx, _dir) = ctx();
+        let mut l = ManageList::default();
+        draw_at(&mut l, ManageTab::Spaces, &ctx, 100);
+        l.cursor = 1;
+        l.handle_key(key(KeyCode::Right), ManageTab::Spaces, &ctx);
+        assert_eq!(
+            l.handle_key(key(KeyCode::Char('r')), ManageTab::Spaces, &ctx),
+            Some(Action::PromptRenameSpace("auth".into()))
+        );
+        assert_eq!(
+            l.handle_key(key(KeyCode::Char('u')), ManageTab::Spaces, &ctx),
+            None,
+            "`u` is the router's (keymap) alias, left unclaimed here"
+        );
+        let alt_down = KeyEvent::new(KeyCode::Down, KeyModifiers::ALT);
+        assert!(matches!(
+            l.handle_key(alt_down, ManageTab::Spaces, &ctx),
+            Some(Action::MoveSpace { .. })
+        ));
+        assert_eq!(l.focus, ListFocus::Detail);
+    }
+
+    /// A pane too narrow for every title button drops the leftmost ones
+    /// (Move all first); the aim only ever lands on a painted control.
+    #[test]
+    fn the_aim_skips_buttons_the_narrow_pane_dropped() {
+        let (ctx, _dir) = ctx();
+        let mut l = ManageList::default();
+        // The widest pane that drops Move all but still fits Rename.
+        let w = (40..120)
+            .rev()
+            .find(|w| {
+                let mut probe = ManageList::default();
+                let hits = draw_at(&mut probe, ManageTab::Spaces, &ctx, *w);
+                hits.rect_of(&Hit::ManageMoveAll).is_none()
+                    && hits.rect_of(&Hit::ManageRename).is_some()
+            })
+            .expect("some width drops exactly the first button");
+        draw_at(&mut l, ManageTab::Spaces, &ctx, w);
+        l.handle_key(key(KeyCode::Right), ManageTab::Spaces, &ctx);
+        assert_eq!(
+            l.handle_key(key(KeyCode::Enter), ManageTab::Spaces, &ctx),
+            Some(Action::PromptRenameSpace("main".into())),
+            "the first painted button, not the dropped one"
+        );
+        l.handle_key(key(KeyCode::Left), ManageTab::Spaces, &ctx);
+        assert_eq!(l.focus, ListFocus::List);
+    }
+
+    /// The aimed control paints focused, exactly as the Settings tab's
+    /// aimed file button does.
+    #[test]
+    fn the_aimed_control_paints_focused() {
+        let (ctx, _dir) = ctx();
+        let theme = Theme::dark();
+        let mut l = ManageList::default();
+        draw_at(&mut l, ManageTab::Environments, &ctx, 100);
+        l.handle_key(key(KeyCode::Right), ManageTab::Environments, &ctx);
+        l.handle_key(key(KeyCode::Down), ManageTab::Environments, &ctx);
+        let backend = ratatui::backend::TestBackend::new(100, 20);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut hits = HitMap::default();
+        let requests = BTreeMap::new();
+        terminal
+            .draw(|f| {
+                l.draw(
+                    f,
+                    f.area(),
+                    &theme,
+                    ManageTab::Environments,
+                    &ctx,
+                    &requests,
+                    &mut hits,
+                    None,
+                )
+            })
+            .unwrap();
+        let seg = hits.rect_of(&Hit::ManageEnvTls(None)).expect("aimed segment");
+        let buf = terminal.backend().buffer();
+        let (focused, _) =
+            crate::paint::control_face(&theme, ButtonKind::Primary, ControlState::Focused);
+        let (normal, _) = crate::paint::control_face(&theme, ButtonKind::Primary, ControlState::Normal);
+        assert_ne!(focused, normal, "the theme distinguishes focus");
+        assert_eq!(buf.cell((seg.x + 1, seg.y)).unwrap().bg, focused);
+    }
+
+    #[test]
+    fn detail_pane_chips_name_the_aimed_control() {
+        let (ctx, _dir) = ctx();
+        let env = ctx.environments()[0].clone();
+        let mut l = ManageList::default();
+        draw_at(&mut l, ManageTab::Environments, &ctx, 100);
+        l.handle_key(key(KeyCode::Right), ManageTab::Environments, &ctx);
+        let chips = l.footer_chips(ManageTab::Environments, &ctx);
+        assert!(chips.iter().any(|(k, l, _)| *k == "↑↓" && *l == "move"), "{chips:?}");
+        assert!(chips.iter().any(|(k, l, _)| *k == "←→" && *l == "select"), "{chips:?}");
+        assert!(
+            chips.iter().any(|(k, l, a)| *k == "enter"
+                && *l == "rename"
+                && *a == Some(Action::PromptRenameEnv(env.clone()))),
+            "{chips:?}"
+        );
+        assert!(chips.iter().any(|(k, l, _)| *k == "esc" && *l == "back"), "{chips:?}");
+        let mut s = ManageList::default();
+        draw_at(&mut s, ManageTab::Spaces, &ctx, 100);
+        s.handle_key(key(KeyCode::Right), ManageTab::Spaces, &ctx);
+        let chips = s.footer_chips(ManageTab::Spaces, &ctx);
+        assert!(!chips.iter().any(|(k, _, _)| *k == "↑↓"), "one row: {chips:?}");
     }
 
     #[test]

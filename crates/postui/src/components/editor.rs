@@ -174,6 +174,12 @@ pub struct Editor {
     /// switching requests never loses the user's place.
     pub preferred_tab: EditorTab,
     pub sub_focus: SubFocus,
+    /// Whether the URL line has the caret (open) or is merely the
+    /// keyboard's resting stop (selected) — spec 2026-09-16. Always
+    /// `false` when `sub_focus != SubFocus::Url`; `select_url`/`open_url`/
+    /// `close_url` and every `Url` transition in `handle_key` keep the two
+    /// in sync.
+    url_open: bool,
     /// Shared cursor/edit state for the key/value table, reused by both the
     /// Params and Headers tabs (never holds the entry data itself).
     pub table: TableEditorState,
@@ -284,6 +290,7 @@ impl Default for Editor {
             active_tab: EditorTab::Headers,
             preferred_tab: EditorTab::Headers,
             sub_focus: SubFocus::Url,
+            url_open: false,
             table: TableEditorState::default(),
             last_body_area: None,
             sending: false,
@@ -307,10 +314,39 @@ impl Editor {
     /// from them, and the footer's quit chip can say so.
     pub fn plain_keys_type(&self) -> bool {
         match self.sub_focus {
-            SubFocus::Url => true,
+            SubFocus::Url => self.url_open,
             SubFocus::Content => self.active_tab == EditorTab::Body || self.table.editing.is_some(),
             SubFocus::Method | SubFocus::Tabs | SubFocus::None => false,
         }
+    }
+
+    /// Whether the URL line has the caret right now (spec 2026-09-16).
+    pub fn url_open(&self) -> bool {
+        self.sub_focus == SubFocus::Url && self.url_open
+    }
+
+    /// `Action::FocusUrl` and a click on the bar both open the line
+    /// directly, rather than merely selecting it: a shortcut or a click
+    /// names the field to type into.
+    pub fn open_url_from_app(&mut self) {
+        self.open_url();
+    }
+
+    fn select_url(&mut self) {
+        self.sub_focus = SubFocus::Url;
+        self.url_open = false;
+    }
+
+    fn open_url(&mut self) {
+        self.sub_focus = SubFocus::Url;
+        self.url_open = true;
+    }
+
+    /// Ends any open edit and leaves the URL line, wherever `sub_focus`
+    /// goes next.
+    fn close_url(&mut self) {
+        self.url.end_edit();
+        self.url_open = false;
     }
 
     /// Loads `req` into the editor for editing, and records it as the
@@ -398,7 +434,10 @@ impl Editor {
         use crate::undo::CursorPos;
         match pos {
             CursorPos::Url(i) => {
-                self.sub_focus = SubFocus::Url;
+                // An undo/redo restore always lands on the closed line,
+                // selected — the field was already closed (its own
+                // session flushed) by the time this step was captured.
+                self.select_url();
                 self.url.set_cursor(*i);
             }
             CursorPos::Body { row, col } => {
@@ -462,13 +501,19 @@ impl Editor {
     /// `has_secret` is a second, always-masked pass used only to decide
     /// whether the reveal/hide toggle should draw at all — it must stay
     /// independent of `revealed`, or revealing would make the toggle that
-    /// un-reveals it disappear.
+    /// un-reveals it disappear. It counts only the rows the section draws
+    /// (`draw_computed_headers` skips `Request`-origin rows: the editable
+    /// table above already shows those, as typed), so a secret used only
+    /// in the request's own headers never offers a toggle with nothing to
+    /// reveal.
     pub fn recompute_computed_headers(&mut self, ctx: &postui_core::prepare::PrepareContext) {
+        use postui_core::prepare::HeaderOrigin;
         let req = self.current_request();
         self.computed.rows =
             postui_core::prepare::computed_headers(&req, ctx, !self.computed.revealed);
         self.computed.has_secret = postui_core::prepare::computed_headers(&req, ctx, true)
             .iter()
+            .filter(|r| r.origin != HeaderOrigin::Request)
             .any(|r| r.value.contains(postui_core::prepare::SECRET_MASK));
     }
 
@@ -510,7 +555,7 @@ impl Editor {
     /// anywhere else, and whenever the caret is outside every token.
     pub fn caret_token(&self) -> Option<String> {
         let (text, byte_off) = match self.sub_focus {
-            SubFocus::Url => {
+            SubFocus::Url if self.url_open => {
                 let text = self.url.text().to_string();
                 let off = char_byte_offset(&text, self.url.cursor());
                 (text, off)
@@ -1341,13 +1386,15 @@ impl Component for Editor {
             // The method badge: a plain control, not a text input, so
             // Enter/Space activate it (opening the chooser) and arrows only
             // navigate. alt+m still cycles the method without focusing it.
+            // `l`/`j` are the vim spellings of Right/Down: a resting stop,
+            // so the letters are free (spec 2026-09-15).
             SubFocus::Method => match ev.code {
                 KeyCode::Enter | KeyCode::Char(' ') => Some(Action::OpenMethodDropdown),
-                KeyCode::Right => {
-                    self.sub_focus = SubFocus::Url;
+                KeyCode::Right | KeyCode::Char('l') if crate::keys::plain_letter(&ev) => {
+                    self.select_url();
                     Some(Action::Render)
                 }
-                KeyCode::Down => {
+                KeyCode::Down | KeyCode::Char('j') if crate::keys::plain_letter(&ev) => {
                     self.sub_focus = SubFocus::Tabs;
                     Some(Action::Render)
                 }
@@ -1357,11 +1404,36 @@ impl Component for Editor {
                 }
                 _ => None,
             },
+            // Selected, not open: a resting stop like the method badge or
+            // tab strip — arrow/hjkl navigate, and Enter/Space/i open the
+            // line so the next key types into it (spec 2026-09-16).
+            SubFocus::Url if !self.url_open => match ev.code {
+                _ if crate::keys::opens_field(&ev) => {
+                    self.open_url();
+                    Some(Action::Render)
+                }
+                KeyCode::Left | KeyCode::Char('h') if crate::keys::plain_letter(&ev) => {
+                    self.sub_focus = SubFocus::Method;
+                    Some(Action::Render)
+                }
+                KeyCode::Down | KeyCode::Char('j') if crate::keys::plain_letter(&ev) => {
+                    self.close_url();
+                    self.sub_focus = SubFocus::Tabs;
+                    Some(Action::Render)
+                }
+                KeyCode::Esc => {
+                    self.close_url();
+                    self.sub_focus = SubFocus::None;
+                    Some(Action::Render)
+                }
+                _ => None,
+            },
             SubFocus::Url => {
                 // Left with the caret already at the start of the line has
                 // no text to move over; it steps out onto the method badge
-                // instead (the only keyboard route to it).
+                // instead (the only keyboard route to it), closed.
                 if ev.code == KeyCode::Left && self.url.cursor() == 0 {
+                    self.close_url();
                     self.sub_focus = SubFocus::Method;
                     return Some(Action::Render);
                 }
@@ -1372,13 +1444,17 @@ impl Component for Editor {
                     return Some(Action::Render);
                 }
                 if ev.code == KeyCode::Down {
+                    self.close_url();
                     self.sub_focus = SubFocus::Tabs;
                     return Some(Action::Render);
                 }
-                // Enter commits and Esc abandons; both blur the input, so a
-                // caret on screen always means keys land in the URL line.
+                // Enter and Esc both close the field with the text kept
+                // (the field rule): the caret leaves, the edit session
+                // ends, and the URL line stays selected — Esc only blurs
+                // to `SubFocus::None` from the already-selected state
+                // above.
                 if matches!(ev.code, KeyCode::Enter | KeyCode::Esc) {
-                    self.sub_focus = SubFocus::None;
+                    self.close_url();
                     return Some(Action::Render);
                 }
                 None
@@ -1386,11 +1462,13 @@ impl Component for Editor {
             // The tab strip: Left/Right switch tabs (the tab-change action
             // resets table state, so it goes through App like a click),
             // Down/Enter descend into the active tab's content, Up climbs
-            // back to the URL line.
+            // back to the URL line (selected, not open). h/l and j/k are
+            // strict synonyms of the arrows here (a resting stop, spec
+            // 2026-09-15).
             SubFocus::Tabs => match ev.code {
-                KeyCode::Left => Some(Action::EditorTabCycle(-1)),
-                KeyCode::Right => Some(Action::EditorTabCycle(1)),
-                KeyCode::Down | KeyCode::Enter => {
+                KeyCode::Left | KeyCode::Char('h') if crate::keys::plain_letter(&ev) => Some(Action::EditorTabCycle(-1)),
+                KeyCode::Right | KeyCode::Char('l') if crate::keys::plain_letter(&ev) => Some(Action::EditorTabCycle(1)),
+                KeyCode::Down | KeyCode::Char('j') | KeyCode::Enter if crate::keys::plain_letter(&ev) => {
                     self.sub_focus = SubFocus::Content;
                     // Entering a table tab must land somewhere visible:
                     // select its first row — or, on an empty table, its
@@ -1405,8 +1483,8 @@ impl Component for Editor {
                     }
                     Some(Action::Render)
                 }
-                KeyCode::Up => {
-                    self.sub_focus = SubFocus::Url;
+                KeyCode::Up | KeyCode::Char('k') if crate::keys::plain_letter(&ev) => {
+                    self.select_url();
                     Some(Action::Render)
                 }
                 KeyCode::Esc => {
@@ -1456,7 +1534,10 @@ impl Component for Editor {
                     // Leaving the table also drops its selection — the mouse
                     // click-away path clears it, and a row that stays lit
                     // while keys land in the URL line misstates focus.
-                    if ev.code == KeyCode::Up {
+                    // `k` is Up's strict synonym, clamp included.
+                    if matches!(ev.code, KeyCode::Up | KeyCode::Char('k'))
+                        && crate::keys::plain_letter(&ev)
+                    {
                         self.table.selected = None;
                         self.sub_focus = SubFocus::Tabs;
                         return Some(Action::Render);
@@ -1592,8 +1673,10 @@ impl Component for Editor {
             // line, mirroring the Url -> Down -> Content chain, so keyboard
             // users aren't stranded (alt+u and clicking work too).
             SubFocus::None => {
-                if ev.code == KeyCode::Down {
-                    self.sub_focus = SubFocus::Url;
+                if matches!(ev.code, KeyCode::Down | KeyCode::Char('j'))
+                    && crate::keys::plain_letter(&ev)
+                {
+                    self.select_url();
                     return Some(Action::Render);
                 }
                 None
@@ -1818,7 +1901,14 @@ impl Editor {
         // Focus styling must track where keys actually go: the URL only
         // counts as focused while its pane is, or the lifted fill/caret
         // would keep painting after Tab moves the keyboard elsewhere.
+        // The fill lift is the resting-stop highlight -- it applies while
+        // the line is merely *selected* too, same as the method badge and
+        // tab strip get a lifted fill without a caret. The caret itself
+        // (and the window scroll that follows it) is a stronger claim: it
+        // must track whether the line actually has the caret, not just
+        // whether it's the keyboard's current stop (spec 2026-09-16).
         let url_focused = ctx.focused && self.sub_focus == SubFocus::Url;
+        let url_caret_live = ctx.focused && self.url_open();
         let method_focused = ctx.focused && self.sub_focus == SubFocus::Method;
 
         // No margin above: the bar's block starts on `area`'s first row.
@@ -1972,7 +2062,7 @@ impl Editor {
         };
         let mut url_line = self
             .url
-            .draw_line_windowed(url_focused, theme, url_text_area.width);
+            .draw_line_windowed(url_caret_live, theme, url_text_area.width);
         url_line.style = Style::default().bg(url_fill).patch(url_line.style);
         buf.set_line(url_text_area.x, text_y, &url_line, url_text_area.width);
         // Token tinting paints over the text just drawn, and registers its
@@ -1980,7 +2070,7 @@ impl Editor {
         crate::components::var_tokens::paint_var_tokens(
             buf,
             Rect::new(url_text_area.x, text_y, url_text_area.width, 1),
-            &self.url.visible_window(url_focused, url_text_area.width),
+            &self.url.visible_window(url_caret_live, url_text_area.width),
             url_text_area.x,
             &self.vars,
             theme,
@@ -3020,7 +3110,9 @@ impl Editor {
             }
             let name_piece = format!("  {}: ", row.name);
             let value_x = area.x.saturating_add(name_piece.chars().count() as u16);
-            let value_piece = row.value.clone();
+            // One plain cell between the value and the pill, so the pill's
+            // hover fill never touches the text.
+            let value_piece = format!("{} ", row.value);
             let text_len = name_piece.chars().count() + value_piece.chars().count();
             let glyph_hovered = ctx.hovered == Some(&crate::hit::Hit::AutoHeaderCopy(i));
             let glyph_style = if glyph_hovered {
@@ -3186,6 +3278,7 @@ mod tests {
         );
         assert!(!e.is_dirty());
         assert_eq!(e.sub_focus, SubFocus::Url, "load must not change sub_focus");
+        e.handle_key(key(KeyCode::Enter)); // open the selected URL line
         e.handle_key(key(KeyCode::Char('/')));
         assert_eq!(e.current_request().url, "https://x/");
         assert!(e.is_dirty());
@@ -3204,6 +3297,7 @@ mod tests {
             Some("a".into()),
             HttpRequest::from_toml_str(r#"url = "https://x""#).unwrap(),
         );
+        e.handle_key(key(KeyCode::Enter)); // open the selected URL line
         e.handle_key(key(KeyCode::Char('/')));
         assert!(e.is_dirty());
         e.mark_saved();
@@ -3649,6 +3743,7 @@ mod tests {
         let mut e = Editor {
             url: LineInput::new("x"), // caret starts at the end, after "x"
             sub_focus: SubFocus::Url,
+            url_open: true,
             ..Editor::default()
         };
         // With the caret mid-text, Left is caret movement, not navigation.
@@ -3712,6 +3807,106 @@ mod tests {
         assert_eq!(e.sub_focus, SubFocus::None);
     }
 
+    /// The method badge and the tab strip are resting stops (no text
+    /// field is live), so the vim letters are strict synonyms of the
+    /// arrows there too (spec 2026-09-15).
+    #[test]
+    fn vim_aliases_are_strict_synonyms_on_the_method_badge_and_tab_strip() {
+        let pairs = [
+            (key(KeyCode::Char('h')), key(KeyCode::Left)),
+            (key(KeyCode::Char('l')), key(KeyCode::Right)),
+            (key(KeyCode::Char('j')), key(KeyCode::Down)),
+            (key(KeyCode::Char('k')), key(KeyCode::Up)),
+        ];
+        for stop in [SubFocus::Method, SubFocus::Tabs] {
+            for (alias, canonical) in pairs {
+                let mut a = Editor {
+                    sub_focus: stop,
+                    ..Editor::default()
+                };
+                let mut b = Editor {
+                    sub_focus: stop,
+                    ..Editor::default()
+                };
+                assert_eq!(
+                    a.handle_key(alias),
+                    b.handle_key(canonical),
+                    "{stop:?} {alias:?}"
+                );
+                assert_eq!(a.sub_focus, b.sub_focus, "{stop:?} {alias:?}");
+                assert_eq!(a.table.selected, b.table.selected, "{stop:?} {alias:?}");
+            }
+        }
+    }
+
+    /// An `Editor` with `sub_focus == SubFocus::Tabs`, the fixture
+    /// `up_down_walks_url_tabs_content_and_back` builds inline — the URL
+    /// line starts selected by default, and `Down` walks that to the tab
+    /// strip.
+    fn editor_on_tabs() -> Editor {
+        let mut e = Editor::default();
+        e.handle_key(key(KeyCode::Down));
+        assert_eq!(e.sub_focus, SubFocus::Tabs, "fixture lands on the tab strip");
+        e
+    }
+
+    #[test]
+    fn k_from_the_tab_strip_selects_the_url_without_opening_it() {
+        let mut ed = editor_on_tabs();
+        ed.handle_key(key(KeyCode::Char('k')));
+        assert_eq!(ed.sub_focus, SubFocus::Url);
+        assert!(!ed.plain_keys_type(), "selected, not open");
+        // j/k still navigate from here instead of typing:
+        ed.handle_key(key(KeyCode::Char('j')));
+        assert_eq!(ed.sub_focus, SubFocus::Tabs, "j moved focus, was not typed");
+    }
+
+    #[test]
+    fn enter_space_or_i_opens_the_selected_url_line() {
+        for opener in [KeyCode::Enter, KeyCode::Char(' '), KeyCode::Char('i')] {
+            let mut ed = editor_on_tabs();
+            ed.handle_key(key(KeyCode::Char('k'))); // select the URL line
+            ed.handle_key(key(opener));
+            assert!(ed.plain_keys_type(), "{opener:?} should have opened the field");
+            ed.handle_key(key(KeyCode::Char('x')));
+            assert!(ed.url.text().contains('x'), "{opener:?}: typed text landed");
+        }
+    }
+
+    #[test]
+    fn esc_and_enter_close_the_url_line_back_to_selected_not_blurred() {
+        for closer in [KeyCode::Esc, KeyCode::Enter] {
+            let mut ed = editor_on_tabs();
+            ed.handle_key(key(KeyCode::Char('k')));
+            ed.handle_key(key(KeyCode::Enter));
+            ed.handle_key(key(KeyCode::Char('x')));
+            let text_before = ed.url.text().to_string();
+            ed.handle_key(key(closer));
+            assert_eq!(
+                ed.sub_focus,
+                SubFocus::Url,
+                "{closer:?}: stays on the URL line, selected"
+            );
+            assert!(!ed.plain_keys_type(), "{closer:?}: field is closed");
+            assert_eq!(ed.url.text(), text_before, "{closer:?}: text kept");
+        }
+    }
+
+    #[test]
+    fn esc_from_a_selected_url_line_blurs_and_j_reselects_it() {
+        let mut ed = editor_on_tabs();
+        ed.handle_key(key(KeyCode::Char('k'))); // select
+        ed.handle_key(key(KeyCode::Esc)); // blur
+        assert_eq!(ed.sub_focus, SubFocus::None);
+        ed.handle_key(key(KeyCode::Char('j')));
+        assert_eq!(
+            ed.sub_focus,
+            SubFocus::Url,
+            "j is the alias 1a000de missed, beside Down"
+        );
+        assert!(!ed.plain_keys_type(), "lands selected, not open");
+    }
+
     #[test]
     fn descending_from_the_tab_strip_lands_on_a_visible_selection() {
         // Entering the content must never be an invisible state: on
@@ -3740,6 +3935,48 @@ mod tests {
             e.table.selected,
             Some(0),
             "an empty table's entry point is its ghost + Add row"
+        );
+    }
+
+    /// `k` is Up's strict synonym at the table's top clamp too: it climbs
+    /// out to the tab strip rather than dying. A modified `k` is neither.
+    #[test]
+    fn k_at_row_zero_climbs_out_like_up_and_ctrl_k_does_not() {
+        let mut e = Editor::default();
+        e.params.insert(
+            "a".into(),
+            Entry {
+                value: "1".into(),
+                enabled: true,
+            },
+        );
+        e.sub_focus = SubFocus::Content;
+        e.table.selected = Some(0);
+        assert_eq!(
+            e.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL)),
+            None
+        );
+        assert_eq!(e.sub_focus, SubFocus::Content, "ctrl+k is not a motion");
+        assert_eq!(e.handle_key(key(KeyCode::Char('k'))), Some(Action::Render));
+        assert_eq!(e.sub_focus, SubFocus::Tabs);
+        assert_eq!(e.table.selected, None);
+    }
+
+    /// The tab strip's `h` is a plain letter only: ctrl+h (the legacy
+    /// ctrl+backspace byte) must not switch tabs.
+    #[test]
+    fn ctrl_h_on_the_tab_strip_is_not_a_tab_cycle() {
+        let mut e = Editor {
+            sub_focus: SubFocus::Tabs,
+            ..Editor::default()
+        };
+        assert_eq!(
+            e.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL)),
+            None
+        );
+        assert_eq!(
+            e.handle_key(key(KeyCode::Char('h'))),
+            Some(Action::EditorTabCycle(-1))
         );
     }
 
@@ -5303,6 +5540,52 @@ url = "https://api.example.com/users""#,
             .cell((url_area.x, text_y))
             .unwrap();
         assert_eq!(well.bg, theme.control, "unhovered well rests: {well:?}");
+    }
+
+    /// A selected-but-closed URL line (spec 2026-09-16) keeps the fill
+    /// lift — it's still the keyboard's resting stop — but must not paint
+    /// a live caret: `k` from the tab strip lands here, and a reversed
+    /// cell wherever the cursor last sat would be exactly the caret the
+    /// spec says a merely-selected field does not have.
+    #[test]
+    fn a_selected_url_line_keeps_the_fill_lift_but_paints_no_caret() {
+        let (mut e, url_area) = editor_with_url_well();
+        // `editor_with_url_well` loads a request without touching
+        // `sub_focus`/`url_open`, so the line starts selected, matching
+        // `k` from the tab strip.
+        assert_eq!(e.sub_focus, SubFocus::Url);
+        assert!(!e.url_open());
+        let theme = Theme::dark();
+        let text_y = url_area.y + 1;
+        let (terminal, _) = draw_for_bar_test(&mut e);
+        let buf = terminal.backend().buffer();
+        let text_area = e.last_url_text_area.unwrap();
+        let reversed_cells = |buf: &ratatui::buffer::Buffer| {
+            (text_area.x..text_area.right())
+                .filter(|&x| buf[(x, text_y)].modifier.contains(Modifier::REVERSED))
+                .count()
+        };
+        assert_eq!(
+            reversed_cells(buf),
+            0,
+            "selected, not open: no caret cell should paint"
+        );
+        let well = buf.cell((url_area.x, text_y)).unwrap();
+        assert_eq!(
+            well.bg,
+            crate::theme::lift_color(theme.control, URL_FOCUS_LIFT),
+            "the resting-stop fill lift still applies while merely selected: {well:?}"
+        );
+
+        // Opening the line (Enter/Space/i, or `Action::FocusUrl`) puts the
+        // caret live, and the reversed cell shows up.
+        e.open_url_from_app();
+        let (terminal2, _) = draw_for_bar_test(&mut e);
+        let buf2 = terminal2.backend().buffer();
+        assert!(
+            reversed_cells(buf2) > 0,
+            "open: the caret cell renders reversed"
+        );
     }
 
     #[test]

@@ -299,6 +299,18 @@ fn alt(c: char) -> KeyEvent {
     KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT)
 }
 
+/// Submits the top form modal's open field the long way (spec
+/// 2026-09-16): Enter no longer submits directly — the first Esc closes
+/// the field to selected, the second reaches the button row (Confirm
+/// aimed), and only then does Enter confirm. Replaces the single
+/// Enter-submits keypress these tests used before the field-open/selected
+/// split landed.
+fn submit_prompt(app: &mut App) {
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+}
+
 fn alt_shift(c: char) -> KeyEvent {
     KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT | KeyModifiers::SHIFT)
 }
@@ -323,7 +335,7 @@ fn ctrl_c_copies_the_url_selection_instead_of_quitting() {
         false,
     ));
     app.editor.url = crate::components::line_input::LineInput::new("https://example.com");
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     app.editor.url.select_all();
 
     app.handle_key(ctrl('c'));
@@ -401,6 +413,215 @@ fn plain_q_quits_when_no_modal_and_component_ignores_it() {
     let mut app = App::new_for_test();
     app.handle_key(plain('q'));
     assert!(app.should_quit);
+}
+
+#[test]
+fn colon_opens_the_palette_from_a_list_and_types_in_a_field() {
+    let mut app = App::new_for_test();
+    app.focus = PaneId::Sidebar;
+    app.handle_key(plain(':'));
+    assert!(matches!(app.modals.top(), Some(Modal::Palette(_))));
+    app.modals.pop();
+    app.focus = PaneId::Editor;
+    app.editor.open_url_from_app();
+    app.handle_key(plain(':'));
+    assert!(app.modals.is_empty(), "in a text field ':' is a character");
+    assert!(app.editor.url.text().ends_with(':'));
+}
+
+#[test]
+fn u_undoes_from_every_list_surface() {
+    let mut app = App::new_for_test();
+    app.update(Action::CreateRequest("r".into()));
+    dirty_the_editor(&mut app);
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.capture_undo();
+    let steps = app.history.undo_len();
+    app.focus = PaneId::Sidebar;
+    app.handle_key(plain('u'));
+    assert_eq!(app.history.undo_len(), steps - 1, "sidebar: u is undo");
+    // The Manage screens swallow plain keys, so each maps u itself.
+    app.update(Action::OpenManage { tab: Some(crate::components::manage::ManageTab::Spaces) });
+    app.update(Action::Redo);
+    app.handle_key(plain('u'));
+    assert_eq!(app.history.undo_len(), steps - 1, "manage list: u is undo");
+}
+
+/// The Manage aliases come from the keymap, not from letters in the
+/// screen handlers: unbind `u` in `keys.toml` and it is dead on the
+/// Manage list exactly as on Main.
+#[test]
+fn the_manage_aliases_follow_keys_toml() {
+    let mut app = App::new_for_test();
+    for n in ["auth", "billing"] {
+        app.update(Action::CreateSpace(n.into()));
+    }
+    app.update(Action::OpenManage {
+        tab: Some(crate::components::manage::ManageTab::Spaces),
+    });
+    app.capture_undo();
+    let steps = app.history.undo_len();
+    assert!(steps > 0);
+    app.handle_key(plain('u'));
+    assert_eq!(app.history.undo_len(), steps - 1, "bound: u undoes here");
+    app.update(Action::Redo);
+    app.keymap.apply_overrides("undo = [\"ctrl+z\"]").unwrap();
+    app.handle_key(plain('u'));
+    assert_eq!(app.history.undo_len(), steps, "unbound in keys.toml: u is dead here too");
+    app.handle_key(ctrl('z'));
+    assert_eq!(app.history.undo_len(), steps - 1, "the remaining combo still works");
+}
+
+/// A Manage tab with no project open still swallows plain keys — but the
+/// whitelisted aliases work there as their chords do.
+#[test]
+fn colon_opens_the_palette_on_a_manage_tab_with_no_project() {
+    let mut app = App::new_for_test();
+    app.project = None;
+    app.update(Action::OpenManage {
+        tab: Some(crate::components::manage::ManageTab::Environments),
+    });
+    app.handle_key(plain('x'));
+    assert!(app.modals.is_empty(), "an unclaimed letter is swallowed");
+    app.handle_key(KeyEvent::new(KeyCode::Char(':'), KeyModifiers::SHIFT));
+    assert!(
+        matches!(app.modals.top(), Some(Modal::Palette(_))),
+        "`:` reaches the palette with no project open"
+    );
+}
+
+/// `:` is a global alias of ctrl+p, and the Manage screens swallow every
+/// plain key they do not claim — the alias reaches them through the
+/// router's keymap whitelist, so it stays strict on each of their four
+/// surfaces. Pressed as a terminal sends it: shift+semicolon carries
+/// `SHIFT`.
+#[test]
+fn colon_opens_the_palette_from_every_manage_surface() {
+    use crate::components::manage::ManageTab;
+    use crate::components::varmanager::VmFocus;
+    let colon = KeyEvent::new(KeyCode::Char(':'), KeyModifiers::SHIFT);
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+
+    let opens = |app: &mut App, what: &str| {
+        app.handle_key(colon);
+        assert!(
+            matches!(app.modals.top(), Some(Modal::Palette(_))),
+            "{what}: `:` must open the palette"
+        );
+        app.update(Action::Close);
+    };
+
+    app.update(Action::OpenManage {
+        tab: Some(ManageTab::Spaces),
+    });
+    opens(&mut app, "the Spaces list");
+
+    app.update(Action::OpenManage {
+        tab: Some(ManageTab::Variables),
+    });
+    app.sync_varmanager();
+    opens(&mut app, "the Variables list");
+
+    goto_group(&mut app, "user");
+    app.varmanager.focus = VmFocus::Grid;
+    opens(&mut app, "the options grid");
+
+    app.update(Action::OpenManage {
+        tab: Some(ManageTab::Settings),
+    });
+    opens(&mut app, "the Settings tab");
+}
+
+/// Undo restores a caret only into a field the step changed (ruling
+/// 2026-09-17). The click that toggled the header also took the caret off
+/// the URL line, so the step's "before" caret is the URL selection — but
+/// the URL is untouched by the undo, and reselecting it would move focus
+/// to an input the undo never changed.
+#[test]
+fn undo_leaves_focus_alone_when_the_stored_caret_is_in_an_unchanged_field() {
+    let mut app = App::new_for_test();
+    app.editor.headers.insert(
+        "accept".into(),
+        postui_core::model::Entry {
+            value: "*/*".into(),
+            enabled: true,
+        },
+    );
+    app.focus = PaneId::Editor;
+    app.editor.sub_focus = SubFocus::Url;
+    app.capture_undo(); // seed: caret on the URL line
+    // One event: focus leaves the URL for the headers table and the row is
+    // disabled.
+    app.editor.sub_focus = SubFocus::Content;
+    app.editor.active_tab = EditorTab::Headers;
+    app.editor.table.selected = Some(0);
+    app.editor.headers.get_mut("accept").unwrap().enabled = false;
+    assert!(app.capture_undo(), "the toggle records a step");
+    app.update(Action::Undo);
+    assert!(app.editor.headers["accept"].enabled, "undo re-enables the row");
+    assert_eq!(
+        app.editor.sub_focus,
+        SubFocus::Content,
+        "the URL did not change, so undo must not select it"
+    );
+    assert_eq!(app.editor.active_tab, EditorTab::Headers);
+    assert_eq!(app.editor.table.selected, Some(0), "the toggled row stays selected");
+    app.update(Action::Redo);
+    assert!(!app.editor.headers["accept"].enabled, "redo disables it again");
+    assert_eq!(app.editor.sub_focus, SubFocus::Content, "redo keeps focus too");
+}
+
+/// ctrl+d is unbound at the global keymap, so it must reach the focused
+/// sidebar's own `handle_key` through the app router (app.rs "step 5").
+#[test]
+fn ctrl_d_pages_the_sidebar_through_the_router() {
+    let mut app = App::new_for_test();
+    for n in ["a", "b", "c", "d", "e"] {
+        app.update(Action::CreateRequest(n.into()));
+    }
+    app.focus = PaneId::Sidebar;
+    app.handle_key(plain('g')); // Home: a known start, row 0
+    assert_eq!(app.sidebar.selected, Some(0));
+    app.handle_key(ctrl('d'));
+    assert_ne!(app.sidebar.selected, Some(0), "ctrl+d must move the selection");
+}
+
+/// ctrl+d is unbound at the global keymap, so it must reach the focused
+/// manage list's own `handle_key` through the app router (app.rs "step 5").
+#[test]
+fn ctrl_d_pages_the_manage_list_through_the_router() {
+    let mut app = App::new_for_test();
+    for n in ["auth", "billing", "cache"] {
+        app.update(Action::CreateSpace(n.into()));
+    }
+    app.update(Action::OpenManage {
+        tab: Some(crate::components::manage::ManageTab::Spaces),
+    });
+    app.manage.list.cursor = 0;
+    app.handle_key(ctrl('d'));
+    assert_ne!(app.manage.list.cursor, 0, "ctrl+d must move the cursor");
+}
+
+/// ctrl+d is unbound at the global keymap, so it must reach the focused
+/// Variable Manager's own `handle_key` through the app router (app.rs
+/// "step 5") — the Variables tab has no `manage.list` of its own, unlike
+/// the two tests above.
+#[test]
+fn ctrl_d_pages_the_variable_manager_list_through_the_router() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::OpenManage {
+        tab: Some(crate::components::manage::ManageTab::Variables),
+    });
+    app.sync_varmanager();
+    app.varmanager.left_cursor = 0;
+    app.handle_key(ctrl('d'));
+    assert_ne!(app.varmanager.left_cursor, 0, "ctrl+d must move the cursor");
 }
 
 #[test]
@@ -641,7 +862,9 @@ fn table_row_context_menu_duplicate_delete_extract_end_to_end() {
     };
     assert!(matches!(kind, PromptKind::ExtractVariable));
     type_into_field(&mut app, "page_num");
-    app.handle_key(enter_key());
+    // Enter now only closes the open field to selected (spec 2026-09-16);
+    // submitting is the button row's Confirm click, same as clicking OK.
+    click_modal_confirm(&mut app);
     assert!(app.modals.is_empty());
     assert_eq!(app.editor.params["page"].value, "{{page_num}}");
 
@@ -836,6 +1059,28 @@ fn undo_restores_a_deleted_table_row() {
     assert_eq!(app.editor.params.len(), 1, "undo brings the row back");
 }
 
+/// ctrl+d is unbound at the global keymap, so it must reach the focused
+/// params table's own `handle_key` through the app router (app.rs "step 5").
+#[test]
+fn ctrl_d_pages_the_table_editor_through_the_router() {
+    let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Params;
+    for (k, v) in [("a", "1"), ("b", "2"), ("c", "3")] {
+        app.editor.params.insert(
+            k.into(),
+            postui_core::model::Entry {
+                value: v.into(),
+                enabled: true,
+            },
+        );
+    }
+    app.focus = PaneId::Editor;
+    app.editor.sub_focus = SubFocus::Content;
+    app.editor.table.selected = Some(0);
+    app.handle_key(ctrl('d'));
+    assert_ne!(app.editor.table.selected, Some(0), "ctrl+d must move the selection");
+}
+
 #[test]
 fn clicking_the_row_delete_affordance_deletes_the_row() {
     let mut app = App::new_for_test();
@@ -868,7 +1113,7 @@ fn app_with_clipboard_text(text: &str) -> App {
 }
 
 /// ctrl+v is paste now (GUI muscle memory — the variable picker moved to
-/// alt+shift+v): with the URL bar focused it reads the clipboard and
+/// alt+v): with the URL bar focused it reads the clipboard and
 /// inserts at the caret, flattening any line break.
 #[test]
 fn ctrl_v_pastes_clipboard_text_into_the_url_bar() {
@@ -901,6 +1146,240 @@ fn ctrl_v_pastes_into_an_open_modal_prompt_input() {
     assert_eq!(input.text(), "pasted-name");
 }
 
+/// ctrl+z inside an open table cell undoes the cell's own keystrokes and
+/// leaves the app history alone; once the cell has closed, ctrl+z is the
+/// app history again.
+#[test]
+fn ctrl_z_in_an_open_cell_undoes_in_the_cell_not_the_history() {
+    let mut app = app_with_one_param();
+    app.capture_undo();
+    let steps = app.history.undo_len();
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+    type_chars(&mut app, "999");
+    app.capture_undo();
+    assert_eq!(
+        app.history.undo_len(),
+        steps,
+        "an open cell records nothing yet"
+    );
+    app.handle_key(ctrl('z'));
+    let edit = app.editor.table.editing.as_ref().expect("the cell stays open");
+    assert_eq!(edit.input.text(), "1", "the typing run came off inside the cell");
+    assert_eq!(app.history.undo_len(), steps, "the app history was not touched");
+}
+
+/// The caret decides which field the undo keys belong to. A cell edit
+/// that survived a jump to the response pane is live but caretless: with
+/// the jq bar focused, ctrl+z steps the bar and leaves the cell alone.
+#[test]
+fn ctrl_z_with_the_caret_in_the_jq_bar_steps_the_bar_not_a_live_cell_behind_it() {
+    let mut app = app_with_one_param();
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+    type_chars(&mut app, "abc");
+    let cell_text = app.editor.table.editing.as_ref().unwrap().input.text().to_string();
+    ready_response(&mut app, JQ_BODY);
+    app.update(Action::OpenJqBar);
+    assert_eq!(app.focus, PaneId::Response);
+    assert!(app.session.response.jq_focused());
+    assert!(
+        app.editor.table.editing.is_some(),
+        "the cell edit survives the jump"
+    );
+    type_chars(&mut app, ".foo");
+    app.handle_key(ctrl('z'));
+    assert_ne!(app.session.response.jq_text(), ".foo", "the bar stepped");
+    assert_eq!(
+        app.editor.table.editing.as_ref().unwrap().input.text(),
+        cell_text,
+        "the caretless cell is untouched"
+    );
+}
+
+/// …and a modal over a live Settings edit owns the caret: ctrl+z steps
+/// the palette's filter, not the field hidden under it.
+#[test]
+fn ctrl_z_in_a_palette_over_a_live_settings_edit_steps_the_palette() {
+    use crate::components::settings::SettingsField;
+    let mut app = App::new_for_test();
+    app.update(Action::OpenManage {
+        tab: Some(crate::components::manage::ManageTab::Settings),
+    });
+    app.settings.begin_edit(SettingsField::Osc52Limit, "");
+    type_chars(&mut app, "5");
+    app.handle_key(ctrl('p'));
+    assert!(matches!(app.modals.top(), Some(Modal::Palette(_))));
+    type_chars(&mut app, "th");
+    app.handle_key(ctrl('z'));
+    assert_eq!(
+        app.settings.field_text(),
+        "5",
+        "the Settings field under the modal is untouched"
+    );
+    let filter = app.modals.focused_input().map(|i| i.text().to_string());
+    assert_ne!(filter.as_deref(), Some("th"), "the palette filter stepped");
+}
+
+/// ctrl+z digs past a modal into its focused field, like ctrl+v does.
+#[test]
+fn ctrl_z_in_a_modal_prompt_undoes_the_prompts_typing() {
+    let mut app = App::new_for_test();
+    app.modals.push(Modal::Prompt {
+        title: "Name".into(),
+        input: crate::components::line_input::LineInput::new(""),
+        kind: PromptKind::NewRequest,
+        revealed: false,
+    });
+    type_chars(&mut app, "abc");
+    app.handle_key(ctrl('z'));
+    let Some(Modal::Prompt { input, .. }) = app.modals.top() else {
+        panic!("the prompt stays open");
+    };
+    assert_eq!(input.text(), "");
+    app.handle_key(KeyEvent::new(
+        KeyCode::Char('z'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    ));
+    let Some(Modal::Prompt { input, .. }) = app.modals.top() else {
+        panic!("the prompt stays open");
+    };
+    assert_eq!(input.text(), "abc", "ctrl+shift+z redoes inside the prompt");
+}
+
+/// Final-review finding 2: once the last recorded close is undone,
+/// `self.steps` empties out but the redo entry it produced must still be
+/// reachable through the normal key path (not just `undo_field_step`
+/// called directly, which is what the fix's regression is disguised
+/// behind). `field_edited()` gates the router's ctrl+z/ctrl+shift+z
+/// carve-out (app.rs step 1c) — it must stay true while `redo` holds
+/// anything, not just while `steps` does.
+#[test]
+fn redo_reaches_a_modal_field_close_after_its_last_undo_empties_the_step_stack() {
+    let mut app = App::new_for_test();
+    app.modals.push(Modal::Prompt {
+        title: "Name".into(),
+        input: crate::components::line_input::LineInput::new(""),
+        kind: PromptKind::NewRequest,
+        revealed: false,
+    });
+    type_chars(&mut app, "abc");
+    // Esc closes the field to selected, recording one step (the text
+    // changed) — the only step on the stack.
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(!app.modals.field_open());
+
+    // Undo through the normal key path: pops the one step, so `steps` is
+    // now empty and `redo` holds the entry it just popped.
+    app.handle_key(ctrl('z'));
+    let Some(Modal::Prompt { input, .. }) = app.modals.top() else {
+        panic!("the prompt stays open");
+    };
+    assert_eq!(input.text(), "", "undo restored the pre-close text");
+
+    // Redo through the SAME normal key path — ctrl+shift+z via
+    // `App::handle_key`, not a direct `undo_field_step(true)` call — must
+    // still reach the modal's redo stack.
+    app.handle_key(KeyEvent::new(
+        KeyCode::Char('z'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    ));
+    let Some(Modal::Prompt { input, .. }) = app.modals.top() else {
+        panic!("the prompt stays open");
+    };
+    assert_eq!(
+        input.text(),
+        "abc",
+        "ctrl+shift+z must redo the field close even after `steps` emptied out"
+    );
+}
+
+/// With a field open but nothing typed, ctrl+z is the app history as
+/// before (spec: "otherwise today's behaviour").
+#[test]
+fn ctrl_z_in_an_untouched_open_cell_is_the_app_history() {
+    let mut app = app_with_one_param();
+    // One step for the app history to walk back: a keystroke into the URL,
+    // closed with Esc so the URL line is not the open field any more.
+    app.capture_undo();
+    app.editor.open_url_from_app();
+    app.handle_key(plain('/'));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.capture_undo();
+    let steps = app.history.undo_len();
+    assert!(steps > 0);
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+    app.handle_key(ctrl('z'));
+    assert_eq!(
+        app.history.undo_len(),
+        steps - 1,
+        "the app history stepped back"
+    );
+}
+
+/// A field that has run out of undo must not quietly spend an app-history
+/// step instead: off the Main screen the undo keys never reached the app
+/// history before the field rule, and they still don't.
+#[test]
+fn an_exhausted_settings_field_undo_never_reaches_the_app_history() {
+    use crate::components::manage::ManageTab;
+    use crate::components::settings::SettingsField;
+    let mut app = app_with_one_param();
+    // One app-history step to notice being spent.
+    app.capture_undo();
+    app.editor.open_url_from_app();
+    app.handle_key(plain('/'));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.capture_undo();
+    let steps = app.history.undo_len();
+    assert!(steps > 0);
+
+    app.screen = Screen::Manage;
+    app.manage.tab = ManageTab::Settings;
+    app.settings.begin_edit(SettingsField::AiCmd, "claude -p");
+    type_chars(&mut app, "x");
+    app.handle_key(ctrl('z'));
+    assert_eq!(
+        app.settings.field_text(),
+        "claude -p",
+        "the typing run came off inside the field"
+    );
+    // The undo stack is empty now, but the redo stack is not, so the field
+    // still counts as edited: the key must stop here, not fall through.
+    app.handle_key(ctrl('z'));
+    assert_eq!(
+        app.history.undo_len(),
+        steps,
+        "an exhausted field undo is swallowed, not spent on the app history"
+    );
+    assert!(app.settings.editing.is_some(), "the field stays open");
+}
+
+/// A picker's filter box is not just a `LineInput`: undoing in it has to
+/// re-run the filter, or the rows would go on showing the old query's
+/// matches under a query that no longer says so.
+#[test]
+fn ctrl_z_in_the_palette_walks_the_filter_back_and_refilters() {
+    let mut app = App::new_for_test();
+    app.update(Action::OpenPalette);
+    let all = {
+        let Some(Modal::Palette(p)) = app.modals.top() else {
+            panic!("palette open");
+        };
+        p.filtered().len()
+    };
+    type_chars(&mut app, "quit");
+    let Some(Modal::Palette(p)) = app.modals.top() else {
+        panic!("palette open");
+    };
+    assert!(p.filtered().len() < all, "the query narrowed the list");
+    app.handle_key(ctrl('z'));
+    let Some(Modal::Palette(p)) = app.modals.top() else {
+        panic!("the palette stays open");
+    };
+    assert_eq!(p.input(), "", "the typing run came off");
+    assert_eq!(p.filtered().len(), all, "and the rows refiltered with it");
+    assert!(p.selected() < p.filtered().len());
+}
+
 /// With the body caret live, ctrl+v pastes multi-line text verbatim.
 #[test]
 fn ctrl_v_pastes_multiline_text_into_the_body_editor() {
@@ -913,18 +1392,18 @@ fn ctrl_v_pastes_multiline_text_into_the_body_editor() {
     assert_eq!(app.editor.body_text(), "{\n  \"a\": 1\n}");
 }
 
-/// The variable picker's new home: alt+shift+v (ctrl+v now pastes).
+/// The variable picker's new home: alt+v (ctrl+v pastes).
 #[test]
-fn alt_shift_v_opens_the_variable_picker() {
+fn alt_v_opens_the_variable_picker() {
     let mut app = App::new_for_test();
     app.update(Action::FocusUrl);
     app.handle_key(KeyEvent::new(
         KeyCode::Char('v'),
-        KeyModifiers::ALT | KeyModifiers::SHIFT,
+        KeyModifiers::ALT,
     ));
     assert!(
         matches!(app.modals.top(), Some(Modal::VarPicker(_))),
-        "alt+shift+v opens the picker"
+        "alt+v opens the picker"
     );
 }
 
@@ -1290,6 +1769,145 @@ fn type_chars(app: &mut App, s: &str) {
     }
 }
 
+/// The footer's `esc done` chip: whichever field is open closes, keeping
+/// its text — and with nothing open the action is inert.
+#[test]
+fn the_close_field_action_closes_whichever_field_is_open() {
+    let mut app = app_with_one_param();
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+    type_chars(&mut app, "2");
+    app.update(Action::CloseField);
+    assert!(app.editor.table.editing.is_none());
+    assert_eq!(app.editor.params["page"].value, "12");
+    assert!(!app.update(Action::CloseField), "nothing open: a no-op");
+}
+
+/// `App::field_open` is the immutable twin of `open_text_field_mut` (plus
+/// the Settings tab's private edit): the two must agree everywhere.
+#[test]
+fn field_open_agrees_with_the_open_text_field() {
+    use crate::components::manage::ManageTab;
+    use crate::components::settings::SettingsField;
+    use crate::components::varmanager::VmField;
+    fn agree(app: &mut App, expected: bool, what: &str) {
+        let open = app.open_text_field_mut().is_some() || app.settings_edit_live();
+        assert_eq!(app.field_open(), open, "{what}: the two disagree");
+        assert_eq!(app.field_open(), expected, "{what}");
+    }
+
+    let mut app = app_with_one_param();
+    // A fresh app starts on the URL line, which *is* an open field.
+    app.editor.sub_focus = SubFocus::Content;
+    agree(&mut app, false, "nothing open");
+
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+    agree(&mut app, true, "a table cell edit");
+    app.update(Action::CloseField);
+
+    app.focus = PaneId::Editor;
+    app.editor.open_url_from_app();
+    agree(&mut app, true, "the URL line");
+    app.editor.sub_focus = SubFocus::Content;
+
+    app.focus = PaneId::Response;
+    ready_response(&mut app, JQ_BODY);
+    assert!(app.session.response.set_jq_focus(true));
+    agree(&mut app, true, "the jq bar");
+    app.session.response.set_jq_focus(false);
+    agree(&mut app, false, "the response pane with no field");
+
+    app.screen = Screen::Manage;
+    app.manage.tab = ManageTab::Variables;
+    agree(&mut app, false, "the Variables tab, no edit");
+    app.varmanager.form.editing = Some((VmField::Description, LineInput::new("")));
+    agree(&mut app, true, "a Variable Manager form field");
+    app.varmanager.form.editing = None;
+
+    app.manage.tab = ManageTab::Settings;
+    agree(&mut app, false, "the Settings tab, no edit");
+    app.settings.begin_edit(SettingsField::AiCmd, "claude -p");
+    agree(&mut app, true, "a Settings edit");
+    app.update(Action::CloseField);
+
+    // A form modal on top: its focused field is the open field, and once
+    // Esc puts the keyboard on the button row no field is open at all.
+    // Both answers must come from the modal branch, which is why it is
+    // checked before the Settings edit in both twins.
+    app.modals.push(Modal::MultiPrompt {
+        title: "New group".into(),
+        fields: vec![
+            crate::components::modal::PromptField::text("name", "Name", ""),
+            crate::components::modal::PromptField::text("fields", "Fields", ""),
+        ],
+        focus: 0,
+        kind: crate::components::modal::PromptKind::NewSelector {
+            shared: false,
+            on_toggle: false,
+        },
+    });
+    agree(&mut app, true, "a form modal with its field focused");
+    // The first Esc closes the field to selected (spec 2026-09-16, no
+    // caret) — still the paste/`CloseField` target, so `field_open`
+    // agrees with `open_text_field_mut` here too; the second Esc is what
+    // actually leaves the field, landing on the button row.
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(
+        app.modals.button_focus().is_none(),
+        "the first Esc only closes the field to selected"
+    );
+    agree(&mut app, true, "a form modal field closed to selected");
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(
+        app.modals.button_focus().is_some(),
+        "the second Esc lands on the button row"
+    );
+    agree(&mut app, false, "a form modal aimed at its button row");
+}
+
+/// The footer's chips are pane-local: a field left open on one pane must
+/// not put its keys on another pane's row. A live cell edit survives
+/// `alt+q`'s jump to the response pane — where there is no field at all
+/// once the bar blurs, so no `esc done` and no search pair.
+#[test]
+fn the_footer_field_flag_is_pane_local() {
+    let mut app = app_with_one_param();
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+    ready_response(&mut app, JQ_BODY);
+    assert!(app.session.response.set_jq_focus(true));
+    app.session.response.set_jq_focus(false); // the bar is open, not focused
+    app.focus = PaneId::Response;
+
+    assert!(
+        !app.field_open(),
+        "the cell edit is live but the caret is on the response pane: no field is open there, and an Esc would not reach the cell"
+    );
+    assert!(
+        !app.pane_field_open(PaneId::Response),
+        "the response pane has no field of its own"
+    );
+    assert!(app.pane_field_open(PaneId::Editor));
+
+    let chips = crate::components::footer::footer_chips(
+        PaneId::Response,
+        false,
+        false,
+        None,
+        false,
+        false,
+        None,
+        crate::components::footer::JqBarState::Open,
+        app.pane_field_open(PaneId::Response),
+    );
+    assert!(
+        !chips.iter().any(|(k, l, _)| *k == "enter" && *l == "search"),
+        "no search box is open: {chips:?}"
+    );
+    assert!(
+        !chips.iter().any(|(k, l, _)| *k == "esc" && *l == "done"),
+        "no field of this pane's is open: {chips:?}"
+    );
+}
+
 #[test]
 fn click_cell_edits_in_place_and_click_away_commits() {
     let mut app = app_with_one_param();
@@ -1430,14 +2048,18 @@ fn a_ghost_row_left_empty_creates_nothing() {
 }
 
 #[test]
-fn esc_mid_edit_puts_the_original_cell_text_back() {
+fn esc_mid_edit_commits_the_cell_and_keeps_the_row_selected() {
     let mut app = app_with_one_param();
+    app.capture_undo(); // seed the shadow before the edit
     click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
     type_chars(&mut app, "999");
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(app.editor.table.editing.is_none());
-    assert_eq!(app.editor.params["page"].value, "1", "the edit reverted");
-    assert_eq!(app.editor.params.len(), 1, "the row survives");
+    assert_eq!(app.editor.params["page"].value, "1999", "Esc keeps the text");
+    assert_eq!(app.editor.table.selected, Some(0), "…and stays on the row");
+    app.capture_undo();
+    app.update(Action::Undo);
+    assert_eq!(app.editor.params["page"].value, "1", "discard is undo");
 }
 
 #[test]
@@ -1769,7 +2391,7 @@ fn no_project_opens_on_settings_but_alt_v_still_closes() {
     assert_ne!(
         app.screen,
         Screen::Manage,
-        "alt+v closes the screen it opened"
+        "alt+r closes the screen it opened"
     );
 
     // The scenario above alone doesn't pin the opening-path-only guard:
@@ -1791,7 +2413,7 @@ fn no_project_opens_on_settings_but_alt_v_still_closes() {
     assert_ne!(
         app.screen,
         Screen::Manage,
-        "alt+v closes; it does not re-target the tab"
+        "alt+r closes; it does not re-target the tab"
     );
 }
 
@@ -2399,7 +3021,7 @@ fn dirty_app() -> App {
     app.update(Action::RefreshSidebar);
     app.update(Action::ForceOpenRequest("main/r".into()));
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     app.handle_key(plain('/'));
     assert!(app.editor.is_dirty());
     app
@@ -2455,6 +3077,10 @@ fn discard_on_a_clean_editor_is_a_no_op() {
 #[test]
 fn discard_is_itself_undoable() {
     let mut app = dirty_app();
+    // `dirty_app` leaves the caret in the URL line, and the app history
+    // waits for a live-synced field to close: Esc closes it (keeping the
+    // text), and the close is the step.
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.capture_undo(); // the dirtying edit becomes its own step
     let dirty_url = app.editor.url.text().to_string();
     app.update(Action::DiscardChanges);
@@ -2466,6 +3092,104 @@ fn discard_is_itself_undoable() {
         dirty_url,
         "undo brings the discarded edit back"
     );
+}
+
+/// [`dirty_app`] with the shadow seeded on the opened request before the
+/// typing, as the main loop's per-event `capture_undo` would have done —
+/// so the typing has a "before" to diff against and can become a step.
+fn dirty_app_seeded() -> App {
+    let mut app = App::new_for_test();
+    postui_core::fixtures::save_request(app.proj().root(), "main/r", &req("https://x/r")).unwrap();
+    app.update(Action::RefreshSidebar);
+    app.update(Action::ForceOpenRequest("main/r".into()));
+    app.capture_undo();
+    app.focus = PaneId::Editor;
+    app.editor.open_url_from_app();
+    app.handle_key(plain('/'));
+    assert!(app.editor.is_dirty());
+    app
+}
+
+/// The URL line's open edit is a step of its own *before* the discard:
+/// the typing was gated (the app history waits for the field to close),
+/// and a discard that replaced the buffer wholesale used to drop it —
+/// the toast promised "undoes" of an edit no step held.
+#[test]
+fn discarding_with_the_url_line_still_open_records_the_typing_first() {
+    let mut app = dirty_app_seeded(); // the caret is still in the URL line
+    app.capture_undo(); // gated: nothing recorded yet
+    let steps = app.history.undo_len();
+    let dirty_url = app.editor.url.text().to_string();
+    app.update(Action::DiscardChanges);
+    app.capture_undo();
+    assert_eq!(
+        app.history.undo_len(),
+        steps + 2,
+        "the typing closed as one step, then the discard"
+    );
+    assert_eq!(app.editor.url.text(), "https://x/r");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.url.text(), dirty_url, "undo brings the edit back");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.url.text(), "https://x/r", "…and the next undoes the typing");
+}
+
+/// Reload is the other wholesale replacement: same handover.
+#[test]
+fn reloading_with_the_url_line_still_open_records_the_typing_first() {
+    let mut app = dirty_app_seeded();
+    app.capture_undo();
+    let steps = app.history.undo_len();
+    let dirty_url = app.editor.url.text().to_string();
+    app.update(Action::ReloadOpenRequest);
+    app.capture_undo();
+    assert_eq!(app.history.undo_len(), steps + 2, "typing, then the reload");
+    assert_eq!(app.editor.url.text(), "https://x/r");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.url.text(), dirty_url);
+}
+
+/// Opening another request with the URL line still open records the
+/// outgoing request's edit exactly as if the field had been closed
+/// first: the history ends up the same length either way, and the
+/// undo-follow brings the edit back.
+#[test]
+fn switching_requests_with_the_url_line_open_records_the_edit_before_the_load() {
+    let run = |close_first: bool| {
+        let mut app = dirty_app_seeded();
+        postui_core::fixtures::save_request(app.proj().root(), "main/s", &req("https://x/s"))
+            .unwrap();
+        app.update(Action::RefreshSidebar);
+        if close_first {
+            app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        }
+        app.capture_undo();
+        let dirty_url = app.editor.url.text().to_string();
+        app.update(Action::SaveRequestThen(Box::new(Action::ForceOpenRequest(
+            "main/s".into(),
+        ))));
+        app.capture_undo();
+        assert_eq!(app.editor.slug.as_deref(), Some("main/s"));
+        (app, dirty_url)
+    };
+    let (closed, _) = run(true);
+    let (mut open, dirty_url) = run(false);
+    assert_eq!(
+        open.history.undo_len(),
+        closed.history.undo_len(),
+        "an open field adds the same steps a closed one did"
+    );
+    // The typing is on the history as `r`'s own editor step (under the
+    // save's disk step), not lost in the load.
+    while let Some(step) = open.history.pop_undo() {
+        if let crate::undo::StepKind::EditorDelta { slug, after, .. } = &step.kind
+            && slug.as_deref() == Some("main/r")
+            && after.url == dirty_url
+        {
+            return;
+        }
+    }
+    panic!("no editor step holds the edit to r");
 }
 
 #[test]
@@ -2528,7 +3252,7 @@ fn saving_a_scratch_through_the_gate_chains_the_quit() {
     for c in "fresh".chars() {
         app.handle_key(plain(c));
     }
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    submit_prompt(&mut app);
     let saved = postui_core::fixtures::load_request(app.proj().root(), "main/fresh").unwrap();
     assert_eq!(saved.url, "https://x/scratch");
     assert!(app.should_quit, "the deferred quit ran after the save");
@@ -2553,6 +3277,11 @@ fn escaping_the_gates_save_prompt_cancels_everything() {
     let mut app = scratch_app();
     app.update(Action::Quit);
     app.handle_key(plain('s'));
+    // The field rule (spec 2026-09-16): the first Esc closes the name
+    // field to selected, the second reaches the prompt's button row, and
+    // the third — from there — cancels the prompt.
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(app.modals.is_empty());
     assert!(!app.should_quit, "Esc means stay, with everything intact");
@@ -3055,7 +3784,7 @@ fn opening_over_dirty_editor_prompts_save_discard_cancel() {
     // Open "a", then edit its URL so the editor becomes dirty.
     app.update(Action::ForceOpenRequest("main/a".into()));
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     app.handle_key(plain('/'));
     assert!(app.editor.is_dirty());
 
@@ -3077,7 +3806,7 @@ fn opening_over_dirty_editor_prompts_save_discard_cancel() {
     let mut app = App::with_root(app.tx.clone(), dir.path().to_path_buf());
     app.update(Action::ForceOpenRequest("main/a".into()));
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     app.handle_key(plain('/'));
     assert!(app.editor.is_dirty());
     app.update(Action::OpenRequest("main/b".into()));
@@ -3179,7 +3908,7 @@ fn switching_to_an_empty_space_clears_the_editor() {
 /// into the URL field.
 fn dirty_the_editor(app: &mut App) {
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     app.handle_key(plain('/'));
     assert!(app.editor.is_dirty());
 }
@@ -3486,7 +4215,7 @@ fn new_space_prompt_creates_and_switches() {
     for c in "billing".chars() {
         app.handle_key(plain(c));
     }
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    submit_prompt(&mut app);
     assert!(app.modals.is_empty());
     assert!(dir.path().join("requests/billing").is_dir());
     assert_eq!(app.proj().spaces(), ["main", "auth", "billing"]);
@@ -3957,6 +4686,9 @@ fn move_all_requests_empties_the_source_and_follows_the_open_request() {
     assert!(!app.capture_undo(), "the move itself is not an edit");
     assert_eq!(app.history.undo_len(), steps_before + 1);
     dirty_the_editor(&mut app);
+    // The typed character lives in the URL line's own history until the
+    // line closes; the close is what the app history records.
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(app.capture_undo());
     assert_eq!(
         app.history.undo_len(),
@@ -4253,6 +4985,9 @@ fn a_dissolved_burst_with_an_edit_between_its_halves_records_no_second_marker() 
         delta: 1,
     });
     dirty_the_editor(&mut app);
+    // Close the URL field: with it still live, ctrl+z would be its own
+    // undo and this test is about the app history.
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.capture_undo();
     let url_after_edit = app.editor.url.text().to_string();
     assert_eq!(
@@ -5388,7 +6123,7 @@ fn clicking_another_row_over_dirty_editor_is_gated_by_confirm() {
     app.refresh_sidebar();
     app.update(Action::ForceOpenRequest("main/top".into()));
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     app.handle_key(plain('/'));
     assert!(app.editor.is_dirty());
 
@@ -5457,7 +6192,7 @@ fn dirty_dot_renders_in_sidebar() {
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     app.update(Action::ForceOpenRequest("main/a".into()));
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     app.handle_key(plain('/'));
     assert!(app.editor.is_dirty());
 
@@ -5486,7 +6221,7 @@ fn new_request_prompt_flow_creates_file_and_opens_it() {
     for c in "api/ping".chars() {
         app.handle_key(plain(c));
     }
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    submit_prompt(&mut app);
     assert!(app.modals.is_empty());
     assert_eq!(app.editor.slug.as_deref(), Some("main/api/ping"));
     assert!(postui_core::fixtures::load_request(app.proj().root(), "main/api/ping").is_ok());
@@ -5507,7 +6242,7 @@ fn new_request_accepts_free_form_names_and_derives_the_slug() {
     for c in "My Request!".chars() {
         app.handle_key(plain(c));
     }
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    submit_prompt(&mut app);
     assert_eq!(app.editor.slug.as_deref(), Some("main/my-request"));
     assert_eq!(app.editor.name.as_deref(), Some("My Request!"));
     let loaded = postui_core::fixtures::load_request(app.proj().root(), "main/my-request").unwrap();
@@ -5525,7 +6260,7 @@ fn new_request_blank_name_toasts_and_creates_nothing() {
     for c in "folder/   ".chars() {
         app.handle_key(plain(c));
     }
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    submit_prompt(&mut app);
     assert!(!app.toasts.is_empty(), "a blank name must toast");
     assert!(
         postui_core::fixtures::list_requests(app.proj().root())
@@ -5639,7 +6374,7 @@ fn saving_a_legacy_request_does_not_invent_a_name() {
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     app.update(Action::ForceOpenRequest("main/legacy".into()));
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     app.handle_key(plain('/'));
     app.update(Action::SaveRequest);
     let loaded = postui_core::fixtures::load_request(dir.path(), "main/legacy").unwrap();
@@ -5660,7 +6395,7 @@ fn new_request_duplicate_name_toasts_and_leaves_existing_file_alone() {
     for c in "api/ping".chars() {
         app.handle_key(plain(c));
     }
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    submit_prompt(&mut app);
     // The rejected name keeps the prompt open (typed text intact) so it
     // can be corrected instead of retyped.
     let Some(Modal::Prompt { input, .. }) = app.modals.top() else {
@@ -5699,7 +6434,7 @@ fn rename_request_updates_disk_and_open_slug() {
     for c in "new".chars() {
         app.handle_key(plain(c));
     }
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    submit_prompt(&mut app);
     assert!(app.modals.is_empty());
     assert!(postui_core::fixtures::load_request(app.proj().root(), "main/old").is_err());
     assert!(postui_core::fixtures::load_request(app.proj().root(), "main/new").is_ok());
@@ -5739,7 +6474,7 @@ fn save_with_no_slug_opens_save_as_prompt() {
     for c in "fresh".chars() {
         app.handle_key(plain(c));
     }
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    submit_prompt(&mut app);
     assert!(app.modals.is_empty());
     assert_eq!(app.editor.slug.as_deref(), Some("main/fresh"));
     let saved = postui_core::fixtures::load_request(app.proj().root(), "main/fresh").unwrap();
@@ -5856,6 +6591,63 @@ fn modal_prompt_field_supports_click_to_place_drag_select_and_double_click() {
     );
 }
 
+/// Final-review finding 1: Esc closes a modal field to selected, then a
+/// click on it (`Hit::ModalInput` -> `ModalStack::focus_input`) must open
+/// it again — spec 2026-09-16, "A click on a field's input opens it at
+/// the click, from any focus." Before the fix, `focus_input` placed the
+/// caret without setting `field_open`, so the caret never rendered and
+/// every typed character was swallowed.
+#[test]
+fn clicking_a_field_closed_to_selected_reopens_it_for_typing() {
+    let mut app = App::new_for_test();
+    app.anims.enabled = false;
+    app.update(Action::PromptNewRequest);
+    for c in "hello".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    // Esc closes the field, keeping the text, and lands on the selected
+    // state (not the button row on the first Esc from a live field).
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(
+        !app.modals.field_open(),
+        "Esc must close the field to selected"
+    );
+
+    render_once(&mut app);
+    let r = app
+        .hits
+        .rect_of(&crate::hit::Hit::ModalInput(0))
+        .expect("prompt input hit");
+    app.handle_mouse(left_down(r.x + 2 + 2, r.y + 1));
+    assert!(
+        app.modals.field_open(),
+        "a click on a closed-to-selected field must reopen it"
+    );
+
+    // Caret must actually render now, not just the flag: draw once more
+    // and look for the input's own REVERSED cell (the caret's styling).
+    let backend = ratatui::backend::TestBackend::new(120, 40);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    let buf = terminal.backend().buffer();
+    let has_caret = (r.x..r.x + r.width).any(|x| {
+        (r.y..r.y + r.height).any(|y| {
+            buf.cell((x, y))
+                .is_some_and(|c| c.modifier.contains(ratatui::style::Modifier::REVERSED))
+        })
+    });
+    assert!(has_caret, "the caret must render once the field is open");
+
+    // And a typed character must land in the field, not be swallowed.
+    app.handle_key(KeyEvent::new(KeyCode::Char('!'), KeyModifiers::NONE));
+    let input = app.modals.focused_input().expect("prompt input");
+    assert!(
+        input.text().contains('!'),
+        "a typed character must reach the reopened field: {:?}",
+        input.text()
+    );
+}
+
 #[tokio::test]
 async fn shift_enter_sends_even_while_the_body_editor_has_focus() {
     // Shift+Enter is a global Send shortcut that must win over the focused
@@ -5876,6 +6668,76 @@ async fn shift_enter_sends_even_while_the_body_editor_has_focus() {
         app.editor.body_text(),
         "{}",
         "no newline leaked into the body"
+    );
+}
+
+#[test]
+fn shift_enter_confirms_a_prompt_modal_while_its_field_is_open() {
+    use crate::components::modal::{Modal, PromptKind};
+    let mut app = App::new_for_test();
+    app.modals.push(Modal::Prompt {
+        title: "New request".into(),
+        input: crate::components::line_input::LineInput::new("my-req"),
+        kind: PromptKind::NewRequest,
+        revealed: false,
+    });
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+    assert!(app.modals.is_empty(), "the modal confirmed and closed");
+}
+
+#[test]
+fn ctrl_enter_confirms_a_prompt_modal_from_the_button_row() {
+    use crate::components::modal::{Modal, PromptKind};
+    let mut app = App::new_for_test();
+    app.modals.push(Modal::Prompt {
+        title: "New request".into(),
+        input: crate::components::line_input::LineInput::new("my-req"),
+        kind: PromptKind::NewRequest,
+        revealed: false,
+    });
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)); // close to selected
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)); // to the button row
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL));
+    assert!(app.modals.is_empty());
+}
+
+#[test]
+fn plain_enter_never_confirms_a_form_modal() {
+    use crate::components::modal::{Modal, PromptKind};
+    let mut app = App::new_for_test();
+    app.modals.push(Modal::Prompt {
+        title: "New request".into(),
+        input: crate::components::line_input::LineInput::new("my-req"),
+        kind: PromptKind::NewRequest,
+        revealed: false,
+    });
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)); // closes the field, does not confirm
+    assert!(!app.modals.is_empty(), "plain Enter only closed the field");
+}
+
+/// A hostile or careless `keys.toml` can bind bare `enter` to `send`
+/// (`KeyCombo::parse` accepts a modifierless combo, and
+/// `apply_overrides` only rejects unknown actions/combos and the
+/// reserved ctrl+c). The confirm dig-past in `handle_key_inner` (step
+/// 1d) must not trust the keymap alone for that — it checks the real
+/// key event's own modifiers, so even under this override plain Enter
+/// still only closes the field, exactly as it does under the default
+/// keymap.
+#[test]
+fn plain_enter_never_confirms_a_form_modal_even_if_keys_toml_binds_it_to_send() {
+    use crate::components::modal::{Modal, PromptKind};
+    let mut app = App::new_for_test();
+    app.keymap.apply_overrides(r#"send = ["enter"]"#).unwrap();
+    app.modals.push(Modal::Prompt {
+        title: "New request".into(),
+        input: crate::components::line_input::LineInput::new("my-req"),
+        kind: PromptKind::NewRequest,
+        revealed: false,
+    });
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(
+        !app.modals.is_empty(),
+        "plain Enter must not confirm even when keys.toml maps it to send"
     );
 }
 
@@ -6166,7 +7028,7 @@ fn cycle_with_dirty_editor_shows_no_switch_toast_until_discard() {
     app.update(Action::RefreshSidebar);
     app.update(Action::ForceOpenRequest("main/r".into()));
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     app.handle_key(plain('/'));
     assert!(app.editor.is_dirty());
 
@@ -6193,7 +7055,7 @@ fn switch_with_dirty_editor_prompts_and_discard_proceeds() {
     app.update(Action::RefreshSidebar);
     app.update(Action::ForceOpenRequest("main/r".into()));
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     app.handle_key(plain('/'));
     assert!(app.editor.is_dirty());
     app.update(Action::SwitchProject(b.path().to_path_buf()));
@@ -6274,6 +7136,7 @@ fn project_chooser_lists_known_and_open_by_path_creates() {
 #[test]
 fn new_project_modal_prefills_path_from_name_and_creates() {
     let mut app = App::new_for_test();
+    app.anims.enabled = false;
     let root = tempfile::tempdir().unwrap();
     app.registry.root = Some(root.path().to_path_buf());
     app.update(Action::PromptNewProject);
@@ -6289,7 +7152,11 @@ fn new_project_modal_prefills_path_from_name_and_creates() {
         "slugified prefill: {}",
         path.text()
     );
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    // Enter now only closes the open field to selected (spec 2026-09-16);
+    // submitting is the button row's Confirm click, same as clicking OK.
+    render_once(&mut app);
+    let confirm = app.hits.rect_of(&Hit::ModalConfirm).unwrap();
+    assert!(app.handle_mouse(left_down(confirm.x, confirm.y)));
     let expected = root.path().join("my-svc");
     assert!(postui_core::project::Project::is_project(&expected));
     assert_eq!(app.proj().root(), expected);
@@ -6501,7 +7368,7 @@ fn create_project_with_dirty_editor_defers_last_until_dirty_gate_resolves() {
     app.update(Action::RefreshSidebar);
     app.update(Action::ForceOpenRequest("main/r".into()));
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     app.handle_key(plain('/'));
     assert!(app.editor.is_dirty());
 
@@ -6585,6 +7452,8 @@ fn new_project_empty_name_swallows_enter_and_esc_cancels() {
     app.update(Action::PromptNewProject);
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(!app.modals.is_empty(), "empty name: modal stays");
+    // The field rule: Esc leaves the field for the button row, then cancels.
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(app.modals.is_empty());
 }
@@ -7134,7 +8003,7 @@ fn create_env_prompt_flow_creates_empty_file_and_switches() {
     for c in "dev".chars() {
         app.handle_key(plain(c));
     }
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    submit_prompt(&mut app);
     assert!(app.modals.is_empty());
     let path = dir.path().join("environments/dev.toml");
     assert!(path.is_file());
@@ -7263,7 +8132,7 @@ fn app_with_vars() -> App {
 fn typing_double_brace_in_url_opens_completing_picker_and_insert_lands_in_url() {
     let mut app = app_with_vars();
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     app.handle_key(plain('{'));
     assert!(app.modals.is_empty(), "one brace: no picker");
     app.handle_key(plain('{'));
@@ -7433,7 +8302,7 @@ fn insert_picker_marks_secret_vars_with_the_lock_badge_and_never_shows_the_value
 fn insert_picker_new_variable_row_opens_prompt_prefilled_with_typed_filter() {
     let mut app = app_with_vars();
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     app.update(Action::OpenVarPicker { completing: false });
     for c in "brand_new".chars() {
         app.handle_key(plain(c));
@@ -7460,7 +8329,7 @@ fn insert_picker_new_variable_row_opens_prompt_prefilled_with_typed_filter() {
 fn insert_picker_new_variable_confirm_creates_the_var_and_inserts_at_the_original_cursor() {
     let mut app = app_with_vars();
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     app.editor.url = crate::components::line_input::LineInput::new("https://x/?a=1");
     app.editor.url.set_cursor(10);
     app.update(Action::OpenVarPicker { completing: false });
@@ -7471,7 +8340,7 @@ fn insert_picker_new_variable_confirm_creates_the_var_and_inserts_at_the_origina
     // Confirming the ghost row swaps the picker for the prompt — same
     // focus, no separate stacked modal to dismiss.
     assert!(matches!(app.modals.top(), Some(Modal::Prompt { .. })));
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    submit_prompt(&mut app);
 
     assert!(app.modals.is_empty(), "both modals closed");
     assert_eq!(
@@ -7496,7 +8365,7 @@ fn insert_picker_new_variable_confirm_with_a_reserved_name_toasts_and_inserts_no
     // referencing a variable that was never declared.
     let mut app = app_with_vars();
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     app.editor.url = crate::components::line_input::LineInput::new("https://x/?a=1");
     app.editor.url.set_cursor(10);
     app.update(Action::OpenVarPicker { completing: false });
@@ -7505,7 +8374,7 @@ fn insert_picker_new_variable_confirm_with_a_reserved_name_toasts_and_inserts_no
     }
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(matches!(app.modals.top(), Some(Modal::Prompt { .. })));
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    submit_prompt(&mut app);
 
     // The refused name keeps the prompt open (typed text intact) so it
     // can be fixed rather than retyped.
@@ -7584,7 +8453,6 @@ fn ctrl_c_copies_a_table_cell_selection_and_keeps_the_edit_live() {
         row: 0,
         col: Col::Key,
         input,
-        original: "page".into(),
     });
 
     app.handle_key(ctrl('c'));
@@ -7717,8 +8585,8 @@ fn click_footer_response_chips_toggle_view_and_open_search() {
 
     let r = app
         .hits
-        .rect_of(&Hit::FooterChip(Action::ResponseViewMode(ViewMode::Raw)))
-        .expect("the 'r' chip is registered");
+        .rect_of(&Hit::FooterChip(Action::CycleResponseView))
+        .expect("the 't' chip is registered");
     app.handle_mouse(left_down(r.x + 1, r.y));
     assert_eq!(app.session.response.view().unwrap().mode, ViewMode::Raw);
 
@@ -8405,6 +9273,77 @@ fn click_prompt_cancel_button_closes_without_creating_a_request() {
     );
 }
 
+/// The button row is a focus stop, so it paints like one: the aimed
+/// button lifts its fill, and the field it came from drops its focused
+/// fill — one focused-looking control at a time.
+#[test]
+fn the_aimed_modal_button_paints_focused_and_the_field_does_not() {
+    let mut app = App::new_for_test();
+    app.anims.enabled = false;
+    app.update(Action::PromptNewRequest);
+    // Renders into a TestBackend and returns the background colour of the
+    // cell at the middle of `hit`'s rect (the shape the tab-strip test
+    // `add_row_chip_label_follows_the_active_tab` uses to read a frame).
+    fn bg_of(app: &mut App, hit: Hit) -> ratatui::style::Color {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        render_once(app);
+        let r = app.hits.rect_of(&hit).unwrap();
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
+        terminal.backend().buffer()[(r.x + r.width / 2, r.y + r.height / 2)].bg
+    }
+    let confirm_in_field = bg_of(&mut app, Hit::ModalConfirm);
+    let field_in_field = bg_of(&mut app, Hit::ModalInput(0));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)); // field to selected
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)); // to the button row
+    assert_eq!(
+        app.modals.button_focus(),
+        Some(crate::components::modal::FormButton::Confirm)
+    );
+    let confirm_aimed = bg_of(&mut app, Hit::ModalConfirm);
+    let field_blurred = bg_of(&mut app, Hit::ModalInput(0));
+    assert_ne!(
+        confirm_in_field, confirm_aimed,
+        "the aimed Confirm lifts its fill"
+    );
+    assert_ne!(
+        field_in_field, field_blurred,
+        "the field drops its focused fill"
+    );
+}
+
+#[test]
+fn cancel_click_closes_a_form_modal_from_inside_its_field() {
+    let mut app = App::new_for_test();
+    app.anims.enabled = false;
+    app.update(Action::PromptNewRequest);
+    type_chars(&mut app, "x");
+    render_once(&mut app);
+    let cancel = app.hits.rect_of(&Hit::ModalCancel).unwrap();
+    app.handle_mouse(left_down(cancel.x, cancel.y));
+    assert!(
+        app.modals.is_empty(),
+        "a Cancel click is the cancel, not a synthesized Esc"
+    );
+}
+
+#[test]
+fn confirm_click_confirms_even_with_cancel_aimed() {
+    let mut app = App::new_for_test();
+    app.anims.enabled = false;
+    app.update(Action::PromptNewRequest);
+    type_chars(&mut app, "api/ping");
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+    render_once(&mut app);
+    let confirm = app.hits.rect_of(&Hit::ModalConfirm).unwrap();
+    app.handle_mouse(left_down(confirm.x, confirm.y));
+    assert!(postui_core::fixtures::load_request(app.proj().root(), "main/api/ping").is_ok());
+}
+
 #[test]
 fn click_prompt_confirm_button_creates_the_request_like_enter() {
     let mut app = App::new_for_test();
@@ -8930,9 +9869,9 @@ fn address_bar_copy_chip_is_clickable_and_copies_url() {
 // --- Task 9: Screen enum + Variable Manager shell (spec §5) ---------------
 
 #[test]
-fn alt_v_opens_the_manager_and_renders_its_title() {
+fn alt_r_opens_the_manager_and_renders_its_title() {
     let mut app = App::new_for_test();
-    app.handle_key(alt('v'));
+    app.handle_key(alt('r'));
     assert_eq!(app.screen, crate::app::Screen::Manage);
     let content = rendered_text(&mut app);
     assert!(content.contains("VARIABLES"), "the left list's own heading");
@@ -8965,7 +9904,7 @@ fn palette_manage_command_opens_the_manage_screen() {
 fn esc_returns_to_main_with_prior_focus_restored() {
     let mut app = App::new_for_test();
     app.focus = PaneId::Response;
-    app.handle_key(alt('v'));
+    app.handle_key(alt('r'));
     assert_eq!(app.screen, crate::app::Screen::Manage);
 
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
@@ -8976,7 +9915,7 @@ fn esc_returns_to_main_with_prior_focus_restored() {
 #[test]
 fn modals_still_open_and_close_on_top_of_the_manager_screen() {
     let mut app = App::new_for_test();
-    app.handle_key(alt('v'));
+    app.handle_key(alt('r'));
     assert_eq!(app.screen, crate::app::Screen::Manage);
 
     // ctrl+p still opens the palette on top of the Manager screen.
@@ -9042,7 +9981,7 @@ fn manager_screen_replaces_the_three_panes_but_keeps_header_and_footer() {
 #[test]
 fn ctrl_r_and_ctrl_enter_do_not_send_from_the_manager_screen() {
     let mut app = App::new_for_test();
-    app.handle_key(alt('v'));
+    app.handle_key(alt('r'));
     assert_eq!(app.screen, crate::app::Screen::Manage);
     assert!(app.toasts.is_empty());
 
@@ -9070,7 +10009,7 @@ fn ctrl_r_and_ctrl_enter_do_not_send_from_the_manager_screen() {
 fn alt_u_does_not_move_focus_from_the_manager_screen() {
     let mut app = App::new_for_test();
     app.focus = PaneId::Response;
-    app.handle_key(alt('v'));
+    app.handle_key(alt('r'));
     assert_eq!(app.screen, crate::app::Screen::Manage);
 
     app.handle_key(alt('u'));
@@ -9097,7 +10036,7 @@ fn alt_u_does_not_move_focus_from_the_manager_screen() {
 #[test]
 fn other_unwhitelisted_global_shortcuts_are_swallowed_by_the_manager_screen() {
     let mut app = App::new_for_test();
-    app.handle_key(alt('v'));
+    app.handle_key(alt('r'));
     assert_eq!(app.screen, crate::app::Screen::Manage);
     assert!(app.toasts.is_empty());
 
@@ -9116,7 +10055,7 @@ fn other_unwhitelisted_global_shortcuts_are_swallowed_by_the_manager_screen() {
 #[test]
 fn alt_x_cycles_env_from_the_manager_screen() {
     let (mut app, _dir) = app_with_envs();
-    app.handle_key(alt('v'));
+    app.handle_key(alt('r'));
     assert_eq!(app.screen, crate::app::Screen::Manage);
     assert_eq!(app.env_label(), "prod");
 
@@ -9138,7 +10077,7 @@ fn alt_x_cycles_env_from_the_manager_screen() {
 #[test]
 fn ctrl_p_still_opens_the_palette_on_top_of_the_manager_screen() {
     let mut app = App::new_for_test();
-    app.handle_key(alt('v'));
+    app.handle_key(alt('r'));
     assert_eq!(app.screen, crate::app::Screen::Manage);
 
     app.handle_key(ctrl('p'));
@@ -9163,7 +10102,7 @@ fn alt_t_opens_the_theme_chooser_on_main_and_the_manager_screen() {
     );
     app.update(Action::Close);
 
-    app.handle_key(alt('v'));
+    app.handle_key(alt('r'));
     assert_eq!(app.screen, crate::app::Screen::Manage);
     app.handle_key(alt('t'));
     assert!(
@@ -9979,8 +10918,12 @@ fn new_selector_prompt_arrows_focus_the_toggle_and_space_flips_shared() {
     // Space while the name field still has focus types a space, it does
     // not reach the toggle.
     app.handle_key(plain(' '));
+    // The toggle row is only reachable once the field is selected, not
+    // open for typing (spec 2026-09-16).
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     app.handle_key(plain(' '));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)); // to the button row
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
     assert!(
@@ -10033,10 +10976,17 @@ fn new_selector_prompt_tab_cycles_between_the_name_field_and_the_toggle() {
     for c in "locale".chars() {
         app.handle_key(plain(c));
     }
+    // The toggle row is only reachable once the field is selected, not
+    // open for typing (spec 2026-09-16).
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.handle_key(tab); // onto the toggle
     app.handle_key(plain(' ')); // shared on
-    app.handle_key(tab); // back to the field
-    app.handle_key(plain(' ')); // a typed space, not a second flip
+    app.handle_key(tab); // back to the field stop
+    // Space no longer types here directly — the field is still selected,
+    // not open, so an opener key reopens it instead of a second flip.
+    app.handle_key(plain(' '));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)); // close the reopened field
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)); // to the button row
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
     assert!(
@@ -10057,10 +11007,15 @@ fn new_selector_prompt_up_returns_focus_to_the_name_field() {
     for c in "locale".chars() {
         app.handle_key(plain(c));
     }
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     app.handle_key(plain(' ')); // shared on
     app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
-    app.handle_key(plain(' ')); // back in the field: a typed space
+    // Back at the field stop (still selected, not open): an opener key
+    // reopens the field rather than typing directly into it.
+    app.handle_key(plain(' '));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)); // close the reopened field
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)); // to the button row
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
     assert!(
@@ -10455,7 +11410,7 @@ fn extract_to_request_saves_the_request_file_to_disk() {
     app.update(Action::ForceOpenRequest("main/ping".into()));
     app.editor.url = crate::components::line_input::LineInput::new("https://x/ping/abc-123");
     app.focus = crate::layout::PaneId::Editor;
-    app.editor.sub_focus = crate::components::editor::SubFocus::Url;
+    app.editor.open_url_from_app();
 
     app.update(Action::ConfirmExtractVariable {
         name: "trace_id".into(),
@@ -10787,12 +11742,12 @@ fn toggle_secret_is_refused_for_a_group() {
 // -- every structural op is reachable both by key and by a painted chip --
 
 #[test]
-fn keyboard_n_and_g_open_the_new_var_and_new_group_prompts() {
+fn keyboard_n_and_a_open_the_new_var_and_new_group_prompts() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    app.handle_key(alt('v'));
+    app.handle_key(alt('r'));
     rendered_text(&mut app);
 
     app.handle_key(plain('n'));
@@ -10803,9 +11758,13 @@ fn keyboard_n_and_g_open_the_new_var_and_new_group_prompts() {
             ..
         })
     ));
+    // The field rule (spec 2026-09-16): the first Esc closes the field to
+    // selected, the second reaches the button row, the third cancels.
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
-    app.handle_key(plain('g'));
+    app.handle_key(plain('a'));
     assert!(matches!(
         app.modals.top(),
         Some(Modal::Prompt {
@@ -10836,6 +11795,10 @@ fn keyboard_f2_d_s_open_the_matching_var_row_actions() {
             ..
         })
     ));
+    // The field rule (spec 2026-09-16): the first Esc closes the field to
+    // selected, the second reaches the button row, the third cancels.
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
     app.handle_key(plain('d'));
@@ -11041,7 +12004,7 @@ fn prompt_new_selector_takes_a_name_and_defaults_its_field() {
     for c in "creds".chars() {
         app.handle_key(plain(c));
     }
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    submit_prompt(&mut app);
 
     // Creating the selector is the whole gesture: no follow-up prompt
     // opens, the new declaration is simply selected in the manager.
@@ -11077,7 +12040,7 @@ fn add_and_remove_group_members_one_at_a_time() {
         for c in member.chars() {
             app.handle_key(plain(c));
         }
-        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        submit_prompt(&mut app);
     }
     assert_eq!(
         app.proj()
@@ -11097,7 +12060,7 @@ fn add_and_remove_group_members_one_at_a_time() {
     for c in "user_id".chars() {
         app.handle_key(plain(c));
     }
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    submit_prompt(&mut app);
     assert!(app.toasts.messages().len() > toasts_before);
     assert_eq!(
         app.proj()
@@ -11111,6 +12074,10 @@ fn add_and_remove_group_members_one_at_a_time() {
     );
 
     // the failed duplicate keeps its prompt open for a retry; drop it
+    // The field rule (spec 2026-09-16): the first Esc closes the field to
+    // selected, the second reaches the button row, the third cancels.
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
     // `d` flow: removal is immediate (undoable)
@@ -11177,7 +12144,7 @@ fn focus_url_with_cursor_on(app: &mut App, url: &str, token: &str) {
     input.set_cursor(mid);
     app.editor.url = input;
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
 }
 
 #[test]
@@ -11344,7 +12311,9 @@ fn confirming_the_value_popup_writes_the_env_scope_and_re_resolves() {
     for c in "https://qa2.example.com".chars() {
         app.handle_key(plain(c));
     }
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    // Enter now only closes the open field to selected (spec 2026-09-16);
+    // submitting is the button row's Confirm click, same as clicking OK.
+    click_modal_confirm(&mut app);
 
     assert!(app.modals.is_empty(), "confirm closes the popup");
     let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
@@ -11386,6 +12355,56 @@ fn confirming_the_value_popup_on_the_request_scope_sets_a_request_var() {
     assert!(app.editor.variables["base_url"].enabled);
 }
 
+/// Review finding: after Esc parked the keyboard on the button row, a
+/// click on a *non-input* field (the Write-to chooser has no caret, so it
+/// registers `ModalField`, not `ModalInput`) moved the modal's own focus
+/// but left the aim on the row — ←/→ still swung between Cancel and
+/// Confirm and the row still painted as the focus. Every click that moves
+/// focus into a modal's body now leaves the row.
+#[test]
+fn clicking_a_choice_field_takes_the_keyboard_off_the_button_row() {
+    let (mut app, _dir) = token_popup_app();
+    app.update(Action::OpenVarTokenPopup("base_url".into()));
+    app.handle_key(plain('x'));
+    // The first Esc closes the field to selected (spec 2026-09-16); the
+    // second parks on the button row.
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(
+        app.modals.button_focus().is_some(),
+        "Esc from the value field parks on the button row"
+    );
+
+    rendered_text(&mut app);
+    let r = app
+        .hits
+        .rect_of(&crate::hit::Hit::ModalField(1))
+        .expect("the choice field takes clicks");
+    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    assert_eq!(
+        app.modals.button_focus(),
+        None,
+        "the click moved focus into the body, so the row is no longer aimed"
+    );
+
+    let scope_text = |app: &App| {
+        let Some(Modal::MultiPrompt { fields, focus, .. }) = app.modals.top() else {
+            panic!("popup still open")
+        };
+        (fields[1].input.text().to_string(), *focus)
+    };
+    let (after_click, focus) = scope_text(&app);
+    assert_eq!(focus, 1, "the click focused the choice field");
+    // ← now steps the chooser back instead of swinging the button aim.
+    app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+    assert_eq!(app.modals.button_focus(), None);
+    assert_ne!(
+        scope_text(&app).0,
+        after_click,
+        "Left aimed the field, not the buttons"
+    );
+}
+
 #[test]
 fn clicking_the_write_to_field_cycles_the_scope() {
     let (mut app, _dir) = token_popup_app();
@@ -11425,7 +12444,7 @@ fn a_taken_name_keeps_the_new_variable_prompt_open_with_the_typed_text() {
     for c in "base_url".chars() {
         app.handle_key(plain(c));
     }
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    submit_prompt(&mut app);
 
     assert!(!app.toasts.is_empty(), "the refusal is surfaced");
     let Some(Modal::Prompt { input, kind, .. }) = app.modals.top() else {
@@ -11443,7 +12462,7 @@ fn a_taken_name_keeps_the_new_selector_prompt_open() {
         // "user" is already a selector in the fixture.
         app.handle_key(plain(c));
     }
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    submit_prompt(&mut app);
 
     assert!(!app.toasts.is_empty());
     let Some(Modal::Prompt { input, kind, .. }) = app.modals.top() else {
@@ -11463,7 +12482,9 @@ fn a_refused_apply_keeps_the_fields_editor_open() {
     for c in "customer_id".chars() {
         app.handle_key(plain(c));
     }
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    // Enter now only closes the open row to selected (spec 2026-09-16);
+    // submitting is the button row's Confirm click, same as clicking OK.
+    click_modal_confirm(&mut app);
 
     assert!(!app.toasts.is_empty(), "the refusal is surfaced");
     let Some(Modal::FieldsEditor(fe)) = app.modals.top() else {
@@ -11825,6 +12846,9 @@ fn typing_a_value_on_a_marked_scope_writes_it_instead_of_removing() {
     let scope = fields.iter().find(|f| f.key == "destination").unwrap();
     assert_eq!(scope.input.text(), "Active env value");
     app.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+    // BackTab off a choice field lands on the value field merely
+    // *selected* (spec 2026-09-16) — Enter reopens it before typing.
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     for c in "http://new.qa".chars() {
         app.handle_key(plain(c));
     }
@@ -11888,9 +12912,18 @@ fn remove_marks_the_default_when_it_is_the_supplier_and_confirm_clears_it() {
 #[test]
 fn editing_a_secret_token_opens_the_masked_secret_prompt() {
     let (mut app, _dir) = token_popup_app();
+    app.proj_mut()
+        .set_secret_for("qa", "api_key", "sk-live-abc123".into())
+        .unwrap();
     app.update(Action::OpenVarTokenPopup("api_key".into()));
 
-    let Some(Modal::Prompt { kind, .. }) = app.modals.top() else {
+    let Some(Modal::Prompt {
+        kind,
+        input,
+        revealed,
+        ..
+    }) = app.modals.top()
+    else {
         panic!("a secret token must open the masked secret prompt")
     };
     assert_eq!(
@@ -11898,8 +12931,102 @@ fn editing_a_secret_token_opens_the_masked_secret_prompt() {
         PromptKind::SecretValue {
             name: "api_key".into(),
             env: "qa".into(),
+            then_send: false,
         }
     );
+    // Editing starts from what is stored (like the Manager's env-value
+    // field), masked until ctrl+r reveals it.
+    assert_eq!(input.text(), "sk-live-abc123");
+    assert!(!revealed);
+}
+
+/// The popup's prompt is an edit, not the send-time chain: confirming
+/// writes the secret (undoably, like the Manager's field) and sends
+/// nothing; Esc just closes it.
+#[test]
+fn confirming_the_popup_secret_prompt_saves_without_sending() {
+    let (mut app, _dir) = token_popup_app();
+    app.proj_mut()
+        .set_secret_for("qa", "api_key", "old".into())
+        .unwrap();
+    app.editor.url = LineInput::new("http://example.invalid/{{api_key}}");
+    app.update(Action::OpenVarTokenPopup("api_key".into()));
+    assert!(matches!(
+        app.modals.top(),
+        Some(Modal::Prompt {
+            kind: PromptKind::SecretValue { then_send: false, .. },
+            ..
+        })
+    ));
+
+    // The seeded text is replaced wholesale.
+    app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
+    type_and_confirm(&mut app, "new");
+
+    assert!(app.modals.is_empty());
+    assert!(app.session.in_flight.is_empty(), "editing a secret never sends");
+    assert_eq!(app.proj().secrets()["qa"]["api_key"], "new");
+    assert!(
+        !rendered_text(&mut app).contains("send canceled"),
+        "no send was in play"
+    );
+
+    app.update(Action::Undo);
+    assert_eq!(
+        app.proj().secrets()["qa"]["api_key"],
+        "old",
+        "the edit is one undo step, like the Manager's"
+    );
+}
+
+#[test]
+fn escaping_the_popup_secret_prompt_does_not_claim_a_canceled_send() {
+    let (mut app, _dir) = token_popup_app();
+    app.update(Action::OpenVarTokenPopup("api_key".into()));
+    // The field rule (spec 2026-09-16): the first Esc closes the field to
+    // selected, the second reaches the button row, and the third — from
+    // there — closes the modal.
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(app.modals.is_empty());
+    assert!(!rendered_text(&mut app).contains("send canceled"));
+}
+
+/// The eye button beside the field is the mouse's reveal: a click unmasks
+/// the seeded value and flips itself to "hide"; another re-masks.
+#[test]
+fn the_secret_prompts_eye_button_reveals_and_hides_the_value() {
+    let (mut app, _dir) = token_popup_app();
+    app.proj_mut()
+        .set_secret_for("qa", "api_key", "sk-live-abc123".into())
+        .unwrap();
+    app.update(Action::OpenVarTokenPopup("api_key".into()));
+    assert!(!rendered_text(&mut app).contains("sk-live-abc123"));
+
+    click_hit(&mut app, Hit::ModalRevealToggle);
+    assert!(matches!(
+        app.modals.top(),
+        Some(Modal::Prompt { revealed: true, .. })
+    ));
+    let shown = rendered_text(&mut app);
+    assert!(shown.contains("sk-live-abc123"), "{shown}");
+    assert!(shown.contains("hide"), "{shown}");
+
+    click_hit(&mut app, Hit::ModalRevealToggle);
+    assert!(!rendered_text(&mut app).contains("sk-live-abc123"));
+}
+
+#[test]
+fn editing_a_missing_secret_token_opens_an_empty_secret_prompt() {
+    let (mut app, _dir) = token_popup_app();
+    app.update(Action::OpenVarTokenPopup("api_key".into()));
+
+    let Some(Modal::Prompt { kind, input, .. }) = app.modals.top() else {
+        panic!("a secret token must open the masked secret prompt")
+    };
+    assert!(matches!(kind, PromptKind::SecretValue { .. }));
+    assert_eq!(input.text(), "", "nothing stored yet, nothing to seed");
 }
 
 #[test]
@@ -12081,7 +13208,7 @@ fn type_and_confirm(app: &mut App, text: &str) {
     for c in text.chars() {
         app.handle_key(plain(c));
     }
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    submit_prompt(app);
 }
 
 #[tokio::test]
@@ -12116,7 +13243,7 @@ async fn missing_secrets_prompt_sequentially_then_the_request_sends() {
         "title must never carry a value: {title}"
     );
     assert!(
-        matches!(kind, PromptKind::SecretValue { name, env } if name == "api_key" && env == "qa")
+        matches!(kind, PromptKind::SecretValue { name, env, then_send: true } if name == "api_key" && env == "qa")
     );
 
     type_and_confirm(&mut app, "key-val");
@@ -12166,6 +13293,10 @@ async fn esc_mid_chain_cancels_the_send_and_keeps_only_confirmed_secrets() {
             ..
         }) if name == "api_secret"
     ));
+    // The field rule (spec 2026-09-16): the first Esc closes the field to
+    // selected, the second reaches the button row, the third cancels.
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
     assert!(app.modals.is_empty(), "esc closes the prompt");
@@ -12263,7 +13394,9 @@ fn add_new_entry_writes_to_the_active_envs_entries_table_selects_it_and_restores
     type_into_field(&mut app, "carol");
     app.handle_key(tab_key());
     type_into_field(&mut app, "3003");
-    app.handle_key(enter_key());
+    // Enter now only closes the open field to selected (spec 2026-09-16);
+    // submitting is the button row's Confirm click, same as clicking OK.
+    click_modal_confirm(&mut app);
 
     assert!(app.modals.is_empty(), "closes back to the field");
     assert_eq!(app.focus, PaneId::Editor, "focus restored to where it was");
@@ -12304,7 +13437,9 @@ fn inline_create_accepts_a_free_form_entry_name_with_a_space() {
     type_into_field(&mut app, "user 1");
     app.handle_key(tab_key());
     type_into_field(&mut app, "9009");
-    app.handle_key(enter_key());
+    // Enter now only closes the open field to selected (spec 2026-09-16);
+    // submitting is the button row's Confirm click, same as clicking OK.
+    click_modal_confirm(&mut app);
 
     assert!(
         app.modals.is_empty(),
@@ -12348,7 +13483,9 @@ fn inline_create_on_a_multi_field_group_takes_one_input_per_field() {
     type_into_field(&mut app, "u-3");
     app.handle_key(tab_key());
     type_into_field(&mut app, "c-3");
-    app.handle_key(enter_key());
+    // Enter now only closes the open field to selected (spec 2026-09-16);
+    // submitting is the button row's Confirm click, same as clicking OK.
+    click_modal_confirm(&mut app);
 
     assert!(app.modals.is_empty(), "{:?}", app.toasts.messages());
     let carol = &app.proj().env_data().options["identity"]["carol"].values;
@@ -12421,7 +13558,9 @@ fn the_option_menus_edit_opens_the_prompt_in_the_environment_that_holds_it() {
         app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
     }
     type_into_field(&mut app, "9999");
-    app.handle_key(enter_key());
+    // Enter now only closes the open field to selected (spec 2026-09-16);
+    // submitting is the button row's Confirm click, same as clicking OK.
+    click_modal_confirm(&mut app);
 
     assert!(app.modals.is_empty());
     let env_doc = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
@@ -12448,6 +13587,35 @@ fn focus_header_value_cell(app: &mut App) {
         .handle_key(tab_key(), &mut app.editor.headers);
 }
 
+/// A `{{token}}` in a cell under edit is still a token: tinted, hoverable
+/// for its tooltip, and a click inside it just moves the caret (left
+/// clicks resolve past token spans, so the edit is never disturbed).
+#[test]
+fn a_token_in_a_header_cell_under_edit_is_tinted_and_hoverable() {
+    let mut app = App::new_for_test();
+    app.editor.headers.insert(
+        "X-Base".into(),
+        postui_core::model::Entry {
+            value: "{{base_url}}".into(),
+            enabled: true,
+        },
+    );
+    focus_header_value_cell(&mut app);
+    assert!(app.editor.table.editing.is_some());
+    render_once(&mut app);
+
+    let r = app
+        .hits
+        .rect_of(&Hit::VarToken("base_url".into()))
+        .expect("the edited cell's token registers its span");
+    app.handle_mouse(left_down(r.x + 2, r.y));
+    assert!(
+        app.editor.table.editing.is_some(),
+        "the click lands in the cell as a caret move, not a picker"
+    );
+    assert!(app.modals.is_empty());
+}
+
 #[test]
 fn extract_to_variable_prompts_writes_and_replaces_field_text_dirty_saved() {
     let mut app = App::new_for_test();
@@ -12472,7 +13640,9 @@ fn extract_to_variable_prompts_writes_and_replaces_field_text_dirty_saved() {
     assert!(matches!(kind, PromptKind::ExtractVariable));
 
     type_into_field(&mut app, "api_key");
-    app.handle_key(enter_key());
+    // Enter now only closes the open field to selected (spec 2026-09-16);
+    // submitting is the button row's Confirm click, same as clicking OK.
+    click_modal_confirm(&mut app);
 
     assert!(app.modals.is_empty());
     let content = rendered_text(&mut app);
@@ -12576,7 +13746,7 @@ fn right_key() -> KeyEvent {
 fn extract_url(app: &mut App, url: &str, name: &str, rights: u8) {
     app.editor.url = LineInput::new(url);
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
 
     app.update(Action::ExtractToVariable);
     assert!(
@@ -12588,7 +13758,9 @@ fn extract_url(app: &mut App, url: &str, name: &str, rights: u8) {
     for _ in 0..rights {
         app.handle_key(right_key());
     }
-    app.handle_key(enter_key());
+    // Enter now only closes an open field to selected (spec 2026-09-16);
+    // submitting is the button row's Confirm click, same as clicking OK.
+    click_modal_confirm(app);
 }
 
 #[test]
@@ -12810,12 +13982,12 @@ fn clicking_off_the_quick_add_option_prompt_still_cancels() {
 fn alt_v_toggles_the_variable_manager_closed_and_restores_focus() {
     let mut app = App::new_for_test();
     app.update(Action::FocusPane(PaneId::Response));
-    let alt_v = KeyEvent::new(KeyCode::Char('v'), KeyModifiers::ALT);
+    let alt_r = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::ALT);
 
-    app.handle_key(alt_v);
+    app.handle_key(alt_r);
     assert_eq!(app.screen, Screen::Manage);
-    app.handle_key(alt_v);
-    assert_eq!(app.screen, Screen::Main, "alt+v closes the open manager");
+    app.handle_key(alt_r);
+    assert_eq!(app.screen, Screen::Main, "alt+r closes the open manager");
     assert_eq!(app.focus, PaneId::Response, "prior focus restored");
 }
 
@@ -13280,6 +14452,34 @@ fn auto_header_copy_icon_is_the_shared_copy_glyph() {
     );
 }
 
+/// The pill's hover fill must not butt up against the value text: one
+/// plain cell separates the value from the three-cell ` 󰆏 ` pill.
+#[test]
+fn auto_header_copy_pill_keeps_a_cell_of_padding_from_the_value() {
+    let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Headers;
+    app.editor.url = LineInput::new("https://example.com/foo");
+    app.update(Action::Render);
+
+    let backend = ratatui::backend::TestBackend::new(100, 70);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    let rect = app
+        .hits
+        .rect_of(&Hit::AutoHeaderCopy(0))
+        .expect("the Host row's copy icon is registered");
+    let buf = terminal.backend().buffer();
+    let cell = |x: u16| buf[(x, rect.y)].symbol().to_string();
+    assert_eq!(rect.width, 3, "the hit covers the whole pill");
+    assert_eq!(
+        (cell(rect.x), cell(rect.x + 1), cell(rect.x + 2)),
+        (" ".into(), "\u{F018F}".into(), " ".into()),
+        "the pill is one plain cell each side of the glyph"
+    );
+    assert_eq!(cell(rect.x - 1), " ", "a gap cell before the pill");
+    assert_eq!(cell(rect.x - 2), "m", "…right after the value `example.com`");
+}
+
 #[test]
 fn auto_header_copy_icon_puts_the_resolved_value_on_the_clipboard() {
     let mut app = App::new_for_test();
@@ -13553,6 +14753,45 @@ fn computed_headers_mask_a_secret_by_default_and_the_reveal_toggle_unmasks() {
 }
 
 #[test]
+fn computed_headers_reveal_toggle_hides_when_only_the_request_table_uses_a_secret() {
+    // The auto section draws only non-`Request` rows, and the request's
+    // own header is the editable table above (tokens, not values). With no
+    // masked value in the section, a reveal toggle would toggle nothing.
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::VarEdit(VarEditOp::SetSecretValue {
+        env: "qa".into(),
+        name: "api_key".into(),
+        value: "sk-live-abc123".into(),
+    }));
+    app.editor.headers.insert(
+        "X-Ignore".into(),
+        postui_core::model::Entry {
+            value: "{{api_key}}".into(),
+            enabled: true,
+        },
+    );
+    // A URL gives the section a (secret-free) Host row to draw.
+    app.editor.url = LineInput::new("https://example.com/foo");
+    app.editor.active_tab = EditorTab::Headers;
+    app.update(Action::Render);
+
+    let backend = ratatui::backend::TestBackend::new(100, 70);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    assert!(
+        app.hits.rect_of(&Hit::AutoHeaderCopy(0)).is_some(),
+        "sanity: the auto section is drawn (Host row)"
+    );
+    assert!(
+        app.hits.rect_of(&Hit::AutoHeaderReveal).is_none(),
+        "nothing in the auto section is masked, so there is nothing to reveal"
+    );
+}
+
+#[test]
 fn computed_headers_recompute_reflects_an_env_switch() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
@@ -13749,7 +14988,7 @@ fn clicking_the_env_value_field_typing_and_clicking_away_writes_the_env_file() {
 }
 
 #[test]
-fn enter_commits_a_field_edit_and_esc_reverts_it() {
+fn enter_and_esc_both_commit_a_field_edit() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -13758,8 +14997,8 @@ fn enter_commits_a_field_edit_and_esc_reverts_it() {
         r == &crate::components::varmanager::VmRow::Var("base_url".into())
     });
 
-    // Esc reverts: the typed digit never reaches disk. (Right-edge clicks
-    // throughout: a click places the caret at the pointer, and the
+    // Esc keeps the typed text: it commits exactly like Enter. (Right-edge
+    // clicks throughout: a click places the caret at the pointer, and the
     // assertions want the typed char at the end of the text.)
     let r = field_rect(&mut app, VmField::Description);
     app.handle_mouse(left_down(r.x + r.width - 2, r.y));
@@ -13770,8 +15009,8 @@ fn enter_commits_a_field_edit_and_esc_reverts_it() {
         app.proj().variables().vars["base_url"]
             .description
             .as_deref(),
-        Some("API root"),
-        "Esc must not write anything"
+        Some("API root!"),
+        "Esc keeps the typed text"
     );
 
     // Enter commits.
@@ -13784,8 +15023,34 @@ fn enter_commits_a_field_edit_and_esc_reverts_it() {
         app.proj().variables().vars["base_url"]
             .description
             .as_deref(),
-        Some("API root!")
+        Some("API root!!")
     );
+}
+
+/// The Variable Manager form routes ctrl+z through `open_text_field_mut`'s
+/// generic arm: it walks the typed run back inside the field and leaves
+/// the field open, the same as a table cell or a Settings field.
+#[test]
+fn ctrl_z_in_the_vm_form_field_restores_the_original() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_row(&mut app, |r| {
+        r == &crate::components::varmanager::VmRow::Var("base_url".into())
+    });
+
+    let r = field_rect(&mut app, VmField::Description);
+    app.handle_mouse(left_down(r.x + r.width - 2, r.y));
+    app.handle_key(plain('!'));
+    app.handle_key(ctrl('z'));
+    let (_, input) = app
+        .varmanager
+        .form
+        .editing
+        .as_ref()
+        .expect("the field stays open");
+    assert_eq!(input.text(), "API root", "ctrl+z undid the typing");
 }
 
 /// Clicking straight from one form field into a *different* one (no
@@ -14104,6 +15369,10 @@ fn keyboard_e_and_s_still_work_with_the_form_on_screen() {
             ..
         })
     ));
+    // The field rule (spec 2026-09-16): the first Esc closes the field to
+    // selected, the second reaches the button row, the third cancels.
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
     app.handle_key(plain('s'));
@@ -14197,13 +15466,15 @@ fn fields_editor_remove_button_marks_the_row_and_confirm_deletes_the_field() {
     assert!(!fe.rows[1].removed);
 
     // ...remove it again and apply: the removal lands at once (undoable).
+    // Enter now only closes the open row to selected (spec 2026-09-16);
+    // submitting is the button row's Confirm click, same as clicking OK.
     rendered_text(&mut app);
     let r = app
         .hits
         .rect_of(&crate::hit::Hit::ModalRowToggle(1))
         .unwrap();
     app.handle_mouse(left_down(r.x, r.y));
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    click_modal_confirm(&mut app);
     assert!(app.modals.is_empty(), "removal is undoable, no confirm");
     assert_eq!(
         app.proj().variables().selectors["creds"].fields,
@@ -14221,7 +15492,9 @@ fn fields_editor_rename_types_into_the_row() {
     for c in "uid".chars() {
         app.handle_key(plain(c));
     }
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    // Enter now only closes the open row to selected (spec 2026-09-16);
+    // submitting is the button row's Confirm click, same as clicking OK.
+    click_modal_confirm(&mut app);
     assert!(app.modals.is_empty(), "apply closes the editor");
     assert_eq!(
         app.proj().variables().selectors["creds"].fields,
@@ -14244,7 +15517,9 @@ fn fields_editor_add_button_appends_a_focused_row() {
     for c in "region".chars() {
         app.handle_key(plain(c));
     }
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    // Enter now only closes the open row to selected (spec 2026-09-16);
+    // submitting is the button row's Confirm click, same as clicking OK.
+    click_modal_confirm(&mut app);
     assert!(app.modals.is_empty());
     assert_eq!(
         app.proj().variables().selectors["creds"].fields,
@@ -14267,7 +15542,9 @@ fn fields_editor_alt_a_appends_a_focused_row() {
     for c in "region".chars() {
         app.handle_key(plain(c));
     }
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    // Enter now only closes the open row to selected (spec 2026-09-16);
+    // submitting is the button row's Confirm click, same as clicking OK.
+    click_modal_confirm(&mut app);
     assert!(app.modals.is_empty());
     assert_eq!(
         app.proj().variables().selectors["creds"].fields,
@@ -14305,10 +15582,12 @@ fn fields_editor_alt_d_toggles_removal_of_the_focused_row() {
     assert!(!fe.rows[0].removed, "alt+d on a removed row restores it");
 
     // Remove the second field and apply: the removal lands at once
-    // (undoable).
+    // (undoable). Enter now only closes the open row to selected (spec
+    // 2026-09-16); submitting is the button row's Confirm click, same as
+    // clicking OK.
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     app.handle_key(alt('d'));
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    click_modal_confirm(&mut app);
     assert!(app.modals.is_empty(), "removal is undoable, no confirm");
     assert_eq!(
         app.proj().variables().selectors["creds"].fields,
@@ -14362,7 +15641,7 @@ fn the_quit_chip_shows_ctrl_c_wherever_plain_q_would_type() {
     let content = rendered_text(&mut app);
     assert!(content.contains("q  quit"), "{content}");
     // The URL line and the body editor type it.
-    app.editor.sub_focus = crate::components::editor::SubFocus::Url;
+    app.editor.open_url_from_app();
     let content = rendered_text(&mut app);
     assert!(content.contains("^C  quit"), "{content}");
     assert!(!content.contains("q  quit"), "{content}");
@@ -14376,6 +15655,10 @@ fn the_quit_chip_shows_ctrl_c_wherever_plain_q_would_type() {
     app.update(Action::PromptNewRequest);
     let content = rendered_text(&mut app);
     assert!(content.contains("^C  quit"), "{content}");
+    // The field rule (spec 2026-09-16): the first Esc closes the field to
+    // selected, the second reaches the button row, the third cancels.
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
     // The manager binds plain q to quit in every focus stop, so the chip
@@ -14561,12 +15844,37 @@ fn editing_a_field_cell_and_clicking_away_rewrites_the_env_file() {
     assert_eq!((edit.row, edit.col), (1, 1));
     assert_eq!(edit.input.text(), "2002");
 
-    // Esc puts the second cell back with nothing written.
+    // Esc commits the second cell — the field rule: Esc keeps the typed
+    // text just like Enter does.
     app.handle_key(plain('x'));
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(app.varmanager.grid.editing.is_none());
     let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
-    assert!(!on_disk.contains("2002x"), "esc reverted: {on_disk}");
+    assert!(on_disk.contains("2002x"), "esc committed: {on_disk}");
+}
+
+/// The Variable Manager grid cell also routes ctrl+z through
+/// `open_text_field_mut`'s generic arm: it walks the typed run back
+/// inside the cell and leaves the cell open.
+#[test]
+fn ctrl_z_in_the_vm_grid_cell_restores_the_original() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+
+    let r = cell_rect(&mut app, 0, 1);
+    app.handle_mouse(left_down(r.x + 10, r.y));
+    app.handle_key(plain('9'));
+    app.handle_key(ctrl('z'));
+    let edit = app
+        .varmanager
+        .grid
+        .editing
+        .as_ref()
+        .expect("the cell stays open");
+    assert_eq!(edit.input.text(), "1001", "ctrl+z undid the typing");
 }
 
 /// User finding: there was no button for deleting an option — only the `d`
@@ -14770,7 +16078,9 @@ fn form_focus_advertises_and_handles_the_field_verbs() {
         "off the env-value field, no clear chip: {chips:?}"
     );
 
-    // Down to the env-value field: qa stores one, so `x` clears it.
+    // Down to the env-value field (past Default and the Secret toggle):
+    // qa stores one, so `x` clears it.
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     let clear = Action::RemoveVarValue {
@@ -14779,8 +16089,8 @@ fn form_focus_advertises_and_handles_the_field_verbs() {
     };
     assert_eq!(
         app.varmanager.form_cursor,
-        crate::components::varmanager::VmField::EnvValue,
-        "two downs land on the env-value field"
+        crate::components::varmanager::FormStop::Field(crate::components::varmanager::VmField::EnvValue),
+        "three downs land on the env-value field"
     );
     let chips = app.varmanager.footer_chips(app.proj(), None);
     assert!(
@@ -14938,7 +16248,7 @@ fn vm_footer_drops_chips_with_no_target() {
         .iter()
         .map(|(k, _, _)| *k)
         .collect();
-    assert_eq!(keys, vec!["n", "g"]);
+    assert_eq!(keys, vec!["n", "a"]);
 
     // Grid focus with the cursor on the ghost row: only "new option".
     goto_group(&mut app, "user");
@@ -15546,8 +16856,10 @@ fn every_named_action_is_mouse_reachable() {
                 false,
                 Some("add header"),
                 false,
+                false,
                 None,
                 crate::components::footer::JqBarState::Closed,
+                false,
             )
             .into_iter()
             .filter_map(|(_, _, a)| a),
@@ -15561,8 +16873,10 @@ fn every_named_action_is_mouse_reachable() {
                 false,
                 Some("add header"),
                 true,
+                false,
                 None,
                 crate::components::footer::JqBarState::Closed,
+                false,
             )
             .into_iter()
             .filter_map(|(_, _, a)| a),
@@ -15576,8 +16890,10 @@ fn every_named_action_is_mouse_reachable() {
                 false,
                 Some("add header"),
                 false,
+                false,
                 None,
                 crate::components::footer::JqBarState::Focused,
+                false,
             )
             .into_iter()
             .filter_map(|(_, _, a)| a),
@@ -16115,7 +17431,7 @@ fn switching_to_the_body_tab_keeps_a_hidden_editor_hidden() {
 #[test]
 fn caret_resting_in_a_token_shows_its_tooltip_only_after_the_wall_clock_dwell() {
     let mut app = App::new_for_test();
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     app.editor.url = crate::components::line_input::LineInput::new("{{base}}");
     app.editor.url.set_cursor(3); // inside the token
     // The tooltip's anchor comes from `Hit::VarToken`, registered by a real
@@ -16158,7 +17474,7 @@ fn manage_opens_on_the_requested_tab_and_alt_arrows_cycle_tabs() {
     app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::ALT));
     assert_eq!(app.manage.tab, crate::components::manage::ManageTab::Spaces);
     app.update(Action::OpenManage { tab: None });
-    assert_eq!(app.screen, Screen::Main, "alt+v toggles closed");
+    assert_eq!(app.screen, Screen::Main, "alt+r toggles closed");
     app.update(Action::OpenManage { tab: None });
     assert_eq!(
         app.manage.tab,
@@ -16231,7 +17547,7 @@ fn header_cycle_pills_yield_at_eighty_columns_so_the_manage_chip_fits() {
         .rect_of(&Hit::HeaderManage)
         .expect("the Manage chip must be on the bar at 80 columns");
     // Whatever of the chip survives the yield order (here the fixture's
-    // 10-character tempdir project name also costs it the `alt+v` keycap),
+    // 10-character tempdir project name also costs it the `alt+r` keycap),
     // the whole painted chip lies within the bar.
     assert!(
         manage.x + manage.width <= 80,
@@ -16637,7 +17953,7 @@ mod undo_tests {
     #[test]
     fn cursor_roundtrip_url() {
         let mut app = App::new_for_test();
-        app.editor.sub_focus = SubFocus::Url;
+        app.editor.open_url_from_app();
         app.editor.url = LineInput::new("hello");
         app.editor.url.set_cursor(3);
         let pos = app.editor.cursor_pos();
@@ -16680,30 +17996,150 @@ mod undo_tests {
     }
 
     #[test]
-    fn url_typing_is_captured_and_coalesced() {
+    fn a_url_edit_lands_as_one_step_when_the_line_closes() {
         let mut app = App::new_for_test();
         app.update(Action::CreateRequest("cap".into()));
         app.capture_undo(); // seed shadow
-        app.editor.sub_focus = SubFocus::Url;
+        app.focus = PaneId::Editor;
+        app.editor.open_url_from_app();
         for c in ['h', 't', 't', 'p'] {
-            app.editor
-                .handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
             app.capture_undo();
         }
-        let step = app.history.pop_undo().expect("typing recorded");
+        // The line's own history holds the burst; closing it hands the
+        // whole edit to the app history as one step.
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        app.capture_undo();
+        let step = app.history.pop_undo().expect("the close recorded");
         let crate::undo::StepKind::EditorDelta { before, after, .. } = step.kind else {
             panic!()
         };
         assert_eq!(before.url, "");
         assert_eq!(after.url, "http");
         // create's own FileStates step (Task 6) may remain beneath it, but
-        // the typing burst itself must be exactly one coalesced EditorDelta.
+        // the whole edit must be exactly one EditorDelta.
         while let Some(step) = app.history.pop_undo() {
             assert!(
                 !matches!(step.kind, crate::undo::StepKind::EditorDelta { .. }),
-                "typing burst produced more than one EditorDelta step"
+                "one close must produce exactly one EditorDelta step"
             );
         }
+    }
+
+    /// Typing in the URL line records nothing until the line closes; the close
+    /// is exactly one step however long the typing took, and a second
+    /// open/edit/close is a second step — never merged with the first.
+    #[test]
+    fn a_url_edit_is_one_app_history_step_per_close() {
+        let mut app = App::new_for_test();
+        app.update(Action::CreateRequest("r".into()));
+        app.capture_undo();
+        let steps = app.history.undo_len();
+        app.focus = PaneId::Editor;
+        app.editor.open_url_from_app();
+        type_chars(&mut app, "/a");
+        app.capture_undo();
+        assert_eq!(app.history.undo_len(), steps, "open: nothing recorded");
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(
+            app.editor.sub_focus,
+            SubFocus::Url,
+            "Esc closes to selected, not blurred"
+        );
+        assert!(!app.editor.url_open());
+        app.capture_undo();
+        assert_eq!(app.history.undo_len(), steps + 1, "close: one step");
+        assert!(app.editor.url.text().ends_with("/a"), "Esc kept the text");
+
+        app.editor.open_url_from_app();
+        type_chars(&mut app, "/b");
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.capture_undo();
+        assert_eq!(
+            app.history.undo_len(),
+            steps + 2,
+            "a second close is a second step"
+        );
+
+        app.update(Action::Undo);
+        assert!(
+            app.editor.url.text().ends_with("/a"),
+            "undo takes off the second close only"
+        );
+    }
+
+    /// The Manage screen takes the caret away without touching `focus` or
+    /// `sub_focus`: the URL line's session must close there too, so the
+    /// typing lands as an app step instead of sitting behind a gate the
+    /// undo router can no longer see (and then being thrown away).
+    #[test]
+    fn opening_the_manage_screen_closes_the_url_lines_edit_session() {
+        let mut app = App::new_for_test();
+        app.update(Action::CreateRequest("r".into()));
+        app.capture_undo();
+        let steps = app.history.undo_len();
+        app.focus = PaneId::Editor;
+        app.editor.open_url_from_app();
+        type_chars(&mut app, "/a");
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        app.capture_undo();
+        assert_eq!(app.history.undo_len(), steps + 1);
+        app.editor.open_url_from_app();
+        type_chars(&mut app, "/b");
+        app.capture_undo();
+        app.update(Action::OpenManage { tab: None });
+        assert_eq!(app.screen, Screen::Manage);
+        assert!(app.capture_undo(), "leaving for Manage closes the edit");
+        assert_eq!(app.history.undo_len(), steps + 2, "…as one step");
+        app.update(Action::Undo);
+        assert!(app.editor.url.text().ends_with("/a"), "u on Manage undoes the /b step");
+        app.update(Action::Redo);
+        assert!(app.editor.url.text().ends_with("/a/b"), "and redo brings it back");
+    }
+
+    /// A pane switch moves the focus without touching `sub_focus`, and it
+    /// closes the URL line's edit session all the same: the edit lands as
+    /// one app step, and a ctrl+z after coming back is the app history's,
+    /// not the field's — an in-field undo never steps across the boundary.
+    #[test]
+    fn tabbing_out_of_the_editor_closes_the_url_lines_edit_session() {
+        let mut app = App::new_for_test();
+        app.update(Action::CreateRequest("r".into()));
+        app.capture_undo();
+        let steps = app.history.undo_len();
+        app.focus = PaneId::Editor;
+        app.editor.open_url_from_app();
+        type_chars(&mut app, "/a");
+        app.update(Action::FocusNext);
+        assert_ne!(app.focus, PaneId::Editor, "the focus left the editor");
+        app.capture_undo();
+        assert_eq!(app.history.undo_len(), steps + 1, "close: one step");
+        assert!(!app.editor.url.edited(), "the line's session ended");
+
+        app.focus = PaneId::Editor;
+        app.editor.open_url_from_app();
+        app.handle_key(ctrl('z'));
+        assert!(
+            !app.editor.url.text().ends_with("/a"),
+            "ctrl+z is the app history's, not the closed field's"
+        );
+    }
+
+    /// An in-field undo that returns the text to where it started, then a
+    /// close, records nothing.
+    #[test]
+    fn undoing_a_url_edit_back_to_the_start_then_closing_records_nothing() {
+        let mut app = App::new_for_test();
+        app.update(Action::CreateRequest("r".into()));
+        app.capture_undo();
+        let steps = app.history.undo_len();
+        app.focus = PaneId::Editor;
+        app.editor.open_url_from_app();
+        type_chars(&mut app, "zzz");
+        app.handle_key(ctrl('z'));
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        app.capture_undo();
+        assert_eq!(app.history.undo_len(), steps);
     }
 
     #[test]
@@ -16755,16 +18191,18 @@ mod undo_tests {
     }
 
     #[test]
-    fn undo_reverts_url_typing_and_redo_restores() {
+    fn undo_reverts_a_closed_url_edit_and_redo_restores() {
         let mut app = App::new_for_test();
         app.update(Action::CreateRequest("uz".into()));
         app.capture_undo();
-        app.editor.sub_focus = SubFocus::Url;
+        app.focus = PaneId::Editor;
+        app.editor.open_url_from_app();
         for c in "abc".chars() {
-            app.editor
-                .handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
             app.capture_undo();
         }
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        app.capture_undo();
         app.update(Action::Undo);
         assert_eq!(app.editor.url.text(), "");
         app.update(Action::Redo);
@@ -16793,7 +18231,7 @@ mod undo_tests {
         let mut app = App::new_for_test();
         app.update(Action::CreateRequest("modal".into()));
         app.capture_undo();
-        app.editor.sub_focus = SubFocus::Url;
+        app.editor.open_url_from_app();
         app.editor
             .handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
         app.capture_undo();
@@ -16803,15 +18241,57 @@ mod undo_tests {
     }
 
     #[test]
+    fn ctrl_z_steps_a_modals_field_stack_instead_of_the_app_history() {
+        use crate::components::line_input::LineInput;
+        use crate::components::modal::{Modal, PromptKind};
+        let mut app = App::new_for_test();
+        app.editor
+            .url
+            .handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE)); // an app-history edit, unrelated
+        app.push_modal(Modal::Prompt {
+            title: "Rename".into(),
+            input: LineInput::new("old"),
+            kind: PromptKind::RenameRequest { from: "old".into() },
+            revealed: false,
+        });
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL));
+        assert_eq!(app.modals.focused_input().unwrap().text(), "old");
+        assert!(!app.modals.is_empty(), "the modal is still open — app history untouched");
+    }
+
+    #[test]
+    fn plain_u_undoes_a_modals_field_step_from_a_selected_field() {
+        use crate::components::line_input::LineInput;
+        use crate::components::modal::{Modal, PromptKind};
+        let mut app = App::new_for_test();
+        app.push_modal(Modal::Prompt {
+            title: "Rename".into(),
+            input: LineInput::new("old"),
+            kind: PromptKind::RenameRequest { from: "old".into() },
+            revealed: false,
+        });
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)); // close to selected
+        app.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
+        assert_eq!(app.modals.focused_input().unwrap().text(), "old");
+    }
+
+    #[test]
     fn edit_after_undo_clears_redo() {
         let mut app = App::new_for_test();
         app.update(Action::CreateRequest("lin".into()));
         app.capture_undo();
-        app.editor.sub_focus = SubFocus::Url;
+        app.editor.open_url_from_app();
         app.editor
             .handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
         app.capture_undo();
         app.update(Action::Undo);
+        // The undo landed the line on the reverted text, selected (spec
+        // 2026-09-16) — typing again needs the field reopened, same as a
+        // keyboard user would with Enter/i.
+        app.editor.open_url_from_app();
         app.editor
             .handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
         app.capture_undo();
@@ -16824,7 +18304,7 @@ mod undo_tests {
         let mut app = App::new_for_test();
         app.update(Action::CreateRequest("aaa".into()));
         app.capture_undo();
-        app.editor.sub_focus = SubFocus::Url;
+        app.editor.open_url_from_app();
         app.editor
             .handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
         app.capture_undo();
@@ -16851,7 +18331,7 @@ mod undo_tests {
         let mut app = App::new_for_test();
         app.update(Action::CreateRequest("jb1".into()));
         app.capture_undo();
-        app.editor.sub_focus = SubFocus::Url;
+        app.editor.open_url_from_app();
         app.editor
             .handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
         app.capture_undo();
@@ -16882,7 +18362,7 @@ mod undo_tests {
         let mut app = App::new_for_test();
         app.update(Action::CreateRequest("del-me".into()));
         app.capture_undo();
-        app.editor.sub_focus = SubFocus::Url;
+        app.editor.open_url_from_app();
         app.editor
             .handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
         app.capture_undo();
@@ -17004,7 +18484,7 @@ mod undo_tests {
         let mut app = App::new_for_test();
         app.update(Action::CreateRequest("sv".into()));
         app.capture_undo();
-        app.editor.sub_focus = SubFocus::Url;
+        app.editor.open_url_from_app();
         app.editor
             .handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
         app.editor
@@ -17046,7 +18526,7 @@ mod undo_tests {
         let mut app = App::new_for_test();
         app.update(Action::CreateRequest("sv2".into()));
         app.capture_undo();
-        app.editor.sub_focus = SubFocus::Url;
+        app.editor.open_url_from_app();
         app.editor
             .handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
         app.capture_undo();
@@ -17071,7 +18551,7 @@ mod undo_tests {
         let mut app = App::new_for_test();
         app.update(Action::CreateRequest("sv3".into()));
         app.capture_undo();
-        app.editor.sub_focus = SubFocus::Url;
+        app.editor.open_url_from_app();
         app.editor
             .handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
         app.capture_undo();
@@ -17124,7 +18604,7 @@ mod undo_tests {
             // Dirty the open editor without recapturing: `is_dirty()` goes
             // true and the shadow (still "two"'s saved snapshot) no longer
             // matches `editor.current_request()`.
-            app.editor.sub_focus = SubFocus::Url;
+            app.editor.open_url_from_app();
             app.editor
                 .handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
             assert!(app.editor.is_dirty());
@@ -17565,7 +19045,7 @@ mod undo_tests {
             "alt+Right word-jumps instead"
         );
         // Anywhere else, alt+Right still cycles tabs.
-        app.editor.sub_focus = SubFocus::Url;
+        app.editor.open_url_from_app();
         app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
         assert_ne!(
             app.editor.active_tab,
@@ -17751,7 +19231,7 @@ mod undo_tests {
 
     /// The picker opens filtered to the applied theme's polarity: on the
     /// (dark) default, light themes are not reachable by browsing, so no
-    /// bright flashes. Left/Right flips to the light set, the preview
+    /// bright flashes. Tab/BackTab flips to the light set, the preview
     /// follows, and Esc still restores the original theme.
     #[test]
     fn theme_picker_polarity_toggle_flips_sets_and_esc_still_reverts() {
@@ -17782,17 +19262,17 @@ mod undo_tests {
         }
         // Terminal has no light/dark counterpart: the switch is inert
         // while it's highlighted.
-        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         assert_eq!(app.theme_name, "terminal", "unpaired: flip does nothing");
-        // Move to the paired "dark" builtin; Right now lands on its
+        // Move to the paired "dark" builtin; Tab now lands on its
         // counterpart in the light set, and the preview follows.
         app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         assert_eq!(app.theme_name, "dark");
-        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         assert_eq!(app.theme_name, "light", "flip follows the counterpart");
         assert_ne!(app.theme.page, original);
         // Flip back: counterpart again — the same family, dark side.
-        app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE));
         assert_eq!(app.theme_name, "dark");
         app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert_eq!(app.theme_name, original_name, "esc restores after toggling");
@@ -17808,15 +19288,15 @@ mod undo_tests {
         let mut app = App::new_for_test();
         app.update(Action::ApplyTheme("gruvbox-dark".into()));
         app.update(Action::OpenThemeChooser);
-        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         assert_eq!(app.theme_name, "gruvbox-light");
-        app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE));
         assert_eq!(app.theme_name, "gruvbox-dark");
         // Catppuccin pairs across its own names, not the stem convention.
         app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         app.update(Action::ApplyTheme("catppuccin-mocha".into()));
         app.update(Action::OpenThemeChooser);
-        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         assert_eq!(app.theme_name, "catppuccin-latte");
     }
 
@@ -17991,7 +19471,7 @@ fn right_click_on_the_url_bar_offers_copy_and_paste_and_copy_copies_the_selectio
     let mut app = App::new_for_test();
     app.set_clipboard_for_test(file_clipboard(&out, ""));
     app.editor.url = crate::components::line_input::LineInput::new("https://example.com");
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     app.editor.url.select_all();
     render_once(&mut app);
     let area = app.editor.last_url_text_area.expect("url area recorded");
@@ -18088,7 +19568,6 @@ fn right_click_on_the_edited_table_cell_offers_the_text_menu_and_keeps_the_edit_
         row: 0,
         col: Col::Key,
         input,
-        original: "page".into(),
     });
     render_once(&mut app);
     let cell = app
@@ -18139,7 +19618,6 @@ fn right_click_elsewhere_on_the_row_keeps_the_row_menu_and_commits_the_edit() {
         row: 0,
         col: Col::Key,
         input: crate::components::line_input::LineInput::new("pages"),
-        original: "page".into(),
     });
     render_once(&mut app);
     // The value cell of the same row is not the cell under edit.
@@ -18403,7 +19881,7 @@ fn extracting_a_url_selection_replaces_only_the_selected_part() {
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     app.update(Action::ForceOpenRequest("main/ping".into()));
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     select_in_url(&mut app, "abc-123");
 
     app.update(Action::ConfirmExtractSelection {
@@ -18455,7 +19933,6 @@ fn extracting_a_table_cell_selection_replaces_the_part_and_commits_the_cell() {
         row: 0,
         col: Col::Value,
         input,
-        original: "Bearer abc".into(),
     });
 
     app.update(Action::ConfirmExtractSelection {
@@ -18638,7 +20115,7 @@ fn extract_selector_option_seed_is_blank_for_a_long_or_unsafe_value() {
         "https://x/ping/3f2504e0-4f89-11d3-9a0c-0305e82c3301",
     );
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     select_in_url(&mut app, "3f2504e0-4f89-11d3-9a0c-0305e82c3301");
     app.update(Action::ExtractSelectionToSelector(TextSurface::Url));
     let Some(Modal::MultiPrompt { fields, .. }) = app.modals.top() else {
@@ -18658,7 +20135,7 @@ fn extract_selector_from_a_url_selection_creates_the_selector_its_option_and_sel
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     app.update(Action::ForceOpenRequest("main/ping".into()));
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     select_in_url(&mut app, "east");
 
     app.update(Action::ConfirmExtractToSelector {
@@ -18704,7 +20181,7 @@ fn extract_selector_shared_puts_the_option_in_variables_toml() {
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     app.editor.url = LineInput::new("v2");
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
 
     app.update(Action::ExtractToSelector);
     assert!(matches!(
@@ -18718,7 +20195,9 @@ fn extract_selector_shared_puts_the_option_in_variables_toml() {
     app.handle_key(tab_key()); // option, seeded "v2"
     app.handle_key(tab_key()); // scope
     app.handle_key(right_key()); // Shared
-    app.handle_key(enter_key());
+    // Enter now only closes an open field to selected (spec 2026-09-16);
+    // submitting is the button row's Confirm click, same as clicking OK.
+    click_modal_confirm(&mut app);
 
     assert!(app.modals.is_empty(), "{:?}", app.toasts.messages());
     assert_eq!(app.editor.url.text(), "{{api_version}}");
@@ -18749,7 +20228,7 @@ fn extract_selector_refuses_a_taken_name_and_leaves_everything_alone() {
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     app.editor.url = LineInput::new("https://x/ping/east");
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     select_in_url(&mut app, "east");
     let vars_before = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
     let env_before = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
@@ -18932,43 +20411,48 @@ fn enter_commits_the_filter_and_leaves_it_on() {
 }
 
 #[test]
-fn esc_cancels_the_edit_and_a_bar_opened_onto_no_filter_closes() {
+fn esc_on_a_bar_opened_onto_no_filter_keeps_the_typed_filter_and_undo_takes_it_off() {
     let mut app = App::new_for_test();
     ready_response(&mut app, JQ_BODY);
     let full = app.session.response.view().unwrap().view_text();
+    app.capture_undo(); // seed the shadow
+    let steps = app.history.undo_len();
     app.handle_key(alt('q'));
     type_str(&mut app, ".data.total");
     app.capture_undo();
-    app.no_coalesce = true;
     assert_eq!(app.session.response.view().unwrap().view_text(), "2");
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    assert_eq!(app.editor.jq, "", "esc drops what was typed");
+    app.sync_jq();
+    assert_eq!(app.editor.jq, ".data.total", "esc keeps what was typed");
     assert!(app.editor.jq_enabled, "…and leaves the switch on");
     assert!(
         !app.session.response.jq_focused(),
         "…and the caret leaves the bar"
     );
-    assert!(!app.session.response.jq_open(), "…which, empty, is hidden");
-    assert_eq!(app.session.response.view().unwrap().view_text(), full);
-    // The cancel was an edit: undo brings the typed filter back.
-    app.capture_undo();
-    app.update(Action::Undo);
-    assert_eq!(app.editor.jq, ".data.total");
+    assert!(app.session.response.jq_open(), "…so the bar stays, unfocused");
     assert_eq!(app.session.response.view().unwrap().view_text(), "2");
+    // The app history waited for the bar to close; the close is the one
+    // step, and undo is what drops the typed filter.
+    assert!(app.capture_undo(), "the close records");
+    assert_eq!(app.history.undo_len(), steps + 1);
+    app.update(Action::Undo);
+    assert_eq!(app.editor.jq, "");
+    assert_eq!(app.session.response.view().unwrap().view_text(), full);
 }
 
 #[test]
-fn esc_puts_a_saved_filter_back_and_leaves_it_on() {
+fn esc_keeps_the_edit_to_a_reopened_filter_and_leaves_it_on() {
     let mut app = App::new_for_test();
     ready_response(&mut app, JQ_BODY);
-    app.update(Action::JqApply(".data.total".into()));
+    app.update(Action::JqApply(".data.items[0].statu".into()));
     app.handle_key(alt_shift('q')); // closes (off)
     app.handle_key(alt('q')); // on + focused
     assert!(app.session.response.jq_focused());
     type_str(&mut app, "s");
-    assert_eq!(app.editor.jq, ".data.totals");
+    assert_eq!(app.editor.jq, ".data.items[0].status");
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    assert_eq!(app.editor.jq, ".data.total", "the edit is reverted");
+    app.sync_jq();
+    assert_eq!(app.editor.jq, ".data.items[0].status", "the edit stands");
     assert!(!app.session.response.jq_focused());
     assert!(
         app.editor.jq_enabled,
@@ -18978,25 +20462,149 @@ fn esc_puts_a_saved_filter_back_and_leaves_it_on() {
         app.session.response.jq_open(),
         "…so the bar stays, unfocused"
     );
-    assert_eq!(app.session.response.view().unwrap().view_text(), "2");
+    assert_eq!(
+        app.session.response.view().unwrap().view_text(),
+        "\"active\""
+    );
 }
 
 #[test]
-fn esc_on_an_open_filter_reverts_the_edit_and_keeps_it_on() {
+fn esc_on_an_open_filter_keeps_the_edit_and_blurs() {
     let mut app = App::new_for_test();
     ready_response(&mut app, JQ_BODY);
     app.update(Action::JqApply(".data.total".into()));
     app.update(Action::OpenJqBar);
     type_str(&mut app, "s");
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    assert_eq!(app.editor.jq, ".data.total");
-    assert!(app.editor.jq_enabled, "it was on when editing started");
-    assert!(
-        app.session.response.jq_open(),
-        "…so the bar stays, unfocused"
-    );
+    app.sync_jq();
+    assert_eq!(app.editor.jq, ".data.totals", "Esc keeps what was typed");
+    assert!(app.editor.jq_enabled);
+    assert!(!app.session.response.jq_focused(), "…and takes the caret away");
+}
+
+/// The jq bar is live as you type, so typing across more than the
+/// coalesce window used to be several app steps; now the close is one.
+#[test]
+fn a_jq_edit_is_one_app_history_step_per_close() {
+    let mut app = App::new_for_test();
+    app.update(Action::CreateRequest("r".into()));
+    ready_response(&mut app, JQ_BODY);
+    app.update(Action::OpenJqBar);
+    app.sync_jq();
+    app.capture_undo();
+    let steps = app.history.undo_len();
+    type_str(&mut app, ".data");
+    app.sync_jq();
+    app.capture_undo();
+    assert_eq!(app.history.undo_len(), steps, "open: nothing recorded");
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.sync_jq();
+    app.capture_undo();
+    assert_eq!(app.history.undo_len(), steps + 1);
+    assert_eq!(app.editor.jq, ".data");
+}
+
+/// The jq bar's twin of the URL case: the Manage screen leaves `focus`
+/// on the response pane, so the bar's session has to close on the screen
+/// change itself, or the gate stays on with no field for `u` to step.
+#[test]
+fn opening_the_manage_screen_closes_the_jq_bars_edit_session() {
+    let mut app = App::new_for_test();
+    app.update(Action::CreateRequest("r".into()));
+    ready_response(&mut app, JQ_BODY);
+    app.update(Action::OpenJqBar);
+    app.sync_jq();
+    app.capture_undo();
+    let steps = app.history.undo_len();
+    type_str(&mut app, ".data");
+    app.sync_jq();
+    app.capture_undo();
+    assert_eq!(app.history.undo_len(), steps, "open: nothing recorded");
+    app.update(Action::OpenManage { tab: None });
+    assert!(app.capture_undo(), "leaving for Manage closes the edit");
+    assert_eq!(app.history.undo_len(), steps + 1);
+    assert_eq!(app.editor.jq, ".data");
+    app.update(Action::Undo);
+    app.sync_jq();
+    assert_eq!(app.editor.jq, "", "u on Manage undoes the filter step");
+    assert_eq!(app.history.undo_len(), steps);
+}
+
+/// A filter that lands while the bar is closed — a tree verb, an AI
+/// reply — is the app history's, not the field's: focusing the bar
+/// afterwards must not hand ctrl+z a step the app history already owns.
+#[test]
+fn a_filter_landed_in_a_closed_bar_stays_the_app_historys() {
+    let mut app = App::new_for_test();
+    app.update(Action::CreateRequest("r".into()));
+    ready_response(&mut app, JQ_BODY);
+    let full = app.session.response.view().unwrap().view_text();
+    app.capture_undo(); // seed the shadow
+    let steps = app.history.undo_len();
+    // The verb path: fired from the tree (the pane has focus, the bar
+    // does not), so nothing blurs the bar on the way through.
+    app.focus = PaneId::Response;
+    app.update(Action::JqApply(".data.total".into()));
+    app.sync_jq();
     assert!(!app.session.response.jq_focused());
-    assert_eq!(app.session.response.view().unwrap().view_text(), "2");
+    assert!(app.capture_undo(), "the app history takes it");
+    assert_eq!(app.history.undo_len(), steps + 1);
+    // Focusing the bar without typing starts an empty session.
+    app.handle_key(alt('q'));
+    assert!(app.session.response.jq_focused());
+    assert!(
+        !app.session.response.jq_field_edited(),
+        "nothing typed: the gate is off"
+    );
+    app.handle_key(ctrl('z'));
+    app.sync_jq();
+    assert_eq!(app.editor.jq, "", "ctrl+z stepped the app history");
+    assert_eq!(app.history.undo_len(), steps);
+    assert_eq!(app.session.response.view().unwrap().view_text(), full);
+}
+
+#[test]
+fn ctrl_z_in_the_jq_bar_walks_the_filter_back() {
+    let mut app = App::new_for_test();
+    ready_response(&mut app, JQ_BODY);
+    app.update(Action::OpenJqBar);
+    type_str(&mut app, ".data");
+    app.handle_key(ctrl('z'));
+    app.sync_jq();
+    assert_eq!(app.session.response.jq_text(), "");
+    assert!(app.session.response.jq_focused(), "the bar keeps the caret");
+}
+
+/// The search box routes ctrl+z through `open_text_field_mut`'s fallback
+/// arm the same way the jq bar's own arm does: it walks the typed run
+/// back and leaves the box open.
+#[test]
+fn ctrl_z_in_the_search_box_walks_the_query_back() {
+    let mut app = App::new_for_test();
+    ready_response(&mut app, JQ_BODY);
+    app.focus = PaneId::Response;
+    app.handle_key(plain('/'));
+    type_str(&mut app, "status");
+    app.handle_key(ctrl('z'));
+    let view = app.session.response.view().unwrap();
+    let search = view.search.as_ref().expect("the search stays open");
+    assert!(search.active, "ctrl+z did not close the box");
+    assert_eq!(search.input.text(), "", "ctrl+z undid the typed run");
+}
+
+#[test]
+fn esc_in_the_search_box_runs_the_search_like_enter() {
+    let mut app = App::new_for_test();
+    ready_response(&mut app, JQ_BODY);
+    app.focus = PaneId::Response;
+    app.handle_key(plain('/'));
+    type_str(&mut app, "status");
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    let view = app.session.response.view().unwrap();
+    let search = view.search.as_ref().expect("the search stays");
+    assert!(!search.active, "the box closed");
+    assert_eq!(search.query, "status", "…with the query run");
+    assert!(!search.matches.is_empty());
 }
 
 #[test]
@@ -19006,12 +20614,17 @@ fn esc_in_the_tree_dismisses_selection_and_search_but_never_the_filter() {
     app.update(Action::JqApply(".data.total".into()));
     app.focus = PaneId::Response;
     app.update(Action::OpenResponseSearch);
-    // First Esc: the search line goes; the bar (and filter) stay.
+    // First Esc: the search box closes on its (empty) query, the caret
+    // back in the tree; the bar (and filter) stay.
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    assert!(app.session.response.view().unwrap().search.is_none());
+    let search = app.session.response.view().unwrap().search.as_ref();
+    assert!(!search.expect("the search stays").active);
     assert!(app.session.response.jq_open());
     assert_eq!(app.session.response.view().unwrap().view_text(), "2");
-    // Another Esc from the tree leaves the saved filter alone.
+    // Esc from the tree is what clears the search…
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(app.session.response.view().unwrap().search.is_none());
+    // …and another leaves the saved filter alone.
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(app.session.response.jq_open());
     assert_eq!(app.editor.jq, ".data.total");
@@ -19019,7 +20632,7 @@ fn esc_in_the_tree_dismisses_selection_and_search_but_never_the_filter() {
 }
 
 #[test]
-fn esc_after_a_tee_up_cancels_back_to_the_filter_before_it() {
+fn esc_after_a_tee_up_keeps_it_and_ctrl_z_is_what_walks_it_back() {
     let mut app = App::new_for_test();
     ready_response(&mut app, JQ_BODY);
     app.update(Action::JqApply(".data.total".into()));
@@ -19029,9 +20642,17 @@ fn esc_after_a_tee_up_cancels_back_to_the_filter_before_it() {
     });
     assert!(app.session.response.jq_focused());
     assert_eq!(app.editor.jq, "map(select(.x == ))");
-    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    // The tee-up landed in the focused bar as one undoable step.
+    app.handle_key(ctrl('z'));
+    app.sync_jq();
     assert_eq!(app.editor.jq, ".data.total");
-    assert_eq!(app.session.response.view().unwrap().view_text(), "2");
+    app.update(Action::JqTeeUp {
+        text: "map(select(.x == ))".into(),
+        cursor: 17,
+    });
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.sync_jq();
+    assert_eq!(app.editor.jq, "map(select(.x == ))", "Esc keeps it");
 }
 
 #[test]
@@ -19150,32 +20771,32 @@ fn multiple_outputs_run_together_without_a_blank_line() {
 }
 
 #[test]
-fn the_focused_bar_advertises_enter_apply_and_esc_cancel() {
+fn the_focused_bar_advertises_enter_apply_and_esc_done() {
     let chips = crate::components::footer::footer_chips(
         PaneId::Response,
         false,
         false,
         None,
         false,
+        false,
         None,
         crate::components::footer::JqBarState::Focused,
+        false,
     );
     let keys: Vec<(&str, &str)> = chips.iter().map(|(k, l, _)| (*k, *l)).collect();
     assert_eq!(
         keys,
         vec![
             ("enter", "apply"),
-            ("esc", "cancel"),
+            ("esc", "done"),
             ("alt+shift+q", "unfilter"),
             ("\u{F0674}", "describe…")
         ],
         "{chips:?}"
     );
-    assert_eq!(
-        chips[1].2,
-        Some(Action::CancelJqEdit),
-        "the esc chip is clickable"
-    );
+    // The esc chip is clickable: it closes the bar's field, keeping
+    // the filter, exactly as the key does.
+    assert_eq!(chips[1].2, Some(Action::CloseField));
 }
 
 #[test]
@@ -19189,21 +20810,64 @@ fn a_saved_filter_is_applied_when_the_request_opens_and_when_a_response_lands() 
 }
 
 #[test]
-fn undo_restores_the_previous_filter_text_in_the_bar() {
+fn undo_after_the_bar_closes_takes_the_whole_edit_off_and_the_bar_follows() {
     let mut app = App::new_for_test();
     ready_response(&mut app, JQ_BODY);
+    app.capture_undo(); // seed the shadow
+    let steps = app.history.undo_len();
     app.handle_key(alt('q'));
     type_str(&mut app, ".data");
     app.capture_undo();
-    app.no_coalesce = true;
     type_str(&mut app, ".total");
     app.capture_undo();
+    assert_eq!(
+        app.history.undo_len(),
+        steps,
+        "the app history waits for the open bar"
+    );
+    // Take the caret off the bar: while it has the caret ctrl+z is the
+    // bar's own undo, and this test is about the app history flowing back
+    // into it. The caret leaving is the close, and the close is the one
+    // step the app history gets — however many bursts went into it.
+    app.focus = PaneId::Editor;
+    app.update(Action::Render);
+    assert!(app.capture_undo(), "the close records");
+    assert_eq!(app.history.undo_len(), steps + 1, "one step for the edit");
     app.update(Action::Undo);
-    assert_eq!(app.editor.jq, ".data");
+    assert_eq!(app.editor.jq, "");
     assert_eq!(
         app.session.response.jq_text(),
-        ".data",
+        "",
         "the bar follows the editor after undo"
+    );
+}
+
+/// The other half of the jq undo contract: with the caret *in* the bar,
+/// ctrl+z is the bar's own undo, and what it leaves has to stick — an
+/// unmarked step would be written straight back by the reconcile at the
+/// end of the very same update.
+#[test]
+fn ctrl_z_in_the_focused_jq_bar_walks_the_filter_back_and_it_sticks() {
+    let mut app = App::new_for_test();
+    ready_response(&mut app, JQ_BODY);
+    app.handle_key(alt('q'));
+    assert!(app.session.response.jq_focused());
+    type_str(&mut app, ".data");
+    assert_eq!(app.editor.jq, ".data");
+
+    app.handle_key(ctrl('z'));
+    assert_eq!(
+        app.session.response.jq_text(),
+        "",
+        "the typing run came off in the bar"
+    );
+    assert_eq!(
+        app.editor.jq, "",
+        "and the reconcile followed the bar instead of writing the filter back"
+    );
+    assert!(
+        app.session.response.jq_focused(),
+        "the bar keeps the caret: undo in a field never closes it"
     );
 }
 
@@ -19486,8 +21150,10 @@ fn the_footer_and_palette_reach_the_jq_bar() {
         false,
         None,
         false,
+        false,
         None,
         crate::components::footer::JqBarState::Closed,
+        false,
     );
     assert!(
         chips
@@ -19774,8 +21440,10 @@ fn the_response_footer_always_offers_alt_q_filter_and_close_only_while_open() {
             false,
             None,
             false,
+            false,
             None,
             state,
+            false,
         )
     };
     let find = |state: JqBarState, key: &str| {
@@ -19968,7 +21636,7 @@ async fn describe_a_filter_sends_the_shape_and_lands_the_reply_in_the_bar() {
         panic!("prompt")
     };
     type_str(&mut app, "just the total");
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    submit_prompt(&mut app);
     assert!(app.session.response.jq_bar().ai_pending);
     let action = drain_ai(&mut app).await;
     app.update(action);
@@ -21107,7 +22775,7 @@ fn dragging_an_environment_row_reorders_and_persists() {
 #[test]
 fn reopening_the_manage_screen_on_another_tab_mid_drag_cancels_it() {
     // `OpenManage { tab: Some(other) }` while the screen is already up
-    // (the palette, or a second alt+v with a tab) resets the list — the
+    // (the palette, or a second alt+r with a tab) resets the list — the
     // drag has to be cancelled first, or it is dropped on the floor with
     // `manage_press` still armed.
     let (mut app, dir) = manage_spaces_app();
@@ -22711,7 +24379,7 @@ fn extract_to_request_over_an_outside_edit_asks_instead_of_overwriting() {
     app.update(Action::ForceOpenRequest("main/ping".into()));
     app.editor.url = crate::components::line_input::LineInput::new("https://x/ping/abc-123");
     app.focus = crate::layout::PaneId::Editor;
-    app.editor.sub_focus = crate::components::editor::SubFocus::Url;
+    app.editor.open_url_from_app();
     postui_core::fixtures::save_request(
         dir.path(),
         "main/ping",
@@ -22771,7 +24439,7 @@ fn a_reload_from_disk_is_its_own_undo_step_and_says_so() {
 
     // Type immediately afterwards, inside the coalesce window.
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     app.handle_key(plain('!'));
     app.capture_undo();
     app.update(Action::Undo);
@@ -23031,7 +24699,7 @@ fn reload_from_disk_applies_a_new_keys_toml_end_to_end() {
     app.update(Action::RefreshSidebar);
     app.update(Action::OpenRequest("main/ping".into()));
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     type_chars(&mut app, "/edited");
     assert!(app.editor.is_dirty());
 
@@ -23043,10 +24711,10 @@ fn reload_from_disk_applies_a_new_keys_toml_end_to_end() {
     );
 }
 
-/// alt+r has to reach the reload from *every* screen, not just Main: the
+/// alt+shift+r has to reach the reload from *every* screen, not just Main: the
 /// Manage screen captures all input except the escape whitelist, and the
 /// Environments tab's own `r` opens the Rename prompt — so an unwhitelisted
-/// alt+r would silently rename instead of reloading.
+/// a bare alt+r would silently rename instead of reloading.
 #[test]
 fn alt_r_reloads_from_every_manage_tab() {
     for tab in [
@@ -23062,11 +24730,11 @@ fn alt_r_reloads_from_every_manage_tab() {
         app.update(Action::OpenManage { tab: Some(tab) });
         app.toasts = Default::default();
 
-        app.handle_key(alt('r'));
+        app.handle_key(alt_shift('r'));
 
         assert!(
             app.modals.is_empty(),
-            "{tab:?}: alt+r opened a modal instead of reloading"
+            "{tab:?}: alt+shift+r opened a modal instead of reloading"
         );
         assert!(
             app.toasts
@@ -23247,7 +24915,7 @@ fn reload_from_disk_never_touches_the_editor_buffer() {
     app.update(Action::RefreshSidebar);
     app.update(Action::OpenRequest("main/ping".into()));
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     type_chars(&mut app, "/edited");
     let url_before = app.editor.url.text().to_string();
     assert!(app.editor.is_dirty());
@@ -23975,6 +25643,131 @@ fn a_bad_osc52_limit_is_rejected_and_the_stored_value_stands() {
     assert!(app.settings.editing.is_none());
 }
 
+/// Esc is a commit here like Enter, and a value that will not commit
+/// cannot close: the edit stays open with what was typed and the toast
+/// says why. No key reverts a field on the way out — the way back is
+/// ctrl+z in the field, or a value that parses.
+#[test]
+fn esc_on_a_rejected_settings_value_keeps_the_edit_open_like_enter() {
+    use crate::components::settings::SettingsField;
+    let mut app = App::new_for_test();
+    app.update(Action::OpenManage {
+        tab: Some(crate::components::manage::ManageTab::Settings),
+    });
+    app.ui_settings.osc52_limit = 65536;
+    app.settings.begin_edit(SettingsField::Osc52Limit, "abc");
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(app.settings.editing, Some(SettingsField::Osc52Limit));
+    assert_eq!(app.settings.field_text(), "abc", "what was typed is still there");
+    assert_eq!(app.ui_settings.osc52_limit, 65536, "the stored value stands");
+    assert!(
+        app.toasts.messages().iter().any(|m| m.contains("65536")),
+        "{:?}",
+        app.toasts.messages()
+    );
+    // The chip is the same Esc.
+    app.toasts = Default::default();
+    app.update(Action::CloseField);
+    assert_eq!(app.settings.editing, Some(SettingsField::Osc52Limit));
+    assert!(!app.toasts.is_empty(), "refused again, and said so");
+}
+
+/// The field rule's discard route for a Settings field: Esc commits (it
+/// never reverts), so undoing a mis-typed run has to happen inside the
+/// field itself, via ctrl+z — same as every other field on this branch.
+#[test]
+fn ctrl_z_in_a_settings_field_undoes_the_typing() {
+    let mut app = App::new_for_test();
+    app.update(Action::OpenManage {
+        tab: Some(crate::components::manage::ManageTab::Settings),
+    });
+    // Open the ai_cmd row's edit directly, the way
+    // `a_bad_osc52_limit_is_rejected_and_the_stored_value_stands` does.
+    app.settings
+        .begin_edit(crate::components::settings::SettingsField::AiCmd, "");
+    type_chars(&mut app, "xyz");
+    app.handle_key(ctrl('z'));
+    assert_eq!(app.settings.field_text(), "", "the run came off");
+    assert!(app.settings.editing.is_some(), "the field stays open");
+}
+
+/// The field rule on the Settings tab: `Esc` closes the edit and keeps
+/// what was typed — it commits, exactly as `Enter` does.
+#[test]
+fn esc_in_a_settings_field_keeps_the_text() {
+    let mut app = App::new_for_test();
+    app.update(Action::OpenManage {
+        tab: Some(crate::components::manage::ManageTab::Settings),
+    });
+    app.settings
+        .begin_edit(crate::components::settings::SettingsField::AiCmd, "");
+    type_chars(&mut app, "my-ai --go");
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(app.settings.editing.is_none(), "Esc closed the field");
+    assert_eq!(
+        app.ui_settings.ai_cmd, "my-ai --go",
+        "and the typed text was committed, not reverted"
+    );
+}
+
+#[test]
+fn settings_vim_aliases_are_strict_synonyms() {
+    fn fresh() -> App {
+        let mut app = App::new_for_test();
+        app.update(Action::OpenManage {
+            tab: Some(crate::components::manage::ManageTab::Settings),
+        });
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        app
+    }
+    let pairs = [
+        (plain('j'), KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
+        (plain('k'), KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)),
+        (plain('g'), KeyEvent::new(KeyCode::Home, KeyModifiers::NONE)),
+        // Shaped as a terminal sends it: crossterm sets SHIFT on every
+        // uppercase char.
+        (
+            KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT),
+            KeyEvent::new(KeyCode::End, KeyModifiers::NONE),
+        ),
+        // `i` opens a selected settings row exactly as Enter does (spec
+        // 2026-09-16).
+        (plain('i'), KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+    ];
+    for (alias, canonical) in pairs {
+        let (mut a, mut b) = (fresh(), fresh());
+        a.handle_key(alias);
+        b.handle_key(canonical);
+        assert_eq!(a.settings.cursor, b.settings.cursor, "{alias:?}");
+    }
+    let (mut a, mut b) = (fresh(), fresh());
+    for app in [&mut a, &mut b] {
+        app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE)); // a Files row
+    }
+    a.handle_key(plain('l'));
+    b.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    assert_eq!(a.settings.file_button, b.settings.file_button);
+    assert_eq!(a.settings.file_button, 1);
+}
+
+/// `i` opens a Settings text row exactly as Enter/Space do (spec
+/// 2026-09-16): it is not just another vim alias for motion here, it is
+/// the shared field-open key.
+#[test]
+fn i_opens_a_settings_text_row_like_enter() {
+    use crate::components::settings::{SettingsField, SettingsRow, SettingsTab};
+    let mut app = App::new_for_test();
+    app.update(Action::OpenManage {
+        tab: Some(crate::components::manage::ManageTab::Settings),
+    });
+    app.settings.cursor = SettingsTab::rows()
+        .iter()
+        .position(|r| matches!(r, SettingsRow::Setting(SettingsField::AiCmd)))
+        .expect("ai_cmd row exists");
+    app.handle_key(plain('i'));
+    assert!(app.settings.editing.is_some(), "i opens the text row");
+}
+
 /// A refused `osc52_limit` keeps its edit open, so a click landing on
 /// another row must not move the cursor out from under it -- `editing`
 /// and `cursor` would then name different rows and the painted well
@@ -24252,6 +26045,137 @@ fn resetting_keys_writes_the_seed_with_or_without_an_existing_file() {
     }
     let text = std::fs::read_to_string(dir.path().join("keys.toml")).unwrap();
     assert_eq!(text, seed, "a present file resets to the same seed");
+}
+
+/// A Settings flag commit is one undo step, like every other field: ctrl+z
+/// reverts it, ctrl+shift+z (redo) reapplies it.
+#[test]
+fn ctrl_z_reverts_a_settings_flag_commit_and_redo_reapplies() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = App::new_for_test();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+    assert!(app.ui_settings.hover_hints, "default is on");
+
+    app.update(Action::SetUiFlag {
+        key: "hover_hints",
+        value: false,
+    });
+    assert!(!app.ui_settings.hover_hints);
+
+    app.update(Action::Undo);
+    assert!(app.ui_settings.hover_hints, "undo restored the flag");
+
+    app.update(Action::Redo);
+    assert!(!app.ui_settings.hover_hints, "redo reapplied it");
+}
+
+/// Same undo/redo contract for a text setting, not just a flag.
+#[test]
+fn ctrl_z_reverts_a_settings_text_commit() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = App::new_for_test();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+    let before = app.ui_settings.ai_cmd.clone();
+
+    app.update(Action::SetUiString {
+        key: "ai_cmd",
+        value: "my-cmd".to_string(),
+    });
+    assert_eq!(app.ui_settings.ai_cmd, "my-cmd");
+
+    app.update(Action::Undo);
+    assert_eq!(app.ui_settings.ai_cmd, before);
+}
+
+/// A write that never lands records nothing to undo -- `osc52_limit` past
+/// `i64::MAX` is refused by `Config::save_ui_int` itself, so the follow-up
+/// `Undo` has no Settings step waiting for it (or anything else).
+#[test]
+fn a_refused_settings_write_records_no_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = App::new_for_test();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+
+    app.update(Action::SetUiInt {
+        key: "osc52_limit",
+        value: usize::MAX,
+    });
+    app.update(Action::Undo);
+
+    assert!(
+        app.toasts
+            .messages()
+            .iter()
+            .any(|m| m.contains("Nothing to undo")),
+        "nothing else changed, so there is nothing to undo: {:?}",
+        app.toasts.messages()
+    );
+}
+
+/// Final-review finding 6: the spec turns `Action::Undo`'s "commit the
+/// open table edit" prelude into "close any open field on the current
+/// screen" — a live, untouched Settings field must commit (as one step,
+/// in the same order the table already gets) before the pop, so ctrl+z
+/// reaches the earlier app-history step instead of getting stuck behind
+/// a field that never released the caret.
+#[test]
+fn undo_closes_a_live_untouched_settings_field_before_popping_app_history() {
+    use crate::components::settings::SettingsField;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = App::new_for_test();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+    let before = app.ui_settings.ai_cmd.clone();
+
+    // An earlier, already-recorded app-history step: the one ctrl+z
+    // should reach.
+    app.update(Action::SetUiString {
+        key: "ai_cmd",
+        value: "my-cmd".to_string(),
+    });
+    assert_eq!(app.ui_settings.ai_cmd, "my-cmd");
+
+    // A live Settings field, open on the Settings tab, showing exactly
+    // what's already stored — untouched, nothing of its own to undo.
+    app.screen = Screen::Manage;
+    app.manage.tab = ManageTab::Settings;
+    app.settings.begin_edit(SettingsField::AiCmd, "my-cmd");
+    assert!(app.settings.editing.is_some());
+
+    app.update(Action::Undo);
+
+    assert!(
+        app.settings.editing.is_none(),
+        "the prelude must close the live field, untouched or not"
+    );
+    assert_eq!(
+        app.ui_settings.ai_cmd, before,
+        "an untouched field commits nothing of its own, so ctrl+z falls \
+         through to the earlier app-history step"
+    );
+}
+
+/// A config.toml Reset is itself one undo step: undoing it puts back the
+/// file as it stood before the reset, not just the defaults the reset
+/// wrote.
+#[test]
+fn undo_of_a_config_reset_restores_the_previous_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = App::new_for_test();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+
+    app.update(Action::SetUiFlag {
+        key: "animations",
+        value: false,
+    });
+    app.update(Action::ForceResetConfigFile(crate::action::ConfigFile::Config));
+    assert!(app.ui_settings.animations, "reset restored the default");
+
+    app.update(Action::Undo);
+    assert!(
+        !app.ui_settings.animations,
+        "undo of the reset restored the pre-reset value"
+    );
 }
 
 /// A Files row is aimed with left/right and run with enter -- the same

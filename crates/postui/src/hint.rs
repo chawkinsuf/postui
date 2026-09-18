@@ -202,14 +202,16 @@ fn fallback_description(action: &Action) -> Option<String> {
         Action::Quit => "Quit postui".to_string(),
         Action::OpenPalette => "Open the command palette".to_string(),
         Action::CancelSend => "Cancel the request in flight".to_string(),
+        Action::CloseField => "Close the field, keeping what you typed".to_string(),
+        Action::FocusUrl => "Edit the URL".to_string(),
         Action::CycleSplit => "Step the editor/response split".to_string(),
         Action::CycleSplitBack => "Step the split back".to_string(),
         Action::DeleteTableRow(_) => "Delete this row".to_string(),
-        Action::CancelJqEdit => "Undo the edits to this filter".to_string(),
         Action::ToggleJqBar => "Turn the jq filter off".to_string(),
         Action::ResponseViewMode(ViewMode::Raw) => "Show the raw response body".to_string(),
         Action::ResponseViewMode(ViewMode::Headers) => "Show the response headers".to_string(),
         Action::ResponseViewMode(ViewMode::Pretty) => "Show the body as a JSON tree".to_string(),
+        Action::CycleResponseView => "Show the next response view".to_string(),
         Action::CloseScreen => "Go back to the request screen".to_string(),
         Action::SelectManageTab(tab) => format!("Show the {} tab", tab.label()),
         _ => return None,
@@ -470,7 +472,7 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         }
         Hit::ConfigEditKeepEditing => text("Resume editing this file"),
         Hit::ConfigEditDiscard => text("Discard these edits"),
-        Hit::ModalCancel => text("Close without changes \u{b7} esc"),
+        Hit::ModalCancel => text("Cancel and close \u{b7} esc on the buttons"),
         Hit::ModalConfirm => text("Confirm and close \u{b7} enter"),
         Hit::ModalChoiceArrow { dir, .. } => text(if *dir > 0 {
             "Go to the next choice"
@@ -484,6 +486,11 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         }),
         Hit::ModalAddRow => text("Add another field"),
         Hit::ModalSharedToggle => text("Use the same options in every environment"),
+        Hit::ModalRevealToggle => text(if ctx.on {
+            "Hide the secret you're typing"
+        } else {
+            "Show the secret you're typing"
+        }),
         // Names the scope the chosen Write-to row would clear, the way
         // the modal's own remove chip does — "this scope" makes the
         // reader look back up at the popup to find out which.
@@ -707,24 +714,28 @@ mod tests {
                             JqBarState::Completing { cycle: true },
                             JqBarState::Completing { cycle: false },
                         ] {
-                            let chips = footer_chips(
-                                focus,
-                                false,
-                                sending,
-                                Some("add param"),
-                                url_focused,
-                                row,
-                                jq,
-                            );
-                            for (_, _, action) in chips {
-                                let Some(action) = action else { continue };
-                                let hit = Hit::FooterChip(action.clone());
-                                let h = hint_for(&hit, &keymap, &ctx()).unwrap();
-                                assert_ne!(
-                                    h,
-                                    format!("{action:?}"),
-                                    "{action:?} has no wording of its own"
+                            for field_open in [false, true] {
+                                let chips = footer_chips(
+                                    focus,
+                                    false,
+                                    sending,
+                                    Some("add param"),
+                                    url_focused,
+                                    false,
+                                    row,
+                                    jq,
+                                    field_open,
                                 );
+                                for (_, _, action) in chips {
+                                    let Some(action) = action else { continue };
+                                    let hit = Hit::FooterChip(action.clone());
+                                    let h = hint_for(&hit, &keymap, &ctx()).unwrap();
+                                    assert_ne!(
+                                        h,
+                                        format!("{action:?}"),
+                                        "{action:?} has no wording of its own"
+                                    );
+                                }
                             }
                         }
                     }
@@ -804,6 +815,7 @@ mod tests {
             Hit::ModalRowToggle(0),
             Hit::TipReveal("tok".into()),
             Hit::VmRevealToggle,
+            Hit::ModalRevealToggle,
             Hit::VmSecretToggle,
             Hit::CopyBodyButton,
             Hit::SaveBodyButton,
@@ -883,6 +895,7 @@ mod tests {
             Hit::AutoHeaderReveal,
             Hit::ChooserToggle,
             Hit::ModalSharedToggle,
+            Hit::ModalRevealToggle,
             Hit::ModalRowToggle(0),
             Hit::ModalRemove,
             Hit::PickerPrimary,
@@ -893,7 +906,6 @@ mod tests {
             Hit::VmPromoteBtn,
             Hit::VmRemoveEnvValue,
             Hit::VmSecretToggle,
-            Hit::FooterChip(Action::CancelJqEdit),
             Hit::FooterChip(Action::ToggleJqBar),
             Hit::FooterChip(Action::CloseScreen),
             Hit::ResponseJqAiButton,

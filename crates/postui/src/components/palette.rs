@@ -1,4 +1,5 @@
 use super::chooser::clip;
+use super::line_input::LineInput;
 use crate::action::{Action, CopyTarget};
 use crate::layout::PaneId;
 use crate::paint::{self, ControlState, FIELD_HEIGHT, ListRow, RowHighlight, TextField};
@@ -6,8 +7,6 @@ use crate::theme::Theme;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
-use ratatui::style::Style;
-use ratatui::text::{Line, Span};
 
 #[derive(Clone)]
 pub struct Command {
@@ -398,7 +397,7 @@ pub fn fuzzy_match(needle: &str, haystack: &str) -> bool {
 }
 
 pub struct PaletteState {
-    input: String,
+    input: LineInput,
     selected: usize,
     /// `all_commands()` sorted by frecency score descending (stable, so
     /// zero-score commands keep declaration order) as of the moment the
@@ -426,7 +425,7 @@ impl PaletteState {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         Self {
-            input: String::new(),
+            input: LineInput::new(""),
             selected: 0,
             filtered: base.clone(),
             base,
@@ -436,14 +435,13 @@ impl PaletteState {
     }
 
     pub fn input(&self) -> &str {
-        &self.input
+        self.input.text()
     }
 
     /// Pastes into the fuzzy query (the bracketed-paste/ctrl+v path),
     /// flattened to one line like every single-line surface.
     pub fn paste(&mut self, text: &str) {
-        self.input
-            .push_str(&crate::components::line_input::flatten_paste(text));
+        self.input.paste(text);
         self.refilter();
     }
 
@@ -490,7 +488,7 @@ impl PaletteState {
         self.filtered = self
             .base
             .iter()
-            .filter(|c| fuzzy_match(&self.input, c.name))
+            .filter(|c| fuzzy_match(self.input.text(), c.name))
             .cloned()
             .collect();
         self.selected = 0;
@@ -512,23 +510,57 @@ impl PaletteState {
                 self.selected = self.selected.saturating_sub(1);
                 self.ensure_visible = true;
             }
+            KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.selected = self.selected.saturating_sub(1);
+                self.ensure_visible = true;
+            }
             KeyCode::Down => {
                 if self.selected + 1 < self.filtered.len() {
                     self.selected += 1;
                 }
                 self.ensure_visible = true;
             }
-            KeyCode::Backspace => {
-                self.input.pop();
-                self.refilter();
+            KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if self.selected + 1 < self.filtered.len() {
+                    self.selected += 1;
+                }
+                self.ensure_visible = true;
             }
-            KeyCode::Char(c) if key.modifiers.difference(KeyModifiers::SHIFT).is_empty() => {
-                self.input.push(c);
-                self.refilter();
+            _ => {
+                let before = self.input.text().to_string();
+                self.input.handle_key(key);
+                if self.input.text() != before {
+                    self.refilter();
+                }
             }
-            _ => {}
         }
         None
+    }
+
+    /// Whether the filter box has keystrokes of its own to step — what
+    /// the app's undo routing asks before handing it the key.
+    pub(crate) fn filter_edited(&self) -> bool {
+        self.input.edited()
+    }
+
+    /// Steps the filter's edit history one place (back, or forward when
+    /// `redo`) and re-runs the filter, mirroring what typing that step
+    /// forward did. Returns whether there was a step to take.
+    pub(crate) fn undo_filter(&mut self, redo: bool) -> bool {
+        let stepped = if redo {
+            self.input.redo()
+        } else {
+            self.input.undo()
+        };
+        if stepped {
+            self.refilter();
+        }
+        stepped
+    }
+
+    #[cfg(test)]
+    fn filtered_is_empty_for_test(&self) -> bool {
+        self.filtered.is_empty()
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -570,10 +602,9 @@ impl PaletteState {
             width: area.width.saturating_sub(2),
             height: FIELD_HEIGHT,
         };
-        let content = Line::from(vec![
-            Span::raw(self.input.clone()),
-            Span::styled("▏", Style::default().fg(theme.accent)),
-        ]);
+        let content = self
+            .input
+            .draw_line_windowed(true, theme, field_area.width.saturating_sub(2));
         TextField {
             content,
             state: ControlState::Focused,
@@ -693,9 +724,27 @@ impl PaletteState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::crossterm::event::KeyModifiers;
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn ctrl(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+    }
+
+    #[test]
+    fn ctrl_n_and_ctrl_p_are_down_and_up() {
+        let mut a = PaletteState::new(&crate::usage::UsageStore::default(), 0);
+        let mut b = PaletteState::new(&crate::usage::UsageStore::default(), 0);
+        a.handle_key(key(KeyCode::Down));
+        b.handle_key(ctrl('n'));
+        assert_eq!(a.selected(), b.selected());
+        a.handle_key(key(KeyCode::Up));
+        b.handle_key(ctrl('p'));
+        assert_eq!(a.selected(), b.selected());
+        assert_eq!(b.input(), "", "ctrl+n/p never type");
     }
 
     /// Puts the cursor on command `id`. A query is a subsequence match, so
@@ -711,7 +760,7 @@ mod tests {
     }
 
     /// The user-triggered reload is reachable from the palette, and its
-    /// row shows the same `alt+r` the key path uses — which only works if
+    /// row shows the same `alt+shift+r` the key path uses — which only works if
     /// the keys name table knows the "reload" action name.
     #[test]
     fn palette_carries_reload_from_disk_with_its_binding() {
@@ -724,7 +773,7 @@ mod tests {
         let keymap = crate::keys::Keymap::default_bindings();
         assert_eq!(
             keymap_action_name("reload-from-disk").and_then(|n| keymap.combo_for(n)),
-            Some("alt+r".to_string())
+            Some("alt+shift+r".to_string())
         );
     }
 
@@ -745,6 +794,21 @@ mod tests {
         assert!(fuzzy_match("QUIT", "Quit"));
         assert!(fuzzy_match("", "anything"));
         assert!(!fuzzy_match("xyz", "Quit"));
+    }
+
+    #[test]
+    fn the_filter_has_a_caret_and_undo() {
+        let mut p = PaletteState::new(&crate::usage::UsageStore::default(), 0);
+        for c in "send".chars() {
+            p.handle_key(key(KeyCode::Char(c)));
+        }
+        assert_eq!(p.input(), "send");
+        p.handle_key(key(KeyCode::Left));
+        p.handle_key(key(KeyCode::Char('X')));
+        assert_eq!(p.input(), "senXd", "the caret moved before the last char");
+        p.undo_filter(false);
+        assert_eq!(p.input(), "send");
+        assert!(!p.filtered_is_empty_for_test() || p.input().is_empty());
     }
 
     #[test]

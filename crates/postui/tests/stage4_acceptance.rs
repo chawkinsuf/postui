@@ -36,6 +36,16 @@ fn type_text(app: &mut App, text: &str) {
     }
 }
 
+/// Submits the top form modal's open field the long way (spec
+/// 2026-09-16): Enter no longer submits directly — the first Esc closes
+/// the field to selected, the second reaches the button row (Confirm
+/// aimed), and only then does Enter confirm.
+fn submit_prompt(app: &mut App) {
+    app.handle_key(key(KeyCode::Esc));
+    app.handle_key(key(KeyCode::Esc));
+    app.handle_key(enter());
+}
+
 fn left_down(x: u16, y: u16) -> MouseEvent {
     MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
@@ -125,7 +135,7 @@ async fn stage4_mouse_only_acceptance_flow() {
         "clicking the new-request button opens the naming prompt"
     );
     type_text(&mut app, "items/create");
-    app.handle_key(enter());
+    submit_prompt(&mut app);
     assert_eq!(
         app.editor.slug.as_deref(),
         Some("main/items/create"),
@@ -146,7 +156,7 @@ async fn stage4_mouse_only_acceptance_flow() {
 
     // --- step 4: URL is keyboard-only (no mouse affordance) -------------
     app.focus = postui::layout::PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     app.editor.url = postui::components::line_input::LineInput::new("");
     type_text(&mut app, &format!("{}/items", server.uri()));
     assert_eq!(app.editor.url.text(), format!("{}/items", server.uri()));

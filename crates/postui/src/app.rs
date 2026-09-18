@@ -433,6 +433,11 @@ pub struct App {
     /// `cursor_before` reflects where the cursor sat before this burst of
     /// edits began, not just before the immediately preceding keystroke.
     shadow_cursor: crate::undo::CursorPos,
+    /// Whether the last `capture_undo` call was held back by an open
+    /// live-synced field (see [`Self::field_gate`]); the call that finds
+    /// the gate off again is the field's close and records without
+    /// coalescing, so two closes are two steps.
+    field_gate_was_on: bool,
     /// Set by wholesale-change arms (format/minify, discard, method change,
     /// insert-var, `$EDITOR` round-trip, table row delete/duplicate) so the
     /// next `capture_undo` records a standalone, non-coalescing step and
@@ -543,12 +548,13 @@ enum SpaceExit<'a> {
 }
 
 /// The theme picker's title-row toggle label for the given polarity —
-/// names the set currently shown, with arrows advertising Left/Right.
+/// names the set currently shown; the swap glyph says it flips (Tab, or
+/// a click — the footer's `tab` chip names the key).
 fn theme_picker_toggle_label(dark: bool) -> String {
     if dark {
-        "◂ dark ▸".into()
+        "⇄ dark".into()
     } else {
-        "◂ light ▸".into()
+        "⇄ light".into()
     }
 }
 
@@ -1129,6 +1135,10 @@ impl App {
                 .is_some_and(|v| v.mode == crate::components::response::ViewMode::Headers),
             Hit::TipReveal(name) => self.tip_revealed.as_ref().is_some_and(|(n, _)| n == name),
             Hit::VmRevealToggle => self.varmanager.form.revealed,
+            Hit::ModalRevealToggle => matches!(
+                self.modals.top(),
+                Some(Modal::Prompt { revealed: true, .. })
+            ),
             Hit::VmSecretToggle => match (&self.varmanager.detail, self.project()) {
                 (VmDetail::Var(name), Some(p)) => {
                     p.variables().vars.get(name).is_some_and(|d| d.secret)
@@ -1614,6 +1624,7 @@ impl App {
             marked_entry: None,
             shadow: None,
             shadow_cursor: crate::undo::CursorPos::None,
+            field_gate_was_on: false,
             no_coalesce: false,
             testbed_list_dir_plan: 1,
             testbed_list_dir_alt: 1,
@@ -2202,9 +2213,48 @@ impl App {
             .unwrap_or_default()
     }
 
+    /// Whether a text field that writes into the request as you type has
+    /// keystrokes of its own in flight: the URL line, and the jq bar. While
+    /// it does, the app history waits — the field's own history covers the
+    /// keystrokes, and the close lands as one step (spec 2026-09-15, "Two
+    /// histories, one handover").
+    fn field_gate(&self) -> bool {
+        // Another screen takes the caret without touching `focus` or
+        // `sub_focus`; there the field is not open (`open_text_field_mut`
+        // agrees), so the gate must not hold either.
+        if self.screen != Screen::Main {
+            return false;
+        }
+        let url = self.focus == PaneId::Editor
+            && self.editor.url_open()
+            && self.editor.url.edited();
+        let jq = self.focus == PaneId::Response && self.session.response.jq_field_edited();
+        url || jq
+    }
+
     pub fn capture_undo(&mut self) -> bool {
         let current_slug = self.editor.slug.clone();
         let cursor = self.editor.cursor_pos();
+        // A caret that has left the URL line closes its session here too,
+        // so a mouse blur, alt+u or a Tab out of the pane is as good as Esc
+        // — focus counts, since a pane switch moves it without touching
+        // `sub_focus`, and so does the screen, since Manage moves neither.
+        let off_screen = self.screen != Screen::Main;
+        if off_screen || self.focus != PaneId::Editor || !self.editor.url_open() {
+            self.editor.url.end_edit();
+        }
+        // The jq bar keeps its caret across a screen change (the pane is
+        // still the focused one underneath), so only its session closes.
+        if off_screen {
+            self.session.response.end_jq_edit_session();
+        }
+        if self.field_gate() {
+            // A wholesale change taken mid-field (`no_coalesce`, e.g. alt+j
+            // format) is still pending here: it joins the close as one step.
+            self.field_gate_was_on = true;
+            return false;
+        }
+        let closing = std::mem::take(&mut self.field_gate_was_on);
         match &self.shadow {
             // Which request is open changed (open/create/delete/rename/
             // save-as): re-seed, never record — the transition itself is
@@ -2228,7 +2278,7 @@ impl App {
                             cursor_after: cursor.clone(),
                         },
                     };
-                    let coalesce = !std::mem::take(&mut self.no_coalesce);
+                    let coalesce = !std::mem::take(&mut self.no_coalesce) && !closing;
                     self.history.record_maybe_coalesce(step, coalesce);
                     self.shadow = Some((current_slug, current));
                     self.shadow_cursor = cursor;
@@ -2243,6 +2293,167 @@ impl App {
         false
     }
 
+    /// Closes the open field's edit session (URL line, jq bar) in place
+    /// and records the keystrokes it was holding as the one app-history
+    /// step they were waiting to become. For the paths that replace the
+    /// editor's buffer wholesale — discard, reload, opening another
+    /// request — which would otherwise lose that step: the gate only ever
+    /// hands over on a close, and `Editor::load` swaps the field out from
+    /// under it with the diff unrecorded.
+    fn flush_field_session(&mut self) {
+        if !self.field_gate() {
+            return;
+        }
+        self.editor.url.end_edit();
+        self.session.response.end_jq_edit_session();
+        self.field_gate_was_on = true; // the close is its own step
+        self.capture_undo();
+    }
+
+    /// The text field that currently owns the caret, if any — the one
+    /// place the field rule's routing lives (spec 2026-09-15). Two fields
+    /// are not reachable here and are special-cased by their neighbours
+    /// below: the Settings tab's live edit (its input is private, see
+    /// [`SettingsTab::field_undo`](crate::components::settings::SettingsTab::field_undo))
+    /// and a picker's filter box (private behind `undo_filter`, because
+    /// stepping it has to re-run the filter too). [`Self::field_open`] is
+    /// the immutable twin of this routing and must agree with it.
+    pub(crate) fn open_text_field_mut(&mut self) -> Option<&mut LineInput> {
+        if !self.modals.is_empty() {
+            return self.modals.focused_input_mut();
+        }
+        match self.screen {
+            Screen::Manage => {
+                if let Some((_, input)) = self.varmanager.form.editing.as_mut() {
+                    return Some(input);
+                }
+                if let Some(edit) = self.varmanager.grid.editing.as_mut() {
+                    return Some(&mut edit.input);
+                }
+                None
+            }
+            // The caret is with the focused pane: a cell edit that survived
+            // a jump to the response pane is live but has no caret, so it
+            // is not the open field there (spec 2026-09-15, "open" = has
+            // the caret).
+            Screen::Main => match self.focus {
+                PaneId::Editor => {
+                    if self.editor.table.editing.is_some() {
+                        return self.editor.table.editing.as_mut().map(|e| &mut e.input);
+                    }
+                    if self.editor.url_open() {
+                        return Some(&mut self.editor.url);
+                    }
+                    None
+                }
+                PaneId::Response => self.session.response.open_text_field_mut(),
+                PaneId::Sidebar => None,
+            },
+            Screen::Testbed => None,
+        }
+    }
+
+    /// Whether a text field owns the caret right now — the immutable twin
+    /// of [`Self::open_text_field_mut`], for callers that only need the
+    /// question answered (`Action::CloseField`; the footer asks the
+    /// pane-local [`Self::pane_field_open`] instead).
+    /// The two must agree: this is `open_text_field_mut().is_some()` plus
+    /// the Settings tab's edit, which that one special-cases away because
+    /// its input is private.
+    pub(crate) fn field_open(&self) -> bool {
+        // Modals first, in the same order as `open_text_field_mut`: a
+        // modal over the Settings tab captures the keyboard, and with a
+        // form modal's focus on its button row no field is open at all.
+        // A form modal's field merely *selected* (spec 2026-09-16, no
+        // caret painted) still counts as open here — it's still the
+        // field paste/`Action::CloseField` target; only `ModalStack`'s
+        // own `field_open` cares about the caret specifically.
+        if !self.modals.is_empty() {
+            return self.modals.focused_input().is_some();
+        }
+        if self.settings_edit_live() {
+            return true;
+        }
+        match self.screen {
+            Screen::Manage => {
+                self.varmanager.form.editing.is_some() || self.varmanager.grid.editing.is_some()
+            }
+            Screen::Main => match self.focus {
+                PaneId::Editor => self.editor.table.editing.is_some() || self.editor.url_open(),
+                PaneId::Response => self.session.response.field_open(),
+                PaneId::Sidebar => false,
+            },
+            Screen::Testbed => false,
+        }
+    }
+
+    /// Whether the field that owns the caret is *`pane`'s own* — what the
+    /// footer's per-pane chips ask, as against [`Self::field_open`]'s
+    /// app-wide question (which only `Action::CloseField` needs). The two
+    /// differ: a live cell edit survives a jump to the response pane, and
+    /// an active search box survives one back to the editor, so a field on
+    /// one pane must never put `esc done` on another's chip row.
+    pub(crate) fn pane_field_open(&self, pane: PaneId) -> bool {
+        match pane {
+            PaneId::Sidebar => false,
+            PaneId::Editor => self.editor.table.editing.is_some() || self.editor.url_open(),
+            PaneId::Response => {
+                self.focus == PaneId::Response && self.session.response.field_open()
+            }
+        }
+    }
+
+    /// Whether an open text field has keystrokes of its own to undo — the
+    /// condition under which the undo keys belong to it.
+    pub(crate) fn open_text_field_edited(&mut self) -> bool {
+        // Modals first, matching `open_text_field_mut` and `field_open`.
+        if !self.modals.is_empty() {
+            return self.modals.field_edited();
+        }
+        if self.settings_edit_live() {
+            return self.settings.field_edited();
+        }
+        self.open_text_field_mut().is_some_and(|f| f.edited())
+    }
+
+    /// Whether the Settings tab's live edit is the field on screen.
+    fn settings_edit_live(&self) -> bool {
+        self.screen == Screen::Manage
+            && self.manage.tab == crate::components::manage::ManageTab::Settings
+            && self.settings.editing.is_some()
+    }
+
+    /// Routes an undo/redo key into the open text field. `true` when a
+    /// field with history took it; `false` leaves the key to the app
+    /// history.
+    fn undo_in_open_field(&mut self, redo: bool) -> bool {
+        // Modals first, in the same order as `open_text_field_edited` (the
+        // gate that sent the key here): a palette over a live Settings
+        // edit owns the caret, and the key must step the field it gated on.
+        if !self.modals.is_empty() {
+            return self.modals.field_undo(redo);
+        }
+        if self.settings_edit_live() {
+            return self.settings.field_edited() && self.settings.field_undo(redo);
+        }
+        // The response pane's fields go through the pane, not the raw
+        // accessor: stepping the jq bar has to mark the edit or `sync_jq`
+        // writes the editor's filter back over it.
+        if self.screen == Screen::Main && self.focus == PaneId::Response {
+            return self.session.response.field_undo(redo);
+        }
+        match self.open_text_field_mut() {
+            Some(f) if f.edited() => {
+                if redo {
+                    f.redo()
+                } else {
+                    f.undo()
+                }
+            }
+            _ => false,
+        }
+    }
+
     fn apply(&mut self, action: Action) -> bool {
         match action {
             // An unsaved request gates quitting behind the same confirm as
@@ -2255,6 +2466,10 @@ impl App {
                 true
             }
             Action::DiscardChanges => {
+                // An edit still open in the URL line is a step of its own
+                // before the discard becomes the next one — so the toast's
+                // "undoes" is true of the discard, not of the typing.
+                self.flush_field_session();
                 self.no_coalesce = true;
                 if !self.editor.is_dirty() {
                     return true;
@@ -2357,6 +2572,16 @@ impl App {
             }
             Action::ForceResetConfigFile(file) => {
                 use crate::action::ConfigFile;
+                let name = match file {
+                    ConfigFile::Config => crate::config::CONFIG_TOML,
+                    ConfigFile::Keys => crate::config::KEYS_TOML,
+                };
+                // Folded the same way `Config::read`'s error already is
+                // for a Reset's undo: a file that is there but unreadable
+                // has nothing sane to restore to, so undoing this reset
+                // removes the file instead, which is the least surprising
+                // outcome.
+                let before = self.read_config_file(name).ok().flatten();
                 let result = match file {
                     // `reset_ui_settings` refuses (leaving the file
                     // untouched) when config.toml does not parse -- exactly
@@ -2379,7 +2604,18 @@ impl App {
                     ),
                 };
                 match result {
-                    Ok(()) => self.update(Action::ReloadFromDisk),
+                    Ok(()) => {
+                        let after = self.read_config_file(name).ok().flatten().unwrap_or_default();
+                        self.history.record_no_coalesce(crate::undo::Step {
+                            kind: crate::undo::StepKind::ConfigFile { file, before, after },
+                            context: crate::undo::Context {
+                                slug: None,
+                                cursor_before: crate::undo::CursorPos::None,
+                                cursor_after: crate::undo::CursorPos::None,
+                            },
+                        });
+                        self.update(Action::ReloadFromDisk)
+                    }
                     Err(e) => {
                         self.toasts.push(
                             format!("could not reset {}: {e}", file.name()),
@@ -2390,8 +2626,11 @@ impl App {
                 }
             }
             Action::SetUiFlag { key, value } => {
+                use crate::undo::UiValue;
+                let before = self.ui_flag(key);
                 let saved = self.config.save_ui_flag(key, value);
-                self.apply_ui_write(saved, |ui| match key {
+                let landed = saved.is_ok();
+                let redraw = self.apply_ui_write(saved, |ui| match key {
                     "animations" => ui.animations = value,
                     "hover_hints" => ui.hover_hints = value,
                     "ai_confirmed" => ui.ai_confirmed = value,
@@ -2400,15 +2639,23 @@ impl App {
                     // other shoe. Keys are `&'static str` from
                     // `SettingsField::key`, so this can only be a typo.
                     other => debug_assert!(false, "no boolean setting named {other:?}"),
-                })
+                });
+                if landed {
+                    self.record_config_step(key, UiValue::Flag(before), UiValue::Flag(value));
+                }
+                redraw
             }
             Action::SetUiString { key, value } => {
+                use crate::undo::UiValue;
+                let before = self.ui_string(key);
                 let saved = self.config.save_ui_string(key, &value);
+                let landed = saved.is_ok();
                 // An empty commit removed the key (see
                 // `Config::save_ui_string`), so what applies is the
                 // default, not an empty command.
                 let default = crate::config::UiSettings::default();
-                self.apply_ui_write(saved, move |ui| match key {
+                let after = value.clone();
+                let redraw = self.apply_ui_write(saved, move |ui| match key {
                     "ai_cmd" => {
                         ui.ai_cmd = if value.is_empty() {
                             default.ai_cmd
@@ -2425,14 +2672,25 @@ impl App {
                         }
                     }
                     other => debug_assert!(false, "no string setting named {other:?}"),
-                })
+                });
+                if landed {
+                    self.record_config_step(key, UiValue::Text(before), UiValue::Text(after));
+                }
+                redraw
             }
             Action::SetUiInt { key, value } => {
+                use crate::undo::UiValue;
+                let before = self.ui_int(key);
                 let saved = self.config.save_ui_int(key, value);
-                self.apply_ui_write(saved, |ui| match key {
+                let landed = saved.is_ok();
+                let redraw = self.apply_ui_write(saved, |ui| match key {
                     "osc52_limit" => ui.osc52_limit = value,
                     other => debug_assert!(false, "no integer setting named {other:?}"),
-                })
+                });
+                if landed {
+                    self.record_config_step(key, UiValue::Int(before), UiValue::Int(value));
+                }
+                redraw
             }
             Action::Quit | Action::ForceQuit => {
                 let slug = self.editor.slug.clone();
@@ -2590,6 +2848,13 @@ impl App {
                 self.session.response.set_view_mode(mode);
                 self.retarget_response_tab_underline(prev_mode);
                 true
+            }
+            Action::CycleResponseView => {
+                if let Some(next) = self.session.response.next_view_mode() {
+                    self.update(Action::ResponseViewMode(next))
+                } else {
+                    false
+                }
             }
             Action::OpenResponseSearch => {
                 self.update(Action::FocusPane(PaneId::Response));
@@ -2852,10 +3117,9 @@ impl App {
                 // re-focusing the already-focused URL bar (clicking the
                 // well the caret is in) would snap the fill to its
                 // unfocused color for a frame — a visible blink.
-                let already =
-                    self.focus == PaneId::Editor && self.editor.sub_focus == SubFocus::Url;
+                let already = self.focus == PaneId::Editor && self.editor.url_open();
                 self.focus = PaneId::Editor;
-                self.editor.sub_focus = SubFocus::Url;
+                self.editor.open_url_from_app();
                 if !already {
                     self.begin_focus_fade();
                 }
@@ -2975,6 +3239,9 @@ impl App {
                 }
             }
             Action::ForceOpenRequest(slug) => {
+                // The outgoing request's open field closes as its own
+                // step before the buffer is replaced.
+                self.flush_field_session();
                 // A slug from another space (palette, cross-space click)
                 // switches spaces first, so the sidebar it lands in is the
                 // one that actually contains it.
@@ -3032,6 +3299,7 @@ impl App {
                         // `DiscardChanges` is: typing that follows must
                         // not merge into it, or one ctrl+z would snap the
                         // buffer back past the reload.
+                        self.flush_field_session();
                         self.no_coalesce = true;
                         self.reseed_editor(Some(slug.clone()), req);
                         self.mark_saved_after_write();
@@ -3495,6 +3763,7 @@ impl App {
                                 kind: PromptKind::SecretValue {
                                     name,
                                     env: self.env_label(),
+                                    then_send: true,
                                 },
                                 revealed: false,
                             });
@@ -3507,7 +3776,7 @@ impl App {
                         );
                         // Name the first (alphabetically — `causes` is a
                         // `BTreeMap`) variable that just needs a pick, not
-                        // a fix, so `alt+shift+v` is a visible next step
+                        // a fix, so `alt+v` is a visible next step
                         // rather than a dead end.
                         if let Some(name) = causes.iter().find_map(|(name, cause)| {
                             (*cause == postui_core::prepare::UnresolvedCause::NeedsSelection)
@@ -3551,6 +3820,14 @@ impl App {
                 true
             }
             Action::CancelSend => self.session.cancel(),
+            Action::CloseField => {
+                // The field rule, dispatched rather than typed: with a
+                // field open this is exactly the Esc it would have taken.
+                if !self.field_open() {
+                    return false;
+                }
+                self.handle_key_inner(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            }
             Action::SetSecret { name, value } => {
                 let result = match self.project.as_mut() {
                     Some(p) => p.set_secret(&name, value).map_err(|e| e.to_string()),
@@ -3720,7 +3997,7 @@ impl App {
                 }
                 // The picker opens filtered to the current theme's
                 // polarity: browsing themes must not flash the opposite
-                // polarity's (much brighter/darker) palettes. Left/Right
+                // polarity's (much brighter/darker) palettes. Tab/BackTab
                 // or the title-row toggle flips to the other set.
                 self.theme_picker_dark = self.theme.is_dark();
                 let mut state = ChooserState::new("Theme", self.theme_picker_items()).with_toggle(
@@ -4151,11 +4428,25 @@ impl App {
                 true
             }
             Action::Undo => {
+                if self.undo_in_open_field(false) {
+                    return true;
+                }
+                // A field that has run out of steps still owns the key:
+                // `edited()` — the router carve-out's gate — stays true
+                // while the redo stack holds anything, so a step that
+                // found nothing must stop here rather than quietly
+                // spending an app-history step behind the user's back.
+                if self.open_text_field_edited() {
+                    return true;
+                }
                 if !self.modals.is_empty() {
                     return true;
                 }
                 // A live cell edit is part of what's being undone: commit it
-                // so it becomes a step, then capture any pending delta.
+                // so it becomes a step, then capture any pending delta. A
+                // live Settings field edit closes the same way (spec
+                // 2026-09-16): the close becomes the step the undo pops.
+                self.commit_settings_edit();
                 self.commit_table_edit();
                 self.capture_undo();
                 loop {
@@ -4181,6 +4472,17 @@ impl App {
                 true
             }
             Action::Redo => {
+                if self.undo_in_open_field(true) {
+                    return true;
+                }
+                // A field that has run out of steps still owns the key:
+                // `edited()` — the router carve-out's gate — stays true
+                // while the redo stack holds anything, so a step that
+                // found nothing must stop here rather than quietly
+                // spending an app-history step behind the user's back.
+                if self.open_text_field_edited() {
+                    return true;
+                }
                 if !self.modals.is_empty() {
                     return true;
                 }
@@ -4225,10 +4527,6 @@ impl App {
                 }
                 true
             }
-            Action::CancelJqEdit => {
-                self.session.response.cancel_jq_edit();
-                true // sync_jq lands the restored filter in the editor
-            }
             Action::OpenJqBar => {
                 if let Some(why) = self.session.response.jq_blocked_reason() {
                     self.toasts.push(why, ToastKind::Info);
@@ -4244,8 +4542,9 @@ impl App {
                 true // sync_jq applies it
             }
             Action::JqTeeUp { text, cursor } => {
-                // Focus before the text lands, so Esc cancels the tee-up
-                // back to the filter that was there.
+                // Focus before the text lands, so the tee-up joins the
+                // bar's edit session and ctrl+z walks it back to the
+                // filter that was there.
                 self.dispatch(Action::FocusPane(PaneId::Response));
                 self.session.response.set_jq_focus(true);
                 self.session.response.set_jq_text_with_cursor(&text, cursor);
@@ -4660,12 +4959,24 @@ impl App {
                         return self.open_select_picker(name, selector);
                     }
                     Some(VarMeta::Secret) | Some(VarMeta::MissingSecret) => {
+                        let env = self.active_env().map(str::to_string).unwrap_or_default();
+                        // Editing starts from the stored value (masked
+                        // until ctrl+r), like the Manager's env-value
+                        // field; a missing secret has nothing to seed.
+                        let current = self
+                            .project
+                            .as_ref()
+                            .and_then(|p| p.secrets().get(&env))
+                            .and_then(|m| m.get(&name))
+                            .cloned()
+                            .unwrap_or_default();
                         self.push_modal(Modal::Prompt {
                             title: format!("Secret {{{{{name}}}}}"),
-                            input: LineInput::new(""),
+                            input: LineInput::new(&current),
                             kind: PromptKind::SecretValue {
                                 name,
-                                env: self.active_env().map(str::to_string).unwrap_or_default(),
+                                env,
+                                then_send: false,
                             },
                             revealed: false,
                         });
@@ -4791,7 +5102,7 @@ impl App {
             }
             Action::InsertVarText(text) => {
                 self.no_coalesce = true;
-                if self.focus == PaneId::Editor && self.editor.sub_focus == SubFocus::Url {
+                if self.focus == PaneId::Editor && self.editor.url_open() {
                     self.editor.url.insert_str(&text);
                 } else if self.focus == PaneId::Editor
                     && matches!(
@@ -4848,7 +5159,7 @@ impl App {
                     } else {
                         tab
                     };
-                // A toggle: alt+v (and the header Manage chip) close the
+                // A toggle: alt+r (and the header Manage chip) close the
                 // screen they opened. A request for the tab that's already
                 // up toggles too; a request for a different tab switches.
                 let target = tab.unwrap_or(self.manage.tab);
@@ -6152,7 +6463,7 @@ impl App {
         if self.focus != PaneId::Editor {
             return None;
         }
-        if self.editor.sub_focus == SubFocus::Url {
+        if self.editor.url_open() {
             return Some((self.editor.url.text(), self.editor.url.cursor()));
         }
         if self.editor.sub_focus == SubFocus::Content
@@ -6599,7 +6910,7 @@ impl App {
     /// dirty/save path as any other row commit.
     fn replace_focused_field_with_token(&mut self, name: &str) {
         let token = format!("{{{{{name}}}}}");
-        if self.editor.sub_focus == SubFocus::Url {
+        if self.editor.url_open() {
             self.editor.url = LineInput::new(&token);
             return;
         }
@@ -8758,6 +9069,7 @@ impl App {
                         return false;
                     }
                 };
+                self.flush_field_session();
                 self.editor.load(Some(slug.clone()), saved);
                 self.editor.mark_saved();
                 self.record_project_step();
@@ -8905,7 +9217,7 @@ impl App {
             return self.update(Action::Render);
         }
         match self.editor.sub_focus {
-            SubFocus::Url => {
+            SubFocus::Url if self.editor.url_open() => {
                 self.editor.url.paste(text);
                 self.update(Action::Render)
             }
@@ -8969,7 +9281,7 @@ impl App {
         {
             return Some(text);
         }
-        if self.editor.sub_focus == SubFocus::Url
+        if self.editor.url_open()
             && let Some(text) = self.editor.url.selected_text()
         {
             return Some(text);
@@ -9541,6 +9853,63 @@ impl App {
             return self.update(Action::Paste);
         }
 
+        // 1c. A bound undo/redo combo digs past the same layers when a text
+        // field is open with keystrokes of its own: ctrl+z means "undo what
+        // I typed here" wherever the caret is (spec 2026-09-15, "Routing").
+        // With nothing typed, the key falls through to today's routing.
+        if modified
+            && matches!(global, Some(Action::Undo | Action::Redo))
+            && self.open_text_field_edited()
+        {
+            return self.update(global.expect("matched above"));
+        }
+
+        // 1d. A combo bound to Send confirms the top form modal from any
+        // focus — field open, field selected, or the button row — the
+        // same "confirm the container" chord Send already is on the main
+        // screen (spec 2026-09-16). Closes an open field first, so its
+        // edit lands as one undo step before the modal's own action
+        // dispatches. This deliberately does not gate on `modified`
+        // (CONTROL | ALT only) the way 1b/1c do: shift+enter is one of
+        // Send's default bindings and carries no CONTROL/ALT modifier,
+        // so that gate would silently exclude it. Instead it checks the
+        // real key event's own modifiers directly (CONTROL or SHIFT) —
+        // not just what the keymap happens to map to `Send` — so a
+        // hostile or careless `keys.toml` binding bare `enter` to `send`
+        // still cannot make plain Enter take this path: it falls through
+        // to the ordinary per-variant Enter-closes-the-field handling
+        // instead, same as today.
+        if global == Some(Action::Send)
+            && ev.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::SHIFT)
+            && self
+                .modals
+                .top()
+                .is_some_and(crate::components::modal::Modal::is_form)
+        {
+            if self.modals.field_open() {
+                self.modals.close_top_field();
+            }
+            let Some(res) = self.modals.confirm_top() else {
+                return true; // swallowed: nothing to confirm yet (e.g. empty text)
+            };
+            let changed = self.apply_modal_result(res);
+            self.sync_theme_preview();
+            return changed;
+        }
+
+        // 1e. A plain key bound to Undo or OpenPalette reaches the top
+        // form modal's selected field/button row the same way `u`/`:`
+        // reach a Manage screen's unclaimed keys (`unclaimed_screen_key`):
+        // the modal's own handler swallows every key it does not name,
+        // so without this carve-out `u` inside a modal is only ever typed.
+        if !modified
+            && matches!(global, Some(Action::Undo | Action::Redo | Action::OpenPalette))
+            && self.modals.top().is_some_and(crate::components::modal::Modal::is_form)
+            && !self.modals.field_open()
+        {
+            return self.update(global.expect("matched above"));
+        }
+
         // 2. Modals capture all remaining input.
         if !self.modals.is_empty() {
             // alt+b is a toggle: over the open theme picker it closes it
@@ -9635,7 +10004,10 @@ impl App {
             if self.screen == Screen::Manage
                 && self.manage.tab == crate::components::manage::ManageTab::Settings
             {
-                return self.handle_settings_key(ev);
+                return match self.handle_settings_key(ev) {
+                    Some(handled) => handled,
+                    None => self.unclaimed_screen_key(global),
+                };
             }
             // The Environments and Spaces tabs: the list's own keys run
             // and anything they don't claim is swallowed like on any other
@@ -9651,12 +10023,13 @@ impl App {
                 if let Some(a) = action {
                     return self.update(a);
                 }
-                return true;
+                return self.unclaimed_screen_key(global);
             }
-            // A variable-form field under edit owns the keyboard: `Esc`
-            // reverts, `Enter` commits (through `commit_var_form`, which
-            // needs the mutable project access `VarManager::handle_key`'s
-            // shared `&Project` can't give it), everything else is
+            // A variable-form field under edit owns the keyboard (the
+            // field rule): `Esc` and `Enter` both commit through
+            // `commit_var_form` -- which needs the mutable project access
+            // `VarManager::handle_key`'s shared `&Project` can't give it
+            // -- and discard is undo, not Esc. Everything else is
             // forwarded straight to its `LineInput`.
             if self.screen == Screen::Manage && self.varmanager.form.editing.is_some() {
                 return self.handle_var_form_key(ev);
@@ -9682,7 +10055,7 @@ impl App {
             if let Some(a) = action {
                 return self.update(a);
             }
-            return true; // swallowed: no fallback to the global keymap
+            return self.unclaimed_screen_key(global);
         }
 
         // 4-exception: with the caret live in the body editor, alt+←/→
@@ -9733,33 +10106,44 @@ impl App {
         false
     }
 
+    /// A plain key a non-`Main` screen's own handler left unclaimed. The
+    /// screen swallows it — with one exception: the small whitelist of
+    /// global actions that work on top of any screen (`:` for the
+    /// palette, `u` for undo — the same list the modified combos get
+    /// first refusal from) runs from the keymap here, so a rebind or
+    /// unbind in `keys.toml` reaches the Manage screens too, and the
+    /// aliases work on a tab with no project open. Modified combos never
+    /// get here: they took the whitelist before the screen saw them.
+    fn unclaimed_screen_key(&mut self, global: Option<Action>) -> bool {
+        match global {
+            Some(a) if screen_escape_whitelist(&a) => self.update(a),
+            _ => true, // swallowed: a plain key never reaches Main's bindings
+        }
+    }
+
     /// Keys on the Settings tab. A live field edit owns the keyboard —
-    /// `Enter` commits, `Esc` cancels, everything else types — exactly
-    /// as the Manage grid's cell edit does; otherwise up/down walk the
-    /// rows, left/right aim a Files row's two buttons, and enter/space
-    /// activates whatever the cursor is on. Always reports a redraw:
-    /// like every other non-`Main` screen, keys it doesn't claim are
-    /// swallowed rather than falling through to the global keymap.
-    fn handle_settings_key(&mut self, ev: KeyEvent) -> bool {
+    /// `Enter` and `Esc` both commit (the field rule), everything else
+    /// types — exactly as the Manage grid's cell edit does; otherwise
+    /// up/down walk the rows, left/right aim a Files row's two buttons,
+    /// and enter/space activates whatever the cursor is on. `Some` is the
+    /// redraw answer for a key the tab claimed; `None` hands an unclaimed
+    /// key to the router's [`Self::unclaimed_screen_key`].
+    fn handle_settings_key(&mut self, ev: KeyEvent) -> Option<bool> {
         use crate::components::settings::SettingsRow;
         // A key on this tab is the keyboard asking for the cursor back:
         // a click away dropped it (see `App::on_hit`), and the very next
         // arrow has to move something the user can see.
         self.settings.focused = true;
         if self.settings.editing.is_some() {
-            return match ev.code {
-                KeyCode::Esc => {
-                    self.settings.end_edit();
-                    true
-                }
-                KeyCode::Enter => self.commit_settings_edit(),
+            return Some(match ev.code {
+                KeyCode::Esc | KeyCode::Enter => self.commit_settings_edit(),
                 _ => {
                     self.settings.type_key(ev);
                     true
                 }
-            };
+            });
         }
-        match ev.code {
+        Some(match ev.code {
             KeyCode::Esc => self.update(Action::CloseScreen),
             KeyCode::Char('q') => self.update(Action::Quit),
             KeyCode::Up => {
@@ -9767,9 +10151,42 @@ impl App {
                     .move_cursor(-1, self.ui_settings_are_editable());
                 true
             }
+            KeyCode::Char('k') if ev.modifiers.is_empty() => {
+                self.settings
+                    .move_cursor(-1, self.ui_settings_are_editable());
+                true
+            }
             KeyCode::Down => {
                 self.settings
                     .move_cursor(1, self.ui_settings_are_editable());
+                true
+            }
+            KeyCode::Char('j') if ev.modifiers.is_empty() => {
+                self.settings
+                    .move_cursor(1, self.ui_settings_are_editable());
+                true
+            }
+            KeyCode::Home => {
+                self.settings
+                    .move_cursor(i32::MIN / 2, self.ui_settings_are_editable());
+                true
+            }
+            KeyCode::Char('g') if ev.modifiers.is_empty() => {
+                self.settings
+                    .move_cursor(i32::MIN / 2, self.ui_settings_are_editable());
+                true
+            }
+            KeyCode::End => {
+                self.settings
+                    .move_cursor(i32::MAX / 2, self.ui_settings_are_editable());
+                true
+            }
+            // Unguarded, like every other surface's `G`: crossterm reports
+            // an uppercase char with `SHIFT` set, so an `is_empty()` guard
+            // would never match in a real terminal.
+            KeyCode::Char('G') => {
+                self.settings
+                    .move_cursor(i32::MAX / 2, self.ui_settings_are_editable());
                 true
             }
             // Only a Files row has two buttons to choose between; on a
@@ -9780,9 +10197,21 @@ impl App {
                 self.settings.file_button = usize::from(ev.code == KeyCode::Right);
                 true
             }
-            KeyCode::Enter | KeyCode::Char(' ') => self.activate_settings_row(),
-            _ => true,
-        }
+            KeyCode::Char('h') | KeyCode::Char('l')
+                if ev.modifiers.is_empty() && matches!(self.settings.row(), SettingsRow::File(_)) =>
+            {
+                self.settings.file_button = usize::from(matches!(ev.code, KeyCode::Char('l')));
+                true
+            }
+            KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Char('i')
+                if crate::keys::opens_field(&ev) =>
+            {
+                self.activate_settings_row()
+            }
+            // `u` / `:` (undo, palette) are not named here: they reach the
+            // router's whitelist from the keymap, like on every screen.
+            _ => return None,
+        })
     }
 
     /// Whether the Settings tab's *setting* rows accept input. False
@@ -9848,10 +10277,10 @@ impl App {
         }
     }
 
-    /// Enter in a live Settings field edit. `osc52_limit` is validated
-    /// here and *rejected* rather than coerced: the edit stays open with
-    /// what was typed, the stored value stands, and a toast says what
-    /// was expected.
+    /// Esc and Enter in a live Settings field edit — the field rule, both
+    /// commit. `osc52_limit` is validated here and *rejected* rather than
+    /// coerced: the edit stays open with what was typed, the stored value
+    /// stands, and a toast says what was expected.
     pub(crate) fn commit_settings_edit(&mut self) -> bool {
         use crate::components::settings::{SettingsField, parse_osc52_limit};
         let Some(field) = self.settings.editing else {
@@ -9921,19 +10350,75 @@ impl App {
         true
     }
 
-    /// Keys while a variable-form field owns the keyboard (Task 8's model,
-    /// exactly): `Esc` reverts (drops the edit with nothing written —
-    /// there's nothing to restore since the form only ever reads its
-    /// resting text live from `self.project`, never caches it), `Enter`
-    /// commits via `commit_var_form`, everything else goes to the field's
-    /// own `LineInput`. Always reports a redraw, like a modal capturing
-    /// every key while it's open.
+    /// The Settings tab's current value for `key`, read straight from
+    /// `ui_settings` — the "before" half of a `Config` undo step. Panics
+    /// only on a typo `Action::SetUi*` can't otherwise reach (same
+    /// contract as `apply_ui_write`'s `debug_assert!` arms).
+    fn ui_flag(&self, key: &'static str) -> bool {
+        match key {
+            "animations" => self.ui_settings.animations,
+            "hover_hints" => self.ui_settings.hover_hints,
+            "ai_confirmed" => self.ui_settings.ai_confirmed,
+            other => {
+                debug_assert!(false, "no boolean setting named {other:?}");
+                false
+            }
+        }
+    }
+
+    fn ui_string(&self, key: &'static str) -> String {
+        match key {
+            "ai_cmd" => self.ui_settings.ai_cmd.clone(),
+            "clipboard_cmd" => self.ui_settings.clipboard_cmd.clone().unwrap_or_default(),
+            "jq_tab" => crate::components::settings::jq_tab_spelling(self.ui_settings.jq_tab)
+                .to_string(),
+            other => {
+                debug_assert!(false, "no string setting named {other:?}");
+                String::new()
+            }
+        }
+    }
+
+    fn ui_int(&self, key: &'static str) -> usize {
+        match key {
+            "osc52_limit" => self.ui_settings.osc52_limit,
+            other => {
+                debug_assert!(false, "no integer setting named {other:?}");
+                0
+            }
+        }
+    }
+
+    /// Records a Settings write as one undo step, once it has landed —
+    /// `before`/`after` already computed by the caller so a refused write
+    /// (which changes nothing) never reaches here.
+    fn record_config_step(
+        &mut self,
+        key: &'static str,
+        before: crate::undo::UiValue,
+        after: crate::undo::UiValue,
+    ) {
+        if before == after {
+            return; // no-op commit: nothing to undo, matching the field rule
+        }
+        self.history.record_no_coalesce(crate::undo::Step {
+            kind: crate::undo::StepKind::Config { key, before, after },
+            context: crate::undo::Context {
+                slug: None,
+                cursor_before: crate::undo::CursorPos::None,
+                cursor_after: crate::undo::CursorPos::None,
+            },
+        });
+    }
+
+    /// Keys while a variable-form field owns the keyboard (the field rule):
+    /// `Esc` and `Enter` both commit via `commit_var_form` — discard is
+    /// undo, in the field or after close — everything else goes to the
+    /// field's own `LineInput`. Always reports a redraw, like a modal
+    /// capturing every key while it's open.
     fn handle_var_form_key(&mut self, ev: KeyEvent) -> bool {
         match ev.code {
-            KeyCode::Esc => {
-                self.varmanager.form.editing = None;
-            }
-            KeyCode::Enter => self.commit_var_form(),
+            KeyCode::Esc | KeyCode::Enter => self.commit_var_form(),
             _ => {
                 if let Some((_, input)) = self.varmanager.form.editing.as_mut() {
                     input.handle_key(ev);
@@ -9944,18 +10429,14 @@ impl App {
     }
 
     /// Keys while a selector-grid cell owns the keyboard — the same contract
-    /// as [`Self::handle_var_form_key`]: `Esc` reverts (nothing is written,
-    /// and the cell's resting text is read live from the project either
-    /// way), `Enter` commits, anything else goes to the cell's own
-    /// `LineInput`. `Tab` commits and steps one column right on the same
-    /// row, so a freshly created option can be filled in without reaching
-    /// for the mouse; a commit that failed keeps its edit and stays put.
+    /// as [`Self::handle_var_form_key`]: `Esc` and `Enter` both commit
+    /// (the field rule), anything else goes to the cell's own `LineInput`.
+    /// `Tab` commits and steps one column right on the same row, so a
+    /// freshly created option can be filled in without reaching for the
+    /// mouse; a commit that failed keeps its edit and stays put.
     fn handle_grid_key(&mut self, ev: KeyEvent) -> bool {
         match ev.code {
-            KeyCode::Esc => {
-                self.varmanager.grid.editing = None;
-            }
-            KeyCode::Enter => self.commit_grid_edit(),
+            KeyCode::Esc | KeyCode::Enter => self.commit_grid_edit(),
             KeyCode::Tab => self.step_grid_edit(1),
             KeyCode::BackTab => self.step_grid_edit(-1),
             _ => {
@@ -10458,6 +10939,16 @@ impl App {
                 } else {
                     ((**before).clone(), step.context.cursor_before.clone())
                 };
+                // A stored caret lands only in a field this step changed;
+                // one that sits in an untouched field (the click that made
+                // the step also moved focus off it) leaves focus where it
+                // is — re-placed by key, since the snapshot swap drops the
+                // table selection.
+                let cursor = if cursor.touched_by(before, after) {
+                    cursor
+                } else {
+                    self.editor.cursor_pos()
+                };
                 self.editor.apply_snapshot(&target);
                 self.editor.restore_cursor(&cursor);
                 self.sync_active_tab();
@@ -10624,6 +11115,102 @@ impl App {
                     }
                 }
             }
+            StepKind::Config { key, before, after } => {
+                use crate::undo::UiValue;
+                let value = if redo { after } else { before };
+                let saved = match value {
+                    UiValue::Flag(v) => self.config.save_ui_flag(key, *v),
+                    UiValue::Text(v) => self.config.save_ui_string(key, v),
+                    UiValue::Int(v) => self.config.save_ui_int(key, *v),
+                };
+                match saved {
+                    Ok(()) => {
+                        let mut ui = self.ui_settings.clone();
+                        match value {
+                            UiValue::Flag(v) => match *key {
+                                "animations" => ui.animations = *v,
+                                "hover_hints" => ui.hover_hints = *v,
+                                "ai_confirmed" => ui.ai_confirmed = *v,
+                                _ => {}
+                            },
+                            UiValue::Text(v) => match *key {
+                                "ai_cmd" => ui.ai_cmd = v.clone(),
+                                "clipboard_cmd" => {
+                                    ui.clipboard_cmd = (!v.is_empty()).then(|| v.clone())
+                                }
+                                "jq_tab" => {
+                                    ui.jq_tab = if v == "menu" {
+                                        crate::config::JqTab::Menu
+                                    } else {
+                                        crate::config::JqTab::Cycle
+                                    }
+                                }
+                                _ => {}
+                            },
+                            UiValue::Int(v) => {
+                                if *key == "osc52_limit" {
+                                    ui.osc52_limit = *v;
+                                }
+                            }
+                        }
+                        self.reapply_ui_settings(ui);
+                        let verb = if redo { "Redid" } else { "Undid" };
+                        let label = crate::components::settings::SettingsField::from_key(key)
+                            .map(crate::components::settings::SettingsField::label)
+                            .unwrap_or(key);
+                        self.toasts
+                            .push(format!("{verb} change to {label}"), ToastKind::Info);
+                        if redo {
+                            self.history.push_undo_no_coalesce(step.clone());
+                        } else {
+                            self.history.push_redo(step.clone());
+                        }
+                        true
+                    }
+                    Err(e) => {
+                        self.toasts
+                            .push(format!("could not undo: {e}"), ToastKind::Error);
+                        false
+                    }
+                }
+            }
+            StepKind::ConfigFile { file, before, after } => {
+                let bytes = if redo {
+                    after.clone()
+                } else {
+                    before.clone().unwrap_or_default()
+                };
+                let name = match file {
+                    crate::action::ConfigFile::Config => crate::config::CONFIG_TOML,
+                    crate::action::ConfigFile::Keys => crate::config::KEYS_TOML,
+                };
+                let result = if !redo && before.is_none() {
+                    self.config.write_validated(name, "")
+                } else {
+                    self.config.write_validated(name, &bytes)
+                };
+                match result {
+                    Ok(()) => {
+                        self.update(Action::ReloadFromDisk);
+                        let verb = if redo { "Redid" } else { "Undid" };
+                        self.toasts.push(
+                            format!("{verb} reset of {}", file.name()),
+                            ToastKind::Info,
+                        );
+                        if redo {
+                            self.history.push_undo_no_coalesce(step.clone());
+                        } else {
+                            self.history.push_redo(step.clone());
+                        }
+                        true
+                    }
+                    Err(e) => {
+                        self.toasts
+                            .push(format!("could not undo: {e}"), ToastKind::Error);
+                        false
+                    }
+                }
+            }
         }
     }
 }
@@ -10634,10 +11221,10 @@ impl App {
 /// palette and the theme chooser — the spec's "the modal stack works on
 /// top unchanged"), the
 /// screen open/close actions themselves, quit, re-reading the project and
-/// config from disk (alt+r — the files a non-`Main` screen shows are
+/// config from disk (alt+shift+r — the files a non-`Main` screen shows are
 /// exactly the ones a user edits in another window, and the Environments
-/// and Spaces tabs bind a bare `r` to Rename, which is what alt+r would
-/// otherwise reach), cycling the active
+/// and Spaces tabs bind a bare `r` to Rename, and alt+r toggles the screen
+/// itself), cycling the active
 /// environment (alt+x) — the one Main shortcut whose target state, the
 /// active env, is also meaningful inside the Variable Manager (it shows
 /// per-env values; `SwitchEnv` re-syncs the Manager) — and the space

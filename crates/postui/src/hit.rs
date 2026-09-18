@@ -271,14 +271,15 @@ pub enum Hit {
     /// and changes nothing.
     ConfigEditDiscard,
     /// The top modal's painted Cancel button (Message has none; Prompt and
-    /// NewProject each have one). Click parity with `Esc`: the app-side
-    /// handler synthesizes an `Esc` key event into `ModalStack::handle_key`
-    /// so it goes through the exact same per-variant logic Esc already
-    /// does, whichever modal is on top.
+    /// NewProject each have one). The app-side handler dispatches
+    /// `ModalStack::cancel_top` directly: since Esc in a form modal's
+    /// field only moves focus to the button row, a synthesized Esc would
+    /// no longer close anything.
     ModalCancel,
     /// The top modal's painted primary confirm button (Message's "OK",
     /// Prompt's and NewProject's "Confirm"). Click parity with `Enter`:
-    /// same synthesize-the-key-event approach as `ModalCancel`.
+    /// the handler calls `ModalStack::confirm_top`, which leaves the
+    /// button row and then runs the modal's own Enter.
     ModalConfirm,
     /// Full-screen region under an open modal; click closes (same as Esc).
     ModalOutside,
@@ -305,6 +306,9 @@ pub enum Hit {
     /// toggle row: clicking it both focuses the row and flips it (the
     /// mouse twin of ↓ then space).
     ModalSharedToggle,
+    /// The secret prompt's `󰈈 reveal`/`󰈉 hide` button beside its field:
+    /// the mouse twin of ctrl+r, flipping whether the typed text shows.
+    ModalRevealToggle,
     /// The value popup's "Remove" button: deletes the stored value at the
     /// chosen Write-to scope, so the next wider scope shows through.
     ModalRemove,

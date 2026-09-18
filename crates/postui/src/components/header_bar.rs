@@ -32,8 +32,8 @@ const SAVE_GROUP_W: u16 =
 /// Padded like its slot-mates `SAVE_LABEL`/`DISCARD_LABEL` -- they share
 /// one slot, and an unpadded label butts straight against its keycap.
 const RELOAD_LABEL: &str = " Reload ";
-/// The Manage screen's Reload chip: ` alt+r  Reload `.
-const RELOAD_W: u16 = (RELOAD_LABEL.len() + " alt+r ".len()) as u16;
+/// The Manage screen's Reload chip: ` alt+shift+r  Reload `.
+const RELOAD_W: u16 = (RELOAD_LABEL.len() + " alt+shift+r ".len()) as u16;
 
 /// Paints the app bar: a flat `theme.panel` fill across all 3 rows and the
 /// project/env/space selectors as single-row `theme.control`-filled chips
@@ -68,7 +68,7 @@ const RELOAD_W: u16 = (RELOAD_LABEL.len() + " alt+r ".len()) as u16;
 /// group. As the bar narrows: the Theme chip drops first (it is the only
 /// chip with nothing to do with the request); then the three cycle pills,
 /// and the group gaps after the selector chips collapse to the ordinary
-/// one-column gap; then the Manage chip's own `alt+v` keycap, leaving a
+/// one-column gap; then the Manage chip's own `alt+r` keycap, leaving a
 /// bare ` Manage `; then Discard, then Save. The keys themselves keep
 /// working in every case, and their hints stay in the footer/palette. If
 /// even the bare Manage chip can't fit right-anchored beside the
@@ -153,7 +153,7 @@ pub fn draw_header(
     let manage_label = " Manage ";
     let manage_label_w = manage_label.chars().count() as u16;
     let manage_pill = crate::paint::Chip {
-        label: "alt+v",
+        label: "alt+r",
         color: theme.text_muted,
     };
     let theme_label = " Theme ";
@@ -287,7 +287,7 @@ pub fn draw_header(
     }
 
     // The Manage-screen toggle, in the footer's clickable idiom with the
-    // keycap leading the name: `alt+v` pill + prominent full name. While
+    // keycap leading the name: `alt+r` pill + prominent full name. While
     // the Manage screen is open the whole chip holds the pressed fill,
     // keeping the old `vars` toggle's stateful read. The name paints
     // unconditionally (a bar too narrow even for it beside the selectors
@@ -357,7 +357,7 @@ pub fn draw_header(
                 area,
                 x,
                 mid_y,
-                "alt+r",
+                "alt+shift+r",
                 RELOAD_LABEL,
                 hovered == Some(&hit),
                 hover_t,
@@ -853,7 +853,7 @@ mod tests {
     #[test]
     fn reload_occupies_the_save_slot_on_the_manage_screen() {
         let theme = Theme::dark();
-        let (term, hits) = render_manage(&theme, true, true, 150);
+        let (term, hits) = render_manage(&theme, true, true, 160);
         let content = format!("{:?}", term.backend().buffer());
         assert!(content.contains("Reload"), "{content}");
         let hit = hits
@@ -1120,7 +1120,7 @@ mod tests {
     }
 
     /// Last to yield: with a long project name at 78 columns the Manage
-    /// chip's own `alt+v` keycap goes after the cycle pills, and the
+    /// chip's own `alt+r` keycap goes after the cycle pills, and the
     /// chip — now a bare ` Manage ` — still fits inside the bar.
     #[test]
     fn manage_keycap_yields_after_the_cycle_pills_on_a_long_project_name() {
@@ -1216,7 +1216,7 @@ mod tests {
     /// The Manage chip sits in the right cluster, a wide group gap left
     /// of the Theme chip — so Theme's own pill clearly belongs to Theme
     /// rather than trailing Manage — in the footer's clickable idiom with
-    /// the keycap leading the name: `alt+v` pill + prominent full name.
+    /// the keycap leading the name: `alt+r` pill + prominent full name.
     #[test]
     fn manage_chip_leads_the_theme_chip_with_a_leading_keycap() {
         let theme = Theme::dark();
@@ -1232,7 +1232,7 @@ mod tests {
         );
         assert_eq!(
             row_text(&term, &rect),
-            format!(" {}+v  Manage ", crate::keys::alt_label())
+            format!(" {}+r  Manage ", crate::keys::alt_label())
         );
         let label_cell = cell(&term, rect.x + alt_pill_w() + 1, mid_of(&rect));
         assert_eq!(label_cell.symbol(), "M");

@@ -1,6 +1,5 @@
 use postui::action::Action;
 use postui::app::App;
-use postui::components::editor::SubFocus;
 use postui::components::line_input::LineInput;
 use postui::components::modal::Modal;
 use postui::components::sidebar::Row;
@@ -30,6 +29,19 @@ fn alt(c: char) -> KeyEvent {
 }
 fn enter() -> KeyEvent {
     KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
+}
+fn esc() -> KeyEvent {
+    KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)
+}
+
+/// Submits the top form modal's open field the long way (spec
+/// 2026-09-16): Enter no longer submits directly — the first Esc closes
+/// the field to selected, the second reaches the button row (Confirm
+/// aimed), and only then does Enter confirm.
+fn submit_prompt(app: &mut App) {
+    app.handle_key(esc());
+    app.handle_key(esc());
+    app.handle_key(enter());
 }
 
 fn dummy_request(url: &str) -> HttpRequest {
@@ -158,7 +170,7 @@ async fn stage3_acceptance_flow() {
     for c in "users/list".chars() {
         app.handle_key(plain(c));
     }
-    app.handle_key(enter());
+    submit_prompt(&mut app);
     assert_eq!(app.editor.slug.as_deref(), Some("main/users/list"));
 
     app.editor.url = LineInput::new("{{base}}/users?tok={{tok}}");
@@ -281,7 +293,7 @@ async fn stage3_acceptance_flow() {
 
     // --- `{{` in the URL pops the picker; picking inserts the token --
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Url;
+    app.editor.open_url_from_app();
     app.editor.url = LineInput::new("");
     app.handle_key(plain('{'));
     app.handle_key(plain('{'));

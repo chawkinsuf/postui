@@ -37,9 +37,7 @@ impl Col {
 /// The cell currently being typed into. Editing is always in place: the
 /// clicked (or Enter'd) cell turns into a `LineInput` right where it sits.
 ///
-/// The map is never mutated before the edit commits, so `original` — the
-/// cell's text when the edit began — is still what the map holds; `Esc`
-/// simply drops the edit (and, defensively, writes `original` back).
+/// Esc commits like Enter; the cell's history is the input's own.
 #[derive(Debug, Clone)]
 pub struct CellEdit {
     /// Index into the map — or `map.len()`, the always-present ghost row
@@ -47,8 +45,6 @@ pub struct CellEdit {
     pub row: usize,
     pub col: Col,
     pub input: LineInput,
-    /// The cell's pre-edit text, for `Esc`-revert.
-    pub original: String,
 }
 
 /// Result of a `TableEditorState` interaction.
@@ -187,11 +183,11 @@ impl TableEditorState {
     }
 
     /// Puts `row`/`col` under edit, seeded with its current text and the
-    /// caret at the end. Any previous edit must already have been committed
-    /// or reverted.
+    /// caret at the end. Any previous edit must already have been
+    /// committed.
     fn start_edit(&mut self, row: usize, col: Col, map: &IndexMap<String, Entry>) {
         let row = row.min(map.len());
-        let original = if row == map.len() && col == Col::Value {
+        let text = if row == map.len() && col == Col::Value {
             // Re-entering the ghost's value cell resumes the stashed text.
             self.pending_ghost_value.clone().unwrap_or_default()
         } else {
@@ -205,8 +201,7 @@ impl TableEditorState {
         self.editing = Some(CellEdit {
             row,
             col,
-            input: LineInput::new(&original),
-            original,
+            input: LineInput::new(&text),
         });
     }
 
@@ -250,28 +245,6 @@ impl TableEditorState {
         let (row, warning) = self.commit_cell(map, &edit);
         self.selected = Some(row.unwrap_or(map.len()).min(map.len()));
         TableOutcome::maybe_warn(warning)
-    }
-
-    /// `Esc`: reverts the active cell to its pre-edit text and leaves
-    /// editing. A row that existed survives; a ghost row that was being
-    /// typed simply never happened.
-    pub fn revert(&mut self, map: &mut IndexMap<String, Entry>) {
-        let Some(edit) = self.editing.take() else {
-            return;
-        };
-        // The map is only ever written on commit, so the pre-edit text is
-        // still in place; restoring it is belt-and-braces against any path
-        // that wrote through the map mid-edit.
-        if edit.col == Col::Value
-            && let Some((_, e)) = map.get_index_mut(edit.row)
-        {
-            e.value.clone_from(&edit.original);
-        }
-        if edit.row >= map.len() {
-            // Reverting a ghost edit: the row never happened, stash and all.
-            self.pending_ghost_value = None;
-        }
-        self.selected = Some(edit.row.min(map.len()));
     }
 
     /// Writes one cell into the map. Returns the row index the edit
@@ -411,7 +384,7 @@ impl TableEditorState {
 
     fn handle_nav_key(&mut self, ev: KeyEvent, map: &mut IndexMap<String, Entry>) -> TableOutcome {
         match ev.code {
-            KeyCode::Char('j') | KeyCode::Down => {
+            KeyCode::Char('j') | KeyCode::Down if crate::keys::plain_letter(&ev) => {
                 // The cursor's range is the data rows plus one: index
                 // `map.len()` is the ghost row, so the keyboard can reach it
                 // the same way the mouse can (and an empty table still has
@@ -422,7 +395,7 @@ impl TableEditorState {
                 });
                 TableOutcome::consumed()
             }
-            KeyCode::Char('k') | KeyCode::Up => {
+            KeyCode::Char('k') | KeyCode::Up if crate::keys::plain_letter(&ev) => {
                 // Row 0 and no selection leave Up unconsumed so the caller
                 // (Editor) can fall back to climbing out to the tab strip
                 // instead of leaving the user stuck with no way back.
@@ -446,18 +419,18 @@ impl TableEditorState {
             }
             // `a` is the keyboard shorthand for "start a new row": it opens
             // the ghost row's key cell, exactly like clicking it.
-            KeyCode::Char('a') => {
+            KeyCode::Char('a') if ev.modifiers.is_empty() => {
                 self.begin_add(map);
                 TableOutcome::consumed()
             }
-            KeyCode::Enter => {
+            KeyCode::Enter | KeyCode::Char('i') if crate::keys::opens_field(&ev) => {
                 if self.selected.is_none() {
                     return TableOutcome::not_consumed();
                 }
                 self.begin_edit_selected(map);
                 TableOutcome::consumed()
             }
-            KeyCode::Char(' ') => {
+            KeyCode::Char(' ') if ev.modifiers.is_empty() => {
                 if self.ghost_selected(map) {
                     return TableOutcome::not_consumed();
                 }
@@ -467,7 +440,40 @@ impl TableEditorState {
                 e.enabled = !e.enabled;
                 TableOutcome::consumed()
             }
-            KeyCode::Char('d') | KeyCode::Delete => {
+            // The table never scrolls, so its "page" is its row count: g/Home
+            // → row 0, G/End → the ghost row, ctrl+f/PageDown → the ghost
+            // row, ctrl+b/PageUp → row 0, ctrl+d/u ± half the rows.
+            KeyCode::Char('g') if ev.modifiers.is_empty() => {
+                self.handle_nav_key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE), map)
+            }
+            KeyCode::Char('G') => {
+                self.handle_nav_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE), map)
+            }
+            KeyCode::Char('f') if ev.modifiers == KeyModifiers::CONTROL => {
+                self.handle_nav_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE), map)
+            }
+            KeyCode::Char('b') if ev.modifiers == KeyModifiers::CONTROL => {
+                self.handle_nav_key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE), map)
+            }
+            KeyCode::Home | KeyCode::PageUp => {
+                self.selected = Some(0);
+                TableOutcome::consumed()
+            }
+            KeyCode::End | KeyCode::PageDown => {
+                self.selected = Some(map.len());
+                TableOutcome::consumed()
+            }
+            KeyCode::Char('d') if ev.modifiers == KeyModifiers::CONTROL => {
+                let half = map.len().div_ceil(2).max(1);
+                self.selected = Some((self.selected.unwrap_or(0) + half).min(map.len()));
+                TableOutcome::consumed()
+            }
+            KeyCode::Char('u') if ev.modifiers == KeyModifiers::CONTROL => {
+                let half = map.len().div_ceil(2).max(1);
+                self.selected = Some(self.selected.unwrap_or(0).saturating_sub(half));
+                TableOutcome::consumed()
+            }
+            KeyCode::Char('d') | KeyCode::Delete if ev.modifiers.is_empty() => {
                 if self.ghost_selected(map) || self.selected.is_none_or(|s| s >= map.len()) {
                     return TableOutcome::not_consumed();
                 }
@@ -489,22 +495,22 @@ impl TableEditorState {
     ) -> TableOutcome {
         let shift = ev.modifiers.contains(KeyModifiers::SHIFT);
         match ev.code {
+            // The field rule: Esc closes the cell keeping its text, and the
+            // cursor stays on the row — Enter does the same (spec
+            // 2026-09-16), it just also commits. Discard is undo.
             KeyCode::Esc => {
-                self.editing = Some(edit);
-                self.revert(map);
-                TableOutcome::consumed()
+                let (row, warning) = self.commit_cell(map, &edit);
+                self.exit_editing(row.unwrap_or(edit.row), map);
+                TableOutcome::maybe_warn(warning)
             }
             KeyCode::Enter => {
                 self.editing = Some(edit);
-                let outcome = self.commit(map);
-                // Enter is "I'm done editing": the selection drops too, so
-                // the row collapses back to its compact line — unless the
-                // commit warned (e.g. a duplicate key resolving to another
-                // row), where the selection is the warning's pointer.
-                if outcome.warning.is_none() {
-                    self.selected = None;
-                }
-                outcome
+                // The field rule (spec 2026-09-16): Enter closes the cell
+                // like Esc does, keeping the row selected — it no longer
+                // drops the selection. `commit` already leaves `selected`
+                // parked on the row (or on the warning's pointer row), so
+                // no explicit set is needed here either way.
+                self.commit(map)
             }
             // Up/Down leave the cell rather than falling through to
             // `LineInput` (which ignores them): they commit it and move the
@@ -933,26 +939,33 @@ impl TableEditorState {
 
         hits.register(Rect::new(area.x, y, area.width, 1), Hit::TableRow(i));
         Self::register_cells(hits, cols_span(&cols, value_right), y, i);
-        // Only the cells drawn as plain text get token treatment: a cell
-        // under edit is showing a live `LineInput` (caret and all), and
-        // registering a `VarToken` over it would turn the next click into a
-        // picker instead of a caret move. The ghost's add label is not a
-        // value, so it gets none either.
+        // Token treatment over whatever each cell drew: the stored text,
+        // or for the cell under edit the live input's visible window —
+        // the URL bar's rule, so a token stays a token while it is being
+        // typed. A left click resolves past `VarToken` spans, so the
+        // caret move underneath is undisturbed. The ghost's add label is
+        // not a value, so it gets none.
+        let edited = |col: Col, w: u16| {
+            (editing_col == Some(col))
+                .then(|| self.editing.as_ref().map(|e| e.input.visible_window(true, w)))
+                .flatten()
+        };
+        let key_window = edited(Col::Key, name_w);
+        let value_window = edited(Col::Value, value_w);
         paint_cell_tokens(
             buf,
             hits,
             &cols,
             value_right,
             y,
-            if real && editing_col != Some(Col::Key) {
-                key
-            } else {
-                ""
+            match &key_window {
+                Some(k) => k.as_str(),
+                None if real => key,
+                None => "",
             },
-            if editing_col == Some(Col::Value) {
-                ""
-            } else {
-                entry.value.as_str()
+            match &value_window {
+                Some(v) => v.as_str(),
+                None => entry.value.as_str(),
             },
             vars,
             theme,
@@ -1090,6 +1103,41 @@ mod tests {
         }
     }
 
+    #[test]
+    fn vim_aliases_are_strict_synonyms_in_the_table() {
+        let ctrl = |c: char| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+        let pairs = [
+            (key(KeyCode::Char('g')), key(KeyCode::Home)),
+            (
+                KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT),
+                key(KeyCode::End),
+            ),
+            (ctrl('f'), key(KeyCode::PageDown)),
+            (ctrl('b'), key(KeyCode::PageUp)),
+            // `i` opens the selected row's cell exactly as Enter does
+            // (spec 2026-09-16).
+            (key(KeyCode::Char('i')), key(KeyCode::Enter)),
+        ];
+        for (alias, canonical) in pairs {
+            let mut ma = map_of(&[("a", "1"), ("b", "2"), ("c", "3")]);
+            let mut mb = ma.clone();
+            let (mut a, mut b) = (TableEditorState::default(), TableEditorState::default());
+            a.selected = Some(1);
+            b.selected = Some(1);
+            a.handle_key(alias, &mut ma);
+            b.handle_key(canonical, &mut mb);
+            assert_eq!(a.selected, b.selected, "{alias:?}");
+        }
+        let mut map = map_of(&[("a", "1"), ("b", "2"), ("c", "3")]);
+        let mut t = TableEditorState::default();
+        t.handle_key(key(KeyCode::End), &mut map);
+        assert_eq!(t.selected, Some(3), "End is the ghost row");
+        t.handle_key(ctrl('u'), &mut map);
+        assert_eq!(t.selected, Some(1), "half of four stops");
+        t.handle_key(ctrl('d'), &mut map);
+        assert_eq!(t.selected, Some(3));
+    }
+
     // --- ghost row selection ----------------------------------------------
 
     /// Arrowing onto the ghost row selects it like any other row — no edit
@@ -1170,7 +1218,6 @@ mod tests {
         assert_eq!(edit.col, Col::Value);
         assert_eq!(edit.input.text(), "2", "seeded with the cell's own text");
         assert_eq!(edit.input.cursor(), 1, "caret at the end");
-        assert_eq!(edit.original, "2");
         assert_eq!(t.selected, Some(0), "the clicked row is the selected row");
     }
 
@@ -1219,16 +1266,16 @@ mod tests {
     }
 
     #[test]
-    fn revert_restores_the_cell_and_leaves_the_row_alone() {
-        let mut map = map_of(&[("page", "2")]);
+    fn esc_on_a_ghost_key_cell_creates_the_row_like_enter() {
+        let mut map = map_of(&[]);
         let mut t = TableEditorState::default();
-        t.click_cell(0, Col::Value, &mut map);
-        type_str(&mut t, &mut map, "999");
-        t.revert(&mut map);
-        assert!(t.editing.is_none());
-        assert_eq!(map["page"].value, "2", "the pre-edit value is back");
-        assert_eq!(map.len(), 1, "the row survives");
-        assert_eq!(t.selected, Some(0), "the row stays selected");
+        t.begin_add(&map);
+        for c in "k".chars() {
+            t.handle_key(key(KeyCode::Char(c)), &mut map);
+        }
+        t.handle_key(key(KeyCode::Esc), &mut map);
+        assert!(map.contains_key("k"));
+        assert_eq!(t.selected, Some(0));
     }
 
     #[test]
@@ -1327,17 +1374,20 @@ mod tests {
     }
 
     #[test]
-    fn esc_on_the_ghost_key_also_discards_a_stashed_value() {
+    fn esc_on_the_empty_ghost_key_keeps_the_stashed_value_for_next_time() {
         let mut map = IndexMap::new();
         let mut t = TableEditorState::default();
         t.click_cell(0, Col::Value, &mut map);
         type_str(&mut t, &mut map, "42");
         t.click_cell(0, Col::Key, &mut map);
-        t.revert(&mut map); // Esc: the ghost row never happened
+        // Esc on an empty key commits nothing (no key to create a row
+        // with), but it's still just a commit — the earlier stash is not
+        // typed text in this field, and Esc never discards typed text.
+        t.handle_key(key(KeyCode::Esc), &mut map);
         t.click_cell(0, Col::Key, &mut map);
         type_str(&mut t, &mut map, "id");
         t.commit(&mut map);
-        assert_eq!(map["id"].value, "", "Esc wiped the stash too");
+        assert_eq!(map["id"].value, "42", "Esc did not discard the stashed value");
     }
 
     // --- keyboard: navigation --------------------------------------------
@@ -1394,16 +1444,43 @@ mod tests {
     }
 
     #[test]
-    fn enter_committing_an_edit_deselects_the_row() {
+    fn enter_committing_an_edit_keeps_the_row_selected() {
         let mut map = map_of(&[("a", "1")]);
         let mut t = TableEditorState {
             selected: Some(0),
             ..TableEditorState::default()
         };
         t.handle_key(key(KeyCode::Enter), &mut map); // begin editing the key
-        t.handle_key(key(KeyCode::Enter), &mut map); // commit — "I'm done"
+        t.handle_key(key(KeyCode::Enter), &mut map); // commit, like Esc
         assert!(t.editing.is_none());
-        assert_eq!(t.selected, None, "Enter after editing drops the selection");
+        assert_eq!(t.selected, Some(0), "Enter keeps the row selected, like Esc");
+    }
+
+    #[test]
+    fn enter_in_an_open_cell_commits_and_keeps_the_row_selected() {
+        let mut map = map_of(&[("a", "1")]);
+        let mut t = TableEditorState {
+            selected: Some(0),
+            ..TableEditorState::default()
+        };
+        t.begin_edit_selected(&map);
+        t.handle_key(key(KeyCode::Char('x')), &mut map);
+        let outcome = t.handle_key(key(KeyCode::Enter), &mut map);
+        assert!(outcome.warning.is_none());
+        assert_eq!(t.selected, Some(0), "Enter keeps the row selected, like Esc");
+        assert!(t.editing.is_none());
+    }
+
+    #[test]
+    fn i_opens_the_selected_row_like_enter() {
+        let mut map = map_of(&[("a", "1")]);
+        let mut t = TableEditorState {
+            selected: Some(0),
+            ..TableEditorState::default()
+        };
+        let outcome = t.handle_key(key(KeyCode::Char('i')), &mut map);
+        assert!(outcome.consumed);
+        assert!(t.editing.is_some());
     }
 
     #[test]
@@ -1564,40 +1641,43 @@ mod tests {
                 enabled: true
             }
         );
-        assert_eq!(t.selected, None, "Enter is 'done editing': deselects too");
+        assert_eq!(t.selected, Some(0), "Enter keeps the row selected, like Esc");
     }
 
     #[test]
-    fn esc_reverts_the_cell_and_exits_editing_without_touching_the_row() {
+    fn esc_commits_the_cell_and_exits_editing_leaving_the_row_selected() {
         let mut map = map_of(&[("a", "1")]);
         let mut t = TableEditorState::default();
         t.click_cell(0, Col::Value, &mut map);
         type_str(&mut t, &mut map, "9");
         assert!(t.handle_key(key(KeyCode::Esc), &mut map).consumed);
         assert!(t.editing.is_none());
-        assert_eq!(map["a"].value, "1", "the cell reverted");
+        assert_eq!(map["a"].value, "19", "the typed text stands");
         assert_eq!(map.len(), 1, "the row survives");
+        assert_eq!(t.selected, Some(0), "the row stays selected");
 
-        // Esc after a Tab reverts only the cell it is in: the already
-        // committed key cell keeps its new text.
+        // Esc after a Tab commits only the cell it is in: the already
+        // committed key cell keeps its new text too.
         t.click_cell(0, Col::Key, &mut map);
         type_str(&mut t, &mut map, "x");
         t.handle_key(key(KeyCode::Tab), &mut map);
         type_str(&mut t, &mut map, "8");
         t.handle_key(key(KeyCode::Esc), &mut map);
         assert_eq!(map.get_index(0).unwrap().0, "ax", "the rename stands");
-        assert_eq!(map["ax"].value, "1", "the value cell reverted");
+        assert_eq!(map["ax"].value, "198", "the value cell's edit stands");
     }
 
     #[test]
-    fn esc_on_a_ghost_row_being_typed_discards_it() {
+    fn esc_on_a_ghost_row_being_typed_creates_it_like_enter() {
         let mut map = map_of(&[("a", "1")]);
         let mut t = TableEditorState::default();
         t.click_cell(1, Col::Key, &mut map);
         type_str(&mut t, &mut map, "new");
         t.handle_key(key(KeyCode::Esc), &mut map);
         assert!(t.editing.is_none());
-        assert_eq!(map.len(), 1, "the abandoned ghost added nothing");
+        assert_eq!(map.len(), 2, "the ghost became a real row");
+        assert!(map.contains_key("new"));
+        assert_eq!(t.selected, Some(1), "the new row stays selected");
     }
 
     // --- renames, duplicates, warnings ------------------------------------

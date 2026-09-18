@@ -597,6 +597,35 @@ impl FilePickerState {
         self.rebuild_rows();
     }
 
+    /// Steps the field's edit history one place (back, or forward when
+    /// `redo`) and rebuilds the listing from it, exactly as a keystroke
+    /// into the field does. Returns whether there was a step to take.
+    pub(crate) fn undo_filter(&mut self, redo: bool) -> bool {
+        let stepped = if redo {
+            self.input.redo()
+        } else {
+            self.input.undo()
+        };
+        if stepped {
+            self.filter_active = true;
+            self.rebuild_rows();
+        }
+        stepped
+    }
+
+    /// Moves the row selection by `delta` (`-1` = Up, `1` = Down), clamped
+    /// to the row list, same as the arrow keys and their ctrl+p/ctrl+n
+    /// aliases.
+    fn move_selection(&mut self, delta: i32) {
+        if delta < 0 {
+            self.selected = self.selected.saturating_sub(1);
+        } else if self.selected + 1 < self.rows.len() {
+            self.selected += 1;
+        }
+        self.ensure_visible = true;
+        self.row_chosen = true;
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<ModalResult> {
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         match key.code {
@@ -609,17 +638,13 @@ impl FilePickerState {
             KeyCode::Enter if alt => return self.confirm_here(),
             KeyCode::Enter => return self.activate(),
             KeyCode::Char('h') if alt => self.toggle_hidden(),
-            KeyCode::Up => {
-                self.selected = self.selected.saturating_sub(1);
-                self.ensure_visible = true;
-                self.row_chosen = true;
+            KeyCode::Up => self.move_selection(-1),
+            KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.move_selection(-1)
             }
-            KeyCode::Down => {
-                if self.selected + 1 < self.rows.len() {
-                    self.selected += 1;
-                }
-                self.ensure_visible = true;
-                self.row_chosen = true;
+            KeyCode::Down => self.move_selection(1),
+            KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.move_selection(1)
             }
             KeyCode::Backspace if self.input.text().is_empty() => self.climb(),
             _ => {
@@ -913,6 +938,48 @@ mod tests {
 
     fn alt(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::ALT)
+    }
+
+    fn ctrl(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+    }
+
+    #[test]
+    fn ctrl_n_and_ctrl_p_are_down_and_up() {
+        let dir = tree();
+        let mut a = FilePickerState::new("Open project", PickerTarget::OpenProject, dir.path(), "");
+        let mut b = FilePickerState::new("Open project", PickerTarget::OpenProject, dir.path(), "");
+        a.handle_key(key(KeyCode::Down));
+        b.handle_key(ctrl('n'));
+        assert_eq!(a.selected(), b.selected());
+        a.handle_key(key(KeyCode::Up));
+        b.handle_key(ctrl('p'));
+        assert_eq!(a.selected(), b.selected());
+        assert_eq!(b.input().text(), "", "ctrl+n/p never type");
+    }
+
+    /// Undo in the field is not just the field: the listing has to be
+    /// rebuilt from the text the undo left behind, exactly as a keystroke
+    /// rebuilds it.
+    #[test]
+    fn undo_filter_walks_the_field_back_and_rebuilds_the_rows() {
+        let dir = tree();
+        let mut p = FilePickerState::new("Open project", PickerTarget::OpenProject, dir.path(), "");
+        let all = p.rows().len();
+        type_str(&mut p, "alp");
+        let narrowed = p.rows().len();
+        assert!(narrowed < all, "the filter narrowed the listing");
+
+        assert!(p.undo_filter(false), "there was a typing run to step");
+        assert_eq!(p.input().text(), "");
+        assert_eq!(p.rows().len(), all, "the rows came back with the text");
+        assert!(p.selected() < p.rows().len());
+
+        assert!(p.undo_filter(true), "and redo walks it forward again");
+        assert_eq!(p.input().text(), "alp");
+        assert_eq!(p.rows().len(), narrowed);
+
+        assert!(!p.undo_filter(true), "nothing left to redo");
     }
 
     fn type_str(p: &mut FilePickerState, s: &str) {

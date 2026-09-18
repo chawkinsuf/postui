@@ -20,6 +20,13 @@ pub struct Step {
     pub context: Context,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum UiValue {
+    Flag(bool),
+    Text(String),
+    Int(usize),
+}
+
 #[derive(Debug, Clone)]
 pub enum StepKind {
     EditorDelta {
@@ -39,6 +46,25 @@ pub enum StepKind {
         /// the deleted one for a delete.
         slug: Option<String>,
         noun: ProjectNoun,
+    },
+    /// One Settings-tab write (`Action::SetUiFlag` / `SetUiString` /
+    /// `SetUiInt`), spec 2026-09-16: undoing writes `before` back through
+    /// `Config::save_ui_*` and reapplies it; redoing writes `after`. Never
+    /// coalesced — each commit (a field close, a toggle, a segment flip)
+    /// is its own step.
+    Config {
+        key: &'static str,
+        before: UiValue,
+        after: UiValue,
+    },
+    /// A `config.toml` / `keys.toml` Reset (`Action::ForceResetConfigFile`).
+    /// `before` is the file's bytes before the reset (`None` when the file
+    /// did not exist); undo writes `before` back (or removes the file) and
+    /// reloads, redo writes `after`.
+    ConfigFile {
+        file: crate::action::ConfigFile,
+        before: Option<String>,
+        after: String,
     },
 }
 
@@ -82,6 +108,27 @@ pub enum CursorPos {
     Body { row: usize, col: usize },
     Cell { tab: EditorTab, key: String },
     None,
+}
+
+impl CursorPos {
+    /// Whether the field this caret sits in is one the step changed
+    /// (ruling 2026-09-17: undo/redo place the caret only in an input the
+    /// step touches — restoring a stored caret into an unchanged field
+    /// would move focus to an input the undo never affected). The Body tab
+    /// is the body text; a table tab is its map.
+    pub fn touched_by(&self, before: &HttpRequest, after: &HttpRequest) -> bool {
+        match self {
+            CursorPos::Url(_) => before.url != after.url,
+            CursorPos::Body { .. } => before.body != after.body,
+            CursorPos::Cell { tab, .. } => match tab {
+                EditorTab::Params => before.params != after.params,
+                EditorTab::Headers => before.headers != after.headers,
+                EditorTab::Vars => before.variables != after.variables,
+                EditorTab::Body => before.body != after.body,
+            },
+            CursorPos::None => false,
+        }
+    }
 }
 
 /// Which single `HttpRequest` field changed, for burst-coalescing purposes.
@@ -302,6 +349,31 @@ impl Default for History {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_caret_is_touched_only_by_a_step_that_changes_its_field() {
+        let before = HttpRequest::default();
+        let mut url = before.clone();
+        url.url = "https://x".into();
+        let mut headers = before.clone();
+        headers.headers.insert(
+            "a".into(),
+            postui_core::model::Entry {
+                value: "1".into(),
+                enabled: true,
+            },
+        );
+        let caret = CursorPos::Url(0);
+        assert!(caret.touched_by(&before, &url));
+        assert!(!caret.touched_by(&before, &headers));
+        let cell = CursorPos::Cell {
+            tab: EditorTab::Headers,
+            key: "a".into(),
+        };
+        assert!(cell.touched_by(&before, &headers));
+        assert!(!cell.touched_by(&before, &url));
+        assert!(!CursorPos::None.touched_by(&before, &url));
+    }
+
     use postui_core::model::{HttpRequest, Method};
     use std::time::{Duration, Instant};
 
@@ -409,6 +481,32 @@ mod tests {
         h.push_redo(s);
         h.record_no_coalesce(delta("", "x"));
         assert!(h.pop_redo().is_none());
+    }
+
+    #[test]
+    fn a_config_step_round_trips_through_a_history_record() {
+        let mut h = History::new();
+        h.record_no_coalesce(Step {
+            kind: StepKind::Config {
+                key: "hover_hints",
+                before: UiValue::Flag(true),
+                after: UiValue::Flag(false),
+            },
+            context: Context {
+                slug: None,
+                cursor_before: CursorPos::None,
+                cursor_after: CursorPos::None,
+            },
+        });
+        let popped = h.pop_undo().expect("the step is there");
+        assert!(matches!(
+            popped.kind,
+            StepKind::Config {
+                key: "hover_hints",
+                before: UiValue::Flag(true),
+                after: UiValue::Flag(false),
+            }
+        ));
     }
 
     #[test]

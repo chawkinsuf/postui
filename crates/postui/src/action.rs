@@ -334,6 +334,10 @@ pub enum Action {
     /// Cancel the in-flight request, if any: aborts its task and marks the
     /// response pane `Cancelled`.
     CancelSend,
+    /// Close the open text field keeping its text — what Esc does there
+    /// (spec 2026-09-15). The footer's `esc done` chip dispatches it; a
+    /// no-op when nothing is open.
+    CloseField,
     /// Confirmed the send-time secret prompt (spec §3): writes `name`'s
     /// value to `secrets.toml` under the active environment, then re-runs
     /// `Action::ForceSend` on success (prompting for the next missing
@@ -524,7 +528,7 @@ pub enum Action {
     /// that could have changed out from under the app (sending, opening a
     /// chooser). A no-op, redraw-wise, when nothing changed.
     ReloadProjectFiles,
-    /// The user-triggered reload (`alt+r`, the palette's "Reload from
+    /// The user-triggered reload (`alt+shift+r`, the palette's "Reload from
     /// disk", the Manage bar's Reload All button): a forced re-read of the
     /// open project's files *and* of the user-editable XDG config files —
     /// `config.toml`, `keys.toml` and `themes/` — applied live. `ui.toml`
@@ -606,6 +610,11 @@ pub enum Action {
     },
     /// Switch the response pane's view (the tabs row's click target).
     ResponseViewMode(crate::components::response::ViewMode),
+    /// `t` walks the response pane's views: Pretty → Raw → Headers →
+    /// Pretty, or Raw ↔ Headers when there is no tree to show. Dispatched
+    /// as an action (not a direct view mutation) so the tab underline
+    /// retargets like a click.
+    CycleResponseView,
     /// Opens the response pane's in-pane search (Task 17, spec §5): the
     /// dispatchable form of the `Find` button / `/` key, so the footer's
     /// Response-pane search chip and the palette can reach it too.
@@ -650,7 +659,7 @@ pub enum Action {
     /// `Action::CloseScreen` can restore it, then switches `App::screen`
     /// to `Screen::Manage` on `tab` — `None` meaning the last-used tab.
     /// Toggles the screen closed when it is already open on that tab, so
-    /// `alt+v` and the header chip both work as an on/off switch.
+    /// `alt+r` and the header chip both work as an on/off switch.
     OpenManage {
         tab: Option<crate::components::manage::ManageTab>,
     },
@@ -669,7 +678,7 @@ pub enum Action {
     // -- Variable Manager structural actions (spec §3.4/§5 action list) --
     /// `n` / the `+ Variable` button: open the new-variable name prompt.
     PromptNewVar,
-    /// `g` / the `+ Group` button: open the new-selector prompt (name + a
+    /// `a` / the `+ Group` button: open the new-selector prompt (name + a
     /// comma-separated field list).
     PromptNewSelector,
     /// `e`/`F2` on a variable row, or its context menu's "Rename…": open
@@ -880,11 +889,6 @@ pub enum Action {
     /// closed jq bar (filter on, focused) or closes an open one (filter
     /// off, text kept) whether or not the caret is in it.
     ToggleJqBar,
-    /// Esc in the bar (and the footer's `esc cancel` chip): puts the
-    /// filter back to what it was when the bar took the caret — text and
-    /// on/off switch — and blurs; a bar opened onto no filter closes. An
-    /// edit whenever anything changed — undo brings the typed text back.
-    CancelJqEdit,
     /// alt+q / the palette / the footer's `filter` chip: focus the bar,
     /// switching it on if it was off. Never blurs and never switches off
     /// — alt+q always means "type a filter", so the switch is a different

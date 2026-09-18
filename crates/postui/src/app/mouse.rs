@@ -1107,6 +1107,7 @@ impl App {
                 | Hit::ModalRowToggle(_)
                 | Hit::ModalAddRow
                 | Hit::ModalSharedToggle
+                | Hit::ModalRevealToggle
                 | Hit::ModalRemove
                 | Hit::ModalOutside
                 | Hit::DropdownRow(_)
@@ -1228,6 +1229,7 @@ impl App {
             )),
             Hit::ManageRow(i) => {
                 self.manage.list.cursor = i;
+                self.manage.list.leave_detail();
                 // A press on a Spaces or Environments row also arms a
                 // possible row drag; the click itself still just selects
                 // (the drag only starts once the pointer leaves the row).
@@ -1550,7 +1552,7 @@ impl App {
                 self.update(Action::SplitStep(delta))
             }
             Hit::UrlBar => {
-                let was_focused = self.editor.sub_focus == SubFocus::Url;
+                let was_focused = self.editor.url_open();
                 // `Action::FocusUrl` is exactly "focus Editor, sub-focus
                 // Url" (see its handler) — dispatching it here rather than
                 // setting both fields by hand is what makes the mouse-parity
@@ -1623,20 +1625,28 @@ impl App {
                         self.modals.top(),
                         Some(crate::components::modal::Modal::Chooser(_))
                     );
-                if theme_picker
-                    || matches!(
-                        self.modals.top(),
-                        Some(crate::components::modal::Modal::MultiPrompt {
-                            kind: crate::components::modal::PromptKind::EditOption { .. },
-                            ..
-                        })
-                    )
-                {
+                if theme_picker {
                     let enter = ratatui::crossterm::event::KeyEvent::new(
                         ratatui::crossterm::event::KeyCode::Enter,
                         ratatui::crossterm::event::KeyModifiers::NONE,
                     );
                     if let Some(res) = self.modals.handle_key(enter) {
+                        return self.apply_modal_result(res);
+                    }
+                    return true;
+                }
+                if matches!(
+                    self.modals.top(),
+                    Some(crate::components::modal::Modal::MultiPrompt {
+                        kind: crate::components::modal::PromptKind::EditOption { .. },
+                        ..
+                    })
+                ) {
+                    // `MultiPrompt`'s own Enter arm only closes a field to
+                    // selected now (spec 2026-09-16) — submitting is
+                    // `confirm_top`'s job alone, same path the button
+                    // row's Confirm click takes.
+                    if let Some(res) = self.modals.confirm_top() {
                         return self.apply_modal_result(res);
                     }
                     return true;
@@ -1649,6 +1659,10 @@ impl App {
             // anything.
             Hit::ModalBody => false,
             Hit::ModalField(i) => {
+                // A click into the modal's body takes the keyboard off
+                // the button row, even when the field it lands on has no
+                // text box of its own to focus.
+                self.modals.leave_button_row();
                 if let Some(crate::components::modal::Modal::MultiPrompt {
                     focus,
                     fields,
@@ -1674,6 +1688,7 @@ impl App {
                 false
             }
             Hit::ModalChoiceArrow { field, dir } => {
+                self.modals.leave_button_row();
                 if let Some(crate::components::modal::Modal::MultiPrompt {
                     focus,
                     fields,
@@ -1719,14 +1734,8 @@ impl App {
                 self.text_drag = Some(TextDrag::ModalInput(i));
                 self.update(Action::Render)
             }
-            // The painted Cancel/Confirm buttons deliver exactly what
-            // Esc/Enter already dispatch for whichever modal is on top: a
-            // synthesized key event routed through the same
-            // `ModalStack::handle_key` match, rather than duplicating its
-            // per-variant logic here. Message's only button ("OK") also
-            // maps to `ModalConfirm` — Enter and Esc already produce the
-            // same close-with-no-actions result for `Modal::Message`.
             Hit::ModalRowToggle(i) => {
+                self.modals.leave_button_row();
                 if let Some(crate::components::modal::Modal::FieldsEditor(state)) =
                     self.modals.top_mut()
                 {
@@ -1736,6 +1745,7 @@ impl App {
                 false
             }
             Hit::ModalAddRow => {
+                self.modals.leave_button_row();
                 if let Some(crate::components::modal::Modal::FieldsEditor(state)) =
                     self.modals.top_mut()
                 {
@@ -1744,7 +1754,18 @@ impl App {
                 }
                 false
             }
+            // The mouse twin of ctrl+r: flips the mask and nothing else
+            // (focus stays wherever it was, so typing carries on).
+            Hit::ModalRevealToggle => {
+                if let Some(crate::components::modal::Modal::Prompt { revealed, .. }) =
+                    self.modals.top_mut()
+                {
+                    *revealed = !*revealed;
+                }
+                self.update(Action::Render)
+            }
             Hit::ModalSharedToggle => {
+                self.modals.leave_button_row();
                 if let Some(crate::components::modal::Modal::Prompt {
                     kind: crate::components::modal::PromptKind::NewSelector { shared, on_toggle },
                     ..
@@ -1759,16 +1780,19 @@ impl App {
                 false
             }
             Hit::ModalRemove => self.remove_from_value_popup(),
+            // The painted buttons dispatch the modal's own cancel/confirm
+            // directly; a synthesized Esc would only close the field now.
+            // Message's only button ("OK") also maps to `ModalConfirm` —
+            // `confirm_top` synthesizes Enter, which `Modal::Message`
+            // already closes on.
             Hit::ModalCancel => {
-                let synth = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
-                let Some(res) = self.modals.handle_key(synth) else {
+                let Some(res) = self.modals.cancel_top() else {
                     return false;
                 };
                 self.apply_modal_result(res)
             }
             Hit::ModalConfirm => {
-                let synth = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
-                let Some(res) = self.modals.handle_key(synth) else {
+                let Some(res) = self.modals.confirm_top() else {
                     return false;
                 };
                 self.apply_modal_result(res)

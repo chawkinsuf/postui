@@ -53,33 +53,52 @@ fn click(app: &mut App, hit: Hit) {
 // --- deselection ---------------------------------------------------------
 
 #[test]
-fn enter_deselects_the_url_input() {
+fn enter_closes_the_open_url_input_to_selected() {
     let mut app = App::new_for_test();
-    click(&mut app, Hit::UrlBar);
+    click(&mut app, Hit::UrlBar); // a click opens the line directly
     assert_eq!(app.editor.sub_focus, SubFocus::Url);
+    assert!(app.editor.url_open());
     type_text(&mut app, "https://x");
     app.handle_key(key(KeyCode::Enter));
+    // Enter closes the field with the text kept, landing on the URL line
+    // selected — not blurred; Esc from *there* is the transition that
+    // blurs (spec 2026-09-16).
     assert_eq!(
         app.editor.sub_focus,
-        SubFocus::None,
-        "Enter blurs the URL input"
+        SubFocus::Url,
+        "Enter closes to selected, not blurred"
     );
+    assert!(!app.editor.url_open(), "the caret leaves");
     assert_eq!(
         app.editor.url.text(),
         "https://x",
         "Enter commits, not edits"
     );
-}
-
-#[test]
-fn esc_deselects_the_url_input() {
-    let mut app = App::new_for_test();
-    click(&mut app, Hit::UrlBar);
     app.handle_key(key(KeyCode::Esc));
     assert_eq!(
         app.editor.sub_focus,
         SubFocus::None,
-        "Esc blurs the URL input"
+        "Esc from the now-selected line blurs it"
+    );
+}
+
+#[test]
+fn esc_closes_the_open_url_input_to_selected() {
+    let mut app = App::new_for_test();
+    click(&mut app, Hit::UrlBar); // a click opens the line directly
+    assert!(app.editor.url_open());
+    app.handle_key(key(KeyCode::Esc));
+    assert_eq!(
+        app.editor.sub_focus,
+        SubFocus::Url,
+        "Esc closes the open field to selected, not blurred"
+    );
+    assert!(!app.editor.url_open());
+    app.handle_key(key(KeyCode::Esc));
+    assert_eq!(
+        app.editor.sub_focus,
+        SubFocus::None,
+        "a second Esc, from selected, blurs"
     );
 }
 
