@@ -181,8 +181,6 @@ pub struct AnimDurations {
     pub list_travel: Duration,
     /// A modal dialog's open transition.
     pub modal_open: Duration,
-    /// A dropdown's open transition.
-    pub dropdown_open: Duration,
     /// A collapsing pane's transition.
     pub pane_collapse: Duration,
     /// A toast's fade.
@@ -199,7 +197,6 @@ impl Default for AnimDurations {
             focus: Duration::from_millis(90),
             list_travel: Duration::from_millis(100),
             modal_open: Duration::from_millis(100),
-            dropdown_open: Duration::from_millis(90),
             pane_collapse: Duration::from_millis(120),
             toast: Duration::from_millis(100),
             send_breathe: Duration::from_millis(700),
@@ -380,13 +377,12 @@ impl UiSettings {
         }
 
         if let Some(table) = value.get("animation_ms").and_then(|v| v.as_table()) {
-            const KNOWN_KEYS: [&str; 9] = [
+            const KNOWN_KEYS: [&str; 8] = [
                 "tab_slide",
                 "hover",
                 "focus",
                 "list_travel",
                 "modal_open",
-                "dropdown_open",
                 "pane_collapse",
                 "toast",
                 "send_breathe",
@@ -408,13 +404,22 @@ impl UiSettings {
             set_ms("focus", &mut settings.anim_ms.focus);
             set_ms("list_travel", &mut settings.anim_ms.list_travel);
             set_ms("modal_open", &mut settings.anim_ms.modal_open);
-            set_ms("dropdown_open", &mut settings.anim_ms.dropdown_open);
             set_ms("pane_collapse", &mut settings.anim_ms.pane_collapse);
             set_ms("toast", &mut settings.anim_ms.toast);
             set_ms("send_breathe", &mut settings.anim_ms.send_breathe);
 
             for key in table.keys() {
-                if !KNOWN_KEYS.contains(&key.as_str()) {
+                // Dropdowns used to grow in over `dropdown_open` ms; they
+                // now open whole on their first frame. A config that still
+                // sets the key gets told so, rather than a generic
+                // "unknown key" that reads like a typo.
+                if key == "dropdown_open" {
+                    warnings.push(
+                        "\"dropdown_open\" in [animation_ms] section of config.toml no \
+                         longer has an effect: dropdowns open instantly"
+                            .to_string(),
+                    );
+                } else if !KNOWN_KEYS.contains(&key.as_str()) {
                     warnings.push(format!(
                         "unknown key {key:?} in [animation_ms] section of config.toml"
                     ));
@@ -1558,7 +1563,6 @@ osc52_limit = 1024
         assert_eq!(s.anim_ms.focus, Duration::from_millis(90));
         assert_eq!(s.anim_ms.list_travel, Duration::from_millis(100));
         assert_eq!(s.anim_ms.modal_open, Duration::from_millis(100));
-        assert_eq!(s.anim_ms.dropdown_open, Duration::from_millis(90));
         assert_eq!(s.anim_ms.pane_collapse, Duration::from_millis(120));
         assert_eq!(s.anim_ms.toast, Duration::from_millis(100));
         assert_eq!(s.anim_ms.send_breathe, Duration::from_millis(700));
@@ -1573,7 +1577,6 @@ osc52_limit = 1024
         assert_eq!(s.anim_ms.focus, Duration::from_millis(90));
         assert_eq!(s.anim_ms.list_travel, Duration::from_millis(100));
         assert_eq!(s.anim_ms.modal_open, Duration::from_millis(100));
-        assert_eq!(s.anim_ms.dropdown_open, Duration::from_millis(90));
         assert_eq!(s.anim_ms.pane_collapse, Duration::from_millis(120));
         assert_eq!(s.anim_ms.toast, Duration::from_millis(100));
         assert_eq!(s.anim_ms.send_breathe, Duration::from_millis(700));
@@ -1589,7 +1592,6 @@ osc52_limit = 1024
              focus = 3\n\
              list_travel = 4\n\
              modal_open = 5\n\
-             dropdown_open = 6\n\
              pane_collapse = 7\n\
              toast = 8\n\
              send_breathe = 9\n",
@@ -1602,13 +1604,21 @@ osc52_limit = 1024
                 focus: Duration::from_millis(3),
                 list_travel: Duration::from_millis(4),
                 modal_open: Duration::from_millis(5),
-                dropdown_open: Duration::from_millis(6),
                 pane_collapse: Duration::from_millis(7),
                 toast: Duration::from_millis(8),
                 send_breathe: Duration::from_millis(9),
             }
         );
         assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn animation_ms_retired_dropdown_open_key_warns_specifically() {
+        let (s, warnings) = UiSettings::parse("[animation_ms]\ndropdown_open = 90\n");
+        assert_eq!(s.anim_ms, AnimDurations::default());
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("dropdown_open"), "{warnings:?}");
+        assert!(warnings[0].contains("no longer"), "{warnings:?}");
     }
 
     #[test]

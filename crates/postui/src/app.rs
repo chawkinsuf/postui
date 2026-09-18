@@ -2721,9 +2721,8 @@ impl App {
                 // duration's end, `done()` already reads true, so
                 // `animating()` reports false on the exact tick that needs
                 // to redraw one final time to reveal whatever was gated on
-                // it reaching t==1.0 (a modal's contents, a dropdown's
-                // shadow — see `paint::floating_panel_settling` and
-                // `components::modal::draw_dropdown`). OR-ing in whether it
+                // it reaching t==1.0 (a modal's contents — see
+                // `paint::floating_panel_settling`). OR-ing in whether it
                 // was still active as of the previous tick catches that
                 // active→finished transition without keeping ticks flowing
                 // once truly idle.
@@ -2801,11 +2800,10 @@ impl App {
                     self.set_theme_by_name(&prior);
                 }
                 // Overlay close is always instant — no motion rule
-                // exception for either open-settle key. Snapping
-                // `ModalOpen` here also sets the next panel modal's open
-                // baseline to 1 for when the stack goes empty→non-empty
-                // again (see `push_modal`).
-                self.anims.snap(AnimKey::DropdownOpen, 1.0);
+                // exception for the open-settle key. Snapping `ModalOpen`
+                // here also sets the next panel modal's open baseline to 1
+                // for when the stack goes empty→non-empty again (see
+                // `push_modal`).
                 self.anims.snap(AnimKey::ModalOpen, 1.0);
                 // With nothing to close, esc is the cancel shortcut: an
                 // esc no component consumed falls through to here (the
@@ -3113,7 +3111,6 @@ impl App {
                     selected: current.unwrap_or(0),
                     current,
                 }));
-                self.begin_dropdown_open();
                 true
             }
             Action::SetMethod(m) => {
@@ -4305,7 +4302,6 @@ impl App {
                     selected: current.unwrap_or(0),
                     current,
                 }));
-                self.begin_dropdown_open();
                 true
             }
             Action::OpenNewEnvPrompt => {
@@ -5956,7 +5952,6 @@ impl App {
                     selected: current.unwrap_or(0),
                     current,
                 }));
-                self.begin_dropdown_open();
                 true
             }
             Action::PromptMoveRequestToSpace(slug) => {
@@ -8562,7 +8557,6 @@ impl App {
             // is "the current one" and nothing gets the ✓ marker.
             current: None,
         }));
-        self.begin_dropdown_open();
         true
     }
 
@@ -9464,24 +9458,6 @@ impl App {
             .retarget(AnimKey::FocusFade, 1.0, self.ui_settings.anim_ms.focus, now);
     }
 
-    /// Starts a dropdown's open-settle over from 0: snaps `AnimKey::DropdownOpen`
-    /// to 0 and retargets it to 1 over `ui_settings.anim_ms.dropdown_open`
-    /// (90ms by default, config-tunable). Called by both `Modal::Dropdown`
-    /// push sites (`Action::OpenMethodDropdown` and `open_context_menu`) so
-    /// the popup's panel fill grows in from its own top edge rather than
-    /// appearing instantly. Closing is always instant — every modal-pop
-    /// path snaps this key straight to 1 instead of retargeting it.
-    pub(crate) fn begin_dropdown_open(&mut self) {
-        let now = Instant::now();
-        self.anims.snap(AnimKey::DropdownOpen, 0.0);
-        self.anims.retarget(
-            AnimKey::DropdownOpen,
-            1.0,
-            self.ui_settings.anim_ms.dropdown_open,
-            now,
-        );
-    }
-
     /// Pushes `modal` onto the modal stack, driving `AnimKey::ModalOpen`
     /// (the panel-style shell's open-settle): an empty→non-empty push
     /// retargets it from 0 to 1 over `ui_settings.anim_ms.modal_open`
@@ -9491,10 +9467,9 @@ impl App {
     /// another, and likewise for a handoff push (`modal_handoff`), where
     /// the stack is only momentarily empty between two modals of one
     /// flow. A `Modal::Dropdown` push is exempted entirely: dropdowns
-    /// settle via their own `AnimKey::DropdownOpen` (started separately by
-    /// `begin_dropdown_open` at their two push sites), and often land on
-    /// top of an existing modal stack, so touching `ModalOpen` for them
-    /// would either double-animate or wrongly snap a panel modal's own
+    /// have no open transition (they paint whole on their first frame),
+    /// and often land on top of an existing modal stack, so touching
+    /// `ModalOpen` for them would wrongly snap a panel modal's own
     /// baseline mid-flight.
     /// Opens the save picker in the Downloads folder (else home) with a
     /// suggested filename; confirming routes through `PickerConfirm`.
@@ -10795,7 +10770,6 @@ impl App {
         if res.close {
             popped = self.modals.pop();
             // Overlay close is always instant.
-            self.anims.snap(AnimKey::DropdownOpen, 1.0);
             self.anims.snap(AnimKey::ModalOpen, 1.0);
             // A dropdown that closes without dispatching anything (clicked
             // off, Esc) undoes the sidebar pre-selection its right-click

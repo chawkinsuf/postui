@@ -9127,58 +9127,58 @@ fn click_method_selector_opens_dropdown_then_click_row_sets_method() {
     assert!(app.modals.is_empty());
 }
 
-/// Opening the method dropdown retargets `AnimKey::DropdownOpen` 0→1 over
-/// `ui_settings.anim_ms.dropdown_open` (90ms by default); every close path
-/// then snaps it straight back to 1 — overlay close is always instant, no
-/// exception for this popup's own open-settle motion.
+/// A dropdown has no open transition and every close path is instant: no
+/// animation key is ever left in flight by opening or closing the method
+/// dropdown through Esc, a row click, or a click outside. (It once grew in
+/// over a 90ms settle; with the ring already at full size the rows reading
+/// in behind it looked like an unfinished load, so the settle is gone.)
 #[test]
-fn method_dropdown_open_settles_then_every_close_path_snaps_instantly() {
+fn method_dropdown_opens_and_closes_without_any_animation_in_flight() {
     let mut app = App::new_for_test();
     render_once(&mut app);
     let badge = app.hits.rect_of(&Hit::MethodSelector).unwrap();
-
-    // Open: the animation starts short of 1 (still easing in).
-    app.handle_mouse(left_down(badge.x, badge.y));
     let now = std::time::Instant::now();
-    assert!(
-        app.anims.value(AnimKey::DropdownOpen, now).unwrap() < 1.0,
-        "opening starts the settle animation short of 1"
-    );
 
-    // Close via Esc (`Action::Close`): snaps instantly.
+    let no_motion = |app: &App, when: &str| {
+        assert!(
+            !app.anims.active(now),
+            "{when}: no animation may be in flight around a dropdown"
+        );
+    };
+
+    // Open, then close via Esc (`Action::Close`).
+    app.handle_mouse(left_down(badge.x, badge.y));
+    assert!(matches!(app.modals.top(), Some(Modal::Dropdown(_))));
+    no_motion(&app, "after opening");
     app.update(Action::Close);
-    assert_eq!(app.anims.value(AnimKey::DropdownOpen, now), Some(1.0));
+    no_motion(&app, "after Esc");
 
     // Re-open, then close by clicking a row (`Hit::DropdownRow`'s own pop).
     // Freshly rendered first so the click resolves against this frame's
     // hits — a stale `HitMap` from the still-open popup still has
-    // `ModalOutside` covering the badge, same as any real redraw cadence
-    // would refresh before the next click lands.
+    // `ModalOutside` covering the badge.
     render_once(&mut app);
     app.handle_mouse(left_down(badge.x, badge.y));
-    assert!(app.anims.value(AnimKey::DropdownOpen, now).unwrap() < 1.0);
     render_once(&mut app);
     let row0 = app.hits.rect_of(&Hit::DropdownRow(0)).unwrap();
     app.handle_mouse(left_down(row0.x, row0.y));
-    assert_eq!(app.anims.value(AnimKey::DropdownOpen, now), Some(1.0));
+    no_motion(&app, "after a row click");
 
-    // Re-open, then close by clicking outside (`Hit::ModalOutside` →
-    // `Action::Close`, via `apply_modal_result`'s Esc-key twin path is
-    // covered above; this exercises the `on_hit` `ModalOutside` arm).
+    // Re-open, then close by clicking outside (the `on_hit` `ModalOutside`
+    // arm).
     render_once(&mut app);
     app.handle_mouse(left_down(badge.x, badge.y));
-    assert!(app.anims.value(AnimKey::DropdownOpen, now).unwrap() < 1.0);
     render_once(&mut app);
     app.handle_mouse(left_down(0, 0));
     assert!(app.modals.is_empty());
-    assert_eq!(app.anims.value(AnimKey::DropdownOpen, now), Some(1.0));
+    no_motion(&app, "after a click outside");
 }
 
 /// `AnimKey::ModalOpen` — the panel-style shell's own open-settle — only
 /// retargets from 0 on an empty→non-empty push; pushing a second modal on
 /// top of an already-open one snaps it straight to 1 instead (no
 /// re-animation of an already-visible shell). Every close path then snaps
-/// it back to 1, same convention as `AnimKey::DropdownOpen`.
+/// it back to 1 — overlay close is always instant.
 #[test]
 fn modal_open_retargets_only_on_empty_to_non_empty_push() {
     let mut app = App::new_for_test();
@@ -9212,9 +9212,9 @@ fn modal_open_retargets_only_on_empty_to_non_empty_push() {
     assert_eq!(app.anims.value(AnimKey::ModalOpen, now), Some(1.0));
 }
 
-/// A `Modal::Dropdown` push must never touch `AnimKey::ModalOpen` — it
-/// settles only via its own `AnimKey::DropdownOpen` (see
-/// `method_dropdown_open_settles_then_every_close_path_snaps_instantly`).
+/// A `Modal::Dropdown` push must never touch `AnimKey::ModalOpen` — a
+/// dropdown has no open transition of its own (see
+/// `method_dropdown_opens_and_closes_without_any_animation_in_flight`).
 /// Pushing a dropdown on top of an *empty* stack (no panel modal open) must
 /// leave `ModalOpen` untouched, and pushing one on top of an *already open*
 /// panel modal must not snap its still-animating settle to 1 early.
@@ -9242,28 +9242,6 @@ fn dropdown_push_never_touches_modal_open() {
         app.anims.value(AnimKey::ModalOpen, now),
         Some(mid_settle),
         "a Dropdown push must not perturb ModalOpen's own in-flight settle"
-    );
-}
-
-/// Successor to a review-finding regression test: when the env chooser was
-/// a centered modal, its push site once bypassed `push_modal` and skipped
-/// the `AnimKey::ModalOpen` retarget. Now that it opens as an anchored
-/// `Modal::Dropdown` (which never touches `ModalOpen`), the equivalent
-/// guarantee is that the open runs `begin_dropdown_open` — a push site
-/// that skips it would pop the menu in with no settle.
-#[test]
-fn env_chooser_open_starts_the_dropdown_settle() {
-    let (mut app, _dir) = app_with_envs();
-    let now = std::time::Instant::now();
-
-    app.update(Action::OpenEnvChooser);
-    assert!(
-        matches!(app.modals.top(), Some(Modal::Dropdown(_))),
-        "sanity: the dropdown actually opened"
-    );
-    assert!(
-        app.anims.value(AnimKey::DropdownOpen, now).unwrap() < 1.0,
-        "opening the env dropdown must start the open settle short of 1"
     );
 }
 

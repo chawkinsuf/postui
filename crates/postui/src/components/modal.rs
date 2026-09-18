@@ -2559,9 +2559,9 @@ impl ModalStack {
         // modal, so dimming everything behind it would be jarring.
         let is_dropdown = matches!(top, Modal::Dropdown(_));
         // `AnimKey::ModalOpen` is the panel-style shell's own open-settle —
-        // a `Dropdown` keeps only its `DropdownOpen` settle (see
-        // `App::push_modal`, which never retargets `ModalOpen` for a
-        // `Dropdown` push), so it always reads as fully open here.
+        // a `Dropdown` has no open transition at all (see `App::push_modal`,
+        // which never retargets `ModalOpen` for a `Dropdown` push), so it
+        // always reads as fully open here.
         let t = if is_dropdown {
             1.0
         } else {
@@ -3145,9 +3145,7 @@ impl ModalStack {
                 let buttons_y = area.y + area.height.saturating_sub(1 + BUTTON_HEIGHT);
                 draw_cancel_confirm_row(frame, hits, theme, area, buttons_y, hovered, button_focus);
             }
-            Modal::Dropdown(state) => {
-                draw_dropdown(frame, screen, theme, hits, hovered, state, anims, now)
-            }
+            Modal::Dropdown(state) => draw_dropdown(frame, screen, theme, hits, hovered, state),
             Modal::MultiPrompt {
                 title,
                 fields,
@@ -3487,7 +3485,6 @@ impl ModalStack {
 /// 1-line pitch (not the 2-line pill pitch the centered overlays use) —
 /// anchored dropdowns are compact menus, and long lists (many methods,
 /// many projects) need every row they can get.
-#[allow(clippy::too_many_arguments)]
 fn draw_dropdown(
     frame: &mut Frame,
     screen: Rect,
@@ -3495,8 +3492,6 @@ fn draw_dropdown(
     hits: &mut crate::hit::HitMap,
     hovered: Option<&crate::hit::Hit>,
     state: &DropdownState,
-    anims: &crate::anim::Anims,
-    now: std::time::Instant,
 ) {
     let max_label = state
         .items
@@ -3554,33 +3549,13 @@ fn draw_dropdown(
     };
     hits.register(area, crate::hit::Hit::ModalBody);
 
-    // Open-settle: the popup's panel fill grows down from its own top edge
-    // over `AnimKey::DropdownOpen` (retargeted 0→1 in `app.rs` on open,
-    // snapped straight to 1 on every close path — closing is always
-    // instant). `frac_vspan` paints the whole covered rows solid and gives
-    // the partial row at the growing edge its fractional glyph; at t=0 the
-    // edge sits exactly on `area`'s top row with zero coverage, which
-    // `frac_vspan`'s negligible-coverage skip leaves untouched (no flash of
-    // `on` on the very first frame).
-    let t = anims
-        .value_or(crate::anim::AnimKey::DropdownOpen, now, 1.0)
-        .clamp(0.0, 1.0);
-    let settle_bottom = area.top() as f32 + area.height as f32 * t;
-    paint::frac_vspan(
-        frame.buffer_mut(),
-        area.x,
-        area.right(),
-        area.top() as f32,
-        settle_bottom,
-        theme.panel,
-        theme.page,
-    );
-    // The drop shadow reads as noise while the popup is still growing in,
-    // so it only appears once settled (a 90ms window by default — this
-    // simply skips it for that brief span rather than scaling it too).
-    if t >= 1.0 {
-        paint::floating_panel(frame.buffer_mut(), area, screen, theme);
-    }
+    // A dropdown opens whole on its first frame: fill, shadow, ring and
+    // every row together. It once grew its fill down from the top over a
+    // 90ms settle, but with the ring already at full size the contents
+    // reading in behind it looked like a menu that hadn't finished
+    // loading rather than motion, so there is no open transition at all
+    // (closing was always instant).
+    paint::floating_panel(frame.buffer_mut(), area, screen, theme);
     paint::ring(frame.buffer_mut(), area, theme.accent, theme.panel);
 
     let inner = Rect {
@@ -3589,8 +3564,6 @@ fn draw_dropdown(
         width: area.width.saturating_sub(4),
         height: area.height.saturating_sub(4),
     };
-    let visible_bottom = (settle_bottom.floor() as u16).clamp(area.top(), area.bottom());
-
     for (i, item) in state.items.iter().enumerate() {
         if i as u16 >= inner.height {
             break;
@@ -3602,18 +3575,7 @@ fn draw_dropdown(
             width: inner.width,
             height: 1,
         };
-        // The hit registers at its final position regardless of the
-        // open-settle animation's progress — a click landing mid-animation
-        // (the 90ms window is easy to beat with a fast double-click, and
-        // tests draw a single frame at whatever `now` they pass) must
-        // resolve exactly as it would once settled. Only the *paint* below
-        // is conditional on visibility.
         hits.register(row_area, crate::hit::Hit::DropdownRow(i));
-        // The still-growing tail of rows below the settle edge doesn't
-        // paint yet — they reveal as the panel fill grows down past them.
-        if row_area.y >= visible_bottom {
-            continue;
-        }
         let enabled = item.is_enabled();
         let selected = enabled && i == state.selected;
         let row_hovered = enabled && hovered == Some(&crate::hit::Hit::DropdownRow(i));
@@ -3808,7 +3770,6 @@ mod tests {
             };
             let mut terminal = Terminal::new(TestBackend::new(60, 30)).unwrap();
             let mut hits = crate::hit::HitMap::default();
-            let anims = crate::anim::Anims::new(false);
             terminal
                 .draw(|f| {
                     draw_dropdown(
@@ -3818,8 +3779,6 @@ mod tests {
                         &mut hits,
                         None,
                         &state,
-                        &anims,
-                        std::time::Instant::now(),
                     )
                 })
                 .unwrap();
@@ -4769,8 +4728,6 @@ mod tests {
                     &mut hits,
                     None,
                     &state,
-                    test_anims(),
-                    std::time::Instant::now(),
                 )
             })
             .unwrap();
@@ -4809,8 +4766,6 @@ mod tests {
                     &mut hits,
                     None,
                     &state,
-                    test_anims(),
-                    std::time::Instant::now(),
                 )
             })
             .unwrap();
@@ -4862,8 +4817,6 @@ mod tests {
                     &mut hits,
                     Some(&crate::hit::Hit::DropdownRow(1)),
                     &state,
-                    test_anims(),
-                    std::time::Instant::now(),
                 )
             })
             .unwrap();
@@ -4933,8 +4886,6 @@ mod tests {
                     &mut hits,
                     None,
                     &state,
-                    test_anims(),
-                    std::time::Instant::now(),
                 )
             })
             .unwrap();
@@ -4981,8 +4932,6 @@ mod tests {
                     &mut hits,
                     None,
                     &state,
-                    test_anims(),
-                    std::time::Instant::now(),
                 )
             })
             .unwrap();
@@ -5020,8 +4969,6 @@ mod tests {
                     &mut hits,
                     None,
                     &state,
-                    test_anims(),
-                    std::time::Instant::now(),
                 )
             })
             .unwrap();
@@ -5037,10 +4984,9 @@ mod tests {
     }
 
     #[test]
-    fn dropdown_open_settle_grows_from_the_top_and_snaps_open_when_settled() {
-        // At t=0 the popup shows nothing yet (frac_vspan's negligible-edge
-        // skip leaves the page underneath alone); at t=1 (this module's
-        // `test_anims()` default) it's fully drawn, ring included.
+    fn dropdown_opens_whole_on_its_first_frame() {
+        // No open transition: the very first frame has the panel fill, the
+        // drop shadow and every row's text, so nothing reads in late.
         let screen = Rect::new(0, 0, 80, 24);
         let state = DropdownState {
             anchor: Rect::new(10, 5, 8, 1),
@@ -5050,40 +4996,40 @@ mod tests {
         };
         let theme = Theme::dark();
 
-        let mut anims = crate::anim::Anims::new(true);
-        let now = std::time::Instant::now();
-        anims.snap(crate::anim::AnimKey::DropdownOpen, 0.0);
-
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
         terminal
             .draw(|f| {
                 crate::paint::fill(f.buffer_mut(), screen, theme.page);
-                draw_dropdown(f, screen, &theme, &mut hits, None, &state, &anims, now)
+                draw_dropdown(f, screen, &theme, &mut hits, None, &state)
             })
             .unwrap();
         let body = hits.rect_of(&crate::hit::Hit::ModalBody).unwrap();
         let buffer = terminal.backend().buffer();
         assert_eq!(
             buffer[(body.x + 1, body.y + 1)].bg,
-            theme.page,
-            "t=0: nothing painted yet, the page underneath still shows"
-        );
-
-        anims.snap(crate::anim::AnimKey::DropdownOpen, 1.0);
-        let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| {
-                crate::paint::fill(f.buffer_mut(), screen, theme.page);
-                draw_dropdown(f, screen, &theme, &mut hits, None, &state, &anims, now)
-            })
-            .unwrap();
-        let buffer = terminal.backend().buffer();
-        assert_eq!(
-            buffer[(body.x + 1, body.y + 1)].bg,
             theme.panel,
-            "t=1: fully settled, panel fill covers the whole popup"
+            "panel fill covers the popup on the first frame"
+        );
+        assert_ne!(
+            buffer[(body.right(), body.bottom() - 1)].bg,
+            theme.page,
+            "the drop shadow's right band is there on the first frame"
+        );
+        assert_ne!(
+            buffer[(body.x + 2, body.bottom())].bg,
+            theme.page,
+            "the drop shadow's bottom band is there on the first frame"
+        );
+        let last = state.items.len() - 1;
+        let last_row = hits.rect_of(&crate::hit::Hit::DropdownRow(last)).unwrap();
+        let text: String = (last_row.x..last_row.right())
+            .map(|x| buffer[(x, last_row.y)].symbol().to_string())
+            .collect();
+        assert!(
+            text.contains(&state.items[last].label),
+            "the last row's label is painted on the first frame: {text:?}"
         );
     }
 

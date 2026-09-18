@@ -1599,7 +1599,6 @@ impl App {
                 };
                 self.modals.pop();
                 // Overlay close is always instant.
-                self.anims.snap(AnimKey::DropdownOpen, 1.0);
                 self.anims.snap(AnimKey::ModalOpen, 1.0);
                 self.update(action)
             }

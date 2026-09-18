@@ -88,7 +88,6 @@ pub enum AnimKey {
     UrlWellHover,
     FocusFade,
     ModalOpen,
-    DropdownOpen,
     PaneCollapse,
     /// The Response pane's hide/show collapse (0.0 shown → 1.0 hidden),
     /// driven by `Action::ToggleResponseCollapse` with the same easing and

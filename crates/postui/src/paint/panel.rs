@@ -45,13 +45,23 @@ pub fn fade_to(buf: &mut Buffer, area: Rect, to: ratatui::style::Color, t: f32) 
     }
 }
 
-/// Fills `area` with `theme.panel`, darkens a 1-cell drop-shadow band along
-/// its right edge (offset 1 down) and bottom edge (offset 2 right), clipped
-/// to `screen` so the shadow never paints outside the terminal, then strokes
-/// a quiet accent ring hugging the panel's inside border.
+/// Fills `area` with `theme.panel`, darkens its drop-shadow bands (see
+/// [`shadow_bands`]), then strokes a quiet accent ring hugging the panel's
+/// inside border.
 pub fn floating_panel(buf: &mut Buffer, area: Rect, screen: Rect, theme: &Theme) {
     fill(buf, area, theme.panel);
+    shadow_bands(buf, area, screen);
+    ring(buf, area, theme.hairline, theme.panel);
+}
 
+/// Darkens a 1-cell drop-shadow band along `area`'s right edge (offset 1
+/// down) and bottom edge (offset 2 right), clipped to `screen` so the
+/// shadow never paints outside the terminal. Touches nothing inside `area`
+/// itself. An empty `area` paints nothing.
+fn shadow_bands(buf: &mut Buffer, area: Rect, screen: Rect) {
+    if area.is_empty() {
+        return;
+    }
     let darken = |buf: &mut Buffer, x: u16, y: u16| {
         if x < screen.left() || x >= screen.right() || y < screen.top() || y >= screen.bottom() {
             return;
@@ -77,8 +87,6 @@ pub fn floating_panel(buf: &mut Buffer, area: Rect, screen: Rect, theme: &Theme)
     for x in (area.left() + 2)..=area.right() {
         darken(buf, x, shadow_y);
     }
-
-    ring(buf, area, theme.hairline, theme.panel);
 }
 
 /// The modal-open settle: at `t < 1.0`, paints only the panel's growing
