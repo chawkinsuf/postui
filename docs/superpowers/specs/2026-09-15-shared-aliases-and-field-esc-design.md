@@ -302,6 +302,19 @@ kill-to-start in a text box.
   than two, and it frees `h` for the motion without a shifted letter. The two footer
   chips (`r raw`, `h headers`) become one `t view` chip; hover hints
   follow.
+
+  *Superseded 2026-09-18.* `t` is gone. Every tab strip — the request
+  editor's tabs, the response views, the Manage screen's strip — is
+  switched by one chord, alt+←/→ (`Action::CycleTabs`, bindable as
+  `tab_next` / `tab_prev`), resolved against the focused pane and
+  wrapping in both directions; from the sidebar it falls back to the
+  editor's strip. The request editor's tab strip is no longer a
+  keyboard stop (↓ from the URL line goes straight into the content,
+  ↑ from the content's top row comes back to the URL line, selected).
+  One footer chip, `alt+←→ tabs`, appears wherever a strip is on
+  screen. No alt+h/l: alt+letters are the chord namespace, not the
+  alias one; a vim keymap profile binds its own spelling to the same
+  action.
 - **Variable Manager new selector**: `g` → `a`, matching the table's
   `a add row`. Footer chip and hint follow.
 

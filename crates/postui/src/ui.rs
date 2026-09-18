@@ -320,7 +320,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             // chord runs above every tab body's keys (`handle_key_inner`),
             // so it is the one chip every Manage tab shares -- last, so
             // nothing shifts as the tab's own chips come and go.
-            chips.push(("alt+←→".to_string(), "switch tab".to_string(), None));
+            chips.push((
+                "alt+←→".to_string(),
+                "tabs".to_string(),
+                Some(crate::action::Action::CycleTabs(1)),
+            ));
             chips
         })
     });

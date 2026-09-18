@@ -921,6 +921,59 @@ fn editor_tab_cycle_order_is_headers_params_vars_body() {
     );
 }
 
+/// alt+←/→ is the one tab chord: `Action::CycleTabs` steps whichever
+/// strip the focused pane owns — the editor's tabs, the response views, or
+/// the Manage screen's strip — and falls back to the editor's strip from
+/// the sidebar, which has no strip of its own.
+#[test]
+fn alt_arrows_cycle_the_focused_panes_tab_strip() {
+    use crate::components::manage::ManageTab;
+    use crate::components::response::ViewMode;
+    let alt_right = KeyEvent::new(KeyCode::Right, KeyModifiers::ALT);
+    let alt_left = KeyEvent::new(KeyCode::Left, KeyModifiers::ALT);
+
+    let mut app = App::new_for_test();
+    ready_response(&mut app, r#"{"a": 1}"#);
+
+    app.focus = PaneId::Editor;
+    assert_eq!(app.editor.active_tab, EditorTab::Headers);
+    app.handle_key(alt_right);
+    assert_eq!(app.editor.active_tab, EditorTab::Params, "editor strip");
+    assert_eq!(app.session.response.view().unwrap().mode, ViewMode::Pretty);
+
+    app.focus = PaneId::Response;
+    app.handle_key(alt_right);
+    assert_eq!(app.session.response.view().unwrap().mode, ViewMode::Raw, "response views");
+    app.handle_key(alt_left);
+    assert_eq!(app.session.response.view().unwrap().mode, ViewMode::Pretty, "and back");
+    assert_eq!(app.editor.active_tab, EditorTab::Params, "editor strip untouched");
+
+    app.focus = PaneId::Sidebar;
+    app.handle_key(alt_left);
+    assert_eq!(app.editor.active_tab, EditorTab::Headers, "sidebar falls back to the editor");
+
+    app.update(Action::OpenManage { tab: Some(ManageTab::Variables) });
+    app.handle_key(alt_right);
+    assert_eq!(app.manage.tab, ManageTab::Environments, "Manage strip");
+    app.handle_key(alt_left);
+    app.handle_key(alt_left);
+    assert_eq!(app.manage.tab, ManageTab::Settings, "wraps backward");
+    assert_eq!(app.editor.active_tab, EditorTab::Headers, "editor strip untouched");
+}
+
+/// The chord is on the any-screen whitelist for the Manage strip's sake;
+/// on a screen with no strip drawn (the testbed) it must not reach the
+/// undrawn editor's tabs behind the screen.
+#[test]
+fn alt_arrows_do_nothing_on_a_screen_without_a_strip() {
+    let mut app = App::new_for_test_with_testbed(true);
+    assert_eq!(app.screen, crate::app::Screen::Testbed);
+    let before = app.editor.active_tab;
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
+    assert_eq!(app.editor.active_tab, before, "no strip on screen, nothing moves");
+    assert_eq!(app.screen, crate::app::Screen::Testbed);
+}
+
 #[test]
 fn editor_tab_select_slot_numbers_follow_the_screen_order() {
     // `EditorTabSelect`'s slot numbers ([`EditorTab::index`], bindable as
@@ -2444,7 +2497,7 @@ fn up_from_a_cell_under_edit_commits_and_never_desyncs_the_focus() {
     );
     // Only then does Up climb out — with no edit left open behind it.
     app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
-    assert_eq!(app.editor.sub_focus, SubFocus::Tabs);
+    assert_eq!(app.editor.sub_focus, SubFocus::Url);
     assert!(app.editor.table.editing.is_none());
 }
 
@@ -3478,15 +3531,15 @@ fn click_in_body_area_starts_the_focus_fade() {
     );
 }
 
-/// Tabbing keyboard focus into the body content (from the tab strip) starts
-/// the same fade the mouse-click path does.
+/// Walking keyboard focus into the body content (Down from the URL line)
+/// starts the same fade the mouse-click path does.
 #[test]
-fn tab_into_body_content_starts_the_focus_fade() {
+fn down_into_body_content_starts_the_focus_fade() {
     let mut app = App::new_for_test();
     app.editor.active_tab = EditorTab::Body;
     app.editor.set_body_text("hello");
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = SubFocus::Tabs;
+    app.editor.sub_focus = SubFocus::Url;
     app.anims.snap(AnimKey::FocusFade, 1.0);
     let down = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
     app.handle_key(down);
@@ -8585,8 +8638,8 @@ fn click_footer_response_chips_toggle_view_and_open_search() {
 
     let r = app
         .hits
-        .rect_of(&Hit::FooterChip(Action::CycleResponseView))
-        .expect("the 't' chip is registered");
+        .rect_of(&Hit::FooterChip(Action::CycleTabs(1)))
+        .expect("the tab chip is registered");
     app.handle_mouse(left_down(r.x + 1, r.y));
     assert_eq!(app.session.response.view().unwrap().mode, ViewMode::Raw);
 
@@ -15628,11 +15681,11 @@ fn the_quit_chip_shows_ctrl_c_wherever_plain_q_would_type() {
     let content = rendered_text(&mut app);
     assert!(content.contains("q  quit"), "{content}");
 
-    // The editor pane: only its text inputs eat plain keys. On the tab
-    // strip (or the method badge, or a selected table row) `q` still
-    // quits, so the chip keeps saying `q`.
+    // The editor pane: only its text inputs eat plain keys. On the method
+    // badge (or a selected table row) `q` still quits, so the chip keeps
+    // saying `q`.
     app.focus = PaneId::Editor;
-    app.editor.sub_focus = crate::components::editor::SubFocus::Tabs;
+    app.editor.sub_focus = crate::components::editor::SubFocus::Method;
     let content = rendered_text(&mut app);
     assert!(content.contains("q  quit"), "{content}");
     app.editor.sub_focus = crate::components::editor::SubFocus::Content;
@@ -16806,6 +16859,10 @@ fn every_named_action_is_mouse_reachable() {
         // in `App::mouse_dispatch_mirror`).
         Action::EditorTabCycle(1),
         Action::EditorTabCycle(-1),
+        // alt+left is the backward half of the shared tab chord; the
+        // forward half is the `alt+←→ tabs` footer chip on every
+        // strip, and each strip's tabs are clickable directly.
+        Action::CycleTabs(-1),
         // shift+alt+w walks the split stops backward; every stop is also a
         // directly clickable chip on the split control (`Hit::SplitStop`),
         // and the forward cycle's alt+w pill is the strip's mouse path.

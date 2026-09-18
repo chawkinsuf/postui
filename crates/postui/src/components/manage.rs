@@ -161,7 +161,6 @@ pub fn draw_manage_bar(
         tabs: &tabs,
         active: tab.index(),
         hovered: hovered_tab,
-        focused: false,
         underline: (ul_x, ul_w),
         disabled: None,
         right_anchored: ManageTab::RIGHT_ANCHORED,

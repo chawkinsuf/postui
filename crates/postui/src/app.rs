@@ -2834,11 +2834,36 @@ impl App {
                 self.retarget_response_tab_underline(prev_mode);
                 true
             }
-            Action::CycleResponseView => {
-                if let Some(next) = self.session.response.next_view_mode() {
+            Action::CycleResponseView(delta) => {
+                if let Some(next) = self.session.response.cycle_view_mode(delta) {
                     self.update(Action::ResponseViewMode(next))
                 } else {
                     false
+                }
+            }
+            Action::CycleTabs(delta) => {
+                // The one tab chord, resolved against what has focus: the
+                // Manage screen's strip when that screen is up (it belongs
+                // to the shell, above every tab body's own keys), otherwise
+                // the focused pane's strip — the sidebar has none, so it
+                // falls back to the editor's, the only other strip on the
+                // request screen.
+                if self.screen == Screen::Manage {
+                    return self.update(Action::SelectManageTab(
+                        self.manage.tab.cycle(delta.into()),
+                    ));
+                }
+                // On the any-screen whitelist for the Manage strip's sake;
+                // any other non-Main screen (the testbed) draws no strip,
+                // so the chord must not move the undrawn editor's tabs.
+                if self.screen != Screen::Main {
+                    return false;
+                }
+                match self.focus {
+                    PaneId::Response => self.update(Action::CycleResponseView(delta)),
+                    PaneId::Editor | PaneId::Sidebar => {
+                        self.update(Action::EditorTabCycle(delta))
+                    }
                 }
             }
             Action::OpenResponseSearch => {
@@ -9971,16 +9996,10 @@ impl App {
                     _ => true,
                 };
             }
-            // alt+←/→ walk the Manage screen's tab strip, wrapping —
-            // above every tab body's own keys, since the strip belongs to
-            // the shell rather than to whichever tab is up.
-            if self.screen == Screen::Manage
-                && ev.modifiers.contains(KeyModifiers::ALT)
-                && matches!(ev.code, KeyCode::Left | KeyCode::Right)
-            {
-                let delta = if ev.code == KeyCode::Right { 1 } else { -1 };
-                return self.update(Action::SelectManageTab(self.manage.tab.cycle(delta)));
-            }
+            // The tab chord (`Action::CycleTabs`, alt+←/→ by default) walks
+            // the Manage screen's strip through the whitelist above — the
+            // strip belongs to the shell, so it runs above every tab body's
+            // own keys.
             // The Settings tab owns its own row cursor and live field
             // edit, and — unlike the two list tabs below — runs with no
             // project open.
@@ -11210,6 +11229,7 @@ fn screen_escape_whitelist(action: &Action) -> bool {
     matches!(
         action,
         Action::OpenPalette
+            | Action::CycleTabs(_)
             | Action::OpenThemeChooser
             | Action::OpenManage { .. }
             | Action::CloseScreen

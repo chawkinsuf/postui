@@ -100,17 +100,17 @@ pub enum Caret {
 }
 
 /// Which sub-region of the editor pane has keyboard focus: the method
-/// badge, the URL line, the Params/Headers/Body tab strip, the active
-/// tab's content (params table / headers table / body editor), or nothing
-/// — the blurred state Enter/Esc/click-away leave behind, in which no
-/// editor input captures keys until one is re-entered. Arrow keys walk
-/// the chain the way it sits on screen: Method ↔ URL horizontally,
-/// URL/Method → Tabs → Content vertically (and back with Up).
+/// badge, the URL line, the active tab's content (params table / headers
+/// table / body editor), or nothing — the blurred state Enter/Esc/
+/// click-away leave behind, in which no editor input captures keys until
+/// one is re-entered. Arrow keys walk the chain the way it sits on
+/// screen: Method ↔ URL horizontally, URL/Method → Content vertically
+/// (and back with Up). The tab strip is not a stop: it is switched by
+/// the shared alt+←/→ chord (`Action::CycleTabs`) or a click.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubFocus {
     Method,
     Url,
-    Tabs,
     Content,
     None,
 }
@@ -329,7 +329,7 @@ impl Editor {
         match self.sub_focus {
             SubFocus::Url => self.url_open,
             SubFocus::Content => self.active_tab == EditorTab::Body || self.table.editing.is_some(),
-            SubFocus::Method | SubFocus::Tabs | SubFocus::None => false,
+            SubFocus::Method | SubFocus::None => false,
         }
     }
 
@@ -348,6 +348,22 @@ impl Editor {
     fn select_url(&mut self) {
         self.sub_focus = SubFocus::Url;
         self.url_open = false;
+    }
+
+    /// Down from the URL line or the method badge: into the active tab's
+    /// content. Entering a table tab must land somewhere visible, so its
+    /// first row — or, on an empty table, its ghost "+ Add" row (index 0
+    /// either way) — is selected instead of a focused-but-nothing-selected
+    /// limbo. A selection already there is kept.
+    fn enter_content(&mut self) {
+        self.sub_focus = SubFocus::Content;
+        if matches!(
+            self.active_tab,
+            EditorTab::Params | EditorTab::Headers | EditorTab::Vars
+        ) && self.table.selected.is_none()
+        {
+            self.table.selected = Some(0);
+        }
     }
 
     fn open_url(&mut self) {
@@ -1414,7 +1430,7 @@ impl Component for Editor {
                     Some(Action::Render)
                 }
                 KeyCode::Down | KeyCode::Char('j') if crate::keys::plain_letter(&ev) => {
-                    self.sub_focus = SubFocus::Tabs;
+                    self.enter_content();
                     Some(Action::Render)
                 }
                 KeyCode::Esc => {
@@ -1423,9 +1439,9 @@ impl Component for Editor {
                 }
                 _ => None,
             },
-            // Selected, not open: a resting stop like the method badge or
-            // tab strip — arrow/hjkl navigate, and Enter/Space/i open the
-            // line so the next key types into it (spec 2026-09-16).
+            // Selected, not open: a resting stop like the method badge —
+            // arrow/hjkl navigate, and Enter/Space/i open the line so the
+            // next key types into it (spec 2026-09-16).
             SubFocus::Url if !self.url_open => match ev.code {
                 _ if crate::keys::opens_field(&ev) => {
                     self.open_url();
@@ -1437,7 +1453,7 @@ impl Component for Editor {
                 }
                 KeyCode::Down | KeyCode::Char('j') if crate::keys::plain_letter(&ev) => {
                     self.close_url();
-                    self.sub_focus = SubFocus::Tabs;
+                    self.enter_content();
                     Some(Action::Render)
                 }
                 KeyCode::Esc => {
@@ -1464,7 +1480,7 @@ impl Component for Editor {
                 }
                 if ev.code == KeyCode::Down {
                     self.close_url();
-                    self.sub_focus = SubFocus::Tabs;
+                    self.enter_content();
                     return Some(Action::Render);
                 }
                 // Enter and Esc both close the field with the text kept
@@ -1478,40 +1494,6 @@ impl Component for Editor {
                 }
                 None
             }
-            // The tab strip: Left/Right switch tabs (the tab-change action
-            // resets table state, so it goes through App like a click),
-            // Down/Enter descend into the active tab's content, Up climbs
-            // back to the URL line (selected, not open). h/l and j/k are
-            // strict synonyms of the arrows here (a resting stop, spec
-            // 2026-09-15).
-            SubFocus::Tabs => match ev.code {
-                KeyCode::Left | KeyCode::Char('h') if crate::keys::plain_letter(&ev) => Some(Action::EditorTabCycle(-1)),
-                KeyCode::Right | KeyCode::Char('l') if crate::keys::plain_letter(&ev) => Some(Action::EditorTabCycle(1)),
-                KeyCode::Down | KeyCode::Char('j') | KeyCode::Enter if crate::keys::plain_letter(&ev) => {
-                    self.sub_focus = SubFocus::Content;
-                    // Entering a table tab must land somewhere visible:
-                    // select its first row — or, on an empty table, its
-                    // ghost "+ Add" row (index 0 either way) — instead of
-                    // a focused-but-nothing-selected limbo.
-                    if matches!(
-                        self.active_tab,
-                        EditorTab::Params | EditorTab::Headers | EditorTab::Vars
-                    ) && self.table.selected.is_none()
-                    {
-                        self.table.selected = Some(0);
-                    }
-                    Some(Action::Render)
-                }
-                KeyCode::Up | KeyCode::Char('k') if crate::keys::plain_letter(&ev) => {
-                    self.select_url();
-                    Some(Action::Render)
-                }
-                KeyCode::Esc => {
-                    self.sub_focus = SubFocus::None;
-                    Some(Action::Render)
-                }
-                _ => None,
-            },
             // On the Params/Headers tabs the table editor gets first crack at
             // every key (including Up/Down navigation within the table); on
             // the Body tab edtui does, except for the two keys that are the
@@ -1548,17 +1530,18 @@ impl Component for Editor {
                         });
                     }
                     // An unconsumed Up (empty table, or already at row 0)
-                    // climbs out to the tab strip instead of being a dead
-                    // end with no keyboard path back up the chain.
-                    // Leaving the table also drops its selection — the mouse
-                    // click-away path clears it, and a row that stays lit
-                    // while keys land in the URL line misstates focus.
-                    // `k` is Up's strict synonym, clamp included.
+                    // climbs out to the URL line (selected, not open)
+                    // instead of being a dead end with no keyboard path
+                    // back up the chain. Leaving the table also drops its
+                    // selection — the mouse click-away path clears it, and
+                    // a row that stays lit while keys land in the URL line
+                    // misstates focus. `k` is Up's strict synonym, clamp
+                    // included.
                     if matches!(ev.code, KeyCode::Up | KeyCode::Char('k'))
                         && crate::keys::plain_letter(&ev)
                     {
                         self.table.selected = None;
-                        self.sub_focus = SubFocus::Tabs;
+                        self.select_url();
                         return Some(Action::Render);
                     }
                     // An Esc the table didn't consume (nothing selected, no
@@ -1667,7 +1650,7 @@ impl Component for Editor {
                     }
                 }
                 // Esc blurs the buffer (Enter must stay a newline in a
-                // multi-line editor); Up climbs out to the tab strip only
+                // multi-line editor); Up climbs out to the URL line only
                 // from the top row, so it can still navigate the body. CTRL/ALT
                 // combos the keymap binds to an app action are shadowed here
                 // (the router hands those to the global keymap first); any
@@ -1679,7 +1662,7 @@ impl Component for Editor {
                     return Some(Action::Render);
                 }
                 if ev.code == KeyCode::Up && self.body.cursor.row == 0 {
-                    self.sub_focus = SubFocus::Tabs;
+                    self.select_url();
                     return Some(Action::Render);
                 }
                 if self.body_nav_key(&ev) {
@@ -2461,7 +2444,6 @@ impl Editor {
                     tabs: &tab_strip,
                     active,
                     hovered,
-                    focused: ctx.focused && self.sub_focus == SubFocus::Tabs,
                     underline,
                     disabled: self
                         .body_tab_disabled()
@@ -3358,10 +3340,11 @@ mod tests {
     }
 
     #[test]
-    fn up_down_walks_url_tabs_content_and_back() {
-        // The vertical chain is URL -> tab strip -> content; Up walks it in
-        // reverse (an empty Params table doesn't consume Up, so Editor's
-        // fallback applies).
+    fn up_down_walks_url_content_and_back() {
+        // The vertical chain is URL -> content; the tab strip is not a
+        // stop (alt+←/→ switch tabs from anywhere). Up walks it in reverse
+        // (an empty Params table doesn't consume Up, so Editor's fallback
+        // applies) and lands on the URL line selected, not open.
         let mut e = Editor::default();
         assert_eq!(
             e.sub_focus,
@@ -3369,26 +3352,24 @@ mod tests {
             "default sub_focus starts on the URL line"
         );
         e.handle_key(key(KeyCode::Down));
-        assert_eq!(e.sub_focus, SubFocus::Tabs);
-        e.handle_key(key(KeyCode::Down));
         assert_eq!(e.sub_focus, SubFocus::Content);
-        e.handle_key(key(KeyCode::Up));
-        assert_eq!(e.sub_focus, SubFocus::Tabs);
+        assert_eq!(e.table.selected, Some(0), "lands on a visible row");
         e.handle_key(key(KeyCode::Up));
         assert_eq!(e.sub_focus, SubFocus::Url);
+        assert!(!e.url_open, "selected, not open");
     }
 
     #[test]
-    fn body_tab_up_returns_to_tab_strip() {
+    fn body_tab_up_returns_to_the_url_line() {
         // Body tab has no table editor to intercept Up at all; from the
-        // buffer's top row, Up climbs back out to the tab strip.
+        // buffer's top row, Up climbs back out to the URL line.
         let mut e = Editor {
             active_tab: EditorTab::Body,
             sub_focus: SubFocus::Content,
             ..Editor::default()
         };
         e.handle_key(key(KeyCode::Up));
-        assert_eq!(e.sub_focus, SubFocus::Tabs);
+        assert_eq!(e.sub_focus, SubFocus::Url);
     }
 
     /// A Body-tab editor with the buffer focused and `text` loaded.
@@ -3793,98 +3774,102 @@ mod tests {
     }
 
     #[test]
-    fn method_focus_down_lands_on_tab_strip_and_esc_blurs() {
+    fn method_focus_down_lands_in_the_content_and_esc_blurs() {
         let mut e = Editor {
             sub_focus: SubFocus::Method,
             ..Editor::default()
         };
         e.handle_key(key(KeyCode::Down));
-        assert_eq!(e.sub_focus, SubFocus::Tabs);
+        assert_eq!(e.sub_focus, SubFocus::Content);
+        assert_eq!(e.table.selected, Some(0), "lands on a visible row");
         e.sub_focus = SubFocus::Method;
         e.handle_key(key(KeyCode::Esc));
         assert_eq!(e.sub_focus, SubFocus::None);
     }
 
+    /// The tab strip is no keyboard stop: plain ←/→ (and h/l) never
+    /// cycle it from any sub-focus — the strip is switched by the shared
+    /// alt+←/→ chord (`Action::CycleTabs`) or a click.
     #[test]
-    fn tab_strip_left_right_switch_tabs_and_enter_descends() {
-        let mut e = Editor {
-            sub_focus: SubFocus::Tabs,
-            ..Editor::default()
-        };
-        assert_eq!(
-            e.handle_key(key(KeyCode::Right)),
-            Some(Action::EditorTabCycle(1))
-        );
-        assert_eq!(
-            e.handle_key(key(KeyCode::Left)),
-            Some(Action::EditorTabCycle(-1))
-        );
-        e.handle_key(key(KeyCode::Enter));
-        assert_eq!(e.sub_focus, SubFocus::Content);
-        e.sub_focus = SubFocus::Tabs;
-        e.handle_key(key(KeyCode::Esc));
-        assert_eq!(e.sub_focus, SubFocus::None);
+    fn plain_arrows_never_cycle_the_tab_strip() {
+        for stop in [SubFocus::Method, SubFocus::Url, SubFocus::Content, SubFocus::None] {
+            for code in [
+                KeyCode::Left,
+                KeyCode::Right,
+                KeyCode::Char('h'),
+                KeyCode::Char('l'),
+            ] {
+                let mut e = Editor {
+                    sub_focus: stop,
+                    ..Editor::default()
+                };
+                let out = e.handle_key(key(code));
+                assert!(
+                    !matches!(out, Some(Action::EditorTabCycle(_))),
+                    "{stop:?} {code:?} -> {out:?}"
+                );
+            }
+        }
     }
 
-    /// The method badge and the tab strip are resting stops (no text
-    /// field is live), so the vim letters are strict synonyms of the
-    /// arrows there too (spec 2026-09-15).
+    /// The method badge is a resting stop (no text field is live), so the
+    /// vim letters are strict synonyms of the arrows there too (spec
+    /// 2026-09-15).
     #[test]
-    fn vim_aliases_are_strict_synonyms_on_the_method_badge_and_tab_strip() {
+    fn vim_aliases_are_strict_synonyms_on_the_method_badge() {
         let pairs = [
             (key(KeyCode::Char('h')), key(KeyCode::Left)),
             (key(KeyCode::Char('l')), key(KeyCode::Right)),
             (key(KeyCode::Char('j')), key(KeyCode::Down)),
             (key(KeyCode::Char('k')), key(KeyCode::Up)),
         ];
-        for stop in [SubFocus::Method, SubFocus::Tabs] {
-            for (alias, canonical) in pairs {
-                let mut a = Editor {
-                    sub_focus: stop,
-                    ..Editor::default()
-                };
-                let mut b = Editor {
-                    sub_focus: stop,
-                    ..Editor::default()
-                };
-                assert_eq!(
-                    a.handle_key(alias),
-                    b.handle_key(canonical),
-                    "{stop:?} {alias:?}"
-                );
-                assert_eq!(a.sub_focus, b.sub_focus, "{stop:?} {alias:?}");
-                assert_eq!(a.table.selected, b.table.selected, "{stop:?} {alias:?}");
-            }
+        let stop = SubFocus::Method;
+        for (alias, canonical) in pairs {
+            let mut a = Editor {
+                sub_focus: stop,
+                ..Editor::default()
+            };
+            let mut b = Editor {
+                sub_focus: stop,
+                ..Editor::default()
+            };
+            assert_eq!(
+                a.handle_key(alias),
+                b.handle_key(canonical),
+                "{stop:?} {alias:?}"
+            );
+            assert_eq!(a.sub_focus, b.sub_focus, "{stop:?} {alias:?}");
+            assert_eq!(a.table.selected, b.table.selected, "{stop:?} {alias:?}");
         }
     }
 
-    /// An `Editor` with `sub_focus == SubFocus::Tabs`, the fixture
-    /// `up_down_walks_url_tabs_content_and_back` builds inline — the URL
-    /// line starts selected by default, and `Down` walks that to the tab
-    /// strip.
-    fn editor_on_tabs() -> Editor {
-        let mut e = Editor::default();
-        e.handle_key(key(KeyCode::Down));
-        assert_eq!(e.sub_focus, SubFocus::Tabs, "fixture lands on the tab strip");
-        e
-    }
-
     #[test]
-    fn k_from_the_tab_strip_selects_the_url_without_opening_it() {
-        let mut ed = editor_on_tabs();
+    fn k_from_the_content_selects_the_url_without_opening_it() {
+        // The URL line starts selected by default; `j` walks that into
+        // the content and `k` from the top row walks back.
+        let mut ed = Editor::default();
+        ed.handle_key(key(KeyCode::Char('j')));
+        assert_eq!(ed.sub_focus, SubFocus::Content, "j moved focus, was not typed");
         ed.handle_key(key(KeyCode::Char('k')));
         assert_eq!(ed.sub_focus, SubFocus::Url);
         assert!(!ed.plain_keys_type(), "selected, not open");
-        // j/k still navigate from here instead of typing:
-        ed.handle_key(key(KeyCode::Char('j')));
-        assert_eq!(ed.sub_focus, SubFocus::Tabs, "j moved focus, was not typed");
+    }
+
+    /// An `Editor` with the URL line selected but closed: the default
+    /// editor walked down into the content and back up with `k`.
+    fn editor_url_selected() -> Editor {
+        let mut e = Editor::default();
+        e.handle_key(key(KeyCode::Down));
+        e.handle_key(key(KeyCode::Char('k')));
+        assert_eq!(e.sub_focus, SubFocus::Url, "fixture lands on the URL line");
+        assert!(!e.plain_keys_type(), "fixture: selected, not open");
+        e
     }
 
     #[test]
     fn enter_space_or_i_opens_the_selected_url_line() {
         for opener in [KeyCode::Enter, KeyCode::Char(' '), KeyCode::Char('i')] {
-            let mut ed = editor_on_tabs();
-            ed.handle_key(key(KeyCode::Char('k'))); // select the URL line
+            let mut ed = editor_url_selected();
             ed.handle_key(key(opener));
             assert!(ed.plain_keys_type(), "{opener:?} should have opened the field");
             ed.handle_key(key(KeyCode::Char('x')));
@@ -3895,8 +3880,7 @@ mod tests {
     #[test]
     fn esc_and_enter_close_the_url_line_back_to_selected_not_blurred() {
         for closer in [KeyCode::Esc, KeyCode::Enter] {
-            let mut ed = editor_on_tabs();
-            ed.handle_key(key(KeyCode::Char('k')));
+            let mut ed = editor_url_selected();
             ed.handle_key(key(KeyCode::Enter));
             ed.handle_key(key(KeyCode::Char('x')));
             let text_before = ed.url.text().to_string();
@@ -3913,8 +3897,7 @@ mod tests {
 
     #[test]
     fn esc_from_a_selected_url_line_blurs_and_j_reselects_it() {
-        let mut ed = editor_on_tabs();
-        ed.handle_key(key(KeyCode::Char('k'))); // select
+        let mut ed = editor_url_selected();
         ed.handle_key(key(KeyCode::Esc)); // blur
         assert_eq!(ed.sub_focus, SubFocus::None);
         ed.handle_key(key(KeyCode::Char('j')));
@@ -3927,7 +3910,7 @@ mod tests {
     }
 
     #[test]
-    fn descending_from_the_tab_strip_lands_on_a_visible_selection() {
+    fn descending_from_the_url_line_lands_on_a_visible_selection() {
         // Entering the content must never be an invisible state: on
         // Params/Headers the first row (or the ghost + Add row of an empty
         // table) is selected immediately, so every keyboard stop shows.
@@ -3939,16 +3922,17 @@ mod tests {
                 enabled: true,
             },
         );
-        e.sub_focus = SubFocus::Tabs;
+        e.sub_focus = SubFocus::Url;
         e.handle_key(key(KeyCode::Down));
         assert_eq!(e.sub_focus, SubFocus::Content);
         assert_eq!(e.table.selected, Some(0), "first row selected on entry");
 
         let mut e = Editor {
-            sub_focus: SubFocus::Tabs,
+            sub_focus: SubFocus::Url,
             ..Editor::default() // empty params table
         };
-        e.handle_key(key(KeyCode::Enter));
+        e.open_url();
+        e.handle_key(key(KeyCode::Down)); // from the open line too
         assert_eq!(e.sub_focus, SubFocus::Content);
         assert_eq!(
             e.table.selected,
@@ -3970,7 +3954,7 @@ mod tests {
                 enabled: true,
             },
         );
-        e.sub_focus = SubFocus::Tabs;
+        e.sub_focus = SubFocus::Url;
         e.handle_key(key(KeyCode::Down));
         assert_eq!((e.sub_focus, e.table.selected), (SubFocus::Content, Some(0)));
         let tab = e.active_tab;
@@ -3986,7 +3970,7 @@ mod tests {
     }
 
     /// `k` is Up's strict synonym at the table's top clamp too: it climbs
-    /// out to the tab strip rather than dying. A modified `k` is neither.
+    /// out to the URL line rather than dying. A modified `k` is neither.
     #[test]
     fn k_at_row_zero_climbs_out_like_up_and_ctrl_k_does_not() {
         let mut e = Editor::default();
@@ -4005,30 +3989,12 @@ mod tests {
         );
         assert_eq!(e.sub_focus, SubFocus::Content, "ctrl+k is not a motion");
         assert_eq!(e.handle_key(key(KeyCode::Char('k'))), Some(Action::Render));
-        assert_eq!(e.sub_focus, SubFocus::Tabs);
+        assert_eq!(e.sub_focus, SubFocus::Url);
         assert_eq!(e.table.selected, None);
     }
 
-    /// The tab strip's `h` is a plain letter only: ctrl+h (the legacy
-    /// ctrl+backspace byte) must not switch tabs.
     #[test]
-    fn ctrl_h_on_the_tab_strip_is_not_a_tab_cycle() {
-        let mut e = Editor {
-            sub_focus: SubFocus::Tabs,
-            ..Editor::default()
-        };
-        assert_eq!(
-            e.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL)),
-            None
-        );
-        assert_eq!(
-            e.handle_key(key(KeyCode::Char('h'))),
-            Some(Action::EditorTabCycle(-1))
-        );
-    }
-
-    #[test]
-    fn params_tab_up_at_row_zero_returns_to_tab_strip() {
+    fn params_tab_up_at_row_zero_returns_to_the_url_line() {
         // A non-empty table still doesn't consume Up at row 0 (the top),
         // so Editor's fallback kicks in even though the table has rows.
         let mut e = Editor::default();
@@ -4050,7 +4016,7 @@ mod tests {
         e.table.selected = Some(0);
         let action = e.handle_key(key(KeyCode::Up));
         assert_eq!(action, Some(Action::Render));
-        assert_eq!(e.sub_focus, SubFocus::Tabs);
+        assert_eq!(e.sub_focus, SubFocus::Url);
         assert_eq!(
             e.table.selected, None,
             "leaving the table clears its selection, matching the mouse \
@@ -4186,8 +4152,8 @@ mod tests {
         );
         e.handle_key(key(KeyCode::Up)); // back to row 0, still inside
         assert_eq!(e.sub_focus, SubFocus::Content);
-        e.handle_key(key(KeyCode::Up)); // at row 0 → climb out to the tab strip
-        assert_eq!(e.sub_focus, SubFocus::Tabs);
+        e.handle_key(key(KeyCode::Up)); // at row 0 → climb out to the URL line
+        assert_eq!(e.sub_focus, SubFocus::Url);
     }
 
     #[test]
@@ -5148,24 +5114,6 @@ url = "https://api.example.com/users""#,
             .cell((method_area.x.saturating_sub(1), method_area.y + 1))
             .unwrap();
         assert_eq!(margin.symbol(), " ", "no ring glyph beside the badge");
-    }
-
-    #[test]
-    fn tab_strip_focus_recolors_the_underline_to_the_focus_ring() {
-        let mut e = Editor {
-            sub_focus: SubFocus::Tabs,
-            ..Editor::default()
-        };
-        let theme = Theme::dark();
-        let (terminal, hits) = draw_for_bar_test(&mut e);
-        let tab0 = hits.rect_of(&crate::hit::Hit::EditorTab(0)).unwrap();
-        let buf = terminal.backend().buffer();
-        let underline = buf.cell((tab0.x + 1, tab0.y + 1)).unwrap();
-        assert_eq!(underline.symbol(), "━");
-        assert_eq!(
-            underline.fg, theme.focus_ring,
-            "focused strip: the active tab's underline recolors to focus_ring"
-        );
     }
 
     #[test]

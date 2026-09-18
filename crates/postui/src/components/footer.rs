@@ -115,11 +115,17 @@ pub(crate) fn footer_chips(
                 ),
                 // The split cycle's alt+w is advertised beside the split
                 // control itself (the tab-bar row's keycap pill), not here.
-                // Arrows are the primary route (method ← URL ↓ tabs ↓ content);
-                // alt+left/right cycle tabs; ctrl-digits now switch spaces.
-                ("↑↓←→", "navigate", None),
+                // Arrows are the primary route (method ← URL ↓ content)
+                // and get no chip of their own (2026-09-18: the old
+                // `↑↓←→ navigate` chip made way for the tab chord — the
+                // URL-focused row must keep hover-hint room at 160 cols);
+                // ctrl-digits switch spaces.
+                // The tab chord chip every strip shares (response pane,
+                // Manage tabs): same keycap, same wording. Last, so the
+                // dynamic inserts below never shift it.
+                ("alt+←→", "tabs", Some(Action::CycleTabs(1))),
             ]);
-            // Every insert below lands before the trailing vars + navigate
+            // Every insert below lands before the trailing vars + tabs
             // pair, so it keeps its place whether or not the leading
             // send/cancel slot is there.
             if url_focused {
@@ -147,7 +153,7 @@ pub(crate) fn footer_chips(
                 // Keyboard twins of the expanded row's ● toggle and 󰆴
                 // delete buttons; the ␣ keycap keeps the row narrow.
                 let toggle_label = if enabled { "disable" } else { "enable" };
-                let pos = chips.len() - 2; // before vars + navigate
+                let pos = chips.len() - 2; // before vars + tabs
                 chips.insert(pos, ("␣", toggle_label, Some(Action::ToggleTableRow(i))));
                 chips.insert(pos + 1, ("d", "delete", Some(Action::DeleteTableRow(i))));
             }
@@ -232,7 +238,7 @@ pub(crate) fn footer_chips(
                 ]
             } else {
                 let mut chips = vec![
-                    ("t", "view", Some(Action::CycleResponseView)),
+                    ("alt+←→", "tabs", Some(Action::CycleTabs(1))),
                     ("/", "search", Some(Action::OpenResponseSearch)),
                     ("alt+q", "filter", Some(Action::OpenJqBar)),
                 ];
@@ -1229,12 +1235,16 @@ mod tests {
     fn editor_focus_shows_editor_hints() {
         let content = render(PaneId::Editor);
         assert!(content.contains("^R  send"));
+        // The same tab chord chip as the response pane and every Manage
+        // tab: one wording wherever a strip is on screen.
+        assert!(content.contains("alt+←→  tabs"), "{content}");
     }
 
     #[test]
     fn response_focus_shows_response_hints() {
         let content = render(PaneId::Response);
-        assert!(content.contains("t  view"));
+        assert!(content.contains("alt+←→  tabs"), "{content}");
+        assert!(!content.contains("t  view"), "{content}");
         assert!(content.contains("/  search"));
     }
 
@@ -1273,7 +1283,7 @@ mod tests {
             })
             .unwrap();
         assert!(
-            hits.rect_of(&Hit::FooterChip(Action::CycleResponseView))
+            hits.rect_of(&Hit::FooterChip(Action::CycleTabs(1)))
                 .is_some()
         );
         assert!(
