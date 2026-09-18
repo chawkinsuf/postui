@@ -3938,6 +3938,34 @@ mod tests {
         );
     }
 
+    /// On a table tab the table owns ←/→ (and h/l) while a row is
+    /// selected: they move the cell cursor and are consumed, never the tab
+    /// strip's cycle. Opening the row then edits the cell the cursor is on.
+    #[test]
+    fn left_right_in_the_table_move_the_cell_cursor_not_the_tab_strip() {
+        let mut e = Editor::default();
+        e.params.insert(
+            "a".into(),
+            Entry {
+                value: "1".into(),
+                enabled: true,
+            },
+        );
+        e.sub_focus = SubFocus::Tabs;
+        e.handle_key(key(KeyCode::Down));
+        assert_eq!((e.sub_focus, e.table.selected), (SubFocus::Content, Some(0)));
+        let tab = e.active_tab;
+        for right in [KeyCode::Right, KeyCode::Char('l')] {
+            e.table.col = super::super::table_editor::Col::Key;
+            assert_eq!(e.handle_key(key(right)), Some(Action::Render), "{right:?}");
+            assert_eq!(e.table.col, super::super::table_editor::Col::Value, "{right:?}");
+            assert_eq!(e.active_tab, tab, "the tab strip did not cycle");
+        }
+        e.handle_key(key(KeyCode::Enter));
+        let edit = e.table.editing.as_ref().expect("the value cell opened");
+        assert_eq!(edit.col, super::super::table_editor::Col::Value);
+    }
+
     /// `k` is Up's strict synonym at the table's top clamp too: it climbs
     /// out to the tab strip rather than dying. A modified `k` is neither.
     #[test]

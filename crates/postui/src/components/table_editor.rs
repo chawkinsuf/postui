@@ -12,8 +12,9 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 
 /// Which cell of a row is under edit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Col {
+    #[default]
     Key,
     Value,
 }
@@ -153,6 +154,10 @@ pub struct TableEditorState {
     /// compact and the row-level keys (Enter/Space/d) are inert until
     /// Down/j or a click lands somewhere.
     pub selected: Option<usize>,
+    /// The cursor's column: the cell Enter opens. ←/→ (h/l) move it in
+    /// nav mode; it follows whatever cell was last open, so Esc then
+    /// Enter reopens the same cell. It persists across row moves.
+    pub col: Col,
     pub editing: Option<CellEdit>,
     /// Value text typed into the ghost row before it has a key. A ghost
     /// VALUE commit can't create a row (only a key can), so the text is
@@ -167,6 +172,7 @@ impl TableEditorState {
     /// index from one map can't be stale (and panic) against the other.
     pub fn reset(&mut self) {
         self.selected = None;
+        self.col = Col::Key;
         self.editing = None;
         self.pending_ghost_value = None;
     }
@@ -198,6 +204,7 @@ impl TableEditorState {
             Self::cell_text(map, row, col)
         };
         self.selected = Some(row);
+        self.col = col;
         self.editing = Some(CellEdit {
             row,
             col,
@@ -338,12 +345,12 @@ impl TableEditorState {
         (Some(idx), None)
     }
 
-    /// Begins editing the selected row's key cell (the `Enter` path, and
+    /// Begins editing the selected row's cursor cell (the `Enter` path, and
     /// the app-side flows that seed a cell edit). A no-op with nothing
     /// selected.
     pub fn begin_edit_selected(&mut self, map: &IndexMap<String, Entry>) {
         let Some(sel) = self.selected else { return };
-        self.start_edit(sel, Col::Key, map);
+        self.start_edit(sel, self.col, map);
     }
 
     /// Starts a brand-new row: the ghost row's key cell, exactly like
@@ -406,6 +413,24 @@ impl TableEditorState {
                     }
                     _ => TableOutcome::not_consumed(),
                 }
+            }
+            // ←/→ move the cursor between the name and value cells; both
+            // clamp and stay consumed so nothing leaks to the pane. With
+            // no row selected there is no cell to move between, so they
+            // stay unconsumed like Up does.
+            KeyCode::Char('h') | KeyCode::Left if crate::keys::plain_letter(&ev) => {
+                if self.selected.is_none() {
+                    return TableOutcome::not_consumed();
+                }
+                self.col = Col::Key;
+                TableOutcome::consumed()
+            }
+            KeyCode::Char('l') | KeyCode::Right if crate::keys::plain_letter(&ev) => {
+                if self.selected.is_none() {
+                    return TableOutcome::not_consumed();
+                }
+                self.col = Col::Value;
+                TableOutcome::consumed()
             }
             KeyCode::Esc => {
                 // Esc deselects (collapsing the expanded row); with nothing
@@ -874,13 +899,33 @@ impl TableEditorState {
             (true, true, _) => theme.text,
             (true, false, _) => theme.text_muted,
         };
+        // The cursor cell keeps a lift of its own inside the cursor row
+        // (the Variable Manager grid's rule), so the exact cell Enter
+        // would open reads at a glance, not just its row. Keyboard only:
+        // an unfocused pane has no cursor to show, and an open cell
+        // paints its own lift.
+        let cursor_cell = (self.selected == Some(i) && ctx.focused && editing_col.is_none())
+            .then_some(self.col);
+        let cell_bg = |col: Col| {
+            if cursor_cell == Some(col) {
+                crate::theme::lift_color(bg, 0.06)
+            } else {
+                bg
+            }
+        };
+        let (name_bg, value_bg) = (cell_bg(Col::Key), cell_bg(Col::Value));
+        match cursor_cell {
+            Some(Col::Key) => fill(buf, Rect::new(cols.name_x, y, name_w, 1), name_bg),
+            Some(Col::Value) => fill(buf, Rect::new(cols.value_x, y, value_w, 1), value_bg),
+            None => {}
+        }
 
         if editing_col == Some(Col::Key) {
             let edit = self.editing.as_ref().expect("editing_col implies editing");
             Self::paint_cell_edit(buf, cols.name_x, y, name_w, &edit.input, bg, theme);
         } else {
             let shown = ghost_label.unwrap_or(key);
-            text(buf, cols.name_x, y, clip(shown, name_w), fg, bg, false);
+            text(buf, cols.name_x, y, clip(shown, name_w), fg, name_bg, false);
         }
 
         if editing_col == Some(Col::Value) {
@@ -888,7 +933,7 @@ impl TableEditorState {
             Self::paint_cell_edit(buf, cols.value_x, y, value_w, &edit.input, bg, theme);
         } else {
             let shown = clip(&entry.value, value_w);
-            text(buf, cols.value_x, y, shown, fg, bg, false);
+            text(buf, cols.value_x, y, shown, fg, value_bg, false);
             // The shadow hint trails the value on the same line, dim: it
             // is a note about that value, so it reads where the value
             // ends rather than on a row of its own.
@@ -903,7 +948,7 @@ impl TableEditorState {
                         y,
                         clip(hint, room),
                         theme.text_muted,
-                        bg,
+                        value_bg,
                         false,
                     );
                 }
@@ -1136,6 +1181,231 @@ mod tests {
         assert_eq!(t.selected, Some(1), "half of four stops");
         t.handle_key(ctrl('d'), &mut map);
         assert_eq!(t.selected, Some(3));
+    }
+
+    // --- cell cursor ------------------------------------------------------
+
+    /// The nav cursor has a column as well as a row: ←/→ move it between
+    /// the name and value cells, clamping at both ends and staying
+    /// consumed so nothing leaks to the pane.
+    #[test]
+    fn left_and_right_move_the_cursor_between_name_and_value_and_clamp() {
+        let mut map = map_of(&[("a", "1"), ("b", "2")]);
+        let mut t = TableEditorState {
+            selected: Some(0),
+            ..TableEditorState::default()
+        };
+        assert_eq!(t.col, Col::Key, "the cursor starts on the name cell");
+        assert!(t.handle_key(key(KeyCode::Left), &mut map).consumed);
+        assert_eq!(t.col, Col::Key, "← on the name cell stays put");
+        assert!(t.handle_key(key(KeyCode::Right), &mut map).consumed);
+        assert_eq!(t.col, Col::Value);
+        assert!(t.handle_key(key(KeyCode::Right), &mut map).consumed);
+        assert_eq!(t.col, Col::Value, "→ on the value cell stays put");
+        assert!(t.handle_key(key(KeyCode::Left), &mut map).consumed);
+        assert_eq!(t.col, Col::Key);
+        assert_eq!(t.selected, Some(0), "the row never moves");
+    }
+
+    /// h/l are strict synonyms for ←/→ in the table's nav mode.
+    #[test]
+    fn h_and_l_alias_left_and_right_for_the_cell_cursor() {
+        for (alias, canonical, from, to) in [
+            ('l', KeyCode::Right, Col::Key, Col::Value),
+            ('h', KeyCode::Left, Col::Value, Col::Key),
+        ] {
+            let mut ma = map_of(&[("a", "1")]);
+            let mut mb = ma.clone();
+            let (mut a, mut b) = (TableEditorState::default(), TableEditorState::default());
+            a.selected = Some(0);
+            b.selected = Some(0);
+            a.col = from;
+            b.col = from;
+            let oa = a.handle_key(key(KeyCode::Char(alias)), &mut ma);
+            let ob = b.handle_key(key(canonical), &mut mb);
+            assert_eq!(oa.consumed, ob.consumed, "{alias}");
+            assert_eq!(a.col, to, "{alias}");
+            assert_eq!(a.col, b.col, "{alias}");
+        }
+    }
+
+    /// The column survives a row move, so →, ↓, ↓ lands on the third
+    /// row's value cell.
+    #[test]
+    fn the_cursor_column_persists_across_row_moves() {
+        let mut map = map_of(&[("a", "1"), ("b", "2"), ("c", "3")]);
+        let mut t = TableEditorState::default();
+        t.handle_key(key(KeyCode::Down), &mut map);
+        t.handle_key(key(KeyCode::Right), &mut map);
+        t.handle_key(key(KeyCode::Down), &mut map);
+        t.handle_key(key(KeyCode::Down), &mut map);
+        assert_eq!((t.selected, t.col), (Some(2), Col::Value));
+    }
+
+    /// With nothing selected ←/→ have no cell to move between: they stay
+    /// unconsumed like Up does, so the pane keeps its own meaning for them.
+    #[test]
+    fn left_and_right_with_no_selection_are_unconsumed() {
+        let mut map = map_of(&[("a", "1")]);
+        let mut t = TableEditorState::default();
+        assert!(!t.handle_key(key(KeyCode::Right), &mut map).consumed);
+        assert!(!t.handle_key(key(KeyCode::Char('l')), &mut map).consumed);
+        assert_eq!(t.col, Col::Key);
+    }
+
+    /// Enter (and `i`) open the cell under the cursor, not always the name.
+    #[test]
+    fn enter_opens_the_cell_under_the_cursor() {
+        for open in [KeyCode::Enter, KeyCode::Char('i')] {
+            let mut map = map_of(&[("a", "1")]);
+            let mut t = TableEditorState {
+                selected: Some(0),
+                col: Col::Value,
+                ..TableEditorState::default()
+            };
+            t.handle_key(key(open), &mut map);
+            let edit = t.editing.as_ref().expect("a cell is open");
+            assert_eq!((edit.row, edit.col), (0, Col::Value), "{open:?}");
+            assert_eq!(edit.input.text(), "1", "{open:?}");
+        }
+    }
+
+    /// The ghost row's value cell opens from the cursor too; its text is
+    /// stashed until a key arrives, as a clicked ghost value already is.
+    #[test]
+    fn enter_on_the_ghost_value_cell_opens_it() {
+        let mut map = map_of(&[("a", "1")]);
+        let mut t = TableEditorState::default();
+        t.handle_key(key(KeyCode::End), &mut map); // the ghost
+        t.handle_key(key(KeyCode::Right), &mut map);
+        t.handle_key(key(KeyCode::Enter), &mut map);
+        let edit = t.editing.as_ref().expect("the ghost value cell is open");
+        assert_eq!((edit.row, edit.col), (1, Col::Value));
+        type_str(&mut t, &mut map, "v");
+        t.handle_key(shift_tab(), &mut map); // over to the ghost key
+        type_str(&mut t, &mut map, "k");
+        t.handle_key(key(KeyCode::Enter), &mut map);
+        assert_eq!(map.get("k").map(|e| e.value.as_str()), Some("v"));
+    }
+
+    /// The cursor column follows the last open cell: leaving a value cell
+    /// by Esc, Enter, ↑/↓ or Tab parks the cursor on that column, so Esc
+    /// then Enter reopens the same cell.
+    #[test]
+    fn leaving_a_cell_parks_the_cursor_on_its_column() {
+        // Esc from the value cell.
+        let mut map = map_of(&[("a", "1"), ("b", "2")]);
+        let mut t = TableEditorState::default();
+        t.click_cell(0, Col::Value, &mut map);
+        assert_eq!(t.col, Col::Value, "a click moves the cursor column");
+        t.handle_key(key(KeyCode::Esc), &mut map);
+        assert_eq!((t.selected, t.col), (Some(0), Col::Value));
+        t.handle_key(key(KeyCode::Enter), &mut map);
+        let edit = t.editing.as_ref().expect("reopened");
+        assert_eq!(edit.col, Col::Value, "Esc then Enter reopens the same cell");
+
+        // Enter commits and parks on the column.
+        t.handle_key(key(KeyCode::Enter), &mut map);
+        assert_eq!((t.editing.is_none(), t.col), (true, Col::Value));
+
+        // Tab walks: key → value → next row's key; the cursor follows.
+        t.click_cell(0, Col::Key, &mut map);
+        t.handle_key(key(KeyCode::Tab), &mut map);
+        assert_eq!(t.col, Col::Value);
+        t.handle_key(key(KeyCode::Tab), &mut map);
+        assert_eq!((t.selected, t.col), (Some(1), Col::Key));
+
+        // ↓ from a value cell keeps the column on the next row.
+        t.handle_key(key(KeyCode::Tab), &mut map); // row 1 value
+        t.handle_key(key(KeyCode::Down), &mut map);
+        assert_eq!((t.selected, t.col, t.editing.is_none()), (Some(2), Col::Value, true));
+    }
+
+    /// A reset drops the column along with the row.
+    #[test]
+    fn reset_returns_the_cursor_to_the_name_column() {
+        let mut t = TableEditorState {
+            col: Col::Value,
+            ..TableEditorState::default()
+        };
+        t.reset();
+        assert_eq!(t.col, Col::Key);
+    }
+
+    /// The cursor cell lifts one step inside the lit row (the Variable
+    /// Manager grid's rule), so the exact cell Enter would open reads at a
+    /// glance. Only the cursor cell lifts; the other cell keeps the row's
+    /// fill.
+    #[test]
+    fn the_cursor_cell_lifts_inside_the_cursor_row() {
+        let theme = Theme::dark();
+        let map = map_of(&[("page", "2")]);
+        let lifted = crate::theme::lift_color(theme.control_hover, 0.06);
+        for (col, other) in [(Col::Key, Col::Value), (Col::Value, Col::Key)] {
+            let t = TableEditorState {
+                selected: Some(0),
+                col,
+                ..TableEditorState::default()
+            };
+            let ctx = ctx(&theme, None);
+            let mut hits = HitMap::default();
+            let terminal = draw_to(&t, &map, &ctx, &mut hits);
+            let buf = terminal.backend().buffer();
+            let cell = |c: Col| {
+                hits.rect_of(&Hit::TableCell { row: 0, col: c.index() })
+                    .expect("cell registered")
+            };
+            let here = cell(col);
+            let there = cell(other);
+            assert_eq!(
+                buf.cell((here.x, here.y)).unwrap().bg,
+                lifted,
+                "{col:?} lifts"
+            );
+            assert_eq!(
+                buf.cell((there.x, there.y)).unwrap().bg,
+                theme.control_hover,
+                "{other:?} keeps the row fill"
+            );
+        }
+    }
+
+    /// No lift without the keyboard: an unfocused pane, or a cell open
+    /// for edit (the edit paints its own lift), draw the cursor cell flat.
+    #[test]
+    fn the_cursor_cell_does_not_lift_unfocused_or_while_editing() {
+        let theme = Theme::dark();
+        let map = map_of(&[("page", "2")]);
+        let lifted = crate::theme::lift_color(theme.control_hover, 0.06);
+        let t = TableEditorState {
+            selected: Some(0),
+            col: Col::Value,
+            ..TableEditorState::default()
+        };
+        let unfocused = DrawCtx {
+            focused: false,
+            ..ctx(&theme, None)
+        };
+        let mut hits = HitMap::default();
+        let terminal = draw_to(&t, &map, &unfocused, &mut hits);
+        let cell = hits.rect_of(&Hit::TableCell { row: 0, col: 1 }).unwrap();
+        assert_eq!(
+            terminal.backend().buffer().cell((cell.x, cell.y)).unwrap().bg,
+            theme.control,
+            "unfocused: resting fill"
+        );
+
+        let mut t = t;
+        let mut map = map;
+        t.click_cell(0, Col::Key, &mut map);
+        let mut hits = HitMap::default();
+        let terminal = draw_to(&t, &map, &ctx(&theme, None), &mut hits);
+        let cell = hits.rect_of(&Hit::TableCell { row: 0, col: 1 }).unwrap();
+        assert_ne!(
+            terminal.backend().buffer().cell((cell.x, cell.y)).unwrap().bg,
+            lifted,
+            "while editing the name cell, the value cell does not lift"
+        );
     }
 
     // --- ghost row selection ----------------------------------------------
