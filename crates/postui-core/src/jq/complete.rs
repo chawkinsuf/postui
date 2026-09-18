@@ -483,6 +483,39 @@ pub fn candidates(ctx: &Context, keys: &[String]) -> Vec<Candidate> {
     }
 }
 
+/// The closing bracket of the innermost opener left unclosed in `text`,
+/// as a candidate — offered only when the text ends in something a
+/// closer can follow (a name, a closing quote, another closer, `?`), so
+/// `sort_by(.params` ghosts `)` but `sort_by(`, `select(.a ==` and
+/// `map(.a |` ghost nothing: there the next thing is an operand, not the
+/// end. `None` inside an unterminated string, and with nothing unclosed.
+pub fn closer(text: &str) -> Option<Candidate> {
+    if unterminated_string(text).is_some() {
+        return None;
+    }
+    let sc = scan(text);
+    let b = text.as_bytes();
+    let open = *sc.unclosed.last()?;
+    let close = match b[open] {
+        b'(' => ')',
+        b'[' => ']',
+        _ => '}',
+    };
+    let last = *text.trim_end().as_bytes().last()?;
+    if text.ends_with(char::is_whitespace) {
+        return None;
+    }
+    let can_follow = is_ident_byte(last) || matches!(last, b'"' | b')' | b']' | b'}' | b'?');
+    if !can_follow {
+        return None;
+    }
+    Some(Candidate {
+        ghost: close.to_string(),
+        insert: close.to_string(),
+        replace_from: None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -491,6 +524,51 @@ mod tests {
 
     fn doc() -> super::super::JqDocument {
         super::super::JqDocument::parse(DOC).expect("fixture is JSON")
+    }
+
+    fn closer_of(text: &str) -> Option<String> {
+        closer(text).map(|c| {
+            assert_eq!(c.ghost, c.insert, "a closer is inserted as shown");
+            assert_eq!(c.replace_from, None);
+            c.ghost
+        })
+    }
+
+    #[test]
+    fn the_closer_is_the_innermost_unclosed_bracket() {
+        assert_eq!(closer_of("sort_by(.params").as_deref(), Some(")"));
+        assert_eq!(closer_of("map({name: .name").as_deref(), Some("}"));
+        assert_eq!(closer_of("map({name: .name}").as_deref(), Some(")"));
+        assert_eq!(closer_of("[.a[0]").as_deref(), Some("]"));
+        assert_eq!(closer_of("select(.a == 1").as_deref(), Some(")"));
+        assert_eq!(closer_of("select(.a == \"x\"").as_deref(), Some(")"));
+        assert_eq!(closer_of("map(.a?").as_deref(), Some(")"));
+        assert_eq!(closer_of("map($x").as_deref(), Some(")"));
+        assert_eq!(closer_of("(.a | .b").as_deref(), Some(")"));
+    }
+
+    #[test]
+    fn no_closer_where_one_cannot_follow_or_nothing_is_open() {
+        for text in [
+            "",
+            ".a",
+            "sort_by(.params)",
+            "sort_by(",
+            "sort_by(.",
+            "map({",
+            "select(.a ==",
+            "select(.a == ",
+            "map(.a |",
+            "map(.a | ",
+            "map(.a,",
+            "limit(3;",
+            "{a:",
+            "select(.a == \"abc",
+            ".a | \"abc",
+            "map(.a  ",
+        ] {
+            assert_eq!(closer_of(text), None, "for {text:?}");
+        }
     }
 
     #[test]

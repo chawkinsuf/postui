@@ -115,6 +115,11 @@ pub struct JqCompletion {
     /// What the caret is typing; `None` when nothing is offered there.
     ctx: Option<Context>,
     candidates: Vec<Candidate>,
+    /// The candidate list is the closing bracket offered by
+    /// [`Self::fall_back_to_closer`] rather than anything the context
+    /// yielded, so the chip is labelled by its ghost alone: a closer
+    /// does not continue the partial the way a key or builtin does.
+    closer: bool,
     /// Which candidate the ghost shows; reset whenever the context
     /// changes.
     index: usize,
@@ -140,6 +145,20 @@ impl JqCompletion {
         } else {
             (self.index + n - 1) % n
         };
+    }
+
+    /// With nothing else on offer at the caret, offers the closing
+    /// bracket of the innermost unclosed opener (see
+    /// [`complete::closer`]): a key or builtin that extends what is
+    /// typed always wins, so this only fills the gap once the token is
+    /// finished.
+    fn fall_back_to_closer(&mut self, text: &str) {
+        if !self.candidates.is_empty() {
+            self.closer = false;
+            return;
+        }
+        self.candidates = complete::closer(text).into_iter().collect();
+        self.closer = !self.candidates.is_empty();
     }
 }
 
@@ -273,7 +292,9 @@ impl JqBar {
             .candidates
             .iter()
             .map(|c| {
-                if c.replace_from.is_some() {
+                // A closer does not continue the partial — `sort_by(.id`
+                // offers `)`, not `id)` — so it is its own whole chip.
+                if c.replace_from.is_some() || self.completion.closer {
                     c.ghost.clone()
                 } else {
                     format!("{partial}{}", c.ghost)
@@ -1714,19 +1735,23 @@ impl Response {
             c.index = 0;
         }
         c.ctx = ctx;
+        c.closer = false;
         let Some(ctx) = c.ctx.clone() else {
             c.candidates.clear();
+            c.fall_back_to_closer(&text);
             return None;
         };
         let expr = match ctx.kind {
             Kind::Word => {
                 c.candidates = complete::candidates(&ctx, &[]);
+                c.fall_back_to_closer(&text);
                 return None;
             }
             Kind::Key { .. } => ctx.input_expr.clone().unwrap_or_else(|| ".".into()),
         };
         if c.cached_expr.as_deref() == Some(expr.as_str()) {
             c.candidates = complete::candidates(&ctx, &c.cached_keys);
+            c.fall_back_to_closer(&text);
             return None;
         }
         c.candidates.clear();
@@ -1749,6 +1774,7 @@ impl Response {
             c.cached_keys = complete::keys_at(&expr, &doc);
             c.cached_expr = Some(expr);
             c.candidates = complete::candidates(&ctx, &c.cached_keys);
+            c.fall_back_to_closer(&text);
             return None;
         }
         c.seq += 1;
@@ -1805,6 +1831,9 @@ impl Response {
             && ctx.input_expr.as_deref() == c.cached_expr.as_deref()
         {
             c.candidates = complete::candidates(ctx, &c.cached_keys);
+            let text = self.jq.input.text().to_string();
+            let c = &mut self.jq.completion;
+            c.fall_back_to_closer(&text);
             c.index = 0;
             return true;
         }
@@ -5775,6 +5804,78 @@ mod tests {
         assert_eq!(r.jq_ghost(), Some("th"), "builtins need no body");
         type_jq_unfocusable(&mut r, ".d");
         assert_eq!(r.jq_ghost(), None, "no document, no keys");
+    }
+
+    #[test]
+    fn a_finished_token_inside_a_bracket_ghosts_its_closer() {
+        let mut r = ready(ITEMS);
+        r.set_jq_tab(JqTab::Cycle);
+        type_jq(&mut r, ".data.items | sort_by(.i");
+        assert_eq!(r.jq_ghost(), Some("d"), "a key still extends: the key wins");
+        type_jq(&mut r, ".data.items | sort_by(.id");
+        assert_eq!(r.jq_ghost(), Some(")"), "nothing extends `id`: the closer");
+        type_jq(&mut r, ".data.items | map({s: .status");
+        assert_eq!(r.jq_ghost(), Some("}"));
+        type_jq(&mut r, ".data.items | map(select(.id == 1");
+        assert_eq!(r.jq_ghost(), Some(")"), "no key context at all: still the closer");
+        type_jq(&mut r, ".data.items | sort_by(");
+        assert_eq!(r.jq_ghost(), None, "nothing typed inside: nothing offered");
+        type_jq(&mut r, ".data.items | sort_by(.id)");
+        assert_eq!(r.jq_ghost(), None, "closed: nothing left to offer");
+        type_jq(&mut r, ".data.items | leng");
+        assert_eq!(r.jq_ghost(), Some("th"), "a builtin still wins over a closer");
+    }
+
+    #[test]
+    fn accepting_the_closer_types_it_and_the_offer_moves_on() {
+        let mut r = ready(ITEMS);
+        r.set_jq_tab(JqTab::Cycle);
+        type_jq(&mut r, ".data.items | map({s: .status");
+        assert_eq!(r.jq_ghost(), Some("}"));
+        bar_key(&mut r, key(KeyCode::Right));
+        r.refresh_jq_completion(SYNC_PRETTY_BYTES);
+        assert_eq!(r.jq_text(), ".data.items | map({s: .status}");
+        assert_eq!(r.jq_ghost(), Some(")"), "the next unclosed opener is offered");
+        bar_key(&mut r, key(KeyCode::Right));
+        r.refresh_jq_completion(SYNC_PRETTY_BYTES);
+        assert_eq!(r.jq_text(), ".data.items | map({s: .status})");
+        assert_eq!(r.jq_ghost(), None);
+    }
+
+    #[test]
+    fn the_closer_is_a_lone_chip_in_menu_mode_and_tab_takes_it() {
+        let mut r = ready(ITEMS);
+        r.set_jq_tab(JqTab::Menu);
+        type_jq(&mut r, ".data.items | sort_by(.id");
+        assert_eq!(
+            r.jq_bar().menu_row(),
+            Some(vec![(")".to_string(), false)]),
+            "the row previews the closer"
+        );
+        bar_key(&mut r, key(KeyCode::Tab));
+        assert_eq!(r.jq_text(), ".data.items | sort_by(.id)");
+        assert!(r.jq_bar().menu().is_none(), "a lone candidate is simply accepted");
+    }
+
+    #[test]
+    fn a_closer_is_offered_after_keys_land_from_the_pool_with_nothing_extending() {
+        let body = big_json();
+        let mut r = ready_gen(&body, 7);
+        r.set_jq_tab(JqTab::Cycle);
+        // A big body arrives unparsed, and the bar refuses focus with no
+        // tree to filter; land the parse as the app would.
+        r.attach_tree(7, crate::components::json_tree::JsonTree::parse(&body));
+        assert!(r.set_jq_focus(true));
+        r.jq_bar_mut().input = LineInput::new("map(.a");
+        r.apply_jq("map(.a", 0);
+        let req = r
+            .refresh_jq_completion(0)
+            .expect("big body: keys come from the pool");
+        assert_eq!(r.jq_ghost(), None, "nothing offered until the keys land");
+        let landed =
+            r.attach_jq_completion(7, req.seq, req.input_expr.clone(), vec!["a".into()], None);
+        assert!(landed, "the ghost changed");
+        assert_eq!(r.jq_ghost(), Some(")"), "`a` extends nothing: the closer");
     }
 
     #[test]

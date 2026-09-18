@@ -257,6 +257,16 @@ Rendering rules:
 - Quoted partial (`."my k`): only keys starting with the partial; ghost
   and insert are the rest of the key plus the closing `"`.
 - Builtin: the rest of the name, plus `(` when arity > 0.
+- **Closer (2026-09-18).** When the caret's context yields no candidate —
+  the typed key or builtin extends nothing, or there is no context at all
+  (`select(.id == 1`) — and the text ends in a token a closer can follow
+  (a name, `"`, `)`, `]`, `}`, `?`), the closing bracket of the innermost
+  unclosed opener is offered as the one candidate: `sort_by(.id` ghosts
+  `)`, `map({s: .status` ghosts `}`. Keys and builtins always win; the
+  closer only fills the gap once the token is finished. Nothing is
+  offered after an opener, an operator, a pipe, a comma or a `.`, and
+  never inside an unterminated string: there the next thing is an
+  operand, not the end. Engine: `complete::closer(text)`.
 
 ## UI (`postui::components::response`)
 
