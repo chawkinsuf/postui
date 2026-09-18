@@ -110,10 +110,11 @@ pub struct Context {
     /// (`us` for `.us`, `sel` for `sel`, `my k` for `."my k`).
     pub partial: String,
     /// Byte offset in `text` where the token being completed starts —
-    /// the `.` for a key, the first letter for a word.
+    /// the `.` for a key, the first letter for a word or a shorthand
+    /// key, the `"` for a quoted one.
     pub token_start: usize,
-    /// For `Kind::Key`: the jq expression whose outputs the caret's `.`
-    /// refers to. `None` for `Kind::Word`.
+    /// For `Kind::Key` and `Kind::Shorthand`: the jq expression whose
+    /// outputs the caret's key belongs to. `None` for `Kind::Word`.
     pub input_expr: Option<String>,
 }
 
@@ -322,10 +323,15 @@ edit), so every edit keeps both in step:
 
 1. If the bar is not focused, the caret is not at the end, or there is
    a selection, clear `ctx` and `candidates` and return `None`.
-2. Compute `context(text)`. `None` → clear and return.
-3. `Kind::Word` → candidates from `builtins()`, no fetch.
-4. `Kind::Key` with `input_expr` equal to the cached one → rebuild
-   candidates from the cached keys (typing more of the partial).
+2. Compute `context(text)`. `None` → clear; then, as on every path that
+   ends with no candidate, offer the closer of the innermost unclosed
+   opener (`complete::closer`) if the text ends in something it can
+   follow.
+3. `Kind::Word` → candidates from `builtins()`, with the closer fallback
+   when none extend.
+4. `Kind::Key` or `Kind::Shorthand` with `input_expr` equal to the
+   cached one → rebuild candidates from the cached keys (typing more of
+   the partial), with the same fallback once keys are known.
 5. Otherwise a fetch is needed. Body under `sync_limit` → `keys_at`
    inline, cache, build candidates. Larger → bump `seq`, set `pending`,
    return `JqCompleteRequest { generation, seq, input_expr, doc }` for

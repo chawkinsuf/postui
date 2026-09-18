@@ -132,6 +132,13 @@ fn unterminated_string(s: &str) -> Option<usize> {
 /// at its own depth (whitespace allowed either way). After `:` or a
 /// value the next thing is not a key, and a `,` inside a nested bracket
 /// belongs to that bracket.
+///
+/// The `last_top_level(seg, b',') == Some(seg.len() - 1)` check can't
+/// actually fail here: once `unclosed.last()` names the `{` we're
+/// looking inside, a `seg` that ends with `,` has that comma at `seg`'s
+/// own top level by construction. It's kept anyway as defence against a
+/// future change to `scan`'s bracket accounting, not a case this
+/// function needs today.
 fn shorthand_slot(before: &str) -> bool {
     let sc = scan(before);
     let Some(&open) = sc.unclosed.last() else {
@@ -509,7 +516,11 @@ pub fn candidates(ctx: &Context, keys: &[String]) -> Vec<Candidate> {
                 plain(rest)
             })
             .collect(),
-        Kind::Key { quoted: true } => keys
+        // A key or shorthand key already inside an open quote: the same
+        // closing-quote continuation either way. Pre-existing gap, not
+        // this pass's to close: a key holding `"` or `\` isn't
+        // re-escaped when the quoted partial is closed.
+        Kind::Key { quoted: true } | Kind::Shorthand { quoted: true } => keys
             .iter()
             .filter(|k| extends(k))
             .map(|k| plain(format!("{}\"", &k[p.len()..])))
@@ -529,11 +540,6 @@ pub fn candidates(ctx: &Context, keys: &[String]) -> Vec<Candidate> {
                     }
                 }
             })
-            .collect(),
-        Kind::Shorthand { quoted: true } => keys
-            .iter()
-            .filter(|k| extends(k))
-            .map(|k| plain(format!("{}\"", &k[p.len()..])))
             .collect(),
         Kind::Shorthand { quoted: false } => keys
             .iter()
@@ -587,8 +593,13 @@ pub fn closer(text: &str) -> Option<Candidate> {
         return None;
     }
     if b[open] == b'(' {
-        let name_start = ident_run_start(&text[..open]);
-        let name = &text[name_start..open];
+        // A space before `(` (`limit (3`) mustn't hide the builtin name
+        // from `ident_run_start`, which otherwise stops at the space and
+        // finds nothing — trim it off the head before hunting for the
+        // identifier run.
+        let head = text[..open].trim_end();
+        let name_start = ident_run_start(head);
+        let name = &head[name_start..];
         if let Some(builtin) = builtins().iter().find(|bi| bi.name == name) {
             let args_so_far = 1 + top_level_count(&text[open + 1..], b';');
             if builtin.arity > args_so_far {
@@ -634,6 +645,11 @@ mod tests {
         assert_eq!(closer_of("(.a | .b").as_deref(), Some(")"));
         assert_eq!(closer_of("range(1").as_deref(), Some(")"));
         assert_eq!(closer_of("limit(3; .[]").as_deref(), Some(")"));
+        assert_eq!(
+            closer_of("limit (3; .[]").as_deref(),
+            Some(")"),
+            "a space before `(` doesn't hide the builtin name"
+        );
         assert_eq!(closer_of("sub(\"a\"; \"b\"").as_deref(), Some(")"));
         assert_eq!(
             closer_of("limit(3; .[]; 1").as_deref(),
@@ -658,6 +674,7 @@ mod tests {
             "map(.a,",
             "limit(3;",
             "limit(3",
+            "limit (3",
             "sub(\"a\"",
             "{a:",
             "select(.a == \"abc",
@@ -813,8 +830,10 @@ mod tests {
                 ("ested".into(), "ested".into(), None),
             ]
         );
-        let ctx = context("map({").map(|_| ()).is_none();
-        assert!(ctx, "nothing typed after `{{` — an empty word is not a context");
+        assert!(
+            context("map({").is_none(),
+            "nothing typed after `{{` — an empty word is not a context"
+        );
         let ctx = context("map({m").unwrap();
         let got: Vec<(String, String, Option<usize>)> = candidates(&ctx, &keys)
             .into_iter()
@@ -913,9 +932,12 @@ mod tests {
                 s.push(alphabet[(seed % alphabet.len() as u64) as usize]);
             }
             let _ = context(&s);
+            let _ = closer(&s);
         }
         let _ = context("é.ü");
         let _ = context(".\"é");
+        let _ = closer("é.ü");
+        let _ = closer(".\"é");
     }
 
     fn builtin(name: &str) -> Option<&'static Builtin> {

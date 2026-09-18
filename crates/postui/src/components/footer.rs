@@ -27,6 +27,10 @@ pub enum JqBarState {
     },
     /// Focused with menu mode's candidate row open: Tab/shift+Tab step it.
     Menu,
+    /// Focused with a closing-bracket ghost: Tab, Right and End all accept
+    /// it (there is only one right answer, so menu mode's Tab-completes
+    /// convention applies even though no candidate row is open).
+    Closer,
     /// Focused with an AI "describe" request outstanding: Esc cancels
     /// that request (the bar's own Esc arm), so the chip must say so
     /// rather than promise `done`.
@@ -180,8 +184,10 @@ pub(crate) fn footer_chips(
                 // its Esc is the request's cancel — the chip names that
                 // action, not the field close it would otherwise be.
                 vec![("esc", "cancel describe", Some(Action::CancelJqDescribe))]
-            } else if let JqBarState::Focused | JqBarState::Completing { .. } | JqBarState::Menu =
-                jq_bar
+            } else if let JqBarState::Focused
+            | JqBarState::Completing { .. }
+            | JqBarState::Menu
+            | JqBarState::Closer = jq_bar
             {
                 // Enter commits (the filter is live already; Enter just
                 // hands focus back to the tree with the filter on), Esc
@@ -203,6 +209,10 @@ pub(crate) fn footer_chips(
                     JqBarState::Menu => {
                         chips.push(("tab", "next", None));
                         chips.push(("shift+tab", "prev", None));
+                    }
+                    JqBarState::Closer => {
+                        chips.push(("tab", "accept", None));
+                        chips.push(("→", "accept", None));
                     }
                     _ => {}
                 }
@@ -799,6 +809,12 @@ mod tests {
             ]
         );
         assert_eq!(&menu[3..], &focused[1..], "enter reads select, not apply");
+        let closer = chips(JqBarState::Closer);
+        assert_eq!(
+            &closer[..2],
+            &["tab accept".to_string(), "→ accept".to_string()]
+        );
+        assert_eq!(&closer[2..], &focused[..]);
     }
 
     /// With an AI describe outstanding the bar's Esc cancels the request,

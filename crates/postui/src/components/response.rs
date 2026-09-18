@@ -1726,6 +1726,14 @@ impl Response {
         self.jq.ghost()
     }
 
+    /// Whether the showing ghost is the closing-bracket fallback rather
+    /// than a key or builtin continuation — Tab, Right and End all accept
+    /// it the same way menu mode's lone candidate does, so the footer
+    /// needs to tell the two apart.
+    pub fn jq_ghost_is_closer(&self) -> bool {
+        self.jq.ghost().is_some() && self.jq.completion.closer
+    }
+
     /// Recomputes the bar's completion for the caret's position. Runs
     /// after every `apply_jq` in the app's reconcile. Keys for a new
     /// context are fetched inline for a body under `sync_limit`, else
@@ -5878,7 +5886,11 @@ mod tests {
         type_jq(&mut r, ".data.items | map({status, i");
         assert_eq!(r.jq_ghost(), Some("d"), "after a comma the next key");
         type_jq(&mut r, ".data.items | map({status: s");
-        assert_ne!(r.jq_ghost(), Some("tatus"), "after a colon a word is a builtin, not a key");
+        assert_eq!(
+            r.jq_ghost(),
+            Some("calars"),
+            "after a colon a word is a builtin (`scalars`), not a key"
+        );
     }
 
     #[test]
