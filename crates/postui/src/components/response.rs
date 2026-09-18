@@ -1726,6 +1726,7 @@ impl Response {
             c.ctx = None;
             c.candidates.clear();
             c.index = 0;
+            c.closer = false;
             return None;
         }
         let text = bar.input.text().to_string();

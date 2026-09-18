@@ -322,6 +322,16 @@ fn last_top_level(s: &str, what: u8) -> Option<usize> {
     })
 }
 
+/// How many top-level occurrences of `what` sit in `s`, outside strings
+/// and nested brackets.
+fn top_level_count(s: &str, what: u8) -> usize {
+    let sc = scan(s);
+    let b = s.as_bytes();
+    (0..b.len())
+        .filter(|&i| b[i] == what && !sc.in_string[i] && sc.depth[i] == 0)
+        .count()
+}
+
 /// The path chain (`.a`, `."k"`, `[…]`, `?`, `$x`, a bare `.`) ending at
 /// the end of `tail`, or `""` when it ends in anything else.
 fn path_chain(tail: &str) -> &str {
@@ -488,9 +498,15 @@ pub fn candidates(ctx: &Context, keys: &[String]) -> Vec<Candidate> {
 /// closer can follow (a name, a closing quote, another closer, `?`), so
 /// `sort_by(.params` ghosts `)` but `sort_by(`, `select(.a ==` and
 /// `map(.a |` ghost nothing: there the next thing is an operand, not the
-/// end. `None` inside an unterminated string, and with nothing unclosed.
+/// end. `None` inside an unterminated string, with nothing unclosed, and
+/// when the opener is a builtin's `(` that still needs more arguments —
+/// `limit(3` ghosting `)` would produce `limit(3)`, which is the wrong
+/// arity, so a closer that makes the call wrong is a wrong offer.
 pub fn closer(text: &str) -> Option<Candidate> {
     if unterminated_string(text).is_some() {
+        return None;
+    }
+    if text.ends_with(char::is_whitespace) {
         return None;
     }
     let sc = scan(text);
@@ -499,15 +515,23 @@ pub fn closer(text: &str) -> Option<Candidate> {
     let close = match b[open] {
         b'(' => ')',
         b'[' => ']',
-        _ => '}',
+        b'{' => '}',
+        _ => return None,
     };
-    let last = *text.trim_end().as_bytes().last()?;
-    if text.ends_with(char::is_whitespace) {
-        return None;
-    }
+    let last = *b.last()?;
     let can_follow = is_ident_byte(last) || matches!(last, b'"' | b')' | b']' | b'}' | b'?');
     if !can_follow {
         return None;
+    }
+    if b[open] == b'(' {
+        let name_start = ident_run_start(&text[..open]);
+        let name = &text[name_start..open];
+        if let Some(builtin) = builtins().iter().find(|bi| bi.name == name) {
+            let args_so_far = 1 + top_level_count(&text[open + 1..], b';');
+            if builtin.arity > args_so_far {
+                return None;
+            }
+        }
     }
     Some(Candidate {
         ghost: close.to_string(),
@@ -545,6 +569,14 @@ mod tests {
         assert_eq!(closer_of("map(.a?").as_deref(), Some(")"));
         assert_eq!(closer_of("map($x").as_deref(), Some(")"));
         assert_eq!(closer_of("(.a | .b").as_deref(), Some(")"));
+        assert_eq!(closer_of("range(1").as_deref(), Some(")"));
+        assert_eq!(closer_of("limit(3; .[]").as_deref(), Some(")"));
+        assert_eq!(closer_of("sub(\"a\"; \"b\"").as_deref(), Some(")"));
+        assert_eq!(
+            closer_of("limit(3; .[]; 1").as_deref(),
+            Some(")"),
+            "3 args already meets limit/2's arity, not refused"
+        );
     }
 
     #[test]
@@ -562,6 +594,8 @@ mod tests {
             "map(.a | ",
             "map(.a,",
             "limit(3;",
+            "limit(3",
+            "sub(\"a\"",
             "{a:",
             "select(.a == \"abc",
             ".a | \"abc",
