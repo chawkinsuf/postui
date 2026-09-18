@@ -535,6 +535,45 @@ fn colon_opens_the_palette_from_every_manage_surface() {
     opens(&mut app, "the Settings tab");
 }
 
+/// Undo restores a caret only into a field the step changed (ruling
+/// 2026-09-17). The click that toggled the header also took the caret off
+/// the URL line, so the step's "before" caret is the URL selection — but
+/// the URL is untouched by the undo, and reselecting it would move focus
+/// to an input the undo never changed.
+#[test]
+fn undo_leaves_focus_alone_when_the_stored_caret_is_in_an_unchanged_field() {
+    let mut app = App::new_for_test();
+    app.editor.headers.insert(
+        "accept".into(),
+        postui_core::model::Entry {
+            value: "*/*".into(),
+            enabled: true,
+        },
+    );
+    app.focus = PaneId::Editor;
+    app.editor.sub_focus = SubFocus::Url;
+    app.capture_undo(); // seed: caret on the URL line
+    // One event: focus leaves the URL for the headers table and the row is
+    // disabled.
+    app.editor.sub_focus = SubFocus::Content;
+    app.editor.active_tab = EditorTab::Headers;
+    app.editor.table.selected = Some(0);
+    app.editor.headers.get_mut("accept").unwrap().enabled = false;
+    assert!(app.capture_undo(), "the toggle records a step");
+    app.update(Action::Undo);
+    assert!(app.editor.headers["accept"].enabled, "undo re-enables the row");
+    assert_eq!(
+        app.editor.sub_focus,
+        SubFocus::Content,
+        "the URL did not change, so undo must not select it"
+    );
+    assert_eq!(app.editor.active_tab, EditorTab::Headers);
+    assert_eq!(app.editor.table.selected, Some(0), "the toggled row stays selected");
+    app.update(Action::Redo);
+    assert!(!app.editor.headers["accept"].enabled, "redo disables it again");
+    assert_eq!(app.editor.sub_focus, SubFocus::Content, "redo keeps focus too");
+}
+
 /// ctrl+d is unbound at the global keymap, so it must reach the focused
 /// sidebar's own `handle_key` through the app router (app.rs "step 5").
 #[test]

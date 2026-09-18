@@ -10939,6 +10939,16 @@ impl App {
                 } else {
                     ((**before).clone(), step.context.cursor_before.clone())
                 };
+                // A stored caret lands only in a field this step changed;
+                // one that sits in an untouched field (the click that made
+                // the step also moved focus off it) leaves focus where it
+                // is — re-placed by key, since the snapshot swap drops the
+                // table selection.
+                let cursor = if cursor.touched_by(before, after) {
+                    cursor
+                } else {
+                    self.editor.cursor_pos()
+                };
                 self.editor.apply_snapshot(&target);
                 self.editor.restore_cursor(&cursor);
                 self.sync_active_tab();

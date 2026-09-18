@@ -110,6 +110,27 @@ pub enum CursorPos {
     None,
 }
 
+impl CursorPos {
+    /// Whether the field this caret sits in is one the step changed
+    /// (ruling 2026-09-17: undo/redo place the caret only in an input the
+    /// step touches — restoring a stored caret into an unchanged field
+    /// would move focus to an input the undo never affected). The Body tab
+    /// is the body text; a table tab is its map.
+    pub fn touched_by(&self, before: &HttpRequest, after: &HttpRequest) -> bool {
+        match self {
+            CursorPos::Url(_) => before.url != after.url,
+            CursorPos::Body { .. } => before.body != after.body,
+            CursorPos::Cell { tab, .. } => match tab {
+                EditorTab::Params => before.params != after.params,
+                EditorTab::Headers => before.headers != after.headers,
+                EditorTab::Vars => before.variables != after.variables,
+                EditorTab::Body => before.body != after.body,
+            },
+            CursorPos::None => false,
+        }
+    }
+}
+
 /// Which single `HttpRequest` field changed, for burst-coalescing purposes.
 /// `None` means either nothing or more than one field differs — such steps
 /// never merge.
@@ -327,6 +348,31 @@ impl Default for History {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_caret_is_touched_only_by_a_step_that_changes_its_field() {
+        let before = HttpRequest::default();
+        let mut url = before.clone();
+        url.url = "https://x".into();
+        let mut headers = before.clone();
+        headers.headers.insert(
+            "a".into(),
+            postui_core::model::Entry {
+                value: "1".into(),
+                enabled: true,
+            },
+        );
+        let caret = CursorPos::Url(0);
+        assert!(caret.touched_by(&before, &url));
+        assert!(!caret.touched_by(&before, &headers));
+        let cell = CursorPos::Cell {
+            tab: EditorTab::Headers,
+            key: "a".into(),
+        };
+        assert!(cell.touched_by(&before, &headers));
+        assert!(!cell.touched_by(&before, &url));
+        assert!(!CursorPos::None.touched_by(&before, &url));
+    }
 
     use postui_core::model::{HttpRequest, Method};
     use std::time::{Duration, Instant};
