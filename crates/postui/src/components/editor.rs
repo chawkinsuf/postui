@@ -86,6 +86,19 @@ impl EditorTab {
     }
 }
 
+/// The editor's own caret, captured across a snapshot swap
+/// ([`Editor::apply_snapshot`]) so the caret the user already has comes
+/// back in the same place, clamped to the new contents. Table cells are
+/// addressed by key (row indices shift under undo) with the index as the
+/// fallback when the key is gone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Caret {
+    Url(usize),
+    Body { row: usize, col: usize },
+    Cell { row: usize, key: Option<String> },
+    None,
+}
+
 /// Which sub-region of the editor pane has keyboard focus: the method
 /// badge, the URL line, the Params/Headers/Body tab strip, the active
 /// tab's content (params table / headers table / body editor), or nothing
@@ -385,6 +398,7 @@ impl Editor {
     /// `Action::DiscardChanges` — so a snapshot swap can't leave a stale
     /// in-progress edit pointed at fields that just got replaced.
     pub fn apply_snapshot(&mut self, req: &HttpRequest) {
+        let caret = self.caret();
         self.name = req.name.clone();
         self.method = req.method;
         self.url = LineInput::new(&req.url);
@@ -401,48 +415,42 @@ impl Editor {
         });
         self.table.editing = None;
         self.table.selected = None;
+        self.restore_caret(&caret);
     }
 
-    /// Where the caret sits right now, for `undo::Context::cursor_before`/
-    /// `cursor_after`. `None` covers every focus state a step doesn't know
-    /// how to restore (Method/Tabs/None sub-focus, or a table tab with
-    /// nothing selected).
-    pub fn cursor_pos(&self) -> crate::undo::CursorPos {
-        use crate::undo::CursorPos;
+    /// Where the caret sits right now, so [`Self::apply_snapshot`] can put
+    /// it back after swapping the fields underneath it. `None` covers every
+    /// focus state a swap can't disturb (Method/Tabs/None sub-focus, or a
+    /// table tab with nothing selected).
+    pub fn caret(&self) -> Caret {
         match self.sub_focus {
-            SubFocus::Url => CursorPos::Url(self.url.cursor()),
-            SubFocus::Content if self.active_tab == EditorTab::Body => CursorPos::Body {
+            SubFocus::Url => Caret::Url(self.url.cursor()),
+            SubFocus::Content if self.active_tab == EditorTab::Body => Caret::Body {
                 row: self.body.cursor.row,
                 col: self.body.cursor.col,
             },
-            SubFocus::Content => match self.table.selected.and_then(|i| self.table_key_at(i)) {
-                Some(key) => CursorPos::Cell {
-                    tab: self.active_tab,
-                    key,
+            SubFocus::Content => match self.table.selected {
+                Some(row) => Caret::Cell {
+                    row,
+                    key: self.table_key_at(row),
                 },
-                None => CursorPos::None,
+                None => Caret::None,
             },
-            _ => CursorPos::None,
+            _ => Caret::None,
         }
     }
 
-    /// Restores a caret position captured by [`Self::cursor_pos`], clamping
-    /// against whatever the fields now hold (an undo/redo step may have
-    /// shortened the URL, dropped a body line, or removed a table key).
-    /// `CursorPos::None` leaves focus exactly as it is.
-    pub fn restore_cursor(&mut self, pos: &crate::undo::CursorPos) {
-        use crate::undo::CursorPos;
+    /// Re-places a caret captured by [`Self::caret`] against whatever the
+    /// fields now hold (a snapshot swap may have shortened the URL, dropped
+    /// a body line, or removed a table row). Focus never moves: the caret
+    /// is the one the editor already had, only clamped. `Caret::None`
+    /// leaves everything as it is.
+    pub fn restore_caret(&mut self, pos: &Caret) {
         match pos {
-            CursorPos::Url(i) => {
-                // An undo/redo restore always lands on the closed line,
-                // selected — the field was already closed (its own
-                // session flushed) by the time this step was captured.
-                self.select_url();
+            Caret::Url(i) => {
                 self.url.set_cursor(*i);
             }
-            CursorPos::Body { row, col } => {
-                self.sub_focus = SubFocus::Content;
-                self.active_tab = EditorTab::Body;
+            Caret::Body { row, col } => {
                 let rows = self.body.lines.len();
                 let row = (*row).min(rows.saturating_sub(1));
                 let col = (*col).min(self.body.lines.len_col(row).unwrap_or(0));
@@ -461,12 +469,23 @@ impl Editor {
                     .unwrap_or(0);
                 self.body.set_viewport_offset(0, row.saturating_sub(half));
             }
-            CursorPos::Cell { tab, key } => {
-                self.active_tab = *tab;
-                self.sub_focus = SubFocus::Content;
-                self.table.selected = self.table_index_of(key);
+            Caret::Cell { row, key } => {
+                // The same row by key (indices shift under undo); a row the
+                // swap removed leaves the cursor at its old index, clamped
+                // to the ghost row. The cell column persists on its own.
+                let len = match self.active_tab {
+                    EditorTab::Params => self.params.len(),
+                    EditorTab::Headers => self.headers.len(),
+                    EditorTab::Vars => self.variables.len(),
+                    EditorTab::Body => 0,
+                };
+                self.table.selected = Some(
+                    key.as_deref()
+                        .and_then(|k| self.table_index_of(k))
+                        .unwrap_or((*row).min(len)),
+                );
             }
-            CursorPos::None => {}
+            Caret::None => {}
         }
     }
 
@@ -3484,7 +3503,7 @@ mod tests {
         let text: String = (0..100).map(|i| format!("\"l{i}\": {i},\n")).collect();
         let mut e = body_editor(&text);
         e.last_body_area = Some(Rect::new(0, 0, 60, 10));
-        e.restore_cursor(&crate::undo::CursorPos::Body { row: 50, col: 0 });
+        e.restore_caret(&Caret::Body { row: 50, col: 0 });
         let offset = e.body.viewport_offset().1;
         assert!(
             (41..=50).contains(&offset),
@@ -3497,7 +3516,7 @@ mod tests {
         let text: String = (0..100).map(|i| format!("\"l{i}\": {i},\n")).collect();
         let mut e = body_editor(&text);
         e.last_body_area = None;
-        e.restore_cursor(&crate::undo::CursorPos::Body { row: 50, col: 0 });
+        e.restore_caret(&Caret::Body { row: 50, col: 0 });
         assert_eq!(
             e.body.viewport_offset().1,
             50,
@@ -3936,6 +3955,34 @@ mod tests {
             Some(0),
             "an empty table's entry point is its ghost + Add row"
         );
+    }
+
+    /// On a table tab the table owns ←/→ (and h/l) while a row is
+    /// selected: they move the cell cursor and are consumed, never the tab
+    /// strip's cycle. Opening the row then edits the cell the cursor is on.
+    #[test]
+    fn left_right_in_the_table_move_the_cell_cursor_not_the_tab_strip() {
+        let mut e = Editor::default();
+        e.params.insert(
+            "a".into(),
+            Entry {
+                value: "1".into(),
+                enabled: true,
+            },
+        );
+        e.sub_focus = SubFocus::Tabs;
+        e.handle_key(key(KeyCode::Down));
+        assert_eq!((e.sub_focus, e.table.selected), (SubFocus::Content, Some(0)));
+        let tab = e.active_tab;
+        for right in [KeyCode::Right, KeyCode::Char('l')] {
+            e.table.col = super::super::table_editor::Col::Key;
+            assert_eq!(e.handle_key(key(right)), Some(Action::Render), "{right:?}");
+            assert_eq!(e.table.col, super::super::table_editor::Col::Value, "{right:?}");
+            assert_eq!(e.active_tab, tab, "the tab strip did not cycle");
+        }
+        e.handle_key(key(KeyCode::Enter));
+        let edit = e.table.editing.as_ref().expect("the value cell opened");
+        assert_eq!(edit.col, super::super::table_editor::Col::Value);
     }
 
     /// `k` is Up's strict synonym at the table's top clamp too: it climbs

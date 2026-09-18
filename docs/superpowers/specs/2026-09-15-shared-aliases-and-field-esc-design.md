@@ -270,7 +270,7 @@ aliases work on a Manage tab with no project open.
 |---|---|---|---|---|---|
 | Sidebar tree | have | ←/→: collapse-or-parent, expand | first/last row | half page | full page |
 | Response viewer | have | ←/→: horizontal scroll | have | half page | full page |
-| Table editor (nav) | have | — | first/last row | half page | full page |
+| Table editor (nav) | have | ←/→: name ⇄ value cell (added 2026-09-17; Enter opens the cell under the cursor) | first/last row | half page | full page |
 | Manage lists | ↑/↓ | →: into the detail pane | first/last | half page | full page |
 | Manage detail pane (Environments/Spaces) | ↑/↓: buttons row ⇄ TLS row | ←/→: aim a button or TLS segment; ← on the first leaves | first/last row | — | — |
 | Variable Manager list | ↑/↓ | ←/→: list⇄grid | first/last | half page | full page |

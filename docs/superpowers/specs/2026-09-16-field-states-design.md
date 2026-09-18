@@ -117,6 +117,9 @@ Already selected-vs-open. Two changes:
   selection at the offending row as today. Esc on a selected row
   deselects as today.
 - `i` opens the selected row's cell, as Enter does.
+- (2026-09-17) The selection has a column: ←/→ (h/l) move it between
+  the name and value cells, Enter/`i` open the cell under it, and it
+  follows the last open cell so Esc then Enter reopens the same one.
 
 Tab / BackTab, ↑ / ↓ from an open cell keep their current meaning
 (commit, then move; the neighbouring row is selected, not opened),

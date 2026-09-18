@@ -17934,7 +17934,8 @@ fn manage_tabs_footer_chips_advertise_list_keys() {
 
 mod undo_tests {
     use super::*;
-    use crate::undo::CursorPos;
+    use crate::components::editor::Caret;
+    use crate::components::table_editor::Col;
     use postui_core::model::Entry;
 
     #[test]
@@ -17951,19 +17952,49 @@ mod undo_tests {
     }
 
     #[test]
-    fn cursor_roundtrip_url() {
+    fn caret_roundtrip_url() {
         let mut app = App::new_for_test();
         app.editor.open_url_from_app();
         app.editor.url = LineInput::new("hello");
         app.editor.url.set_cursor(3);
-        let pos = app.editor.cursor_pos();
+        let pos = app.editor.caret();
         app.editor.url = LineInput::new("hello world");
-        app.editor.restore_cursor(&pos);
-        assert_eq!(app.editor.cursor_pos(), pos);
+        app.editor.restore_caret(&pos);
+        assert_eq!(app.editor.caret(), pos);
     }
 
     #[test]
-    fn restore_cursor_cell_key_survives_row_shift() {
+    fn restore_caret_cell_key_survives_row_shift() {
+        let mut app = App::new_for_test();
+        app.editor.active_tab = EditorTab::Params;
+        app.editor.sub_focus = SubFocus::Content;
+        for (k, v) in [("a", "1"), ("b", "2")] {
+            app.editor.params.insert(
+                k.into(),
+                Entry {
+                    value: v.into(),
+                    enabled: true,
+                },
+            );
+        }
+        app.editor.table.selected = Some(1); // key "b"
+        let pos = app.editor.caret();
+        assert_eq!(
+            pos,
+            Caret::Cell {
+                row: 1,
+                key: Some("b".into()),
+            }
+        );
+        app.editor.params.shift_remove("a"); // "b" is now index 0
+        app.editor.restore_caret(&pos);
+        assert_eq!(app.editor.table.selected, Some(0));
+    }
+
+    /// A row the swap removed (undoing its add) leaves the cursor at the
+    /// same index, clamped to the ghost row.
+    #[test]
+    fn restore_caret_cell_falls_back_to_the_index_when_the_key_is_gone() {
         let mut app = App::new_for_test();
         app.editor.active_tab = EditorTab::Params;
         app.editor.sub_focus = SubFocus::Content;
@@ -17974,25 +18005,93 @@ mod undo_tests {
                 enabled: true,
             },
         );
-        app.editor.params.insert(
-            "b".into(),
+        app.editor.table.selected = Some(0);
+        let pos = app.editor.caret();
+        app.editor.params.clear();
+        app.editor.restore_caret(&pos);
+        assert_eq!(app.editor.table.selected, Some(0), "the ghost row");
+    }
+
+    /// Ruling 2026-09-18: undo/redo never move focus — the same as the
+    /// Manage screen. Undoing a URL edit from the headers table leaves the
+    /// table focused; the URL line is not re-selected.
+    #[test]
+    fn undo_of_a_url_edit_leaves_focus_on_the_table() {
+        let mut app = App::new_for_test();
+        app.update(Action::CreateRequest("focus-stays".into()));
+        app.editor.headers.insert(
+            "accept".into(),
             Entry {
-                value: "2".into(),
+                value: "*/*".into(),
                 enabled: true,
             },
         );
-        app.editor.table.selected = Some(1); // key "b"
-        let pos = app.editor.cursor_pos();
-        assert_eq!(
-            pos,
-            CursorPos::Cell {
-                tab: EditorTab::Params,
-                key: "b".into()
-            }
-        );
-        app.editor.params.shift_remove("a"); // "b" is now index 0
-        app.editor.restore_cursor(&pos);
+        app.capture_undo(); // seed shadow
+        app.focus = PaneId::Editor;
+        app.editor.open_url_from_app();
+        for c in ['h', 't', 't', 'p'] {
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+            app.capture_undo();
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        app.capture_undo();
+        assert_eq!(app.editor.url.text(), "http");
+        // Focus moves to the headers table before the undo.
+        app.editor.sub_focus = SubFocus::Content;
+        app.editor.active_tab = EditorTab::Headers;
+        app.editor.preferred_tab = EditorTab::Headers;
+        app.editor.table.selected = Some(0);
+        app.editor.table.col = Col::Value;
+        app.capture_undo();
+        app.focus = PaneId::Sidebar;
+        app.update(Action::Undo);
+        assert_eq!(app.editor.url.text(), "", "the URL edit is undone");
+        assert_eq!(app.focus, PaneId::Sidebar, "the pane focus stays put");
+        assert_eq!(app.editor.sub_focus, SubFocus::Content, "the table stays focused");
+        assert_eq!(app.editor.active_tab, EditorTab::Headers);
+        assert_eq!(app.editor.table.selected, Some(0), "same row");
+        assert_eq!(app.editor.table.col, Col::Value, "same cell");
+        assert!(app.editor.table.editing.is_none());
+        app.update(Action::Redo);
+        assert_eq!(app.editor.url.text(), "http");
+        assert_eq!(app.editor.sub_focus, SubFocus::Content, "redo keeps focus too");
         assert_eq!(app.editor.table.selected, Some(0));
+    }
+
+    /// Undoing a value-cell edit after ← moved the cursor to the name cell
+    /// keeps the cursor on the name cell: the caret is never moved back to
+    /// the cell the step changed.
+    #[test]
+    fn undo_of_a_cell_edit_keeps_the_cell_cursor_where_it_is() {
+        let mut app = App::new_for_test();
+        app.update(Action::CreateRequest("cell-undo".into()));
+        app.editor.params.insert(
+            "a".into(),
+            Entry {
+                value: "1".into(),
+                enabled: true,
+            },
+        );
+        app.editor.active_tab = EditorTab::Params;
+        app.editor.preferred_tab = EditorTab::Params;
+        app.editor.sub_focus = SubFocus::Content;
+        app.editor.table.selected = Some(0);
+        app.editor.table.col = Col::Value;
+        app.capture_undo(); // seed shadow
+        app.focus = PaneId::Editor;
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.capture_undo();
+        assert_eq!(app.editor.params["a"].value, "12");
+        app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        assert_eq!(app.editor.table.col, Col::Key);
+        app.capture_undo();
+        app.update(Action::Undo);
+        assert_eq!(app.editor.params["a"].value, "1");
+        assert_eq!(app.editor.table.selected, Some(0), "same row");
+        assert_eq!(app.editor.table.col, Col::Key, "the cursor stays on the name cell");
+        assert!(app.editor.table.editing.is_none(), "nothing reopened");
     }
 
     #[test]
@@ -18619,8 +18718,6 @@ mod undo_tests {
                 },
                 context: crate::undo::Context {
                     slug: Some("one".into()),
-                    cursor_before: CursorPos::None,
-                    cursor_after: CursorPos::None,
                 },
             };
 

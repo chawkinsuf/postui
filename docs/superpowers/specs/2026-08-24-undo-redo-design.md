@@ -82,14 +82,15 @@ Disk steps store *content*, not descriptions: the touched files' full text
 is read just before and just after the operation. Undo works even though
 history is in-memory, at the cost of recoverability ending at app exit.
 
-`Context` records the request slug, focused pane/field, and cursor
-position so undo can jump back and place the cursor. Two positions are
-kept per step: the cursor as of `before` (used by undo) and as of `after`
-(used by redo); coalescing keeps the merged step's `before` cursor and
-takes the newest `after` cursor. Table-cell fields are addressed by key,
-not row index, so cursor restore still lands on the right cell after
-intervening row insertions/deletions; if the key no longer exists, focus
-falls back to the pane without a cell selection.
+`Context` records the request slug so undo can jump back to the step's
+request. It records no caret (ruling 2026-09-18, superseding the earlier
+stored-caret design and the 2026-09-17 "only a changed field" refinement):
+undo/redo never move focus or the caret, the same as the Manage screen.
+The editor's own caret is captured across the snapshot swap and re-placed
+against the new contents — URL caret clamped, body row/col clamped with
+the viewport seeded near it, table row re-found by key (row indices shift
+under undo) with the old index, clamped to the ghost row, as the fallback
+when the key is gone. The cell cursor column persists on its own.
 
 ## Capture
 
@@ -163,8 +164,8 @@ screens; inert while a modal is open.
 path):
 
 - *Same request open:* decompose the snapshot into editor fields (inverse
-  of `current_request()`, largely the existing load path), restore
-  cursor/focus from `Context`, sync the shadow to the applied state so the
+  of `current_request()`, largely the existing load path), keep focus and
+  the caret where they are, sync the shadow to the applied state so the
   capture hook doesn't record the undo as a new edit.
 - *Jump-back:* switch to the step's request **bypassing the dirty gate**.
   Safe by construction: the departing request's unsaved state is fully
@@ -209,7 +210,7 @@ switch / timeout / no-coalesce flag). Injectable time source; no sleeps.
 App-level tests (existing harness in `app/tests.rs`, temp-dir projects,
 synthetic events):
 
-- type in URL → undo restores prior text and cursor
+- type in URL → undo restores prior text; focus and caret stay put
 - edit two fields → two steps
 - delete request → undo restores file on disk with identical content →
   redo deletes again
