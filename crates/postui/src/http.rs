@@ -42,18 +42,73 @@ pub struct SentHeader {
 }
 
 impl SentHeader {
-    /// Pairs a prepared request's wire headers with its masked display
-    /// headers (`PreparedRequest::display_headers`), row for row.
-    pub fn from_prepared(req: &PreparedRequest) -> Vec<Self> {
-        req.headers
+    /// Every header `req` puts on the wire, in wire order and wire case:
+    /// the prepared rows (paired with their masked twins from
+    /// `PreparedRequest::display_headers`), then what the client adds on
+    /// its own — reqwest's default `accept: */*` unless a row already
+    /// names it, hyper's `host` (the URL's authority, default port
+    /// dropped) and, for a body, `content-length`. `Host` and
+    /// `Content-Length` are what an HTTP/1.1 send carries; an h2
+    /// negotiation spells the first as `:authority`, same value. Verified
+    /// against a raw server by `sent_headers_match_the_wire`.
+    pub fn wire(req: &PreparedRequest) -> Vec<Self> {
+        let mut rows: Vec<Self> = req
+            .headers
             .iter()
             .zip(&req.display_headers)
             .map(|((name, value), (_, display))| SentHeader {
-                name: name.clone(),
+                name: name.to_ascii_lowercase(),
                 value: value.clone(),
                 display: display.clone(),
             })
-            .collect()
+            .collect();
+        let plain = |name: &str, value: String| SentHeader {
+            name: name.to_string(),
+            value: value.clone(),
+            display: value,
+        };
+        if !rows.iter().any(|r| r.name == "accept") {
+            rows.push(plain("accept", "*/*".to_string()));
+        }
+        if !rows.iter().any(|r| r.name == "host") {
+            let (host, display) = (authority(&req.url), authority(&req.display_url));
+            if !host.is_empty() {
+                rows.push(SentHeader {
+                    name: "host".to_string(),
+                    value: host,
+                    display,
+                });
+            }
+        }
+        if let Some(body) = &req.body
+            && !rows.iter().any(|r| r.name == "content-length")
+        {
+            rows.push(plain("content-length", body.len().to_string()));
+        }
+        rows
+    }
+}
+
+/// The `host` value hyper derives from a URL: host plus the port when it
+/// isn't the scheme's default. A display URL whose host holds the secret
+/// mask is not parsed — the parser would punycode the mask into
+/// `xn--…` — so its host segment is taken verbatim instead.
+fn authority(url: &str) -> String {
+    let after_scheme = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let segment = after_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default();
+    if segment.contains(postui_core::prepare::SECRET_MASK) {
+        return segment.to_string();
+    }
+    let Ok(u) = reqwest::Url::parse(url) else {
+        return segment.to_string();
+    };
+    match (u.host_str(), u.port()) {
+        (Some(host), Some(p)) => format!("{host}:{p}"),
+        (Some(host), None) => host.to_string(),
+        (None, _) => segment.to_string(),
     }
 }
 
@@ -160,7 +215,7 @@ pub async fn send(client: &reqwest::Client, req: &PreparedRequest) -> Result<Res
         status,
         url: req.display_url.clone(),
         headers,
-        sent_headers: SentHeader::from_prepared(req),
+        sent_headers: SentHeader::wire(req),
         body,
         ttfb,
         elapsed,
@@ -388,5 +443,85 @@ mod tests {
             resp.ttfb,
             resp.elapsed
         );
+    }
+
+    /// `sent_headers` is the wire truth, not the configured rows: what a
+    /// raw server actually receives from a send, name for name, value for
+    /// value, in order — including what reqwest and hyper add on their own
+    /// (`accept`, `host`, `content-length`), with names in their wire case.
+    #[tokio::test]
+    async fn sent_headers_match_the_wire() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        for body in [None, Some("{\"a\":1}".to_string())] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let server = tokio::spawn(async move {
+                let (mut sock, _) = listener.accept().await.unwrap();
+                let mut buf = vec![0u8; 4096];
+                let n = sock.read(&mut buf).await.unwrap();
+                sock.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n")
+                    .await
+                    .unwrap();
+                String::from_utf8_lossy(&buf[..n]).to_string()
+            });
+            let req = PreparedRequest {
+                method: if body.is_some() {
+                    postui_core::model::Method::Post
+                } else {
+                    postui_core::model::Method::Get
+                },
+                url: format!("http://127.0.0.1:{port}/p?q=1"),
+                display_url: format!("http://127.0.0.1:{port}/p?q=1"),
+                headers: vec![("X-One".into(), "1".into())],
+                display_headers: vec![("X-One".into(), "1".into())],
+                body,
+                insecure: false,
+            };
+            let data = send(&client(), &req).await.unwrap();
+            let raw = server.await.unwrap();
+            let wire: Vec<(String, String)> = raw
+                .split("\r\n")
+                .skip(1)
+                .take_while(|l| !l.is_empty())
+                .map(|l| {
+                    let (k, v) = l.split_once(": ").unwrap();
+                    (k.to_string(), v.to_string())
+                })
+                .collect();
+            assert!(wire.len() >= 3, "the probe saw the client's own rows: {raw}");
+            let sent: Vec<(String, String)> = data
+                .sent_headers
+                .iter()
+                .map(|h| (h.name.clone(), h.value.clone()))
+                .collect();
+            assert_eq!(sent, wire, "the snapshot is what went on the wire:\n{raw}");
+            for h in &data.sent_headers {
+                assert_eq!(h.display, h.value, "no secrets here, so display = value");
+            }
+        }
+    }
+
+    /// The masked twins travel with the wire rows: a secret in a prepared
+    /// header or in the URL's host shows as its mask, while `value` keeps
+    /// the real text for the copy pill.
+    #[test]
+    fn wire_rows_carry_masked_displays_for_secrets() {
+        let mask = postui_core::prepare::SECRET_MASK;
+        let req = PreparedRequest {
+            method: postui_core::model::Method::Get,
+            url: "https://s3cret.example.com:8443/p".into(),
+            display_url: format!("https://{mask}.example.com:8443/p"),
+            headers: vec![("Authorization".into(), "Bearer s3cret".into())],
+            display_headers: vec![("Authorization".into(), format!("Bearer {mask}"))],
+            body: None,
+            insecure: false,
+        };
+        let rows = SentHeader::wire(&req);
+        let auth = rows.iter().find(|r| r.name == "authorization").unwrap();
+        assert_eq!(auth.value, "Bearer s3cret");
+        assert_eq!(auth.display, format!("Bearer {mask}"));
+        let host = rows.iter().find(|r| r.name == "host").unwrap();
+        assert_eq!(host.value, "s3cret.example.com:8443");
+        assert_eq!(host.display, format!("{mask}.example.com:8443"));
     }
 }
