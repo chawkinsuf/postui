@@ -266,7 +266,11 @@ Rendering rules:
   closer only fills the gap once the token is finished. Nothing is
   offered after an opener, an operator, a pipe, a comma or a `.`, and
   never inside an unterminated string: there the next thing is an
-  operand, not the end. Engine: `complete::closer(text)`.
+  operand, not the end. Engine: `complete::closer(text)`. A closer is a
+  ghost in both Tab modes: menu mode withholds ghosts because a guess
+  pushed at the user compounds, and a closer is not a guess — there is
+  exactly one. Tab, Right and End accept it; no chip row is shown for
+  it.
 
 ## UI (`postui::components::response`)
 
@@ -336,7 +340,7 @@ In `ready_key`'s jq-focused branch, before the event reaches the
 |-----------------|-------------------------------|--------------------------------------------------|
 | Tab             | next candidate (wraps)        | enter the row at the first (entered: next, wraps) |
 | shift+Tab       | previous candidate (wraps)    | enter the row at the last (entered: previous)     |
-| Right, End      | accept                        | a plain caret move (entered: leaves the row first) |
+| Right, End      | accept                        | a plain caret move on a chip row; accept a closer ghost (entered: leaves the row first) |
 | Enter           | leave the bar, typed text kept | leave the bar (entered: confirm the chip, stay)   |
 | Esc             | cancel the edit               | cancel the edit (entered: un-pick, stay)          |
 | Down            | leave the bar                 | leave the bar                                    |

@@ -266,9 +266,11 @@ impl JqBar {
     }
 
     /// The candidate the ghost shows, when one is showing. Menu mode has
-    /// no ghost: its row is the preview.
+    /// no ghost for a guess — its row is the preview — but a closer is
+    /// not a guess: there is exactly one bracket that can close the
+    /// innermost opener, so it ghosts in both modes.
     fn candidate(&self) -> Option<&Candidate> {
-        if self.tab == JqTab::Menu || !self.offering() {
+        if !self.offering() || (self.tab == JqTab::Menu && !self.completion.closer) {
             return None;
         }
         self.completion.candidates.get(self.completion.index)
@@ -306,7 +308,8 @@ impl JqBar {
     /// Menu mode's row as drawn: `(label, selected)` per chip. With Tab
     /// in the row, the entered row's chips and selection; before that,
     /// the live candidates for what is being typed with nothing
-    /// selected. `None` in cycle mode, or with nothing to offer.
+    /// selected. `None` in cycle mode, or with nothing to offer. A
+    /// closer is a ghost in menu mode too, never a row.
     pub fn menu_row(&self) -> Option<Vec<(String, bool)>> {
         if self.tab != JqTab::Menu {
             return None;
@@ -314,7 +317,7 @@ impl JqBar {
         if let Some(menu) = &self.menu {
             return Some(menu.chips().map(|(l, sel)| (l.to_string(), sel)).collect());
         }
-        if !self.offering() {
+        if !self.offering() || self.completion.closer {
             return None;
         }
         Some(
@@ -2311,7 +2314,9 @@ impl Response {
                         }
                         return Some(Action::Render);
                     }
-                    KeyCode::Right | KeyCode::End if plain && cycle => {
+                    // Right/End accept a ghost. Menu mode has one only
+                    // for a closer, so there they accept exactly that.
+                    KeyCode::Right | KeyCode::End if plain && (cycle || self.jq.completion.closer) => {
                         self.accept_jq_completion();
                         return Some(Action::Render);
                     }
@@ -5844,18 +5849,50 @@ mod tests {
     }
 
     #[test]
-    fn the_closer_is_a_lone_chip_in_menu_mode_and_tab_takes_it() {
+    fn the_closer_is_a_ghost_in_menu_mode_too_and_tab_or_right_takes_it() {
         let mut r = ready(ITEMS);
         r.set_jq_tab(JqTab::Menu);
         type_jq(&mut r, ".data.items | sort_by(.id");
-        assert_eq!(
-            r.jq_bar().menu_row(),
-            Some(vec![(")".to_string(), false)]),
-            "the row previews the closer"
-        );
+        assert_eq!(r.jq_bar().menu_row(), None, "one right answer needs no row");
+        assert_eq!(r.jq_ghost(), Some(")"), "it is a ghost, as in cycle mode");
         bar_key(&mut r, key(KeyCode::Tab));
         assert_eq!(r.jq_text(), ".data.items | sort_by(.id)");
-        assert!(r.jq_bar().menu().is_none(), "a lone candidate is simply accepted");
+        assert!(r.jq_bar().menu().is_none());
+        type_jq(&mut r, ".data.items | map({s: .status");
+        assert_eq!(r.jq_ghost(), Some("}"));
+        bar_key(&mut r, key(KeyCode::Right));
+        assert_eq!(r.jq_text(), ".data.items | map({s: .status}", "Right accepts a closer ghost in menu mode");
+        r.refresh_jq_completion(SYNC_PRETTY_BYTES);
+        assert_eq!(r.jq_ghost(), Some(")"));
+        bar_key(&mut r, key(KeyCode::End));
+        assert_eq!(r.jq_text(), ".data.items | map({s: .status})", "End too");
+    }
+
+    #[test]
+    fn a_lone_key_candidate_is_still_a_chip_in_menu_mode() {
+        let mut r = ready(ITEMS);
+        r.set_jq_tab(JqTab::Menu);
+        type_jq(&mut r, ".data.items[] | .st");
+        assert_eq!(r.jq_ghost(), None, "a guess is never pushed as a ghost");
+        assert_eq!(
+            r.jq_bar().menu_row(),
+            Some(vec![("status".to_string(), false)])
+        );
+        bar_key(&mut r, key(KeyCode::Right));
+        assert_eq!(r.jq_text(), ".data.items[] | .st", "Right is a plain caret move on a chip row");
+    }
+
+    #[test]
+    fn the_muted_note_shows_under_a_closer_ghost_in_menu_mode() {
+        let mut r = ready(ITEMS);
+        r.set_jq_tab(JqTab::Menu);
+        type_jq(&mut r, ".data.items | sort_by(.id");
+        let theme = Theme::dark();
+        let (line, color) = error_row(&mut r, "unclosed (");
+        assert_eq!(line.trim(), "unclosed (");
+        assert_eq!(color, theme.text_muted);
+        let text = render(&mut r);
+        assert!(text.contains("sort_by(.id)"), "the ghost `)` is on the bar row: {text}");
     }
 
     #[test]
