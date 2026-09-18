@@ -6595,7 +6595,7 @@ mod tests {
     fn a_bad_filter_keeps_the_previous_tree_and_marks_the_bar_stale() {
         let mut r = ready(ITEMS);
         r.apply_jq(".data.items | length", SYNC_PRETTY_BYTES);
-        r.apply_jq(".data.items | select(", SYNC_PRETTY_BYTES);
+        r.apply_jq(".data.items )", SYNC_PRETTY_BYTES);
         assert_eq!(r.view().unwrap().view_text(), "2", "last good output stays");
         assert!(r.jq_bar().stale);
         let err = r.jq_bar().error.clone().expect("syntax error recorded");
@@ -6667,13 +6667,13 @@ mod tests {
     #[test]
     fn a_stale_error_is_cleared_when_the_body_becomes_non_json_and_the_bar_shrinks() {
         let mut r = ready(ITEMS);
-        r.apply_jq(".a | select(", SYNC_PRETTY_BYTES);
+        r.apply_jq(".a )", SYNC_PRETTY_BYTES);
         let err = r.jq_bar().error.clone().expect("syntax error recorded");
         assert!(err.span().is_some());
         // A re-send lands a non-JSON body: jq has nothing to run against.
         r.set_state(ResponseState::Ready(Box::new(data("plain text"))), 1);
         assert!(!r.jq_available());
-        r.apply_jq(".a | select(", SYNC_PRETTY_BYTES);
+        r.apply_jq(".a )", SYNC_PRETTY_BYTES);
         assert!(
             r.jq_bar().error.is_none(),
             "non-JSON response disables jq silently, no stale error"

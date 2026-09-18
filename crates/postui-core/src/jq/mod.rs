@@ -45,9 +45,13 @@ impl Eq for JqDocument {}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JqError {
     /// Lex/parse failure; `span` is a byte range into the filter text.
+    /// `incomplete` means the parser ran off the end of the input — the
+    /// filter is unfinished rather than wrong, so there is no span: no
+    /// character typed so far is to blame.
     Syntax {
         message: String,
         span: Option<Range<usize>>,
+        incomplete: bool,
     },
     /// `nosuchfn/1` — name and arity, with the call's span when known.
     Unknown {
@@ -73,6 +77,12 @@ impl JqError {
             JqError::Syntax { span, .. } | JqError::Unknown { span, .. } => span.clone(),
             JqError::Runtime { .. } => None,
         }
+    }
+
+    /// Whether the filter merely stops short (an unclosed bracket, a
+    /// trailing `|`) — the normal state of one still being typed.
+    pub fn incomplete(&self) -> bool {
+        matches!(self, JqError::Syntax { incomplete: true, .. })
     }
 }
 
@@ -190,6 +200,7 @@ fn load_error(code: &str, errs: jaq_core::load::Errors<&str, ()>) -> JqError {
                 return JqError::Syntax {
                     message: msg,
                     span: None,
+                    incomplete: false,
                 };
             }
         }
@@ -197,27 +208,27 @@ fn load_error(code: &str, errs: jaq_core::load::Errors<&str, ()>) -> JqError {
     JqError::Syntax {
         message: "invalid filter".into(),
         span: None,
+        incomplete: false,
     }
 }
 
 /// Builds a `Syntax` error for an unexpected token. jaq points at the
 /// offending slice `tok`; when the lexer/parser instead ran off the end of
-/// the input it reports an empty `tok` with no useful position of its own,
-/// so we fall back to the last character actually in `code`.
+/// the input it reports an empty `tok` — the filter is unfinished, which
+/// is what every filter looks like mid-typing, so the error says what is
+/// missing, blames no character, and is marked `incomplete`.
 fn unexpected<S: std::fmt::Debug>(code: &str, expect: &S, tok: &str) -> JqError {
     if tok.is_empty() {
-        let span = code.char_indices().last().map(|(i, c)| i..i + c.len_utf8());
         return JqError::Syntax {
-            message: format!(
-                "unexpected end of filter — expected {}",
-                expect_text(expect)
-            ),
-            span,
+            message: incomplete_text(expect),
+            span: None,
+            incomplete: true,
         };
     }
     JqError::Syntax {
         message: format!("unexpected `{tok}` — expected {}", expect_text(expect)),
         span: span_of(code, tok),
+        incomplete: false,
     }
 }
 
@@ -225,6 +236,24 @@ fn expect_text<S: std::fmt::Debug>(expect: &S) -> String {
     // Neither `Expect` type has a `Display`; their Debug names are fine
     // once lower-cased (`Nothing`, `Delim("(")`, `Term`, ...).
     format!("{expect:?}").to_lowercase()
+}
+
+/// What an unfinished filter is missing, from the parser's expectation:
+/// `Delim("(")` names the opener left unclosed, `Term` a missing operand
+/// (`.a |`, `if .a then`). Anything else keeps jaq's own name.
+fn incomplete_text<S: std::fmt::Debug>(expect: &S) -> String {
+    let debug = format!("{expect:?}");
+    if let Some(opener) = debug
+        .strip_prefix("Delim(\"")
+        .and_then(|s| s.strip_suffix("\")"))
+    {
+        // The escaped quote is `\"` in Debug; unescape it.
+        return format!("unclosed {}", opener.replace("\\\"", "\""));
+    }
+    if debug == "Term" {
+        return "expected a term".into();
+    }
+    format!("expected {}", debug.to_lowercase())
 }
 
 fn compile_error(code: &str, errs: jaq_core::compile::Errors<&str, ()>) -> JqError {
@@ -241,6 +270,7 @@ fn compile_error(code: &str, errs: jaq_core::compile::Errors<&str, ()>) -> JqErr
                 other => JqError::Syntax {
                     message: format!("undefined {}: `{name}`", other.as_str()),
                     span,
+                    incomplete: false,
                 },
             };
         }
@@ -248,6 +278,7 @@ fn compile_error(code: &str, errs: jaq_core::compile::Errors<&str, ()>) -> JqErr
     JqError::Syntax {
         message: "invalid filter".into(),
         span: None,
+        incomplete: false,
     }
 }
 
@@ -281,16 +312,42 @@ mod tests {
 
     #[test]
     fn a_syntax_error_names_the_offending_token_with_its_span() {
-        let err = check(".foo | select(").unwrap_err();
-        let JqError::Syntax { span, .. } = &err else {
+        let err = check(".foo )").unwrap_err();
+        let JqError::Syntax {
+            span, incomplete, ..
+        } = &err
+        else {
             panic!("expected a syntax error, got {err:?}");
         };
+        assert!(!incomplete, "a stray token is a real error");
         let span = span.clone().expect("lex/parse errors carry a span");
-        assert_eq!(
-            &".foo | select("[span.clone()],
-            "(",
-            "span covers the token: {span:?}"
-        );
+        assert_eq!(&".foo )"[span.clone()], ")", "span covers the token: {span:?}");
+        assert!(!err.incomplete());
+    }
+
+    #[test]
+    fn running_off_the_end_of_the_filter_is_incomplete_with_no_span() {
+        for (code, want) in [
+            (".foo | select(", "unclosed ("),
+            ("map({name", "unclosed {"),
+            ("[.a", "unclosed ["),
+            (".a | \"abc", "unclosed \""),
+            (".a |", "expected a term"),
+            ("if .a then", "expected a term"),
+        ] {
+            let err = check(code).unwrap_err();
+            assert!(err.incomplete(), "{code:?} should be incomplete: {err:?}");
+            assert_eq!(err.span(), None, "{code:?}: an unfinished filter blames no character");
+            assert_eq!(err.message(), want, "for {code:?}");
+        }
+    }
+
+    #[test]
+    fn only_end_of_input_syntax_errors_are_incomplete() {
+        assert!(!check("this is not jq").unwrap_err().incomplete());
+        assert!(!check(".foo | nosuchfn(1)").unwrap_err().incomplete());
+        let doc = doc();
+        assert!(!run(".data.total | .x", &doc).unwrap_err().incomplete());
     }
 
     #[test]
