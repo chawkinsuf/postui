@@ -2853,6 +2853,12 @@ impl App {
                         self.manage.tab.cycle(delta.into()),
                     ));
                 }
+                // On the any-screen whitelist for the Manage strip's sake;
+                // any other non-Main screen (the testbed) draws no strip,
+                // so the chord must not move the undrawn editor's tabs.
+                if self.screen != Screen::Main {
+                    return false;
+                }
                 match self.focus {
                     PaneId::Response => self.update(Action::CycleResponseView(delta)),
                     PaneId::Editor | PaneId::Sidebar => {

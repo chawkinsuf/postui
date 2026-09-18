@@ -961,6 +961,19 @@ fn alt_arrows_cycle_the_focused_panes_tab_strip() {
     assert_eq!(app.editor.active_tab, EditorTab::Headers, "editor strip untouched");
 }
 
+/// The chord is on the any-screen whitelist for the Manage strip's sake;
+/// on a screen with no strip drawn (the testbed) it must not reach the
+/// undrawn editor's tabs behind the screen.
+#[test]
+fn alt_arrows_do_nothing_on_a_screen_without_a_strip() {
+    let mut app = App::new_for_test_with_testbed(true);
+    assert_eq!(app.screen, crate::app::Screen::Testbed);
+    let before = app.editor.active_tab;
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
+    assert_eq!(app.editor.active_tab, before, "no strip on screen, nothing moves");
+    assert_eq!(app.screen, crate::app::Screen::Testbed);
+}
+
 #[test]
 fn editor_tab_select_slot_numbers_follow_the_screen_order() {
     // `EditorTabSelect`'s slot numbers ([`EditorTab::index`], bindable as
