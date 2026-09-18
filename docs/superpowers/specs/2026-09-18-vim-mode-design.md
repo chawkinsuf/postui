@@ -48,9 +48,9 @@ One branch. User-visible changes:
   labels spelled for the active profile.
 
 Out of scope, under "Deferred": `.` repeat, named registers, marks and
-macros, text objects beyond what edtui already gives the body, visual
-mode on *lists* (multi-row selection), and the `ctrl+o`/`ctrl+i` jump
-list.
+macros, text objects in `LineInput` beyond `iw`/`aw`, blockwise visual,
+visual mode on *lists* (multi-row selection), the `ctrl+o`/`ctrl+i`
+jump list, and `/` as a filter on the list surfaces.
 
 ## The central decision: resolve before dispatch
 
@@ -75,8 +75,8 @@ The router takes a raw `KeyEvent` plus one bit — whether the focused
 thing is currently accepting text — and returns exactly one of:
 
 - **`Action(a)`** — the sequence resolved to a named action.
-- **`Key(ev, count)`** — a normalized key the surface already handles,
-  with an optional repeat count.
+- **`Keys(evs)`** — one or more normalized keys the surface already
+  handles.
 - **`Pending`** — a sequence is incomplete; the key is consumed and
   echoed in the footer.
 - **`Declined`** — the router does not own this key; it passes through
@@ -84,6 +84,24 @@ thing is currently accepting text — and returns exactly one of:
 
 The one bit of context is not new state: selected-versus-open is the
 model the field-states round already established.
+
+**Counts are applied by replay, never handed onward.** `3j` returns
+three `Down` events, not one `Down` carrying a `3`. No surface, and no
+edtui call site, ever learns what a count is — which is the same reason
+the router exists at all. The single exception lives entirely inside
+the `vim` module: in an operator+motion like `d3w` the count belongs to
+the motion the operator consumes, and is resolved before any key
+leaves. This is also how counts reach edtui, which has none of its own.
+
+`Keys` returning a vector rather than one event is what makes replay
+possible; it is the only reason that variant is plural.
+
+**Normalization is part of the contract, not a side effect.** The
+open-field set that `opens_field()` defines today — Enter, Space, and
+`i` — moves into the router: Space normalizes to the open key in *both*
+profiles, and `i` only in vim mode. A silently dropped Space is exactly
+the failure §"Risks" names, so the normalize cases are table-tested
+beside the decline cases.
 
 ### How a verb is "removed" without the surface knowing
 
@@ -151,8 +169,6 @@ whichever is active and always wins.
 | `u` | *unbound* | Undo | vim undo (`keys.rs:424` today, unconditional) |
 | `:` | *unbound* | Palette (ex) | vim ex (`keys.rs:352` today, unconditional) |
 | `ctrl+r` | Send (`keys.rs:408`) | Redo | vim redo; Send keeps `ctrl+enter` and `shift+enter` |
-| `ctrl+v` | Paste (`keys.rs:413`) | Visual block | core vim, and this round adds visual mode |
-| `ctrl+o` | Project chooser (`keys.rs:411`) | *unbound* | vim's jumplist-back; reached by `:project` |
 | `ctrl+s` | Save (`keys.rs:405`) | *unbound* | `:w` |
 | `alt+w` / `shift+alt+w` | Cycle split (`keys.rs:417`) | *unbound* | `ctrl+w w` and `ctrl+w h/j/k/l` |
 | `alt+←` / `alt+→` | Cycle tabs (`keys.rs:385`) | *unbound* | `gt` / `gT`, and `2gt` |
@@ -161,6 +177,22 @@ whichever is active and always wins.
 **Ruling: the vim spelling replaces the chord, it does not alias it.**
 Where a verb gains a vim-native spelling in vim mode, the old chord is
 unbound there. One way to do each thing per profile.
+
+**`ctrl+v` keeps Paste in both profiles**, and this is not a
+compromise. Vim's paste is `p`/`P`, which puts from vim's *own*
+register — what `yy` or `dd` just filled. The system clipboard is a
+different register, reached in vim as `"+p`. So `p` and `ctrl+v` read
+different sources and do not compete; edtui binds `ctrl+v` to paste in
+insert mode for the same reason (`key.rs:912`). Blockwise visual, which
+`ctrl+v` would otherwise carry, is deferred: edtui's `EditorMode` has
+only `Normal`, `Insert`, `Visual` and `Search` (`state/mode.rs:3-9`),
+with no blockwise variant, and a block selection is meaningless in a
+single-line `LineInput`.
+
+**`ctrl+o` keeps the project chooser in both profiles.** Vim's `ctrl+o`
+is jumplist-back, but the jumplist is deferred, so unbinding it here
+would buy a dead key and cost the chooser its chord. Revisit if and
+when the jumplist is built.
 
 `ctrl+p` (palette) and `ctrl+z` (undo) stay bound in both. `ctrl+p` as
 a finder is idiomatic in vim configs, and `ctrl+z` costs nothing beside
@@ -185,18 +217,25 @@ of that work in default mode, as they did before that round.
 
 Plain letters belong to vim. The per-surface app verbs bound to them
 today — `n` new, `r` rename, `d` delete, `m` move, `e` edit, `p`
-promote, `c` copy, `v` paste, `o`, `s`, `x`, `t`, `a` add — are all
-removed in vim mode. Every one of them has a vim meaning that a vim
-user's fingers already expect.
+promote, `c` copy, `v` paste, `o`, `s`, `x`, `t`, `a` add, and the
+per-surface `q` arms (`varmanager.rs:1146`, `:1299`,
+`manage_list.rs:526`) alongside the global one — are all removed in vim
+mode. Every one of them has a vim meaning that a vim user's fingers
+already expect.
 
-Three take vim spellings directly:
+Four take vim spellings directly:
 
 | Verb | Vim mode |
 | --- | --- |
 | Delete row | `dd` |
 | Copy row | `yy` |
-| Paste row | `p` |
+| Paste row | `p` (`P` above) |
 | Add row | `o` below, `O` above |
+
+`yy` and `p` act on an in-app register, not the system clipboard —
+which is what the Variable Manager's `c`/`v` option stash already is
+(App state, never leaving its own selector). `ctrl+v` remains the
+system-clipboard paste, in both profiles.
 
 The rest — new, rename, move, promote, group fields, reveal, set
 default environment — have no vim analogue and are reached **only** by
@@ -206,9 +245,15 @@ which is why §"Ex-commands" is part of this round and not a follow-up.
 Sequences and counts arrive on these surfaces with the router: `gg`
 home, `G` end, `3j`, `10G`, `gt`/`gT`/`2gt` for tabs, `ctrl+w h/j/k/l`
 and `ctrl+w w` for panes (`Action::FocusPane` already exists at
-`action.rs:114`, so the panes are addressable today), `zz`/`zt`/`zb`
-in the response body, and `/` with `n`/`N` on every list rather than
-only the response view.
+`action.rs:114`, so the panes are addressable today), and `zz`/`zt`/`zb`
+in the response body.
+
+`/` stays where it already works — the response view. Extending it to
+the sidebar, table, Variable Manager and Manage list is **not** part of
+this round: those surfaces have no filter row and no filter state, so
+`/` there is a feature to build rather than a key to bind, and it is
+worth having in default mode too. It is listed under "Deferred" as its
+own task.
 
 ## Text fields
 
@@ -224,6 +269,8 @@ anchor and selection primitives it already has:
   `I` first non-blank, `o`/`O` where the surface has rows.
 - **Operators**: `d`, `c`, `y` with motions, doubled forms (`dd`,
   `cc`, `yy`) and the capital shorthands `D`, `C`, `Y`.
+- **Text objects**: `iw` and `aw` only, so that `ciw` and `daw` work.
+  No bracket or quote objects — see "Deferred".
 - **Direct edits**: `x`, `X`, `p`, `P`.
 - **Visual**: `v`, `V`, with the operators applying to the selection.
 - **Counts** on all of the above, and `u` / `ctrl+r`.
@@ -254,8 +301,8 @@ the register drive. Two things the app must still do:
 - **Intercept edtui's insert-mode chords.** It binds `ctrl+u`,
   `ctrl+p` and `ctrl+y` in insert mode (`key.rs:998-1000`), which
   collide with app chords. The app claims those first.
-- **Supply counts.** edtui has none. The router applies a count by
-  replaying the key *n* times.
+- **Supply counts.** edtui has none. The router's replay covers this
+  with no special case: `3w` reaches edtui as three `w` events.
 
 In default mode the body stays pinned to Insert exactly as today.
 
@@ -308,9 +355,14 @@ key. The existing `every_named_action_is_mouse_reachable` test
 
 - **Router table tests, per profile.** Key sequence in, resolved
   outcome out: `gg`, `3j`, `10G`, `gt`, `2gt`, `dd`, `ctrl+w h`, a
-  pending prefix, an Esc that clears it, and — most important — the
-  **decline** cases, where a key the router does not own passes
-  through byte-identical.
+  pending prefix, and an Esc that clears it. Three cases matter more
+  than the verbs:
+  - **Decline** — a key the router does not own passes through
+    byte-identical.
+  - **Normalize** — Space reaches the surface as the open key in both
+    profiles, `i` only in vim mode.
+  - **Replay** — `3j` yields exactly three `Down` events, and no
+    outcome ever carries a count outward.
 - **Surface tests stay single-mode** and keep asserting arrows. Their
   vim-letter assertions are deleted with the arms they test.
 - **`LineInput` vim unit tests** for each motion, operator and count,
@@ -350,8 +402,18 @@ key. The existing `every_named_action_is_mouse_reachable` test
   delete). The app has no multi-select at all, so this is a feature,
   not a binding.
 - **`ctrl+o` / `ctrl+i` jump list.** The app has no concept of visited
-  locations to jump between.
+  locations to jump between. Until it does, `ctrl+o` keeps the project
+  chooser in both profiles.
+- **Blockwise visual (`ctrl+v`).** edtui's `EditorMode` has no
+  blockwise variant (`state/mode.rs:3-9`) and a block selection means
+  nothing in a single-line field, so there is nowhere to put it.
+  `ctrl+v` stays the system-clipboard paste in both profiles.
 - **Text objects in `LineInput`** beyond `iw`/`aw`. The body gets
   edtui's set; the single-line fields do not need `i{`.
+- **`/` as a filter on the list surfaces** — sidebar, table, Variable
+  Manager, Manage list. Each needs a filter row and filter state that
+  do not exist, which makes it a feature rather than a binding, and it
+  is worth having in default mode too. Its own task, independent of
+  vim mode.
 - **`gq`, `>>`/`<<`, `J` join** and the other line-shaping verbs: the
   body is the only multi-line surface and edtui does not bind them.
