@@ -1751,7 +1751,9 @@ impl Response {
                 c.fall_back_to_closer(&text);
                 return None;
             }
-            Kind::Key { .. } => ctx.input_expr.clone().unwrap_or_else(|| ".".into()),
+            Kind::Key { .. } | Kind::Shorthand { .. } => {
+                ctx.input_expr.clone().unwrap_or_else(|| ".".into())
+            }
         };
         if c.cached_expr.as_deref() == Some(expr.as_str()) {
             c.candidates = complete::candidates(&ctx, &c.cached_keys);
@@ -5830,6 +5832,35 @@ mod tests {
         assert_eq!(r.jq_ghost(), None, "closed: nothing left to offer");
         type_jq(&mut r, ".data.items | leng");
         assert_eq!(r.jq_ghost(), Some("th"), "a builtin still wins over a closer");
+    }
+
+    #[test]
+    fn a_word_inside_braces_ghosts_the_shorthand_key_then_the_closer() {
+        let mut r = ready(ITEMS);
+        r.set_jq_tab(JqTab::Cycle);
+        type_jq(&mut r, ".data.items | map({s");
+        assert_eq!(r.jq_ghost(), Some("tatus"), "`{{status}}` is `{{status: .status}}`");
+        bar_key(&mut r, key(KeyCode::Right));
+        r.refresh_jq_completion(SYNC_PRETTY_BYTES);
+        assert_eq!(r.jq_text(), ".data.items | map({status");
+        assert_eq!(r.jq_ghost(), Some("}"), "the key is complete: the closer");
+        type_jq(&mut r, ".data.items | map({status, i");
+        assert_eq!(r.jq_ghost(), Some("d"), "after a comma the next key");
+        type_jq(&mut r, ".data.items | map({status: s");
+        assert_ne!(r.jq_ghost(), Some("tatus"), "after a colon a word is a builtin, not a key");
+    }
+
+    #[test]
+    fn a_shorthand_key_is_a_whole_word_chip_in_menu_mode() {
+        let mut r = ready(ITEMS);
+        r.set_jq_tab(JqTab::Menu);
+        type_jq(&mut r, ".data.items | map({s");
+        assert_eq!(
+            r.jq_bar().menu_row(),
+            Some(vec![("status".to_string(), false)])
+        );
+        bar_key(&mut r, key(KeyCode::Tab));
+        assert_eq!(r.jq_text(), ".data.items | map({status");
     }
 
     #[test]

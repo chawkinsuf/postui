@@ -123,6 +123,11 @@ pub enum Kind {
     Key { quoted: bool },
     /// A bare word not preceded by `.`, `$` or `@`: a builtin name.
     Word,
+    /// (2026-09-18) A key of an object built by shorthand — `{name}` is
+    /// `{name: .name}` — so a bare word or a `"` string right after `{`
+    /// or after a `,` at the brace's own depth is a key of the object's
+    /// input, not a builtin. `quoted` as for `Key`.
+    Shorthand { quoted: bool },
 }
 ```
 
@@ -257,6 +262,13 @@ Rendering rules:
 - Quoted partial (`."my k`): only keys starting with the partial; ghost
   and insert are the rest of the key plus the closing `"`.
 - Builtin: the rest of the name, plus `(` when arity > 0.
+- **Shorthand key (2026-09-18).** As for a key, without the dot: an
+  identifier key ghosts its rest (`{na` → `me`); a key that is not an
+  identifier is rewritten from the word as `"my key"` with
+  `replace_from` at the word; a quoted partial (`{"my k`) gets the rest
+  plus `"`. The input expression is the object's input, resolved like a
+  key's through the enclosing brackets (`map({na` → `.[]`). After `:`
+  or a value a word is a builtin as before; `{$x` completes nothing.
 - **Closer (2026-09-18).** When the caret's context yields no candidate —
   the typed key or builtin extends nothing, or there is no context at all
   (`select(.id == 1`) — and the text ends in a token a closer can follow
