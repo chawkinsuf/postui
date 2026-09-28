@@ -41,11 +41,9 @@ pub enum StepKind {
     /// by the journal cap is skipped silently.
     Project {
         id: postui_core::journal::EntryId,
-        /// The request the toast names: the one open when the step was
-        /// made for a file change, the request that moved for a reorder,
-        /// the deleted one for a delete.
-        slug: Option<String>,
-        noun: ProjectNoun,
+        /// The undo/redo toast's wording, captured when the op ran (spec
+        /// R2).
+        label: StepLabel,
         /// The view just before the op and just after it (spec §4.1):
         /// undo lands on the parts that differ, taken from `before`; redo
         /// from `after`.
@@ -71,32 +69,6 @@ pub enum StepKind {
         before: Option<String>,
         after: String,
     },
-}
-
-/// Which wording a `Project` marker's undo/redo toast uses — the wording
-/// the step kind it replaces used. Chosen by the recording arm rather
-/// than derived from the journal label, because two different ops share
-/// the label `"move request"` (a move to another space, and a keyboard
-/// reorder) and they toast differently.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProjectNoun {
-    /// `"{Undid|Redid} file change to {display}"`.
-    FileChange,
-    /// `"{Undid|Redid} reorder of {display}"`.
-    Reorder,
-    /// `"{Undid|Redid} reorder of space {display}"` — the step's `slug`
-    /// is a space name, not a request slug.
-    SpaceReorder,
-    /// `"{Undid|Redid} reorder of environment {display}"` — the step's
-    /// `slug` is an environment name, not a request slug.
-    EnvReorder,
-    /// `"Restored {file}"` / `"Deleted {file} again"`.
-    Trash,
-    /// [`Self::Trash`] for something that is not a request: the step's
-    /// `slug` is the name to show verbatim (an environment's file name,
-    /// a space's directory name) rather than a request slug the `.toml`
-    /// is appended to.
-    TrashNamed,
 }
 
 /// Which request a step belongs to, so undo can jump back to it. No caret
@@ -160,7 +132,6 @@ pub enum ListRow {
 
 /// What a project step did, for its undo/redo toast (spec R2).
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)] // used from Task 9
 pub enum Verb {
     Create,
     Rename,
@@ -184,40 +155,25 @@ impl StepLabel {
     fn of(verb: Verb, subject: impl Into<String>) -> Self {
         Self { verb, subject: subject.into() }
     }
-    #[allow(dead_code)] // used from Task 9
     pub fn create(display: impl Into<String>) -> Self { Self::of(Verb::Create, display) }
-    #[allow(dead_code)] // used from Task 9
     pub fn rename(new_display: impl Into<String>) -> Self { Self::of(Verb::Rename, new_display) }
-    #[allow(dead_code)] // used from Task 9
     pub fn moved(display: impl Into<String>, space: impl Into<String>) -> Self {
         Self::of(Verb::Move { to: space.into() }, display)
     }
-    #[allow(dead_code)] // used from Task 9
     pub fn moved_all(n: usize, space: impl Into<String>) -> Self {
         let noun = if n == 1 { "request" } else { "requests" };
         Self::of(Verb::Move { to: space.into() }, format!("{n} {noun}"))
     }
-    #[allow(dead_code)] // used from Task 9
     pub fn reorder(what: impl Into<String>) -> Self { Self::of(Verb::Reorder, what) }
-    #[allow(dead_code)] // used from Task 9
     pub fn change(what: impl Into<String>) -> Self { Self::of(Verb::Change, what) }
-    #[allow(dead_code)] // used from Task 9
     pub fn variable(name: &str) -> Self { Self::change(format!("variable {name}")) }
-    #[allow(dead_code)] // used from Task 9
     pub fn environment(display: &str) -> Self { Self::change(format!("environment {display}")) }
-    #[allow(dead_code)] // used from Task 9
     pub fn space(display: &str) -> Self { Self::change(format!("space {display}")) }
-    #[allow(dead_code)] // used from Task 9
     pub fn project() -> Self { Self::of(Verb::ProjectChange, "") }
-    #[allow(dead_code)] // used from Task 9
     pub fn delete(what: impl Into<String>) -> Self { Self::of(Verb::Delete, what) }
-    #[allow(dead_code)] // used from Task 9
     pub fn delete_env(display: &str) -> Self { Self::delete(format!("environment {display}")) }
-    #[allow(dead_code)] // used from Task 9
     pub fn delete_space(display: &str) -> Self { Self::delete(format!("space {display}")) }
-    #[allow(dead_code)] // used from Task 9
     pub fn delete_variable(name: &str) -> Self { Self::delete(format!("\"{name}\"")) }
-    #[allow(dead_code)] // used from Task 9
     pub fn delete_option(name: &str, env: &str) -> Self {
         Self::delete(format!("option \"{name}\" in {env}"))
     }

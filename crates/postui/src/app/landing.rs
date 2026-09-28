@@ -59,26 +59,10 @@ impl App {
     /// is popped by the journal and the marker already recorded for it is
     /// skipped as stale on undo.
     ///
-    /// The step's toast names the open request and reads like the
-    /// `FileStates` step it replaces; [`Self::record_project_step_as`] is
-    /// for the arms that toast differently.
-    pub(super) fn record_project_step(&mut self, t: OpToken) {
-        let slug = self.editor.slug.clone();
-        self.record_project_step_as(t, crate::undo::ProjectNoun::FileChange, slug);
-    }
-
-    /// [`Self::record_project_step`] with an explicit toast noun and the
-    /// request that noun names (the request that moved, for a reorder;
-    /// the deleted one, for a delete). The noun is chosen here rather
-    /// than derived from the entry's label because `move_request` and
-    /// `move_request_shown` both journal under the label `"move request"`
-    /// and toast differently — see [`crate::undo::ProjectNoun`].
-    pub(super) fn record_project_step_as(
-        &mut self,
-        t: OpToken,
-        noun: crate::undo::ProjectNoun,
-        slug: Option<String>,
-    ) {
+    /// The step's toast reads `label` (spec R2), captured by the caller
+    /// when the op ran so it never names a request that merely happened
+    /// to be open, nor reads a name after the file is gone.
+    pub(super) fn record_project_step(&mut self, t: OpToken, label: crate::undo::StepLabel) {
         self.op_in_flight = false;
         let top = self.journal_top();
         if top == self.marked_entry {
@@ -112,13 +96,21 @@ impl App {
         self.history.record_no_coalesce(crate::undo::Step {
             kind: crate::undo::StepKind::Project {
                 id,
-                slug: slug.clone(),
-                noun,
+                label,
                 before: Box::new(t.before),
                 after: Box::new(after),
             },
-            context: crate::undo::Context { slug },
+            context: crate::undo::Context { slug: self.editor.slug.clone() },
         });
+    }
+
+    /// `change to {open request}` (spec R2's request-file row), or
+    /// `fallback` when nothing is open.
+    pub(super) fn open_request_label(&self, fallback: crate::undo::StepLabel) -> crate::undo::StepLabel {
+        match self.editor.slug.as_deref() {
+            Some(slug) => crate::undo::StepLabel::change(self.request_display(slug)),
+            None => fallback,
+        }
     }
 
     /// Brings the view to what an undo (or redo) of a project step says,

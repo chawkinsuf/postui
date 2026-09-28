@@ -92,6 +92,23 @@ pub enum VarEditOp {
     },
 }
 
+impl VarEditOp {
+    /// The declaration this edit belongs to — what an undo/redo toast
+    /// names. An option edit names its selector.
+    pub fn subject(&self) -> &str {
+        match self {
+            Self::SetEnvValue { name, .. }
+            | Self::SetDefault { name, .. }
+            | Self::SetSecretValue { name, .. }
+            | Self::SetRequestVar { name, .. } => name,
+            Self::SetDescription { owner, .. } => owner,
+            Self::SetOptionValue { selector, .. }
+            | Self::SetOptionDescription { selector, .. }
+            | Self::SelectOption { selector, .. } => selector,
+        }
+    }
+}
+
 /// A structural mutation dispatched by the Variable Manager: unlike
 /// [`VarEditOp`] (one value), these add/remove/rename/reshape declarations
 /// and options. Each maps onto a `postui_core::project::VarEdit` in
@@ -170,6 +187,26 @@ pub enum VarStructOp {
         env: String,
         selector: String,
     },
+}
+
+impl VarStructOp {
+    /// The declaration this op reshapes. A rename names the new name; an
+    /// option op names its selector.
+    pub fn subject(&self) -> &str {
+        match self {
+            Self::NewVar { name, .. }
+            | Self::NewSelector { name, .. }
+            | Self::Delete { name }
+            | Self::ToggleSecret { name }
+            | Self::Promote { name, .. } => name,
+            Self::Rename { to, .. } => to,
+            Self::SetFields { selector, .. }
+            | Self::NewOption { selector, .. }
+            | Self::RenameOption { selector, .. }
+            | Self::DeleteOption { selector, .. }
+            | Self::PasteOption { selector, .. } => selector,
+        }
+    }
 }
 
 /// What the detail pane is showing.

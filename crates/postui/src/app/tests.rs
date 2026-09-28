@@ -19162,10 +19162,8 @@ mod undo_tests {
         );
         assert!(matches!(
             app.history_top_kind_for_test(),
-            Some(crate::undo::StepKind::Project {
-                noun: crate::undo::ProjectNoun::Trash,
-                ..
-            })
+            Some(crate::undo::StepKind::Project { label, .. })
+                if matches!(label.verb, crate::undo::Verb::Delete)
         ));
 
         app.update(Action::Undo);
@@ -28006,4 +28004,139 @@ fn undo_of_delete_active_space_restores_the_active_space() {
     app.update(Action::ForceDeleteSpace("main".into()));
     app.update(Action::Undo);
     assert_eq!(app.proj().local().active_space, "main", "undo lands back in the deleted space");
+}
+
+// -------------------------------------------------------------
+// Task 10: undo/redo toasts name the thing the step changed (R2)
+// -------------------------------------------------------------
+
+#[test]
+fn request_delete_undo_and_redo_toasts_use_the_display_name() {
+    let mut app = App::new_for_test();
+    app.update(Action::CreateRequest("Fancy Name!".into()));
+    app.update(Action::DeleteRequest("main/fancy-name".into()));
+    app.update(Action::Undo);
+    assert_eq!(app.toasts.last_message(), Some("Restored Fancy Name!"));
+    app.update(Action::Redo);
+    assert_eq!(app.toasts.last_message(), Some("Deleted Fancy Name! again"));
+}
+
+#[test]
+fn environment_delete_undo_and_redo_toasts_name_the_environment() {
+    let (mut app, _dir) = app_with_envs();
+    app.update(Action::CreateEnv("Staging One".into()));
+    assert_eq!(app.env_name("staging-one"), "Staging One");
+    app.update(Action::ForceDeleteEnv("staging-one".into()));
+    app.update(Action::Undo);
+    assert_eq!(app.toasts.last_message(), Some("Restored environment Staging One"));
+    app.update(Action::Redo);
+    assert_eq!(app.toasts.last_message(), Some("Deleted environment Staging One again"));
+}
+
+#[test]
+fn space_delete_undo_and_redo_toasts_name_the_space() {
+    let (mut app, _dir) = spaced_app();
+    app.update(Action::CreateSpace("Auth v2!".into()));
+    app.update(Action::ForceDeleteSpace("auth-v2".into()));
+    app.update(Action::Undo);
+    assert_eq!(app.toasts.last_message(), Some("Restored space Auth v2!"));
+    app.update(Action::Redo);
+    assert_eq!(app.toasts.last_message(), Some("Deleted space Auth v2! again"));
+}
+
+#[test]
+fn undoing_an_environment_rename_names_the_environment() {
+    let (mut app, _dir) = app_with_envs();
+    app.update(Action::RenameEnv { from: "qa".into(), to: "Staging".into() });
+    let shown = app.env_name("staging");
+    app.update(Action::Undo);
+    assert_eq!(app.toasts.last_message(), Some(&format!("Undid change to environment {shown}")[..]));
+}
+
+#[test]
+fn undoing_a_space_rename_names_the_space() {
+    let (mut app, _dir) = spaced_app();
+    app.update(Action::RenameSpace { from: "auth".into(), to: "Identity".into() });
+    let shown = app.space_name("identity");
+    app.update(Action::Undo);
+    assert_eq!(app.toasts.last_message(), Some(&format!("Undid change to space {shown}")[..]));
+}
+
+#[test]
+fn undoing_the_migration_names_no_subject() {
+    let dir = tempfile::tempdir().unwrap();
+    postui_core::fixtures::init_project(dir.path(), Some("legacy")).unwrap();
+    std::fs::write(dir.path().join("variables.toml"), "[groups.user]\nfields = [\"user_id\"]\n").unwrap();
+    postui_core::fixtures::save_request(dir.path(), "main/users", &req("https://x/users")).unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::ForceOpenRequest("main/users".into()));
+    app.update(Action::ApplyMigration);
+    for _ in 0..4 {
+        if app.modals.is_empty() {
+            break;
+        }
+        app.update(Action::Close);
+    }
+    assert!(app.modals.is_empty(), "the offer is dismissed");
+    app.update(Action::Undo);
+    assert_eq!(app.toasts.last_message(), Some("Undid project change"), "{:?}", app.toasts.messages());
+}
+
+#[test]
+fn variable_delete_undo_and_redo_toasts_quote_the_variable() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::DeleteVar { name: "api_key".into() });
+    app.update(Action::Undo);
+    assert_eq!(app.toasts.last_message(), Some("Restored \"api_key\""));
+    app.update(Action::Redo);
+    assert_eq!(app.toasts.last_message(), Some("Deleted \"api_key\" again"));
+}
+
+#[test]
+fn option_delete_undo_toast_names_the_option_and_env() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::VarStruct(crate::components::varmanager::VarStructOp::DeleteOption {
+        env: "qa".into(),
+        selector: "user".into(),
+        name: "alice".into(),
+    }));
+    app.update(Action::Undo);
+    let env = app.env_name("qa");
+    assert_eq!(app.toasts.last_message(), Some(&format!("Restored option \"alice\" in {env}")[..]));
+}
+
+#[test]
+fn undoing_a_rename_says_rename_and_never_names_the_open_request() {
+    let (mut app, _dir) = spaced_app();
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    app.update(Action::RenameRequest { from: "main/beta".into(), to: "Gamma".into() });
+    app.update(Action::Undo);
+    assert_eq!(app.toasts.last_message(), Some("Undid rename to Gamma"));
+}
+
+#[test]
+fn undoing_a_duplicate_names_the_copy_by_its_display_name() {
+    let (mut app, _dir) = spaced_app();
+    app.update(Action::CreateRequest("Fancy Name!".into()));
+    app.sidebar.select_slug("main/fancy-name");
+    app.update(Action::DuplicateRequest);
+    let copy = app.editor.slug.clone().unwrap();
+    let shown = app.request_display(&copy);
+    app.update(Action::Undo);
+    assert_eq!(app.toasts.last_message(), Some(&format!("Undid create of {shown}")[..]));
+}
+
+#[test]
+fn undoing_a_create_names_the_created_request() {
+    let mut app = App::new_for_test();
+    app.update(Action::CreateRequest("Fresh One".into()));
+    app.update(Action::Undo);
+    assert_eq!(app.toasts.last_message(), Some("Undid create of Fresh One"));
 }

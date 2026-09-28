@@ -427,10 +427,10 @@ pub struct App {
     /// keyboard burst stays one undo step.
     marked_entry: Option<postui_core::journal::EntryId>,
     /// A journaled op is between its `Project` call and its marker. Set by
-    /// `begin_op`; cleared by `record_project_step_as` (and so by
-    /// `record_project_step`), and, as the safety net for an op that bailed
-    /// before its record, after every action in `dispatch` and at the end
-    /// of every event in `handle_key` and `handle_mouse`.
+    /// `begin_op`; cleared by `record_project_step`, and, as the safety net
+    /// for an op that bailed before its record, after every action in
+    /// `dispatch` and at the end of every event in `handle_key` and
+    /// `handle_mouse`.
     op_in_flight: bool,
     /// The open request as of the last `capture_undo` call (with its slug),
     /// diffed against the live editor each call to detect edits that never
@@ -3412,7 +3412,7 @@ impl App {
                         let display = self.request_display(&new_slug);
                         self.toasts
                             .push(format!("Duplicated to {display}"), ToastKind::Success);
-                        self.record_project_step(t);
+                        self.record_project_step(t, crate::undo::StepLabel::create(display));
                     }
                     Err(e) => {
                         self.toasts
@@ -3551,6 +3551,7 @@ impl App {
                 true
             }
             Action::ForceMoveRequestToSpace { slug, space } => {
+                let display_before = self.request_display(&slug);
                 let t = self.begin_op();
                 let Some(p) = self.project.as_mut() else {
                     return true;
@@ -3584,7 +3585,10 @@ impl App {
                         if was_selected {
                             self.sidebar.select_nearest_request(from_row.unwrap_or(0));
                         }
-                        self.record_project_step(t);
+                        self.record_project_step(
+                            t,
+                            crate::undo::StepLabel::moved(display_before, self.space_name(&space)),
+                        );
                     }
                     Err(e) => {
                         self.toasts
@@ -3635,6 +3639,7 @@ impl App {
                 };
                 match p.rename_request(&from, &to) {
                     Ok((slug, leaf)) => {
+                        let label = crate::undo::StepLabel::rename(leaf.clone());
                         self.session.rename(&from, &slug);
                         self.refresh_sidebar();
                         if self.editor.slug.as_deref() == Some(from.as_str()) {
@@ -3649,7 +3654,7 @@ impl App {
                             }
                             self.sidebar.open_slug = Some(slug);
                         }
-                        self.record_project_step(t);
+                        self.record_project_step(t, label);
                     }
                     Err(Error::AlreadyExists(taken)) => {
                         self.toasts.push(
@@ -3691,11 +3696,7 @@ impl App {
                             self.shadow = None;
                         }
                         self.persist_open_request();
-                        self.record_project_step_as(
-                            t,
-                            crate::undo::ProjectNoun::Trash,
-                            Some(slug.clone()),
-                        );
+                        self.record_project_step(t, crate::undo::StepLabel::delete(display));
                     }
                     Err(e) => {
                         self.toasts
@@ -3881,7 +3882,7 @@ impl App {
                 };
                 match result {
                     Ok(()) => {
-                        self.record_project_step(t);
+                        self.record_project_step(t, crate::undo::StepLabel::variable(&name));
                         self.apply(Action::ForceSend)
                     }
                     Err(e) => {
@@ -4379,7 +4380,8 @@ impl App {
                         self.toasts
                             .push(format!("env: {label}"), ToastKind::Success);
                         self.select_list_row(crate::components::manage::ManageTab::Environments, &slug);
-                        self.record_project_step(t);
+                        let step_label = crate::undo::StepLabel::environment(&self.env_name(&slug));
+                        self.record_project_step(t, step_label);
                     }
                     Err(postui_core::project::Error::AlreadyExists(name)) => {
                         self.toasts.push(
@@ -4450,7 +4452,7 @@ impl App {
                         // Core journals the whole conversion (the `.bak`
                         // copies included) as one entry.
                         self.refresh_sidebar();
-                        self.record_project_step(t);
+                        self.record_project_step(t, crate::undo::StepLabel::project());
                         let summary = if notes.is_empty() {
                             "variables migrated \u{2014} a .bak of each rewritten file is beside it"
                                 .to_string()
@@ -5097,7 +5099,7 @@ impl App {
                                     // Core journals the secrets write, so
                                     // the removal is one undo step like
                                     // every other variable write.
-                                    self.record_project_step(t);
+                                    self.record_project_step(t, crate::undo::StepLabel::variable(&name));
                                     self.toasts.push(
                                         format!("removed {name}'s value for env {env}"),
                                         ToastKind::Success,
@@ -5113,7 +5115,7 @@ impl App {
                         let t = self.begin_op();
                         match self.edit_env(&env, |doc| varedit::set_env_value(doc, &name, None)) {
                             Ok(()) => {
-                                self.record_project_step(t);
+                                self.record_project_step(t, crate::undo::StepLabel::variable(&name));
                                 self.toasts.push(
                                     format!("removed {name} from env {env}"),
                                     ToastKind::Success,
@@ -5129,7 +5131,7 @@ impl App {
                         let t = self.begin_op();
                         match self.edit_variables(|doc| varedit::clear_default(doc, &name)) {
                             Ok(()) => {
-                                self.record_project_step(t);
+                                self.record_project_step(t, crate::undo::StepLabel::variable(&name));
                                 self.toasts
                                     .push(format!("removed {name}'s default"), ToastKind::Success);
                             }
@@ -5283,8 +5285,9 @@ impl App {
             }
             Action::VarEdit(op) => {
                 let t = self.begin_op();
+                let label = crate::undo::StepLabel::variable(op.subject());
                 match self.apply_var_edit(&op) {
-                    Ok(()) => self.record_project_step(t),
+                    Ok(()) => self.record_project_step(t, label),
                     Err(msg) => {
                         self.toasts.push(msg, ToastKind::Error);
                         self.last_action_failed = true;
@@ -5397,7 +5400,7 @@ impl App {
                 };
                 match result {
                     Ok(()) => {
-                        self.record_project_step(t);
+                        self.record_project_step(t, crate::undo::StepLabel::variable(&selector));
                         self.toasts.push(
                             format!("removed \"{field}\" from {selector}{}", self.undo_hint()),
                             ToastKind::Info,
@@ -5446,7 +5449,7 @@ impl App {
                     self.last_action_failed = true;
                 } else {
                     self.sync_varmanager();
-                    self.record_project_step(t);
+                    self.record_project_step(t, crate::undo::StepLabel::variable(&name));
                 }
                 true
             }
@@ -5535,6 +5538,19 @@ impl App {
                         .is_some_and(|o| o.contains_key(name)),
                     _ => false,
                 };
+                // Read before the op: an option delete's env display, and
+                // the label for every other op, so a delete never reads a
+                // name after the file it names is gone.
+                let label = match &op {
+                    VarStructOp::Delete { name } => crate::undo::StepLabel::delete_variable(name),
+                    VarStructOp::DeleteOption { name, env, .. } => {
+                        crate::undo::StepLabel::delete_option(name, &self.env_name(env))
+                    }
+                    VarStructOp::Promote { .. } => {
+                        self.open_request_label(crate::undo::StepLabel::variable(op.subject()))
+                    }
+                    _ => crate::undo::StepLabel::variable(op.subject()),
+                };
                 let t = self.begin_op();
                 match self.apply_var_struct(&op) {
                     Ok(()) => {
@@ -5558,7 +5574,7 @@ impl App {
                         {
                             self.varmanager.select_name(name);
                         }
-                        self.record_project_step(t);
+                        self.record_project_step(t, label);
                         // Deletes act without a confirm gate, so their
                         // toasts advertise the way back.
                         match &op {
@@ -5568,7 +5584,11 @@ impl App {
                                 ToastKind::Info,
                             ),
                             VarStructOp::DeleteOption { name, env, .. } => self.toasts.push(
-                                format!("Deleted option \"{name}\" from {env}{}", self.undo_hint()),
+                                format!(
+                                    "Deleted option \"{name}\" in {}{}",
+                                    self.env_name(env),
+                                    self.undo_hint()
+                                ),
                                 ToastKind::Info,
                             ),
                             _ => {}
@@ -5598,8 +5618,9 @@ impl App {
             }
             Action::ApplyGroupFields { selector, slots } => {
                 let t = self.begin_op();
+                let label = crate::undo::StepLabel::variable(&selector);
                 self.apply_group_fields(selector, slots);
-                self.record_project_step(t);
+                self.record_project_step(t, label);
                 true
             }
             Action::StartOptionNameEdit { row } => {
@@ -5800,7 +5821,7 @@ impl App {
                 }) {
                     Ok(()) => {
                         self.set_selection_for(&env, &owner, &key);
-                        self.record_project_step(t);
+                        self.record_project_step(t, crate::undo::StepLabel::variable(&owner));
                         let where_label = if shared { "all environments" } else { &env };
                         self.toasts.push(
                             format!("{owner} \u{2192} {key} ({where_label})"),
@@ -5846,7 +5867,7 @@ impl App {
                 });
                 match result {
                     Ok(()) => {
-                        self.record_project_step(t);
+                        self.record_project_step(t, crate::undo::StepLabel::variable(&owner));
                         self.toasts
                             .push(format!("{key} updated"), ToastKind::Success);
                     }
@@ -6084,7 +6105,7 @@ impl App {
                         // the request it moves. The Spaces list's cursor
                         // lands on the new row (live or parked).
                         self.select_list_row(crate::components::manage::ManageTab::Spaces, &slug);
-                        self.record_project_step(t);
+                        self.record_project_step(t, crate::undo::StepLabel::space(&self.space_name(&slug)));
                         true
                     }
                     Err(e) => {
@@ -6123,7 +6144,7 @@ impl App {
                             format!("Renamed environment to {}", self.env_name(&to)),
                             ToastKind::Success,
                         );
-                        self.record_project_step(t);
+                        self.record_project_step(t, crate::undo::StepLabel::environment(&self.env_name(&to)));
                     }
                     Err(e) => {
                         self.toasts.push(
@@ -6142,7 +6163,7 @@ impl App {
                 };
                 match p.set_env_tls(&env, policy) {
                     Ok(()) => {
-                        self.record_project_step(t);
+                        self.record_project_step(t, crate::undo::StepLabel::environment(&self.env_name(&env)));
                         let name = self.env_name(&env);
                         let msg = match policy {
                             Some(postui_core::project::TlsPolicy::Verify) => {
@@ -6199,13 +6220,7 @@ impl App {
                             self.sync_varmanager();
                         }
                         self.clamp_list(crate::components::manage::ManageTab::Environments);
-                        // The undo toast names the file that went to the
-                        // trash, as the trashed-file step it replaces did.
-                        self.record_project_step_as(
-                            t,
-                            crate::undo::ProjectNoun::TrashNamed,
-                            Some(format!("{name}.toml")),
-                        );
+                        self.record_project_step(t, crate::undo::StepLabel::delete_env(&display));
                     }
                     Err(e) => {
                         self.toasts
@@ -6259,7 +6274,7 @@ impl App {
                             self.sync_varmanager();
                             self.manage_select_name(&to);
                         }
-                        self.record_project_step(t);
+                        self.record_project_step(t, crate::undo::StepLabel::space(&self.space_name(&to)));
                     }
                     Err(e) => {
                         self.toasts
@@ -6313,14 +6328,7 @@ impl App {
                             self.refresh_sidebar();
                         }
                         self.clamp_list(crate::components::manage::ManageTab::Spaces);
-                        // The undo toast names the directory that went to
-                        // the trash, as the trashed-file step it replaces
-                        // did.
-                        self.record_project_step_as(
-                            t,
-                            crate::undo::ProjectNoun::TrashNamed,
-                            Some(name.clone()),
-                        );
+                        self.record_project_step(t, crate::undo::StepLabel::delete_space(&display));
                     }
                     Err(e) => {
                         self.toasts
@@ -6346,10 +6354,9 @@ impl App {
                         // A burst merges in core: the journal's top id
                         // stays the same, so nothing is re-recorded and
                         // the whole burst stays one undo step.
-                        self.record_project_step_as(
+                        self.record_project_step(
                             t,
-                            crate::undo::ProjectNoun::SpaceReorder,
-                            Some(name.clone()),
+                            crate::undo::StepLabel::reorder(format!("space {}", self.space_name(&name))),
                         );
                     }
                     Err(e) => {
@@ -6376,10 +6383,9 @@ impl App {
                         // A burst merges in core: the journal's top id
                         // stays the same, so nothing is re-recorded and
                         // the whole burst stays one undo step.
-                        self.record_project_step_as(
+                        self.record_project_step(
                             t,
-                            crate::undo::ProjectNoun::EnvReorder,
-                            Some(name.clone()),
+                            crate::undo::StepLabel::reorder(format!("environment {}", self.env_name(&name))),
                         );
                     }
                     Err(e) => {
@@ -6424,10 +6430,9 @@ impl App {
                         // A burst merges in core: the journal's top id
                         // stays the same, so nothing is re-recorded and
                         // the whole burst stays one undo step.
-                        self.record_project_step_as(
+                        self.record_project_step(
                             t,
-                            crate::undo::ProjectNoun::Reorder,
-                            Some(slug.clone()),
+                            crate::undo::StepLabel::reorder(self.request_display(&slug)),
                         );
                     }
                     Err(e) => {
@@ -6514,7 +6519,10 @@ impl App {
                 } else {
                     self.persist_open_request();
                 }
-                self.record_project_step(t);
+                self.record_project_step(
+                    t,
+                    crate::undo::StepLabel::moved_all(moved.len(), self.space_name(&to)),
+                );
                 true
             }
         }
@@ -6749,7 +6757,7 @@ impl App {
                         self.replace_selection_with_token(surface, &name);
                     }
                 }
-                self.record_project_step(t);
+                self.record_project_step(t, self.open_request_label(crate::undo::StepLabel::variable(&name)));
                 self.toasts
                     .push(format!("extracted to {{{{{name}}}}}"), ToastKind::Success);
             }
@@ -6758,7 +6766,7 @@ impl App {
                 // it, so there is nothing to undo — but the Manager still
                 // re-reads, as it did when the half-write stood.
                 self.sync_varmanager();
-                self.record_project_step(t);
+                self.record_project_step(t, self.open_request_label(crate::undo::StepLabel::variable(&name)));
                 self.toasts.push(msg, ToastKind::Error);
                 self.last_action_failed = true;
             }
@@ -6924,7 +6932,7 @@ impl App {
                 // A `Request` destination journals nothing: its save
                 // below is not an undo step.
                 if !wrote_to_request {
-                    self.record_project_step(t);
+                    self.record_project_step(t, self.open_request_label(crate::undo::StepLabel::variable(&name)));
                 }
                 // Finding 2, same ruling as promote: the
                 // `Request` destination's write only exists so far
@@ -7208,8 +7216,9 @@ impl App {
         // directly from `handle_key` (click-away/Enter), so it records its
         // own marker rather than relying on `Action::VarEdit`'s wrap.
         let t = self.begin_op();
+        let label = crate::undo::StepLabel::variable(op.subject());
         match self.apply_var_edit(&op) {
-            Ok(()) => self.record_project_step(t),
+            Ok(()) => self.record_project_step(t, label),
             Err(msg) => {
                 self.varmanager.form.editing =
                     Some(crate::components::varmanager::FormEdit { field, input, original });
@@ -7717,6 +7726,8 @@ impl App {
             .map(|g| g.fields.clone())
             .unwrap_or_default();
         let ghost = edit.row >= options.len();
+        // Read before `selector` moves into the op below.
+        let label = crate::undo::StepLabel::variable(&selector);
 
         // Same as `commit_var_form`: called directly from `handle_key`,
         // never through `self.apply`, so it records its own marker. Each
@@ -7785,7 +7796,7 @@ impl App {
                 if ghost && !fields.is_empty() {
                     self.vm_start_cell_edit(edit.row, 1);
                 }
-                self.record_project_step(t);
+                self.record_project_step(t, label);
             }
             Err(msg) => {
                 self.varmanager.grid.editing = Some(edit);
@@ -8321,7 +8332,7 @@ impl App {
             self.sidebar.select_slug(&drag.slug);
         }
         if let Some(t) = reordered {
-            self.record_project_step_as(t, crate::undo::ProjectNoun::Reorder, Some(drag.slug.clone()));
+            self.record_project_step(t, crate::undo::StepLabel::reorder(self.request_display(&drag.slug)));
         }
         true
     }
@@ -8378,18 +8389,18 @@ impl App {
             self.manage_select_name(&drag.name);
             let t = self.begin_op();
             let Some(p) = self.project.as_mut() else { return true };
-            let (written, noun) = match drag.tab {
+            let (written, label) = match drag.tab {
                 ManageTab::Spaces => (
                     p.set_space_order(&drag.working),
-                    crate::undo::ProjectNoun::SpaceReorder,
+                    crate::undo::StepLabel::reorder(format!("space {}", self.space_name(&drag.name))),
                 ),
                 _ => (
                     p.set_environment_order(&drag.working),
-                    crate::undo::ProjectNoun::EnvReorder,
+                    crate::undo::StepLabel::reorder(format!("environment {}", self.env_name(&drag.name))),
                 ),
             };
             match written {
-                Ok(_) => reordered = Some((t, noun)),
+                Ok(_) => reordered = Some((t, label)),
                 Err(e) => self
                     .toasts
                     .push(format!("cannot reorder: {e}"), ToastKind::Warning),
@@ -8398,8 +8409,8 @@ impl App {
         // The list cursor follows the item that was dragged, wherever it
         // ended up — committed or snapped back.
         self.manage_select_name(&drag.name);
-        if let Some((t, noun)) = reordered {
-            self.record_project_step_as(t, noun, Some(drag.name.clone()));
+        if let Some((t, label)) = reordered {
+            self.record_project_step(t, label);
         }
         true
     }
@@ -8940,7 +8951,7 @@ impl App {
                             .push(format!("could not open {slug}: {e}"), ToastKind::Error);
                         self.refresh_sidebar();
                         self.last_action_failed = true;
-                        self.record_project_step(t);
+                        self.record_project_step(t, crate::undo::StepLabel::create(leaf.clone()));
                         return false;
                     }
                 };
@@ -8957,7 +8968,7 @@ impl App {
                 self.sidebar.select_slug(&slug);
                 self.retarget_sidebar_travel(prev);
                 self.persist_open_request();
-                self.record_project_step(t);
+                self.record_project_step(t, crate::undo::StepLabel::create(leaf.clone()));
                 true
             }
             Err(Error::AlreadyExists(taken)) => {
@@ -10833,8 +10844,7 @@ impl App {
                 }
                 true
             }
-            StepKind::Project { id, slug, noun, before, after } => {
-                use crate::undo::ProjectNoun;
+            StepKind::Project { id, label, before, after } => {
                 // The replay restores `.local/state.toml`, so the active
                 // space can move under the app (undoing a space delete
                 // goes back into the deleted space). `after_replay` needs
@@ -10858,64 +10868,15 @@ impl App {
                     return false;
                 }
                 let result = if redo { p.redo() } else { p.undo() };
-                let (verb, done) = if redo {
-                    ("redo", "Redid")
-                } else {
-                    ("undo", "Undid")
-                };
+                let verb = if redo { "redo" } else { "undo" };
+                let reorder = matches!(label.verb, crate::undo::Verb::Reorder);
                 match result {
                     Ok(Some(u)) => {
-                        let reorder = matches!(
-                            noun,
-                            ProjectNoun::Reorder | ProjectNoun::SpaceReorder | ProjectNoun::EnvReorder
-                        );
                         self.after_replay(&u, before, after, reorder, &space_before, env_before.as_deref());
                         // `marked_entry` tracks the journal's top as the
                         // app last saw it: a replay moved it, so re-read.
                         self.sync_marked_entry();
-                        let msg = match noun {
-                            ProjectNoun::FileChange => match slug {
-                                Some(slug) => {
-                                    format!("{done} file change to {}", self.request_display(slug))
-                                }
-                                None => format!("{done} file change"),
-                            },
-                            ProjectNoun::Reorder => {
-                                let what = match slug {
-                                    Some(slug) => self.request_display(slug),
-                                    None => "the requests".to_string(),
-                                };
-                                format!("{done} reorder of {what}")
-                            }
-                            ProjectNoun::SpaceReorder => {
-                                let what = match slug {
-                                    Some(name) => format!("space {}", self.space_name(name)),
-                                    None => "the spaces".to_string(),
-                                };
-                                format!("{done} reorder of {what}")
-                            }
-                            ProjectNoun::EnvReorder => {
-                                let what = match slug {
-                                    Some(name) => format!("environment {}", self.env_name(name)),
-                                    None => "the environments".to_string(),
-                                };
-                                format!("{done} reorder of {what}")
-                            }
-                            ProjectNoun::Trash | ProjectNoun::TrashNamed => {
-                                let what = match (noun, slug.as_deref()) {
-                                    (ProjectNoun::TrashNamed, Some(name)) => name.to_string(),
-                                    (_, Some(s)) => {
-                                        format!("{}.toml", s.rsplit('/').next().unwrap_or(s))
-                                    }
-                                    (_, None) => "delete".into(),
-                                };
-                                if redo {
-                                    format!("Deleted {what} again")
-                                } else {
-                                    format!("Restored {what}")
-                                }
-                            }
-                        };
+                        let msg = label.toast(redo);
                         self.toasts.push(msg, ToastKind::Info);
                         if redo {
                             self.history.push_undo_no_coalesce(step.clone());
@@ -10928,15 +10889,10 @@ impl App {
                     // replay, and the step is dropped.
                     Ok(None) => false,
                     Err(e) => {
-                        let msg = match noun {
-                            ProjectNoun::Reorder
-                            | ProjectNoun::SpaceReorder
-                            | ProjectNoun::EnvReorder => {
-                                format!("could not {verb} the reorder: {e}")
-                            }
-                            // The file the entry names changed under the
-                            // app; `{e}` says which and how.
-                            _ => format!("could not {verb}: {e}"),
+                        let msg = if reorder {
+                            format!("could not {verb} the reorder: {e}")
+                        } else {
+                            format!("could not {verb}: {e}")
                         };
                         self.toasts.push(msg, ToastKind::Error);
                         // `replay` puts the entry back on the stack it came
