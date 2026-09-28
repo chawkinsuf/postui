@@ -4123,6 +4123,29 @@ fn renaming_the_open_request_moves_local_state_to_the_new_slug() {
     assert_eq!(relaunched.editor.slug.as_deref(), Some("main/zulu"), "a relaunch reopens it");
 }
 
+/// Final review M2: undoing a rename of the open request restores the
+/// file's missing `name` (a legacy file) in the editor too, so a later
+/// save never writes the undone name back.
+#[test]
+fn undoing_a_rename_of_an_open_nameless_request_drops_the_name_again() {
+    let (mut app, dir) = spaced_app();
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    assert_eq!(app.editor.name, None, "the fixture file has no name");
+    app.update(Action::RenameRequest { from: "main/alpha".into(), to: "Zulu".into() });
+    assert_eq!(app.editor.name.as_deref(), Some("Zulu"));
+
+    app.update(Action::Undo);
+    assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"));
+    assert_eq!(app.editor.name, None);
+    assert!(!app.editor.is_dirty());
+    app.update(Action::SaveRequest);
+    assert_eq!(
+        postui_core::fixtures::load_request(dir.path(), "main/alpha").unwrap().name,
+        None,
+        "a save writes no name back"
+    );
+}
+
 /// A failed cross-space open still commits the switch and leaves the
 /// editor on the old space's request. Persisting what the editor holds
 /// must not write that slug into (or clear) the new space's memory.

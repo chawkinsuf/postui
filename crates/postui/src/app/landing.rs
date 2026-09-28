@@ -171,15 +171,16 @@ impl App {
             });
             if let Some(new_slug) = moved_to {
                 self.editor.slug = Some(new_slug.clone());
+                // Assigned even when the file has no `name` (a legacy
+                // file): the name the op wrote must not outlive its undo,
+                // or a later save would write it back.
                 let name = self
                     .project()
                     .and_then(|p| p.requests().iter().find(|l| l.slug == new_slug))
                     .and_then(|l| l.name.clone());
-                if let Some(name) = name {
-                    self.editor.name = Some(name.clone());
-                    if let Some(saved) = self.editor.saved.as_mut() {
-                        saved.name = Some(name);
-                    }
+                self.editor.name = name.clone();
+                if let Some(saved) = self.editor.saved.as_mut() {
+                    saved.name = name;
                 }
                 // The shadow follows too, name included, so the next
                 // capture sees no edit in the re-key.
