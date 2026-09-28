@@ -28492,9 +28492,19 @@ fn option_delete_undo_toast_names_the_option_and_env() {
         selector: "user".into(),
         name: "alice".into(),
     }));
-    app.update(Action::Undo);
     let env = app.env_name("qa");
+    // C10: the forward toast, its undo and its redo all name the option
+    // and its environment the same way; the forward one adds the hint.
+    let hint = app.undo_hint();
+    assert!(hint.ends_with(" undoes"), "{hint:?}");
+    assert_eq!(
+        app.toasts.last_message(),
+        Some(&format!("Deleted option \"alice\" in {env}{hint}")[..])
+    );
+    app.update(Action::Undo);
     assert_eq!(app.toasts.last_message(), Some(&format!("Restored option \"alice\" in {env}")[..]));
+    app.update(Action::Redo);
+    assert_eq!(app.toasts.last_message(), Some(&format!("Deleted option \"alice\" in {env} again")[..]));
 }
 
 #[test]
