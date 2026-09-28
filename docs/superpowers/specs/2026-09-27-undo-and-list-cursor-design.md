@@ -210,7 +210,10 @@ The vim-mode code is used as reference only (§5).
     after a project switch, no row is selected). On 2026-09-27 the user
     accepted this rule in its place (OQ5). The cursor is drawn only
     while the sidebar is focused, so an unfocused sidebar at startup
-    still shows no selection.
+    still shows no selection. The app starts with the sidebar focused,
+    so at startup the first row does show the cursor fill (the
+    `control_hover` marker, not the open-request band); the user
+    confirmed that on 2026-09-28 (`you`).
 - **Change:** §4.2. `enter_space` (l.8273) stops clearing
   `sidebar.selected` (l.8295). `Sidebar::rebuild` (sidebar.rs l.156)
   keeps its identity rule, but falls back to the nearest request row
