@@ -4077,6 +4077,35 @@ fn switching_to_a_project_with_nothing_open_puts_the_cursor_on_the_first_request
     assert_eq!(app.sidebar.selected, Some(0), "the first row, not row 2 of the old project");
 }
 
+#[test]
+fn a_space_switch_does_not_fade_the_band_in_from_the_old_space_row() {
+    let (mut app, _dir) = spaced_app();
+    app.update(Action::ForceOpenRequest("main/beta".into()));
+    assert_eq!(app.sidebar.open_row(), Some(1));
+    app.update(Action::CycleSpace(1));
+    assert_eq!(app.editor.slug.as_deref(), Some("auth/login"));
+    assert_eq!(
+        app.sidebar.band_fade_from, None,
+        "row 1 of main is no row of auth: nothing to fade out from"
+    );
+}
+
+#[test]
+fn a_failed_open_leaves_the_sidebar_cursor_where_it_was() {
+    let (mut app, dir) = spaced_app();
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    app.sidebar.selected = Some(1);
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/beta"));
+    std::fs::write(dir.path().join("requests/main/beta.toml"), "not = [valid").unwrap();
+    app.update(Action::ForceOpenRequest("main/beta".into()));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"), "the editor is unchanged");
+    assert_eq!(
+        app.sidebar.selected_slug().as_deref(),
+        Some("main/beta"),
+        "a failed open changed nothing, so the cursor keeps its row"
+    );
+}
+
 /// OQ5 (2026-09-27): with nothing open, the cursor sits on the first row
 /// so every key has a target — but it is drawn only while the sidebar is
 /// focused (the next test).

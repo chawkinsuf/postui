@@ -115,10 +115,15 @@ impl App {
             );
         }
 
-        // 3. What the editor holds.
-        let prev_open_row = self.sidebar.open_row();
+        // 3. What the editor holds. The band fades out from the open
+        //    row only when that row is one of the active space's: after a
+        //    switch the rows still show the outgoing space, and its index
+        //    names nothing in the space being entered.
+        let open_in_active = self.editor.slug.as_deref().and_then(postui_core::storage::space_of)
+            == Some(self.active_space().as_str());
+        let prev_open_row = self.sidebar.open_row().filter(|_| open_in_active);
         let mut landed = true;
-        let open_changed = l.open.is_some();
+        let asked_open = l.open.is_some();
         match l.open {
             Some(Open::Request { slug, buffer }) => {
                 self.flush_field_session();
@@ -162,6 +167,9 @@ impl App {
             None => {}
         }
         self.sidebar.open_slug = self.editor.slug.clone();
+        // A failed open left the editor unchanged (§4.2 step 3), so the
+        // open request did not change: no default aim, no persist.
+        let open_changed = asked_open && landed;
 
         // 4. Rebuild once, with the cursor row's folders queued open.
         let aim = l.cursor.or(open_changed.then_some(CursorAim::OnOpen));
