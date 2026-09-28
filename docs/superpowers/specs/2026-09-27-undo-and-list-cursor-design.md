@@ -1,7 +1,10 @@
 # Undo correctness and list cursor rules (piece 2)
 
-Draft, 2026-09-27. Base: `main` at 743d1bb. Profile-agnostic: no vim code
-is involved, and everything here lands on `main` before piece 4.
+Status: approved by the user 2026-09-28, after a section-by-section
+review (drafted 2026-09-27). Base: `main` at 743d1bb. Profile-agnostic: no vim code
+is involved, and everything here lands on `main` before piece 4. The user
+decided all five open questions on 2026-09-27, each by accepting the
+recommendation (§7).
 
 Every decision carries a label:
 
@@ -134,17 +137,17 @@ The vim-mode code is used as reference only (§5).
     delete and toasts `Deleted space {display} and its {n} requests
     {undo hint}`, or `Deleted space {display}{hint}` when it was empty
     (`earlier`).
-  - `DeleteSpace`'s unsaved-changes gate (l.6238) goes too (`mine`; see
-    OQ4 — this is a behaviour change the user has not decided). The
-    step carries the open request's unsaved buffer (R4), so undo
+  - `DeleteSpace`'s unsaved-changes gate (l.6238) goes too (`mine`,
+    accepted by the user 2026-09-27; OQ4). The step carries the open request's unsaved buffer (R4), so undo
     brings the edits back and the gate is a confirm by another name.
   - The move and move-all dirty gates stay. A move is not a delete.
 - **Tests:** §6.3.
 
 ### R4 Undo restores the parts of the view the op changed
 
-- **Who:** `mine`, derived from rule 1. Two sub-points are open
-  questions (OQ1, OQ2).
+- **Who:** `mine`, derived from rule 1. Two sub-points were open
+  questions (OQ1, OQ2). The user accepted both recommendations on
+  2026-09-27.
 - **Rule:**
   - Each project step records the `View` just before its op and just
     after it. `View` is the active space, what the editor holds (a slug
@@ -178,9 +181,11 @@ The vim-mode code is used as reference only (§5).
 - **Who:** `earlier` (a87378e, 85ed897). It is also what R4 gives for a
   keyboard delete, because the cursor sat on the row when it was
   deleted.
-- **Rule:** after undoing a delete, the cursor of the list that lost
-  the row is back on that row: sidebar, Environments, Spaces or
-  Variables. The row's own list is updated even when it is not on
+- **Rule:** after undoing a delete made from a list, the cursor of the
+  list that lost the row is back on that row: sidebar, Environments,
+  Spaces or Variables. A delete made elsewhere (the editor's own delete
+  while the sidebar cursor sat on another row) puts the cursor back
+  where it was, as rule 1 requires. The row's own list is updated even when it is not on
   screen (`mine`). Undo never switches screen or tab to show the row
   (`earlier`).
 - **Change:** each list's row lives in `View` (`sidebar`, `row`). The
@@ -200,9 +205,12 @@ The vim-mode code is used as reference only (§5).
     rules "a cleared cursor stays cleared" (dd3e138) and "a project
     switch clears the cursor" (2137262). Both existed to keep a stale
     index off an unrelated row, and landing on the open request does
-    that better. It also conflicts with a decision the user accepted in
-    round 6 (sweep-6 spec §9: with nothing open at startup or after a
-    project switch, no row is selected) — see OQ5.
+    that better. It replaces a round-6 recommendation of mine that the
+    user accepted (sweep-6 spec §9: with nothing open at startup or
+    after a project switch, no row is selected). On 2026-09-27 the user
+    accepted this rule in its place (OQ5). The cursor is drawn only
+    while the sidebar is focused, so an unfocused sidebar at startup
+    still shows no selection.
 - **Change:** §4.2. `enter_space` (l.8273) stops clearing
   `sidebar.selected` (l.8295). `Sidebar::rebuild` (sidebar.rs l.156)
   keeps its identity rule, but falls back to the nearest request row
@@ -314,10 +322,17 @@ fn land(&mut self, l: Landing) -> bool
      `shadow` to it; vim-mode `seat_editor_snapshot`);
    - if the open fails, toast, seat nothing, and continue with the
      editor unchanged (05a3b4d);
-   - this step reuses the unsaved-changes guard in
-     `jump_to_request_for_undo` (l.10915): if the editor holds
-     uncaptured unsaved content, `land` refuses and the caller shows
-     the dirty gate.
+   - `land` itself never refuses. The unsaved-changes check belongs to
+     the callers that land before anything is written: `ForceOpenRequest`,
+     the space switches, and `jump_to_request_for_undo`, which keeps its
+     guard (l.10915). They check first, show the dirty gate if the
+     editor holds uncaptured unsaved content, and call `land` only once
+     it is clear. A journaled arm calls `land` after its `Project` write,
+     when a refusal would leave the files changed and the view not. Its
+     own dirty gate (or the Discard that reached it) has already run, so
+     it lands unconditionally. A `debug_assert!` in `land` pins that the
+     editor holds nothing uncaptured on entry, apart from a `buffer`
+     that the landing itself seats.
 
    `Open::Scratch`: set `Editor::default()`, then load the buffer as a
    scratch when it has one.
@@ -359,7 +374,8 @@ These become thin callers of `land`:
   `land` performs no journaled write (`refresh_sidebar`'s
   `set_expanded` and `persist_open_request` are unjournaled), so
   recording after the landing still pairs the marker with the op's
-  own entry.
+  own entry. `land` cannot refuse here (§4.2 step 3): the arm's dirty
+  gate ran before `begin_op`.
 - The dirty gate's Discard reaches the `Force*` arm while the editor
   still holds the edit, so `before.buffer` is the edit the op found.
   This is the OQ1 behaviour.
@@ -403,7 +419,7 @@ else the nearest one below, else the nearest one above.
 | Undo duplicate | `before.open` (+ buffer) | `before.cursor` (R) |
 | Delete R, R open | scratch (R9 marker) | neighbour of R |
 | Delete R, R not open | unchanged | neighbour if the cursor was on R, else kept |
-| Undo delete R | R reopened (+ buffer) if it was open, else unchanged | R |
+| Undo delete R | R reopened (+ buffer) if it was open, else unchanged | `before.cursor`: R when the delete came from the list (the cursor was on R); wherever it was otherwise (rule 1) |
 | Redo delete R | as the forward delete | as the forward delete |
 | Rename R to R2 (re-sort or not) | R2 if R was open | R2 if it was on R (bug b) |
 | Undo / redo rename | follows R2 → R / R → R2 | R / R2 |
@@ -413,7 +429,7 @@ else the nearest one below, else the nearest one above.
 | Undo / redo move all | follows back / forth | the open row |
 | Reorder R (alt+↑/↓, drag) | unchanged | R |
 | Undo / redo reorder | unchanged | R |
-| Switch space (ctrl+N, alt+c, chooser) | remembered, else first visible, else first in folders, else scratch | the open row, else none (empty space) |
+| Switch space (ctrl+N, alt+c, chooser) | remembered, else first visible, else first in folders, else scratch | the open row, else the first row (a space with folders but no requests), else none (a space with no rows) |
 | Create space | unchanged | unchanged |
 | Delete the active space | fallback space's remembered or first request | the open row |
 | Undo delete of the active space | `before.open` in the restored space | `before.cursor` |
@@ -441,7 +457,7 @@ else the nearest one below, else the nearest one above.
 
 ### 4.7 Telling "open" from "cursor here"
 
-- **Who:** `mine`. See OQ3.
+- **Who:** `mine`, accepted by the user 2026-09-27 (OQ3).
 - **Today:** the open row gets a `selection` fill and a `▌` bar. A
   cursor on another row gets a steady `control_hover` fill, drawn only
   while the sidebar is focused. When the cursor sits on the open row,
@@ -587,8 +603,14 @@ with vim keys replaced by actions. The rest are new.
   - `switching_projects_lands_the_cursor_on_the_restored_request`
     (replaces 2137262's test),
     `switching_to_a_project_with_nothing_open_puts_the_cursor_on_the_first_request`;
+  - OQ5: `startup_without_persisted_open_request_selects_nothing` and
+    `switching_projects_clears_the_sidebar_cursor` are rewritten as
+    `startup_with_nothing_open_puts_the_cursor_on_the_first_row` plus
+    `an_unfocused_sidebar_draws_no_cursor_fill_at_startup`;
   - `an_outside_delete_of_the_cursor_row_lands_on_the_neighbour`,
     `enter_space_never_clears_the_cursor`;
+  - `undoing_a_delete_made_from_the_editor_puts_the_sidebar_cursor_back_where_it_was`,
+    `switching_into_a_space_with_only_folders_puts_the_cursor_on_the_first_row`;
   - `the_sidebar_cursor_is_never_none_while_rows_exist`, which walks
     every row of §4.5 in turn on one fixture and asserts the invariant
     after each.
@@ -614,7 +636,11 @@ Existing `main` tests whose assertions change: the three
 `delete_*_confirms_*` tests, `new_space_prompt_creates_and_switches`, and
 every test that reads a `Restored x.toml` toast.
 
-## 7 Open questions
+## 7 Open questions (decided 2026-09-27)
+
+The user accepted every recommendation below. Each one is still labelled
+`mine`: a decision on that question, not a standing rule. The options
+and considerations are kept as the record.
 
 **OQ1. Does undo bring back unsaved edits?** This covers undo of a
 create, duplicate or save-as, and of a delete, run while the open
@@ -634,7 +660,7 @@ gate's Discard.
   - (B) matches what the user did step for step, but it adds a step
     kind, and a scratch's discard cannot be replayed once the scratch
     is gone.
-- **Recommendation (`mine`): (A).** Treat "Discard & create" as one
+- **Decided: (A)** (`mine`, accepted). Treat "Discard & create" as one
   op whose pre-op state still held the edits. For the delete of the
   open request and a save-as from a scratch, nothing was discarded, so
   (A) is simply rule 1.
@@ -653,14 +679,14 @@ Should its undo still switch the editor back?
     reopens.
   - A project step can only be on top of the undo stack when the
     editor holds nothing uncaptured, so the jump loses nothing.
-- **Recommendation (`mine`): yes.** Undo takes you to where the undone
+- **Decided: yes** (`mine`, accepted). Undo takes you to where the undone
   thing happened, and ops that did not touch the editor (R4) never
   move it.
 
 **OQ3. Should the open row look different when the focused cursor is
 on it (§4.7)?**
 
-- **Recommendation (`mine`): yes, the half-step fill lift.** It is
+- **Decided: yes, the half-step fill lift** (`mine`, accepted). It is
   cheap, and sweep 7 listed the identical fill as a finding. Rejecting
   it leaves R6's invariant as the only fix, which already removes the
   harmful case (a cursor that is not there).
@@ -670,9 +696,8 @@ deleting the space that holds the open, unsaved request raises the
 unsaved-changes dialog. R3 removes it because the step now carries the
 unsaved buffer and undo brings it back.
 
-- **Recommendation (`mine`): remove it**, for the same reason deletes
-  never confirm (rule 2): undo restores everything. Keep it if you want
-  unsaved edits to always stop a destructive op.
+- **Decided: remove it** (`mine`, accepted), for the same reason
+  deletes never confirm (rule 2): undo restores everything.
 
 **OQ5. With nothing open (startup, project switch), is a row
 selected?** In round 6 the user accepted "no row wears the selected
@@ -682,11 +707,10 @@ fill when nothing is open" (tests
 cursor on the first row, so `j`/`k`, `Enter` and `dd` always have a
 target and a cleared-but-invisible cursor can't happen.
 
-- **Recommendation (`mine`): R6's rule**, with the cursor drawn only
-  while the sidebar is focused, so an unfocused sidebar still shows no
-  selection at startup. If you prefer the round-6 rule, R6 keeps
-  `None` in exactly those two cases and every other landing still
-  applies.
+- **Decided: R6's rule** (`mine`, accepted), with the cursor drawn
+  only while the sidebar is focused, so an unfocused sidebar still
+  shows no selection at startup. The two round-6 tests are rewritten
+  to pin this (§6).
 
 ## 8 Out of scope
 

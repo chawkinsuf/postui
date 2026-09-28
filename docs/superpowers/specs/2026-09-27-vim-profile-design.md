@@ -1,7 +1,9 @@
 # Vim profile (piece 4) — design
 
-Status: draft by Claude, 2026-09-27, for review. Piece 4 of the vim
-rebuild. It implements §6–§9 of the target key list
+Status: approved by the user 2026-09-28, after a section-by-section
+review (drafted by Claude 2026-09-27). The user decided all
+three open questions on 2026-09-27, each by accepting my recommendation
+(§10). Piece 4 of the vim rebuild. It implements §6–§9 of the target key list
 (`docs/superpowers/specs/2026-09-27-vim-target-keys.md`, "the key list")
 and integrates piece 3's text engine into every text surface. Where this
 spec and the key list disagree, the key list wins and this spec is fixed.
@@ -73,7 +75,7 @@ handle_key_inner(ev):
   normalize_super_keys, cmd+c, step 1 (ctrl+c), drag guards   // unchanged
   let ctx = self.key_ctx();                  // one snapshot per event (§3.2)
   let edge = self.router.sync(&ctx);         // field-session edges (§3.3)
-  self.apply_session_edge(edge);             // engine.open / carry / close
+  self.apply_session_edge(edge);             // engine.enter / carry / settle / leave
   match self.router.resolve(ev, &ctx) {
       Resolved::Declined     => self.handle_key_routed(ev),   // steps 1b–6 as on main
       Resolved::Consumed     => true,        // pending grew, or a key swallowed
@@ -110,7 +112,7 @@ pub struct KeyCtx {
     pub profile: KeyProfile,           // Arrows | Vim
     pub surface: Surface,              // where the keys go (§3.3)
     pub field: FieldCaret,             // None | Live(FieldId) | Parked(FieldId)
-    pub engine: EngineView,            // mode + half_typed, meaningful when Live
+    pub engine: EngineView,            // mode + pending, meaningful when Live
     pub answers: SmallVec<[char; 4]>,  // the top dialog's letter answers (§5.10)
     pub user_bare: bool,               // vim: keys.toml binds this bare char (§4.4)
 }
@@ -156,11 +158,16 @@ the edge. The edge semantics are the same as vim-mode
 
 | Before → after | Edge | Engine call |
 |---|---|---|
-| None → Live(a) | open | `engine.open(kind, start mode or OpenAs)` |
-| Live(a) → Live(b), a ≠ b | carry (Tab, or a click into the next field) | `engine.carry(kind)`, mode kept |
-| Live(a) → None | close | `engine.close()`, and the router's pending is cleared |
+| None → Live(a) | open | `engine.enter(start, seat, target)`: `start` from the kind or `OpenAs` |
+| Live(a) → Live(b), a ≠ b | carry (Tab, or a click into the next field) | `engine.carry(target)`, mode kept |
+| Live(a) → None | close | `engine.leave(target)`, the field session's app-history step is recorded (§3.7), and the router's pending is cleared |
 | Live(a) → Parked(a) | park (palette, `{{` picker, menu over the field) | none; the session keeps its mode |
 | Parked(a) → Live(a) | unpark | none |
+
+After a click, a mouse sweep, or a key the router ran itself while a
+session is Live, `sync` also calls `engine.settle(target, how)` (piece 3
+§4.2), so a mouse selection becomes Visual and a Normal caret never
+rests past the last char.
 
 While a session is Parked, `ctx.surface` is the modal on top. No
 field-only table row can match, so the rule "a parked field never claims
@@ -285,38 +292,61 @@ bare chars that fields type.
 
 ### 3.7 The engine boundary
 
-Piece 3 provides the engine. This spec assumes an API roughly like the
-one below. If piece 3 differs, only `keyroute/engine_glue.rs` changes.
+Piece 3 provides the engine, and its §4 (`2026-09-27-vim-text-engine-design.md`)
+is the source for the API. Piece 4 calls it through
+`keyroute/engine_glue.rs` and nowhere else:
 
 ```rust
-engine.open(kind, mode, seat, target); engine.carry(kind); engine.close();
-engine.handle(key, target) -> Consumed | Declined | Did(EngineEffect);
-engine.mode() -> Normal | Insert | Visual | VisualLine | Replace;
-engine.half_typed() -> bool; engine.echo() -> String;
-// target: Line(&mut LineInput) | Body(&mut edtui::EditorState)
+engine.enter(start, seat, target); engine.carry(target); engine.settle(target, how);
+engine.leave(target); engine.external_edit(target, f);   // session edges, piece 3 §4.2
+engine.handle(key, target, &view_ctx) -> Outcome;         // Consumed { changed, note, request } | Declined { count, keys }
+engine.paste(text, target) -> Outcome;
+engine.mode() -> Normal | Insert | InsertNormal | Replace | Visual(shape) | Search(dir);
+engine.pending() -> bool; engine.echo() -> String; engine.search_line();
+// target: Target { buf: OneLineBuf(&mut LineInput) | BodyBuf(&mut EditorState), state: &mut BufState }
 ```
 
-Piece 4 needs these from the engine. If one is missing, M3 stops and the
-user is asked:
+What piece 4 relies on (all stated in piece 3; if the implementation
+differs, M3 stops and the user is asked):
 
-1. It declines exactly the keys in piece 3's decline table
-   (`2026-09-27-vim-text-engine-design.md` §4.3), without changing state —
-   that table is the single source; this spec must not assume a broader
-   rule. Esc in idle Normal is declined there. Other plain keys with no
-   engine command are consumed silently (with an "unsupported" note for
-   the few listed there); every app key piece 4 needs in a field is caught
-   by the look-ahead below before the engine sees it, and every
-   ctrl/alt chord that is not the engine's is declined.
-2. `FieldKind::Cmdline` runs locked to Insert, and ctrl+w and ctrl+u work
-   there.
-3. It handles register prefixes (`"x`) itself: it consumes the register
-   key, and for an unsupported register it returns `Did(Note)`.
-4. In the body it drives edtui's public `EditorState`, and edtui's own
-   vim keys never run in the vim profile (`you`: body keeps edtui for
-   buffer, render and undo only).
+1. The engine declines exactly the keys in piece 3's decline table (§4.3),
+   without changing state. That table is the single source; this spec
+   must not assume a broader rule. Esc in idle Normal is declined there.
+   Other plain keys with no engine command are consumed silently, with an
+   "unsupported" note for the few listed there. Every app key piece 4
+   needs in a field is caught by the look-ahead below before the engine
+   sees it, and every ctrl/alt chord that is not the engine's is
+   declined.
+2. Every query box runs through the engine with `Start::InsertOnly`: the
+   `:` command line, the palette query, the jq bar, the `{{` variable
+   picker filter, the chooser filters and the file-picker filter
+   (`FieldKind::Cmdline`). There is no Normal layer there, Esc is
+   declined, and `BS`, ctrl+w and ctrl+u are the engine's Insert keys,
+   so they behave exactly as in any other field (`you`, 2026-09-28: the
+   engine, not a second text path).
+3. The engine handles register prefixes (`"x`) itself. It consumes the
+   register key, and for an unsupported register it returns `Consumed`
+   with a `Note`, which piece 4 shows.
+4. In the body the engine drives edtui's public `EditorState`, edtui's own
+   vim keys never run in the vim profile, and the engine owns the body's
+   undo (piece 3 §3.11, open question 1 there, accepted). edtui only
+   stores and draws the text.
+5. `Consumed.request` carries `AppRequest::CopyToClipboard` (`"+y`, tier
+   2), which piece 4 runs through the existing OSC 52 path.
 
-**Who sees a key in an open field.** In Insert, Visual, or Normal with
-`half_typed()` true, the engine sees every key first. The router adds
+**The app history around an engine session** (piece 3 §3.11, a
+requirement on this piece). While a session is Live, `u` and `ctrl+r`
+go to the engine first (below). When the session closes, piece 4 records
+one `EditorDelta` from `BufState::text_at_start()` to the text at close,
+if `BufState::edited()`, then calls `end_session()`. This is the rule the
+one-line fields follow on main today. While an engine session is live on
+the body, the body's per-key app-history capture is suppressed, so the
+body also gets one app step per session. Edits made outside the key path
+(a picked `{{token}}`, format, minify, paste in Normal) go through
+`engine.external_edit`.
+
+**Who sees a key in an open field.** In Insert, Visual, Search, or Normal
+with `pending()` true, the engine sees every key first. The router adds
 nothing, and a key the engine declines goes to today's routing.
 
 In idle Normal, the router looks first, but only at rows whose surface
@@ -332,6 +362,7 @@ class is `FIELD_NORMAL_*`. There are few of them:
 | `q<any>` `@<any>` | macro note (§5.11) | earlier |
 | `m<any>` `'<any>` `` `<any> `` | marks note, and the key after is consumed | mine |
 | `j` `k` (one-line fields only) | leave the field and move rows: `CloseField`, then Down/Up × count | you |
+| `ctrl+d` `ctrl+u` `ctrl+f` `ctrl+b` (one-line fields only) | leave the field and page: `CloseField`, then the chord as on the closed surface. Piece 3 declines these for this purpose (its §4.3) | mine, extending decision 2 (`j`/`k`) to the paging keys |
 
 On a NoMatch, the buffered keys replay into the engine. `2gg`, `3dw`,
 `ge`, `gU` and `0` all reach the engine exactly as typed. The engine
@@ -412,8 +443,11 @@ and `Hit::SettingsKeymap(profile)`, copied from 6668bdc: the
 
 A switch is recorded as a config undo step, like other Settings rows
 (`mine`). A switch clears the router's pending state. An open field stays
-open. Arrows has no Normal mode, so the engine is closed and the field
-goes on as main's modeless field (`mine`).
+open, with its text and caret untouched. Vim to arrows: arrows has no
+Normal mode, so the engine session is left and the field goes on as
+main's modeless field (`mine`). Arrows to vim: the engine session is
+entered in Insert with `Seat::Keep`, because the field was being typed
+in, so nothing changes under the user's fingers (`mine`).
 
 ### 4.4 Per-profile keymaps
 
@@ -432,7 +466,7 @@ keymap and into the vim table (§3.5). That removes vim-mode's
 | `alt+w` / `shift+alt+w` | cycle split | unbound (`:split`, `:splitback`) |
 | `alt+←` / `alt+→` | cycle tabs | unbound (`gt` / `gT`) |
 | `alt+a` | add table row | unbound (`a`) |
-| `u`, `:` | see open question 1 | table rows |
+| `u`, `:` | unbound: undo is ctrl+z, the palette is ctrl+p (open question 1, decided) | table rows |
 
 Every other chord is the same in both profiles. That covers ctrl+c,
 ctrl+p, ctrl+z/ctrl+shift+z, ctrl+v (paste), ctrl+o (project chooser),
@@ -456,11 +490,12 @@ keep named keys only: arrows, Home/End, PgUp/PgDn, Enter, Space, Tab, Esc
 and their own ctrl chords (`earlier`, vim-mode 0bced15/7599f94). Each
 letter's spelling then lives in one place.
 
-The vim aliases main has in the arrows profile are the subject of open
-question 1: `j` `k` `h` `l` `g` `G` in every list and the response, `i`
-in `keys::opens_field` (`keys.rs:36`), and the bare `u` and `:` keymap
-rows. Until you answer, this spec assumes they leave arrows (`earlier`,
-2026-09-18 spec "Default mode gets its letters back").
+The vim aliases main has in the arrows profile leave it: `j` `k` `h` `l`
+`g` `G` in every list and the response, `i` in `keys::opens_field`
+(`keys.rs:36`), and the bare `u` and `:` keymap rows. Arrows keeps `q`
+quit and the ctrl+d/u/f/b paging chords. This was the 2026-09-18 spec's
+"Default mode gets its letters back" (`earlier`), and the user accepted my
+recommendation to do it on 2026-09-27 (open question 1).
 
 ### 4.6 One source for spellings: footer chips and hints
 
@@ -522,7 +557,7 @@ swallowed silently (`mine`).
 | `h` `l` | ← → | collapse a folder or go to its parent / expand it (main's `Left`/`Right` arms) | earlier |
 | `zo` `zc` `za` | — | open / close / toggle the folder under the cursor, or the folder holding the request (tier 2) | mine |
 | `a` | `a` (was `n`) | `PromptNewRequest` in the cursor's folder | you; earlier |
-| `dd`, `{N}dd` | `d` | delete the request, or N request rows from the cursor down as **one** undo step (core `delete_requests`, ada2e90, via piece 2). Folder rows are skipped, collapsed folders are untouched, a count past the end is clamped, and on a folder row nothing happens | you; count earlier |
+| `dd`, `{N}dd` | `d` | delete the request, or N request rows from the cursor down as **one** undo step (core `delete_requests`, ported from ada2e90 in M2 and recorded as one piece 2 step). Folder rows are skipped, collapsed folders are untouched, a count past the end is clamped, and on a folder row nothing happens | you; count earlier |
 | `yy` `p` `P` | `y` `p` `P` | put duplicates the yanked request into the slot under (`p`) or over (`P`) the cursor with core `duplicate_request_at` (684893c), seeding the level's order array first (571b519). A put in another space is refused with a toast and the register is kept (ac03b90). The register is dropped on a project switch | earlier |
 
 ### 5.3 Tables (Params, Headers, Vars)
@@ -549,7 +584,7 @@ expects (`earlier`, 2026-09-18 spec "Vim mode on navigation surfaces").
 |---|---|---|---|
 | Environments / Spaces list | `a` new, `r` rename, `dd` delete, `m` move all (Spaces). `{N}dd` refused: "Counted delete works on requests and table rows". `:tls` for TLS | `a` (was `n`), `r`, `d`, `m`, `t` | you; earlier; refuse mine |
 | Variables list | `a` new variable, `A` new selector, `r` rename, `dd` delete; `:secret`, `:fields`, `:promote` | `a` (was `n`), `A` (was `a`), `r` (was `e`/F2; F2 kept), `d`, `s`, `m` | you; earlier (38353d4) |
-| Options grid | `yy` / `p` copy / paste an option through the grid's own stash, which is scoped to its selector (`earlier`); `dd` delete; `a` new option; `:rename`, `:value` | `c` `v` `d`, `o` new option and `a` new option, `r`, `e` | earlier; `a` = new option mine (not new variable as in vim-mode: a row here is an option) |
+| Options grid | `yy` / `p` copy / paste an option through the grid's own stash, which is scoped to its selector (`earlier`); `dd` delete; `a` new option; `:rename`, `:value` | `c` `v` `d`, `o` new option and `a` new option, `r`, `e` | earlier; `a` = new option mine, accepted 2026-09-27 (not new variable as in vim-mode: a row here is an option) |
 | Variable form | fields only: `j` `k` between fields, Enter/`i` open; `:promote` `:reveal` `:secret` `:clear` `:delete` | `p` `r` `s` `x` | earlier |
 | Manage detail panes | fields and buttons: `j` `k`, Enter/`i`; `:delete` `:rename` reach the row | as today | earlier |
 
@@ -577,7 +612,8 @@ being edited.
 | `Esc` in idle Normal | today's routing: the field closes and keeps its text. The body blurs (`editor.rs:1668`) | earlier |
 | `j` `k` in idle Normal, one-line field | `CloseField`, then Down/Up × count. URL: to the content below. Cell: the row cursor moves. Form: the next field is selected. Prompt: aims the button row. The close is its own undo step | you |
 | `Enter` in an open one-line field (not a prompt) | today's routing: commit and close | earlier |
-| `a` in an open table cell, Normal | vim's append (the engine). vim-mode made it add a row, which made the open cell the one place `a` was not append | mine (reverses earlier) |
+| `a` in an open table cell, Normal | vim's append (the engine). vim-mode made it add a row, which made the open cell the one place `a` was not append | mine, accepted 2026-09-27 (reverses earlier) |
+| Body search (piece 3 §3.14, tier 2, second wave) | the engine owns `/` `?` `n` `N` `*` `#`. Piece 4 draws `Engine::search_line()` as a prompt on the body pane's bottom row, and the renderer paints the engine's matches. `/` on a list or closed surface keeps its own row (lists: parked note; response: its own search) | you (decided tier 2); drawing mine |
 
 ### 5.7 Response viewer
 
@@ -589,7 +625,7 @@ ctrl+End here, because the response's bare Home/End scroll sideways
 |---|---|---|---|
 | `j` `k` `gg` `G`, counts, `{N}G` | 1 | cursor line; `{N}G` goes to line N | earlier; `{N}G` mine |
 | `h` `l`, `0` `$` | 1 | scroll sideways / to line start or end (the named keys main already handles) | earlier |
-| `ctrl+d` `ctrl+u` | 1 | scroll the view **and** move the cursor by half a page, keeping the cursor's screen row. Today they only move the cursor (`response.rs:2505–2512`). Fixed in the chord arm, so arrows gets it too | mine |
+| `ctrl+d` `ctrl+u` | 1 | scroll the view **and** move the cursor by half a page, keeping the cursor's screen row. Today they only move the cursor (`response.rs:2505–2512`). Fixed in the chord arm, so arrows gets it too | mine, accepted 2026-09-27 |
 | `ctrl+f` `ctrl+b` | 2 | the same for a full page | mine |
 | `zo` `zc` `za` | 1 | open / close / toggle the container under the cursor (`Action::TreeFold`) on the Pretty view; nothing elsewhere | earlier |
 | `zR` `zM` | 2 | open / close every container (`TreeFold(OpenAll/CloseAll)`) | mine |
@@ -617,11 +653,11 @@ ctrl+End here, because the response's bare Home/End scroll sideways
 
 `:` opens the command palette in ex mode (`Action::OpenExPalette`,
 vim-mode 9a5acce/0e64dc7/071f292, `earlier`). The query is a Cmdline
-field. Command-line editing works in it:
+field, run by the engine in `Start::InsertOnly` (§3.7 item 2).
+Command-line editing works in it:
 
-- ctrl+u clears to the start (`line_input.rs:406`).
-- ctrl+w deletes a word back. The router maps it to the LineInput's
-  word-delete key.
+- ctrl+u clears to the start and ctrl+w deletes a word back. Both are
+  the engine's Insert keys, the same as in every other field.
 - Backspace on an empty query closes the line (`mine`, as in Vim).
 - Esc cancels.
 - ctrl+n and ctrl+p move the highlight.
@@ -635,11 +671,13 @@ match must be dense (071f292). Enter runs the highlighted row (`earlier`).
 **Queries that run nothing** (`mine`; key list §8 Out rows):
 
 - A Vim command we don't support. These are named in the table: `s`,
-  `substitute`, `g`, `global`, `v`, `vglobal`, `noh`, `nohlsearch`,
-  `se`, `set`, `sor`, `sort`, `norm`, `normal`, `r`, `read`, `!`, and
+  `substitute`, `g`, `global`, `v`, `vglobal`, `se`, `set`, `sor`, `sort`, `norm`, `normal`, `r`, `read`, `!`, and
   any query that starts with a range (`%`, a digit, `.`, `$`, `'`, `<`).
-  The palette shows one muted row, "Not supported: :noh", and no fuzzy
+  The palette shows one muted row, "Not supported: :s", and no fuzzy
   rows. Enter closes the line and runs nothing.
+- `noh` and `nohlsearch` are in this list until piece 3's body search
+  ships (its §3.14, tier 2, second wave). From then on they are a verb
+  that clears the body's search highlight.
 - A query that pins nothing and fuzzy-matches nothing. The list is
   empty, and Enter closes the line with the note "Not a command: :xyz".
 
@@ -662,13 +700,13 @@ review).
 | `:send` `:project` `:manage` `:theme` `:split` `:splitback` | as the palette commands | earlier |
 | `:new` `:rename` `:delete` `:move` | `OnSelection(Add/Rename/Delete/Move)` on the surface underneath | earlier |
 | `:group` `:fields` `:promote` `:secret` `:clear` `:reveal` `:tls` | the Variable Manager and Manage verbs (§5.4) | earlier |
-| `:value` | the options grid's "Edit…" prompt. vim-mode called it `:edit`, which is Vim's reload | mine |
+| `:value` | the options grid's "Edit…" prompt. vim-mode called it `:edit`, which is Vim's reload | mine, accepted 2026-09-27 |
 
 ### 5.10 Prompts, pickers and dialogs
 
 | Surface | Vim | Arrows | Who |
 |---|---|---|---|
-| One-field prompt (name, rename, save as) | opens in Insert. `Esc` goes to Normal, and `Esc` in idle Normal cancels the dialog. `Enter` confirms from Insert or Normal. `j` in idle Normal aims the button row | unchanged from main: Enter and Esc close the field, and confirming is the button row or ctrl+enter (`modal.rs:1817–1839`). See open question 2 | earlier (vim); mine (arrows) |
+| One-field prompt (name, rename, save as) | opens in Insert. `Esc` goes to Normal, and `Esc` in idle Normal cancels the dialog. `Enter` confirms from Insert or Normal. `j` in idle Normal aims the button row | `Enter` confirms and `Esc` cancels the dialog, changing main's two arms in `modal.rs:1817–1839` and the footer chips. Multi-field forms keep main's behaviour | earlier (vim); mine, accepted as open question 2 (arrows) |
 | Multi-field forms (new project, value popup, fields editor) | the field two-level model (§5.6) inside main's form ladder. `Esc` in idle Normal closes the field; the next `Esc` goes to the buttons | unchanged | earlier |
 | Pickers (palette, `{{` variables, choosers, file picker) | type to filter; ctrl+n and ctrl+p move (already on main); Enter picks; Esc closes. The footer advertises `^N/^P` in vim | unchanged | earlier |
 | Confirm and message dialogs | the answer letters (`y`/`n`, `s`/`d`, …), Esc cancels. `h` `j` `k` `l` `G` become arrows unless the letter is one of the dialog's answers. Prefixes and counts are not taken | unchanged | earlier (d2fb68d) |
@@ -685,7 +723,7 @@ away once `u` and `:` are vim table rows.
 | `ZZ` | `:x`, i.e. `WriteQuit` | you |
 | `ZQ` | `:q!`, i.e. `ForceQuit` | you |
 | `Z` + any other key | swallowed | earlier |
-| `q{reg}` | a muted note "Macros are not supported". It arms the recording flag, and the echo shows `recording @{reg} — not supported` until the next bare `q` in Normal, which is swallowed silently and clears it. `qa x q @a` then runs `x` once, drops the `q`, and notes `@a`. Nothing types into a field and nothing opens | note earlier; closing `q` mine |
+| `q{reg}` | a muted note "Macros are not supported". It arms the recording flag, and the echo shows `recording @{reg} — not supported` until the next bare `q` in Normal, which is swallowed silently and clears it. `qa x q @a` then runs `x` once, drops the `q`, and notes `@a`. Nothing types into a field and nothing opens | note earlier; closing `q` mine, accepted 2026-09-27 |
 | `@{reg}` | the same note, with the register key consumed | earlier |
 | `m{a-z}` in an open field, `'x` `` `x `` anywhere | the note "Marks are not supported". On lists `m` stays move | you (shared letters); note mine |
 | `"x` on a closed surface | the note "Registers are not supported here". In fields the engine owns `"` | mine |
@@ -777,7 +815,7 @@ enumerations at `app.rs:2308–2404`, and vim-mode's third copy in
 | two-spelling `FooterChip`, `hint::vim_native_key` | **dropped** for `spell()` | a third copy of the spellings |
 | ~20 `*Selected*` actions | **dropped** for `OnSelection` (§6.1) | the review |
 | `ScrollCaretTo`, `TreeFold`, `SelectTab`, `FocusEditorContent` actions | **copied**; `TreeFold` gains OpenAll and CloseAll | small, tested |
-| prompt changes 9cbfcd1 / d9134ff (Enter confirms, one-Esc cancel, both profiles) | **not copied into modal.rs**. The vim behaviour is table rows (§5.10); arrows waits on open question 2 | keeps arrows untouched |
+| prompt changes 9cbfcd1 / d9134ff (Enter confirms, one-Esc cancel, both profiles) | **rewritten**. The vim behaviour is table rows (§5.10). The arrows behaviour is the two-arm change in `modal.rs` (open question 2, decided) | one-field prompts confirm on Enter in both profiles |
 | `vim/field.rs`, `line_input.rs` additions, body layer in `editor.rs` | piece 3's | not this piece |
 | ~24k lines of tests | **not ported wholesale**. Each behaviour becomes one matrix row (§8) | the matrix covers the key list; old tests pinned intermediate rulings |
 
@@ -877,8 +915,9 @@ which is screen text and, where marked, a disk check:
 
 - **A. Profile.** First launch shows "Keyboard", and Esc and Enter do
   nothing. `v` gives `NORMAL` in the footer. Settings, then `Arrows`:
-  `j` on the sidebar does nothing (if open question 1 is accepted) and
-  ↓ moves. Switch back to Vim.
+  `j` on the sidebar does nothing and ↓ moves. `r` on a request, a new
+  name, then one Enter renames it, with no second key (open question 2). Switch
+  back to Vim.
 - **B. Sidebar.** Run `3j`, `dd` (one row gone, no dialog), `u` (back
   and reselected), `2dd` then `u` (both back in one step), `yy` `p`
   (`beta copy` under the cursor), `P`, `u` `u`, `a` + name + Enter
@@ -888,8 +927,7 @@ which is screen text and, where marked, a disk check:
   `yy` `p`; `dd`; `u`; `i`, `cw` `Y` Esc; `j` (the cell closes and the
   cursor goes down one row); `3dd` then `u`.
 - **D. Panes and command line.** Run `ctrl+w l`, `j`, `k`, `h`, `p`;
-  `2gt`; `:w` (saved); `:s` Enter (nothing runs); `:noh` Enter (nothing
-  runs); `:man` Enter (Manage opens); `gt`; `:q` with unsaved edits (the
+  `2gt`; `:w` (saved); `:s` Enter (nothing runs); `:man` Enter (Manage opens); `gt`; `:q` with unsaved edits (the
   dirty gate). Disk: only the `:w` save.
 - **E. Response.** Send; `G`; `gg`; `ctrl+d` (the view and the cursor
   both move); `zc` `zo`; `/id` Enter; `n` `N` (the counter changes).
@@ -922,8 +960,9 @@ milestone.
     matrix harness (§8.1) and the invariant tests (§8.3).
 - **M2: list and table verbs.**
   - Shared letters `a` `A` `r` `m` in both profiles, `dd`/`d`,
-    `{N}dd` (sidebar batch via piece 2's `delete_requests`, and
-    `Editor::delete_rows`).
+    `{N}dd` (the core `delete_requests` batch, ported from ada2e90 in
+    this milestone and recorded through piece 2's `begin_op` /
+    `record_project_step`, and `Editor::delete_rows`).
   - `yy`/`y` + `p`/`P`, with core `duplicate_request_at` and the order
     seed.
   - `OnSelection(Verb)` and `selection_action` (§6.1).
@@ -931,10 +970,15 @@ milestone.
     test (§8.2).
 - **M3: engine integration.** Needs piece 3.
   - `engine_glue.rs`, the session edges, the open modes (§5.6), the
-    field-Normal lookahead rows (§3.7) and `j`/`k` leaving a field.
+    field-Normal lookahead rows (§3.7), and `j`/`k` and the paging
+    chords leaving a field.
   - Body routing through the engine in vim, while arrows keeps edtui
-    input as today.
-  - Vim prompt rows (§5.10) and the Cmdline ctrl+w mapping.
+    input as today. One app-history step per field session, and the
+    body's per-key capture suppressed while a session is live (§3.7).
+  - Every query box through the engine in `InsertOnly` (§3.7 item 2).
+    If the ex palette (M4) lands first, its query is main's LineInput
+    until this milestone switches it.
+  - Vim prompt rows (§5.10).
 - **M4: panes, tabs, command line, response, globals.** The closed-surface
   half can start before M3.
   - `ctrl+w` geometry; `gt` `gT` `{N}gt` and `FocusEditorContent`.
@@ -948,37 +992,37 @@ milestone.
   - Then the acceptance sweep (§8.4). Any tier-2 item that proves costly
     moves to a follow-up and its key-list row is marked Parked.
 
-## 10. Open questions
+## 10. Open questions (decided 2026-09-27)
 
-1. **Do the vim letter aliases leave the arrows profile?** Main binds
-   `j` `k` `h` `l` `g` `G` on lists and the response, `i` to open fields,
-   and bare `u` (undo) and `:` (palette) in every profile. The
-   2026-09-18 spec removed them from the non-vim profile (`earlier`). The
-   payoff is a truly modeless arrows profile and letters free for the
-   shared verbs. **My recommendation: remove them, and keep `q` quit and
-   the ctrl+d/u/f/b paging chords in arrows.** If you'd rather keep them,
-   they become arrows table rows, and no other part of this spec changes.
-2. **Should Enter confirm a one-field prompt in the arrows profile too?**
-   On main, Enter only closes the field. Confirming takes Esc, Esc, Enter
-   or ctrl+enter. vim-mode changed this for both profiles (9cbfcd1,
-   `earlier`). This spec keeps arrows as main has it and gives vim the
-   key list's model. **My recommendation: yes, make Enter confirm (and
-   Esc cancel) the one-field prompt in both profiles.** It is a two-arm
-   change in `modal.rs:1817–1839` plus the footer chips, and renaming
-   something should not take three keys.
-3. **Five choices in this draft change earlier behaviour or extend the key
-   list — review each (all `mine`):**
-   - `a` inside an open table cell appends text as Vim does; vim-mode made
-     it add a row (`earlier`). Recommendation: Vim's meaning inside an open
-     cell, `a` adds a row only on the closed row.
-   - `a` on the Manage options grid adds an option, not a variable.
+The user accepted every recommendation below. Each one stays labelled
+`mine`: a decision on that question, not a standing rule.
+
+1. **Do the vim letter aliases leave the arrows profile? Decided: yes.**
+   Main binds `j` `k` `h` `l` `g` `G` on lists and the response, `i` to
+   open fields, and bare `u` (undo) and `:` (palette) in every profile.
+   They leave arrows, as the 2026-09-18 spec planned (`earlier`). Arrows
+   keeps `q` quit and the ctrl+d/u/f/b paging chords. The payoff is a
+   truly modeless arrows profile, with letters free for the shared verbs
+   (§4.4, §4.5).
+2. **Should Enter confirm a one-field prompt in the arrows profile too?
+   Decided: yes.** Enter confirms and Esc cancels the one-field prompt in
+   both profiles. On main, Enter only closes the field, and confirming
+   takes Esc, Esc, Enter or ctrl+enter. vim-mode changed this for both
+   profiles (9cbfcd1, `earlier`). It is a two-arm change in
+   `modal.rs:1817–1839` plus the footer chips (§5.10).
+3. **Five choices that change earlier behaviour or extend the key list.
+   Decided: all five accepted.**
+   - `a` inside an open table cell appends text as Vim does. vim-mode made
+     it add a row (`earlier`). `a` adds a row only on the closed row
+     (§5.6).
+   - `a` on the Manage options grid adds an option, not a variable (§5.4).
    - The closing `q` of `qa…q` is swallowed, with a "recording — not
-     supported" echo until then (key list §9 row, `mine`, not yet
-     explicitly accepted).
+     supported" echo until then (§5.11; key list §9).
    - The options-grid edit verb is `:value`, because `:edit` is Vim's
-     reload.
+     reload (§5.9).
    - `ctrl+d`/`ctrl+u` in the response scroll the view as well as the
-     cursor — and the fix applies to the arrows profile's paging too.
+     cursor, and the fix applies to the arrows profile's paging too
+     (§5.7).
 
 ## 11. Out of scope
 
@@ -986,15 +1030,15 @@ milestone.
   body's operator grammar. That is piece 3; this piece only calls it
   (§3.7).
 - The undo journal and list-cursor redesign: reselect after undo,
-  `land_on_request`, the cursor rules. That is piece 2, and piece 4
+  `land`, the cursor rules. That is piece 2, and piece 4
   depends on it. (The core `delete_requests` batch for `Ndd`, vim-mode
   ada2e90, is NOT in piece 2 — it lands here, in M2, on top of piece 2's
   step recording.)
 - `/` search and filter in lists. Parked for a future update (`you`).
 - Macros, marks, named registers (`"+` is piece 3's tier 2), the
   jumplist (`ctrl+o`/`ctrl+i`), block Visual (`ctrl+v`), and
-  `:s` `:g` `:noh` `:set`. They are Out: notes only, never another
-  action.
+  `:s` `:g` `:set`. They are Out: notes only, never another action.
+  `:noh` is Out only until body search ships (§5.9).
 - `H` `M` `L` and `zz` `zt` `zb` in lists (Out).
 - Per-profile sections in keys.toml, and rebinding vim sequences through
   keys.toml.

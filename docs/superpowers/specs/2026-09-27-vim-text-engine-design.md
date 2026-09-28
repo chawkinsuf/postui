@@ -1,6 +1,9 @@
 # Vim text engine and Vim conformance tests (piece 3)
 
-Status: draft for review, 2026-09-27. Nothing is implemented. Every decision
+Status: approved by the user 2026-09-28, after a section-by-section
+review (drafted 2026-09-27). Nothing is implemented. The user
+decided all five open questions on 2026-09-27, each by accepting my
+recommendation (§9). Every decision
 is labelled: `you` (a rule you stated, or one of your 2026-09-27 decisions),
 `mine` (my recommendation, accept or reject), `earlier` (settled during the
 vim-mode rounds but not shown to be yours, so treat it as mine).
@@ -27,7 +30,8 @@ Piece 4 (the vim profile: router, lists, panes, ex commands) calls it.
 Goals:
 
 1. One engine handles every text surface in the vim profile: the URL, table
-   cells, prompt inputs, form fields, Settings edits, and the request Body.
+   cells, prompt inputs, form fields, Settings edits, the query boxes
+   (Insert only, §4.2), and the request Body.
    The same code and the same key grammar run on a one-line and a multi-line
    buffer (`you`: own engine; `mine`: one engine for both).
 2. The arrows profile is not changed at all. `LineInput::handle_key` and the
@@ -35,8 +39,9 @@ Goals:
    may require vim).
 3. In the vim profile, edtui stores and draws the body text. Its key handler
    is never called, and the engine never calls `EditorState::execute`
-   (`you`: this was the accepted direction). This spec also recommends not
-   using edtui's undo stack (§3.11, open question 1).
+   (`you`: this was the accepted direction). The engine, not edtui's undo
+   stack, owns the body's undo (§3.11; my recommendation, accepted
+   2026-09-27 as open question 1).
 4. Undo restores exactly (`you`, rule 1). Undo granularity and the caret
    position after `u` and `ctrl+r` match Vim (`mine`).
 5. The engine makes no app decisions. It returns an outcome and piece 4
@@ -67,7 +72,7 @@ next to it.
 
 | File | Holds |
 |---|---|
-| `mod.rs` | `Engine`, `BufState`, `Outcome`, `KeyCtx`, `Mode`, the public API (§4) |
+| `mod.rs` | `Engine`, `BufState`, `Outcome`, `ViewCtx`, `Mode`, the public API (§4) |
 | `buf.rs` | `Pos`, the `TextBuf` trait, `OneLineBuf` (over `LineInput`), `BodyBuf` (over `EditorState`) |
 | `settings.rs` | the pinned settings as constants, plus `SETTINGS_LINE`, the exact `:set` string the oracle runs |
 | `keys.rs` | the key parser (`Pending` → `Cmd`), the count rules, the echo string |
@@ -78,6 +83,7 @@ next to it.
 | `history.rs` | undo/redo steps as edit records, and the caret rule |
 | `register.rs` | the unnamed register (tier 2: `"0`, `"+`) |
 | `class.rs` | Vim's character classes for words (§3.13) |
+| `search.rs` | tier 2, second wave: pattern translation, the search motion, and `matches` for the highlight (§3.14) |
 
 `components/word_nav.rs` (the arrows profile's ctrl+arrow word hops) is not
 changed. The engine does not use it (§3.13).
@@ -370,10 +376,11 @@ cannot use edtui's stack cleanly:
 
 Recommendation (`mine`): **A**. In the vim profile edtui stores and draws,
 and the engine owns vim semantics, undo included. This narrows the accepted
-direction ("edtui for buffer/render/undo"), so it is open question 1.
+direction ("edtui for buffer/render/undo"). The user accepted A on
+2026-09-27 (open question 1).
 
-**How this meets the app history** (a requirement on pieces 2 and 4,
-recommendation `mine`, open question 2). The engine's history answers `u`
+**How this meets the app history** (a requirement on piece 4,
+recommendation `mine`, accepted 2026-09-27 as open question 2). The engine's history answers `u`
 and `ctrl+r` while its buffer has the caret. When it has nothing left, `u`
 is declined and piece 4 passes it to the app history, as `LineInput::edited`
 gates it today. The app records one `EditorDelta` per buffer session, from
@@ -419,6 +426,90 @@ engine doesn't reuse it the way field.rs did. The corpus covers `é`, `ö`,
 them. Combining characters and display width are drawing concerns and are
 not the engine's.
 
+### 3.14 Search (tier 2, second wave)
+
+**Who:** the user decided on 2026-09-27 that body search is tier 2,
+second wave, by accepting my recommendation (open question 4). The details
+below are `mine` unless marked otherwise. The pattern language was open
+question 5 (decided: the subset below).
+
+**Keys.**
+
+- `/` and `?` type a pattern, and `Enter` runs the search.
+- `n` and `N` repeat it.
+- `*` and `#` search for the keyword under the caret as a whole word
+  (`\<word\>`).
+- Counts work (`3n`, `2/foo<CR>`).
+- A search is a motion: it follows an operator (`d/foo<CR>`, `c?bar<CR>`,
+  `yn`), and it extends a Visual selection.
+- Search offsets (`/foo/e`), `gn`/`gN`, `g*`/`g#` and search history are
+  Out for this release.
+
+**Motion kind.** A search is charwise and exclusive (`:help /`), so the
+exclusive-at-column-0 rule (§3.6 rule 1) applies after an operator. A
+search that finds nothing is a failed motion (§3.6): the caret stays, and
+a waiting operator is cancelled.
+
+**Typing the pattern.** `/` and `?` enter a nested mode,
+`Mode::Search { dir, typed }`, much as Insert `ctrl+o` enters
+`InsertNormal`. The engine owns the pattern text so that a waiting operator
+survives while it is typed.
+
+- `Engine::search_line()` returns `/` or `?` followed by the pattern and
+  the caret position in it. Piece 4 draws it as a prompt on the bottom
+  row of the body pane, as accepted in decision 4. It is not the `:`
+  palette, which is an overlay with result rows. `echo()` also shows
+  the waiting operator and count (`d2/`).
+- Printable chars and paste type into the pattern.
+- `BS` deletes back. `BS` on an empty pattern cancels, as in Vim.
+- `ctrl+w` and `ctrl+u` delete back a word, or back to the start.
+- `Esc` cancels: the operator is dropped and the caret does not move.
+- `Enter` runs the search. An empty pattern reuses the last one, as in Vim.
+- While the pattern is typed, the caret does not move, and the match it
+  would land on is painted (Vim's `incsearch`, drawing only).
+
+**Pinned behaviour.** These are added to `SETTINGS_LINE` (§3.4):
+`wrapscan magic noignorecase nosmartcase`, which are Vim's defaults.
+
+- A search that wraps shows the note `search hit BOTTOM, continuing at TOP`
+  (or TOP/BOTTOM for `?`), Vim's wording.
+- A miss shows `Pattern not found: {pattern}`.
+- The last pattern and its direction are `Engine` state, global as in Vim,
+  so `n` in a one-line field reuses a search made in the body. On a
+  one-line buffer, search runs within its single line.
+
+**Highlighting.** After a search, every match in the body is painted with a
+search highlight. The highlight stays until `:noh`, a new search, or a
+request switch. The engine exposes `Engine::last_search()` and a
+`matches(&buf, rows)` helper so that the renderer paints exactly what `n`
+would visit. Piece 4 moves `:noh`/`:nohlsearch` from its "runs nothing"
+list to a supported verb.
+
+**Pattern language** (open question 5; my recommendation, accepted
+2026-09-27): a translated subset of Vim's `magic` syntax, compiled with
+the `regex` crate.
+`regex` 1.13 is already in `Cargo.lock` as a transitive dependency, so this
+adds a direct dependency but no new crate. The subset is:
+
+- literal chars;
+- `.` `*` `^` `$` and `[…]` (including ranges and `^` negation);
+- `\+` `\=` `\?` and `\{n,m}`;
+- `\(…\)` and `\|`;
+- `\s` `\S` `\d` `\D` `\w` `\W`;
+- `\<` `\>`;
+- `\` before any of these to make it literal.
+
+`\<` and `\>` are checked against `class.rs` after `regex` finds a
+candidate, because `regex`'s `\b` defines a word differently from Vim's
+`iskeyword`. Anything outside the subset (`\v`, `\zs`, `\%`, `~`, `\{-}`,
+and so on) shows `pattern not supported: {atom}`, and nothing is searched.
+The engine never searches for something other than what was typed.
+
+`history.rs` is untouched: a search changes no text. `.` does not repeat a
+search on its own, but `d/foo<CR>` followed by `.` repeats the delete with
+the same pattern, as Vim does. `Dot` stores the motion, including its
+pattern.
+
 ## 4. The engine ↔ app API
 
 ### 4.1 Types
@@ -428,7 +519,8 @@ pub struct Engine { /* mode, Pending, Visual, InsertSession, registers, dot, las
 pub struct BufState { /* history, last_visual (gv), last_insert (gi) */ }
 pub struct Target<'a, B: TextBuf> { pub buf: &'a mut B, pub state: &'a mut BufState }
 
-pub struct KeyCtx {
+/// Named `ViewCtx`, not `KeyCtx`: piece 4's router has its own `KeyCtx`.
+pub struct ViewCtx {
     /// Rows the body shows, for ctrl+d/u/f/b, H/M/L, zz/zt/zb (tier 2).
     /// None for a one-line field.
     pub viewport_rows: Option<usize>,
@@ -446,10 +538,10 @@ pub enum Outcome {
 pub enum Note { Unsupported(&'static str) }          // footer text, e.g. `register "a not supported`
 pub enum AppRequest { CopyToClipboard(String) }      // "+y (tier 2)
 
-pub enum Mode { Normal, Insert, InsertNormal, Replace, Visual(Shape) }
+pub enum Mode { Normal, Insert, InsertNormal, Replace, Visual(Shape), Search(Dir) }  // Search: tier 2 (§3.14)
 
 impl Engine {
-    pub fn handle<B: TextBuf>(&mut self, key: KeyEvent, t: Target<'_, B>, ctx: &KeyCtx) -> Outcome;
+    pub fn handle<B: TextBuf>(&mut self, key: KeyEvent, t: Target<'_, B>, ctx: &ViewCtx) -> Outcome;
     pub fn paste<B: TextBuf>(&mut self, text: &str, t: Target<'_, B>) -> Outcome;
     pub fn mode(&self) -> Mode;
     pub fn echo(&self) -> String;         // "" when nothing is half-typed
@@ -479,8 +571,11 @@ happen.
   caret. `Start::Normal` is for a buffer entered by keyboard.
   `Start::Insert` is for a buffer created by an add verb, or a prompt; Esc
   then goes to Normal and a second Esc is declined. `Start::InsertOnly` is
-  for the jq bar, the search bar and the file-picker filter: there is no
-  Normal layer, the Insert keys work, and Esc is declined. Which surface
+  for every query box: the `:` command line, the palette query, the jq
+  bar, the response search bar, the `{{` variable picker filter, the
+  chooser filters and the file-picker filter (`you`, 2026-09-28: these go
+  through the engine, not a second text path). There is no Normal layer,
+  the Insert keys work, and Esc is declined. Which surface
   gets which is piece 4's rule (`earlier`). `Seat` is one of `Keep`,
   `ColZero`, `End` or `FirstNonBlank`, as in field.rs. A session opened in
   Insert records as an `i` for `.` (`mine`).
@@ -507,8 +602,9 @@ happen.
 The engine returns `Declined` for these keys. Anything not listed and not
 the engine's own is consumed with no effect in Normal and Visual (Normal
 never types). Where a vim user expects something, it also shows a
-`Note::Unsupported`: `U`, `K`, `Q`, `&`, `*`, `#`, `/`, `?`, `n`, `N`, `gJ`,
-and the operators `d:` and `d/`.
+`Note::Unsupported`: `U`, `K`, `Q`, `&`, `gJ`, and the operator `d:`. Until
+search ships in the second wave (§3.14), `*`, `#`, `/`, `?`, `n`, `N` and
+`d/` show the note too.
 
 | Key | When | Why |
 |---|---|---|
@@ -535,11 +631,14 @@ Piece 4 must:
   `count`.
 - Show `echo()` and `mode()` in the footer, and show `Note`s.
 - Carry out `AppRequest`.
-- Pass `KeyCtx.viewport_rows` from the body's last drawn area.
+- Pass `ViewCtx.viewport_rows` from the body's last drawn area.
 - Call the session edges (§4.2).
 - Suppress the body's per-key app-history capture while an engine session
   is live (§3.11).
 - Enumerate the buffers once, through its `FieldId`.
+- Tier 2, second wave: draw `search_line()` as a prompt on the body pane's
+  bottom row, paint `matches` as the search highlight, and make `:noh`
+  clear it (§3.14).
 
 ## 5. Key coverage by tier
 
@@ -555,6 +654,7 @@ passes the conformance test (`mine`).
 | §5 one-line rules (`o O J` no-op, whole-field `dd`, shared register, joined paste) | 1 | buf.rs, register.rs | first release (S tests) |
 | §1 `ge gE`, `{ }`; §2 `~ g~ gu gU`, `>> << > <`, `ctrl+a ctrl+x`; §3 `ip ap`; §4 counted inserts, `gv`, `gi`, Insert `ctrl+r`; §9 `"0` | 2 | same modules | **first wave**, before piece 4 ships: each is a small addition to grammar that already exists |
 | §2 `R`; §4 Insert `ctrl+o`, `ctrl+t ctrl+d`; §1 `ctrl+d ctrl+u ctrl+f ctrl+b`, `H M L`, `zz zt zb`; §9 `"+` | 2 | insert.rs, motion.rs, register.rs | second wave: needs viewport plumbing, a nested mode, or the app's clipboard |
+| §1 search `/ ? n N * #`, as a motion and after operators (§3.14) | 2 | search.rs, keys.rs | second wave: a nested mode, the pattern translator, and the renderer's highlight |
 | §2 `gJ`; §3 `it at is as`; §4 `ctrl+v` block; named registers | Out | §4.3 | never |
 
 Beyond the key list, the Normal motions `+`, `-` and `Enter` in the body
@@ -632,7 +732,9 @@ Lints the generator enforces:
   too: if `pending()` is true at the end of a case, the case fails and must
   move to an S test, because the echo can't be read from Vim.
 - `.` may appear only after a change in the same case.
-- Keys may not contain `:` or `/`.
+- Keys may not contain `:`. `/` and `?` are allowed (the search groups,
+  §3.14); a pattern must be ended by `<CR>` or `<Esc>`, which the
+  half-typed rule above already enforces.
 
 ### 6.3 Generator: the proven recipe and its traps
 
@@ -690,7 +792,16 @@ Traps (from the spike, plus the ones this design adds):
    change in the same case.
 9. **Ending half-typed.** In a case ending in operator-pending, the
    trailing `<Cmd>` reaches the pending operator, so the result means
-   nothing. The lint forbids such cases.
+   nothing. The lint forbids such cases. The same goes for a case that
+   ends while a search pattern is still being typed.
+10. **A missed search does not flush the typeahead** (checked
+    2026-09-28 on Vim 9.1.0016 with this recipe). E486 `Pattern not
+    found` leaves the keys after it queued: `/zzz<CR>` still captures,
+    `/zzz<CR>x` runs the `x`, and `d/zzz<CR>` cancels the operator and
+    changes nothing. A miss is therefore an ordinary no-effect case. The
+    generator still treats a missing capture as a harness error, never
+    as a result. The search cases also pin `nohlsearch noincsearch` so
+    that no redraw state leaks between cases.
 
 The golden header records `vim_version`, `v:versionlong`, the patch list,
 `SETTINGS_LINE`, `winheight`, and the corpus file's SHA-256. The generator
@@ -715,10 +826,14 @@ without regenerating the golden file fails loudly. Each case then runs on
 up to two buffers:
 
 - **Body**: always. `EditorState::new(Lines::from(lines.join("\n")))`.
-- **One-line**: only when both the input and Vim's result are one line.
-  This automatically skips `o`, `yyp`, `J` and Insert `Enter`, whose
-  one-line behaviour is covered by S tests. The buffer is
-  `LineInput::new(line)`.
+- **One-line**: only when both the input and Vim's result are one line,
+  and the keys contain no key the one-line buffer declines in the mode
+  it is typed in (§4.3): Insert `Tab`, `ctrl+t`, `ctrl+d`, `Up` and
+  `Down` among them. Vim gives those keys an effect (spaces, an indent,
+  an undo break), while the one-line field hands them to the app, so
+  "declined = no effect" would be false. The first rule skips `o`,
+  `yyp`, `J` and Insert `Enter`; both rules' one-line behaviour is
+  covered by S tests. The buffer is `LineInput::new(line)`.
 
 For each run the test does the following:
 
@@ -726,7 +841,8 @@ For each run the test does the following:
   `BufState` and calls `enter(Start::Normal, Seat::Keep)`.
 - Feeds the parsed keys through `handle`. A `Declined` outcome counts as
   "no effect", which matches Vim's failed motion or no-op for every
-  declined key the corpus can contain.
+  declined key that reaches a run (the one-line skip rule above removes
+  the rest).
 - Compares lines, cursor (0-based on the Rust side), the mode (`n`, `i`,
   `R`, `v`, `V`, `niI` map to `Mode`), the Visual anchor, the unnamed
   register text and its type, and `top` when recorded.
@@ -820,45 +936,54 @@ Visual line mode, `gv`/`gi`, and the harness.
 5. **Performance smoke test.** `dG`, `u` and `ci{` on a 5,000-line body
    each finish under 50 ms in a debug build.
 
-## 9. Open questions
+## 9. Open questions (decided 2026-09-27)
 
-1. **Body undo store.** The accepted direction was "edtui for
-   buffer/render/undo". I recommend that in the vim profile edtui only
-   stores and draws, and the engine owns undo (§3.11, option A), because
-   edtui's stack gets the caret and the redo branch wrong and cannot be
-   fed without patching or tricking it. Accept A, or keep edtui's undo
-   through option B or C?
-2. **How long body undo lasts.** When you come back to the body after the
-   response pane, should `u` still undo your last small edit? I recommend
-   yes: keep the body's history while the request stays open, drop it on a
-   request switch or on any change made outside the engine, and let the app
-   history keep one step per body session (§3.11). The alternative is a
-   fresh history each time the body gets the caret, which is simpler, but
-   then `u` undoes the whole earlier session at once.
-3. **Insert-mode `ctrl+o` (tier 2).** In Vim it runs one Normal command.
-   Today `ctrl+o` opens the project chooser, and the key list keeps that
-   for Normal (`earlier`). I recommend that the engine takes `ctrl+o` in
-   Insert only, so the chooser stays one `Esc` away.
-4. **Search inside the body (`/ ? n N * #`).** The key list never listed it,
-   so this draft put it out of scope — that was an inference, not a
-   decision. Unlike list search (which you parked), this is text search in a
-   JSON body, where a vim user jumps with `/key` constantly, and `d/foo` /
-   `c/foo` are operator motions. I recommend tier 2, second wave: a search
-   prompt at the bottom of the body, matches highlighted, `n`/`N` wrap, and
-   `/`-motions usable after operators; the oracle can test it. Or keep it
-   out for this release?
+All five were decided by the user on 2026-09-27, each by accepting my
+recommendation. They stay labelled `mine`: decisions on these questions,
+not standing rules.
+
+1. **Body undo store. Decided: A.** In the vim profile edtui only stores
+   and draws, and the engine owns undo (§3.11), because edtui's stack gets
+   the caret and the redo branch wrong and cannot be fed without patching
+   or tricking it. Options B and C were rejected.
+2. **How long body undo lasts. Decided: while the request stays open.**
+   `u` after a trip to the response pane still undoes the last small edit.
+   The history is dropped on a request switch or on any change made
+   outside the engine, and the app history keeps one step per body session
+   (§3.11). The rejected alternative was a fresh history each time the
+   body gets the caret.
+3. **Insert-mode `ctrl+o` (tier 2). Decided: the engine takes it in Insert
+   only**, and runs one Normal command as Vim does. In Normal, `ctrl+o`
+   keeps opening the project chooser (`earlier`), which stays one `Esc`
+   away.
+4. **Search inside the body (`/ ? n N * #`). Decided: tier 2, second
+   wave**, designed in §3.14: a search prompt at the bottom of the body,
+   matches highlighted, `n`/`N` that wrap, and `/` motions after
+   operators, with the oracle testing it.
+5. **Search pattern language (raised by decision 4). Decided: A**, the
+   Vim `magic` subset (`mine`, accepted 2026-09-27). Should `/pattern`
+   understand Vim's regex syntax?
+   - (A) A translated subset of Vim's `magic` syntax (§3.14 lists it). A
+     pattern outside the subset shows `pattern not supported` and searches
+     nothing. The oracle tests every atom in the subset.
+   - (B) Literal text only: every char matches itself. This is simpler,
+     but `/a.b` finds only the literal `a.b`, and `/^  "id"` finds
+     nothing, so a vim user's patterns silently mean something else.
+   - **Accepted recommendation: A.** It is the "instantly use, with common
+     keys" goal applied to search. The subset covers the atoms people type
+     from memory, and anything else is refused rather than misread.
 
 ## 10. Out of scope
 
 - Piece 4: the router, lists, tables, panes, ex commands, footer wording,
   `ZZ`/`ZQ`, macro and mark notes, deciding which surface starts in which
   mode, and wiring `BufState` into the app history.
-- Piece 2: the app undo and list-cursor redesign. This piece only states
-  the requirement in §3.11.
+- Piece 2: the app undo and list-cursor redesign. Piece 3 needs nothing
+  from it; §3.11's app-history requirement is piece 4's.
 - The arrows profile's text editing.
 - Everything the key list marks Out: `gJ`, `it at is as`, block Visual,
   named registers `"a`–`"z`, marks, macros, `:s`, `:g`, `:set`. Search
-  inside the body (`/ ? n N * #`) is out only pending open question 4.
+  offsets, `gn`/`gN`, `g*`/`g#` and search history (§3.14).
 - Changes to edtui itself, including vendoring it.
-- Search, highlighting and syntax colouring of the body, which are the
-  renderer's and unchanged.
+- Syntax colouring of the body, which is the renderer's and unchanged.
+  The search highlight is in scope (§3.14).

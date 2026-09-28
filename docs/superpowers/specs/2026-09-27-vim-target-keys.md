@@ -1,9 +1,9 @@
 # Vim profile — target key list
 
-Status: drafted by Claude 2026-09-27; the user's decisions on the open
-questions are applied (see "Decisions" at the end). The review copy lives on
-the Claude Docs page "Vim profile — target key list (draft)"; if the two
-disagree, the user's latest answer wins — update this file to match.
+Status: approved by the user 2026-09-28 (drafted by Claude 2026-09-27); the
+user's decisions on the open questions are applied (see "Decisions" at the
+end). This file is the source. The earlier review copy on the Claude Docs
+page "Vim profile — target key list (draft)" is superseded and out of date.
 Implemented by pieces 3 (text engine: §1–§5) and 4 (vim profile: §6–§9).
 
 ## How to read this
@@ -27,8 +27,10 @@ Multi-line keys (`j`, `k`, `o`, `J`, …) apply to the body only; §5 says what
 they do in one-line fields.
 
 Pinned editing settings (the comparison runs Vim with the same):
-`expandtab shiftwidth=2 autoindent`, no wrap-around motions (`whichwrap`
-default), `selection=inclusive`. — Who: mine.
+`expandtab shiftwidth=2 autoindent`, Vim's default `whichwrap=b,s`
+(`Backspace` and `Space` wrap to the previous/next line in Normal, `h`
+and `l` do not), `selection=inclusive`. The full list is piece 3 §3.4.
+— Who: mine.
 
 ---
 
@@ -48,6 +50,7 @@ default), `selection=inclusive`. — Who: mine.
 | `ctrl+f` `ctrl+b`, `H` `M` `L` | 2 | V | body |
 | `zz` `zt` `zb` | 2 | V | body |
 | Counts on every motion (`5j`, `3w`, `2f,`) | 1 | V | |
+| `/` `?` `n` `N` `*` `#` search, also after operators (`d/foo`) and in Visual | 2 | V | second wave; prompt on the body's bottom row, matches highlighted, `n`/`N` wrap. Pattern syntax: a subset of Vim's regex (piece 3 §3.14). Offsets (`/foo/e`), `gn`, `g*` Out — you (accepted my recommendation) |
 
 ## 2. Text: changing (Normal)
 
@@ -86,7 +89,7 @@ default), `selection=inclusive`. — Who: mine.
 | `o` `O` | 1 | V | body; see §5 for one-line fields |
 | `Esc` (and `ctrl+[`) leaves Insert, caret steps back one | 1 | V | |
 | Insert: `Backspace`, `ctrl+w` (word back), `ctrl+u` (to line start) | 1 | V | |
-| Insert: `ctrl+o {cmd}` (one Normal command) | 2 | V | |
+| Insert: `ctrl+o {cmd}` (one Normal command) | 2 | V | Insert only; in Normal `ctrl+o` stays the project chooser — you (accepted my recommendation) |
 | Insert: `ctrl+r {reg}` (paste register) | 2 | V | |
 | Insert: `ctrl+t` `ctrl+d` (indent) | 2 | V | body |
 | `gi` (insert where you last left Insert) | 2 | V | |
@@ -133,7 +136,7 @@ variable picker lists. Tables: Headers / Params / Vars rows.
 | Keys | Tier | Test | Notes |
 |---|---|---|---|
 | `j` `k` `gg` `G`, counts | 1 | S | |
-| `ctrl+d` `ctrl+u` scroll the view AND move the cursor by half a page | 1 | S | sweep 7 found only the cursor moves today |
+| `ctrl+d` `ctrl+u` scroll the view AND move the cursor by half a page | 1 | S | sweep 7 found only the cursor moves today; the fix applies to the arrows profile too — you (accepted my recommendation) |
 | `ctrl+f` `ctrl+b`, `zz` `zt` `zb` | 2 | S | |
 | `zo` `zc` `za`, `zR` `zM` (open/close all) | 1 / 2 | S | `zR`/`zM` tier 2 |
 | `/` `n` `N` search with a match counter | 1 | S | |
@@ -153,18 +156,20 @@ variable picker lists. Tables: Headers / Params / Vars rows.
 | `:` + app verbs (`:send`, `:new`, `:rename`, `:manage`, …) | 1 | S | earlier |
 | Command line editing: `ctrl+u` `ctrl+w`, `Backspace`, `Esc` cancels | 1 | S | |
 | Command-line history (`↑` `↓`) | 2 | S | |
-| `:noh`, `:s`, `:g`, `:set …` | Out | | show no match; never run something else |
+| `:s`, `:g`, `:set …` | Out | | show no match; never run something else |
+| `:noh` | Out, then 2 | S | Out until body search ships; then it clears the search highlight |
 
 ## 9. Prompts, pickers, dialogs, and everything global
 
 | Keys | Tier | Test | Notes / Who |
 |---|---|---|---|
-| A prompt opens in Insert; `Esc` → Normal; `Esc` again cancels; `Enter` confirms from anywhere | 1 | S | earlier |
+| A prompt opens in Insert; `Esc` → Normal; `Esc` again cancels; `Enter` confirms from anywhere | 1 | S | earlier. In the arrows profile too, `Enter` confirms and `Esc` cancels a one-field prompt — you (accepted my recommendation) |
 | Pickers (palette, `{{` variables, choosers): type to filter, `ctrl+n` `ctrl+p` move | 1 | S | earlier |
 | Confirm dialogs answer with their letter keys (`y`/`n`, `s`/`d`), `Esc` cancels | 1 | S | earlier |
 | `ZZ` `ZQ` | 1 | S | follow Vim: `ZZ` = `:x`, `ZQ` = `:q!` — you (accepted my recommendation; replaces the vim-mode branch's save/discard-without-quitting) |
-| Macros `q{reg}` … `q`, `@{reg}` | Out | S | Shows "not supported"; must never type into a field or eat the next key. Proposal: after `q{reg}` shows the note, the closing `q` is swallowed too (fixes the `qa x q @a` → INSERT problem sweep 7 found) — mine |
+| Macros `q{reg}` … `q`, `@{reg}` | Out | S | Shows "not supported"; must never type into a field or eat the next key. After `q{reg}` shows the note, the closing `q` is swallowed too (fixes the `qa x q @a` → INSERT problem sweep 7 found) — you (accepted my recommendation) |
 | Marks `m{a-z}`, `'` `` ` `` jumps | Out | S | `m` keeps its list meaning (move) — you (shared letters) |
+| `"0` (the yank register: `"0p` puts the last yank even after a delete) | 2 | V | first wave (piece 3 §5) — mine |
 | Named registers `"a`–`"z`, `"+` | Out / 2 | | `"+` (system clipboard) tier 2 — mine |
 | Jumps `ctrl+o` `ctrl+i` | Out | | `ctrl+o` keeps the project chooser — earlier |
 | Any unsupported key | — | S | does nothing visible except, where a vim user would expect something, a short "not supported" note; never arms a half-typed state that eats the next key |
@@ -185,3 +190,19 @@ variable picker lists. Tables: Headers / Params / Vars rows.
    already large.
 5. Items marked `earlier` stay as the defaults unless the user objects to a
    specific row (accepted my recommendation).
+
+Later on 2026-09-27, while reviewing the piece 2–4 specs, the user accepted
+these recommendations of mine (each is a decision on that question, not a
+standing rule):
+
+6. Search inside the body (`/ ? n N * #`) is tier 2, second wave (§1 row;
+   piece 3 §3.14). Patterns use a subset of Vim's regex. Anything outside
+   it shows "pattern not supported" and searches nothing.
+7. Insert `ctrl+o` runs one Normal command. In Normal, `ctrl+o` stays the
+   project chooser.
+8. The vim letter aliases (`j k h l g G`, `i`, bare `u` and `:`) leave the
+   arrows profile. Arrows keeps `q` quit and the ctrl+d/u/f/b chords.
+9. `Enter` confirms a one-field prompt in both profiles.
+10. The closing `q` of `q{reg}…q` is swallowed. `a` in an open cell
+    appends. `a` on the options grid adds an option, and its edit verb is
+    `:value`. The response `ctrl+d`/`ctrl+u` fix also applies in arrows.
