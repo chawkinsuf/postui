@@ -1419,11 +1419,12 @@ impl ModalStack {
     /// the trimmed text is empty: the prompt stays open and says what is
     /// missing, instead of the confirm silently doing nothing (on "Save
     /// request as" that read as a broken save). The noun follows the
-    /// kind — every prompt but one holds a name, while `SecretValue`
-    /// holds a value.
+    /// kind — most prompts hold a name, `SecretValue` holds a value and
+    /// `JqDescribe` a sentence describing the filter.
     fn empty_prompt_toast(kind: &PromptKind) -> ModalResult {
         let noun = match kind {
             PromptKind::SecretValue { .. } => "value",
+            PromptKind::JqDescribe => "description",
             _ => "name",
         };
         ModalResult {
@@ -5818,6 +5819,26 @@ mod tests {
             res.actions
         );
         assert_eq!(m.stack.len(), 1);
+    }
+
+    /// The jq describe prompt holds a sentence, so its empty field asks for
+    /// a description.
+    #[test]
+    fn confirming_an_empty_jq_describe_prompt_asks_for_a_description() {
+        let mut m = ModalStack::default();
+        m.push(Modal::Prompt {
+            title: "Describe the filter".into(),
+            input: LineInput::new(""),
+            kind: PromptKind::JqDescribe,
+            revealed: false,
+        });
+        let res = m.confirm_top().expect("a refusal is still a result");
+        assert!(!res.close, "the prompt stays up");
+        assert!(
+            matches!(res.actions.as_slice(), [Action::ShowToast(msg, crate::components::toast::ToastKind::Info)] if msg == "Type a description first"),
+            "got {:?}",
+            res.actions
+        );
     }
 
     /// The row's `h`/`l` are plain letters only: ctrl+h — what a legacy
