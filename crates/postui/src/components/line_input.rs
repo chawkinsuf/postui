@@ -400,6 +400,19 @@ impl LineInput {
                 self.select_all();
                 true
             }
+            // The shell's ctrl+u: delete from the line start to the caret
+            // (or just the selection, when there is one).
+            KeyCode::Char('u') if key.modifiers == KeyModifiers::CONTROL => {
+                self.record(EditKind::Whole);
+                if !self.delete_selection() && self.cursor > 0 {
+                    let end = self.byte_offset(self.cursor);
+                    self.text.replace_range(0..end, "");
+                    self.cursor = 0;
+                }
+                self.anchor = None;
+                self.word_anchor = None;
+                true
+            }
             // A physical ctrl+backspace reaches a legacy terminal as the
             // 0x08 byte, which crossterm parses as ctrl+h — same word
             // deletion as the enhanced-keys `Backspace + CONTROL` below.
@@ -801,6 +814,15 @@ mod tests {
     }
     fn code(c: KeyCode) -> KeyEvent {
         KeyEvent::new(c, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn ctrl_u_deletes_to_the_start_of_the_line() {
+        let mut i = LineInput::new("abc def");
+        i.set_cursor(4);
+        assert!(i.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL)));
+        assert_eq!(i.text(), "def");
+        assert_eq!(i.cursor(), 0);
     }
 
     #[test]

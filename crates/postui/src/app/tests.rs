@@ -635,6 +635,27 @@ fn undo_leaves_focus_alone_when_the_stored_caret_is_in_an_unchanged_field() {
     assert_eq!(app.editor.sub_focus, SubFocus::Content, "redo keeps focus too");
 }
 
+/// ctrl+u is unbound at the global keymap and only pages the list
+/// surfaces, so an open text field gets it: the URL field and a prompt
+/// both clear back to the line start.
+#[test]
+fn ctrl_u_reaches_an_open_text_field_through_the_router() {
+    let mut app = App::new_for_test();
+    app.update(Action::CreateRequest("r".into()));
+    app.focus = PaneId::Editor;
+    app.editor.open_url_from_app();
+    type_str(&mut app, "https://x");
+    assert_eq!(app.editor.url.text(), "https://x");
+    app.handle_key(ctrl('u'));
+    assert_eq!(app.editor.url.text(), "", "the URL field cleared");
+
+    app.update(Action::PromptNewRequest);
+    type_str(&mut app, "orders");
+    assert_eq!(app.modals.focused_input().unwrap().text(), "orders");
+    app.handle_key(ctrl('u'));
+    assert_eq!(app.modals.focused_input().unwrap().text(), "", "the prompt cleared");
+}
+
 /// ctrl+d is unbound at the global keymap, so it must reach the focused
 /// sidebar's own `handle_key` through the app router (app.rs "step 5").
 #[test]
