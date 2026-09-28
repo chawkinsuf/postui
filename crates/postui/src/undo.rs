@@ -82,8 +82,10 @@ pub struct Context {
 
 /// The part of the app's view an undo can put back (spec §4.1): the
 /// active space, what the editor holds (with its unsaved buffer when it
-/// has one), the sidebar cursor, and the Manage/Variables row. A project
-/// step stores one from just before its op and one from just after.
+/// has one), the sidebar cursor, and the Manage/Variables row: the one on
+/// screen, or, for an op that moves a list's cursor off screen (an
+/// environment or space create or delete), that list's. A project step
+/// stores one from just before its op and one from just after.
 #[derive(Debug, Clone, PartialEq)]
 pub struct View {
     pub space: String,

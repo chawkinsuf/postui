@@ -20792,6 +20792,59 @@ mod undo_tests {
         assert_eq!(app.manage_selected(ManageTab::Environments).as_deref(), Some("qa"));
     }
 
+    /// Final review M1: a create or delete moves its own Manage list's
+    /// cursor even with the Manage screen down, so the step records that
+    /// list's row and undo puts the cursor back (rule 1).
+    #[test]
+    fn undoing_a_space_create_off_manage_puts_the_spaces_cursor_back() {
+        let (mut app, _dir) = spaced_app();
+        assert_eq!(app.screen, Screen::Main);
+        assert_eq!(app.manage_selected(ManageTab::Spaces).as_deref(), Some("main"));
+        app.update(Action::CreateSpace("Zeta".into()));
+        assert_eq!(app.manage_selected(ManageTab::Spaces).as_deref(), Some("zeta"));
+        app.update(Action::Undo);
+        assert_eq!(app.manage_selected(ManageTab::Spaces).as_deref(), Some("main"));
+        app.update(Action::Redo);
+        assert_eq!(app.manage_selected(ManageTab::Spaces).as_deref(), Some("zeta"));
+    }
+
+    #[test]
+    fn undoing_an_env_create_off_manage_puts_the_environments_cursor_back() {
+        let dir = tempfile::tempdir().unwrap();
+        var_project(dir.path());
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::with_root(tx, dir.path().to_path_buf());
+        let before = app.manage_selected(ManageTab::Environments);
+        assert!(before.is_some());
+        app.update(Action::CreateEnv("Stage".into()));
+        assert_eq!(app.manage_selected(ManageTab::Environments).as_deref(), Some("stage"));
+        app.update(Action::Undo);
+        assert_eq!(app.manage_selected(ManageTab::Environments), before);
+    }
+
+    #[test]
+    fn undoing_a_space_delete_off_manage_puts_the_spaces_cursor_back() {
+        let (mut app, _dir) = spaced_app();
+        app.select_list_row(ManageTab::Spaces, "auth");
+        app.update(Action::DeleteSpace("auth".into()));
+        assert_eq!(app.manage_selected(ManageTab::Spaces).as_deref(), Some("main"), "clamped");
+        app.update(Action::Undo);
+        assert_eq!(app.manage_selected(ManageTab::Spaces).as_deref(), Some("auth"));
+    }
+
+    #[test]
+    fn undoing_an_env_delete_off_manage_puts_the_environments_cursor_back() {
+        let dir = tempfile::tempdir().unwrap();
+        var_project(dir.path());
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::with_root(tx, dir.path().to_path_buf());
+        app.select_list_row(ManageTab::Environments, "qa");
+        app.update(Action::DeleteEnv("qa".into()));
+        assert_eq!(app.manage_selected(ManageTab::Environments).as_deref(), Some("dev"), "clamped");
+        app.update(Action::Undo);
+        assert_eq!(app.manage_selected(ManageTab::Environments).as_deref(), Some("qa"));
+    }
+
     #[test]
     fn undoing_one_of_two_env_deletes_reselects_the_right_row() {
         let (mut app, _dir) = manage_envs_app();

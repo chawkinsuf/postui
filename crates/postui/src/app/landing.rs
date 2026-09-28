@@ -36,6 +36,9 @@ pub(crate) struct Landing {
 /// one, so a step without a before-view does not compile (spec §4.3).
 pub(crate) struct OpToken {
     before: View,
+    /// The Manage list whose cursor the op moves whatever is on screen
+    /// ([`App::begin_list_op`]); both views record its row.
+    list: Option<ManageTab>,
 }
 
 impl App {
@@ -45,9 +48,21 @@ impl App {
     /// The dirty gate's Discard reaches here with the edit still in the
     /// editor, so `before` carries it (OQ1).
     pub(super) fn begin_op(&mut self) -> OpToken {
+        self.begin_op_on(None)
+    }
+
+    /// [`Self::begin_op`] for an op that moves `tab`'s own list cursor
+    /// even while that list is parked or the Manage screen is down (an
+    /// environment or space create or delete): both views record that
+    /// list's row rather than the one on screen, so undo puts it back.
+    pub(super) fn begin_list_op(&mut self, tab: ManageTab) -> OpToken {
+        self.begin_op_on(Some(tab))
+    }
+
+    fn begin_op_on(&mut self, list: Option<ManageTab>) -> OpToken {
         self.flush_field_session();
         self.op_in_flight = true;
-        OpToken { before: self.view() }
+        OpToken { before: self.view_on(list), list }
     }
 
     /// Records a marker for the journal entry the op produced, if it
@@ -91,7 +106,7 @@ impl App {
         }
         self.marked_entry = top;
         let Some(id) = top else { return };
-        let after = self.view();
+        let after = self.view_on(t.list);
         self.history.record_no_coalesce(crate::undo::Step {
             kind: crate::undo::StepKind::Project {
                 id,
@@ -257,6 +272,12 @@ impl App {
 
     /// The view an undo step records (§4.1).
     pub(super) fn view(&self) -> View {
+        self.view_on(None)
+    }
+
+    /// [`Self::view`], with `list`'s row (when given) in place of the one
+    /// on screen.
+    fn view_on(&self, list: Option<ManageTab>) -> View {
         let buffer = self
             .editor_holds_unsaved()
             .then(|| Box::new(self.editor.current_request()));
@@ -268,7 +289,10 @@ impl App {
             space: self.active_space(),
             open,
             cursor: self.sidebar.selected_key(),
-            row: self.list_row(),
+            row: match list {
+                Some(tab) => self.list_row_of(tab),
+                None => self.list_row(),
+            },
         }
     }
 
@@ -277,7 +301,12 @@ impl App {
         if self.screen != Screen::Manage {
             return None;
         }
-        match self.manage.tab {
+        self.list_row_of(self.manage.tab)
+    }
+
+    /// The row under `tab`'s own cursor, live or parked.
+    fn list_row_of(&self, tab: ManageTab) -> Option<ListRow> {
+        match tab {
             ManageTab::Environments => self.manage_selected(ManageTab::Environments).map(ListRow::Env),
             ManageTab::Spaces => self.manage_selected(ManageTab::Spaces).map(ListRow::Space),
             ManageTab::Variables => self.varmanager.detail.name().map(|n| ListRow::Var(n.to_string())),

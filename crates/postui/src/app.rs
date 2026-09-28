@@ -4382,7 +4382,7 @@ impl App {
                 if self.refuse_without_project() {
                     return true;
                 }
-                let t = self.begin_op();
+                let t = self.begin_list_op(crate::components::manage::ManageTab::Environments);
                 let Some(p) = self.project.as_mut() else {
                     return true;
                 };
@@ -6109,7 +6109,7 @@ impl App {
                 if self.refuse_without_project() {
                     return true;
                 }
-                let t = self.begin_op();
+                let t = self.begin_list_op(crate::components::manage::ManageTab::Spaces);
                 let Some(p) = self.project.as_mut() else {
                     return true;
                 };
@@ -6220,7 +6220,7 @@ impl App {
             }
             Action::ForceDeleteEnv(name) => {
                 let display = self.env_name(&name);
-                let t = self.begin_op();
+                let t = self.begin_list_op(crate::components::manage::ManageTab::Environments);
                 let Some(p) = self.project.as_mut() else {
                     return true;
                 };
@@ -6332,7 +6332,7 @@ impl App {
                 // rows to count. The count the dialog used to warn about
                 // lives in the toast now, next to the undo hint.
                 let count = self.sidebar.space_counts().get(&name).copied().unwrap_or(0);
-                let t = self.begin_op();
+                let t = self.begin_list_op(crate::components::manage::ManageTab::Spaces);
                 let Some(p) = self.project.as_mut() else {
                     return true;
                 };
