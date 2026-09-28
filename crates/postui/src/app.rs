@@ -6008,8 +6008,11 @@ impl App {
                     to,
                 });
                 if items.is_empty() {
-                    self.toasts
-                        .push("No other space to move to", ToastKind::Info);
+                    // The same warning as `m`: it names the remedy.
+                    self.toasts.push(
+                        "Only one space — create another to move requests",
+                        ToastKind::Warning,
+                    );
                     return true;
                 }
                 self.push_modal(Modal::Chooser(ChooserState::new(

@@ -5776,6 +5776,24 @@ fn m_with_only_one_space_says_so_instead_of_doing_nothing() {
     );
 }
 
+/// "Move all requests" out of the only space says the same thing `m` does.
+#[test]
+fn moving_all_requests_with_only_one_space_warns_like_m() {
+    let mut app = App::new_for_test();
+    app.toasts = Default::default();
+
+    app.update(Action::PromptMoveAllRequests("main".into()));
+    assert!(app.modals.is_empty(), "nowhere to move to, so no picker");
+    assert!(
+        app.toasts
+            .entries()
+            .iter()
+            .any(|(m, k)| m.contains("Only one space") && **k == ToastKind::Warning),
+        "the same warning as `m`: {:?}",
+        app.toasts.entries()
+    );
+}
+
 /// With no other space to move to, the row is left out rather than
 /// opening an empty chooser.
 #[test]
