@@ -20,7 +20,6 @@ pub(crate) enum CursorAim {
     On(RowKey),
     /// The request row now at this index, else the nearest below, else
     /// the nearest above (`Sidebar::select_nearest_request`).
-    #[allow(dead_code)] // used from Task 9
     Neighbour(usize),
 }
 

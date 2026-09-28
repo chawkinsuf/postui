@@ -4,7 +4,7 @@ use crate::components::editor::{Editor, EditorTab, SubFocus};
 use crate::components::line_input::LineInput;
 use crate::components::modal::{Modal, ModalResult, ModalStack, PromptKind};
 use crate::components::response::{ResponseState, SYNC_PRETTY_BYTES, ViewMode};
-use crate::components::sidebar::Row;
+use crate::components::sidebar::{Row, RowKey};
 use crate::components::toast::{ToastKind, Toasts};
 use crate::components::varmanager::{
     VarEditOp, VarManager, VarStructOp, VmDetail, VmFocus, var_edit_op_for,
@@ -14,6 +14,7 @@ use crate::hit::{Hit, HitMap, PointerShape, ScrollbarSpec};
 use crate::keys::KeyCombo;
 use crate::layout::PaneId;
 use crate::theme::Theme;
+use crate::undo::Open;
 use landing::{CursorAim, Landing};
 use postui_core::project::{HeldDrift, OpenError, Project};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -3552,8 +3553,12 @@ impl App {
             }
             Action::ForceMoveRequestToSpace { slug, space } => {
                 let display_before = self.request_display(&slug);
+                let from_row = self.sidebar.row_of(&slug);
+                let cursor_on = self.sidebar.selected_slug().as_deref() == Some(slug.as_str());
+                let was_open = self.editor.slug.as_deref() == Some(slug.as_str());
                 let t = self.begin_op();
                 let Some(p) = self.project.as_mut() else {
+                    self.op_in_flight = false;
                     return true;
                 };
                 match p.move_request(&slug, &space) {
@@ -3561,15 +3566,18 @@ impl App {
                         // The move doesn't follow the request into its
                         // new space (user feedback: that made moving
                         // several in a row a chore). From this space's
-                        // point of view it's a delete: the editor clears
-                        // if it held the request, and the sidebar cursor
-                        // lands on the nearest remaining request so the
-                        // next `m` has something to act on.
-                        let was_selected =
-                            self.sidebar.selected_slug().as_deref() == Some(slug.as_str());
-                        let from_row = self.sidebar.selected;
+                        // point of view it's a delete: the editor is left
+                        // on a scratch if it held the request, and the
+                        // cursor lands on the neighbour when it was on the
+                        // row or the row was open (§4.5), so the next `m`
+                        // has something to act on.
                         self.session.rename(&slug, &new_slug);
-                        self.refresh_sidebar();
+                        self.land(Landing {
+                            open: was_open.then_some(Open::Scratch { buffer: None }),
+                            cursor: (was_open || cursor_on)
+                                .then(|| CursorAim::Neighbour(from_row.unwrap_or(0))),
+                            ..Landing::default()
+                        });
                         self.toasts.push(
                             format!(
                                 "Moved {} to {}",
@@ -3578,19 +3586,13 @@ impl App {
                             ),
                             ToastKind::Success,
                         );
-                        if self.editor.slug.as_deref() == Some(slug.as_str()) {
-                            self.editor = Editor::default();
-                            self.shadow = None;
-                        }
-                        if was_selected {
-                            self.sidebar.select_nearest_request(from_row.unwrap_or(0));
-                        }
                         self.record_project_step(
                             t,
                             crate::undo::StepLabel::moved(display_before, self.space_name(&space)),
                         );
                     }
                     Err(e) => {
+                        self.op_in_flight = false;
                         self.toasts
                             .push(format!("could not move {slug}: {e}"), ToastKind::Error);
                         self.last_action_failed = true;
@@ -3633,15 +3635,18 @@ impl App {
                 // The typed name is relative to the active space, same as
                 // a create.
                 let to = format!("{}/{}", self.active_space(), to.trim_start_matches('/'));
+                let cursor_on = self.sidebar.selected_slug().as_deref() == Some(from.as_str());
                 let t = self.begin_op();
                 let Some(p) = self.project.as_mut() else {
+                    self.op_in_flight = false;
                     return true;
                 };
                 match p.rename_request(&from, &to) {
                     Ok((slug, leaf)) => {
                         let label = crate::undo::StepLabel::rename(leaf.clone());
                         self.session.rename(&from, &slug);
-                        self.refresh_sidebar();
+                        // The editor follows the new slug in place, never
+                        // reloading.
                         if self.editor.slug.as_deref() == Some(from.as_str()) {
                             self.editor.slug = Some(slug.clone());
                             // The rename wrote the new display name to
@@ -3652,8 +3657,13 @@ impl App {
                             if let Some(saved) = self.editor.saved.as_mut() {
                                 saved.name = Some(leaf);
                             }
-                            self.sidebar.open_slug = Some(slug);
                         }
+                        // The cursor follows the row through a re-sort
+                        // (sweep-7 bug b).
+                        self.land(Landing {
+                            cursor: cursor_on.then(|| CursorAim::On(RowKey::Request(slug.clone()))),
+                            ..Landing::default()
+                        });
                         self.record_project_step(t, label);
                     }
                     Err(Error::AlreadyExists(taken)) => {
@@ -3680,8 +3690,12 @@ impl App {
             }
             Action::DeleteRequest(slug) => {
                 let display = self.request_display(&slug);
+                let from_row = self.sidebar.row_of(&slug);
+                let cursor_on = self.sidebar.selected_slug().as_deref() == Some(slug.as_str());
+                let was_open = self.editor.slug.as_deref() == Some(slug.as_str());
                 let t = self.begin_op();
                 let Some(p) = self.project.as_mut() else {
+                    self.op_in_flight = false;
                     return true;
                 };
                 match p.delete_request(&slug) {
@@ -3690,15 +3704,20 @@ impl App {
                             format!("Deleted {display}{}", self.undo_hint()),
                             ToastKind::Info,
                         );
-                        self.refresh_sidebar();
-                        if self.editor.slug.as_deref() == Some(slug.as_str()) {
-                            self.editor = Editor::default();
-                            self.shadow = None;
-                        }
-                        self.persist_open_request();
+                        // The editor is left on a scratch when it held the
+                        // request (R9 marks it); the cursor lands on the
+                        // neighbour when it was on the row or the row was
+                        // open (§4.5).
+                        self.land(Landing {
+                            open: was_open.then_some(Open::Scratch { buffer: None }),
+                            cursor: (was_open || cursor_on)
+                                .then(|| CursorAim::Neighbour(from_row.unwrap_or(0))),
+                            ..Landing::default()
+                        });
                         self.record_project_step(t, crate::undo::StepLabel::delete(display));
                     }
                     Err(e) => {
+                        self.op_in_flight = false;
                         self.toasts
                             .push(format!("could not delete {slug}: {e}"), ToastKind::Error);
                     }
@@ -6244,28 +6263,33 @@ impl App {
                 if to.trim() == self.space_name(&from) {
                     return true;
                 }
+                let cursor = self.sidebar.selected_key();
                 let t = self.begin_op();
                 let Some(p) = self.project.as_mut() else {
+                    self.op_in_flight = false;
                     return true;
                 };
                 match p.rename_space(&from, &to) {
                     Ok(to) => {
                         self.session.rename_space(&from, &to);
                         let from_prefix = format!("{from}/");
-                        if let Some(rest) = self
-                            .editor
-                            .slug
-                            .as_deref()
-                            .and_then(|s| s.strip_prefix(&from_prefix))
-                        {
-                            let new_slug = format!("{to}/{rest}");
-                            self.editor.slug = Some(new_slug.clone());
-                            self.sidebar.open_slug = Some(new_slug);
+                        let rekey = |s: &str| {
+                            s.strip_prefix(&from_prefix).map(|rest| format!("{to}/{rest}"))
+                        };
+                        if let Some(new_slug) = self.editor.slug.as_deref().and_then(rekey) {
+                            self.editor.slug = Some(new_slug);
                             if let Some((slug, _)) = self.shadow.as_mut() {
                                 *slug = self.editor.slug.clone();
                             }
                         }
-                        self.refresh_sidebar();
+                        // Renaming the active space keeps the cursor on the
+                        // same row, re-prefixed, folder or request (§4.5);
+                        // the rows of any other space are untouched.
+                        let aim = cursor.and_then(|key| match key {
+                            RowKey::Folder(path) => rekey(&path).map(RowKey::Folder),
+                            RowKey::Request(slug) => rekey(&slug).map(RowKey::Request),
+                        });
+                        self.land(Landing { cursor: aim.map(CursorAim::On), ..Landing::default() });
                         self.toasts.push(
                             format!("Renamed space to {}", self.space_name(&to)),
                             ToastKind::Success,
@@ -6325,7 +6349,7 @@ impl App {
                         if was_active {
                             self.follow_active_space();
                         } else {
-                            self.refresh_sidebar();
+                            self.land(Landing::default());
                         }
                         self.clamp_list(crate::components::manage::ManageTab::Spaces);
                         self.record_project_step(t, crate::undo::StepLabel::delete_space(&display));
@@ -6425,8 +6449,11 @@ impl App {
                 };
                 match p.move_request_shown(&space, &level, &shown, &rel, delta) {
                     Ok(_) => {
+                        // Not a landing: nothing open or active changes,
+                        // and a held alt+↓ must not re-walk the tree per
+                        // step. The cursor stays on the moved row.
                         self.rebuild_sidebar();
-                        self.sidebar.select_slug(&slug);
+                        self.sidebar.select_key(&RowKey::Request(slug.clone()));
                         // A burst merges in core: the journal's top id
                         // stays the same, so nothing is re-recorded and
                         // the whole burst stays one undo step.
@@ -6505,20 +6532,14 @@ impl App {
                 for (old, new) in &moved {
                     self.session.rename(old, new);
                 }
-                self.refresh_sidebar();
-                if let Some(open) = open
-                    && let Some((_, new_slug)) = moved.iter().find(|(old, _)| *old == open)
-                {
-                    // Follow the open request into its new space.
-                    // `ForceOpenRequest` owns the editor, the sidebar's
-                    // open row and the re-seeded shadow — pre-setting any
-                    // of them here would defeat `capture_undo`'s
-                    // "which request is open changed → re-seed, never
-                    // record" branch and forge a phantom edit step.
-                    self.apply(Action::ForceOpenRequest(new_slug.clone()));
-                } else {
-                    self.persist_open_request();
-                }
+                let follow = open.and_then(|open| {
+                    moved.iter().find(|(old, _)| *old == open).map(|(_, new)| new.clone())
+                });
+                // The open request follows the move into its new space.
+                self.land(Landing {
+                    open: follow.map(|slug| Open::Request { slug, buffer: None }),
+                    ..Landing::default()
+                });
                 self.record_project_step(
                     t,
                     crate::undo::StepLabel::moved_all(moved.len(), self.space_name(&to)),
@@ -8327,10 +8348,11 @@ impl App {
                     .push(format!("cannot reorder: {e}"), ToastKind::Warning),
             }
         }
-        self.refresh_sidebar();
-        if drag.space == self.active_space() {
-            self.sidebar.select_slug(&drag.slug);
-        }
+        // The drag is already taken, so the landing's own drag cancel (it
+        // calls back here) finds nothing to do.
+        let cursor = (drag.space == self.active_space())
+            .then(|| CursorAim::On(RowKey::Request(drag.slug.clone())));
+        self.land(Landing { cursor, ..Landing::default() });
         if let Some(t) = reordered {
             self.record_project_step(t, crate::undo::StepLabel::reorder(self.request_display(&drag.slug)));
         }
@@ -8933,42 +8955,25 @@ impl App {
         // without a marker to undo it: the file landed either way.
         match p.create_request(name, req) {
             Ok((slug, leaf)) => {
-                // Hold the created request so the editor gets exactly
-                // what was written (display name included).
-                let saved = match self
-                    .project
-                    .as_mut()
-                    .expect("checked above")
-                    .open_request(&slug)
-                {
-                    Ok(r) => r.clone(),
-                    Err(e) => {
-                        // The file landed, so the entry is real and keeps
-                        // its marker; the editor was never marked saved,
-                        // so this counts as a failed save and the
-                        // deferred step (quit, switch) does not run.
-                        self.toasts
-                            .push(format!("could not open {slug}: {e}"), ToastKind::Error);
-                        self.refresh_sidebar();
-                        self.last_action_failed = true;
-                        self.record_project_step(t, crate::undo::StepLabel::create(leaf.clone()));
-                        return false;
-                    }
-                };
-                self.editor.load(Some(slug.clone()), saved);
+                let label = crate::undo::StepLabel::create(leaf.clone());
+                // The editor holds exactly what was written (display name
+                // included); the landing opens the new row's folders and
+                // puts the cursor on it.
+                if !self.land(Landing {
+                    open: Some(Open::Request { slug: slug.clone(), buffer: None }),
+                    ..Landing::default()
+                }) {
+                    // The file landed, so the entry is real and keeps its
+                    // marker; the editor was never marked saved, so this
+                    // counts as a failed save and the deferred step (quit,
+                    // switch) does not run. `land` toasted why.
+                    self.record_project_step(t, label);
+                    self.last_action_failed = true;
+                    return false;
+                }
                 self.editor.mark_saved();
-                self.toasts
-                    .push(format!("Saved {leaf}"), ToastKind::Success);
-                // Queue the slug's ancestor folders open, rebuild the tree
-                // with them expanded (so the new row exists at all), then
-                // select it now that it's actually visible.
-                let prev = self.sidebar.open_row();
-                self.sidebar.select_slug(&slug);
-                self.refresh_sidebar();
-                self.sidebar.select_slug(&slug);
-                self.retarget_sidebar_travel(prev);
-                self.persist_open_request();
-                self.record_project_step(t, crate::undo::StepLabel::create(leaf.clone()));
+                self.toasts.push(format!("Saved {leaf}"), ToastKind::Success);
+                self.record_project_step(t, label);
                 true
             }
             Err(Error::AlreadyExists(taken)) => {

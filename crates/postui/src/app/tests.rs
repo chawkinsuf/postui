@@ -28140,3 +28140,193 @@ fn undoing_a_create_names_the_created_request() {
     app.update(Action::Undo);
     assert_eq!(app.toasts.last_message(), Some("Undid create of Fresh One"));
 }
+
+#[test]
+fn deleting_the_open_request_selects_the_neighbour_row_without_opening_it() {
+    let mut app = App::new_for_test();
+    for n in ["a", "b", "c"] {
+        app.update(Action::CreateRequest(n.into()));
+    }
+    app.update(Action::OpenRequest("main/b".into()));
+    app.update(Action::DeleteRequest("main/b".into()));
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/c"));
+    assert!(app.editor.slug.is_none(), "editor is a scratch, not c");
+}
+
+#[test]
+fn deleting_the_open_request_skips_a_folder_header_neighbour() {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let dir = tempfile::tempdir().unwrap();
+    postui_core::fixtures::ensure_project(dir.path()).unwrap();
+    for slug in ["main/alpha", "main/beta", "main/zsub/x"] {
+        postui_core::fixtures::save_request(dir.path(), slug, &req("https://x/1")).unwrap();
+    }
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    render_once(&mut app);
+    app.update(Action::OpenRequest("main/beta".into()));
+    assert!(matches!(app.sidebar.rows.get(2), Some(Row::Folder { .. })));
+    app.update(Action::DeleteRequest("main/beta".into()));
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/alpha"));
+}
+
+#[test]
+fn deleting_the_cursor_row_lands_on_the_neighbour() {
+    let (mut app, _dir) = three_row_app();
+    app.update(Action::ForceOpenRequest("main/gamma".into()));
+    app.sidebar.select_slug("main/alpha");
+    app.update(Action::DeleteSelectedRequest);
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/beta"));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/gamma"), "the open request stays open");
+}
+
+#[test]
+fn deleting_the_last_row_lands_on_the_row_above() {
+    let (mut app, _dir) = three_row_app();
+    app.sidebar.select_slug("main/gamma");
+    app.update(Action::DeleteSelectedRequest);
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/beta"));
+}
+
+#[test]
+fn undoing_a_delete_made_from_the_editor_puts_the_sidebar_cursor_back_where_it_was() {
+    let (mut app, _dir) = three_row_app();
+    app.update(Action::ForceOpenRequest("main/beta".into()));
+    app.sidebar.select_slug("main/alpha");
+    app.update(Action::DeleteRequest("main/beta".into())); // the editor's own delete
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/gamma"), "the open row's neighbour");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.slug.as_deref(), Some("main/beta"), "reopened");
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/alpha"), "rule 1: where it was, not the reopened row");
+}
+
+#[test]
+fn an_undo_that_reopens_a_request_leaves_an_unchanged_cursor_where_it_is() {
+    let (mut app, _dir) = three_row_app();
+    app.update(Action::ForceOpenRequest("main/beta".into()));
+    app.sidebar.select_slug("main/gamma");
+    // The delete's neighbour is gamma too, so the op left the cursor alone.
+    app.update(Action::DeleteRequest("main/beta".into()));
+    app.update(Action::Undo);
+    assert_eq!(app.editor.slug.as_deref(), Some("main/beta"));
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/gamma"), "a part the op did not change is left alone");
+}
+
+/// Sweep-7 bug (b).
+#[test]
+fn renaming_a_request_that_resorts_keeps_the_cursor_on_it() {
+    let (mut app, _dir) = three_row_app();
+    app.sidebar.select_slug("main/alpha");
+    app.update(Action::RenameRequest { from: "main/alpha".into(), to: "zulu".into() });
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/zulu"));
+}
+
+#[test]
+fn undoing_a_resorting_rename_puts_the_cursor_back_on_the_old_name() {
+    let (mut app, _dir) = three_row_app();
+    app.sidebar.select_slug("main/alpha");
+    app.update(Action::RenameRequest { from: "main/alpha".into(), to: "zulu".into() });
+    app.update(Action::Undo);
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/alpha"));
+    app.update(Action::Redo);
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/zulu"));
+}
+
+/// Sweep-7 bug (a): move R to another space, follow it there and open
+/// it, undo — R is back in its space, open, and the cursor is on it, so
+/// the next `m` targets the moved-back request.
+#[test]
+fn undoing_a_cross_space_move_lands_the_cursor_on_the_moved_back_request() {
+    let (mut app, _dir) = spaced_app();
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    app.sidebar.select_slug("main/alpha");
+    app.update(Action::ForceMoveRequestToSpace { slug: "main/alpha".into(), space: "auth".into() });
+    app.update(Action::SwitchSpace("auth".into()));
+    app.update(Action::OpenRequest("auth/alpha".into()));
+    app.update(Action::Undo);
+    assert_eq!(app.proj().local().active_space, "main");
+    assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"));
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/alpha"));
+    app.update(Action::PromptMoveSelectedRequestToSpace);
+    let Some(Modal::Chooser(c)) = app.modals.top() else { panic!("the move chooser") };
+    assert!(
+        c.items.iter().any(|i| i
+            .actions
+            .iter()
+            .any(|a| matches!(a, Action::MoveRequestToSpace { slug, .. } if slug == "main/alpha"))),
+        "the chooser moves the moved-back request"
+    );
+}
+
+#[test]
+fn moving_a_request_to_another_space_lands_on_the_neighbour() {
+    let (mut app, _dir) = three_row_app();
+    app.update(Action::ForceOpenRequest("main/beta".into()));
+    app.sidebar.select_slug("main/beta");
+    app.update(Action::ForceMoveRequestToSpace { slug: "main/beta".into(), space: "auth".into() });
+    assert!(app.editor.slug.is_none(), "the moved request left with its space");
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/gamma"));
+}
+
+#[test]
+fn reordering_keeps_the_cursor_on_the_moved_row_and_so_does_its_undo() {
+    let (mut app, _dir) = three_row_app();
+    app.sidebar.select_slug("main/beta");
+    app.update(Action::MoveRequest { slug: "main/beta".into(), delta: 1 });
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/beta"));
+    app.update(Action::Undo);
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/beta"));
+}
+
+/// `main` holds `alpha` and a collapsed folder `zsub` (with `x`); `auth`
+/// holds `login`. Rows: `alpha`, then the `zsub` folder.
+fn folder_space_app() -> (App, tempfile::TempDir) {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let dir = tempfile::tempdir().unwrap();
+    postui_core::fixtures::ensure_project(dir.path()).unwrap();
+    postui_core::fixtures::create_space(dir.path(), "auth").unwrap();
+    for slug in ["main/alpha", "main/zsub/x", "auth/login"] {
+        postui_core::fixtures::save_request(dir.path(), slug, &req("https://x/1")).unwrap();
+    }
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    render_once(&mut app);
+    assert!(matches!(app.sidebar.rows.get(1), Some(Row::Folder { path, .. }) if path == "main/zsub"));
+    (app, dir)
+}
+
+/// Spec §4.5: renaming the active space keeps the cursor on the same row,
+/// re-prefixed — a folder row included (controller ruling C13).
+#[test]
+fn renaming_the_active_space_keeps_the_cursor_on_a_folder_row() {
+    use crate::components::sidebar::RowKey;
+    let (mut app, _dir) = folder_space_app();
+    assert!(app.sidebar.select_key(&RowKey::Folder("main/zsub".into())));
+    app.update(Action::RenameSpace { from: "main".into(), to: "Renamed".into() });
+    let space = app.proj().local().active_space.clone();
+    assert_ne!(space, "main", "the rename happened");
+    assert_eq!(app.sidebar.selected_key(), Some(RowKey::Folder(format!("{space}/zsub"))));
+}
+
+#[test]
+fn renaming_the_active_space_keeps_the_cursor_on_a_request_row() {
+    let (mut app, _dir) = folder_space_app();
+    app.sidebar.select_slug("main/alpha");
+    app.update(Action::RenameSpace { from: "main".into(), to: "Renamed".into() });
+    let space = app.proj().local().active_space.clone();
+    assert_eq!(app.sidebar.selected_slug(), Some(format!("{space}/alpha")));
+}
+
+/// Rule 1: undoing the rename puts the cursor back on the folder row it
+/// was on; redo re-prefixes it again.
+#[test]
+fn undoing_a_space_rename_puts_the_cursor_back_on_the_folder_row() {
+    use crate::components::sidebar::RowKey;
+    let (mut app, _dir) = folder_space_app();
+    assert!(app.sidebar.select_key(&RowKey::Folder("main/zsub".into())));
+    app.update(Action::RenameSpace { from: "main".into(), to: "Renamed".into() });
+    let space = app.proj().local().active_space.clone();
+    app.update(Action::Undo);
+    assert_eq!(app.proj().local().active_space, "main");
+    assert_eq!(app.sidebar.selected_key(), Some(RowKey::Folder("main/zsub".into())));
+    app.update(Action::Redo);
+    assert_eq!(app.sidebar.selected_key(), Some(RowKey::Folder(format!("{space}/zsub"))));
+}
