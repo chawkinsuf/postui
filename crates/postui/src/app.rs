@@ -1472,11 +1472,8 @@ impl App {
     fn switch_manage_tab_state(&mut self, tab: crate::components::manage::ManageTab) {
         use crate::components::manage::ManageTab;
         self.manage.switch_list(tab);
-        if matches!(tab, ManageTab::Environments | ManageTab::Spaces)
-            && let Some(p) = self.project.as_ref()
-        {
-            let len = crate::components::manage_list::ManageList::items(tab, p).len();
-            self.manage.list.clamp(len);
+        if matches!(tab, ManageTab::Environments | ManageTab::Spaces) {
+            self.clamp_list(tab);
         }
         self.settings.end_edit();
     }
