@@ -20768,6 +20768,23 @@ mod undo_tests {
             check(&app, name);
         }
 
+        // Arrow / page / Home / End: the keyboard moves the cursor, never
+        // clears it. `render_once` gives the sidebar a known viewport so
+        // `page()` (behind PageDown/PageUp) is not zero.
+        app.focus = PaneId::Sidebar;
+        render_once(&mut app);
+        for (name, key) in [
+            ("arrow down", KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
+            ("arrow up", KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)),
+            ("page down", KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE)),
+            ("page up", KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE)),
+            ("home", KeyEvent::new(KeyCode::Home, KeyModifiers::NONE)),
+            ("end", KeyEvent::new(KeyCode::End, KeyModifiers::NONE)),
+        ] {
+            app.handle_key(key);
+            check(&app, name);
+        }
+
         // Right-click a row, then dismiss the menu (§4.5's own row): drive
         // it the way `dismissed_sidebar_context_menu_restores_the_previous_selection`
         // does — render so the hitmap exists, right-click the cursor's own
@@ -20782,6 +20799,21 @@ mod undo_tests {
         check(&app, "right-click a row");
         app.update(Action::Close);
         check(&app, "dismiss the menu");
+
+        // Outside change (reload, poll): the project changes on disk
+        // without going through the app — remove the cursor's row, then
+        // add a new one — and `RefreshSidebar` must still find a cursor.
+        // Pattern from `an_outside_delete_of_the_cursor_row_lands_on_the_neighbour`.
+        app.update(Action::ForceOpenRequest("main/fresh".into()));
+        app.sidebar.select_slug("main/fresh");
+        assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/fresh"));
+        std::fs::remove_file(postui_core::storage::request_path(dir.path(), "main/fresh")).unwrap();
+        app.update(Action::RefreshSidebar);
+        check(&app, "outside delete of the cursor row");
+
+        postui_core::fixtures::save_request(dir.path(), "main/outsider", &req("https://x/9")).unwrap();
+        app.update(Action::RefreshSidebar);
+        check(&app, "outside add of a row");
 
         // Redo of a delete, run fresh so the redo stack holds exactly what
         // was just undone.
