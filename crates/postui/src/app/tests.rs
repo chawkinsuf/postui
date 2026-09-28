@@ -12083,6 +12083,83 @@ fn extract_to_request_saves_the_request_file_to_disk() {
     assert_eq!(on_disk.url, "{{trace_id}}");
 }
 
+/// Final review I1: an extract records its project step *before* the token
+/// replacement, so the step's views carry no buffer. Extract, save, undo,
+/// undo then peels the token (dirty against the saved file) and then the
+/// declaration — without reloading the request over the unsaved original.
+/// Redo walks the same two steps back, one visible change each.
+fn extract_save_undo_undo_keeps_the_original_url(extract: Action, declared: fn(&App) -> bool) {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    postui_core::fixtures::save_request(dir.path(), "main/ping", &req("https://x/token-abc123"))
+        .unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    // The event loop captures editor steps after every event.
+    let step = |app: &mut App, a: Action| {
+        app.update(a);
+        app.capture_undo();
+    };
+    step(&mut app, Action::ForceOpenRequest("main/ping".into()));
+    app.focus = crate::layout::PaneId::Editor;
+    app.editor.open_url_from_app();
+
+    step(&mut app, extract);
+    assert_eq!(app.editor.url.text(), "{{session_token}}");
+    assert!(declared(&app));
+    step(&mut app, Action::SaveRequest);
+    assert!(!app.editor.is_dirty());
+
+    step(&mut app, Action::Undo);
+    assert_eq!(app.editor.url.text(), "https://x/token-abc123", "undo 1 peels the token");
+    assert!(app.editor.is_dirty(), "against the saved token");
+    assert!(declared(&app), "undo 1 leaves the declaration");
+
+    step(&mut app, Action::Undo);
+    assert!(!declared(&app), "undo 2 peels the declaration");
+    assert_eq!(
+        app.editor.url.text(),
+        "https://x/token-abc123",
+        "undo 2 never reloads the request over the unsaved original"
+    );
+    assert!(app.editor.is_dirty(), "one save restores the pre-op file");
+
+    step(&mut app, Action::Redo);
+    assert!(declared(&app), "redo 1 re-declares");
+    assert_eq!(
+        app.editor.url.text(),
+        "https://x/token-abc123",
+        "redo 1 leaves the URL to the next step"
+    );
+
+    step(&mut app, Action::Redo);
+    assert_eq!(app.editor.url.text(), "{{session_token}}", "redo 2 re-inserts the token");
+}
+
+#[test]
+fn extract_variable_then_save_undo_undo_keeps_the_unsaved_original_url() {
+    extract_save_undo_undo_keeps_the_original_url(
+        Action::ConfirmExtractVariable {
+            name: "session_token".into(),
+            destination: crate::action::ExtractDestination::ProjectDefault,
+        },
+        |app| app.variables().vars.contains_key("session_token"),
+    );
+}
+
+#[test]
+fn extract_selector_then_save_undo_undo_keeps_the_unsaved_original_url() {
+    extract_save_undo_undo_keeps_the_original_url(
+        Action::ConfirmExtractToSelector {
+            name: "session_token".into(),
+            option: "one".into(),
+            shared: false,
+            source: crate::action::ExtractSource::FocusedField,
+        },
+        |app| app.variables().selectors.contains_key("session_token"),
+    );
+}
+
 // -------------------------------------------------------------
 // Finding 3: option delete
 // -------------------------------------------------------------

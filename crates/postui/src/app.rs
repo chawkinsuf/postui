@@ -6772,13 +6772,19 @@ impl App {
             Ok(()) => {
                 self.set_selection_for(&env, &name, &option);
                 self.sync_varmanager();
+                // Recorded before the token replacement: the step's views
+                // then carry no buffer, and the replacement is the next
+                // `capture_undo`'s own editor step. Recorded after it, the
+                // step's `after` would hold the token edit, and undoing it
+                // (once the token step is undone and the file saved) would
+                // reload the request over the unsaved original.
+                self.record_project_step(t, self.open_request_label(crate::undo::StepLabel::variable(&name)));
                 match source {
                     ExtractSource::FocusedField => self.replace_focused_field_with_token(&name),
                     ExtractSource::Selection(surface) => {
                         self.replace_selection_with_token(surface, &name);
                     }
                 }
-                self.record_project_step(t, self.open_request_label(crate::undo::StepLabel::variable(&name)));
                 self.toasts
                     .push(format!("extracted to {{{{{name}}}}}"), ToastKind::Success);
             }
@@ -6943,17 +6949,19 @@ impl App {
                 // replacement, and a Request destination's
                 // `[variables]` insert) is captured by the next
                 // `capture_undo` as an EditorDelta — undo peels the
-                // token-replacement, then the declaration.
+                // token-replacement, then the declaration. The step is
+                // recorded before the replacement, so its views carry no
+                // buffer (see `confirm_extract_to_selector`). A `Request`
+                // destination journals nothing: its save below is not an
+                // undo step.
+                if !wrote_to_request {
+                    self.record_project_step(t, self.open_request_label(crate::undo::StepLabel::variable(&name)));
+                }
                 match source {
                     ExtractSource::FocusedField => self.replace_focused_field_with_token(&name),
                     ExtractSource::Selection(surface) => {
                         self.replace_selection_with_token(surface, &name);
                     }
-                }
-                // A `Request` destination journals nothing: its save
-                // below is not an undo step.
-                if !wrote_to_request {
-                    self.record_project_step(t, self.open_request_label(crate::undo::StepLabel::variable(&name)));
                 }
                 // Finding 2, same ruling as promote: the
                 // `Request` destination's write only exists so far
