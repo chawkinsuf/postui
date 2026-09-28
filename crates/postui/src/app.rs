@@ -5987,8 +5987,15 @@ impl App {
                         space,
                     });
                 if items.is_empty() {
-                    self.toasts
-                        .push("No other space to move to", ToastKind::Info);
+                    // A warning, not an Info note: the user pressed a key
+                    // the footer advertises and nothing happened, so this
+                    // answers "why didn't `m` work" — and it names the
+                    // remedy, because "no other space" reads like a
+                    // failure rather than a project with one space in it.
+                    self.toasts.push(
+                        "Only one space — create another to move requests",
+                        ToastKind::Warning,
+                    );
                     return true;
                 }
                 self.push_modal(Modal::Chooser(ChooserState::new("Move to space", items)));

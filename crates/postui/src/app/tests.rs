@@ -5744,6 +5744,38 @@ fn request_context_menu_offers_one_move_row_that_opens_the_space_chooser() {
     );
 }
 
+/// `m` on a request in a project with only one space: there is nowhere
+/// to move it. An Info "no other space" note read as the key doing
+/// nothing; it warns and says what the project is missing, and opens no
+/// modal.
+#[test]
+fn m_with_only_one_space_says_so_instead_of_doing_nothing() {
+    let mut app = App::new_for_test();
+    postui_core::fixtures::save_request(app.proj().root(), "main/alpha", &req("https://x/1"))
+        .unwrap();
+    app.update(Action::RefreshSidebar);
+    render_once(&mut app);
+    app.focus = PaneId::Sidebar;
+    app.sidebar.select_slug("main/alpha");
+    app.toasts = Default::default();
+
+    press(&mut app, 'm');
+    assert!(app.modals.is_empty(), "nowhere to move to, so no picker");
+    let said = app.toasts.messages().join(" | ");
+    assert!(
+        said.contains("Only one space"),
+        "the key must say why it did nothing: {said:?}"
+    );
+    assert!(
+        app.toasts
+            .entries()
+            .iter()
+            .any(|(m, k)| m.contains("Only one space") && **k == ToastKind::Warning),
+        "a warning, not an info note: {:?}",
+        app.toasts.entries()
+    );
+}
+
 /// With no other space to move to, the row is left out rather than
 /// opening an empty chooser.
 #[test]
