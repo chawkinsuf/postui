@@ -4470,7 +4470,7 @@ fn m_in_the_sidebar_opens_the_move_to_space_chooser_for_the_selection() {
 // -- Task 11: space CRUD --------------------------------------------------
 
 #[test]
-fn new_space_prompt_creates_and_switches() {
+fn new_space_prompt_creates_without_switching() {
     let (mut app, dir) = spaced_app();
     app.update(Action::OpenNewSpacePrompt);
     for c in "billing".chars() {
@@ -4480,8 +4480,7 @@ fn new_space_prompt_creates_and_switches() {
     assert!(app.modals.is_empty());
     assert!(dir.path().join("requests/billing").is_dir());
     assert_eq!(app.proj().spaces(), ["main", "auth", "billing"]);
-    assert_eq!(app.proj().local().active_space, "billing");
-    assert!(app.editor.slug.is_none());
+    assert_eq!(app.proj().local().active_space, "main", "the prompt makes the space, it does not enter it");
     let toasts = app.toasts.messages().len();
     app.update(Action::CreateSpace("auth".into()));
     assert!(app.toasts.messages().len() > toasts, "duplicate toasts");
@@ -4494,8 +4493,11 @@ fn creating_a_space_with_a_free_form_name_slugs_the_folder_and_shows_the_name() 
     let (mut app, dir) = spaced_app();
     app.update(Action::CreateSpace("Auth v2!".into()));
     assert!(dir.path().join("requests/auth-v2").is_dir());
-    assert_eq!(app.proj().local().active_space, "auth-v2");
     assert_eq!(app.proj().space_name("auth-v2"), "Auth v2!");
+    // Creating does not enter the new space, so switch on purpose to
+    // read the display name off the header chip.
+    app.update(Action::SwitchSpace("auth-v2".into()));
+    assert_eq!(app.proj().local().active_space, "auth-v2");
     let text = rendered_text_wide(&mut app);
     assert!(text.contains("Space: Auth v2!"), "{text}");
     assert!(
@@ -4514,6 +4516,87 @@ fn creating_a_space_with_a_free_form_name_slugs_the_folder_and_shows_the_name() 
         .find(|it| it.label == "3  Auth v2!")
         .expect("display name in the chooser");
     assert_eq!(row.action, Some(Action::SwitchSpace("auth-v2".into())));
+}
+
+#[test]
+fn creating_a_space_does_not_switch_to_it() {
+    let (mut app, dir) = spaced_app();
+    app.update(Action::SwitchSpace("auth".into()));
+    app.update(Action::OpenRequest("auth/login".into()));
+    app.update(Action::CreateSpace("billing".into()));
+    assert!(dir.path().join("requests/billing").is_dir());
+    assert_eq!(app.proj().spaces(), ["main", "auth", "billing"]);
+    assert_eq!(app.proj().local().active_space, "auth", "the new space is created, not entered");
+    assert_eq!(app.editor.slug.as_deref(), Some("auth/login"), "the request you were aiming at stays open");
+}
+
+#[test]
+fn creating_a_space_puts_the_manage_cursor_on_the_new_row() {
+    use crate::components::manage::ManageTab;
+    let (mut app, _dir) = spaced_app();
+    app.update(Action::OpenManage { tab: Some(ManageTab::Spaces) });
+    app.update(Action::CreateSpace("billing".into()));
+    assert_eq!(app.manage_selected(ManageTab::Spaces).as_deref(), Some("billing"));
+}
+
+#[test]
+fn creating_an_environment_puts_the_manage_cursor_on_the_new_row() {
+    use crate::components::manage::ManageTab;
+    let (mut app, _dir) = app_with_envs();
+    app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
+    assert_eq!(app.manage_selected(ManageTab::Environments).as_deref(), Some("prod"), "the cursor starts on the first row");
+    app.update(Action::CreateEnv("staging".into()));
+    assert_eq!(app.manage_selected(ManageTab::Environments).as_deref(), Some("staging"));
+    assert_eq!(app.proj().active_env(), Some("staging"), "creating an environment still activates it");
+}
+
+#[test]
+fn each_manage_list_tab_keeps_its_own_cursor() {
+    use crate::components::manage::ManageTab;
+    let (mut app, _dir) = app_with_envs();
+    app.update(Action::CreateSpace("auth".into()));
+    app.update(Action::CreateSpace("billing".into()));
+    assert_eq!(app.proj().spaces(), ["main", "auth", "billing"]);
+    assert_eq!(app.proj().environments(), ["prod", "qa"]);
+    app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
+    app.manage.list.cursor = 1;
+    app.update(Action::SelectManageTab(ManageTab::Spaces));
+    assert_eq!(app.manage.list.cursor, 2, "the Spaces tab arrives on its own cursor (the create left it on billing), not on the env cursor");
+    assert_eq!(app.manage_selected(ManageTab::Spaces).as_deref(), Some("billing"));
+    app.manage.list.cursor = 1;
+    app.update(Action::SelectManageTab(ManageTab::Environments));
+    assert_eq!(app.manage_selected(ManageTab::Environments).as_deref(), Some("qa"), "Environments kept the cursor it had");
+    app.update(Action::SelectManageTab(ManageTab::Variables));
+    app.update(Action::SelectManageTab(ManageTab::Settings));
+    app.update(Action::SelectManageTab(ManageTab::Spaces));
+    assert_eq!(app.manage_selected(ManageTab::Spaces).as_deref(), Some("auth"), "Spaces kept its own cursor");
+    app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
+    assert_eq!(app.manage.list.cursor, 1, "OpenManage keeps it too");
+}
+
+#[test]
+fn a_parked_manage_cursor_clamps_to_a_shrunken_list() {
+    use crate::components::manage::ManageTab;
+    let (mut app, _dir) = manage_envs_app();
+    assert_eq!(app.proj().environments(), ["prod", "qa", "dev"]);
+    app.manage.list.cursor = 2;
+    app.update(Action::SelectManageTab(ManageTab::Spaces));
+    app.update(Action::DeleteEnv("dev".into()));
+    assert_eq!(app.proj().environments(), ["prod", "qa"]);
+    app.update(Action::SelectManageTab(ManageTab::Environments));
+    assert_eq!(app.manage.list.cursor, 1, "clamped to the last row");
+    assert_eq!(app.manage_selected(ManageTab::Environments).as_deref(), Some("qa"));
+}
+
+#[test]
+fn deleting_an_environment_lands_the_manage_cursor_on_the_neighbour() {
+    let (mut app, _dir) = manage_envs_app();
+    app.manage_select_name("dev");
+    app.update(Action::DeleteEnv("dev".into()));
+    assert_eq!(app.manage_selected(crate::components::manage::ManageTab::Environments).as_deref(), Some("qa"), "the last row went: the one above");
+    app.manage_select_name("prod");
+    app.update(Action::DeleteEnv("prod".into()));
+    assert_eq!(app.manage_selected(crate::components::manage::ManageTab::Environments).as_deref(), Some("qa"), "the row that slid up into index 0");
 }
 
 #[test]

@@ -1435,7 +1435,7 @@ impl App {
         tab: crate::components::manage::ManageTab,
     ) -> Option<String> {
         self.project()
-            .and_then(|p| self.manage.list.selected(tab, p))
+            .and_then(|p| self.manage.list_for(tab).selected(tab, p))
             .map(str::to_string)
     }
 
@@ -1463,6 +1463,24 @@ impl App {
         }
     }
 
+    /// Hands the Manage screen's shared state over to `tab`, for both
+    /// spellings of a tab switch (`OpenManage` with a tab, and the strip's
+    /// `SelectManageTab`). Each list tab keeps its own cursor; a parked
+    /// cursor past the end of a list that shrank while away clamps here.
+    /// Any in-progress Settings field edit ends: it points at something
+    /// the new tab does not show.
+    fn switch_manage_tab_state(&mut self, tab: crate::components::manage::ManageTab) {
+        use crate::components::manage::ManageTab;
+        self.manage.switch_list(tab);
+        if matches!(tab, ManageTab::Environments | ManageTab::Spaces)
+            && let Some(p) = self.project.as_ref()
+        {
+            let len = crate::components::manage_list::ManageList::items(tab, p).len();
+            self.manage.list.clamp(len);
+        }
+        self.settings.end_edit();
+    }
+
     /// Moves the Manage screen's list cursor onto `name` in the open tab.
     fn manage_select_name(&mut self, name: &str) {
         let Self {
@@ -1470,7 +1488,24 @@ impl App {
         } = self;
         if let Some(p) = project {
             let tab = manage.tab;
-            manage.list.select_name(tab, p, name);
+            manage.list_for_mut(tab).select_name(tab, p, name);
+        }
+    }
+
+    /// Puts `tab`'s own list cursor (live or parked) on `name`.
+    fn select_list_row(&mut self, tab: crate::components::manage::ManageTab, name: &str) {
+        let Self { project, manage, .. } = self;
+        if let Some(p) = project {
+            manage.list_for_mut(tab).select_name(tab, p, name);
+        }
+    }
+
+    /// Clamps `tab`'s own list cursor to the list's current length.
+    fn clamp_list(&mut self, tab: crate::components::manage::ManageTab) {
+        let Self { project, manage, .. } = self;
+        if let Some(p) = project {
+            let len = crate::components::manage_list::ManageList::items(tab, p).len();
+            manage.list_for_mut(tab).clamp(len);
         }
     }
 
@@ -4348,7 +4383,7 @@ impl App {
                     return true;
                 };
                 match p.create_environment(&name) {
-                    Ok(_slug) => {
+                    Ok(slug) => {
                         // Core activated the new environment inside the
                         // transaction and recorded the transition, so
                         // there is no switch to make here — only the
@@ -4360,6 +4395,7 @@ impl App {
                         let label = self.env_label_display();
                         self.toasts
                             .push(format!("env: {label}"), ToastKind::Success);
+                        self.select_list_row(crate::components::manage::ManageTab::Environments, &slug);
                     }
                     Err(postui_core::project::Error::AlreadyExists(name)) => {
                         self.toasts.push(
@@ -5175,7 +5211,8 @@ impl App {
                 true
             }
             Action::OpenManage { tab } => {
-                // A tab switch here `reset`s the list, which would drop a
+                // A tab switch here hands the list over to the new tab
+                // (each list tab keeps its own cursor), which would drop a
                 // live Manage-list row drag on the floor with its press
                 // still armed: cancel it first, as `SelectManageTab` does.
                 self.finish_manage_drag(false);
@@ -5197,8 +5234,7 @@ impl App {
                     return self.update(Action::CloseScreen);
                 }
                 if self.manage.tab != target {
-                    self.manage.list.reset();
-                    self.settings.end_edit();
+                    self.switch_manage_tab_state(target);
                 }
                 let prev = self.manage.tab;
                 self.manage.tab = target;
@@ -5226,17 +5262,15 @@ impl App {
             Action::SelectManageTab(tab) => {
                 // A live Manage-list row drag belongs to whichever tab's
                 // list it is rearranging: the tab strip switching out from
-                // under it cancels it (and `reset` below would drop the
-                // drag on the floor anyway).
+                // under it cancels it (and the tab-state swap below would
+                // drop the drag on the floor anyway).
                 self.finish_manage_drag(false);
-                // Each tab lists something else: a cursor (and any name
-                // edit) carried across would point at the wrong item.
+                // Each list tab keeps its own cursor, so switching tabs
+                // does not reset it, but the Settings tab's field edit
+                // still ends: it points at something this tab does not
+                // show.
                 if self.manage.tab != tab {
-                    self.manage.list.reset();
-                    // The Settings tab's field edit goes with it, for the
-                    // same reason the list's own name edit does: it points
-                    // at something this tab does not show.
-                    self.settings.end_edit();
+                    self.switch_manage_tab_state(tab);
                     let prev = self.manage.tab;
                     self.manage.tab = tab;
                     self.settings.clamp_to_live(self.ui_settings_are_editable());
@@ -6047,7 +6081,12 @@ impl App {
                             format!("Created space {}", self.space_name(&slug)),
                             ToastKind::Success,
                         );
-                        self.apply(Action::SwitchSpace(slug))
+                        // Creating a space does not follow you into it,
+                        // the way `ForceMoveRequestToSpace` does not follow
+                        // the request it moves. The Spaces list's cursor
+                        // lands on the new row (live or parked).
+                        self.select_list_row(crate::components::manage::ManageTab::Spaces, &slug);
+                        true
                     }
                     Err(e) => {
                         self.toasts
@@ -6163,6 +6202,7 @@ impl App {
                         if self.screen == Screen::Manage {
                             self.sync_varmanager();
                         }
+                        self.clamp_list(crate::components::manage::ManageTab::Environments);
                     }
                     Err(e) => {
                         self.toasts
@@ -6283,6 +6323,7 @@ impl App {
                         } else {
                             self.refresh_sidebar();
                         }
+                        self.clamp_list(crate::components::manage::ManageTab::Spaces);
                     }
                     Err(e) => {
                         self.toasts

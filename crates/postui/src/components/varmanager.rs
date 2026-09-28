@@ -1157,7 +1157,8 @@ impl VarManager {
 
     /// Rebuilds `left_rows` from `ctx` and repairs the selection after a
     /// structural write: the cursor clamps into range, and a detail pane
-    /// pointing at a name that no longer exists empties.
+    /// pointing at a name that no longer exists re-opens on the neighbour
+    /// row the cursor lands on instead.
     pub fn sync(&mut self, ctx: &Project) {
         self.left_rows = build_left_rows(ctx);
         if self.left_cursor >= self.left_rows.len() {
@@ -1169,12 +1170,38 @@ impl VarManager {
             VmDetail::Group(name) => !ctx.variables().selectors.contains_key(name),
         };
         if gone {
-            self.detail = VmDetail::None;
             self.form = VarFormState::default();
             self.grid = OptionGridState::default();
             self.focus = VmFocus::List;
+            // The neighbour of the row that went: whatever slid up into
+            // the cursor's own index, else the nearest selectable row
+            // above it. The cursor follows, so the highlight and the pane
+            // never disagree.
+            self.detail = match self.nearest_stop(self.left_cursor) {
+                Some(i) => {
+                    self.left_cursor = i;
+                    match &self.left_rows[i] {
+                        VmRow::Var(name) => VmDetail::Var(name.clone()),
+                        VmRow::Group(name) => VmDetail::Group(name.clone()),
+                        _ => VmDetail::None,
+                    }
+                }
+                None => VmDetail::None,
+            };
         }
         self.ensure_visible = true;
+    }
+
+    /// The row a selection lands on once the row it was on is gone: `from`
+    /// itself when something selectable slid up into that index, else the
+    /// nearest selectable row above it, else the first below. `None` only
+    /// when the list holds no selectable row at all.
+    fn nearest_stop(&self, from: usize) -> Option<usize> {
+        if self.left_rows.get(from).is_some_and(VmRow::is_stop) {
+            return Some(from);
+        }
+        let above = (0..from.min(self.left_rows.len())).rev().find(|i| self.left_rows[*i].is_stop());
+        above.or_else(|| (from..self.left_rows.len()).find(|i| self.left_rows[*i].is_stop()))
     }
 
     /// Points the cursor and detail pane at the row declaring `name`
@@ -3408,7 +3435,7 @@ fields = ["user_id", "customer_id"]
     }
 
     #[test]
-    fn sync_clamps_the_cursor_and_drops_a_deleted_detail() {
+    fn sync_clamps_the_cursor_and_reselects_after_a_deleted_detail() {
         let (_dir, ctx) = fixture();
         let mut vm = VarManager::default();
         render(&mut vm, &ctx);
@@ -3416,11 +3443,69 @@ fields = ["user_id", "customer_id"]
         vm.detail = VmDetail::Var("gone".into());
         vm.sync(&ctx);
         assert_eq!(vm.left_cursor, vm.left_rows.len() - 1);
-        assert_eq!(vm.detail, VmDetail::None);
+        // The detail pane follows the clamped cursor rather than emptying:
+        // the last row is the `creds` selector.
+        assert_eq!(vm.detail, VmDetail::Group("creds".into()));
 
         vm.detail = VmDetail::Group("creds".into());
         vm.sync(&ctx);
         assert_eq!(vm.detail, VmDetail::Group("creds".into()));
+    }
+
+    #[test]
+    fn deleting_the_open_variable_opens_the_neighbour_row() {
+        let (dir, _ctx) = fixture();
+        std::fs::write(
+            dir.path().join("variables.toml"),
+            "[alpha]\ndefault = \"1\"\n\n[beta]\ndefault = \"2\"\n\n[gamma]\ndefault = \"3\"\n",
+        )
+        .unwrap();
+        let (ctx, _) = Project::open(dir.path().to_path_buf()).unwrap();
+        let mut vm = VarManager::default();
+        render(&mut vm, &ctx);
+        let row_of = |vm: &VarManager, name: &str| {
+            vm.left_rows.iter().position(|r| r.name() == Some(name)).expect("row")
+        };
+        vm.select_row(row_of(&vm, "beta"));
+        let cursor = vm.left_cursor;
+        std::fs::write(
+            dir.path().join("variables.toml"),
+            "[alpha]\ndefault = \"1\"\n\n[gamma]\ndefault = \"3\"\n",
+        )
+        .unwrap();
+        let (ctx, _) = Project::open(dir.path().to_path_buf()).unwrap();
+        vm.sync(&ctx);
+        assert_eq!(vm.left_cursor, cursor, "the cursor does not move");
+        assert_eq!(vm.detail, VmDetail::Var("gamma".into()), "the pane opens the row now under the cursor");
+
+        vm.select_row(row_of(&vm, "gamma"));
+        std::fs::write(dir.path().join("variables.toml"), "[alpha]\ndefault = \"1\"\n").unwrap();
+        let (ctx, _) = Project::open(dir.path().to_path_buf()).unwrap();
+        vm.sync(&ctx);
+        assert_eq!(vm.left_cursor, row_of(&vm, "alpha"));
+        assert_eq!(vm.detail, VmDetail::Var("alpha".into()));
+    }
+
+    #[test]
+    fn deleting_the_last_variable_of_a_section_lands_on_the_one_above() {
+        let (dir, ctx) = fixture();
+        let mut vm = VarManager::default();
+        render(&mut vm, &ctx);
+        vm.select_name("api_key");
+        assert_eq!(vm.detail, VmDetail::Var("api_key".into()));
+        std::fs::write(
+            dir.path().join("variables.toml"),
+            "[base_url]\ndefault = \"http://localhost:8080\"\n\n[selectors.creds]\nfields = [\"user_id\"]\n",
+        )
+        .unwrap();
+        let (ctx, _) = Project::open(dir.path().to_path_buf()).unwrap();
+        vm.sync(&ctx);
+        assert_eq!(vm.detail, VmDetail::Var("base_url".into()));
+        assert_eq!(
+            vm.left_rows.get(vm.left_cursor).and_then(VmRow::name),
+            Some("base_url"),
+            "the highlight agrees with the pane"
+        );
     }
 
     #[test]

@@ -76,11 +76,63 @@ impl ManageTab {
 /// The Manage screen's own state: which tab is up, plus the list-edit
 /// body the Environments and Spaces tabs share. The Variables tab's body
 /// keeps its state elsewhere (`App::varmanager`).
-#[derive(Default)]
 pub struct Manage {
     pub tab: ManageTab,
-    /// The Environments/Spaces tabs' shared list-edit body.
+    /// The list-edit body of whichever list tab is live (`live`). The one
+    /// `ui.rs` and the mouse read: with `live` held to `tab` by
+    /// [`Self::switch_list`], it is always the open tab's own list.
     pub list: crate::components::manage_list::ManageList,
+    /// Which list tab `list` belongs to. Never `Variables`/`Settings`:
+    /// those tabs draw no list, so the live one simply waits for them.
+    live: ManageTab,
+    /// The *other* list tab's parked state, swapped in when that tab
+    /// comes up. There are only two list tabs, so one slot is enough.
+    parked: crate::components::manage_list::ManageList,
+}
+
+impl Default for Manage {
+    fn default() -> Self {
+        Self {
+            tab: ManageTab::default(),
+            list: crate::components::manage_list::ManageList::default(),
+            live: ManageTab::Environments,
+            parked: crate::components::manage_list::ManageList::default(),
+        }
+    }
+}
+
+impl Manage {
+    /// Parks the live list under its own tab and brings `tab`'s list
+    /// forward, so each list tab keeps its cursor, scroll and pane focus
+    /// across a switch. A no-op for the tabs that draw no list and for
+    /// the tab already live. The caller clamps (`ManageList::clamp`):
+    /// only it knows the project.
+    pub fn switch_list(&mut self, tab: ManageTab) {
+        if !matches!(tab, ManageTab::Environments | ManageTab::Spaces) || tab == self.live {
+            return;
+        }
+        std::mem::swap(&mut self.list, &mut self.parked);
+        self.live = tab;
+    }
+
+    /// `tab`'s own list, live or parked (spec R5: an undo reselects a row
+    /// in a list that is not on screen).
+    pub fn list_for(&self, tab: ManageTab) -> &crate::components::manage_list::ManageList {
+        if tab == self.live || !matches!(tab, ManageTab::Environments | ManageTab::Spaces) {
+            &self.list
+        } else {
+            &self.parked
+        }
+    }
+
+    /// [`Self::list_for`], mutably.
+    pub fn list_for_mut(&mut self, tab: ManageTab) -> &mut crate::components::manage_list::ManageList {
+        if tab == self.live || !matches!(tab, ManageTab::Environments | ManageTab::Spaces) {
+            &mut self.list
+        } else {
+            &mut self.parked
+        }
+    }
 }
 
 /// The bar's height: the Variables tab's buttons are `BUTTON_HEIGHT` tall

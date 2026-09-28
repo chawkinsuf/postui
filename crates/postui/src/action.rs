@@ -487,7 +487,9 @@ pub enum Action {
     OpenSpaceChooser,
     /// Open the `PromptKind::NewSpace` name prompt.
     OpenNewSpacePrompt,
-    /// Create `requests/<name>/` (+ list entry) and switch to it.
+    /// Create `requests/<name>/` (+ list entry). Does not switch to it —
+    /// the Spaces list's cursor lands on the new row instead, the way
+    /// `ForceMoveRequestToSpace` does not follow the request it moves.
     CreateSpace(String),
     /// Open the `PromptKind::RenameSpace` prompt, prefilled with the name.
     PromptRenameSpace(String),
