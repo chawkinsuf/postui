@@ -1006,7 +1006,10 @@ impl Component for Sidebar {
             // right-click arming a context menu), gets a steady
             // `control_hover`-fill marker: visibly targeted, clearly not the
             // band. When the two coincide (the common case right after an
-            // open) the band simply wins.
+            // open), the cursor still needs a cue of its own (R6: the
+            // cursor always sits somewhere): the band's fill lifts half a
+            // step toward the cursor fill, but only while the pane is
+            // focused — unfocused, the open row reads exactly as before.
             let is_open = matches!(
                 row,
                 Row::Request { slug, .. } if self.open_slug.as_deref() == Some(slug.as_str())
@@ -1026,6 +1029,11 @@ impl Component for Sidebar {
             });
             let is_cursor =
                 ctx.focused && self.selected == Some(i) && !is_band_row && band_alpha.is_none();
+            // §4.7: the cursor always sits somewhere (R6), so when it rests
+            // on the open row it needs a cue of its own: the band's fill
+            // lifts half a step toward the cursor fill, only while the
+            // pane is focused.
+            let lifted = ctx.focused && self.selected == Some(i) && is_band_row;
             let is_dragged = matches!(
                 (row, self.drag.as_ref()),
                 (Row::Request { slug, .. }, Some(d)) if *slug == d.slug
@@ -1077,7 +1085,18 @@ impl Component for Sidebar {
                     hover_t,
                     theme,
                 );
-                Self::resolve_fill(theme, highlight, theme.panel, hover_t)
+                if lifted {
+                    let lift = crate::theme::mix(theme.selection, theme.control_hover, 0.5);
+                    // Keep the `▌` bar cell: refill only the row's body.
+                    fill(
+                        buf,
+                        Rect::new(list_area.x + 1, text_row, list_area.width.saturating_sub(1), 1),
+                        lift,
+                    );
+                    lift
+                } else {
+                    Self::resolve_fill(theme, highlight, theme.panel, hover_t)
+                }
             };
 
             self.paint_row(
@@ -2003,10 +2022,11 @@ mod tests {
     }
 
     /// When the cursor lands on the open request itself (the common case
-    /// right after Enter), the cursor's selection fill simply wins — no
+    /// right after Enter), the band's fill lifts half a step toward the
+    /// cursor fill — a cue of its own — while the name stays plain, no
     /// separate open-accent styling layered underneath it.
     #[test]
-    fn cursor_on_the_open_row_shows_plain_selection_not_accent_name() {
+    fn cursor_on_the_open_row_lifts_the_selection_fill_and_keeps_the_name_plain() {
         let mut s = Sidebar::default();
         s.refresh(listing(&["only"]), "main", &expanded(&[]), &[]);
         s.open_slug = Some("main/only".into());
@@ -2025,10 +2045,44 @@ mod tests {
         let fill_cell = buf[(row0.x + row0.width - 2, row0.y)].clone();
         let name_cell = buf[(row0.x + 7, row0.y)].clone();
         assert_eq!(bar_cell.symbol(), "\u{258c}");
-        assert_eq!(fill_cell.bg, theme.selection);
+        assert_eq!(
+            fill_cell.bg,
+            crate::theme::mix(theme.selection, theme.control_hover, 0.5)
+        );
         assert_eq!(
             name_cell.fg, theme.text,
-            "coinciding open+cursor: the selection fill wins, name stays normal-colored"
+            "coinciding open+cursor: the lifted fill wins, name stays normal-colored"
+        );
+    }
+
+    #[test]
+    fn the_open_row_lifts_while_the_focused_cursor_is_on_it() {
+        let paint = |focused: bool, cursor: usize| {
+            let mut s = Sidebar::default();
+            s.refresh(listing(&["a", "b"]), "main", &expanded(&[]), &[]);
+            s.open_slug = Some("main/a".into());
+            s.selected = Some(cursor);
+            let theme = Theme::dark();
+            let mut ctx = draw_ctx(&theme, None);
+            ctx.focused = focused;
+            let backend = ratatui::backend::TestBackend::new(30, 12);
+            let mut terminal = ratatui::Terminal::new(backend).unwrap();
+            let mut hits = HitMap::default();
+            terminal.draw(|f| s.draw(f, f.area(), &ctx, &mut hits)).unwrap();
+            let row0 = hits.rect_of(&Hit::SidebarRow(0)).unwrap();
+            terminal.backend().buffer()[(row0.x + row0.width - 2, row0.y)].bg
+        };
+        let theme = Theme::dark();
+        assert_eq!(
+            paint(true, 0),
+            crate::theme::mix(theme.selection, theme.control_hover, 0.5),
+            "focused + on the open row: lifted"
+        );
+        assert_eq!(paint(false, 0), theme.selection, "unfocused: as today");
+        assert_eq!(
+            paint(true, 1),
+            theme.selection,
+            "cursor elsewhere: the open row as today"
         );
     }
 

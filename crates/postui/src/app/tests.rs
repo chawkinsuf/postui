@@ -6360,10 +6360,11 @@ fn sidebar_test_app_three_flat_rows() -> (App, tempfile::TempDir) {
 /// Regression test for the mouse-click travel-desync bug: keyboard-nav to
 /// one row, then click a *different* row, must SNAP the travel band to the
 /// clicked row instantly rather than leaving it animating (or frozen) on
-/// wherever the keyboard cursor last settled. Also exercises the
-/// coincide-wins ruling: the clicked request becomes both the cursor row
-/// and the open row, so it must show the plain `▌`/`theme.selection`
-/// treatment with a normal-colored (not `theme.accent`) name.
+/// wherever the keyboard cursor last settled. Also exercises the lifted-fill
+/// ruling (§4.7): the clicked request becomes both the cursor row and the
+/// open row, and while the pane is focused that lifts the band's fill half
+/// a step toward the cursor fill, with a normal-colored (not `theme.accent`)
+/// name.
 #[test]
 fn click_after_keyboard_nav_snaps_the_travel_band_to_the_clicked_row() {
     let (mut app, _dir) = sidebar_test_app_three_flat_rows();
@@ -6395,10 +6396,10 @@ fn click_after_keyboard_nav_snaps_the_travel_band_to_the_clicked_row() {
          animating (or frozen) on the keyboard cursor's old row"
     );
 
-    // Drawn: row 2 carries the plain selection fill/bar (cursor ==
-    // clicked == now-open row, so open's accent-name styling doesn't
-    // layer on top — the fill simply wins); row 0 (the stale keyboard
-    // position) carries neither.
+    // Drawn: row 2 carries the accent bar and the lifted fill (cursor ==
+    // clicked == now-open row, focused pane, so §4.7's lift applies —
+    // open's accent-name styling still doesn't layer on top); row 0 (the
+    // stale keyboard position) carries neither.
     render_once(&mut app);
     let backend = ratatui::backend::TestBackend::new(120, 40);
     let mut terminal = ratatui::Terminal::new(backend).unwrap();
@@ -6413,7 +6414,7 @@ fn click_after_keyboard_nav_snaps_the_travel_band_to_the_clicked_row() {
     );
     assert_eq!(
         buf[(row2.x + row2.width - 2, row2.y)].bg,
-        app.theme.selection
+        crate::theme::mix(app.theme.selection, app.theme.control_hover, 0.5)
     );
     assert_ne!(
         buf[(row0.x, row0.y)].symbol(),
