@@ -1194,6 +1194,75 @@ fn undo_restores_a_deleted_table_row() {
     assert_eq!(app.editor.params.len(), 1, "undo brings the row back");
 }
 
+/// Every other delete toasts with the undo hint; a header/param/var row
+/// used to vanish with no feedback at all.
+#[test]
+fn deleting_a_table_row_toasts_with_the_undo_hint() {
+    let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Headers;
+    app.editor.headers.insert(
+        "Accept".into(),
+        postui_core::model::Entry {
+            value: "*/*".into(),
+            enabled: true,
+        },
+    );
+    app.toasts = Default::default();
+    app.update(Action::DeleteTableRow(0));
+    assert!(app.editor.headers.is_empty(), "the row was removed");
+    let hint = app.undo_hint();
+    assert_eq!(
+        app.toasts.last_message(),
+        Some(format!("Deleted row \"Accept\"{hint}")).as_deref()
+    );
+}
+
+/// A row whose key was never filled in has no name to quote, so it is
+/// named by its 1-based position instead of toasting `Deleted row ""`.
+#[test]
+fn deleting_an_unnamed_table_row_names_its_position() {
+    let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Headers;
+    for key in ["Accept", "  "] {
+        app.editor.headers.insert(
+            key.into(),
+            postui_core::model::Entry {
+                value: "*/*".into(),
+                enabled: true,
+            },
+        );
+    }
+    app.toasts = Default::default();
+    app.update(Action::DeleteTableRow(1));
+    assert_eq!(app.editor.headers.len(), 1, "the blank row was removed");
+    let hint = app.undo_hint();
+    assert_eq!(
+        app.toasts.last_message(),
+        Some(format!("Deleted row 2{hint}")).as_deref()
+    );
+}
+
+/// An out-of-range index removes nothing, so it must not toast either.
+#[test]
+fn deleting_a_table_row_out_of_range_toasts_nothing() {
+    let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Headers;
+    app.toasts = Default::default();
+    app.update(Action::DeleteTableRow(0));
+    assert!(app.toasts.messages().is_empty(), "{:?}", app.toasts.messages());
+}
+
+/// The Body tab has no table rows at all, so `DeleteTableRow` must be a
+/// no-op there too — no toast.
+#[test]
+fn deleting_a_table_row_on_the_body_tab_toasts_nothing() {
+    let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Body;
+    app.toasts = Default::default();
+    app.update(Action::DeleteTableRow(0));
+    assert!(app.toasts.messages().is_empty(), "{:?}", app.toasts.messages());
+}
+
 /// ctrl+d is unbound at the global keymap, so it must reach the focused
 /// params table's own `handle_key` through the app router (app.rs "step 5").
 #[test]

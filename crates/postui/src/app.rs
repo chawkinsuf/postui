@@ -3464,7 +3464,20 @@ impl App {
                     EditorTab::Vars => &mut self.editor.variables,
                     EditorTab::Body => return true,
                 };
+                let key = map.get_index(i).map(|(k, _)| k.clone());
                 self.editor.table.delete_row(map, i);
+                if let Some(key) = key {
+                    // A row whose key was never filled in has no name to
+                    // quote; its 1-based position is what the user was
+                    // looking at, so that is what it says.
+                    let what = if key.trim().is_empty() {
+                        format!("row {}", i + 1)
+                    } else {
+                        format!("row \"{key}\"")
+                    };
+                    self.toasts
+                        .push(format!("Deleted {what}{}", self.undo_hint()), ToastKind::Info);
+                }
                 true
             }
             Action::DuplicateTableRow(i) => {
