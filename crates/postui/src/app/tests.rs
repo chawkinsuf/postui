@@ -3180,6 +3180,24 @@ fn discard_changes_reverts_immediately_with_an_undo_hint() {
 }
 
 #[test]
+fn applying_a_jq_filter_never_dirties_the_request_or_gates_quit() {
+    let mut app = App::new_for_test();
+    postui_core::fixtures::save_request(app.proj().root(), "main/r", &req("https://x/r")).unwrap();
+    app.update(Action::RefreshSidebar);
+    app.update(Action::ForceOpenRequest("main/r".into()));
+    app.update(Action::JqApply(".meta".into()));
+    assert_eq!(app.editor.jq, ".meta", "the filter landed on the editor");
+    assert!(
+        !app.editor.is_dirty(),
+        "a jq filter change is a view setting, not an edit"
+    );
+    assert!(!app.sidebar.open_dirty, "the sidebar row shows no dirty dot");
+    app.update(Action::Quit);
+    assert!(app.modals.is_empty(), "no unsaved-changes gate");
+    assert!(app.should_quit, "quit proceeds without asking");
+}
+
+#[test]
 fn discard_on_a_clean_editor_is_a_no_op() {
     let mut app = dirty_app();
     app.update(Action::DiscardChanges);
@@ -20755,7 +20773,10 @@ fn alt_q_focuses_the_jq_bar_and_typing_filters_the_tree_live() {
         app.editor.jq, ".data.total",
         "the bar mirrors into the request"
     );
-    assert!(app.editor.is_dirty());
+    assert!(
+        !app.editor.is_dirty(),
+        "a jq filter change is a view setting, not an edit"
+    );
     app.handle_key(alt('q'));
     assert!(
         app.session.response.jq_focused(),

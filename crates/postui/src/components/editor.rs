@@ -557,7 +557,15 @@ impl Editor {
     /// loaded and then changed counts as dirty.
     pub fn is_dirty(&self) -> bool {
         match &self.saved {
-            Some(s) => *s != self.current_request(),
+            Some(s) => {
+                // The jq filter is a view setting that travels with the
+                // file but never counts as an edit: compare with it
+                // masked to the saved value.
+                let mut now = self.current_request();
+                now.jq = s.jq.clone();
+                now.jq_enabled = s.jq_enabled;
+                *s != now
+            }
             None => false,
         }
     }
@@ -4753,14 +4761,17 @@ mod tests {
         assert_eq!(ed.current_request().jq, Some(".a".into()));
         ed.jq.clear();
         assert_eq!(ed.current_request().jq, None, "an empty bar is no filter");
-        assert!(ed.is_dirty(), "clearing the filter modifies the request");
+        assert!(
+            !ed.is_dirty(),
+            "clearing the filter is a view setting, not an edit"
+        );
         req.jq = None;
         ed.apply_snapshot(&req);
         assert_eq!(ed.jq, "");
     }
 
     #[test]
-    fn jq_enabled_round_trips_and_switching_off_dirties_the_request() {
+    fn jq_enabled_round_trips_and_never_dirties_the_request() {
         let mut ed = Editor::default();
         let req = HttpRequest {
             jq: Some(".a".into()),
@@ -4774,8 +4785,8 @@ mod tests {
         assert!(!ed.is_dirty());
         ed.jq_enabled = true;
         assert!(
-            ed.is_dirty(),
-            "switching the filter on modifies the request"
+            !ed.is_dirty(),
+            "switching the filter on is a view setting, not an edit"
         );
         ed.jq.clear();
         ed.jq_enabled = false;
@@ -4783,8 +4794,31 @@ mod tests {
             ed.current_request().jq_enabled,
             "off with no filter normalises to on: there is nothing to switch off"
         );
+        assert!(!ed.is_dirty(), "still just jq settings, still not dirty");
         ed.apply_snapshot(&req);
         assert!(!ed.jq_enabled);
+    }
+
+    #[test]
+    fn changing_the_jq_filter_alone_is_not_dirty() {
+        let mut ed = Editor::default();
+        ed.load(
+            None,
+            HttpRequest {
+                url: "http://x".into(),
+                ..Default::default()
+            },
+        );
+        ed.mark_saved();
+        ed.jq = ".meta".into();
+        assert!(!ed.is_dirty());
+        ed.url.set_text("http://y");
+        assert!(ed.is_dirty(), "a real edit still is");
+        assert_eq!(
+            ed.current_request().jq.as_deref(),
+            Some(".meta"),
+            "the filter still saves"
+        );
     }
 
     #[test]
