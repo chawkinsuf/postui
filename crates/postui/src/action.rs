@@ -267,8 +267,13 @@ pub enum Action {
     /// the folder context menu's "New request here…", so the typed name
     /// lands inside the folder that was right-clicked.
     PromptNewRequestIn(String),
-    /// Create a fresh request at `name` (a slug), then open it.
+    /// Create a fresh request at `name` (a slug), then open it. If the
+    /// editor is dirty this is intercepted into a `Modal::Confirm` rather
+    /// than applied directly; see `App::update`.
     CreateRequest(String),
+    /// Actually create the request at `name`, bypassing the dirty check
+    /// (used directly, or as the tail action of a dirty-prompt choice).
+    ForceCreateRequest(String),
     /// Open the rename prompt, prefilled with the selected sidebar slug.
     PromptRenameRequest,
     /// Rename the request at `from` to `to` on disk.

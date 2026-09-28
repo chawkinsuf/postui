@@ -5493,6 +5493,39 @@ fn move_all_requests_holding_a_dirty_open_request_gates_first() {
     );
 }
 
+/// Creating a request replaces the open editor, so unsaved edits there
+/// must go through the same gate as opening another row — otherwise they
+/// are gone from memory and never reached disk.
+#[test]
+fn creating_a_request_over_a_dirty_editor_raises_the_unsaved_gate() {
+    let mut app = App::new_for_test();
+    app.update(Action::CreateRequest("orders".into()));
+    app.editor.url.set_text("http://x"); // dirty
+    assert!(app.editor_holds_unsaved());
+    app.update(Action::CreateRequest("second".into()));
+    assert!(
+        matches!(app.modals.top(), Some(Modal::Confirm { title, .. }) if title == "Unsaved changes")
+    );
+    assert_eq!(
+        app.editor.slug.as_deref(),
+        Some("main/orders"),
+        "editor untouched behind the gate"
+    );
+    assert_eq!(app.editor.url.text(), "http://x");
+    // 'd' = discard, then the create proceeds.
+    press(&mut app, 'd');
+    assert_eq!(app.editor.slug.as_deref(), Some("main/second"));
+}
+
+#[test]
+fn creating_a_request_over_a_clean_editor_needs_no_gate() {
+    let mut app = App::new_for_test();
+    app.update(Action::CreateRequest("orders".into()));
+    app.update(Action::CreateRequest("second".into()));
+    assert!(app.modals.is_empty());
+    assert_eq!(app.editor.slug.as_deref(), Some("main/second"));
+}
+
 fn ordered_app() -> (App, tempfile::TempDir) {
     // main: alpha, beta (listed as beta, alpha); auth: login
     let (mut app, dir) = spaced_app();
@@ -18599,7 +18632,7 @@ mod undo_tests {
         app.capture_undo();
         // open jb2 through the dirty gate's discard? No — undo's jump-back
         // must work even with jb1 dirty. Open jb2 by force:
-        app.update(Action::CreateRequest("jb2".into()));
+        app.update(Action::ForceCreateRequest("jb2".into()));
         // create_or_save_as loads the new request unconditionally, so jb1's
         // unsaved "xq" lives only in history now.
         while app.editor.slug.as_deref() != Some("main/jb1") {

@@ -3570,6 +3570,17 @@ impl App {
                 if self.refuse_without_project() {
                     return true;
                 }
+                if self.editor_holds_unsaved() {
+                    self.dirty_gate("create", Action::ForceCreateRequest(name));
+                    true
+                } else {
+                    self.apply(Action::ForceCreateRequest(name))
+                }
+            }
+            Action::ForceCreateRequest(name) => {
+                if self.refuse_without_project() {
+                    return true;
+                }
                 self.create_or_save_as(&name, |_| postui_core::model::HttpRequest {
                     name: None,
                     method: postui_core::model::Method::Get,
