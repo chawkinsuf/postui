@@ -425,21 +425,37 @@ impl App {
             self.place_list_row(row);
         }
 
-        // 7. The travel band, and local state (only when it changed, so a
-        //    landing that opens nothing never materialises state.toml).
+        // 7. The travel band, and local state whenever it disagrees with
+        //    the editor (a rename re-keys the open request without opening
+        //    anything). A fresh project with nothing open is not stale, so
+        //    a landing that opens nothing never materialises state.toml.
         self.retarget_sidebar_travel(prev_open_row);
-        if open_changed && self.open_state_stale() {
+        if self.open_state_stale() {
             self.persist_open_request();
         }
         landed
     }
 
     /// Whether local state names another open request than the editor's.
+    /// The active space's memory counts only while the editor holds one
+    /// of its requests (or nothing): see [`App::editor_in_active_space`].
     fn open_state_stale(&self) -> bool {
         self.project().is_some_and(|p| {
             p.local().open_request != self.editor.slug
-                || p.space_open_for(&self.active_space()) != self.editor.slug
+                || (self.editor_in_active_space()
+                    && p.space_open_for(&self.active_space()) != self.editor.slug)
         })
+    }
+
+    /// Whether what the editor holds belongs to the active space: a
+    /// request of it, or nothing. Not so only after a failed cross-space
+    /// open, which commits the switch but leaves the editor on the old
+    /// space's request; that slug is never the new space's to remember.
+    pub(super) fn editor_in_active_space(&self) -> bool {
+        self.editor
+            .slug
+            .as_deref()
+            .is_none_or(|s| postui_core::storage::space_of(s) == Some(self.active_space().as_str()))
     }
 
     /// The cursor on the open request's row, else the first request row,

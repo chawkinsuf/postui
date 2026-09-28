@@ -4106,6 +4106,45 @@ fn a_failed_open_leaves_the_sidebar_cursor_where_it_was() {
     );
 }
 
+/// Final review I2 (spec §4.2 step 7): renaming the open request re-keys
+/// the editor without opening anything, and local state still follows it,
+/// so a relaunch reopens the renamed request.
+#[test]
+fn renaming_the_open_request_moves_local_state_to_the_new_slug() {
+    let (mut app, dir) = spaced_app();
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    app.update(Action::RenameRequest { from: "main/alpha".into(), to: "Zulu".into() });
+    assert_eq!(app.editor.slug.as_deref(), Some("main/zulu"));
+    assert_eq!(app.proj().local().open_request.as_deref(), Some("main/zulu"));
+    assert_eq!(app.proj().space_open_for("main").as_deref(), Some("main/zulu"));
+
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let relaunched = App::with_root(tx, dir.path().to_path_buf());
+    assert_eq!(relaunched.editor.slug.as_deref(), Some("main/zulu"), "a relaunch reopens it");
+}
+
+/// A failed cross-space open still commits the switch and leaves the
+/// editor on the old space's request. Persisting what the editor holds
+/// must not write that slug into (or clear) the new space's memory.
+#[test]
+fn a_failed_cross_space_open_keeps_both_spaces_remembered_requests() {
+    let (mut app, dir) = spaced_app();
+    postui_core::fixtures::save_request(dir.path(), "auth/logout", &req("https://x/2")).unwrap();
+    app.update(Action::ForceOpenRequest("auth/login".into()));
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    assert_eq!(app.proj().space_open_for("auth").as_deref(), Some("auth/login"));
+    std::fs::write(dir.path().join("requests/auth/logout.toml"), "not = [valid").unwrap();
+
+    app.update(Action::ForceOpenRequest("auth/logout".into()));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"), "the open failed");
+    assert_eq!(app.active_space(), "auth", "the switch stands");
+    // Any later landing runs the same persist step.
+    app.update(Action::ForceOpenRequest("auth/logout".into()));
+
+    assert_eq!(app.proj().space_open_for("auth").as_deref(), Some("auth/login"));
+    assert_eq!(app.proj().space_open_for("main").as_deref(), Some("main/alpha"));
+}
+
 /// OQ5 (2026-09-27): with nothing open, the cursor sits on the first row
 /// so every key has a target — but it is drawn only while the sidebar is
 /// focused (the next test).

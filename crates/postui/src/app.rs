@@ -8133,15 +8133,21 @@ impl App {
     /// Writes whichever request the editor now holds (`None` when it
     /// holds none) into the project's local state, as both the active
     /// space's remembered request and the project-wide open one, so
-    /// `state.toml` never disagrees with the screen. `App::land` calls it
-    /// whenever a landing changed what the editor holds and the state is
-    /// stale (open, a space or project switch); the routes that do not
-    /// land yet — create, delete, a move-all that follows nothing — end
-    /// with it, and so does an undo that re-keys the open request in place.
+    /// `state.toml` never disagrees with the screen. Its callers are
+    /// `App::land` (step 7, on every landing whose state is stale — an
+    /// open, a switch, a rename that re-keyed the open request) and
+    /// `App::after_replay` (an undo that re-keyed or reset the editor
+    /// without a landing that opened anything). The active space's memory
+    /// is left alone while the editor holds another space's request (a
+    /// failed cross-space open): that slug is not the space's to remember,
+    /// and clearing it would lose what the space was left on.
     fn persist_open_request(&mut self) {
         let slug = self.editor.slug.clone();
+        let in_active = self.editor_in_active_space();
         if let Some(p) = self.project_mut() {
-            p.record_space_open(slug.as_deref());
+            if in_active {
+                p.record_space_open(slug.as_deref());
+            }
             p.set_open_request(slug.as_deref());
         }
     }
