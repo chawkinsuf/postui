@@ -1864,6 +1864,12 @@ const COPY_CHIP_WIDTH: u16 = 3;
 /// well's left edge (`" 󰌾 "` — a single-cell Nerd Font glyph plus one
 /// padding column each side, the copy chip's anatomy).
 const LOCK_CHIP_WIDTH: u16 = 3;
+/// The scratch-request marker in the URL well's right-edge cluster: the
+/// editor holds a request with no file behind it, so its edits are not
+/// being kept anywhere. Drawn only while `Editor::slug` is `None`, in
+/// `theme.text_muted` — the lock/copy chips' resting tone. Drawn whole or
+/// not at all: a well with no room for it keeps its columns for the URL.
+const UNSAVED_MARKER: &str = " unsaved ";
 /// Lightness lift of the URL well's fill (and so its caps) while the
 /// pointer is over it: a slight step — smaller than the focus lift below,
 /// and on the same ramp — so pointing at the bar answers before the click
@@ -2074,6 +2080,17 @@ impl Editor {
         // window is narrowed to leave room for both so they never overlap.
         let chip_w = COPY_CHIP_WIDTH.min(url_area.width);
         let lock_w = LOCK_CHIP_WIDTH.min(url_area.width.saturating_sub(chip_w));
+        // A request with no file behind it looks exactly like a saved one
+        // otherwise. All or nothing: a well too narrow to hold the whole
+        // word shows no marker rather than a clipped " unsav".
+        let marker_w = UNSAVED_MARKER.chars().count() as u16;
+        let unsaved_w = if self.slug.is_none()
+            && url_area.width.saturating_sub(chip_w + lock_w) >= marker_w + URL_PAD
+        {
+            marker_w
+        } else {
+            0
+        };
         // The text is inset URL_PAD columns from the method segment so it
         // isn't flush against the badge.
         let url_text_area = Rect {
@@ -2082,7 +2099,8 @@ impl Editor {
                 .width
                 .saturating_sub(URL_PAD)
                 .saturating_sub(chip_w)
-                .saturating_sub(lock_w),
+                .saturating_sub(lock_w)
+                .saturating_sub(unsaved_w),
             ..url_area
         };
         let mut url_line = self
@@ -2106,6 +2124,21 @@ impl Editor {
             height: 1,
             ..url_text_area
         });
+
+        // --- scratch marker ----------------------------------------------
+        // Left of the copy chip, which sits left of the lock: the cluster
+        // reads lock, copy, `unsaved` from the right edge. No hit: it says
+        // something rather than doing something.
+        if unsaved_w > 0 {
+            let marker_area = Rect {
+                x: url_area.x + url_area.width.saturating_sub(lock_w + chip_w + unsaved_w),
+                y: text_y,
+                width: unsaved_w,
+                height: 1,
+            };
+            fill(buf, marker_area, url_fill);
+            text(buf, marker_area.x, text_y, UNSAVED_MARKER, theme.text_muted, url_fill, false);
+        }
 
         // --- TLS lock ----------------------------------------------------
         // The certificate-verification toggle, holding the well's rightmost
@@ -5278,6 +5311,42 @@ url = "https://api.example.com/users""#,
             })
             .collect();
         assert_eq!(gap, "  ", "2 columns of left padding before the URL text");
+    }
+
+    /// A scratch request (no file behind it) was indistinguishable from a
+    /// saved one, so unsaved work looked safe. The marker says so, muted,
+    /// and vanishes the moment the request has a slug.
+    #[test]
+    fn a_scratch_editor_shows_the_unsaved_marker_and_a_saved_one_does_not() {
+        let theme = Theme::dark();
+        let bar_row = |e: &mut Editor| -> (String, Option<ratatui::style::Color>) {
+            let (terminal, hits) = draw_for_bar_test(e);
+            let bar = hits.rect_of(&crate::hit::Hit::UrlBar).unwrap();
+            let text_y = bar.y + 1;
+            let buf = terminal.backend().buffer();
+            let cells: Vec<String> = (0..buf.area.width)
+                .filter_map(|x| buf.cell((x, text_y)).map(|c| c.symbol().to_string()))
+                .collect();
+            let at = (0..cells.len()).find(|&i| {
+                cells[i..].iter().take(7).map(|s| s.as_str()).collect::<String>() == "unsaved"
+            });
+            let fg = at.and_then(|i| buf.cell((i as u16, text_y)).map(|c| c.fg));
+            (cells.concat(), fg)
+        };
+
+        let mut scratch = Editor::default();
+        scratch.load(None, HttpRequest::from_toml_str(r#"url = "https://x/y""#).unwrap());
+        let (row, fg) = bar_row(&mut scratch);
+        assert!(row.contains("unsaved"), "a scratch request must be marked: {row}");
+        assert_eq!(fg, Some(theme.text_muted), "muted, like the chips beside it");
+
+        let mut saved = Editor::default();
+        saved.load(
+            Some("main/a".into()),
+            HttpRequest::from_toml_str(r#"url = "https://x/y""#).unwrap(),
+        );
+        let (row, _) = bar_row(&mut saved);
+        assert!(!row.contains("unsaved"), "a request with a file behind it carries no marker: {row}");
     }
 
     /// Draws the address bar with an explicit `anims`/`now` (rather than
