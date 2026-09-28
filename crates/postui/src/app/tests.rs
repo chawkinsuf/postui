@@ -4025,6 +4025,58 @@ fn a_switch_into_an_empty_space_opens_nothing_and_selects_nothing() {
     assert!(app.sidebar.selected.is_none());
 }
 
+#[test]
+fn opening_a_request_puts_the_cursor_on_it_even_in_a_collapsed_folder() {
+    let (mut app, dir) = spaced_app();
+    postui_core::fixtures::save_request(dir.path(), "main/deep/inner/x", &req("https://x/9")).unwrap();
+    app.update(Action::RefreshSidebar);
+    app.update(Action::ForceOpenRequest("main/deep/inner/x".into()));
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/deep/inner/x"));
+    let expanded = &app.proj().local().expanded;
+    assert!(expanded.contains("main/deep") && expanded.contains("main/deep/inner"));
+}
+
+#[test]
+fn switching_into_a_space_with_only_folders_puts_the_cursor_on_the_first_row() {
+    let (mut app, _dir) = ops_space_app(&["ops/b/two", "ops/a/one"]);
+    app.update(Action::CycleSpace(1));
+    assert_eq!(app.editor.slug.as_deref(), Some("ops/a/one"), "folders in name order");
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("ops/a/one"));
+}
+
+#[test]
+fn switching_projects_lands_the_cursor_on_the_restored_request() {
+    let (mut app, _dir) = three_row_app();
+    let other = tempfile::tempdir().unwrap();
+    postui_core::fixtures::ensure_project(other.path()).unwrap();
+    for slug in ["main/alpha", "main/beta", "main/gamma"] {
+        postui_core::fixtures::save_request(other.path(), slug, &req("https://y")).unwrap();
+    }
+    postui_core::fixtures::save_local_state(
+        other.path(),
+        &postui_core::project::LocalState { open_request: Some("main/gamma".into()), ..Default::default() },
+    )
+    .unwrap();
+    app.sidebar.selected = Some(0);
+    app.update(Action::ForceSwitchProject(other.path().to_path_buf()));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/gamma"));
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/gamma"));
+}
+
+#[test]
+fn switching_to_a_project_with_nothing_open_puts_the_cursor_on_the_first_request() {
+    let (mut app, _dir) = three_row_app();
+    let other = tempfile::tempdir().unwrap();
+    postui_core::fixtures::ensure_project(other.path()).unwrap();
+    for slug in ["main/zeta", "main/eta"] {
+        postui_core::fixtures::save_request(other.path(), slug, &req("https://y")).unwrap();
+    }
+    app.sidebar.selected = Some(2);
+    app.update(Action::ForceSwitchProject(other.path().to_path_buf()));
+    assert!(app.editor.slug.is_none());
+    assert_eq!(app.sidebar.selected, Some(0), "the first row, not row 2 of the old project");
+}
+
 /// OQ5 (2026-09-27): with nothing open, the cursor sits on the first row
 /// so every key has a target — but it is drawn only while the sidebar is
 /// focused (the next test).

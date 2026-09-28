@@ -14,6 +14,7 @@ use crate::hit::{Hit, HitMap, PointerShape, ScrollbarSpec};
 use crate::keys::KeyCombo;
 use crate::layout::PaneId;
 use crate::theme::Theme;
+use landing::{CursorAim, Landing};
 use postui_core::project::{HeldDrift, OpenError, Project};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::path::PathBuf;
@@ -425,6 +426,9 @@ pub struct App {
     /// [`Self::record_project_step`] records nothing for it and a
     /// keyboard burst stays one undo step.
     marked_entry: Option<postui_core::journal::EntryId>,
+    /// Set by `begin_op`, cleared by `record_project_step`: a journaled op
+    /// is between its `Project` call and its marker.
+    op_in_flight: bool,
     /// The open request as of the last `capture_undo` call (with its slug),
     /// diffed against the live editor each call to detect edits that never
     /// went through an `Action`. `None` before the first request is open.
@@ -535,6 +539,7 @@ fn resolve_startup(
 enum SpaceExit<'a> {
     /// The editor still holds the outgoing space's request: remember it
     /// (`None` — nothing open — clears the entry). Every normal switch.
+    #[allow(dead_code)] // switches land through `land` now; Task 9 deletes this enum
     Remember(Option<&'a str>),
     /// Leave the outgoing space's remembered request untouched. Used by
     /// the undo-follow paths, where the editor has *already* been moved to
@@ -912,6 +917,10 @@ impl App {
                     && app.project().is_some_and(|p| p.request_exists(&slug))
                 {
                     app.update(Action::ForceOpenRequest(slug));
+                } else {
+                    // Nothing to restore: the cursor still sits on the
+                    // first row (R6, OQ5), drawn only while focused.
+                    app.land(Landing { cursor: Some(CursorAim::OnOpen), ..Landing::default() });
                 }
             }
             Some(Err(e)) => {
@@ -1650,6 +1659,7 @@ impl App {
             _test_dir: None,
             history: crate::undo::History::new(),
             marked_entry: None,
+            op_in_flight: false,
             shadow: None,
             field_gate_was_on: false,
             no_coalesce: false,
@@ -3278,47 +3288,13 @@ impl App {
                 }
             }
             Action::ForceOpenRequest(slug) => {
-                // The outgoing request's open field closes as its own
-                // step before the buffer is replaced.
-                self.flush_field_session();
-                // A slug from another space (palette, cross-space click)
-                // switches spaces first, so the sidebar it lands in is the
-                // one that actually contains it.
-                let outgoing = self.editor.slug.clone();
-                if let Some(space) = postui_core::storage::space_of(&slug).map(str::to_string)
-                    && space != self.active_space()
-                    && !self.enter_space(&space, SpaceExit::Remember(outgoing.as_deref()))
-                {
-                    return true;
-                }
-                let Some(p) = self.project.as_mut() else {
-                    return true;
-                };
-                // Only one request is held at a time, as only one is open.
-                if let Some(prev) = outgoing.as_deref().filter(|s| *s != slug) {
-                    p.close_request(prev);
-                }
-                match p.open_request(&slug).cloned() {
-                    Ok(req) => {
-                        self.editor.load(Some(slug.clone()), req);
-                        self.sync_active_tab();
-                        // Every open route (click, Enter, palette, restore)
-                        // drags the sidebar selection along so it can't
-                        // diverge from the open request. Queue ancestor
-                        // folders open, rebuild so the row exists, then
-                        // select it now that it's visible.
-                        let prev = self.sidebar.open_row();
-                        self.sidebar.select_slug(&slug);
-                        self.refresh_sidebar();
-                        self.sidebar.select_slug(&slug);
-                        self.retarget_sidebar_travel(prev);
-                        self.persist_open_request();
-                    }
-                    Err(e) => {
-                        self.toasts
-                            .push(format!("could not open {slug}: {e}"), ToastKind::Error);
-                    }
-                }
+                // The outgoing request's open field closes as its own step
+                // (land flushes it) before the buffer is replaced; a slug
+                // from another space switches spaces first.
+                self.land(Landing {
+                    open: Some(crate::undo::Open::Request { slug, buffer: None }),
+                    ..Landing::default()
+                });
                 true
             }
             Action::SaveRequest => self.save_request_checked(None),
@@ -4196,15 +4172,18 @@ impl App {
                 // the incoming project's saved split alongside its open
                 // request.
                 self.seed_split_from_project();
-                let open = self.project().and_then(|p| p.local().open_request.clone());
-                match open {
-                    Some(slug) if self.project().is_some_and(|p| p.request_exists(&slug)) => {
-                        self.apply(Action::ForceOpenRequest(slug));
-                    }
-                    _ => {
-                        self.editor = Editor::default();
-                    }
-                }
+                let open = self
+                    .project()
+                    .and_then(|p| p.local().open_request.clone())
+                    .filter(|slug| self.request_exists(slug));
+                self.land(Landing {
+                    open: Some(match open {
+                        Some(slug) => crate::undo::Open::Request { slug, buffer: None },
+                        None => crate::undo::Open::Scratch { buffer: None },
+                    }),
+                    cursor: Some(CursorAim::OnOpen),
+                    ..Landing::default()
+                });
                 self.registry.register(target);
                 self.save_registry();
                 self.toasts
@@ -5934,27 +5913,30 @@ impl App {
                 }
             }
             Action::ForceSwitchSpace(name) => {
-                let outgoing = self.editor.slug.clone();
-                if !self.enter_space(&name, SpaceExit::Remember(outgoing.as_deref())) {
+                if !self.spaces().contains(&name) {
+                    self.toasts
+                        .push(format!("no space named {name:?}"), ToastKind::Warning);
                     return true;
                 }
                 // What the space was last left on, when that request still
-                // exists; otherwise its first row; otherwise nothing.
+                // exists; else its first visible request; else its first
+                // request inside folders; else a scratch.
                 let target = self
                     .project()
                     .and_then(|p| p.space_open_for(&name))
                     .filter(|s| self.request_exists(s))
                     .or_else(|| self.space_fallback_request(&name));
-                match target {
-                    Some(slug) => self.apply(Action::ForceOpenRequest(slug)),
-                    None => {
-                        self.editor = Editor::default();
-                        self.shadow = None;
-                        self.sidebar.open_slug = None;
-                        self.persist_open_request();
-                        true
-                    }
-                }
+                let open = match target {
+                    Some(slug) => crate::undo::Open::Request { slug, buffer: None },
+                    None => crate::undo::Open::Scratch { buffer: None },
+                };
+                self.land(Landing {
+                    space: Some(name),
+                    open: Some(open),
+                    cursor: Some(CursorAim::OnOpen),
+                    row: None,
+                });
+                true
             }
             Action::JumpSpace(n) => {
                 match n.checked_sub(1).and_then(|i| self.spaces().get(i)).cloned() {
@@ -8338,25 +8320,18 @@ impl App {
     /// the space it lands in was last left on, as a switch does.
     fn follow_active_space(&mut self) {
         let space = self.active_space();
-        if !self.enter_space(&space, SpaceExit::Keep) {
-            return;
-        }
+        self.toasts
+            .push(format!("space: {}", self.space_name(&space)), ToastKind::Success);
         let target = self
             .project()
             .and_then(|p| p.space_open_for(&space))
             .filter(|s| self.request_exists(s))
             .or_else(|| self.space_fallback_request(&space));
-        match target {
-            Some(slug) => {
-                self.apply(Action::ForceOpenRequest(slug));
-            }
-            None => {
-                self.editor = Editor::default();
-                self.shadow = None;
-                self.sidebar.open_slug = None;
-                self.persist_open_request();
-            }
-        }
+        let open = match target {
+            Some(slug) => crate::undo::Open::Request { slug, buffer: None },
+            None => crate::undo::Open::Scratch { buffer: None },
+        };
+        self.land(Landing { open: Some(open), cursor: Some(CursorAim::OnOpen), ..Landing::default() });
     }
 
     /// Re-reads the project directory and rebuilds the sidebar tree,
@@ -10958,7 +10933,10 @@ impl App {
             }
             return false;
         }
-        self.apply(Action::ForceOpenRequest(target_slug.to_string()));
+        self.land(Landing {
+            open: Some(crate::undo::Open::Request { slug: target_slug.to_string(), buffer: None }),
+            ..Landing::default()
+        });
         if self.editor.slug.as_deref() != Some(target_slug) {
             // The open failed (file gone/broken — ForceOpenRequest already
             // toasted the reason); drop the step.
@@ -11319,6 +11297,7 @@ fn screen_escape_whitelist(action: &Action) -> bool {
     )
 }
 
+mod landing;
 mod mouse;
 #[cfg(test)]
 mod tests;

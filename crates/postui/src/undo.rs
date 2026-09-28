@@ -108,7 +108,6 @@ pub struct Context {
 /// has one), the sidebar cursor, and the Manage/Variables row. A project
 /// step stores one from just before its op and one from just after.
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)] // used from Task 8
 pub struct View {
     pub space: String,
     pub open: Open,
@@ -119,7 +118,6 @@ pub struct View {
 /// What the editor holds. `buffer` is `Some` only while the editor holds
 /// work a switch would lose (`App::editor_holds_unsaved`).
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)] // used from Task 8
 pub enum Open {
     Request { slug: String, buffer: Option<Box<HttpRequest>> },
     Scratch { buffer: Option<Box<HttpRequest>> },
@@ -139,7 +137,6 @@ impl Open {
     }
 
     /// The request's slug; `None` for a scratch.
-    #[allow(dead_code)] // used from Task 8
     pub fn slug(&self) -> Option<&str> {
         match self {
             Open::Request { slug, .. } => Some(slug),
@@ -150,7 +147,6 @@ impl Open {
 
 /// A Manage-screen row by identity: which list, which name.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)] // used from Task 8
 pub enum ListRow {
     Env(String),
     Space(String),
