@@ -538,13 +538,15 @@ fn resolve_startup(
 #[derive(Debug, Clone, Copy)]
 enum SpaceExit<'a> {
     /// The editor still holds the outgoing space's request: remember it
-    /// (`None` — nothing open — clears the entry). Every normal switch.
+    /// (`None` — nothing open — clears the entry). Nothing constructs it:
+    /// normal switches land through `App::land`, which remembers the
+    /// outgoing space's request itself.
     #[allow(dead_code)] // switches land through `land` now; Task 9 deletes this enum
     Remember(Option<&'a str>),
     /// Leave the outgoing space's remembered request untouched. Used by
-    /// the undo-follow paths, where the editor has *already* been moved to
-    /// the incoming space's slug and so describes the destination, not the
-    /// space being left.
+    /// the undo-follow path in `after_undone`, where the editor has
+    /// *already* been moved to the incoming space's slug and so describes
+    /// the destination, not the space being left.
     Keep,
 }
 
@@ -8251,11 +8253,11 @@ impl App {
 
     /// Writes whichever request the editor now holds (`None` when it
     /// holds none) into the project's local state, as both the active
-    /// space's remembered request and the project-wide open one. Every
-    /// route that changes what the editor holds — open, create, delete,
-    /// rename, a space or project switch's landing, an undo's reopen —
-    /// ends with this call, so `state.toml` never disagrees with the
-    /// screen.
+    /// space's remembered request and the project-wide open one, so
+    /// `state.toml` never disagrees with the screen. `App::land` calls it
+    /// whenever a landing changed what the editor holds and the state is
+    /// stale (open, a space or project switch); the routes that do not
+    /// land yet — create, delete, rename, an undo's reopen — end with it.
     fn persist_open_request(&mut self) {
         let slug = self.editor.slug.clone();
         if let Some(p) = self.project_mut() {
@@ -8315,9 +8317,10 @@ impl App {
 
     /// Brings the view to the space the project now says is active, after
     /// an op moved it there in core (deleting the active space falls back
-    /// to the first remaining one). `SpaceExit::Keep`: the space being
-    /// left is gone, so there is nothing to remember for it. Opens what
-    /// the space it lands in was last left on, as a switch does.
+    /// to the first remaining one). Core already made the space active,
+    /// so the landing makes no switch, and the space being left is gone,
+    /// so nothing is remembered for it. Opens what the space it lands in
+    /// was last left on, as a switch does.
     fn follow_active_space(&mut self) {
         let space = self.active_space();
         self.toasts
@@ -10575,10 +10578,12 @@ impl App {
     /// newly open request's row, over the config-tunable
     /// `ui_settings.anim_ms.list_travel` (100ms by default). The band
     /// tracks the OPEN request, not the keyboard cursor, so this is called
-    /// only after mutations that change which request is open (the
-    /// `ForceOpenRequest`/create-request flows). A no-op when the open row
-    /// didn't move, or when nothing is open (`draw`'s own fallback already
-    /// snaps to the open row whenever the anim has no tracked value).
+    /// only after mutations that change which request is open (`App::land`
+    /// and the create-request flow). `prev` is `None` when the band had no
+    /// row in the space now shown (a space switch), so nothing fades out
+    /// from an unrelated row. A no-op when the open row didn't move, or
+    /// when nothing is open (`draw`'s own fallback already snaps to the
+    /// open row whenever the anim has no tracked value).
     fn retarget_sidebar_travel(&mut self, prev: Option<usize>) {
         // `sidebar.open_slug` is normally synced from the editor after the
         // full action applies (see `update`); the callers sit mid-arm, so
@@ -10938,8 +10943,8 @@ impl App {
             ..Landing::default()
         });
         if self.editor.slug.as_deref() != Some(target_slug) {
-            // The open failed (file gone/broken — ForceOpenRequest already
-            // toasted the reason); drop the step.
+            // The open failed (file gone/broken — `land` already toasted
+            // the reason); drop the step.
             return false;
         }
         self.capture_undo(); // re-seed the shadow for the newly opened request
