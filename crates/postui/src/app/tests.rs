@@ -27204,3 +27204,83 @@ fn clicking_a_checkbox_row_toggles_and_arms_no_text_sweep() {
     assert!(app.settings.editing.is_none(), "a checkbox opens no edit");
     assert!(app.text_drag.is_none(), "and arms no sweep");
 }
+
+// ---- state.toml redo, on a project whose local state was never written ----
+
+fn env_app() -> (App, tempfile::TempDir) {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let dir = tempfile::tempdir().unwrap();
+    postui_core::fixtures::ensure_project(dir.path()).unwrap();
+    postui_core::fixtures::create_space(dir.path(), "auth").unwrap();
+    for e in ["dev", "qa"] {
+        let _ = postui_core::fixtures::create_environment(dir.path(), e);
+    }
+    for slug in ["main/alpha", "main/beta", "auth/login"] {
+        postui_core::fixtures::save_request(dir.path(), slug, &req("https://x/1")).unwrap();
+    }
+    let app = App::with_root(tx, dir.path().to_path_buf());
+    (app, dir)
+}
+
+/// Runs `op`, then Undo, then Redo; returns any toast that reads "could
+/// not …", which is how a refused redo surfaces.
+fn undo_redo_toasts(app: &mut App, op: Action) -> Vec<String> {
+    app.update(op);
+    app.update(Action::Undo);
+    app.update(Action::Redo);
+    app.toasts
+        .messages()
+        .iter()
+        .filter(|m| m.contains("could not"))
+        .map(|m| m.to_string())
+        .collect()
+}
+
+#[test]
+fn redo_after_delete_space_survives_a_project_with_no_local_state_yet() {
+    let (mut app, _dir) = spaced_app();
+    let bad = undo_redo_toasts(&mut app, Action::ForceDeleteSpace("auth".into()));
+    assert!(bad.is_empty(), "{bad:?}");
+    assert_eq!(app.proj().spaces(), ["main"]);
+}
+
+#[test]
+fn redo_after_rename_space_survives_a_project_with_no_local_state_yet() {
+    let (mut app, _dir) = spaced_app();
+    let bad = undo_redo_toasts(
+        &mut app,
+        Action::RenameSpace { from: "auth".into(), to: "Login".into() },
+    );
+    assert!(bad.is_empty(), "{bad:?}");
+    assert_eq!(app.proj().spaces(), ["main", "login"]);
+}
+
+#[test]
+fn redo_after_delete_inactive_env_survives_a_project_with_no_local_state_yet() {
+    let (mut app, _dir) = env_app();
+    assert_eq!(app.proj().active_env(), Some("dev"));
+    let bad = undo_redo_toasts(&mut app, Action::ForceDeleteEnv("qa".into()));
+    assert!(bad.is_empty(), "{bad:?}");
+    assert_eq!(app.proj().environments(), ["dev"]);
+}
+
+#[test]
+fn redo_after_rename_inactive_env_survives_a_project_with_no_local_state_yet() {
+    let (mut app, _dir) = env_app();
+    assert_eq!(app.proj().active_env(), Some("dev"));
+    let bad = undo_redo_toasts(
+        &mut app,
+        Action::RenameEnv { from: "qa".into(), to: "Prod".into() },
+    );
+    assert!(bad.is_empty(), "{bad:?}");
+    assert!(app.proj().environments().iter().any(|e| e == "prod"));
+}
+
+#[test]
+fn undo_of_delete_active_space_restores_the_active_space() {
+    let (mut app, _dir) = spaced_app();
+    assert_eq!(app.proj().local().active_space, "main");
+    app.update(Action::ForceDeleteSpace("main".into()));
+    app.update(Action::Undo);
+    assert_eq!(app.proj().local().active_space, "main", "undo lands back in the deleted space");
+}

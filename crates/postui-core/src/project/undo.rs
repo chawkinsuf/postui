@@ -107,12 +107,15 @@ impl Project {
 
     /// Applies this entry's `active_env` transition directly (`before` on
     /// undo, `after` on redo). `reload_all`'s `.local/state.toml`-based
-    /// restore already covers the steady-state case, but can't recover an
-    /// environment switch whose `persist_local_journaled` call was the
-    /// *first* write `state.toml` ever got (its recorded `before` is
-    /// `None`, so undoing it removes the file rather than restoring old
-    /// content) — this uses the entry's own record instead, so it always
-    /// wins when the two disagree.
+    /// restore already covers the steady-state case; this uses the entry's
+    /// own record instead, so it always wins when the two disagree. (Before
+    /// `run_transaction` started materialising `.local/state.toml` up
+    /// front, this was also the only thing that saved an environment
+    /// switch whose `persist_local_journaled` call was the file's first
+    /// ever write — a recorded `before: None` that undo would turn into
+    /// deleting the file. `run_transaction` now rules that case out for
+    /// every journaled `state.toml` write, not only this one, but this
+    /// method is still the source of truth for `active_env` on undo/redo.)
     ///
     /// Its `state.toml` write is journaled (`persist_local_journaled`) and
     /// [`Self::replay`] calls this while the replay is still recording, so
@@ -390,10 +393,12 @@ mod tests {
         assert_eq!(p.spaces(), ["main", "auth"]);
     }
 
-    /// The entry's `.local/state.toml` write was the file's *first*, so
-    /// undoing it removes the file; the environment restore that follows
-    /// must not re-create it behind the journal's back, or the redo's
-    /// preflight sees a file it expects to be absent and drops the step.
+    /// `.local/state.toml` does not exist yet when this op runs.
+    /// `run_transaction` now materialises it from pre-op memory before any
+    /// journaled write happens, so this op's own `state.toml` write is no
+    /// longer recorded as `before: None` and undo no longer deletes the
+    /// file. Kept as a regression test for the case that motivated
+    /// `apply_meta_active_env`'s own protection.
     #[test]
     fn redo_survives_an_env_switch_whose_entry_first_created_state_toml() {
         let (dir, mut p) = fixture();
@@ -407,6 +412,7 @@ mod tests {
         assert!(read(&dir, ".local/state.toml").unwrap().contains("environment = \"qa-2\""));
     }
 
+    /// Same as above, `delete_environment`'s path.
     #[test]
     fn redo_of_an_environment_delete_survives_the_same_first_state_toml_write() {
         let (dir, mut p) = fixture();
