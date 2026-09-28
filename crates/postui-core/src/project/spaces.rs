@@ -182,11 +182,7 @@ impl Project {
         }
         spaces.remove(idx);
         let name = name.to_string();
-        let meta = EntryMeta {
-            reopen: self.local.open_request.clone(),
-            ..EntryMeta::default()
-        };
-        self.transaction("delete space", meta, |p| {
+        self.transaction("delete space", EntryMeta::default(), |p| {
             p.edit_project_toml(|doc| {
                 doc["spaces"] = toml_edit::value(meta::slug_array(&spaces));
                 meta::remove_item_table(doc, meta::Kind::Space, &name);

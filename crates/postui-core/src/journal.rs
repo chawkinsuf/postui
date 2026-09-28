@@ -54,8 +54,6 @@ pub struct EntryMeta {
     pub moves: Vec<(String, String)>,
     /// `(before, after)` active environment, when the entry switched it.
     pub active_env: Option<(Option<String>, Option<String>)>,
-    /// The request this entry was made in, for the "jump back" toast.
-    pub reopen: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

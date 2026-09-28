@@ -284,6 +284,8 @@ pub enum Action {
     /// Copy the selected sidebar request to the next free `<slug>-copy…`
     /// name and open the copy.
     DuplicateRequest,
+    /// Duplicates `slug` and opens the copy; `DuplicateRequest`'s dirty gate runs first.
+    ForceDuplicateRequest(String),
     /// The scratch gate's save path: opens the Save-as name prompt with the
     /// deferred action to run once the save succeeds.
     PromptSaveScratch(Box<Action>),

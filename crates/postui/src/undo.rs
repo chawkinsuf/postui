@@ -46,6 +46,11 @@ pub enum StepKind {
         /// the deleted one for a delete.
         slug: Option<String>,
         noun: ProjectNoun,
+        /// The view just before the op and just after it (spec §4.1):
+        /// undo lands on the parts that differ, taken from `before`; redo
+        /// from `after`.
+        before: Box<View>,
+        after: Box<View>,
     },
     /// One Settings-tab write (`Action::SetUiFlag` / `SetUiString` /
     /// `SetUiInt`), spec 2026-09-16: undoing writes `before` back through
