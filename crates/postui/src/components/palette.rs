@@ -389,11 +389,72 @@ pub(crate) fn keymap_action_name(command_id: &str) -> Option<&'static str> {
     }
 }
 
+/// Case-insensitive subsequence match: every char of `needle` appears in
+/// `haystack`, in order, with any gaps. The chooser and variable picker
+/// filter on this alone; the palette ranks the survivors with
+/// [`match_rank`].
 pub fn fuzzy_match(needle: &str, haystack: &str) -> bool {
-    let needle = needle.to_lowercase();
-    let haystack = haystack.to_lowercase();
-    let mut hay = haystack.chars();
-    needle.chars().all(|n| hay.any(|h| h == n))
+    match_rank(needle, haystack).is_some()
+}
+
+/// How well `needle` matches `haystack`, as a key that sorts best-first;
+/// `None` when it doesn't match at all (the same test as [`fuzzy_match`]).
+///
+/// The key is `(tier, span, start)`: an exact name, then a prefix, then a
+/// run starting at a word boundary, then a run anywhere, then a scattered
+/// subsequence — so "quit" lists Quit above "Request: duplicate". Within a
+/// tier, a tighter match (fewer chars between first and last hit) beats a
+/// looser one, and an earlier one beats a later one. Rows that tie on all
+/// three are left in the order they came, which is what lets frecency
+/// break ties.
+///
+/// The scattered span is the tightest window a leftmost-end/rightmost-
+/// start pass finds — not always the global minimum, but stable and
+/// cheap, and the tiers above catch every case where it would matter.
+pub fn match_rank(needle: &str, haystack: &str) -> Option<(u8, usize, usize)> {
+    let needle: Vec<char> = needle.to_lowercase().chars().collect();
+    let hay: Vec<char> = haystack.to_lowercase().chars().collect();
+    if needle.is_empty() || needle == hay {
+        return Some((0, 0, 0));
+    }
+    // A contiguous run: the earliest one, and whether it starts a word.
+    let run_start = (0..hay.len().saturating_sub(needle.len() - 1))
+        .find(|&s| hay[s..s + needle.len()] == needle[..]);
+    if let Some(s) = run_start {
+        let tier = if s == 0 {
+            1
+        } else if !hay[s - 1].is_alphanumeric() {
+            2
+        } else {
+            3
+        };
+        return Some((tier, needle.len(), s));
+    }
+    // Scattered: leftmost end, then the latest start that still reaches it.
+    let mut i = 0;
+    let mut end = None;
+    for (pos, &h) in hay.iter().enumerate() {
+        if h == needle[i] {
+            i += 1;
+            if i == needle.len() {
+                end = Some(pos);
+                break;
+            }
+        }
+    }
+    let end = end?;
+    let mut j = needle.len();
+    let mut start = end;
+    for pos in (0..=end).rev() {
+        if hay[pos] == needle[j - 1] {
+            j -= 1;
+            start = pos;
+            if j == 0 {
+                break;
+            }
+        }
+    }
+    Some((4, end - start + 1, start))
 }
 
 pub struct PaletteState {
@@ -403,7 +464,7 @@ pub struct PaletteState {
     /// zero-score commands keep declaration order) as of the moment the
     /// palette opened. `refilter` filters *this* order rather than
     /// re-deriving it, so an empty query shows frecency order and a typed
-    /// query fuzzy-filters within it (frecency only breaks ties — spec §6).
+    /// query ranks its matches with this order breaking ties (spec §6).
     base: Vec<Command>,
     filtered: Vec<Command>,
     /// First visible row's index into `filtered`. See `ChooserState` for the
@@ -484,13 +545,19 @@ impl PaletteState {
         self.ensure_visible = false;
     }
 
+    /// Re-runs the fuzzy filter and ranks the survivors by match quality
+    /// ([`match_rank`]).
     fn refilter(&mut self) {
-        self.filtered = self
+        let query = self.input.text();
+        let mut ranked: Vec<((u8, usize, usize), &Command)> = self
             .base
             .iter()
-            .filter(|c| fuzzy_match(self.input.text(), c.name))
-            .cloned()
+            .filter_map(|c| match_rank(query, c.name).map(|rank| (rank, c)))
             .collect();
+        // Stable, so rows that match equally well keep `base`'s frecency
+        // order — frecency only breaks ties.
+        ranked.sort_by_key(|(rank, _)| *rank);
+        self.filtered = ranked.into_iter().map(|(_, c)| c.clone()).collect();
         self.selected = 0;
         self.scroll = 0;
         self.ensure_visible = true;
@@ -1158,6 +1225,95 @@ mod tests {
         assert!(
             content.contains("^C"),
             "the quit row's bound combo must render in caret notation: {content}"
+        );
+    }
+}
+
+/// Ranking: the filter is still a subsequence match, but the surviving
+/// rows sort by how well they match ("quit" must list Quit above
+/// "Request: duplicate"), and frecency only breaks ties.
+#[cfg(test)]
+mod rank_tests {
+    use super::*;
+    use ratatui::crossterm::event::KeyModifiers;
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn typed(query: &str, usage: &crate::usage::UsageStore) -> PaletteState {
+        let mut p = PaletteState::new(usage, 1_000_000);
+        for c in query.chars() {
+            p.handle_key(key(KeyCode::Char(c)));
+        }
+        p
+    }
+
+    fn names(p: &PaletteState) -> Vec<&'static str> {
+        p.filtered().iter().map(|c| c.name).collect()
+    }
+
+    #[test]
+    fn match_rank_orders_exact_prefix_word_start_substring_then_subsequence() {
+        let exact = match_rank("quit", "Quit").unwrap();
+        let prefix = match_rank("qui", "Quit").unwrap();
+        let word = match_rank("save", "Request: save").unwrap();
+        let inside = match_rank("ave", "Request: save").unwrap();
+        let scattered = match_rank("quit", "Request: duplicate").unwrap();
+        assert!(exact < prefix, "{exact:?} vs {prefix:?}");
+        assert!(prefix < word, "{prefix:?} vs {word:?}");
+        assert!(word < inside, "{word:?} vs {inside:?}");
+        assert!(inside < scattered, "{inside:?} vs {scattered:?}");
+        assert_eq!(match_rank("xyz", "Quit"), None);
+        assert_eq!(match_rank("", "Quit"), match_rank("", "Send request"));
+    }
+
+    /// Two scattered matches: the tighter one wins, then the earlier one.
+    #[test]
+    fn scattered_matches_rank_by_span_then_start() {
+        let tight = match_rank("qut", "aq-u-t").unwrap();
+        let loose = match_rank("qut", "q--u--t").unwrap();
+        assert!(tight < loose, "{tight:?} vs {loose:?}");
+        let early = match_rank("qt", "q-t--").unwrap();
+        let late = match_rank("qt", "--q-t").unwrap();
+        assert!(early < late, "{early:?} vs {late:?}");
+    }
+
+    #[test]
+    fn the_exact_name_lists_first() {
+        let p = typed("quit", &crate::usage::UsageStore::default());
+        assert_eq!(names(&p)[0], "Quit");
+        assert!(names(&p).contains(&"Request: duplicate"));
+    }
+
+    /// `qui` is a prefix of Quit and a scatter across "reQUest: duplIcate":
+    /// the prefix wins, whatever the declaration order says.
+    #[test]
+    fn a_prefix_beats_a_scattered_match() {
+        let p = typed("qui", &crate::usage::UsageStore::default());
+        assert_eq!(names(&p)[0], "Quit");
+        let p = typed("qu", &crate::usage::UsageStore::default());
+        assert_eq!(names(&p)[0], "Quit");
+    }
+
+    /// Frecency can't lift a scattered match over a prefix — it only
+    /// orders rows that match equally well.
+    #[test]
+    fn frecency_breaks_ties_within_a_tier_not_across_tiers() {
+        let mut usage = crate::usage::UsageStore::default();
+        for _ in 0..50 {
+            usage.record("request-duplicate", 1_000_000);
+        }
+        let p = typed("qu", &usage);
+        assert_eq!(names(&p)[0], "Quit", "prefix beats heavy use of a scatter");
+        for _ in 0..50 {
+            usage.record("focus-response", 1_000_000);
+        }
+        let p = typed("focus", &usage);
+        assert_eq!(
+            names(&p)[0],
+            "Focus: response",
+            "all three focus rows are equal prefix matches, so use decides"
         );
     }
 }

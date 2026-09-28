@@ -1129,7 +1129,13 @@ impl ModalStack {
     /// frame nothing asked to repaint.
     pub fn confirm_top(&mut self) -> Option<ModalResult> {
         if let Some(Modal::Prompt { input, kind, .. }) = self.stack.last() {
-            return Self::confirm_prompt(input, kind);
+            return Self::confirm_prompt(input, kind).or_else(|| {
+                input
+                    .text()
+                    .trim()
+                    .is_empty()
+                    .then(|| Self::empty_prompt_toast(kind))
+            });
         }
         if let Some(Modal::NewProject { name, path, .. }) = self.stack.last() {
             return Self::confirm_new_project(name, path);
@@ -1407,6 +1413,28 @@ impl ModalStack {
             close: true,
             ..Default::default()
         })
+    }
+
+    /// What `confirm_top` answers when `confirm_prompt` refuses because
+    /// the trimmed text is empty: the prompt stays open and says what is
+    /// missing, instead of the confirm silently doing nothing (on "Save
+    /// request as" that read as a broken save). The noun follows the
+    /// kind — most prompts hold a name, `SecretValue` holds a value and
+    /// `JqDescribe` a sentence describing the filter.
+    fn empty_prompt_toast(kind: &PromptKind) -> ModalResult {
+        let noun = match kind {
+            PromptKind::SecretValue { .. } => "value",
+            PromptKind::JqDescribe => "description",
+            _ => "name",
+        };
+        ModalResult {
+            actions: vec![Action::ShowToast(
+                format!("Type a {noun} first"),
+                crate::components::toast::ToastKind::Info,
+            )],
+            close: false,
+            ..Default::default()
+        }
     }
 
     /// Whether the top modal may be dismissed without choosing one of its
@@ -5715,23 +5743,101 @@ mod tests {
         );
     }
 
-    /// A swallowed confirm (empty name) must leave the aim where it was:
+    /// A refused confirm (empty name) must leave the aim where it was:
     /// silently dropping back into the field would move focus on a frame
-    /// nothing asked to be repainted.
+    /// nothing asked to be repainted. The refusal toasts, but it still
+    /// doesn't close or move the aim.
     #[test]
     fn a_swallowed_confirm_keeps_the_aim_on_the_button_row() {
         let mut m = prompt_stack();
         m.handle_key(key(KeyCode::Esc)); // closes the (empty) field to selected
         m.handle_key(key(KeyCode::Esc)); // reaches the button row
         assert_eq!(m.button_focus(), Some(FormButton::Confirm));
-        assert!(
-            m.handle_key(key(KeyCode::Enter)).is_none(),
-            "an empty name has nothing to confirm"
-        );
+        let res = m
+            .handle_key(key(KeyCode::Enter))
+            .expect("an empty name toasts instead of confirming");
+        assert!(!res.close, "an empty name has nothing to confirm");
         assert_eq!(
             m.button_focus(),
             Some(FormButton::Confirm),
             "still on the row, Confirm still aimed"
+        );
+    }
+
+    /// Confirming an empty prompt used to do nothing at all — on "Save
+    /// request as" in particular that read as a broken save. It toasts
+    /// what is missing and leaves the prompt up.
+    #[test]
+    fn confirming_an_empty_prompt_toasts_and_keeps_it_open() {
+        for (title, kind) in [
+            ("New request", PromptKind::NewRequest),
+            ("Save request as", PromptKind::SaveAs),
+        ] {
+            let mut m = ModalStack::default();
+            m.push(Modal::Prompt {
+                title: title.into(),
+                input: LineInput::new(""),
+                kind,
+                revealed: false,
+            });
+            m.handle_key(key(KeyCode::Esc)); // closes the (empty) field to selected
+            m.handle_key(key(KeyCode::Esc)); // reaches the button row
+            let res = m
+                .handle_key(key(KeyCode::Enter))
+                .expect("a refusal is still a result");
+            assert!(!res.close, "{title}: the prompt stays up");
+            assert!(
+                matches!(res.actions.as_slice(), [Action::ShowToast(msg, crate::components::toast::ToastKind::Info)] if msg == "Type a name first"),
+                "{title}: got {:?}",
+                res.actions
+            );
+            assert_eq!(m.stack.len(), 1);
+        }
+    }
+
+    /// The secret prompt's empty field is a missing *value*, not a missing
+    /// name: one helper serves every `Prompt` kind, so the noun has to
+    /// follow the kind.
+    #[test]
+    fn confirming_an_empty_secret_prompt_asks_for_a_value_not_a_name() {
+        let mut m = ModalStack::default();
+        m.push(Modal::Prompt {
+            title: "Secret".into(),
+            input: LineInput::new(""),
+            kind: PromptKind::SecretValue {
+                name: "token".into(),
+                env: "dev".into(),
+                then_send: false,
+            },
+            revealed: false,
+        });
+        let res = m.confirm_top().expect("a refusal is still a result");
+        assert!(!res.close, "the prompt stays up");
+        assert!(
+            matches!(res.actions.as_slice(), [Action::ShowToast(msg, crate::components::toast::ToastKind::Info)] if msg == "Type a value first"),
+            "got {:?}",
+            res.actions
+        );
+        assert_eq!(m.stack.len(), 1);
+    }
+
+    /// The jq describe prompt holds a sentence, so its empty field asks for
+    /// a description.
+    #[test]
+    fn confirming_an_empty_jq_describe_prompt_asks_for_a_description() {
+        let mut m = ModalStack::default();
+        m.push(Modal::Prompt {
+            title: "Describe the filter".into(),
+            input: LineInput::new(""),
+            kind: PromptKind::JqDescribe,
+            revealed: false,
+        });
+        let res = m.confirm_top().expect("a refusal is still a result");
+        assert!(!res.close, "the prompt stays up");
+        assert!(
+            matches!(res.actions.as_slice(), [Action::ShowToast(msg, crate::components::toast::ToastKind::Info)] if msg == "Type a description first"),
+            "got {:?}",
+            res.actions
         );
     }
 

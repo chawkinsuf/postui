@@ -635,6 +635,27 @@ fn undo_leaves_focus_alone_when_the_stored_caret_is_in_an_unchanged_field() {
     assert_eq!(app.editor.sub_focus, SubFocus::Content, "redo keeps focus too");
 }
 
+/// ctrl+u is unbound at the global keymap and only pages the list
+/// surfaces, so an open text field gets it: the URL field and a prompt
+/// both clear back to the line start.
+#[test]
+fn ctrl_u_reaches_an_open_text_field_through_the_router() {
+    let mut app = App::new_for_test();
+    app.update(Action::CreateRequest("r".into()));
+    app.focus = PaneId::Editor;
+    app.editor.open_url_from_app();
+    type_str(&mut app, "https://x");
+    assert_eq!(app.editor.url.text(), "https://x");
+    app.handle_key(ctrl('u'));
+    assert_eq!(app.editor.url.text(), "", "the URL field cleared");
+
+    app.update(Action::PromptNewRequest);
+    type_str(&mut app, "orders");
+    assert_eq!(app.modals.focused_input().unwrap().text(), "orders");
+    app.handle_key(ctrl('u'));
+    assert_eq!(app.modals.focused_input().unwrap().text(), "", "the prompt cleared");
+}
+
 /// ctrl+d is unbound at the global keymap, so it must reach the focused
 /// sidebar's own `handle_key` through the app router (app.rs "step 5").
 #[test]
@@ -1171,6 +1192,75 @@ fn undo_restores_a_deleted_table_row() {
     app.capture_undo();
     app.update(Action::Undo);
     assert_eq!(app.editor.params.len(), 1, "undo brings the row back");
+}
+
+/// Every other delete toasts with the undo hint; a header/param/var row
+/// used to vanish with no feedback at all.
+#[test]
+fn deleting_a_table_row_toasts_with_the_undo_hint() {
+    let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Headers;
+    app.editor.headers.insert(
+        "Accept".into(),
+        postui_core::model::Entry {
+            value: "*/*".into(),
+            enabled: true,
+        },
+    );
+    app.toasts = Default::default();
+    app.update(Action::DeleteTableRow(0));
+    assert!(app.editor.headers.is_empty(), "the row was removed");
+    let hint = app.undo_hint();
+    assert_eq!(
+        app.toasts.last_message(),
+        Some(format!("Deleted row \"Accept\"{hint}")).as_deref()
+    );
+}
+
+/// A row whose key was never filled in has no name to quote, so it is
+/// named by its 1-based position instead of toasting `Deleted row ""`.
+#[test]
+fn deleting_an_unnamed_table_row_names_its_position() {
+    let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Headers;
+    for key in ["Accept", "  "] {
+        app.editor.headers.insert(
+            key.into(),
+            postui_core::model::Entry {
+                value: "*/*".into(),
+                enabled: true,
+            },
+        );
+    }
+    app.toasts = Default::default();
+    app.update(Action::DeleteTableRow(1));
+    assert_eq!(app.editor.headers.len(), 1, "the blank row was removed");
+    let hint = app.undo_hint();
+    assert_eq!(
+        app.toasts.last_message(),
+        Some(format!("Deleted row 2{hint}")).as_deref()
+    );
+}
+
+/// An out-of-range index removes nothing, so it must not toast either.
+#[test]
+fn deleting_a_table_row_out_of_range_toasts_nothing() {
+    let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Headers;
+    app.toasts = Default::default();
+    app.update(Action::DeleteTableRow(0));
+    assert!(app.toasts.messages().is_empty(), "{:?}", app.toasts.messages());
+}
+
+/// The Body tab has no table rows at all, so `DeleteTableRow` must be a
+/// no-op there too — no toast.
+#[test]
+fn deleting_a_table_row_on_the_body_tab_toasts_nothing() {
+    let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Body;
+    app.toasts = Default::default();
+    app.update(Action::DeleteTableRow(0));
+    assert!(app.toasts.messages().is_empty(), "{:?}", app.toasts.messages());
 }
 
 /// ctrl+d is unbound at the global keymap, so it must reach the focused
@@ -3177,6 +3267,24 @@ fn discard_changes_reverts_immediately_with_an_undo_hint() {
         rendered_text(&mut app).contains("^Z undoes"),
         "the toast advertises the escape hatch"
     );
+}
+
+#[test]
+fn applying_a_jq_filter_never_dirties_the_request_or_gates_quit() {
+    let mut app = App::new_for_test();
+    postui_core::fixtures::save_request(app.proj().root(), "main/r", &req("https://x/r")).unwrap();
+    app.update(Action::RefreshSidebar);
+    app.update(Action::ForceOpenRequest("main/r".into()));
+    app.update(Action::JqApply(".meta".into()));
+    assert_eq!(app.editor.jq, ".meta", "the filter landed on the editor");
+    assert!(
+        !app.editor.is_dirty(),
+        "a jq filter change is a view setting, not an edit"
+    );
+    assert!(!app.sidebar.open_dirty, "the sidebar row shows no dirty dot");
+    app.update(Action::Quit);
+    assert!(app.modals.is_empty(), "no unsaved-changes gate");
+    assert!(app.should_quit, "quit proceeds without asking");
 }
 
 #[test]
@@ -5493,6 +5601,39 @@ fn move_all_requests_holding_a_dirty_open_request_gates_first() {
     );
 }
 
+/// Creating a request replaces the open editor, so unsaved edits there
+/// must go through the same gate as opening another row — otherwise they
+/// are gone from memory and never reached disk.
+#[test]
+fn creating_a_request_over_a_dirty_editor_raises_the_unsaved_gate() {
+    let mut app = App::new_for_test();
+    app.update(Action::CreateRequest("orders".into()));
+    app.editor.url.set_text("http://x"); // dirty
+    assert!(app.editor_holds_unsaved());
+    app.update(Action::CreateRequest("second".into()));
+    assert!(
+        matches!(app.modals.top(), Some(Modal::Confirm { title, .. }) if title == "Unsaved changes")
+    );
+    assert_eq!(
+        app.editor.slug.as_deref(),
+        Some("main/orders"),
+        "editor untouched behind the gate"
+    );
+    assert_eq!(app.editor.url.text(), "http://x");
+    // 'd' = discard, then the create proceeds.
+    press(&mut app, 'd');
+    assert_eq!(app.editor.slug.as_deref(), Some("main/second"));
+}
+
+#[test]
+fn creating_a_request_over_a_clean_editor_needs_no_gate() {
+    let mut app = App::new_for_test();
+    app.update(Action::CreateRequest("orders".into()));
+    app.update(Action::CreateRequest("second".into()));
+    assert!(app.modals.is_empty());
+    assert_eq!(app.editor.slug.as_deref(), Some("main/second"));
+}
+
 fn ordered_app() -> (App, tempfile::TempDir) {
     // main: alpha, beta (listed as beta, alpha); auth: login
     let (mut app, dir) = spaced_app();
@@ -5600,6 +5741,56 @@ fn request_context_menu_offers_one_move_row_that_opens_the_space_chooser() {
             slug: "main/alpha".into(),
             space: "auth".into()
         }]
+    );
+}
+
+/// `m` on a request in a project with only one space: there is nowhere
+/// to move it. An Info "no other space" note read as the key doing
+/// nothing; it warns and says what the project is missing, and opens no
+/// modal.
+#[test]
+fn m_with_only_one_space_says_so_instead_of_doing_nothing() {
+    let mut app = App::new_for_test();
+    postui_core::fixtures::save_request(app.proj().root(), "main/alpha", &req("https://x/1"))
+        .unwrap();
+    app.update(Action::RefreshSidebar);
+    render_once(&mut app);
+    app.focus = PaneId::Sidebar;
+    app.sidebar.select_slug("main/alpha");
+    app.toasts = Default::default();
+
+    press(&mut app, 'm');
+    assert!(app.modals.is_empty(), "nowhere to move to, so no picker");
+    let said = app.toasts.messages().join(" | ");
+    assert!(
+        said.contains("Only one space"),
+        "the key must say why it did nothing: {said:?}"
+    );
+    assert!(
+        app.toasts
+            .entries()
+            .iter()
+            .any(|(m, k)| m.contains("Only one space") && **k == ToastKind::Warning),
+        "a warning, not an info note: {:?}",
+        app.toasts.entries()
+    );
+}
+
+/// "Move all requests" out of the only space says the same thing `m` does.
+#[test]
+fn moving_all_requests_with_only_one_space_warns_like_m() {
+    let mut app = App::new_for_test();
+    app.toasts = Default::default();
+
+    app.update(Action::PromptMoveAllRequests("main".into()));
+    assert!(app.modals.is_empty(), "nowhere to move to, so no picker");
+    assert!(
+        app.toasts
+            .entries()
+            .iter()
+            .any(|(m, k)| m.contains("Only one space") && **k == ToastKind::Warning),
+        "the same warning as `m`: {:?}",
+        app.toasts.entries()
     );
 }
 
@@ -18599,7 +18790,7 @@ mod undo_tests {
         app.capture_undo();
         // open jb2 through the dirty gate's discard? No — undo's jump-back
         // must work even with jb1 dirty. Open jb2 by force:
-        app.update(Action::CreateRequest("jb2".into()));
+        app.update(Action::ForceCreateRequest("jb2".into()));
         // create_or_save_as loads the new request unconditionally, so jb1's
         // unsaved "xq" lives only in history now.
         while app.editor.slug.as_deref() != Some("main/jb1") {
@@ -20722,7 +20913,10 @@ fn alt_q_focuses_the_jq_bar_and_typing_filters_the_tree_live() {
         app.editor.jq, ".data.total",
         "the bar mirrors into the request"
     );
-    assert!(app.editor.is_dirty());
+    assert!(
+        !app.editor.is_dirty(),
+        "a jq filter change is a view setting, not an edit"
+    );
     app.handle_key(alt('q'));
     assert!(
         app.session.response.jq_focused(),
