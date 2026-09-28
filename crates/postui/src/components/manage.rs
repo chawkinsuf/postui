@@ -74,8 +74,9 @@ impl ManageTab {
 }
 
 /// The Manage screen's own state: which tab is up, plus the list-edit
-/// body the Environments and Spaces tabs share. The Variables tab's body
-/// keeps its state elsewhere (`App::varmanager`).
+/// bodies of the Environments and Spaces tabs, one each (the live one in
+/// `list`, the other parked), so each tab keeps its own cursor (spec R5).
+/// The Variables tab's body keeps its state elsewhere (`App::varmanager`).
 pub struct Manage {
     pub tab: ManageTab,
     /// The list-edit body of whichever list tab is live (`live`). The one

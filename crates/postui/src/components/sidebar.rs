@@ -68,9 +68,11 @@ pub struct Sidebar {
     /// The full flat listing behind the current tree, kept so future
     /// rebuilds don't need a caller-supplied copy.
     listing: Vec<RequestListing>,
-    /// Ancestor folder paths that `select_slug` needs opened to make its
-    /// target visible. The caller (`App::refresh_sidebar`) merges these into
-    /// `project.expanded` and clears this set on the next refresh.
+    /// Ancestor folder paths queued open to make a target row visible:
+    /// by `expand_to` (a landing's cursor row, `App::land` step 4) and by
+    /// `select_slug`, which calls it. The caller (`App::refresh_sidebar`)
+    /// merges these into `project.expanded` and clears this set on the
+    /// next refresh.
     pub pending_expand: BTreeSet<String>,
     /// Set whenever the *selection* moves (`move_selection`, `select_slug`,
     /// `refresh`) so the next `draw` scrolls it into view. Wheel scrolling
@@ -238,14 +240,6 @@ impl Sidebar {
                 (space, names.into_iter().map(|(n, _)| n).collect())
             })
             .collect()
-    }
-
-    /// The first request row in display order (the switch-in fallback).
-    pub fn first_request_slug(&self) -> Option<String> {
-        self.rows.iter().find_map(|r| match r {
-            Row::Request { slug, .. } => Some(slug.clone()),
-            _ => None,
-        })
     }
 
     /// The first request of `space` in display order with `expanded`

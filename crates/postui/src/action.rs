@@ -501,9 +501,9 @@ pub enum Action {
         from: String,
         to: String,
     },
-    /// User asked to delete a space. Gated on unsaved edits when the open
-    /// request lives there; otherwise deletes at once, no confirm (it's
-    /// undoable).
+    /// User asked to delete a space. Deletes at once, with no confirm and
+    /// no unsaved-edits gate (OQ4): the step carries the open request's
+    /// unsaved buffer, and undo brings the space and the edit back.
     DeleteSpace(String),
     /// Trashes the space's directory (undoable) and drops the list entry.
     ForceDeleteSpace(String),

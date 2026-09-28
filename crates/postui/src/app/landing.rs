@@ -478,9 +478,9 @@ impl App {
     }
 
     /// Whether what the editor holds belongs to the active space: a
-    /// request of it, or nothing. Not so only after a failed cross-space
-    /// open, which commits the switch but leaves the editor on the old
-    /// space's request; that slug is never the new space's to remember.
+    /// request of it, or nothing. A failed cross-space open is the case
+    /// that breaks it: the switch stands but the editor keeps the old
+    /// space's request, and that slug is never the new space's to remember.
     pub(super) fn editor_in_active_space(&self) -> bool {
         self.editor
             .slug

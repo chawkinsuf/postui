@@ -8191,7 +8191,8 @@ impl App {
     }
 
     /// Re-reads the project directory and rebuilds the sidebar tree,
-    /// merging any ancestor folders `select_slug` needs opened into
+    /// merging the ancestor folders queued in `pending_expand` (by
+    /// `Sidebar::expand_to`, which `land` and `select_slug` use) into
     /// `project.expanded` first. Replaces every previous
     /// `list_requests` + `sidebar.refresh` pair so the tree/expansion
     /// state stays consistent at every call site.
@@ -10429,16 +10430,17 @@ impl App {
     /// the selection band was on — the previously OPEN request) toward the
     /// newly open request's row, over the config-tunable
     /// `ui_settings.anim_ms.list_travel` (100ms by default). The band
-    /// tracks the OPEN request, not the keyboard cursor, so this is called
-    /// only after mutations that change which request is open (`App::land`
-    /// and the create-request flow). `prev` is `None` when the band had no
-    /// row in the space now shown (a space switch), so nothing fades out
-    /// from an unrelated row. A no-op when the open row didn't move, or
-    /// when nothing is open (`draw`'s own fallback already snaps to the
-    /// open row whenever the anim has no tracked value).
+    /// tracks the OPEN request, not the keyboard cursor. Its one caller is
+    /// `App::land` (step 7), on every landing: the open row moves when the
+    /// open request changes and also when a rebuild re-indexes it. `prev`
+    /// is `None` when the band had no row in the space now shown (a space
+    /// switch), so nothing fades out from an unrelated row. A no-op when
+    /// the open row didn't move, or when nothing is open (`draw`'s own
+    /// fallback already snaps to the open row whenever the anim has no
+    /// tracked value).
     fn retarget_sidebar_travel(&mut self, prev: Option<usize>) {
         // `sidebar.open_slug` is normally synced from the editor after the
-        // full action applies (see `update`); the callers sit mid-arm, so
+        // full action applies (see `update`); `land` runs mid-arm, so
         // sync it here first to compute the band's real destination.
         self.sidebar.open_slug = self.editor.slug.clone();
         let Some(cur) = self.sidebar.open_row() else {

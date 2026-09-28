@@ -71,10 +71,12 @@ pub enum StepKind {
     },
 }
 
-/// Which request a step belongs to, so undo can jump back to it. No caret
-/// is stored: undo/redo leave focus and the caret exactly where they are
-/// (ruling 2026-09-18, matching the Manage screen) — `Editor::apply_snapshot`
-/// re-places the caret it already has against the swapped-in fields.
+/// The request the editor held when the step was recorded. Nothing reads
+/// it any more: a project step lands through its `View`s, and an editor
+/// step carries its own slug. No caret is stored: undo/redo leave focus
+/// and the caret exactly where they are (ruling 2026-09-18, matching the
+/// Manage screen) — `Editor::apply_snapshot` re-places the caret it
+/// already has against the swapped-in fields.
 #[derive(Debug, Clone)]
 pub struct Context {
     pub slug: Option<String>,

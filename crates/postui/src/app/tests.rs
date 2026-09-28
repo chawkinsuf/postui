@@ -5194,10 +5194,7 @@ fn two_move_request_steps_in_a_row_both_land_without_waiting_for_mtime() {
             delta: -1,
         });
     }
-    assert_eq!(
-        app.sidebar.first_request_slug().as_deref(),
-        Some("main/gamma")
-    );
+    assert_eq!(request_rows(&app).first().map(String::as_str), Some("main/gamma"));
 }
 
 #[test]
@@ -5206,10 +5203,7 @@ fn move_selected_request_resolves_the_selection() {
     render_once(&mut app);
     app.sidebar.select_slug("main/beta");
     app.update(Action::MoveSelectedRequest(-1));
-    assert_eq!(
-        app.sidebar.first_request_slug().as_deref(),
-        Some("main/beta")
-    );
+    assert_eq!(request_rows(&app).first().map(String::as_str), Some("main/beta"));
 }
 
 #[test]
@@ -24448,9 +24442,9 @@ fn dragging_an_environment_row_reorders_and_persists() {
 #[test]
 fn reopening_the_manage_screen_on_another_tab_mid_drag_cancels_it() {
     // `OpenManage { tab: Some(other) }` while the screen is already up
-    // (the palette, or a second alt+r with a tab) resets the list — the
-    // drag has to be cancelled first, or it is dropped on the floor with
-    // `manage_press` still armed.
+    // (the palette, or a second alt+r with a tab) parks the live list and
+    // brings the other tab's forward — the drag has to be cancelled first,
+    // or it is dropped on the floor with `manage_press` still armed.
     let (mut app, dir) = manage_spaces_app();
     let r0 = manage_row(&mut app, 0);
     let r2 = manage_row(&mut app, 2);
