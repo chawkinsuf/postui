@@ -20716,6 +20716,166 @@ mod undo_tests {
         assert!(postui_core::fixtures::request_exists(app.proj().root(), "main/alpha"), "the rename failed");
         assert!(!app.op_in_flight);
     }
+
+    /// Task 13, spec §6.5's last bullet, ruling C12: walks every row of
+    /// §4.5 in turn on one fixture and asserts G5 — the sidebar cursor is
+    /// never `None` while a row exists — after each. The step names name
+    /// the §4.5 row so a failure points at the missing landing.
+    #[test]
+    fn the_sidebar_cursor_is_never_none_while_rows_exist() {
+        let (mut app, dir) = spaced_app();
+        postui_core::fixtures::save_request(dir.path(), "main/sub/inner", &req("https://x/3")).unwrap();
+        app.update(Action::RefreshSidebar);
+        let check = |app: &App, step: &str| {
+            if !app.sidebar.rows.is_empty() {
+                assert!(app.sidebar.selected.is_some(), "no cursor after: {step}");
+            }
+        };
+        let steps: Vec<(&str, Action)> = vec![
+            ("open", Action::ForceOpenRequest("main/alpha".into())),
+            ("open foldered", Action::ForceOpenRequest("main/sub/inner".into())),
+            ("create", Action::ForceCreateRequest("fresh".into())),
+            ("undo create", Action::Undo),
+            ("redo create", Action::Redo),
+            ("duplicate", Action::DuplicateRequest),
+            ("undo duplicate", Action::Undo),
+            ("save as", Action::SaveRequestAs("savedcopy".into())),
+            ("undo save as", Action::Undo),
+            ("delete open", Action::DeleteRequest("main/fresh".into())),
+            ("undo delete", Action::Undo),
+            ("redo delete", Action::Redo),
+            ("undo delete again", Action::Undo),
+            ("rename", Action::RenameRequest { from: "main/beta".into(), to: "zeta".into() }),
+            ("undo rename", Action::Undo),
+            ("redo rename", Action::Redo),
+            ("undo rename again", Action::Undo),
+            ("move to auth", Action::ForceMoveRequestToSpace { slug: "main/alpha".into(), space: "auth".into() }),
+            ("undo move", Action::Undo),
+            ("switch space", Action::ForceSwitchSpace("auth".into())),
+            ("switch back", Action::ForceSwitchSpace("main".into())),
+            ("move all", Action::ForceMoveAllRequests { from: "auth".into(), to: "main".into() }),
+            ("undo move all", Action::Undo),
+            ("reorder", Action::MoveRequest { slug: "main/beta".into(), delta: 1 }),
+            ("undo reorder", Action::Undo),
+            ("create space", Action::CreateSpace("billing".into())),
+            ("delete inactive space", Action::ForceDeleteSpace("billing".into())),
+            ("undo that", Action::Undo),
+            ("delete active space", Action::ForceDeleteSpace("main".into())),
+            ("undo that too", Action::Undo),
+        ];
+        for (name, action) in steps {
+            app.update(action);
+            check(&app, name);
+        }
+
+        // Right-click a row, then dismiss the menu (§4.5's own row): drive
+        // it the way `dismissed_sidebar_context_menu_restores_the_previous_selection`
+        // does — render so the hitmap exists, right-click the cursor's own
+        // row, then close.
+        render_once(&mut app);
+        let idx = app.sidebar.selected.expect("a cursor before the right-click");
+        let r = app
+            .hits
+            .rect_of(&crate::hit::Hit::SidebarRow(idx))
+            .expect("the selected row is on screen");
+        app.handle_mouse(right_down(r.x, r.y));
+        check(&app, "right-click a row");
+        app.update(Action::Close);
+        check(&app, "dismiss the menu");
+
+        // Redo of a delete, run fresh so the redo stack holds exactly what
+        // was just undone.
+        app.update(Action::DeleteRequest("main/beta".into()));
+        check(&app, "delete for redo");
+        app.update(Action::Undo);
+        check(&app, "undo before redo delete");
+        app.update(Action::Redo);
+        check(&app, "redo delete");
+        app.update(Action::Undo);
+        check(&app, "undo the redo delete");
+
+        // Redo of a rename.
+        app.update(Action::RenameRequest { from: "main/alpha".into(), to: "alpha2".into() });
+        check(&app, "rename for redo");
+        app.update(Action::Undo);
+        check(&app, "undo before redo rename");
+        app.update(Action::Redo);
+        check(&app, "redo rename");
+        app.update(Action::Undo);
+        check(&app, "undo the redo rename");
+
+        // Undo/redo of an editor edit (an `EditorDelta` step) on another
+        // request: edit a field on alpha, open beta, then undo must jump
+        // back to alpha (`jump_to_request_for_undo`).
+        app.update(Action::ForceOpenRequest("main/alpha".into()));
+        app.capture_undo(); // seed the shadow before the edit
+        app.editor.open_url_from_app();
+        app.editor
+            .handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
+        app.capture_undo();
+        app.update(Action::ForceOpenRequest("main/beta".into()));
+        check(&app, "open beta after editing alpha");
+        app.update(Action::Undo);
+        assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"), "undo followed the edit");
+        check(&app, "undo jumps to alpha's edit");
+        app.update(Action::Redo);
+        check(&app, "redo the edit");
+
+        // Project switch (`ForceSwitchProject`), and back.
+        let other = tempfile::tempdir().unwrap();
+        postui_core::fixtures::ensure_project(other.path()).unwrap();
+        postui_core::fixtures::save_request(other.path(), "main/gamma", &req("https://y/1")).unwrap();
+        app.update(Action::ForceSwitchProject(other.path().to_path_buf()));
+        check(&app, "switch project");
+        app.update(Action::ForceSwitchProject(dir.path().to_path_buf()));
+        check(&app, "switch project back");
+
+        // Undo of a space edit: rename the active space.
+        app.update(Action::RenameSpace { from: "main".into(), to: "Core".into() });
+        check(&app, "rename active space");
+        app.update(Action::Undo);
+        check(&app, "undo rename active space");
+
+        app.update(Action::RefreshSidebar);
+        check(&app, "refresh");
+    }
+
+    /// Ruling C12: undo of a variable edit and an env edit, walked with the
+    /// same G5 check as `the_sidebar_cursor_is_never_none_while_rows_exist`
+    /// — on a fixture that actually has envs and variables (`spaced_app`
+    /// has neither).
+    #[test]
+    fn the_sidebar_cursor_is_never_none_across_variable_and_env_edits() {
+        let dir = tempfile::tempdir().unwrap();
+        var_project(dir.path());
+        postui_core::fixtures::save_request(dir.path(), "main/req", &req("https://x/1")).unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::with_root(tx, dir.path().to_path_buf());
+        app.update(Action::RefreshSidebar);
+        let check = |app: &App, step: &str| {
+            if !app.sidebar.rows.is_empty() {
+                assert!(app.sidebar.selected.is_some(), "no cursor after: {step}");
+            }
+        };
+        app.update(Action::ForceOpenRequest("main/req".into()));
+        check(&app, "open");
+
+        // Undo of a variable edit (§4.5's last row).
+        app.update(Action::VarEdit(VarEditOp::SetEnvValue {
+            env: "qa".into(),
+            name: "base_url".into(),
+            value: "https://qa2.example.com".into(),
+        }));
+        check(&app, "variable edit");
+        app.update(Action::Undo);
+        check(&app, "undo variable edit");
+
+        // Undo of an env edit: rename the env.
+        app.update(Action::RenameEnv { from: "qa".into(), to: "staging".into() });
+        check(&app, "rename env");
+        app.update(Action::Undo);
+        check(&app, "undo rename env");
+    }
 }
 
 // --- right-click text menus (Copy / Paste on text surfaces) ---------------
