@@ -474,19 +474,6 @@ impl Project {
         // same failure through its own journaled write and roll the
         // transaction back the normal way; this call has nothing else to
         // report that the real write wouldn't.
-        // `.local/state.toml` is rewritten outside the journal on every UI
-        // change (`persist_local`), so a journaled op below must never
-        // record the file as *absent*: its undo would delete the file (and
-        // with it the pre-op local memory), and the app's next unjournaled
-        // `persist_local` would put it back where the redo's preflight
-        // expects nothing (`Conflict("... already exists")`). Materialise
-        // it from the pre-op memory first, so any `persist_local_journaled`
-        // below records real `before` bytes instead of `None`. A write
-        // failure here is ignored rather than aborting the transaction:
-        // whatever op below actually needs the write (if any) will hit the
-        // same failure through its own journaled write and roll the
-        // transaction back the normal way; this call has nothing else to
-        // report that the real write wouldn't.
         if let Ok(path) = rel(STATE_TOML)
             && !self.disk.exists(&path)
         {
