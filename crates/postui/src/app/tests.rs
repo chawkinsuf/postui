@@ -4672,24 +4672,19 @@ fn undo_of_a_space_rename_takes_the_open_request_back_with_it() {
 }
 
 #[test]
-fn delete_space_confirms_with_the_count_then_trashes_and_undoes() {
+fn delete_space_says_the_count_then_trashes_and_undoes() {
     let (mut app, dir) = spaced_app();
     app.update(Action::ForceOpenRequest("main/alpha".into()));
     app.update(Action::DeleteSpace("main".into()));
-    let Some(Modal::Confirm {
-        title,
-        body,
-        choices,
-    }) = app.modals.top()
-    else {
-        panic!("confirm")
-    };
-    assert_eq!(title, "Delete space \"main\"?");
-    assert_eq!(body, "Its 2 requests will be deleted.");
-    assert_eq!(choices[0].1, "Delete 2 requests");
-    let confirm = choices[0].0;
-    app.handle_key(plain(confirm));
-    assert!(app.modals.is_empty());
+    assert!(app.modals.is_empty(), "delete never confirms");
+    assert!(
+        app.toasts
+            .messages()
+            .iter()
+            .any(|m| m.starts_with("Deleted space main and its 2 requests")),
+        "{:?}",
+        app.toasts.messages()
+    );
     assert!(!dir.path().join("requests/main").exists());
     assert_eq!(app.proj().spaces(), ["auth"]);
     assert_eq!(
@@ -4713,30 +4708,24 @@ fn delete_space_confirms_with_the_count_then_trashes_and_undoes() {
 }
 
 #[test]
-fn delete_space_refuses_the_last_space_and_shows_a_plain_label_for_an_empty_one() {
+fn delete_space_refuses_the_last_space_and_says_nothing_of_requests_for_an_empty_one() {
     let (mut app, dir) = spaced_app();
     postui_core::fixtures::create_space(dir.path(), "empty").unwrap();
     app.update(Action::ReloadProjectFiles);
     app.reload_project_documents();
     app.update(Action::DeleteSpace("empty".into()));
-    let Some(Modal::Confirm { body, choices, .. }) = app.modals.top() else {
-        panic!("confirm")
-    };
-    assert_eq!(body, "");
-    assert_eq!(choices[0].1, "Delete space");
-    app.update(Action::Close);
-
-    // One request is a *request*, not "1 requests".
+    assert_eq!(
+        app.toasts.last_message(),
+        Some(&format!("Deleted space empty{}", app.undo_hint())[..]),
+    );
     app.update(Action::DeleteSpace("auth".into()));
-    let Some(Modal::Confirm { body, choices, .. }) = app.modals.top() else {
-        panic!("confirm")
-    };
-    assert_eq!(body, "Its 1 request will be deleted.");
-    assert_eq!(choices[0].1, "Delete 1 request");
-    app.update(Action::Close);
-
-    app.update(Action::ForceDeleteSpace("auth".into()));
-    app.update(Action::ForceDeleteSpace("empty".into()));
+    assert!(
+        app.toasts
+            .last_message()
+            .is_some_and(|m| m.starts_with("Deleted space auth and its 1 request")),
+        "{:?}",
+        app.toasts.messages()
+    );
     assert_eq!(app.proj().spaces(), ["main"]);
     let toasts = app.toasts.messages().len();
     app.update(Action::ForceDeleteSpace("main".into()));
@@ -8166,7 +8155,7 @@ fn rename_env_moves_the_file_rekeys_secrets_and_follows_the_active_env() {
 }
 
 #[test]
-fn delete_env_confirms_trashes_clears_the_active_env_and_undoes() {
+fn delete_env_never_confirms_and_its_toast_says_values_and_secrets_went() {
     let (mut app, dir) = app_with_envs();
     // A real selector (declared in variables.toml, options in the env
     // file) rather than a bare made-up key: `reload_if_changed` prunes
@@ -8187,19 +8176,14 @@ fn delete_env_confirms_trashes_clears_the_active_env_and_undoes() {
     app.proj_mut().set_secret("tok", "s3cret".into()).unwrap();
     app.proj_mut().set_selection_for("qa", "user", "alice");
     app.update(Action::DeleteEnv("qa".into()));
-    let Some(Modal::Confirm {
-        title,
-        body,
-        choices,
-    }) = app.modals.top()
-    else {
-        panic!("confirm")
-    };
-    assert_eq!(title, "Delete environment \"qa\"?");
-    assert_eq!(body, "Its values and secrets are removed.");
-    assert_eq!(choices[0].1, "Delete environment");
-    let confirm = choices[0].0;
-    app.handle_key(plain(confirm));
+    assert!(app.modals.is_empty(), "delete never confirms");
+    assert!(
+        app.toasts.last_message().is_some_and(|m| m.starts_with(
+            "Deleted environment qa: its values and secrets went with it"
+        )),
+        "{:?}",
+        app.toasts.messages()
+    );
     assert!(!dir.path().join("environments/qa.toml").exists());
     assert_eq!(
         app.env_label(),
@@ -18143,7 +18127,8 @@ fn list_keys_move_delete_and_rename_through_the_prompt() {
     app.update(Action::Close);
 
     app.handle_key(plain('d'));
-    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
+    assert!(app.modals.is_empty(), "`d` deletes without a confirm");
+    assert_eq!(app.proj().spaces(), ["main"], "`auth` is gone");
 }
 
 #[test]
@@ -18207,10 +18192,8 @@ fn clicking_new_delete_and_a_row_dispatch_the_right_actions() {
     ));
     app.update(Action::Close);
     click_hit(&mut app, Hit::ManageDelete);
-    let Some(Modal::Confirm { title, .. }) = app.modals.top() else {
-        panic!("confirm")
-    };
-    assert_eq!(title, "Delete environment \"qa\"?");
+    assert!(app.modals.is_empty(), "delete never confirms");
+    assert!(!app.proj().environments().contains(&"qa".to_string()));
 }
 
 #[test]

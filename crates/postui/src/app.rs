@@ -6133,16 +6133,10 @@ impl App {
                     );
                     return true;
                 }
-                self.push_modal(Modal::Confirm {
-                    title: format!("Delete environment \"{}\"?", self.env_name(&name)),
-                    body: "Its values and secrets are removed.".into(),
-                    choices: vec![(
-                        'd',
-                        "Delete environment".into(),
-                        vec![Action::ForceDeleteEnv(name)],
-                    )],
-                });
-                true
+                // No confirm (rule 2): a delete is undoable, and the undo
+                // hint in the toast is the way back. The dialog's warning
+                // about values and secrets moves into that toast.
+                self.apply(Action::ForceDeleteEnv(name))
             }
             Action::ForceDeleteEnv(name) => {
                 let display = self.env_name(&name);
@@ -6160,7 +6154,10 @@ impl App {
                             Some(format!("{name}.toml")),
                         );
                         self.toasts.push(
-                            format!("Deleted environment {display}{}", self.undo_hint()),
+                            format!(
+                                "Deleted environment {display}: its values and secrets went with it{}",
+                                self.undo_hint()
+                            ),
                             ToastKind::Info,
                         );
                         if self.screen == Screen::Manage {
@@ -6236,33 +6233,10 @@ impl App {
                     .and_then(postui_core::storage::space_of)
                     == Some(name.as_str());
                 if open_here && self.editor_holds_unsaved() {
-                    self.dirty_gate("delete space", Action::PromptDeleteSpace(name));
+                    self.dirty_gate("delete space", Action::ForceDeleteSpace(name));
                 } else {
-                    self.apply(Action::PromptDeleteSpace(name));
+                    self.apply(Action::ForceDeleteSpace(name));
                 }
-                true
-            }
-            Action::PromptDeleteSpace(name) => {
-                if self.spaces().len() <= 1 {
-                    self.toasts
-                        .push("cannot delete the last space", ToastKind::Warning);
-                    return true;
-                }
-                let count = self.sidebar.space_counts().get(&name).copied().unwrap_or(0);
-                let (body, label) = if count == 0 {
-                    (String::new(), "Delete space".to_string())
-                } else {
-                    let noun = if count == 1 { "request" } else { "requests" };
-                    (
-                        format!("Its {count} {noun} will be deleted."),
-                        format!("Delete {count} {noun}"),
-                    )
-                };
-                self.push_modal(Modal::Confirm {
-                    title: format!("Delete space \"{}\"?", self.space_name(&name)),
-                    body,
-                    choices: vec![('d', label, vec![Action::ForceDeleteSpace(name)])],
-                });
                 true
             }
             Action::ForceDeleteSpace(name) => {
@@ -6280,6 +6254,10 @@ impl App {
                 // failure: the transaction is atomic.)
                 let was_active = self.active_space() == name;
                 let display = self.space_name(&name);
+                // Sampled before the delete: afterwards the space has no
+                // rows to count. The count the dialog used to warn about
+                // lives in the toast now, next to the undo hint.
+                let count = self.sidebar.space_counts().get(&name).copied().unwrap_or(0);
                 let Some(p) = self.project.as_mut() else {
                     return true;
                 };
@@ -6292,10 +6270,14 @@ impl App {
                             crate::undo::ProjectNoun::TrashNamed,
                             Some(name.clone()),
                         );
-                        self.toasts.push(
-                            format!("Deleted space {display}{}", self.undo_hint()),
-                            ToastKind::Info,
-                        );
+                        let undo = self.undo_hint();
+                        let msg = if count > 0 {
+                            let noun = if count == 1 { "request" } else { "requests" };
+                            format!("Deleted space {display} and its {count} {noun}{undo}")
+                        } else {
+                            format!("Deleted space {display}{undo}")
+                        };
+                        self.toasts.push(msg, ToastKind::Info);
                         if was_active {
                             self.follow_active_space();
                         } else {
