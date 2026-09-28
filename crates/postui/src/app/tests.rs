@@ -6278,8 +6278,11 @@ fn click_after_keyboard_nav_snaps_the_travel_band_to_the_clicked_row() {
     let (mut app, _dir) = sidebar_test_app_three_flat_rows();
     render_once(&mut app);
 
-    // R6: the cursor already sits on row 0 ("alpha") as soon as the
-    // sidebar has rows, with no keyboard press needed.
+    // Keyboard-nav down then back up: R6 already starts the cursor on row
+    // 0 ("alpha"), but driving it with the keyboard (rather than relying
+    // on that rest state) is what this regression is actually about.
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
     assert_eq!(app.sidebar.selected, Some(0));
 
     // Click row 2 ("gamma") — a different row from the keyboard cursor.
@@ -6335,8 +6338,12 @@ fn folder_arrow_click_moves_only_the_cursor_not_the_travel_band() {
     let (mut app, _dir) = sidebar_test_app();
     render_once(&mut app);
 
-    // R6: the cursor already sits on row 0 ("top"), with no keyboard press
-    // needed.
+    // Keyboard-nav down then back up: R6 already starts the cursor on row
+    // 0 ("top"), but driving it with the keyboard first is what makes the
+    // travel-anim assertion below cover the keyboard-nav half of the
+    // regression, not just the click half.
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
     assert_eq!(app.sidebar.selected, Some(0));
 
     // Click the folder arrow on row 1 ("api").
