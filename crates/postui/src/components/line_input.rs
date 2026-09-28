@@ -401,10 +401,14 @@ impl LineInput {
                 true
             }
             // The shell's ctrl+u: delete from the line start to the caret
-            // (or just the selection, when there is one).
+            // (or just the selection, when there is one). Like the deletes
+            // below, it records only when there is something to remove.
             KeyCode::Char('u') if key.modifiers == KeyModifiers::CONTROL => {
-                self.record(EditKind::Whole);
-                if !self.delete_selection() && self.cursor > 0 {
+                if self.selection().is_some() {
+                    self.record(EditKind::Whole);
+                    self.delete_selection();
+                } else if self.cursor > 0 {
+                    self.record(EditKind::Whole);
                     let end = self.byte_offset(self.cursor);
                     self.text.replace_range(0..end, "");
                     self.cursor = 0;
@@ -823,6 +827,15 @@ mod tests {
         assert!(i.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL)));
         assert_eq!(i.text(), "def");
         assert_eq!(i.cursor(), 0);
+    }
+
+    #[test]
+    fn ctrl_u_at_the_line_start_records_nothing() {
+        let mut i = LineInput::new("abc");
+        i.set_cursor(0);
+        assert!(i.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL)));
+        assert_eq!(i.text(), "abc");
+        assert!(!i.edited(), "nothing was removed, so there is nothing to undo");
     }
 
     #[test]
