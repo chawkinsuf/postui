@@ -415,6 +415,9 @@ impl Editor {
     /// in-progress edit pointed at fields that just got replaced.
     pub fn apply_snapshot(&mut self, req: &HttpRequest) {
         let caret = self.caret();
+        let keys_before: Vec<String> = (0..self.table_len())
+            .filter_map(|i| self.table_key_at(i))
+            .collect();
         self.name = req.name.clone();
         self.method = req.method;
         self.url = LineInput::new(&req.url);
@@ -432,6 +435,16 @@ impl Editor {
         self.table.editing = None;
         self.table.selected = None;
         self.restore_caret(&caret);
+        // A row the swap brought back (undoing a delete, redoing an add) is
+        // where the cursor goes, the way every list reselects its restored
+        // row: the first one when several return. Only a row cursor moves —
+        // focus and cell text carets stay put (ruling 6772cd9).
+        if let Caret::Cell { .. } = caret
+            && let Some(i) = (0..self.table_len())
+                .find(|&i| self.table_key_at(i).is_some_and(|k| !keys_before.contains(&k)))
+        {
+            self.table.selected = Some(i);
+        }
     }
 
     /// Where the caret sits right now, so [`Self::apply_snapshot`] can put
@@ -488,7 +501,9 @@ impl Editor {
             Caret::Cell { row, key } => {
                 // The same row by key (indices shift under undo); a row the
                 // swap removed leaves the cursor at its old index, clamped
-                // to the ghost row. The cell column persists on its own.
+                // to the last real row. Never the ghost "+ Add" row at
+                // index `len`. An empty table has only the ghost row to
+                // offer. The cell column persists on its own.
                 let len = match self.active_tab {
                     EditorTab::Params => self.params.len(),
                     EditorTab::Headers => self.headers.len(),
@@ -498,7 +513,7 @@ impl Editor {
                 self.table.selected = Some(
                     key.as_deref()
                         .and_then(|k| self.table_index_of(k))
-                        .unwrap_or((*row).min(len)),
+                        .unwrap_or_else(|| (*row).min(len.saturating_sub(1))),
                 );
             }
             Caret::None => {}
@@ -3498,6 +3513,52 @@ mod tests {
             (41..=50).contains(&offset),
             "the restored row (50) sits inside a 10-row viewport at offset {offset}"
         );
+    }
+
+    /// Undoing an add removes the row the cursor sits on, so the key is
+    /// gone and the index fallback fires. It must land on the last *real*
+    /// row, never on the ghost "+ Add" row.
+    #[test]
+    fn a_restored_cell_cursor_never_parks_on_the_ghost_row() {
+        let mut e = Editor {
+            active_tab: EditorTab::Headers,
+            sub_focus: SubFocus::Content,
+            ..Editor::default()
+        };
+        for key in ["Accept", "X-Debug"] {
+            e.headers.insert(
+                key.into(),
+                Entry {
+                    value: "1".into(),
+                    enabled: true,
+                },
+            );
+        }
+        e.restore_caret(&Caret::Cell {
+            row: 2,
+            key: Some("Accept-copy".into()),
+        });
+        assert_eq!(
+            e.table.selected,
+            Some(1),
+            "a vanished key falls back to the last real row, not the ghost row at index {}",
+            e.headers.len()
+        );
+    }
+
+    /// The same fallback on an empty table has only the ghost row to sit on.
+    #[test]
+    fn a_restored_cell_cursor_on_an_emptied_table_sits_at_zero() {
+        let mut e = Editor {
+            active_tab: EditorTab::Headers,
+            sub_focus: SubFocus::Content,
+            ..Editor::default()
+        };
+        e.restore_caret(&Caret::Cell {
+            row: 3,
+            key: Some("Accept".into()),
+        });
+        assert_eq!(e.table.selected, Some(0));
     }
 
     #[test]

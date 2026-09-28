@@ -1194,6 +1194,41 @@ fn undo_restores_a_deleted_table_row() {
     assert_eq!(app.editor.params.len(), 1, "undo brings the row back");
 }
 
+/// Undoing a table-row delete lands the cursor on the restored row, the
+/// way every list does — not on whichever neighbour the delete left it on.
+#[test]
+fn undoing_a_table_row_delete_selects_the_restored_row() {
+    let mut app = App::new_for_test();
+    app.update(Action::CreateRequest("reselect".into()));
+    for (k, v) in [("Accept", "application/json"), ("X-Debug", "1")] {
+        app.editor.headers.insert(
+            k.into(),
+            postui_core::model::Entry {
+                value: v.into(),
+                enabled: true,
+            },
+        );
+    }
+    app.editor.active_tab = EditorTab::Headers;
+    app.editor.preferred_tab = EditorTab::Headers;
+    app.focus = PaneId::Editor;
+    app.editor.sub_focus = SubFocus::Content;
+    app.editor.table.selected = Some(0);
+    app.capture_undo(); // seed the shadow before the delete
+    app.update(Action::DeleteTableRow(0));
+    app.capture_undo();
+    assert_eq!(
+        app.editor.table_key_at(app.editor.table.selected.unwrap()),
+        Some("X-Debug".into()),
+        "the delete leaves the cursor on the neighbour"
+    );
+    app.update(Action::Undo);
+    assert_eq!(app.editor.headers.len(), 2, "undo brings the row back");
+    assert_eq!(app.editor.table.selected, Some(0), "the cursor lands on the restored Accept row");
+    assert_eq!(app.focus, PaneId::Editor, "focus never moves");
+    assert_eq!(app.editor.sub_focus, SubFocus::Content);
+}
+
 /// Every other delete toasts with the undo hint; a header/param/var row
 /// used to vanish with no feedback at all.
 #[test]
@@ -18341,7 +18376,8 @@ mod undo_tests {
     }
 
     /// A row the swap removed (undoing its add) leaves the cursor at the
-    /// same index, clamped to the ghost row.
+    /// same index, clamped to the last real row. Here the table is emptied
+    /// entirely, so the only row left is the ghost "+ Add" row at index 0.
     #[test]
     fn restore_caret_cell_falls_back_to_the_index_when_the_key_is_gone() {
         let mut app = App::new_for_test();
