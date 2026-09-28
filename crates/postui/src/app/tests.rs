@@ -5575,6 +5575,25 @@ fn keyboard_moves_of_different_requests_are_separate_steps() {
     assert_eq!(app.history.undo_len(), steps + 2);
 }
 
+/// A drop commits straight from `handle_mouse`, not through `dispatch`:
+/// one whose write fails after `begin_op` still leaves no op in flight.
+#[test]
+fn a_drop_whose_write_fails_leaves_no_op_in_flight() {
+    let (mut app, dir) = three_row_app();
+    let r0 = row_rect(&mut app, 0);
+    let r2 = row_rect(&mut app, 2);
+    app.handle_mouse(left_down(r0.x + 2, r0.y));
+    app.handle_mouse(moved(r0.x + 2, r2.y));
+    // `project.toml` turns unparseable under the drag: the order write
+    // refuses rather than overwrite it.
+    let meta_path = dir.path().join("project.toml");
+    std::fs::write(&meta_path, "spaces = [\n").unwrap();
+    app.handle_mouse(left_up(r0.x + 2, r2.y));
+    assert_eq!(std::fs::read_to_string(&meta_path).unwrap(), "spaces = [\n", "nothing written");
+    assert!(app.toasts.messages().iter().any(|m| m.starts_with("cannot reorder")));
+    assert!(!app.op_in_flight);
+}
+
 #[test]
 fn a_dropped_row_drag_is_its_own_undo_step() {
     let (mut app, dir) = three_row_app();
@@ -20668,6 +20687,23 @@ mod undo_tests {
         std::fs::remove_file(postui_core::storage::request_path(dir.path(), "main/alpha")).unwrap();
         app.update(Action::Undo);
         assert!(app.editor.slug.is_none(), "never a dangling slug");
+    }
+
+    #[test]
+    fn undoing_an_inactive_space_delete_keeps_local_state_on_the_open_request() {
+        let (mut app, _dir) = spaced_app();
+        // A visit gives auth local memory, so its delete rewrites (and
+        // journals) `state.toml`.
+        app.update(Action::ForceOpenRequest("auth/login".into()));
+        app.update(Action::ForceOpenRequest("main/alpha".into()));
+        app.update(Action::DeleteSpace("auth".into()));
+        app.update(Action::ForceOpenRequest("main/beta".into()));
+        // The replay restores the delete's journaled `state.toml`, which
+        // names alpha; nothing in the view changed, so nothing lands.
+        app.update(Action::Undo);
+        assert!(app.proj().spaces().contains(&"auth".to_string()));
+        assert_eq!(app.editor.slug.as_deref(), Some("main/beta"));
+        assert_eq!(app.proj().local().open_request.as_deref(), Some("main/beta"));
     }
 
     #[test]

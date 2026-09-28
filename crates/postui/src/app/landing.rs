@@ -170,7 +170,6 @@ impl App {
         //    listing the replay's reload rebuilt, not `open_request`,
         //    which would re-stamp the held entry without re-seeding the
         //    buffer.
-        let mut rekeyed = false;
         if let Some(open) = self.editor.slug.clone() {
             let moved_to = u.meta.moves.iter().find_map(|(old, new)| {
                 if u.redo {
@@ -180,7 +179,6 @@ impl App {
                 }
             });
             if let Some(new_slug) = moved_to {
-                rekeyed = true;
                 self.editor.slug = Some(new_slug.clone());
                 let name = self
                     .project()
@@ -256,9 +254,11 @@ impl App {
                 ToastKind::Success,
             );
         }
-        // A re-key or a reset the landing left alone still changed what
-        // the editor holds: local state follows it.
-        if (rekeyed || reset) && self.open_state_stale() {
+        // The replay may have restored a journaled `state.toml` (a space
+        // delete's), and a re-key or reset the landing left alone changed
+        // what the editor holds: either way local state follows the
+        // editor, as after every replay.
+        if self.open_state_stale() {
             self.persist_open_request();
         }
     }

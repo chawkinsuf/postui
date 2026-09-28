@@ -426,8 +426,11 @@ pub struct App {
     /// [`Self::record_project_step`] records nothing for it and a
     /// keyboard burst stays one undo step.
     marked_entry: Option<postui_core::journal::EntryId>,
-    /// Set by `begin_op`, cleared by `record_project_step`: a journaled op
-    /// is between its `Project` call and its marker.
+    /// A journaled op is between its `Project` call and its marker. Set by
+    /// `begin_op`; cleared by `record_project_step_as` (and so by
+    /// `record_project_step`), and, as the safety net for an op that bailed
+    /// before its record, after every action in `dispatch` and at the end
+    /// of every event in `handle_key` and `handle_mouse`.
     op_in_flight: bool,
     /// The open request as of the last `capture_undo` call (with its slug),
     /// diffed against the live editor each call to detect edits that never
@@ -9659,6 +9662,10 @@ impl App {
     /// modal state change (close/typing) that bypasses `update`.
     pub fn handle_key(&mut self, ev: KeyEvent) -> bool {
         let changed = self.handle_key_inner(ev);
+        // The op safety net at the event boundary, as `dispatch` has one
+        // per action: a key handled without an action (a var-form or
+        // grid commit) can bail between `begin_op` and its record.
+        self.op_in_flight = false;
         self.arm_pending_toasts();
         // Not every key reaches `update` -- Esc on a modal just pops it
         // -- so the gate is re-checked at the event boundary too.

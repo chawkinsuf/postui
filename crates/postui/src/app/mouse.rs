@@ -22,6 +22,10 @@ impl App {
     ///   here — modal-list scrolling is a later task.
     pub fn handle_mouse(&mut self, m: ratatui::crossterm::event::MouseEvent) -> bool {
         let changed = self.handle_mouse_inner(m);
+        // The op safety net at the event boundary, as in `handle_key`: a
+        // drag release commits without an action and can bail between
+        // `begin_op` and its record.
+        self.op_in_flight = false;
         self.arm_pending_toasts();
         // Same reason as `handle_key`: a click that only pops a modal
         // never reaches `update`, and an unanswered startup gate must
