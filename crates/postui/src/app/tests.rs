@@ -3967,19 +3967,137 @@ fn startup_restores_open_request_inside_a_collapsed_folder() {
     );
 }
 
+/// `main` holds `alpha`; a never-visited space `ops` holds `slugs`.
+fn ops_space_app(slugs: &[&str]) -> (App, tempfile::TempDir) {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let dir = tempfile::tempdir().unwrap();
+    postui_core::fixtures::ensure_project(dir.path()).unwrap();
+    postui_core::fixtures::create_space(dir.path(), "ops").unwrap();
+    postui_core::fixtures::save_request(dir.path(), "main/alpha", &req("https://x/1")).unwrap();
+    for slug in slugs {
+        postui_core::fixtures::save_request(dir.path(), slug, &req("https://x/2")).unwrap();
+    }
+    (App::with_root(tx, dir.path().to_path_buf()), dir)
+}
+
 #[test]
-fn startup_without_persisted_open_request_selects_nothing() {
+fn switching_into_a_space_whose_request_is_foldered_opens_it() {
+    let (mut app, _dir) = ops_space_app(&["ops/deploy/run"]);
+    app.update(Action::CycleSpace(1));
+    assert_eq!(app.proj().local().active_space, "ops");
+    assert_eq!(app.editor.slug.as_deref(), Some("ops/deploy/run"));
+    assert!(app.proj().local().expanded.contains("ops/deploy"));
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("ops/deploy/run"));
+}
+
+#[test]
+fn switching_into_a_space_opens_a_request_two_folders_deep() {
+    let (mut app, _dir) = ops_space_app(&["ops/deploy/prod/run"]);
+    app.update(Action::CycleSpace(1));
+    assert_eq!(app.editor.slug.as_deref(), Some("ops/deploy/prod/run"));
+    let expanded = &app.proj().local().expanded;
+    assert!(expanded.contains("ops/deploy") && expanded.contains("ops/deploy/prod"));
+}
+
+#[test]
+fn a_space_switch_prefers_a_top_level_request() {
+    let (mut app, _dir) = ops_space_app(&["ops/deploy/run", "ops/top"]);
+    app.update(Action::CycleSpace(1));
+    assert_eq!(app.editor.slug.as_deref(), Some("ops/top"));
+}
+
+#[test]
+fn a_space_switch_still_prefers_the_remembered_request() {
+    let (mut app, _dir) = ops_space_app(&["ops/deploy/run", "ops/top"]);
+    app.update(Action::CycleSpace(1));
+    app.update(Action::ForceOpenRequest("ops/deploy/run".into()));
+    app.update(Action::CycleSpace(1)); // back to main
+    app.update(Action::CycleSpace(1)); // ops again
+    assert_eq!(app.editor.slug.as_deref(), Some("ops/deploy/run"));
+}
+
+#[test]
+fn a_switch_into_an_empty_space_opens_nothing_and_selects_nothing() {
+    let (mut app, _dir) = ops_space_app(&[]);
+    app.update(Action::CycleSpace(1));
+    assert_eq!(app.proj().local().active_space, "ops");
+    assert!(app.editor.slug.is_none());
+    assert!(app.sidebar.selected.is_none());
+}
+
+/// OQ5 (2026-09-27): with nothing open, the cursor sits on the first row
+/// so every key has a target — but it is drawn only while the sidebar is
+/// focused (the next test).
+#[test]
+fn startup_with_nothing_open_puts_the_cursor_on_the_first_row() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let dir = tempfile::tempdir().unwrap();
     postui_core::fixtures::ensure_project(dir.path()).unwrap();
     postui_core::fixtures::save_request(dir.path(), "main/ping", &req("https://x/ping")).unwrap();
-
     let app = App::with_root(tx, dir.path().to_path_buf());
     assert_eq!(app.editor.slug, None);
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/ping"));
+}
+
+#[test]
+fn an_unfocused_sidebar_draws_no_cursor_fill_at_startup() {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let dir = tempfile::tempdir().unwrap();
+    postui_core::fixtures::ensure_project(dir.path()).unwrap();
+    postui_core::fixtures::save_request(dir.path(), "main/ping", &req("https://x/ping")).unwrap();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    let fill_of_row0 = |app: &mut App| {
+        app.anims.finish_all();
+        let backend = ratatui::backend::TestBackend::new(120, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
+        let row = app
+            .hits
+            .rect_of(&crate::hit::Hit::SidebarRow(0))
+            .expect("row 0 drawn");
+        terminal.backend().buffer()[(row.x + row.width - 2, row.y)].bg
+    };
+    app.focus = PaneId::Editor;
+    assert_ne!(
+        fill_of_row0(&mut app),
+        app.theme.control_hover,
+        "no cursor fill while another pane has focus"
+    );
+    app.focus = PaneId::Sidebar;
     assert_eq!(
-        app.sidebar.selected, None,
-        "no row wears the selected fill when nothing is open — a \
-         highlighted row with an empty editor misstates what's loaded"
+        fill_of_row0(&mut app),
+        app.theme.control_hover,
+        "the focused sidebar shows where the cursor is"
+    );
+}
+
+#[test]
+fn an_outside_delete_of_the_cursor_row_lands_on_the_neighbour() {
+    let (mut app, dir) = spaced_app();
+    app.sidebar.select_slug("main/alpha");
+    std::fs::remove_file(postui_core::storage::request_path(dir.path(), "main/alpha")).unwrap();
+    app.update(Action::RefreshSidebar);
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/beta"));
+}
+
+#[test]
+fn enter_space_never_clears_the_cursor() {
+    // Drives `enter_space` directly (not through `SwitchSpace`, which
+    // reopens a remembered/fallback request and re-selects its row as a
+    // side effect — that would mask a bug in `enter_space` itself): with
+    // nothing opened afterward, the sidebar cursor must still land
+    // somewhere as soon as `enter_space` rebuilds the sidebar for the new
+    // space.
+    let (mut app, _dir) = spaced_app();
+    assert!(app.enter_space("auth", SpaceExit::Keep));
+    assert!(
+        app.sidebar.selected.is_some(),
+        "auth has a row (login); the cursor must be on it"
+    );
+    assert!(app.enter_space("main", SpaceExit::Keep));
+    assert!(
+        app.sidebar.selected.is_some(),
+        "main has rows (alpha, beta); the cursor must be on one"
     );
 }
 
@@ -6160,9 +6278,8 @@ fn click_after_keyboard_nav_snaps_the_travel_band_to_the_clicked_row() {
     let (mut app, _dir) = sidebar_test_app_three_flat_rows();
     render_once(&mut app);
 
-    // Keyboard-select row 0 ("alpha"): lands the cursor and its travel anim
-    // there.
-    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    // R6: the cursor already sits on row 0 ("alpha") as soon as the
+    // sidebar has rows, with no keyboard press needed.
     assert_eq!(app.sidebar.selected, Some(0));
 
     // Click row 2 ("gamma") — a different row from the keyboard cursor.
@@ -6218,8 +6335,8 @@ fn folder_arrow_click_moves_only_the_cursor_not_the_travel_band() {
     let (mut app, _dir) = sidebar_test_app();
     render_once(&mut app);
 
-    // Keyboard-select row 0 ("top").
-    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    // R6: the cursor already sits on row 0 ("top"), with no keyboard press
+    // needed.
     assert_eq!(app.sidebar.selected, Some(0));
 
     // Click the folder arrow on row 1 ("api").

@@ -5944,7 +5944,7 @@ impl App {
                     .project()
                     .and_then(|p| p.space_open_for(&name))
                     .filter(|s| self.request_exists(s))
-                    .or_else(|| self.sidebar.first_request_slug());
+                    .or_else(|| self.space_fallback_request(&name));
                 match target {
                     Some(slug) => self.apply(Action::ForceOpenRequest(slug)),
                     None => {
@@ -8312,13 +8312,23 @@ impl App {
                 .push(format!("no space named {space:?}"), ToastKind::Warning);
             return false;
         }
-        self.sidebar.selected = None;
         self.refresh_sidebar();
         self.toasts.push(
             format!("space: {}", self.space_name(space)),
             ToastKind::Success,
         );
         true
+    }
+
+    /// The request a switch into `space` opens when the space has no
+    /// remembered one: the first visible request, else the first request
+    /// inside collapsed folders (spec §4.2).
+    fn space_fallback_request(&self, space: &str) -> Option<String> {
+        let p = self.project()?;
+        let order = postui_core::order::space_order(p.meta(), space).to_vec();
+        self.sidebar
+            .first_visible_request_in_space(space, &order, &p.local().expanded)
+            .or_else(|| self.sidebar.first_request_in_space(space, &order))
     }
 
     /// Brings the view to the space the project now says is active, after
@@ -8335,7 +8345,7 @@ impl App {
             .project()
             .and_then(|p| p.space_open_for(&space))
             .filter(|s| self.request_exists(s))
-            .or_else(|| self.sidebar.first_request_slug());
+            .or_else(|| self.space_fallback_request(&space));
         match target {
             Some(slug) => {
                 self.apply(Action::ForceOpenRequest(slug));

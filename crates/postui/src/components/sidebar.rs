@@ -42,9 +42,10 @@ pub enum Row {
     },
 }
 
-/// Identifies a row across a `refresh` rebuild so the previous selection can
-/// be relocated in the new tree even though row indices shift.
-enum RowId {
+/// Identifies a row across a rebuild (a folder path or a request slug).
+/// Undo's `View` stores the cursor as one (spec §4.1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RowKey {
     Folder(String),
     Request(String),
 }
@@ -56,10 +57,10 @@ pub struct Sidebar {
     /// explanation of why nothing is loaded (a project that refused to
     /// open). Paragraphs are separated by blank lines.
     pub notice: Option<String>,
-    /// Index of the cursor/selected row, or `None` when no row is selected
-    /// (a fresh sidebar with nothing open yet, or the previously selected
-    /// row disappeared in a rebuild). The selected fill is honest: it only
-    /// ever sits on a row the user actually put it on.
+    /// Index of the cursor/selected row. `None` only when there are no
+    /// rows at all; whenever rows exist the cursor is on one of them (G5).
+    /// A refresh preserves the selection by row identity, else hands it to
+    /// the neighbouring row (see `rebuild`).
     pub selected: Option<usize>,
     /// Index of the first row drawn; `draw` keeps `selected` inside the
     /// visible window whenever `ensure_visible` is set, by adjusting this.
@@ -133,7 +134,8 @@ impl Sidebar {
     /// name); a folder's children are emitted only when `expanded`
     /// contains its path. Preserves the current selection by row identity
     /// (folder path or request slug) across the rebuild; a selection whose
-    /// row vanished clears rather than sliding onto an arbitrary neighbor.
+    /// row vanished lands on the neighbouring row instead, and while any
+    /// rows exist the cursor is never left empty (G5).
     ///
     /// Only `space`'s entries become rows: everything outside it is dropped
     /// (but kept in `listing` for `space_counts`), and the tree is rooted at
@@ -154,7 +156,8 @@ impl Sidebar {
     /// for a change that touched no file (a live drag, a folder toggle).
     /// Same selection-preserving rules as `refresh`.
     pub fn rebuild(&mut self, space: &str, expanded: &BTreeSet<String>, order: &[String]) {
-        let prev = self.selected_identity();
+        let prev = self.selected_key();
+        let prev_index = self.selected;
         let prefix = format!("{space}/");
         let mut sorted: Vec<RequestListing> = self
             .listing
@@ -185,6 +188,19 @@ impl Sidebar {
 
         self.selected =
             prev.and_then(|id| self.rows.iter().position(|r| Self::row_matches(r, &id)));
+        // G5: while rows exist the cursor is somewhere. A row that vanished
+        // (an outside delete, a switch to another space's rows) hands the
+        // cursor to the request now at its index, else the nearest one; a
+        // list with no request rows puts it on the row at that index. Every
+        // in-app op lands explicitly (`App::land`); this only serves
+        // refreshes nothing aimed.
+        if self.selected.is_none() && !self.rows.is_empty() {
+            let at = prev_index.unwrap_or(0).min(self.rows.len() - 1);
+            self.select_nearest_request(at);
+            if self.selected.is_none() {
+                self.selected = Some(at);
+            }
+        }
         self.ensure_visible = true;
     }
 
@@ -230,6 +246,54 @@ impl Sidebar {
             Row::Request { slug, .. } => Some(slug.clone()),
             _ => None,
         })
+    }
+
+    /// The first request of `space` in display order with `expanded`
+    /// folders open: the first request a user would see (§4.2 "first
+    /// visible"). Same order `build_rows` paints.
+    pub fn first_visible_request_in_space(
+        &self,
+        space: &str,
+        order: &[String],
+        expanded: &BTreeSet<String>,
+    ) -> Option<String> {
+        let prefix = format!("{space}/");
+        let mut sorted: Vec<RequestListing> = self
+            .listing
+            .iter()
+            .filter(|l| l.slug.starts_with(&prefix))
+            .cloned()
+            .collect();
+        sorted.sort_by(|a, b| a.slug.cmp(&b.slug));
+        let ctx = LevelCtx {
+            expanded,
+            space,
+            order,
+            overlay: None,
+        };
+        let mut rows = Vec::new();
+        Self::build_rows(&sorted, &prefix, 0, &ctx, &mut rows);
+        rows.into_iter().find_map(|r| match r {
+            Row::Request { slug, .. } => Some(slug),
+            Row::Folder { .. } => None,
+        })
+    }
+
+    /// The first request of `space` as if every folder were expanded: the
+    /// switch fallback when no visible row is a request.
+    pub fn first_request_in_space(&self, space: &str, order: &[String]) -> Option<String> {
+        let prefix = format!("{space}/");
+        let mut all_folders = BTreeSet::new();
+        for l in self.listing.iter().filter(|l| l.slug.starts_with(&prefix)) {
+            let mut segs: Vec<&str> = l.slug[prefix.len()..].split('/').collect();
+            segs.pop();
+            let mut path = space.to_string();
+            for seg in segs {
+                path = format!("{path}/{seg}");
+                all_folders.insert(path.clone());
+            }
+        }
+        self.first_visible_request_in_space(space, order, &all_folders)
     }
 
     /// Builds the rows for one folder level (`prefix`, possibly empty for
@@ -302,10 +366,52 @@ impl Sidebar {
         }
     }
 
-    fn selected_identity(&self) -> Option<RowId> {
+    /// The currently selected row's identity (a folder path or a request
+    /// slug), stable across a rebuild even though row indices shift.
+    pub fn selected_key(&self) -> Option<RowKey> {
         match self.rows.get(self.selected?)? {
-            Row::Folder { path, .. } => Some(RowId::Folder(path.clone())),
-            Row::Request { slug, .. } => Some(RowId::Request(slug.clone())),
+            Row::Folder { path, .. } => Some(RowKey::Folder(path.clone())),
+            Row::Request { slug, .. } => Some(RowKey::Request(slug.clone())),
+        }
+    }
+
+    /// Selects the row `key` names, if it is visible. `true` when it did.
+    pub fn select_key(&mut self, key: &RowKey) -> bool {
+        match self.rows.iter().position(|r| Self::row_matches(r, key)) {
+            Some(i) => {
+                self.selected = Some(i);
+                self.ensure_visible = true;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The first request row, else the first row; nothing when empty.
+    pub fn select_first(&mut self) {
+        if self.rows.is_empty() {
+            return;
+        }
+        self.select_nearest_request(0);
+        if self.selected.is_none() {
+            self.selected = Some(0);
+            self.ensure_visible = true;
+        }
+    }
+
+    /// Queues `slug`'s ancestor folders open for the next refresh, without
+    /// moving the cursor (the landing places it once the rows exist).
+    pub fn expand_to(&mut self, slug: &str) {
+        let mut parts: Vec<&str> = slug.split('/').collect();
+        parts.pop();
+        let mut acc = String::new();
+        for seg in parts {
+            acc = if acc.is_empty() {
+                seg.to_string()
+            } else {
+                format!("{acc}/{seg}")
+            };
+            self.pending_expand.insert(acc.clone());
         }
     }
 
@@ -319,10 +425,10 @@ impl Sidebar {
         }
     }
 
-    fn row_matches(row: &Row, id: &RowId) -> bool {
+    fn row_matches(row: &Row, id: &RowKey) -> bool {
         match (row, id) {
-            (Row::Folder { path, .. }, RowId::Folder(p)) => path == p,
-            (Row::Request { slug, .. }, RowId::Request(s)) => slug == s,
+            (Row::Folder { path, .. }, RowKey::Folder(p)) => path == p,
+            (Row::Request { slug, .. }, RowKey::Request(s)) => slug == s,
             _ => false,
         }
     }
@@ -332,17 +438,7 @@ impl Sidebar {
     /// caller can open them before the next `refresh` (which is what
     /// actually makes the row visible when it wasn't already).
     pub fn select_slug(&mut self, slug: &str) {
-        let mut parts: Vec<&str> = slug.split('/').collect();
-        parts.pop(); // drop the request's own basename; the rest are ancestor folders
-        let mut acc = String::new();
-        for seg in parts {
-            if acc.is_empty() {
-                acc = seg.to_string();
-            } else {
-                acc = format!("{acc}/{seg}");
-            }
-            self.pending_expand.insert(acc.clone());
-        }
+        self.expand_to(slug);
 
         if let Some(i) = self
             .rows
@@ -1466,16 +1562,23 @@ mod tests {
             assert_eq!(a.selected, b.selected, "{alias:?} vs {canonical:?}: selection");
         }
         // Full pages: ctrl+f/ctrl+b (PageDown/PageUp) move by the list
-        // height; ctrl+d/ctrl+u by half of it.
+        // height; ctrl+d/ctrl+u by half of it. `fresh()` starts on row 0
+        // (R6: the cursor is always somewhere) and its two `j` presses land
+        // it on row 2, so these are relative to that, not an absolute 1.
         let mut s = fresh();
+        let start = s.selected.expect("fresh() lands on a row");
         s.handle_key(ctrl('f'));
-        assert_eq!(s.selected, Some(5), "clamped at the last row");
+        assert_eq!(s.selected, Some(6), "clamped at the last row");
         s.handle_key(ctrl('b'));
-        assert_eq!(s.selected, Some(1));
+        assert_eq!(s.selected, Some(2), "a full page back from the last row");
         s.handle_key(ctrl('d'));
-        assert_eq!(s.selected, Some(3), "half of the 4-row page");
+        assert_eq!(
+            s.selected,
+            Some(start + 2),
+            "half of the 4-row page, from fresh()'s row 2"
+        );
         s.handle_key(ctrl('u'));
-        assert_eq!(s.selected, Some(1));
+        assert_eq!(s.selected, Some(start), "half a page back lands where fresh() started");
     }
 
     #[test]
@@ -1515,6 +1618,73 @@ mod tests {
         s.refresh(listing(&["a/b/c"]), "main", &expanded(&[]), &[]);
         s.select_slug("main/a/b/c");
         assert!(s.pending_expand.contains("main/a") && s.pending_expand.contains("main/a/b"));
+    }
+
+    #[test]
+    fn a_rebuild_whose_cursor_row_vanished_lands_on_the_neighbour_request() {
+        let mut s = Sidebar::default();
+        s.refresh(listing(&["alpha", "beta", "gamma"]), "main", &expanded(&[]), &[]);
+        s.select_slug("main/beta");
+        s.refresh(listing(&["alpha", "gamma"]), "main", &expanded(&[]), &[]);
+        assert_eq!(
+            s.selected_slug().as_deref(),
+            Some("main/gamma"),
+            "the row that slid up"
+        );
+        s.refresh(listing(&["alpha"]), "main", &expanded(&[]), &[]);
+        assert_eq!(
+            s.selected_slug().as_deref(),
+            Some("main/alpha"),
+            "the last row went: the one above"
+        );
+    }
+
+    #[test]
+    fn a_rebuild_with_rows_never_leaves_the_cursor_empty() {
+        let mut s = Sidebar::default();
+        s.refresh(listing(&["alpha", "sub/x"]), "main", &expanded(&[]), &[]);
+        assert_eq!(
+            s.selected_slug().as_deref(),
+            Some("main/alpha"),
+            "a fresh list starts on its first request"
+        );
+        s.refresh(listing(&["sub/x"]), "main", &expanded(&[]), &[]);
+        assert_eq!(
+            s.selected,
+            Some(0),
+            "only a folder row left: the cursor sits on it"
+        );
+        s.refresh(listing(&[]), "main", &expanded(&[]), &[]);
+        assert_eq!(s.selected, None, "no rows, no cursor");
+    }
+
+    #[test]
+    fn first_request_in_space_looks_inside_collapsed_folders_and_prefers_the_top_level() {
+        let mut s = Sidebar::default();
+        s.refresh(
+            listing(&["deploy/run", "deploy/prod/x"]),
+            "main",
+            &expanded(&[]),
+            &[],
+        );
+        assert_eq!(
+            s.first_visible_request_in_space("main", &[], &expanded(&[])),
+            None
+        );
+        assert_eq!(
+            s.first_request_in_space("main", &[]).as_deref(),
+            Some("main/deploy/run")
+        );
+        s.refresh(
+            listing(&["deploy/run", "top"]),
+            "main",
+            &expanded(&[]),
+            &[],
+        );
+        assert_eq!(
+            s.first_request_in_space("main", &[]).as_deref(),
+            Some("main/top")
+        );
     }
 
     /// A disabled (instantly-jumping) `Anims` shared by every test's
