@@ -3570,12 +3570,16 @@ impl App {
                         // on a scratch if it held the request, and the
                         // cursor lands on the neighbour when it was on the
                         // row or the row was open (§4.5), so the next `m`
-                        // has something to act on.
+                        // has something to act on. No row (the folder is
+                        // collapsed) means no neighbour: the cursor keeps
+                        // its row.
                         self.session.rename(&slug, &new_slug);
                         self.land(Landing {
                             open: was_open.then_some(Open::Scratch { buffer: None }),
-                            cursor: (was_open || cursor_on)
-                                .then(|| CursorAim::Neighbour(from_row.unwrap_or(0))),
+                            cursor: from_row
+                                .map(CursorAim::Neighbour)
+                                .or_else(|| self.sidebar.selected_key().map(CursorAim::On))
+                                .filter(|_| was_open || cursor_on),
                             ..Landing::default()
                         });
                         self.toasts.push(
@@ -3707,11 +3711,14 @@ impl App {
                         // The editor is left on a scratch when it held the
                         // request (R9 marks it); the cursor lands on the
                         // neighbour when it was on the row or the row was
-                        // open (§4.5).
+                        // open (§4.5). No row (the folder is collapsed)
+                        // means no neighbour: the cursor keeps its row.
                         self.land(Landing {
                             open: was_open.then_some(Open::Scratch { buffer: None }),
-                            cursor: (was_open || cursor_on)
-                                .then(|| CursorAim::Neighbour(from_row.unwrap_or(0))),
+                            cursor: from_row
+                                .map(CursorAim::Neighbour)
+                                .or_else(|| self.sidebar.selected_key().map(CursorAim::On))
+                                .filter(|_| was_open || cursor_on),
                             ..Landing::default()
                         });
                         self.record_project_step(t, crate::undo::StepLabel::delete(display));
@@ -6834,7 +6841,12 @@ impl App {
             return true;
         };
         use crate::action::ExtractDestination;
-        let t = self.begin_op();
+        // A `Request` destination journals nothing (its save below is not
+        // an undo step), so it begins no op either: `begin_op` would
+        // close the open field session as its own step, and the typing
+        // plus the token replacement are meant to peel off as one.
+        let wrote_to_request = matches!(destination, ExtractDestination::Request);
+        let t = (!wrote_to_request).then(|| self.begin_op());
         let write_result: Result<(), String> = match destination {
             ExtractDestination::ProjectDefault => {
                 if self.variables().vars.contains_key(&name)
@@ -6939,7 +6951,6 @@ impl App {
                 Ok(())
             }
         };
-        let wrote_to_request = matches!(destination, ExtractDestination::Request);
         match write_result {
             Ok(()) => {
                 // The var-file half of the gesture (ProjectDefault/
@@ -6954,7 +6965,7 @@ impl App {
                 // buffer (see `confirm_extract_to_selector`). A `Request`
                 // destination journals nothing: its save below is not an
                 // undo step.
-                if !wrote_to_request {
+                if let Some(t) = t {
                     self.record_project_step(t, self.open_request_label(crate::undo::StepLabel::variable(&name)));
                 }
                 match source {

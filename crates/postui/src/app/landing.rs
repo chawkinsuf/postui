@@ -383,11 +383,16 @@ impl App {
                 self.flush_field_session();
                 let outgoing = self.editor.slug.clone();
                 let Some(p) = self.project.as_mut() else { return false };
-                if let Some(prev) = outgoing.as_deref().filter(|s| *s != slug) {
-                    p.close_request(prev);
-                }
                 match p.open_request(&slug).cloned() {
                     Ok(req) => {
+                        // Only one request is held at a time, as only one
+                        // is open. The outgoing one is released only now
+                        // that the open succeeded: on failure the editor
+                        // keeps showing it, so the project must keep
+                        // holding it or the drift check goes blind.
+                        if let Some(prev) = outgoing.as_deref().filter(|s| *s != slug) {
+                            p.close_request(prev);
+                        }
                         self.editor.load(Some(slug.clone()), req);
                         self.sync_active_tab();
                         if let Some(buf) = buffer {

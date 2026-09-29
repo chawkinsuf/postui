@@ -28719,3 +28719,100 @@ fn undoing_a_space_rename_puts_the_cursor_back_on_the_folder_row() {
     app.update(Action::Redo);
     assert_eq!(app.sidebar.selected_key(), Some(RowKey::Folder(format!("{space}/zsub"))));
 }
+
+// ---- code-review follow-ups on the one-landing-path branch ----
+
+/// Review finding 1: `land` used to close the outgoing request before the
+/// incoming open had succeeded. When the open failed the editor kept the
+/// old request on screen but the project no longer held it, so the drift
+/// check went blind and the next save overwrote an outside edit unasked.
+#[test]
+fn a_failed_open_keeps_the_previous_request_held_so_drift_is_still_caught() {
+    let (mut app, dir) = spaced_app();
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    // Break beta on disk so opening it fails.
+    let beta = postui_core::storage::request_path(dir.path(), "main/beta");
+    std::fs::write(&beta, "url = \"x\"\nurl = \"dup\"\n").unwrap();
+    app.update(Action::ForceOpenRequest("main/beta".into()));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"), "alpha stays on screen");
+    assert!(app.toasts.messages().iter().any(|m| m.starts_with("could not open main/beta")));
+    assert!(
+        app.proj().held_request("main/alpha").is_some(),
+        "the project still holds the request the editor shows"
+    );
+
+    // An outside edit to alpha now, then a save: the drift confirm must fire.
+    postui_core::fixtures::save_request(dir.path(), "main/alpha", &req("https://x/edited-outside"))
+        .unwrap();
+    dirty_the_editor(&mut app);
+    app.handle_key(ctrl('s'));
+    assert!(
+        matches!(app.modals.top(), Some(Modal::Confirm { .. })),
+        "the outside edit must be caught, not overwritten"
+    );
+}
+
+/// Review finding 2: deleting the open request while its folder is
+/// collapsed has no row to take a neighbour from. The cursor stays where
+/// it was rather than jumping to the top of the space.
+#[test]
+fn deleting_the_open_request_in_a_collapsed_folder_leaves_the_cursor_alone() {
+    let (mut app, dir) = spaced_app();
+    postui_core::fixtures::save_request(dir.path(), "main/deep/inner", &req("https://x/9")).unwrap();
+    app.update(Action::RefreshSidebar);
+    app.update(Action::ForceOpenRequest("main/deep/inner".into()));
+    app.proj_mut().set_expanded(Default::default());
+    app.refresh_sidebar();
+    assert!(app.sidebar.row_of("main/deep/inner").is_none(), "folder collapsed");
+    app.sidebar.select_slug("main/beta");
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/beta"));
+
+    app.update(Action::DeleteRequest("main/deep/inner".into()));
+    assert!(app.editor.slug.is_none(), "the open request is gone; a scratch");
+    assert_eq!(
+        app.sidebar.selected_slug().as_deref(),
+        Some("main/beta"),
+        "no row to take a neighbour from, so the cursor stays put"
+    );
+}
+
+/// Review finding 4: extract-to-request journals nothing, so it must not
+/// begin an op either. Beginning one flushed the open URL session into
+/// its own undo step, and a field mid-edit plus the extract took two undos
+/// where the still-open session makes them one (as before the landing
+/// rework).
+#[test]
+fn extract_to_request_from_a_field_mid_edit_is_one_undo_step() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    postui_core::fixtures::save_request(dir.path(), "main/ping", &req("https://x/ping/abc-123"))
+        .unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::ForceOpenRequest("main/ping".into()));
+    app.capture_undo(); // the main loop's per-event seed of the shadow
+    app.focus = crate::layout::PaneId::Editor;
+    app.editor.open_url_from_app();
+    app.handle_key(plain('9'));
+    app.capture_undo(); // mid-session: the gate holds, nothing recorded yet
+    assert_eq!(app.editor.url.text(), "https://x/ping/abc-1239");
+    let steps_before = app.history.undo_len();
+
+    app.update(Action::ConfirmExtractVariable {
+        name: "trace_id".into(),
+        destination: crate::action::ExtractDestination::Request,
+    });
+    app.capture_undo(); // the main loop's per-event capture of the replacement
+    assert_eq!(app.editor.url.text(), "{{trace_id}}");
+    assert_eq!(
+        app.history.undo_len(),
+        steps_before + 1,
+        "the extract is one step, not a session close plus the replacement"
+    );
+    app.update(Action::Undo);
+    assert_eq!(
+        app.editor.url.text(),
+        "https://x/ping/abc-123",
+        "one undo peels the typing and the replacement together"
+    );
+}
