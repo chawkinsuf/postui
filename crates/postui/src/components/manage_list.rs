@@ -163,11 +163,15 @@ impl ManageList {
         }
     }
 
-    /// Drops every trace of the previous tab's list: its cursor and its
-    /// scroll (the tab strip switches to a different set of items
-    /// entirely).
-    pub fn reset(&mut self) {
-        *self = Self::default();
+    /// Pulls the cursor back into a list `len` rows long — how a cursor
+    /// parked by a tab switch survives its list shrinking while the tab
+    /// was away, and where a delete leaves it (the same index, clamped).
+    /// An empty list leaves the cursor at 0.
+    pub fn clamp(&mut self, len: usize) {
+        if self.cursor >= len {
+            self.cursor = len.saturating_sub(1);
+            self.ensure_visible = true;
+        }
     }
 
     /// The row index a screen row `y` maps to, given the last draw's

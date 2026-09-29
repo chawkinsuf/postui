@@ -284,6 +284,8 @@ pub enum Action {
     /// Copy the selected sidebar request to the next free `<slug>-copy…`
     /// name and open the copy.
     DuplicateRequest,
+    /// Duplicates `slug` and opens the copy; `DuplicateRequest`'s dirty gate runs first.
+    ForceDuplicateRequest(String),
     /// The scratch gate's save path: opens the Save-as name prompt with the
     /// deferred action to run once the save succeeds.
     PromptSaveScratch(Box<Action>),
@@ -476,9 +478,10 @@ pub enum Action {
         name: String,
         delta: i32,
     },
-    /// User asked to delete an environment: opens the confirm.
+    /// User asked to delete an environment: deletes it at once, no confirm
+    /// (it's undoable).
     DeleteEnv(String),
-    /// Confirmed; trashes the environment file (undoable), drops its
+    /// Trashes the environment file (undoable), drops its
     /// secrets/selections and clears the active env when it was this one.
     ForceDeleteEnv(String),
     /// Open the space dropdown: every space (numbered, ✓ on the active
@@ -486,7 +489,9 @@ pub enum Action {
     OpenSpaceChooser,
     /// Open the `PromptKind::NewSpace` name prompt.
     OpenNewSpacePrompt,
-    /// Create `requests/<name>/` (+ list entry) and switch to it.
+    /// Create `requests/<name>/` (+ list entry). Does not switch to it —
+    /// the Spaces list's cursor lands on the new row instead, the way
+    /// `ForceMoveRequestToSpace` does not follow the request it moves.
     CreateSpace(String),
     /// Open the `PromptKind::RenameSpace` prompt, prefilled with the name.
     PromptRenameSpace(String),
@@ -496,13 +501,11 @@ pub enum Action {
         from: String,
         to: String,
     },
-    /// User asked to delete a space. Gated on unsaved edits when the open
-    /// request lives there; otherwise goes straight to the confirm.
+    /// User asked to delete a space. Deletes at once, with no confirm and
+    /// no unsaved-edits gate (OQ4): the step carries the open request's
+    /// unsaved buffer, and undo brings the space and the edit back.
     DeleteSpace(String),
-    /// The delete confirm, whose body/label carry the request count.
-    PromptDeleteSpace(String),
-    /// Confirmed; trashes the space's directory (undoable) and drops the
-    /// list entry.
+    /// Trashes the space's directory (undoable) and drops the list entry.
     ForceDeleteSpace(String),
     /// Move `name` `delta` positions in the space list (clamped).
     /// Recorded as a project step; a burst of moves inside the coalesce

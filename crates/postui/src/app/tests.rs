@@ -1194,6 +1194,41 @@ fn undo_restores_a_deleted_table_row() {
     assert_eq!(app.editor.params.len(), 1, "undo brings the row back");
 }
 
+/// Undoing a table-row delete lands the cursor on the restored row, the
+/// way every list does — not on whichever neighbour the delete left it on.
+#[test]
+fn undoing_a_table_row_delete_selects_the_restored_row() {
+    let mut app = App::new_for_test();
+    app.update(Action::CreateRequest("reselect".into()));
+    for (k, v) in [("Accept", "application/json"), ("X-Debug", "1")] {
+        app.editor.headers.insert(
+            k.into(),
+            postui_core::model::Entry {
+                value: v.into(),
+                enabled: true,
+            },
+        );
+    }
+    app.editor.active_tab = EditorTab::Headers;
+    app.editor.preferred_tab = EditorTab::Headers;
+    app.focus = PaneId::Editor;
+    app.editor.sub_focus = SubFocus::Content;
+    app.editor.table.selected = Some(0);
+    app.capture_undo(); // seed the shadow before the delete
+    app.update(Action::DeleteTableRow(0));
+    app.capture_undo();
+    assert_eq!(
+        app.editor.table_key_at(app.editor.table.selected.unwrap()),
+        Some("X-Debug".into()),
+        "the delete leaves the cursor on the neighbour"
+    );
+    app.update(Action::Undo);
+    assert_eq!(app.editor.headers.len(), 2, "undo brings the row back");
+    assert_eq!(app.editor.table.selected, Some(0), "the cursor lands on the restored Accept row");
+    assert_eq!(app.focus, PaneId::Editor, "focus never moves");
+    assert_eq!(app.editor.sub_focus, SubFocus::Content);
+}
+
 /// Every other delete toasts with the undo hint; a header/param/var row
 /// used to vanish with no feedback at all.
 #[test]
@@ -3932,19 +3967,280 @@ fn startup_restores_open_request_inside_a_collapsed_folder() {
     );
 }
 
+/// `main` holds `alpha`; a never-visited space `ops` holds `slugs`.
+fn ops_space_app(slugs: &[&str]) -> (App, tempfile::TempDir) {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let dir = tempfile::tempdir().unwrap();
+    postui_core::fixtures::ensure_project(dir.path()).unwrap();
+    postui_core::fixtures::create_space(dir.path(), "ops").unwrap();
+    postui_core::fixtures::save_request(dir.path(), "main/alpha", &req("https://x/1")).unwrap();
+    for slug in slugs {
+        postui_core::fixtures::save_request(dir.path(), slug, &req("https://x/2")).unwrap();
+    }
+    (App::with_root(tx, dir.path().to_path_buf()), dir)
+}
+
 #[test]
-fn startup_without_persisted_open_request_selects_nothing() {
+fn switching_into_a_space_whose_request_is_foldered_opens_it() {
+    let (mut app, _dir) = ops_space_app(&["ops/deploy/run"]);
+    app.update(Action::CycleSpace(1));
+    assert_eq!(app.proj().local().active_space, "ops");
+    assert_eq!(app.editor.slug.as_deref(), Some("ops/deploy/run"));
+    assert!(app.proj().local().expanded.contains("ops/deploy"));
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("ops/deploy/run"));
+}
+
+#[test]
+fn switching_into_a_space_opens_a_request_two_folders_deep() {
+    let (mut app, _dir) = ops_space_app(&["ops/deploy/prod/run"]);
+    app.update(Action::CycleSpace(1));
+    assert_eq!(app.editor.slug.as_deref(), Some("ops/deploy/prod/run"));
+    let expanded = &app.proj().local().expanded;
+    assert!(expanded.contains("ops/deploy") && expanded.contains("ops/deploy/prod"));
+}
+
+#[test]
+fn a_space_switch_prefers_a_top_level_request() {
+    let (mut app, _dir) = ops_space_app(&["ops/deploy/run", "ops/top"]);
+    app.update(Action::CycleSpace(1));
+    assert_eq!(app.editor.slug.as_deref(), Some("ops/top"));
+}
+
+#[test]
+fn a_space_switch_still_prefers_the_remembered_request() {
+    let (mut app, _dir) = ops_space_app(&["ops/deploy/run", "ops/top"]);
+    app.update(Action::CycleSpace(1));
+    app.update(Action::ForceOpenRequest("ops/deploy/run".into()));
+    app.update(Action::CycleSpace(1)); // back to main
+    app.update(Action::CycleSpace(1)); // ops again
+    assert_eq!(app.editor.slug.as_deref(), Some("ops/deploy/run"));
+}
+
+#[test]
+fn a_switch_into_an_empty_space_opens_nothing_and_selects_nothing() {
+    let (mut app, _dir) = ops_space_app(&[]);
+    app.update(Action::CycleSpace(1));
+    assert_eq!(app.proj().local().active_space, "ops");
+    assert!(app.editor.slug.is_none());
+    assert!(app.sidebar.selected.is_none());
+}
+
+#[test]
+fn opening_a_request_puts_the_cursor_on_it_even_in_a_collapsed_folder() {
+    let (mut app, dir) = spaced_app();
+    postui_core::fixtures::save_request(dir.path(), "main/deep/inner/x", &req("https://x/9")).unwrap();
+    app.update(Action::RefreshSidebar);
+    app.update(Action::ForceOpenRequest("main/deep/inner/x".into()));
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/deep/inner/x"));
+    let expanded = &app.proj().local().expanded;
+    assert!(expanded.contains("main/deep") && expanded.contains("main/deep/inner"));
+}
+
+#[test]
+fn switching_into_a_space_with_only_folders_puts_the_cursor_on_the_first_row() {
+    let (mut app, _dir) = ops_space_app(&["ops/b/two", "ops/a/one"]);
+    app.update(Action::CycleSpace(1));
+    assert_eq!(app.editor.slug.as_deref(), Some("ops/a/one"), "folders in name order");
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("ops/a/one"));
+}
+
+#[test]
+fn switching_projects_lands_the_cursor_on_the_restored_request() {
+    let (mut app, _dir) = three_row_app();
+    let other = tempfile::tempdir().unwrap();
+    postui_core::fixtures::ensure_project(other.path()).unwrap();
+    for slug in ["main/alpha", "main/beta", "main/gamma"] {
+        postui_core::fixtures::save_request(other.path(), slug, &req("https://y")).unwrap();
+    }
+    postui_core::fixtures::save_local_state(
+        other.path(),
+        &postui_core::project::LocalState { open_request: Some("main/gamma".into()), ..Default::default() },
+    )
+    .unwrap();
+    app.sidebar.selected = Some(0);
+    app.update(Action::ForceSwitchProject(other.path().to_path_buf()));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/gamma"));
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/gamma"));
+}
+
+#[test]
+fn switching_to_a_project_with_nothing_open_puts_the_cursor_on_the_first_request() {
+    let (mut app, _dir) = three_row_app();
+    let other = tempfile::tempdir().unwrap();
+    postui_core::fixtures::ensure_project(other.path()).unwrap();
+    for slug in ["main/zeta", "main/eta"] {
+        postui_core::fixtures::save_request(other.path(), slug, &req("https://y")).unwrap();
+    }
+    app.sidebar.selected = Some(2);
+    app.update(Action::ForceSwitchProject(other.path().to_path_buf()));
+    assert!(app.editor.slug.is_none());
+    assert_eq!(app.sidebar.selected, Some(0), "the first row, not row 2 of the old project");
+}
+
+#[test]
+fn a_space_switch_does_not_fade_the_band_in_from_the_old_space_row() {
+    let (mut app, _dir) = spaced_app();
+    app.update(Action::ForceOpenRequest("main/beta".into()));
+    assert_eq!(app.sidebar.open_row(), Some(1));
+    app.update(Action::CycleSpace(1));
+    assert_eq!(app.editor.slug.as_deref(), Some("auth/login"));
+    assert_eq!(
+        app.sidebar.band_fade_from, None,
+        "row 1 of main is no row of auth: nothing to fade out from"
+    );
+}
+
+#[test]
+fn a_failed_open_leaves_the_sidebar_cursor_where_it_was() {
+    let (mut app, dir) = spaced_app();
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    app.sidebar.selected = Some(1);
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/beta"));
+    std::fs::write(dir.path().join("requests/main/beta.toml"), "not = [valid").unwrap();
+    app.update(Action::ForceOpenRequest("main/beta".into()));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"), "the editor is unchanged");
+    assert_eq!(
+        app.sidebar.selected_slug().as_deref(),
+        Some("main/beta"),
+        "a failed open changed nothing, so the cursor keeps its row"
+    );
+}
+
+/// Final review I2 (spec §4.2 step 7): renaming the open request re-keys
+/// the editor without opening anything, and local state still follows it,
+/// so a relaunch reopens the renamed request.
+#[test]
+fn renaming_the_open_request_moves_local_state_to_the_new_slug() {
+    let (mut app, dir) = spaced_app();
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    app.update(Action::RenameRequest { from: "main/alpha".into(), to: "Zulu".into() });
+    assert_eq!(app.editor.slug.as_deref(), Some("main/zulu"));
+    assert_eq!(app.proj().local().open_request.as_deref(), Some("main/zulu"));
+    assert_eq!(app.proj().space_open_for("main").as_deref(), Some("main/zulu"));
+
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let relaunched = App::with_root(tx, dir.path().to_path_buf());
+    assert_eq!(relaunched.editor.slug.as_deref(), Some("main/zulu"), "a relaunch reopens it");
+}
+
+/// Final review M2: undoing a rename of the open request restores the
+/// file's missing `name` (a legacy file) in the editor too, so a later
+/// save never writes the undone name back.
+#[test]
+fn undoing_a_rename_of_an_open_nameless_request_drops_the_name_again() {
+    let (mut app, dir) = spaced_app();
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    assert_eq!(app.editor.name, None, "the fixture file has no name");
+    app.update(Action::RenameRequest { from: "main/alpha".into(), to: "Zulu".into() });
+    assert_eq!(app.editor.name.as_deref(), Some("Zulu"));
+
+    app.update(Action::Undo);
+    assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"));
+    assert_eq!(app.editor.name, None);
+    assert!(!app.editor.is_dirty());
+    app.update(Action::SaveRequest);
+    assert_eq!(
+        postui_core::fixtures::load_request(dir.path(), "main/alpha").unwrap().name,
+        None,
+        "a save writes no name back"
+    );
+}
+
+/// A failed cross-space open still commits the switch and leaves the
+/// editor on the old space's request. Persisting what the editor holds
+/// must not write that slug into (or clear) the new space's memory.
+#[test]
+fn a_failed_cross_space_open_keeps_both_spaces_remembered_requests() {
+    let (mut app, dir) = spaced_app();
+    postui_core::fixtures::save_request(dir.path(), "auth/logout", &req("https://x/2")).unwrap();
+    app.update(Action::ForceOpenRequest("auth/login".into()));
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    assert_eq!(app.proj().space_open_for("auth").as_deref(), Some("auth/login"));
+    std::fs::write(dir.path().join("requests/auth/logout.toml"), "not = [valid").unwrap();
+
+    app.update(Action::ForceOpenRequest("auth/logout".into()));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"), "the open failed");
+    assert_eq!(app.active_space(), "auth", "the switch stands");
+    // Any later landing runs the same persist step.
+    app.update(Action::ForceOpenRequest("auth/logout".into()));
+
+    assert_eq!(app.proj().space_open_for("auth").as_deref(), Some("auth/login"));
+    assert_eq!(app.proj().space_open_for("main").as_deref(), Some("main/alpha"));
+}
+
+/// OQ5 (2026-09-27): with nothing open, the cursor sits on the first row
+/// so every key has a target — but it is drawn only while the sidebar is
+/// focused (the next test).
+#[test]
+fn startup_with_nothing_open_puts_the_cursor_on_the_first_row() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let dir = tempfile::tempdir().unwrap();
     postui_core::fixtures::ensure_project(dir.path()).unwrap();
     postui_core::fixtures::save_request(dir.path(), "main/ping", &req("https://x/ping")).unwrap();
-
     let app = App::with_root(tx, dir.path().to_path_buf());
     assert_eq!(app.editor.slug, None);
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/ping"));
+}
+
+#[test]
+fn an_unfocused_sidebar_draws_no_cursor_fill_at_startup() {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let dir = tempfile::tempdir().unwrap();
+    postui_core::fixtures::ensure_project(dir.path()).unwrap();
+    postui_core::fixtures::save_request(dir.path(), "main/ping", &req("https://x/ping")).unwrap();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    let fill_of_row0 = |app: &mut App| {
+        app.anims.finish_all();
+        let backend = ratatui::backend::TestBackend::new(120, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
+        let row = app
+            .hits
+            .rect_of(&crate::hit::Hit::SidebarRow(0))
+            .expect("row 0 drawn");
+        terminal.backend().buffer()[(row.x + row.width - 2, row.y)].bg
+    };
+    app.focus = PaneId::Editor;
+    assert_ne!(
+        fill_of_row0(&mut app),
+        app.theme.control_hover,
+        "no cursor fill while another pane has focus"
+    );
+    app.focus = PaneId::Sidebar;
     assert_eq!(
-        app.sidebar.selected, None,
-        "no row wears the selected fill when nothing is open — a \
-         highlighted row with an empty editor misstates what's loaded"
+        fill_of_row0(&mut app),
+        app.theme.control_hover,
+        "the focused sidebar shows where the cursor is"
+    );
+}
+
+#[test]
+fn an_outside_delete_of_the_cursor_row_lands_on_the_neighbour() {
+    let (mut app, dir) = spaced_app();
+    app.sidebar.select_slug("main/alpha");
+    std::fs::remove_file(postui_core::storage::request_path(dir.path(), "main/alpha")).unwrap();
+    app.update(Action::RefreshSidebar);
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/beta"));
+}
+
+#[test]
+fn entering_a_space_never_clears_the_cursor() {
+    // Lands on the space alone (not through `SwitchSpace`, which reopens
+    // a remembered/fallback request and re-selects its row as a side
+    // effect — that would mask a bug in the space entry itself): with
+    // nothing opened, the sidebar cursor must still land somewhere as
+    // soon as the landing rebuilds the sidebar for the new space.
+    let (mut app, _dir) = spaced_app();
+    let space = |name: &str| Landing { space: Some(name.to_string()), ..Landing::default() };
+    assert!(app.land(space("auth")));
+    assert!(
+        app.sidebar.selected.is_some(),
+        "auth has a row (login); the cursor must be on it"
+    );
+    assert!(app.land(space("main")));
+    assert!(
+        app.sidebar.selected.is_some(),
+        "main has rows (alpha, beta); the cursor must be on one"
     );
 }
 
@@ -4435,7 +4731,7 @@ fn m_in_the_sidebar_opens_the_move_to_space_chooser_for_the_selection() {
 // -- Task 11: space CRUD --------------------------------------------------
 
 #[test]
-fn new_space_prompt_creates_and_switches() {
+fn new_space_prompt_creates_without_switching() {
     let (mut app, dir) = spaced_app();
     app.update(Action::OpenNewSpacePrompt);
     for c in "billing".chars() {
@@ -4445,8 +4741,7 @@ fn new_space_prompt_creates_and_switches() {
     assert!(app.modals.is_empty());
     assert!(dir.path().join("requests/billing").is_dir());
     assert_eq!(app.proj().spaces(), ["main", "auth", "billing"]);
-    assert_eq!(app.proj().local().active_space, "billing");
-    assert!(app.editor.slug.is_none());
+    assert_eq!(app.proj().local().active_space, "main", "the prompt makes the space, it does not enter it");
     let toasts = app.toasts.messages().len();
     app.update(Action::CreateSpace("auth".into()));
     assert!(app.toasts.messages().len() > toasts, "duplicate toasts");
@@ -4459,8 +4754,11 @@ fn creating_a_space_with_a_free_form_name_slugs_the_folder_and_shows_the_name() 
     let (mut app, dir) = spaced_app();
     app.update(Action::CreateSpace("Auth v2!".into()));
     assert!(dir.path().join("requests/auth-v2").is_dir());
-    assert_eq!(app.proj().local().active_space, "auth-v2");
     assert_eq!(app.proj().space_name("auth-v2"), "Auth v2!");
+    // Creating does not enter the new space, so switch on purpose to
+    // read the display name off the header chip.
+    app.update(Action::SwitchSpace("auth-v2".into()));
+    assert_eq!(app.proj().local().active_space, "auth-v2");
     let text = rendered_text_wide(&mut app);
     assert!(text.contains("Space: Auth v2!"), "{text}");
     assert!(
@@ -4479,6 +4777,87 @@ fn creating_a_space_with_a_free_form_name_slugs_the_folder_and_shows_the_name() 
         .find(|it| it.label == "3  Auth v2!")
         .expect("display name in the chooser");
     assert_eq!(row.action, Some(Action::SwitchSpace("auth-v2".into())));
+}
+
+#[test]
+fn creating_a_space_does_not_switch_to_it() {
+    let (mut app, dir) = spaced_app();
+    app.update(Action::SwitchSpace("auth".into()));
+    app.update(Action::OpenRequest("auth/login".into()));
+    app.update(Action::CreateSpace("billing".into()));
+    assert!(dir.path().join("requests/billing").is_dir());
+    assert_eq!(app.proj().spaces(), ["main", "auth", "billing"]);
+    assert_eq!(app.proj().local().active_space, "auth", "the new space is created, not entered");
+    assert_eq!(app.editor.slug.as_deref(), Some("auth/login"), "the request you were aiming at stays open");
+}
+
+#[test]
+fn creating_a_space_puts_the_manage_cursor_on_the_new_row() {
+    use crate::components::manage::ManageTab;
+    let (mut app, _dir) = spaced_app();
+    app.update(Action::OpenManage { tab: Some(ManageTab::Spaces) });
+    app.update(Action::CreateSpace("billing".into()));
+    assert_eq!(app.manage_selected(ManageTab::Spaces).as_deref(), Some("billing"));
+}
+
+#[test]
+fn creating_an_environment_puts_the_manage_cursor_on_the_new_row() {
+    use crate::components::manage::ManageTab;
+    let (mut app, _dir) = app_with_envs();
+    app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
+    assert_eq!(app.manage_selected(ManageTab::Environments).as_deref(), Some("prod"), "the cursor starts on the first row");
+    app.update(Action::CreateEnv("staging".into()));
+    assert_eq!(app.manage_selected(ManageTab::Environments).as_deref(), Some("staging"));
+    assert_eq!(app.proj().active_env(), Some("staging"), "creating an environment still activates it");
+}
+
+#[test]
+fn each_manage_list_tab_keeps_its_own_cursor() {
+    use crate::components::manage::ManageTab;
+    let (mut app, _dir) = app_with_envs();
+    app.update(Action::CreateSpace("auth".into()));
+    app.update(Action::CreateSpace("billing".into()));
+    assert_eq!(app.proj().spaces(), ["main", "auth", "billing"]);
+    assert_eq!(app.proj().environments(), ["prod", "qa"]);
+    app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
+    app.manage.list.cursor = 1;
+    app.update(Action::SelectManageTab(ManageTab::Spaces));
+    assert_eq!(app.manage.list.cursor, 2, "the Spaces tab arrives on its own cursor (the create left it on billing), not on the env cursor");
+    assert_eq!(app.manage_selected(ManageTab::Spaces).as_deref(), Some("billing"));
+    app.manage.list.cursor = 1;
+    app.update(Action::SelectManageTab(ManageTab::Environments));
+    assert_eq!(app.manage_selected(ManageTab::Environments).as_deref(), Some("qa"), "Environments kept the cursor it had");
+    app.update(Action::SelectManageTab(ManageTab::Variables));
+    app.update(Action::SelectManageTab(ManageTab::Settings));
+    app.update(Action::SelectManageTab(ManageTab::Spaces));
+    assert_eq!(app.manage_selected(ManageTab::Spaces).as_deref(), Some("auth"), "Spaces kept its own cursor");
+    app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
+    assert_eq!(app.manage.list.cursor, 1, "OpenManage keeps it too");
+}
+
+#[test]
+fn a_parked_manage_cursor_clamps_to_a_shrunken_list() {
+    use crate::components::manage::ManageTab;
+    let (mut app, _dir) = manage_envs_app();
+    assert_eq!(app.proj().environments(), ["prod", "qa", "dev"]);
+    app.manage.list.cursor = 2;
+    app.update(Action::SelectManageTab(ManageTab::Spaces));
+    app.update(Action::DeleteEnv("dev".into()));
+    assert_eq!(app.proj().environments(), ["prod", "qa"]);
+    app.update(Action::SelectManageTab(ManageTab::Environments));
+    assert_eq!(app.manage.list.cursor, 1, "clamped to the last row");
+    assert_eq!(app.manage_selected(ManageTab::Environments).as_deref(), Some("qa"));
+}
+
+#[test]
+fn deleting_an_environment_lands_the_manage_cursor_on_the_neighbour() {
+    let (mut app, _dir) = manage_envs_app();
+    app.manage_select_name("dev");
+    app.update(Action::DeleteEnv("dev".into()));
+    assert_eq!(app.manage_selected(crate::components::manage::ManageTab::Environments).as_deref(), Some("qa"), "the last row went: the one above");
+    app.manage_select_name("prod");
+    app.update(Action::DeleteEnv("prod".into()));
+    assert_eq!(app.manage_selected(crate::components::manage::ManageTab::Environments).as_deref(), Some("qa"), "the row that slid up into index 0");
 }
 
 #[test]
@@ -4637,24 +5016,19 @@ fn undo_of_a_space_rename_takes_the_open_request_back_with_it() {
 }
 
 #[test]
-fn delete_space_confirms_with_the_count_then_trashes_and_undoes() {
+fn delete_space_says_the_count_then_trashes_and_undoes() {
     let (mut app, dir) = spaced_app();
     app.update(Action::ForceOpenRequest("main/alpha".into()));
     app.update(Action::DeleteSpace("main".into()));
-    let Some(Modal::Confirm {
-        title,
-        body,
-        choices,
-    }) = app.modals.top()
-    else {
-        panic!("confirm")
-    };
-    assert_eq!(title, "Delete space \"main\"?");
-    assert_eq!(body, "Its 2 requests will be deleted.");
-    assert_eq!(choices[0].1, "Delete 2 requests");
-    let confirm = choices[0].0;
-    app.handle_key(plain(confirm));
-    assert!(app.modals.is_empty());
+    assert!(app.modals.is_empty(), "delete never confirms");
+    assert!(
+        app.toasts
+            .messages()
+            .iter()
+            .any(|m| m.starts_with("Deleted space main and its 2 requests")),
+        "{:?}",
+        app.toasts.messages()
+    );
     assert!(!dir.path().join("requests/main").exists());
     assert_eq!(app.proj().spaces(), ["auth"]);
     assert_eq!(
@@ -4678,47 +5052,29 @@ fn delete_space_confirms_with_the_count_then_trashes_and_undoes() {
 }
 
 #[test]
-fn delete_space_refuses_the_last_space_and_shows_a_plain_label_for_an_empty_one() {
+fn delete_space_refuses_the_last_space_and_says_nothing_of_requests_for_an_empty_one() {
     let (mut app, dir) = spaced_app();
     postui_core::fixtures::create_space(dir.path(), "empty").unwrap();
     app.update(Action::ReloadProjectFiles);
     app.reload_project_documents();
     app.update(Action::DeleteSpace("empty".into()));
-    let Some(Modal::Confirm { body, choices, .. }) = app.modals.top() else {
-        panic!("confirm")
-    };
-    assert_eq!(body, "");
-    assert_eq!(choices[0].1, "Delete space");
-    app.update(Action::Close);
-
-    // One request is a *request*, not "1 requests".
+    assert_eq!(
+        app.toasts.last_message(),
+        Some(&format!("Deleted space empty{}", app.undo_hint())[..]),
+    );
     app.update(Action::DeleteSpace("auth".into()));
-    let Some(Modal::Confirm { body, choices, .. }) = app.modals.top() else {
-        panic!("confirm")
-    };
-    assert_eq!(body, "Its 1 request will be deleted.");
-    assert_eq!(choices[0].1, "Delete 1 request");
-    app.update(Action::Close);
-
-    app.update(Action::ForceDeleteSpace("auth".into()));
-    app.update(Action::ForceDeleteSpace("empty".into()));
+    assert!(
+        app.toasts
+            .last_message()
+            .is_some_and(|m| m.starts_with("Deleted space auth and its 1 request")),
+        "{:?}",
+        app.toasts.messages()
+    );
     assert_eq!(app.proj().spaces(), ["main"]);
     let toasts = app.toasts.messages().len();
     app.update(Action::ForceDeleteSpace("main".into()));
     assert_eq!(app.proj().spaces(), ["main"]);
     assert!(app.toasts.messages().len() > toasts);
-}
-
-#[test]
-fn delete_space_holding_a_dirty_open_request_gates_first() {
-    let (mut app, _dir) = spaced_app();
-    app.update(Action::ForceOpenRequest("main/alpha".into()));
-    dirty_the_editor(&mut app);
-    app.update(Action::DeleteSpace("main".into()));
-    let Some(Modal::Confirm { title, .. }) = app.modals.top() else {
-        panic!("gate")
-    };
-    assert_eq!(title, "Unsaved changes");
 }
 
 #[test]
@@ -4838,10 +5194,7 @@ fn two_move_request_steps_in_a_row_both_land_without_waiting_for_mtime() {
             delta: -1,
         });
     }
-    assert_eq!(
-        app.sidebar.first_request_slug().as_deref(),
-        Some("main/gamma")
-    );
+    assert_eq!(request_rows(&app).first().map(String::as_str), Some("main/gamma"));
 }
 
 #[test]
@@ -4850,10 +5203,7 @@ fn move_selected_request_resolves_the_selection() {
     render_once(&mut app);
     app.sidebar.select_slug("main/beta");
     app.update(Action::MoveSelectedRequest(-1));
-    assert_eq!(
-        app.sidebar.first_request_slug().as_deref(),
-        Some("main/beta")
-    );
+    assert_eq!(request_rows(&app).first().map(String::as_str), Some("main/beta"));
 }
 
 #[test]
@@ -5115,6 +5465,8 @@ fn undo_of_a_move_to_space_restores_both_lists() {
 #[test]
 fn quick_keyboard_moves_of_one_request_roll_up_into_one_undo_step() {
     let (mut app, dir) = slotted_app(&["alpha", "beta", "gamma"]);
+    // The real UI moves the cursor's row (alt+↑/↓ on the selection).
+    app.sidebar.select_slug("main/gamma");
     let steps = app.history.undo_len();
     for _ in 0..2 {
         app.update(Action::MoveRequest {
@@ -5277,6 +5629,25 @@ fn keyboard_moves_of_different_requests_are_separate_steps() {
         delta: 1,
     });
     assert_eq!(app.history.undo_len(), steps + 2);
+}
+
+/// A drop commits straight from `handle_mouse`, not through `dispatch`:
+/// one whose write fails after `begin_op` still leaves no op in flight.
+#[test]
+fn a_drop_whose_write_fails_leaves_no_op_in_flight() {
+    let (mut app, dir) = three_row_app();
+    let r0 = row_rect(&mut app, 0);
+    let r2 = row_rect(&mut app, 2);
+    app.handle_mouse(left_down(r0.x + 2, r0.y));
+    app.handle_mouse(moved(r0.x + 2, r2.y));
+    // `project.toml` turns unparseable under the drag: the order write
+    // refuses rather than overwrite it.
+    let meta_path = dir.path().join("project.toml");
+    std::fs::write(&meta_path, "spaces = [\n").unwrap();
+    app.handle_mouse(left_up(r0.x + 2, r2.y));
+    assert_eq!(std::fs::read_to_string(&meta_path).unwrap(), "spaces = [\n", "nothing written");
+    assert!(app.toasts.messages().iter().any(|m| m.starts_with("cannot reorder")));
+    assert!(!app.op_in_flight);
 }
 
 #[test]
@@ -5877,10 +6248,11 @@ fn moving_the_last_request_selects_the_one_above() {
 
 #[test]
 fn undo_of_a_move_follows_the_file_back_and_keeps_the_outgoing_space_s_memory() {
-    // `enter_space` records the outgoing space's open request. On the
-    // undo-follow paths the editor has *already* been moved to the
+    // A landing records the outgoing space's open request. On the
+    // undo-follow path the editor has *already* been moved to the
     // incoming space's slug, so recording it would take the `_ =>` arm and
-    // erase the space being left. `SpaceExit::Keep` is what stops that.
+    // erase the space being left; `land` records only an editor that
+    // still describes the outgoing space.
     let (mut app, _dir) = spaced_app();
     app.update(Action::ForceOpenRequest("main/alpha".into()));
     app.update(Action::MoveRequestToSpace {
@@ -6044,18 +6416,21 @@ fn sidebar_test_app_three_flat_rows() -> (App, tempfile::TempDir) {
 /// Regression test for the mouse-click travel-desync bug: keyboard-nav to
 /// one row, then click a *different* row, must SNAP the travel band to the
 /// clicked row instantly rather than leaving it animating (or frozen) on
-/// wherever the keyboard cursor last settled. Also exercises the
-/// coincide-wins ruling: the clicked request becomes both the cursor row
-/// and the open row, so it must show the plain `▌`/`theme.selection`
-/// treatment with a normal-colored (not `theme.accent`) name.
+/// wherever the keyboard cursor last settled. Also exercises the lifted-fill
+/// ruling (§4.7): the clicked request becomes both the cursor row and the
+/// open row, and while the pane is focused that lifts the band's fill half
+/// a step toward the cursor fill, with a normal-colored (not `theme.accent`)
+/// name.
 #[test]
 fn click_after_keyboard_nav_snaps_the_travel_band_to_the_clicked_row() {
     let (mut app, _dir) = sidebar_test_app_three_flat_rows();
     render_once(&mut app);
 
-    // Keyboard-select row 0 ("alpha"): lands the cursor and its travel anim
-    // there.
+    // Keyboard-nav down then back up: R6 already starts the cursor on row
+    // 0 ("alpha"), but driving it with the keyboard (rather than relying
+    // on that rest state) is what this regression is actually about.
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
     assert_eq!(app.sidebar.selected, Some(0));
 
     // Click row 2 ("gamma") — a different row from the keyboard cursor.
@@ -6077,10 +6452,10 @@ fn click_after_keyboard_nav_snaps_the_travel_band_to_the_clicked_row() {
          animating (or frozen) on the keyboard cursor's old row"
     );
 
-    // Drawn: row 2 carries the plain selection fill/bar (cursor ==
-    // clicked == now-open row, so open's accent-name styling doesn't
-    // layer on top — the fill simply wins); row 0 (the stale keyboard
-    // position) carries neither.
+    // Drawn: row 2 carries the accent bar and the lifted fill (cursor ==
+    // clicked == now-open row, focused pane, so §4.7's lift applies —
+    // open's accent-name styling still doesn't layer on top); row 0 (the
+    // stale keyboard position) carries neither.
     render_once(&mut app);
     let backend = ratatui::backend::TestBackend::new(120, 40);
     let mut terminal = ratatui::Terminal::new(backend).unwrap();
@@ -6095,7 +6470,7 @@ fn click_after_keyboard_nav_snaps_the_travel_band_to_the_clicked_row() {
     );
     assert_eq!(
         buf[(row2.x + row2.width - 2, row2.y)].bg,
-        app.theme.selection
+        crate::theme::mix(app.theme.selection, app.theme.control_hover, 0.5)
     );
     assert_ne!(
         buf[(row0.x, row0.y)].symbol(),
@@ -6111,8 +6486,12 @@ fn folder_arrow_click_moves_only_the_cursor_not_the_travel_band() {
     let (mut app, _dir) = sidebar_test_app();
     render_once(&mut app);
 
-    // Keyboard-select row 0 ("top").
+    // Keyboard-nav down then back up: R6 already starts the cursor on row
+    // 0 ("top"), but driving it with the keyboard first is what makes the
+    // travel-anim assertion below cover the keyboard-nav half of the
+    // regression, not just the click half.
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
     assert_eq!(app.sidebar.selected, Some(0));
 
     // Click the folder arrow on row 1 ("api").
@@ -8131,7 +8510,7 @@ fn rename_env_moves_the_file_rekeys_secrets_and_follows_the_active_env() {
 }
 
 #[test]
-fn delete_env_confirms_trashes_clears_the_active_env_and_undoes() {
+fn delete_env_never_confirms_and_its_toast_says_values_and_secrets_went() {
     let (mut app, dir) = app_with_envs();
     // A real selector (declared in variables.toml, options in the env
     // file) rather than a bare made-up key: `reload_if_changed` prunes
@@ -8152,19 +8531,14 @@ fn delete_env_confirms_trashes_clears_the_active_env_and_undoes() {
     app.proj_mut().set_secret("tok", "s3cret".into()).unwrap();
     app.proj_mut().set_selection_for("qa", "user", "alice");
     app.update(Action::DeleteEnv("qa".into()));
-    let Some(Modal::Confirm {
-        title,
-        body,
-        choices,
-    }) = app.modals.top()
-    else {
-        panic!("confirm")
-    };
-    assert_eq!(title, "Delete environment \"qa\"?");
-    assert_eq!(body, "Its values and secrets are removed.");
-    assert_eq!(choices[0].1, "Delete environment");
-    let confirm = choices[0].0;
-    app.handle_key(plain(confirm));
+    assert!(app.modals.is_empty(), "delete never confirms");
+    assert!(
+        app.toasts.last_message().is_some_and(|m| m.starts_with(
+            "Deleted environment qa: its values and secrets went with it"
+        )),
+        "{:?}",
+        app.toasts.messages()
+    );
     assert!(!dir.path().join("environments/qa.toml").exists());
     assert_eq!(
         app.env_label(),
@@ -11763,6 +12137,83 @@ fn extract_to_request_saves_the_request_file_to_disk() {
         "https://x/ping/abc-123"
     );
     assert_eq!(on_disk.url, "{{trace_id}}");
+}
+
+/// Final review I1: an extract records its project step *before* the token
+/// replacement, so the step's views carry no buffer. Extract, save, undo,
+/// undo then peels the token (dirty against the saved file) and then the
+/// declaration — without reloading the request over the unsaved original.
+/// Redo walks the same two steps back, one visible change each.
+fn extract_save_undo_undo_keeps_the_original_url(extract: Action, declared: fn(&App) -> bool) {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    postui_core::fixtures::save_request(dir.path(), "main/ping", &req("https://x/token-abc123"))
+        .unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    // The event loop captures editor steps after every event.
+    let step = |app: &mut App, a: Action| {
+        app.update(a);
+        app.capture_undo();
+    };
+    step(&mut app, Action::ForceOpenRequest("main/ping".into()));
+    app.focus = crate::layout::PaneId::Editor;
+    app.editor.open_url_from_app();
+
+    step(&mut app, extract);
+    assert_eq!(app.editor.url.text(), "{{session_token}}");
+    assert!(declared(&app));
+    step(&mut app, Action::SaveRequest);
+    assert!(!app.editor.is_dirty());
+
+    step(&mut app, Action::Undo);
+    assert_eq!(app.editor.url.text(), "https://x/token-abc123", "undo 1 peels the token");
+    assert!(app.editor.is_dirty(), "against the saved token");
+    assert!(declared(&app), "undo 1 leaves the declaration");
+
+    step(&mut app, Action::Undo);
+    assert!(!declared(&app), "undo 2 peels the declaration");
+    assert_eq!(
+        app.editor.url.text(),
+        "https://x/token-abc123",
+        "undo 2 never reloads the request over the unsaved original"
+    );
+    assert!(app.editor.is_dirty(), "one save restores the pre-op file");
+
+    step(&mut app, Action::Redo);
+    assert!(declared(&app), "redo 1 re-declares");
+    assert_eq!(
+        app.editor.url.text(),
+        "https://x/token-abc123",
+        "redo 1 leaves the URL to the next step"
+    );
+
+    step(&mut app, Action::Redo);
+    assert_eq!(app.editor.url.text(), "{{session_token}}", "redo 2 re-inserts the token");
+}
+
+#[test]
+fn extract_variable_then_save_undo_undo_keeps_the_unsaved_original_url() {
+    extract_save_undo_undo_keeps_the_original_url(
+        Action::ConfirmExtractVariable {
+            name: "session_token".into(),
+            destination: crate::action::ExtractDestination::ProjectDefault,
+        },
+        |app| app.variables().vars.contains_key("session_token"),
+    );
+}
+
+#[test]
+fn extract_selector_then_save_undo_undo_keeps_the_unsaved_original_url() {
+    extract_save_undo_undo_keeps_the_original_url(
+        Action::ConfirmExtractToSelector {
+            name: "session_token".into(),
+            option: "one".into(),
+            shared: false,
+            source: crate::action::ExtractSource::FocusedField,
+        },
+        |app| app.variables().selectors.contains_key("session_token"),
+    );
 }
 
 // -------------------------------------------------------------
@@ -18108,7 +18559,8 @@ fn list_keys_move_delete_and_rename_through_the_prompt() {
     app.update(Action::Close);
 
     app.handle_key(plain('d'));
-    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
+    assert!(app.modals.is_empty(), "`d` deletes without a confirm");
+    assert_eq!(app.proj().spaces(), ["main"], "`auth` is gone");
 }
 
 #[test]
@@ -18172,10 +18624,8 @@ fn clicking_new_delete_and_a_row_dispatch_the_right_actions() {
     ));
     app.update(Action::Close);
     click_hit(&mut app, Hit::ManageDelete);
-    let Some(Modal::Confirm { title, .. }) = app.modals.top() else {
-        panic!("confirm")
-    };
-    assert_eq!(title, "Delete environment \"qa\"?");
+    assert!(app.modals.is_empty(), "delete never confirms");
+    assert!(!app.proj().environments().contains(&"qa".to_string()));
 }
 
 #[test]
@@ -18341,7 +18791,8 @@ mod undo_tests {
     }
 
     /// A row the swap removed (undoing its add) leaves the cursor at the
-    /// same index, clamped to the ghost row.
+    /// same index, clamped to the last real row. Here the table is emptied
+    /// entirely, so the only row left is the ghost "+ Add" row at index 0.
     #[test]
     fn restore_caret_cell_falls_back_to_the_index_when_the_key_is_gone() {
         let mut app = App::new_for_test();
@@ -18788,11 +19239,15 @@ mod undo_tests {
         app.editor
             .handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
         app.capture_undo();
-        // open jb2 through the dirty gate's discard? No — undo's jump-back
-        // must work even with jb1 dirty. Open jb2 by force:
-        app.update(Action::ForceCreateRequest("jb2".into()));
-        // create_or_save_as loads the new request unconditionally, so jb1's
+        // Leave jb1 for a jb2 made outside the app, by force: undo's
+        // jump-back must work even with jb1 dirty. Not through a journaled
+        // create: undoing that brings back the unsaved edits it found
+        // (OQ1), so the loop below would stop at jb1 holding "xq" and
+        // never reach the jump-back. An open journals nothing, so jb1's
         // unsaved "xq" lives only in history now.
+        postui_core::fixtures::save_request(app.proj().root(), "main/jb2", &req("")).unwrap();
+        app.update(Action::ForceOpenRequest("main/jb2".into()));
+        assert_eq!(app.editor.slug.as_deref(), Some("main/jb2"));
         while app.editor.slug.as_deref() != Some("main/jb1") {
             app.update(Action::Undo);
         }
@@ -18841,10 +19296,8 @@ mod undo_tests {
         );
         assert!(matches!(
             app.history_top_kind_for_test(),
-            Some(crate::undo::StepKind::Project {
-                noun: crate::undo::ProjectNoun::Trash,
-                ..
-            })
+            Some(crate::undo::StepKind::Project { label, .. })
+                if matches!(label.verb, crate::undo::Verb::Delete)
         ));
 
         app.update(Action::Undo);
@@ -19993,6 +20446,653 @@ mod undo_tests {
             app.theme_name, "catppuccin-mocha",
             "refilter re-selects row 0 and previews it"
         );
+    }
+
+    fn sidebar_on(app: &mut App, slug: &str) {
+        app.focus = PaneId::Sidebar;
+        app.sidebar.select_slug(slug);
+        assert_eq!(app.sidebar.selected_slug().as_deref(), Some(slug));
+    }
+
+    fn type_z_into_the_url(app: &mut App) -> String {
+        app.editor.open_url_from_app();
+        app.editor.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
+        app.capture_undo();
+        app.editor.url.text().to_string()
+    }
+
+    #[test]
+    fn undoing_a_create_reopens_the_request_open_before_it() {
+        let (mut app, _dir) = spaced_app();
+        app.update(Action::ForceOpenRequest("main/alpha".into()));
+        app.update(Action::CreateRequest("fresh".into()));
+        assert_eq!(app.editor.slug.as_deref(), Some("main/fresh"));
+        app.update(Action::Undo);
+        assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"));
+    }
+
+    #[test]
+    fn undoing_a_duplicate_reopens_the_request_open_before_it() {
+        let (mut app, _dir) = spaced_app();
+        app.update(Action::ForceOpenRequest("main/alpha".into()));
+        sidebar_on(&mut app, "main/alpha");
+        app.update(Action::DuplicateRequest);
+        assert_ne!(app.editor.slug.as_deref(), Some("main/alpha"));
+        app.update(Action::Undo);
+        assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"));
+        assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/alpha"));
+    }
+
+    #[test]
+    fn duplicating_over_unsaved_edits_asks_before_it_duplicates() {
+        let (mut app, dir) = spaced_app();
+        app.update(Action::ForceOpenRequest("main/alpha".into()));
+        sidebar_on(&mut app, "main/alpha");
+        type_z_into_the_url(&mut app);
+        app.update(Action::DuplicateRequest);
+        assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })), "the gate comes first");
+        assert!(!postui_core::fixtures::request_exists(dir.path(), "main/alpha-copy"), "nothing duplicated yet");
+    }
+
+    #[test]
+    fn undoing_a_save_as_reopens_the_original() {
+        let (mut app, _dir) = spaced_app();
+        app.update(Action::ForceOpenRequest("main/alpha".into()));
+        app.update(Action::SaveRequestAs("copy".into()));
+        assert_eq!(app.editor.slug.as_deref(), Some("main/copy"));
+        app.update(Action::Undo);
+        assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"));
+    }
+
+    #[test]
+    fn undoing_a_save_as_from_a_scratch_brings_the_scratch_back() {
+        let mut app = scratch_app();
+        let before = app.editor.current_request();
+        app.update(Action::SaveRequestAs("fromscratch".into()));
+        assert_eq!(app.editor.slug.as_deref(), Some("main/fromscratch"));
+        app.update(Action::Undo);
+        assert!(!postui_core::fixtures::request_exists(app.proj().root(), "main/fromscratch"));
+        assert!(app.editor.slug.is_none(), "a scratch again");
+        assert_eq!(app.editor.current_request(), before, "holding what it held");
+        assert!(app.editor.is_scratch_dirty(), "unsaved, as it was");
+        app.update(Action::Redo);
+        assert!(postui_core::fixtures::request_exists(app.proj().root(), "main/fromscratch"));
+    }
+
+    #[test]
+    fn undoing_a_create_through_a_scratchs_discard_brings_the_scratch_back() {
+        let mut app = scratch_app();
+        let before = app.editor.current_request();
+        app.update(Action::CreateRequest("fresh".into()));
+        app.handle_key(plain('d')); // the dirty gate's Discard
+        assert_eq!(app.editor.slug.as_deref(), Some("main/fresh"));
+        app.update(Action::Undo);
+        assert!(!postui_core::fixtures::request_exists(app.proj().root(), "main/fresh"));
+        assert!(app.editor.slug.is_none());
+        assert_eq!(app.editor.current_request(), before);
+        assert!(app.editor.is_scratch_dirty());
+    }
+
+    #[test]
+    fn undoing_a_create_through_the_dirty_gates_discard_brings_the_edit_back() {
+        let (mut app, _dir) = spaced_app();
+        app.update(Action::ForceOpenRequest("main/alpha".into()));
+        let dirty = type_z_into_the_url(&mut app);
+        app.update(Action::CreateRequest("fresh".into()));
+        app.handle_key(plain('d')); // Discard changes
+        assert_eq!(app.editor.slug.as_deref(), Some("main/fresh"));
+        app.update(Action::Undo);
+        assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"));
+        assert_eq!(app.editor.url.text(), dirty, "OQ1: undo brings the edit back");
+        assert!(app.editor.is_dirty());
+    }
+
+    #[test]
+    fn undoing_two_creates_walks_back_through_both() {
+        let (mut app, _dir) = spaced_app();
+        app.update(Action::ForceOpenRequest("main/alpha".into()));
+        app.update(Action::CreateRequest("first".into()));
+        app.update(Action::CreateRequest("second".into()));
+        app.update(Action::Undo);
+        assert_eq!(app.editor.slug.as_deref(), Some("main/first"));
+        app.update(Action::Undo);
+        assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"));
+    }
+
+    #[test]
+    fn undoing_a_create_after_moving_on_reopens_the_request_it_left() {
+        let (mut app, _dir) = spaced_app();
+        app.update(Action::ForceOpenRequest("main/alpha".into()));
+        app.update(Action::CreateRequest("fresh".into()));
+        app.update(Action::ForceOpenRequest("main/beta".into()));
+        app.update(Action::Undo);
+        assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"), "OQ2: undo takes you back");
+    }
+
+    #[test]
+    fn undoing_a_create_after_renaming_the_open_request_reopens_the_new_name() {
+        let (mut app, _dir) = spaced_app();
+        app.update(Action::ForceOpenRequest("main/alpha".into()));
+        app.update(Action::RenameRequest { from: "main/alpha".into(), to: "Omega".into() });
+        assert_eq!(app.editor.slug.as_deref(), Some("main/omega"));
+        app.update(Action::CreateRequest("fresh".into()));
+        app.update(Action::Undo);
+        assert_eq!(app.editor.slug.as_deref(), Some("main/omega"), "the name it had when the create ran");
+    }
+
+    #[test]
+    fn undoing_a_delete_of_the_dirty_open_request_restores_its_unsaved_edit() {
+        let (mut app, _dir) = spaced_app();
+        app.update(Action::ForceOpenRequest("main/alpha".into()));
+        app.editor.open_url_from_app();
+        app.editor.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
+        let dirty_url = app.editor.url.text().to_string();
+        app.update(Action::DeleteRequest("main/alpha".into()));
+        assert!(app.editor.slug.is_none(), "deleting the open request closes it");
+        app.update(Action::Undo);
+        assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"));
+        assert_eq!(app.editor.url.text(), dirty_url);
+        assert!(app.editor.is_dirty());
+    }
+
+    #[test]
+    fn undoing_through_an_unrelated_step_still_finds_every_step() {
+        let (mut app, dir) = spaced_app();
+        app.update(Action::ForceOpenRequest("main/alpha".into()));
+        app.capture_undo();
+        let dirty_url = type_z_into_the_url(&mut app);
+        let clean_url = "https://x/1".to_string();
+        assert_ne!(dirty_url, clean_url);
+        app.update(Action::DeleteRequest("main/beta".into()));
+        app.update(Action::ForceCreateRequest("fresh".into()));
+        assert_eq!(app.editor.slug.as_deref(), Some("main/fresh"));
+        app.update(Action::Undo);
+        assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"));
+        assert_eq!(app.editor.url.text(), dirty_url);
+        assert!(app.editor.is_dirty());
+        app.update(Action::Undo);
+        assert!(postui_core::fixtures::request_exists(dir.path(), "main/beta"));
+        assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"));
+        assert_eq!(app.editor.url.text(), dirty_url, "untouched by beta's undo");
+        app.update(Action::Undo);
+        assert_eq!(app.editor.url.text(), clean_url, "the z edit's own undo, not skipped over");
+        assert!(!app.editor.is_dirty());
+    }
+
+    #[test]
+    fn undoing_a_create_after_a_discarded_edit_reopens_clean() {
+        let (mut app, _dir) = spaced_app();
+        app.update(Action::ForceOpenRequest("main/alpha".into()));
+        type_z_into_the_url(&mut app);
+        app.update(Action::ForceOpenRequest("main/beta".into()));
+        app.update(Action::ForceOpenRequest("main/alpha".into()));
+        assert!(!app.editor.is_dirty(), "alpha reopened clean off disk");
+        let clean_url = app.editor.url.text().to_string();
+        app.update(Action::ForceCreateRequest("fresh".into()));
+        app.update(Action::Undo);
+        assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"));
+        assert_eq!(app.editor.url.text(), clean_url);
+        assert!(!app.editor.is_dirty());
+    }
+
+    #[test]
+    fn a_reopen_that_fails_seats_nothing() {
+        let (mut app, dir) = spaced_app();
+        app.update(Action::ForceOpenRequest("main/alpha".into()));
+        app.update(Action::CreateRequest("gamma".into()));
+        let gamma_url = app.editor.url.text().to_string();
+        // Break alpha on disk so the create's undo cannot reopen it.
+        let path = postui_core::storage::request_path(dir.path(), "main/alpha");
+        std::fs::write(&path, "url = \"x\"\nurl = \"dup\"\n").unwrap();
+        app.update(Action::Undo);
+        assert!(!postui_core::fixtures::request_exists(dir.path(), "main/gamma"), "the create's own undo still ran");
+        assert!(app.editor.slug.is_none(), "gamma is gone; alpha could not open; a scratch");
+        assert!(!app.editor.is_dirty() && !app.editor.is_scratch_dirty(), "nothing was seated");
+        assert_eq!(app.editor.url.text(), gamma_url, "the blank scratch a new request also had");
+        assert!(app.toasts.messages().iter().any(|m| m.starts_with("could not open main/alpha")));
+    }
+
+    #[test]
+    fn undoing_a_delete_of_a_closed_request_after_moving_on_does_not_reopen_anything() {
+        let (mut app, dir) = spaced_app();
+        app.update(Action::ForceOpenRequest("main/alpha".into()));
+        app.update(Action::DeleteRequest("main/beta".into()));
+        app.update(Action::ForceOpenRequest("auth/login".into()));
+        app.update(Action::Undo);
+        assert!(postui_core::fixtures::request_exists(dir.path(), "main/beta"));
+        assert_eq!(app.editor.slug.as_deref(), Some("auth/login"), "the delete never touched the editor");
+        assert_eq!(app.proj().local().active_space, "auth");
+    }
+
+    #[test]
+    fn undoing_a_variable_edit_never_touches_the_editor() {
+        let dir = tempfile::tempdir().unwrap();
+        var_project(dir.path());
+        postui_core::fixtures::save_request(dir.path(), "main/one", &req("https://x/1")).unwrap();
+        postui_core::fixtures::save_request(dir.path(), "main/two", &req("https://x/2")).unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::with_root(tx, dir.path().to_path_buf());
+        app.update(Action::ForceOpenRequest("main/one".into()));
+        app.update(Action::VarEdit(crate::components::varmanager::VarEditOp::SetDefault {
+            name: "base_url".into(),
+            value: "http://changed".into(),
+        }));
+        app.update(Action::ForceOpenRequest("main/two".into()));
+        app.update(Action::Undo);
+        assert_eq!(app.editor.slug.as_deref(), Some("main/two"));
+    }
+
+    #[test]
+    fn redo_of_a_create_lands_on_the_created_request_from_anywhere() {
+        let (mut app, _dir) = spaced_app();
+        app.update(Action::ForceOpenRequest("main/alpha".into()));
+        app.update(Action::CreateRequest("fresh".into()));
+        app.update(Action::Undo);
+        app.update(Action::ForceOpenRequest("main/beta".into()));
+        app.update(Action::Redo);
+        assert_eq!(app.editor.slug.as_deref(), Some("main/fresh"));
+    }
+
+    #[test]
+    fn deleting_a_space_holding_the_unsaved_open_request_does_not_gate_and_undo_restores_the_edit() {
+        let (mut app, _dir) = spaced_app();
+        app.update(Action::ForceOpenRequest("main/alpha".into()));
+        let dirty = type_z_into_the_url(&mut app);
+        app.update(Action::DeleteSpace("main".into()));
+        assert!(app.modals.is_empty(), "OQ4: no gate");
+        assert_eq!(app.proj().local().active_space, "auth");
+        app.update(Action::Undo);
+        assert_eq!(app.proj().local().active_space, "main");
+        assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"));
+        assert_eq!(app.editor.url.text(), dirty);
+    }
+
+    #[test]
+    fn deleting_a_request_undo_reselects_it() {
+        let (mut app, _dir) = spaced_app();
+        sidebar_on(&mut app, "main/beta");
+        app.update(Action::DeleteSelectedRequest);
+        assert!(app.modals.is_empty(), "delete never confirms");
+        app.update(Action::Undo);
+        assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/beta"));
+    }
+
+    #[test]
+    fn undoing_a_delete_inside_a_collapsed_folder_expands_it_and_reselects_the_row() {
+        let (mut app, dir) = spaced_app();
+        postui_core::fixtures::save_request(dir.path(), "main/sub/inner", &req("https://x/3")).unwrap();
+        app.sidebar.expand_to("main/sub/inner");
+        app.update(Action::RefreshSidebar);
+        sidebar_on(&mut app, "main/sub/inner");
+        // Collapse the folder under the cursor; the delete's own refresh
+        // reads it, so the row's folder is shut once the row is gone.
+        app.proj_mut().set_expanded(std::collections::BTreeSet::new());
+        app.update(Action::DeleteSelectedRequest);
+        assert!(!postui_core::fixtures::request_exists(dir.path(), "main/sub/inner"));
+        assert!(
+            !app.sidebar.rows.iter().any(|r| matches!(r, Row::Request { slug, .. } if slug == "main/sub/inner")),
+            "the folder is collapsed"
+        );
+        app.update(Action::Undo);
+        assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/sub/inner"));
+    }
+
+    #[test]
+    fn deleting_a_variable_undo_reselects_it() {
+        let dir = tempfile::tempdir().unwrap();
+        var_project(dir.path());
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::with_root(tx, dir.path().to_path_buf());
+        app.update(Action::OpenManage { tab: Some(ManageTab::Variables) });
+        app.sync_varmanager();
+        goto_row(&mut app, |r| r == &crate::components::varmanager::VmRow::Var("api_key".into()));
+        app.update(Action::DeleteVar { name: "api_key".into() });
+        assert!(!app.proj().variables().vars.contains_key("api_key"));
+        goto_row(&mut app, |r| r == &crate::components::varmanager::VmRow::Var("base_url".into()));
+        app.update(Action::Undo);
+        let under = app.varmanager.left_rows.get(app.varmanager.left_cursor).and_then(|r| r.name());
+        assert_eq!(under, Some("api_key"), "the undo reselects the restored row");
+    }
+
+    #[test]
+    fn deleting_an_environment_from_the_manage_list_undo_reselects_it() {
+        let (mut app, _dir) = manage_envs_app();
+        app.manage_select_name("qa");
+        app.update(Action::DeleteEnv("qa".into()));
+        app.manage_select_name("prod");
+        app.update(Action::Undo);
+        assert_eq!(app.manage_selected(ManageTab::Environments).as_deref(), Some("qa"));
+    }
+
+    #[test]
+    fn deleting_a_space_from_the_manage_list_undo_reselects_it() {
+        let (mut app, _dir) = manage_spaces_app();
+        app.manage_select_name("auth");
+        app.update(Action::DeleteSpace("auth".into()));
+        app.manage_select_name("main");
+        app.update(Action::Undo);
+        assert_eq!(app.manage_selected(ManageTab::Spaces).as_deref(), Some("auth"));
+    }
+
+    #[test]
+    fn undoing_an_env_delete_off_screen_reselects_it_when_the_tab_opens() {
+        let (mut app, _dir) = manage_envs_app();
+        app.manage_select_name("qa");
+        app.update(Action::DeleteEnv("qa".into()));
+        app.update(Action::SelectManageTab(ManageTab::Spaces));
+        app.update(Action::Undo);
+        assert_eq!(app.manage.tab, ManageTab::Spaces, "undo never switches tab");
+        app.update(Action::SelectManageTab(ManageTab::Environments));
+        assert_eq!(app.manage_selected(ManageTab::Environments).as_deref(), Some("qa"));
+    }
+
+    /// Final review M1: a create or delete moves its own Manage list's
+    /// cursor even with the Manage screen down, so the step records that
+    /// list's row and undo puts the cursor back (rule 1).
+    #[test]
+    fn undoing_a_space_create_off_manage_puts_the_spaces_cursor_back() {
+        let (mut app, _dir) = spaced_app();
+        assert_eq!(app.screen, Screen::Main);
+        assert_eq!(app.manage_selected(ManageTab::Spaces).as_deref(), Some("main"));
+        app.update(Action::CreateSpace("Zeta".into()));
+        assert_eq!(app.manage_selected(ManageTab::Spaces).as_deref(), Some("zeta"));
+        app.update(Action::Undo);
+        assert_eq!(app.manage_selected(ManageTab::Spaces).as_deref(), Some("main"));
+        app.update(Action::Redo);
+        assert_eq!(app.manage_selected(ManageTab::Spaces).as_deref(), Some("zeta"));
+    }
+
+    #[test]
+    fn undoing_an_env_create_off_manage_puts_the_environments_cursor_back() {
+        let dir = tempfile::tempdir().unwrap();
+        var_project(dir.path());
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::with_root(tx, dir.path().to_path_buf());
+        let before = app.manage_selected(ManageTab::Environments);
+        assert!(before.is_some());
+        app.update(Action::CreateEnv("Stage".into()));
+        assert_eq!(app.manage_selected(ManageTab::Environments).as_deref(), Some("stage"));
+        app.update(Action::Undo);
+        assert_eq!(app.manage_selected(ManageTab::Environments), before);
+    }
+
+    #[test]
+    fn undoing_a_space_delete_off_manage_puts_the_spaces_cursor_back() {
+        let (mut app, _dir) = spaced_app();
+        app.select_list_row(ManageTab::Spaces, "auth");
+        app.update(Action::DeleteSpace("auth".into()));
+        assert_eq!(app.manage_selected(ManageTab::Spaces).as_deref(), Some("main"), "clamped");
+        app.update(Action::Undo);
+        assert_eq!(app.manage_selected(ManageTab::Spaces).as_deref(), Some("auth"));
+    }
+
+    #[test]
+    fn undoing_an_env_delete_off_manage_puts_the_environments_cursor_back() {
+        let dir = tempfile::tempdir().unwrap();
+        var_project(dir.path());
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::with_root(tx, dir.path().to_path_buf());
+        app.select_list_row(ManageTab::Environments, "qa");
+        app.update(Action::DeleteEnv("qa".into()));
+        assert_eq!(app.manage_selected(ManageTab::Environments).as_deref(), Some("dev"), "clamped");
+        app.update(Action::Undo);
+        assert_eq!(app.manage_selected(ManageTab::Environments).as_deref(), Some("qa"));
+    }
+
+    #[test]
+    fn undoing_one_of_two_env_deletes_reselects_the_right_row() {
+        let (mut app, _dir) = manage_envs_app();
+        app.manage_select_name("qa");
+        app.update(Action::DeleteEnv("qa".into()));
+        app.manage_select_name("dev");
+        app.update(Action::DeleteEnv("dev".into()));
+        app.update(Action::Undo);
+        assert_eq!(app.proj().environments(), ["prod", "dev"]);
+        assert_eq!(app.manage_selected(ManageTab::Environments).as_deref(), Some("dev"));
+    }
+
+    #[test]
+    fn undoing_a_create_whose_file_broke_on_disk_still_removes_it() {
+        let (mut app, dir) = spaced_app();
+        app.update(Action::ForceOpenRequest("main/alpha".into()));
+        app.update(Action::CreateRequest("fresh".into()));
+        let path = postui_core::storage::request_path(dir.path(), "main/fresh");
+        std::fs::write(&path, "url = \"x\"\nurl = \"dup\"\n").unwrap();
+        app.update(Action::Undo);
+        assert!(!path.exists(), "undo removes the file whatever its content");
+        assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"));
+    }
+
+    #[test]
+    fn an_undo_that_leaves_the_editor_on_a_missing_request_resets_it_to_a_scratch() {
+        let (mut app, dir) = spaced_app();
+        app.update(Action::ForceOpenRequest("main/alpha".into()));
+        app.update(Action::RenameRequest { from: "main/beta".into(), to: "Beta2".into() });
+        // The open request vanishes outside the app.
+        std::fs::remove_file(postui_core::storage::request_path(dir.path(), "main/alpha")).unwrap();
+        app.update(Action::Undo);
+        assert!(app.editor.slug.is_none(), "never a dangling slug");
+    }
+
+    #[test]
+    fn undoing_an_inactive_space_delete_keeps_local_state_on_the_open_request() {
+        let (mut app, _dir) = spaced_app();
+        // A visit gives auth local memory, so its delete rewrites (and
+        // journals) `state.toml`.
+        app.update(Action::ForceOpenRequest("auth/login".into()));
+        app.update(Action::ForceOpenRequest("main/alpha".into()));
+        app.update(Action::DeleteSpace("auth".into()));
+        app.update(Action::ForceOpenRequest("main/beta".into()));
+        // The replay restores the delete's journaled `state.toml`, which
+        // names alpha; nothing in the view changed, so nothing lands.
+        app.update(Action::Undo);
+        assert!(app.proj().spaces().contains(&"auth".to_string()));
+        assert_eq!(app.editor.slug.as_deref(), Some("main/beta"));
+        assert_eq!(app.proj().local().open_request.as_deref(), Some("main/beta"));
+    }
+
+    #[test]
+    fn no_arm_leaves_an_op_in_flight() {
+        let (mut app, _dir) = spaced_app();
+        app.update(Action::Undo);
+        assert!(!app.op_in_flight);
+        app.update(Action::ForceOpenRequest("main/alpha".into()));
+        // A rename onto a name that is taken fails after the op began.
+        app.update(Action::RenameRequest { from: "main/alpha".into(), to: "beta".into() });
+        assert!(postui_core::fixtures::request_exists(app.proj().root(), "main/alpha"), "the rename failed");
+        assert!(!app.op_in_flight);
+    }
+
+    /// Task 13, spec §6.5's last bullet, ruling C12: walks every row of
+    /// §4.5 in turn on one fixture and asserts G5 — the sidebar cursor is
+    /// never `None` while a row exists — after each. The step names name
+    /// the §4.5 row so a failure points at the missing landing.
+    #[test]
+    fn the_sidebar_cursor_is_never_none_while_rows_exist() {
+        let (mut app, dir) = spaced_app();
+        postui_core::fixtures::save_request(dir.path(), "main/sub/inner", &req("https://x/3")).unwrap();
+        app.update(Action::RefreshSidebar);
+        let check = |app: &App, step: &str| {
+            if !app.sidebar.rows.is_empty() {
+                assert!(app.sidebar.selected.is_some(), "no cursor after: {step}");
+            }
+        };
+        let steps: Vec<(&str, Action)> = vec![
+            ("open", Action::ForceOpenRequest("main/alpha".into())),
+            ("open foldered", Action::ForceOpenRequest("main/sub/inner".into())),
+            ("create", Action::ForceCreateRequest("fresh".into())),
+            ("undo create", Action::Undo),
+            ("redo create", Action::Redo),
+            ("duplicate", Action::DuplicateRequest),
+            ("undo duplicate", Action::Undo),
+            ("save as", Action::SaveRequestAs("savedcopy".into())),
+            ("undo save as", Action::Undo),
+            ("delete open", Action::DeleteRequest("main/fresh".into())),
+            ("undo delete", Action::Undo),
+            ("redo delete", Action::Redo),
+            ("undo delete again", Action::Undo),
+            ("rename", Action::RenameRequest { from: "main/beta".into(), to: "zeta".into() }),
+            ("undo rename", Action::Undo),
+            ("redo rename", Action::Redo),
+            ("undo rename again", Action::Undo),
+            ("move to auth", Action::ForceMoveRequestToSpace { slug: "main/alpha".into(), space: "auth".into() }),
+            ("undo move", Action::Undo),
+            ("switch space", Action::ForceSwitchSpace("auth".into())),
+            ("switch back", Action::ForceSwitchSpace("main".into())),
+            ("move all", Action::ForceMoveAllRequests { from: "auth".into(), to: "main".into() }),
+            ("undo move all", Action::Undo),
+            ("reorder", Action::MoveRequest { slug: "main/beta".into(), delta: 1 }),
+            ("undo reorder", Action::Undo),
+            ("create space", Action::CreateSpace("billing".into())),
+            ("delete inactive space", Action::ForceDeleteSpace("billing".into())),
+            ("undo that", Action::Undo),
+            ("delete active space", Action::ForceDeleteSpace("main".into())),
+            ("undo that too", Action::Undo),
+        ];
+        for (name, action) in steps {
+            app.update(action);
+            check(&app, name);
+        }
+
+        // Arrow / page / Home / End: the keyboard moves the cursor, never
+        // clears it. `render_once` gives the sidebar a known viewport so
+        // `page()` (behind PageDown/PageUp) is not zero.
+        app.focus = PaneId::Sidebar;
+        render_once(&mut app);
+        for (name, key) in [
+            ("arrow down", KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
+            ("arrow up", KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)),
+            ("page down", KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE)),
+            ("page up", KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE)),
+            ("home", KeyEvent::new(KeyCode::Home, KeyModifiers::NONE)),
+            ("end", KeyEvent::new(KeyCode::End, KeyModifiers::NONE)),
+        ] {
+            app.handle_key(key);
+            check(&app, name);
+        }
+
+        // Right-click a row, then dismiss the menu (§4.5's own row): drive
+        // it the way `dismissed_sidebar_context_menu_restores_the_previous_selection`
+        // does — render so the hitmap exists, right-click the cursor's own
+        // row, then close.
+        render_once(&mut app);
+        let idx = app.sidebar.selected.expect("a cursor before the right-click");
+        let r = app
+            .hits
+            .rect_of(&crate::hit::Hit::SidebarRow(idx))
+            .expect("the selected row is on screen");
+        app.handle_mouse(right_down(r.x, r.y));
+        check(&app, "right-click a row");
+        app.update(Action::Close);
+        check(&app, "dismiss the menu");
+
+        // Outside change (reload, poll): the project changes on disk
+        // without going through the app — remove the cursor's row, then
+        // add a new one — and `RefreshSidebar` must still find a cursor.
+        // Pattern from `an_outside_delete_of_the_cursor_row_lands_on_the_neighbour`.
+        app.update(Action::ForceOpenRequest("main/fresh".into()));
+        app.sidebar.select_slug("main/fresh");
+        assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/fresh"));
+        std::fs::remove_file(postui_core::storage::request_path(dir.path(), "main/fresh")).unwrap();
+        app.update(Action::RefreshSidebar);
+        check(&app, "outside delete of the cursor row");
+
+        postui_core::fixtures::save_request(dir.path(), "main/outsider", &req("https://x/9")).unwrap();
+        app.update(Action::RefreshSidebar);
+        check(&app, "outside add of a row");
+
+        // Redo of a delete, run fresh so the redo stack holds exactly what
+        // was just undone.
+        app.update(Action::DeleteRequest("main/beta".into()));
+        check(&app, "delete for redo");
+        app.update(Action::Undo);
+        check(&app, "undo before redo delete");
+        app.update(Action::Redo);
+        check(&app, "redo delete");
+        app.update(Action::Undo);
+        check(&app, "undo the redo delete");
+
+        // Redo of a rename.
+        app.update(Action::RenameRequest { from: "main/alpha".into(), to: "alpha2".into() });
+        check(&app, "rename for redo");
+        app.update(Action::Undo);
+        check(&app, "undo before redo rename");
+        app.update(Action::Redo);
+        check(&app, "redo rename");
+        app.update(Action::Undo);
+        check(&app, "undo the redo rename");
+
+        // Undo/redo of an editor edit (an `EditorDelta` step) on another
+        // request: edit a field on alpha, open beta, then undo must jump
+        // back to alpha (`jump_to_request_for_undo`).
+        app.update(Action::ForceOpenRequest("main/alpha".into()));
+        app.capture_undo(); // seed the shadow before the edit
+        app.editor.open_url_from_app();
+        app.editor
+            .handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
+        app.capture_undo();
+        app.update(Action::ForceOpenRequest("main/beta".into()));
+        check(&app, "open beta after editing alpha");
+        app.update(Action::Undo);
+        assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"), "undo followed the edit");
+        check(&app, "undo jumps to alpha's edit");
+        app.update(Action::Redo);
+        check(&app, "redo the edit");
+
+        // Project switch (`ForceSwitchProject`), and back.
+        let other = tempfile::tempdir().unwrap();
+        postui_core::fixtures::ensure_project(other.path()).unwrap();
+        postui_core::fixtures::save_request(other.path(), "main/gamma", &req("https://y/1")).unwrap();
+        app.update(Action::ForceSwitchProject(other.path().to_path_buf()));
+        check(&app, "switch project");
+        app.update(Action::ForceSwitchProject(dir.path().to_path_buf()));
+        check(&app, "switch project back");
+
+        // Undo of a space edit: rename the active space.
+        app.update(Action::RenameSpace { from: "main".into(), to: "Core".into() });
+        check(&app, "rename active space");
+        app.update(Action::Undo);
+        check(&app, "undo rename active space");
+
+        app.update(Action::RefreshSidebar);
+        check(&app, "refresh");
+    }
+
+    /// Ruling C12: undo of a variable edit and an env edit, walked with the
+    /// same G5 check as `the_sidebar_cursor_is_never_none_while_rows_exist`
+    /// — on a fixture that actually has envs and variables (`spaced_app`
+    /// has neither).
+    #[test]
+    fn the_sidebar_cursor_is_never_none_across_variable_and_env_edits() {
+        let dir = tempfile::tempdir().unwrap();
+        var_project(dir.path());
+        postui_core::fixtures::save_request(dir.path(), "main/req", &req("https://x/1")).unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::with_root(tx, dir.path().to_path_buf());
+        app.update(Action::RefreshSidebar);
+        let check = |app: &App, step: &str| {
+            if !app.sidebar.rows.is_empty() {
+                assert!(app.sidebar.selected.is_some(), "no cursor after: {step}");
+            }
+        };
+        app.update(Action::ForceOpenRequest("main/req".into()));
+        check(&app, "open");
+
+        // Undo of a variable edit (§4.5's last row).
+        app.update(Action::VarEdit(VarEditOp::SetEnvValue {
+            env: "qa".into(),
+            name: "base_url".into(),
+            value: "https://qa2.example.com".into(),
+        }));
+        check(&app, "variable edit");
+        app.update(Action::Undo);
+        check(&app, "undo variable edit");
+
+        // Undo of an env edit: rename the env.
+        app.update(Action::RenameEnv { from: "qa".into(), to: "staging".into() });
+        check(&app, "rename env");
+        app.update(Action::Undo);
+        check(&app, "undo rename env");
     }
 }
 
@@ -23342,9 +24442,9 @@ fn dragging_an_environment_row_reorders_and_persists() {
 #[test]
 fn reopening_the_manage_screen_on_another_tab_mid_drag_cancels_it() {
     // `OpenManage { tab: Some(other) }` while the screen is already up
-    // (the palette, or a second alt+r with a tab) resets the list — the
-    // drag has to be cancelled first, or it is dropped on the floor with
-    // `manage_press` still armed.
+    // (the palette, or a second alt+r with a tab) parks the live list and
+    // brings the other tab's forward — the drag has to be cancelled first,
+    // or it is dropped on the floor with `manage_press` still armed.
     let (mut app, dir) = manage_spaces_app();
     let r0 = manage_row(&mut app, 0);
     let r2 = manage_row(&mut app, 2);
@@ -27203,4 +28303,516 @@ fn clicking_a_checkbox_row_toggles_and_arms_no_text_sweep() {
     assert_eq!(app.ui_settings.hover_hints, !before, "the box toggled");
     assert!(app.settings.editing.is_none(), "a checkbox opens no edit");
     assert!(app.text_drag.is_none(), "and arms no sweep");
+}
+
+// ---- state.toml redo, on a project whose local state was never written ----
+
+fn env_app() -> (App, tempfile::TempDir) {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let dir = tempfile::tempdir().unwrap();
+    postui_core::fixtures::ensure_project(dir.path()).unwrap();
+    postui_core::fixtures::create_space(dir.path(), "auth").unwrap();
+    for e in ["dev", "qa"] {
+        let _ = postui_core::fixtures::create_environment(dir.path(), e);
+    }
+    for slug in ["main/alpha", "main/beta", "auth/login"] {
+        postui_core::fixtures::save_request(dir.path(), slug, &req("https://x/1")).unwrap();
+    }
+    let app = App::with_root(tx, dir.path().to_path_buf());
+    (app, dir)
+}
+
+/// Runs `op`, then Undo, then Redo; returns any toast that reads "could
+/// not …", which is how a refused redo surfaces.
+fn undo_redo_toasts(app: &mut App, op: Action) -> Vec<String> {
+    app.update(op);
+    app.update(Action::Undo);
+    app.update(Action::Redo);
+    app.toasts
+        .messages()
+        .iter()
+        .filter(|m| m.contains("could not"))
+        .map(|m| m.to_string())
+        .collect()
+}
+
+#[test]
+fn redo_after_delete_space_survives_a_project_with_no_local_state_yet() {
+    let (mut app, _dir) = spaced_app();
+    let bad = undo_redo_toasts(&mut app, Action::ForceDeleteSpace("auth".into()));
+    assert!(bad.is_empty(), "{bad:?}");
+    assert_eq!(app.proj().spaces(), ["main"]);
+}
+
+#[test]
+fn redo_after_rename_space_survives_a_project_with_no_local_state_yet() {
+    let (mut app, _dir) = spaced_app();
+    let bad = undo_redo_toasts(
+        &mut app,
+        Action::RenameSpace { from: "auth".into(), to: "Login".into() },
+    );
+    assert!(bad.is_empty(), "{bad:?}");
+    assert_eq!(app.proj().spaces(), ["main", "login"]);
+}
+
+#[test]
+fn redo_after_delete_inactive_env_survives_a_project_with_no_local_state_yet() {
+    let (mut app, _dir) = env_app();
+    assert_eq!(app.proj().active_env(), Some("dev"));
+    let bad = undo_redo_toasts(&mut app, Action::ForceDeleteEnv("qa".into()));
+    assert!(bad.is_empty(), "{bad:?}");
+    assert_eq!(app.proj().environments(), ["dev"]);
+}
+
+#[test]
+fn redo_after_rename_inactive_env_survives_a_project_with_no_local_state_yet() {
+    let (mut app, _dir) = env_app();
+    assert_eq!(app.proj().active_env(), Some("dev"));
+    let bad = undo_redo_toasts(
+        &mut app,
+        Action::RenameEnv { from: "qa".into(), to: "Prod".into() },
+    );
+    assert!(bad.is_empty(), "{bad:?}");
+    assert!(app.proj().environments().iter().any(|e| e == "prod"));
+}
+
+#[test]
+fn undo_of_delete_active_space_restores_the_active_space() {
+    let (mut app, _dir) = spaced_app();
+    assert_eq!(app.proj().local().active_space, "main");
+    app.update(Action::ForceDeleteSpace("main".into()));
+    app.update(Action::Undo);
+    assert_eq!(app.proj().local().active_space, "main", "undo lands back in the deleted space");
+}
+
+// -------------------------------------------------------------
+// Task 10: undo/redo toasts name the thing the step changed (R2)
+// -------------------------------------------------------------
+
+#[test]
+fn request_delete_undo_and_redo_toasts_use_the_display_name() {
+    let mut app = App::new_for_test();
+    app.update(Action::CreateRequest("Fancy Name!".into()));
+    app.update(Action::DeleteRequest("main/fancy-name".into()));
+    app.update(Action::Undo);
+    assert_eq!(app.toasts.last_message(), Some("Restored Fancy Name!"));
+    app.update(Action::Redo);
+    assert_eq!(app.toasts.last_message(), Some("Deleted Fancy Name! again"));
+}
+
+#[test]
+fn environment_delete_undo_and_redo_toasts_name_the_environment() {
+    let (mut app, _dir) = app_with_envs();
+    app.update(Action::CreateEnv("Staging One".into()));
+    assert_eq!(app.env_name("staging-one"), "Staging One");
+    app.update(Action::ForceDeleteEnv("staging-one".into()));
+    app.update(Action::Undo);
+    assert_eq!(app.toasts.last_message(), Some("Restored environment Staging One"));
+    app.update(Action::Redo);
+    assert_eq!(app.toasts.last_message(), Some("Deleted environment Staging One again"));
+}
+
+#[test]
+fn space_delete_undo_and_redo_toasts_name_the_space() {
+    let (mut app, _dir) = spaced_app();
+    app.update(Action::CreateSpace("Auth v2!".into()));
+    app.update(Action::ForceDeleteSpace("auth-v2".into()));
+    app.update(Action::Undo);
+    assert_eq!(app.toasts.last_message(), Some("Restored space Auth v2!"));
+    app.update(Action::Redo);
+    assert_eq!(app.toasts.last_message(), Some("Deleted space Auth v2! again"));
+}
+
+#[test]
+fn undoing_an_environment_rename_names_the_environment() {
+    let (mut app, _dir) = app_with_envs();
+    app.update(Action::RenameEnv { from: "qa".into(), to: "Staging".into() });
+    let shown = app.env_name("staging");
+    app.update(Action::Undo);
+    assert_eq!(app.toasts.last_message(), Some(&format!("Undid change to environment {shown}")[..]));
+}
+
+#[test]
+fn undoing_a_space_rename_names_the_space() {
+    let (mut app, _dir) = spaced_app();
+    app.update(Action::RenameSpace { from: "auth".into(), to: "Identity".into() });
+    let shown = app.space_name("identity");
+    app.update(Action::Undo);
+    assert_eq!(app.toasts.last_message(), Some(&format!("Undid change to space {shown}")[..]));
+}
+
+#[test]
+fn undoing_the_migration_names_no_subject() {
+    let dir = tempfile::tempdir().unwrap();
+    postui_core::fixtures::init_project(dir.path(), Some("legacy")).unwrap();
+    std::fs::write(dir.path().join("variables.toml"), "[groups.user]\nfields = [\"user_id\"]\n").unwrap();
+    postui_core::fixtures::save_request(dir.path(), "main/users", &req("https://x/users")).unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::ForceOpenRequest("main/users".into()));
+    app.update(Action::ApplyMigration);
+    for _ in 0..4 {
+        if app.modals.is_empty() {
+            break;
+        }
+        app.update(Action::Close);
+    }
+    assert!(app.modals.is_empty(), "the offer is dismissed");
+    app.update(Action::Undo);
+    assert_eq!(app.toasts.last_message(), Some("Undid project change"), "{:?}", app.toasts.messages());
+}
+
+#[test]
+fn variable_delete_undo_and_redo_toasts_quote_the_variable() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::DeleteVar { name: "api_key".into() });
+    app.update(Action::Undo);
+    assert_eq!(app.toasts.last_message(), Some("Restored \"api_key\""));
+    app.update(Action::Redo);
+    assert_eq!(app.toasts.last_message(), Some("Deleted \"api_key\" again"));
+}
+
+#[test]
+fn option_delete_undo_toast_names_the_option_and_env() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::VarStruct(crate::components::varmanager::VarStructOp::DeleteOption {
+        env: "qa".into(),
+        selector: "user".into(),
+        name: "alice".into(),
+    }));
+    let env = app.env_name("qa");
+    // C10: the forward toast, its undo and its redo all name the option
+    // and its environment the same way; the forward one adds the hint.
+    let hint = app.undo_hint();
+    assert!(hint.ends_with(" undoes"), "{hint:?}");
+    assert_eq!(
+        app.toasts.last_message(),
+        Some(&format!("Deleted option \"alice\" in {env}{hint}")[..])
+    );
+    app.update(Action::Undo);
+    assert_eq!(app.toasts.last_message(), Some(&format!("Restored option \"alice\" in {env}")[..]));
+    app.update(Action::Redo);
+    assert_eq!(app.toasts.last_message(), Some(&format!("Deleted option \"alice\" in {env} again")[..]));
+}
+
+#[test]
+fn undoing_a_rename_says_rename_and_never_names_the_open_request() {
+    let (mut app, _dir) = spaced_app();
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    app.update(Action::RenameRequest { from: "main/beta".into(), to: "Gamma".into() });
+    app.update(Action::Undo);
+    assert_eq!(app.toasts.last_message(), Some("Undid rename to Gamma"));
+}
+
+#[test]
+fn undoing_a_duplicate_names_the_copy_by_its_display_name() {
+    let (mut app, _dir) = spaced_app();
+    app.update(Action::CreateRequest("Fancy Name!".into()));
+    app.sidebar.select_slug("main/fancy-name");
+    app.update(Action::DuplicateRequest);
+    let copy = app.editor.slug.clone().unwrap();
+    let shown = app.request_display(&copy);
+    app.update(Action::Undo);
+    assert_eq!(app.toasts.last_message(), Some(&format!("Undid create of {shown}")[..]));
+}
+
+#[test]
+fn undoing_a_create_names_the_created_request() {
+    let mut app = App::new_for_test();
+    app.update(Action::CreateRequest("Fresh One".into()));
+    app.update(Action::Undo);
+    assert_eq!(app.toasts.last_message(), Some("Undid create of Fresh One"));
+}
+
+#[test]
+fn deleting_the_open_request_selects_the_neighbour_row_without_opening_it() {
+    let mut app = App::new_for_test();
+    for n in ["a", "b", "c"] {
+        app.update(Action::CreateRequest(n.into()));
+    }
+    app.update(Action::OpenRequest("main/b".into()));
+    app.update(Action::DeleteRequest("main/b".into()));
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/c"));
+    assert!(app.editor.slug.is_none(), "editor is a scratch, not c");
+}
+
+#[test]
+fn deleting_the_open_request_skips_a_folder_header_neighbour() {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let dir = tempfile::tempdir().unwrap();
+    postui_core::fixtures::ensure_project(dir.path()).unwrap();
+    for slug in ["main/alpha", "main/beta", "main/zsub/x"] {
+        postui_core::fixtures::save_request(dir.path(), slug, &req("https://x/1")).unwrap();
+    }
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    render_once(&mut app);
+    app.update(Action::OpenRequest("main/beta".into()));
+    assert!(matches!(app.sidebar.rows.get(2), Some(Row::Folder { .. })));
+    app.update(Action::DeleteRequest("main/beta".into()));
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/alpha"));
+}
+
+#[test]
+fn deleting_the_cursor_row_lands_on_the_neighbour() {
+    let (mut app, _dir) = three_row_app();
+    app.update(Action::ForceOpenRequest("main/gamma".into()));
+    app.sidebar.select_slug("main/alpha");
+    app.update(Action::DeleteSelectedRequest);
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/beta"));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/gamma"), "the open request stays open");
+}
+
+#[test]
+fn deleting_the_last_row_lands_on_the_row_above() {
+    let (mut app, _dir) = three_row_app();
+    app.sidebar.select_slug("main/gamma");
+    app.update(Action::DeleteSelectedRequest);
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/beta"));
+}
+
+#[test]
+fn undoing_a_delete_made_from_the_editor_puts_the_sidebar_cursor_back_where_it_was() {
+    let (mut app, _dir) = three_row_app();
+    app.update(Action::ForceOpenRequest("main/beta".into()));
+    app.sidebar.select_slug("main/alpha");
+    app.update(Action::DeleteRequest("main/beta".into())); // the editor's own delete
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/gamma"), "the open row's neighbour");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.slug.as_deref(), Some("main/beta"), "reopened");
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/alpha"), "rule 1: where it was, not the reopened row");
+}
+
+#[test]
+fn an_undo_that_reopens_a_request_leaves_an_unchanged_cursor_where_it_is() {
+    let (mut app, _dir) = three_row_app();
+    app.update(Action::ForceOpenRequest("main/beta".into()));
+    app.sidebar.select_slug("main/gamma");
+    // The delete's neighbour is gamma too, so the op left the cursor alone.
+    app.update(Action::DeleteRequest("main/beta".into()));
+    app.update(Action::Undo);
+    assert_eq!(app.editor.slug.as_deref(), Some("main/beta"));
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/gamma"), "a part the op did not change is left alone");
+}
+
+/// Sweep-7 bug (b).
+#[test]
+fn renaming_a_request_that_resorts_keeps_the_cursor_on_it() {
+    let (mut app, _dir) = three_row_app();
+    app.sidebar.select_slug("main/alpha");
+    app.update(Action::RenameRequest { from: "main/alpha".into(), to: "zulu".into() });
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/zulu"));
+}
+
+#[test]
+fn undoing_a_resorting_rename_puts_the_cursor_back_on_the_old_name() {
+    let (mut app, _dir) = three_row_app();
+    app.sidebar.select_slug("main/alpha");
+    app.update(Action::RenameRequest { from: "main/alpha".into(), to: "zulu".into() });
+    app.update(Action::Undo);
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/alpha"));
+    app.update(Action::Redo);
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/zulu"));
+}
+
+/// Sweep-7 bug (a): move R to another space, follow it there and open
+/// it, undo — R is back in its space, open, and the cursor is on it, so
+/// the next `m` targets the moved-back request.
+#[test]
+fn undoing_a_cross_space_move_lands_the_cursor_on_the_moved_back_request() {
+    let (mut app, _dir) = spaced_app();
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    app.sidebar.select_slug("main/alpha");
+    app.update(Action::ForceMoveRequestToSpace { slug: "main/alpha".into(), space: "auth".into() });
+    app.update(Action::SwitchSpace("auth".into()));
+    app.update(Action::OpenRequest("auth/alpha".into()));
+    app.update(Action::Undo);
+    assert_eq!(app.proj().local().active_space, "main");
+    assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"));
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/alpha"));
+    app.update(Action::PromptMoveSelectedRequestToSpace);
+    let Some(Modal::Chooser(c)) = app.modals.top() else { panic!("the move chooser") };
+    assert!(
+        c.items.iter().any(|i| i
+            .actions
+            .iter()
+            .any(|a| matches!(a, Action::MoveRequestToSpace { slug, .. } if slug == "main/alpha"))),
+        "the chooser moves the moved-back request"
+    );
+}
+
+#[test]
+fn moving_a_request_to_another_space_lands_on_the_neighbour() {
+    let (mut app, _dir) = three_row_app();
+    app.update(Action::ForceOpenRequest("main/beta".into()));
+    app.sidebar.select_slug("main/beta");
+    app.update(Action::ForceMoveRequestToSpace { slug: "main/beta".into(), space: "auth".into() });
+    assert!(app.editor.slug.is_none(), "the moved request left with its space");
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/gamma"));
+}
+
+#[test]
+fn reordering_keeps_the_cursor_on_the_moved_row_and_so_does_its_undo() {
+    let (mut app, _dir) = three_row_app();
+    app.sidebar.select_slug("main/beta");
+    app.update(Action::MoveRequest { slug: "main/beta".into(), delta: 1 });
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/beta"));
+    app.update(Action::Undo);
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/beta"));
+}
+
+/// `main` holds `alpha` and a collapsed folder `zsub` (with `x`); `auth`
+/// holds `login`. Rows: `alpha`, then the `zsub` folder.
+fn folder_space_app() -> (App, tempfile::TempDir) {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let dir = tempfile::tempdir().unwrap();
+    postui_core::fixtures::ensure_project(dir.path()).unwrap();
+    postui_core::fixtures::create_space(dir.path(), "auth").unwrap();
+    for slug in ["main/alpha", "main/zsub/x", "auth/login"] {
+        postui_core::fixtures::save_request(dir.path(), slug, &req("https://x/1")).unwrap();
+    }
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    render_once(&mut app);
+    assert!(matches!(app.sidebar.rows.get(1), Some(Row::Folder { path, .. }) if path == "main/zsub"));
+    (app, dir)
+}
+
+/// Spec §4.5: renaming the active space keeps the cursor on the same row,
+/// re-prefixed — a folder row included (controller ruling C13).
+#[test]
+fn renaming_the_active_space_keeps_the_cursor_on_a_folder_row() {
+    use crate::components::sidebar::RowKey;
+    let (mut app, _dir) = folder_space_app();
+    assert!(app.sidebar.select_key(&RowKey::Folder("main/zsub".into())));
+    app.update(Action::RenameSpace { from: "main".into(), to: "Renamed".into() });
+    let space = app.proj().local().active_space.clone();
+    assert_ne!(space, "main", "the rename happened");
+    assert_eq!(app.sidebar.selected_key(), Some(RowKey::Folder(format!("{space}/zsub"))));
+}
+
+#[test]
+fn renaming_the_active_space_keeps_the_cursor_on_a_request_row() {
+    let (mut app, _dir) = folder_space_app();
+    app.sidebar.select_slug("main/alpha");
+    app.update(Action::RenameSpace { from: "main".into(), to: "Renamed".into() });
+    let space = app.proj().local().active_space.clone();
+    assert_eq!(app.sidebar.selected_slug(), Some(format!("{space}/alpha")));
+}
+
+/// Rule 1: undoing the rename puts the cursor back on the folder row it
+/// was on; redo re-prefixes it again.
+#[test]
+fn undoing_a_space_rename_puts_the_cursor_back_on_the_folder_row() {
+    use crate::components::sidebar::RowKey;
+    let (mut app, _dir) = folder_space_app();
+    assert!(app.sidebar.select_key(&RowKey::Folder("main/zsub".into())));
+    app.update(Action::RenameSpace { from: "main".into(), to: "Renamed".into() });
+    let space = app.proj().local().active_space.clone();
+    app.update(Action::Undo);
+    assert_eq!(app.proj().local().active_space, "main");
+    assert_eq!(app.sidebar.selected_key(), Some(RowKey::Folder("main/zsub".into())));
+    app.update(Action::Redo);
+    assert_eq!(app.sidebar.selected_key(), Some(RowKey::Folder(format!("{space}/zsub"))));
+}
+
+// ---- code-review follow-ups on the one-landing-path branch ----
+
+/// Review finding 1: `land` used to close the outgoing request before the
+/// incoming open had succeeded. When the open failed the editor kept the
+/// old request on screen but the project no longer held it, so the drift
+/// check went blind and the next save overwrote an outside edit unasked.
+#[test]
+fn a_failed_open_keeps_the_previous_request_held_so_drift_is_still_caught() {
+    let (mut app, dir) = spaced_app();
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    // Break beta on disk so opening it fails.
+    let beta = postui_core::storage::request_path(dir.path(), "main/beta");
+    std::fs::write(&beta, "url = \"x\"\nurl = \"dup\"\n").unwrap();
+    app.update(Action::ForceOpenRequest("main/beta".into()));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"), "alpha stays on screen");
+    assert!(app.toasts.messages().iter().any(|m| m.starts_with("could not open main/beta")));
+    assert!(
+        app.proj().held_request("main/alpha").is_some(),
+        "the project still holds the request the editor shows"
+    );
+
+    // An outside edit to alpha now, then a save: the drift confirm must fire.
+    postui_core::fixtures::save_request(dir.path(), "main/alpha", &req("https://x/edited-outside"))
+        .unwrap();
+    dirty_the_editor(&mut app);
+    app.handle_key(ctrl('s'));
+    assert!(
+        matches!(app.modals.top(), Some(Modal::Confirm { .. })),
+        "the outside edit must be caught, not overwritten"
+    );
+}
+
+/// Review finding 2: deleting the open request while its folder is
+/// collapsed has no row to take a neighbour from. The cursor stays where
+/// it was rather than jumping to the top of the space.
+#[test]
+fn deleting_the_open_request_in_a_collapsed_folder_leaves_the_cursor_alone() {
+    let (mut app, dir) = spaced_app();
+    postui_core::fixtures::save_request(dir.path(), "main/deep/inner", &req("https://x/9")).unwrap();
+    app.update(Action::RefreshSidebar);
+    app.update(Action::ForceOpenRequest("main/deep/inner".into()));
+    app.proj_mut().set_expanded(Default::default());
+    app.refresh_sidebar();
+    assert!(app.sidebar.row_of("main/deep/inner").is_none(), "folder collapsed");
+    app.sidebar.select_slug("main/beta");
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/beta"));
+
+    app.update(Action::DeleteRequest("main/deep/inner".into()));
+    assert!(app.editor.slug.is_none(), "the open request is gone; a scratch");
+    assert_eq!(
+        app.sidebar.selected_slug().as_deref(),
+        Some("main/beta"),
+        "no row to take a neighbour from, so the cursor stays put"
+    );
+}
+
+/// Review finding 4: extract-to-request journals nothing, so it must not
+/// begin an op either. Beginning one flushed the open URL session into
+/// its own undo step, and a field mid-edit plus the extract took two undos
+/// where the still-open session makes them one (as before the landing
+/// rework).
+#[test]
+fn extract_to_request_from_a_field_mid_edit_is_one_undo_step() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    postui_core::fixtures::save_request(dir.path(), "main/ping", &req("https://x/ping/abc-123"))
+        .unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::ForceOpenRequest("main/ping".into()));
+    app.capture_undo(); // the main loop's per-event seed of the shadow
+    app.focus = crate::layout::PaneId::Editor;
+    app.editor.open_url_from_app();
+    app.handle_key(plain('9'));
+    app.capture_undo(); // mid-session: the gate holds, nothing recorded yet
+    assert_eq!(app.editor.url.text(), "https://x/ping/abc-1239");
+    let steps_before = app.history.undo_len();
+
+    app.update(Action::ConfirmExtractVariable {
+        name: "trace_id".into(),
+        destination: crate::action::ExtractDestination::Request,
+    });
+    app.capture_undo(); // the main loop's per-event capture of the replacement
+    assert_eq!(app.editor.url.text(), "{{trace_id}}");
+    assert_eq!(
+        app.history.undo_len(),
+        steps_before + 1,
+        "the extract is one step, not a session close plus the replacement"
+    );
+    app.update(Action::Undo);
+    assert_eq!(
+        app.editor.url.text(),
+        "https://x/ping/abc-123",
+        "one undo peels the typing and the replacement together"
+    );
 }

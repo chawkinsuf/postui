@@ -42,9 +42,10 @@ pub enum Row {
     },
 }
 
-/// Identifies a row across a `refresh` rebuild so the previous selection can
-/// be relocated in the new tree even though row indices shift.
-enum RowId {
+/// Identifies a row across a rebuild (a folder path or a request slug).
+/// Undo's `View` stores the cursor as one (spec §4.1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RowKey {
     Folder(String),
     Request(String),
 }
@@ -56,10 +57,10 @@ pub struct Sidebar {
     /// explanation of why nothing is loaded (a project that refused to
     /// open). Paragraphs are separated by blank lines.
     pub notice: Option<String>,
-    /// Index of the cursor/selected row, or `None` when no row is selected
-    /// (a fresh sidebar with nothing open yet, or the previously selected
-    /// row disappeared in a rebuild). The selected fill is honest: it only
-    /// ever sits on a row the user actually put it on.
+    /// Index of the cursor/selected row. `None` only when there are no
+    /// rows at all; whenever rows exist the cursor is on one of them (G5).
+    /// A refresh preserves the selection by row identity, else hands it to
+    /// the neighbouring row (see `rebuild`).
     pub selected: Option<usize>,
     /// Index of the first row drawn; `draw` keeps `selected` inside the
     /// visible window whenever `ensure_visible` is set, by adjusting this.
@@ -67,9 +68,11 @@ pub struct Sidebar {
     /// The full flat listing behind the current tree, kept so future
     /// rebuilds don't need a caller-supplied copy.
     listing: Vec<RequestListing>,
-    /// Ancestor folder paths that `select_slug` needs opened to make its
-    /// target visible. The caller (`App::refresh_sidebar`) merges these into
-    /// `project.expanded` and clears this set on the next refresh.
+    /// Ancestor folder paths queued open to make a target row visible:
+    /// by `expand_to` (a landing's cursor row, `App::land` step 4) and by
+    /// `select_slug`, which calls it. The caller (`App::refresh_sidebar`)
+    /// merges these into `project.expanded` and clears this set on the
+    /// next refresh.
     pub pending_expand: BTreeSet<String>,
     /// Set whenever the *selection* moves (`move_selection`, `select_slug`,
     /// `refresh`) so the next `draw` scrolls it into view. Wheel scrolling
@@ -133,7 +136,8 @@ impl Sidebar {
     /// name); a folder's children are emitted only when `expanded`
     /// contains its path. Preserves the current selection by row identity
     /// (folder path or request slug) across the rebuild; a selection whose
-    /// row vanished clears rather than sliding onto an arbitrary neighbor.
+    /// row vanished lands on the neighbouring row instead, and while any
+    /// rows exist the cursor is never left empty (G5).
     ///
     /// Only `space`'s entries become rows: everything outside it is dropped
     /// (but kept in `listing` for `space_counts`), and the tree is rooted at
@@ -154,7 +158,8 @@ impl Sidebar {
     /// for a change that touched no file (a live drag, a folder toggle).
     /// Same selection-preserving rules as `refresh`.
     pub fn rebuild(&mut self, space: &str, expanded: &BTreeSet<String>, order: &[String]) {
-        let prev = self.selected_identity();
+        let prev = self.selected_key();
+        let prev_index = self.selected;
         let prefix = format!("{space}/");
         let mut sorted: Vec<RequestListing> = self
             .listing
@@ -185,6 +190,19 @@ impl Sidebar {
 
         self.selected =
             prev.and_then(|id| self.rows.iter().position(|r| Self::row_matches(r, &id)));
+        // G5: while rows exist the cursor is somewhere. A row that vanished
+        // (an outside delete, a switch to another space's rows) hands the
+        // cursor to the request now at its index, else the nearest one; a
+        // list with no request rows puts it on the row at that index. Every
+        // in-app op lands explicitly (`App::land`); this only serves
+        // refreshes nothing aimed.
+        if self.selected.is_none() && !self.rows.is_empty() {
+            let at = prev_index.unwrap_or(0).min(self.rows.len() - 1);
+            self.select_nearest_request(at);
+            if self.selected.is_none() {
+                self.selected = Some(at);
+            }
+        }
         self.ensure_visible = true;
     }
 
@@ -224,12 +242,52 @@ impl Sidebar {
             .collect()
     }
 
-    /// The first request row in display order (the switch-in fallback).
-    pub fn first_request_slug(&self) -> Option<String> {
-        self.rows.iter().find_map(|r| match r {
-            Row::Request { slug, .. } => Some(slug.clone()),
-            _ => None,
+    /// The first request of `space` in display order with `expanded`
+    /// folders open: the first request a user would see (§4.2 "first
+    /// visible"). Same order `build_rows` paints.
+    pub fn first_visible_request_in_space(
+        &self,
+        space: &str,
+        order: &[String],
+        expanded: &BTreeSet<String>,
+    ) -> Option<String> {
+        let prefix = format!("{space}/");
+        let mut sorted: Vec<RequestListing> = self
+            .listing
+            .iter()
+            .filter(|l| l.slug.starts_with(&prefix))
+            .cloned()
+            .collect();
+        sorted.sort_by(|a, b| a.slug.cmp(&b.slug));
+        let ctx = LevelCtx {
+            expanded,
+            space,
+            order,
+            overlay: None,
+        };
+        let mut rows = Vec::new();
+        Self::build_rows(&sorted, &prefix, 0, &ctx, &mut rows);
+        rows.into_iter().find_map(|r| match r {
+            Row::Request { slug, .. } => Some(slug),
+            Row::Folder { .. } => None,
         })
+    }
+
+    /// The first request of `space` as if every folder were expanded: the
+    /// switch fallback when no visible row is a request.
+    pub fn first_request_in_space(&self, space: &str, order: &[String]) -> Option<String> {
+        let prefix = format!("{space}/");
+        let mut all_folders = BTreeSet::new();
+        for l in self.listing.iter().filter(|l| l.slug.starts_with(&prefix)) {
+            let mut segs: Vec<&str> = l.slug[prefix.len()..].split('/').collect();
+            segs.pop();
+            let mut path = space.to_string();
+            for seg in segs {
+                path = format!("{path}/{seg}");
+                all_folders.insert(path.clone());
+            }
+        }
+        self.first_visible_request_in_space(space, order, &all_folders)
     }
 
     /// Builds the rows for one folder level (`prefix`, possibly empty for
@@ -302,10 +360,52 @@ impl Sidebar {
         }
     }
 
-    fn selected_identity(&self) -> Option<RowId> {
+    /// The currently selected row's identity (a folder path or a request
+    /// slug), stable across a rebuild even though row indices shift.
+    pub fn selected_key(&self) -> Option<RowKey> {
         match self.rows.get(self.selected?)? {
-            Row::Folder { path, .. } => Some(RowId::Folder(path.clone())),
-            Row::Request { slug, .. } => Some(RowId::Request(slug.clone())),
+            Row::Folder { path, .. } => Some(RowKey::Folder(path.clone())),
+            Row::Request { slug, .. } => Some(RowKey::Request(slug.clone())),
+        }
+    }
+
+    /// Selects the row `key` names, if it is visible. `true` when it did.
+    pub fn select_key(&mut self, key: &RowKey) -> bool {
+        match self.rows.iter().position(|r| Self::row_matches(r, key)) {
+            Some(i) => {
+                self.selected = Some(i);
+                self.ensure_visible = true;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The first request row, else the first row; nothing when empty.
+    pub fn select_first(&mut self) {
+        if self.rows.is_empty() {
+            return;
+        }
+        self.select_nearest_request(0);
+        if self.selected.is_none() {
+            self.selected = Some(0);
+            self.ensure_visible = true;
+        }
+    }
+
+    /// Queues `slug`'s ancestor folders open for the next refresh, without
+    /// moving the cursor (the landing places it once the rows exist).
+    pub fn expand_to(&mut self, slug: &str) {
+        let mut parts: Vec<&str> = slug.split('/').collect();
+        parts.pop();
+        let mut acc = String::new();
+        for seg in parts {
+            acc = if acc.is_empty() {
+                seg.to_string()
+            } else {
+                format!("{acc}/{seg}")
+            };
+            self.pending_expand.insert(acc.clone());
         }
     }
 
@@ -319,10 +419,10 @@ impl Sidebar {
         }
     }
 
-    fn row_matches(row: &Row, id: &RowId) -> bool {
+    fn row_matches(row: &Row, id: &RowKey) -> bool {
         match (row, id) {
-            (Row::Folder { path, .. }, RowId::Folder(p)) => path == p,
-            (Row::Request { slug, .. }, RowId::Request(s)) => slug == s,
+            (Row::Folder { path, .. }, RowKey::Folder(p)) => path == p,
+            (Row::Request { slug, .. }, RowKey::Request(s)) => slug == s,
             _ => false,
         }
     }
@@ -332,17 +432,7 @@ impl Sidebar {
     /// caller can open them before the next `refresh` (which is what
     /// actually makes the row visible when it wasn't already).
     pub fn select_slug(&mut self, slug: &str) {
-        let mut parts: Vec<&str> = slug.split('/').collect();
-        parts.pop(); // drop the request's own basename; the rest are ancestor folders
-        let mut acc = String::new();
-        for seg in parts {
-            if acc.is_empty() {
-                acc = seg.to_string();
-            } else {
-                acc = format!("{acc}/{seg}");
-            }
-            self.pending_expand.insert(acc.clone());
-        }
+        self.expand_to(slug);
 
         if let Some(i) = self
             .rows
@@ -910,7 +1000,10 @@ impl Component for Sidebar {
             // right-click arming a context menu), gets a steady
             // `control_hover`-fill marker: visibly targeted, clearly not the
             // band. When the two coincide (the common case right after an
-            // open) the band simply wins.
+            // open), the cursor still needs a cue of its own (R6: the
+            // cursor always sits somewhere): the band's fill lifts half a
+            // step toward the cursor fill, but only while the pane is
+            // focused — unfocused, the open row reads exactly as before.
             let is_open = matches!(
                 row,
                 Row::Request { slug, .. } if self.open_slug.as_deref() == Some(slug.as_str())
@@ -930,6 +1023,11 @@ impl Component for Sidebar {
             });
             let is_cursor =
                 ctx.focused && self.selected == Some(i) && !is_band_row && band_alpha.is_none();
+            // §4.7: the cursor always sits somewhere (R6), so when it rests
+            // on the open row it needs a cue of its own: the band's fill
+            // lifts half a step toward the cursor fill, only while the
+            // pane is focused.
+            let lifted = ctx.focused && self.selected == Some(i) && is_band_row;
             let is_dragged = matches!(
                 (row, self.drag.as_ref()),
                 (Row::Request { slug, .. }, Some(d)) if *slug == d.slug
@@ -981,7 +1079,18 @@ impl Component for Sidebar {
                     hover_t,
                     theme,
                 );
-                Self::resolve_fill(theme, highlight, theme.panel, hover_t)
+                if lifted {
+                    let lift = crate::theme::mix(theme.selection, theme.control_hover, 0.5);
+                    // Keep the `▌` bar cell: refill only the row's body.
+                    fill(
+                        buf,
+                        Rect::new(list_area.x + 1, text_row, list_area.width.saturating_sub(1), 1),
+                        lift,
+                    );
+                    lift
+                } else {
+                    Self::resolve_fill(theme, highlight, theme.panel, hover_t)
+                }
             };
 
             self.paint_row(
@@ -1466,16 +1575,23 @@ mod tests {
             assert_eq!(a.selected, b.selected, "{alias:?} vs {canonical:?}: selection");
         }
         // Full pages: ctrl+f/ctrl+b (PageDown/PageUp) move by the list
-        // height; ctrl+d/ctrl+u by half of it.
+        // height; ctrl+d/ctrl+u by half of it. `fresh()` starts on row 0
+        // (R6: the cursor is always somewhere) and its two `j` presses land
+        // it on row 2, so these are relative to that, not an absolute 1.
         let mut s = fresh();
+        let start = s.selected.expect("fresh() lands on a row");
         s.handle_key(ctrl('f'));
-        assert_eq!(s.selected, Some(5), "clamped at the last row");
+        assert_eq!(s.selected, Some(6), "clamped at the last row");
         s.handle_key(ctrl('b'));
-        assert_eq!(s.selected, Some(1));
+        assert_eq!(s.selected, Some(2), "a full page back from the last row");
         s.handle_key(ctrl('d'));
-        assert_eq!(s.selected, Some(3), "half of the 4-row page");
+        assert_eq!(
+            s.selected,
+            Some(start + 2),
+            "half of the 4-row page, from fresh()'s row 2"
+        );
         s.handle_key(ctrl('u'));
-        assert_eq!(s.selected, Some(1));
+        assert_eq!(s.selected, Some(start), "half a page back lands where fresh() started");
     }
 
     #[test]
@@ -1515,6 +1631,73 @@ mod tests {
         s.refresh(listing(&["a/b/c"]), "main", &expanded(&[]), &[]);
         s.select_slug("main/a/b/c");
         assert!(s.pending_expand.contains("main/a") && s.pending_expand.contains("main/a/b"));
+    }
+
+    #[test]
+    fn a_rebuild_whose_cursor_row_vanished_lands_on_the_neighbour_request() {
+        let mut s = Sidebar::default();
+        s.refresh(listing(&["alpha", "beta", "gamma"]), "main", &expanded(&[]), &[]);
+        s.select_slug("main/beta");
+        s.refresh(listing(&["alpha", "gamma"]), "main", &expanded(&[]), &[]);
+        assert_eq!(
+            s.selected_slug().as_deref(),
+            Some("main/gamma"),
+            "the row that slid up"
+        );
+        s.refresh(listing(&["alpha"]), "main", &expanded(&[]), &[]);
+        assert_eq!(
+            s.selected_slug().as_deref(),
+            Some("main/alpha"),
+            "the last row went: the one above"
+        );
+    }
+
+    #[test]
+    fn a_rebuild_with_rows_never_leaves_the_cursor_empty() {
+        let mut s = Sidebar::default();
+        s.refresh(listing(&["alpha", "sub/x"]), "main", &expanded(&[]), &[]);
+        assert_eq!(
+            s.selected_slug().as_deref(),
+            Some("main/alpha"),
+            "a fresh list starts on its first request"
+        );
+        s.refresh(listing(&["sub/x"]), "main", &expanded(&[]), &[]);
+        assert_eq!(
+            s.selected,
+            Some(0),
+            "only a folder row left: the cursor sits on it"
+        );
+        s.refresh(listing(&[]), "main", &expanded(&[]), &[]);
+        assert_eq!(s.selected, None, "no rows, no cursor");
+    }
+
+    #[test]
+    fn first_request_in_space_looks_inside_collapsed_folders_and_prefers_the_top_level() {
+        let mut s = Sidebar::default();
+        s.refresh(
+            listing(&["deploy/run", "deploy/prod/x"]),
+            "main",
+            &expanded(&[]),
+            &[],
+        );
+        assert_eq!(
+            s.first_visible_request_in_space("main", &[], &expanded(&[])),
+            None
+        );
+        assert_eq!(
+            s.first_request_in_space("main", &[]).as_deref(),
+            Some("main/deploy/run")
+        );
+        s.refresh(
+            listing(&["deploy/run", "top"]),
+            "main",
+            &expanded(&[]),
+            &[],
+        );
+        assert_eq!(
+            s.first_request_in_space("main", &[]).as_deref(),
+            Some("main/top")
+        );
     }
 
     /// A disabled (instantly-jumping) `Anims` shared by every test's
@@ -1833,10 +2016,11 @@ mod tests {
     }
 
     /// When the cursor lands on the open request itself (the common case
-    /// right after Enter), the cursor's selection fill simply wins — no
+    /// right after Enter), the band's fill lifts half a step toward the
+    /// cursor fill — a cue of its own — while the name stays plain, no
     /// separate open-accent styling layered underneath it.
     #[test]
-    fn cursor_on_the_open_row_shows_plain_selection_not_accent_name() {
+    fn cursor_on_the_open_row_lifts_the_selection_fill_and_keeps_the_name_plain() {
         let mut s = Sidebar::default();
         s.refresh(listing(&["only"]), "main", &expanded(&[]), &[]);
         s.open_slug = Some("main/only".into());
@@ -1855,10 +2039,44 @@ mod tests {
         let fill_cell = buf[(row0.x + row0.width - 2, row0.y)].clone();
         let name_cell = buf[(row0.x + 7, row0.y)].clone();
         assert_eq!(bar_cell.symbol(), "\u{258c}");
-        assert_eq!(fill_cell.bg, theme.selection);
+        assert_eq!(
+            fill_cell.bg,
+            crate::theme::mix(theme.selection, theme.control_hover, 0.5)
+        );
         assert_eq!(
             name_cell.fg, theme.text,
-            "coinciding open+cursor: the selection fill wins, name stays normal-colored"
+            "coinciding open+cursor: the lifted fill wins, name stays normal-colored"
+        );
+    }
+
+    #[test]
+    fn the_open_row_lifts_while_the_focused_cursor_is_on_it() {
+        let paint = |focused: bool, cursor: usize| {
+            let mut s = Sidebar::default();
+            s.refresh(listing(&["a", "b"]), "main", &expanded(&[]), &[]);
+            s.open_slug = Some("main/a".into());
+            s.selected = Some(cursor);
+            let theme = Theme::dark();
+            let mut ctx = draw_ctx(&theme, None);
+            ctx.focused = focused;
+            let backend = ratatui::backend::TestBackend::new(30, 12);
+            let mut terminal = ratatui::Terminal::new(backend).unwrap();
+            let mut hits = HitMap::default();
+            terminal.draw(|f| s.draw(f, f.area(), &ctx, &mut hits)).unwrap();
+            let row0 = hits.rect_of(&Hit::SidebarRow(0)).unwrap();
+            terminal.backend().buffer()[(row0.x + row0.width - 2, row0.y)].bg
+        };
+        let theme = Theme::dark();
+        assert_eq!(
+            paint(true, 0),
+            crate::theme::mix(theme.selection, theme.control_hover, 0.5),
+            "focused + on the open row: lifted"
+        );
+        assert_eq!(paint(false, 0), theme.selection, "unfocused: as today");
+        assert_eq!(
+            paint(true, 1),
+            theme.selection,
+            "cursor elsewhere: the open row as today"
         );
     }
 

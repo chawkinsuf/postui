@@ -125,14 +125,20 @@ fn stage8_landmarks_render_walk() {
     );
 
     // --- sidebar rows: the request list keeps a flat panel fill (no
-    // zebra striping — dropped in the stage-8 feedback rounds) ----------
+    // zebra striping — dropped in the stage-8 feedback rounds), except
+    // row 0, which carries the startup cursor fill (R6: the cursor is
+    // always on a row, and the sidebar starts focused) -----------------
     let row0 = app.hits.rect_of(&Hit::SidebarRow(0)).unwrap();
     let row1 = app.hits.rect_of(&Hit::SidebarRow(1)).unwrap();
     let row2 = app.hits.rect_of(&Hit::SidebarRow(2)).unwrap();
     let bg0 = buf.cell((row0.x + 1, row0.y)).unwrap().bg;
     let bg1 = buf.cell((row1.x + 1, row1.y)).unwrap().bg;
     let bg2 = buf.cell((row2.x + 1, row2.y)).unwrap().bg;
-    assert_eq!(bg0, t_panel, "row 0 sits on the flat panel fill");
+    assert_eq!(
+        bg0,
+        app.theme.control_hover,
+        "row 0 carries the startup cursor (R6: the cursor is always on a row)"
+    );
     assert_eq!(bg1, t_panel, "row 1 matches — no zebra stripe");
     assert_eq!(bg2, t_panel, "row 2 matches — no zebra stripe");
 

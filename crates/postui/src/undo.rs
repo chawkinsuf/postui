@@ -3,6 +3,7 @@
 //! [`History::record`]; merging bursts of typing into one undo step happens
 //! here.
 
+use crate::components::sidebar::RowKey;
 use postui_core::model::HttpRequest;
 use std::time::{Duration, Instant};
 
@@ -40,11 +41,14 @@ pub enum StepKind {
     /// by the journal cap is skipped silently.
     Project {
         id: postui_core::journal::EntryId,
-        /// The request the toast names: the one open when the step was
-        /// made for a file change, the request that moved for a reorder,
-        /// the deleted one for a delete.
-        slug: Option<String>,
-        noun: ProjectNoun,
+        /// The undo/redo toast's wording, captured when the op ran (spec
+        /// R2).
+        label: StepLabel,
+        /// The view just before the op and just after it (spec §4.1):
+        /// undo lands on the parts that differ, taken from `before`; redo
+        /// from `after`.
+        before: Box<View>,
+        after: Box<View>,
     },
     /// One Settings-tab write (`Action::SetUiFlag` / `SetUiString` /
     /// `SetUiInt`), spec 2026-09-16: undoing writes `before` back through
@@ -67,39 +71,132 @@ pub enum StepKind {
     },
 }
 
-/// Which wording a `Project` marker's undo/redo toast uses — the wording
-/// the step kind it replaces used. Chosen by the recording arm rather
-/// than derived from the journal label, because two different ops share
-/// the label `"move request"` (a move to another space, and a keyboard
-/// reorder) and they toast differently.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProjectNoun {
-    /// `"{Undid|Redid} file change to {display}"`.
-    FileChange,
-    /// `"{Undid|Redid} reorder of {display}"`.
-    Reorder,
-    /// `"{Undid|Redid} reorder of space {display}"` — the step's `slug`
-    /// is a space name, not a request slug.
-    SpaceReorder,
-    /// `"{Undid|Redid} reorder of environment {display}"` — the step's
-    /// `slug` is an environment name, not a request slug.
-    EnvReorder,
-    /// `"Restored {file}"` / `"Deleted {file} again"`.
-    Trash,
-    /// [`Self::Trash`] for something that is not a request: the step's
-    /// `slug` is the name to show verbatim (an environment's file name,
-    /// a space's directory name) rather than a request slug the `.toml`
-    /// is appended to.
-    TrashNamed,
-}
-
-/// Which request a step belongs to, so undo can jump back to it. No caret
-/// is stored: undo/redo leave focus and the caret exactly where they are
-/// (ruling 2026-09-18, matching the Manage screen) — `Editor::apply_snapshot`
-/// re-places the caret it already has against the swapped-in fields.
+/// The request the editor held when the step was recorded. Nothing reads
+/// it any more: a project step lands through its `View`s, and an editor
+/// step carries its own slug. No caret is stored: undo/redo leave focus
+/// and the caret exactly where they are (ruling 2026-09-18, matching the
+/// Manage screen) — `Editor::apply_snapshot` re-places the caret it
+/// already has against the swapped-in fields.
 #[derive(Debug, Clone)]
 pub struct Context {
     pub slug: Option<String>,
+}
+
+/// The part of the app's view an undo can put back (spec §4.1): the
+/// active space, what the editor holds (with its unsaved buffer when it
+/// has one), the sidebar cursor, and the Manage/Variables row: the one on
+/// screen, or, for an op that moves a list's cursor off screen (an
+/// environment or space create or delete), that list's. A project step
+/// stores one from just before its op and one from just after.
+#[derive(Debug, Clone, PartialEq)]
+pub struct View {
+    pub space: String,
+    pub open: Open,
+    pub cursor: Option<RowKey>,
+    pub row: Option<ListRow>,
+}
+
+/// What the editor holds. `buffer` is `Some` only while the editor holds
+/// work a switch would lose (`App::editor_holds_unsaved`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Open {
+    Request { slug: String, buffer: Option<Box<HttpRequest>> },
+    Scratch { buffer: Option<Box<HttpRequest>> },
+}
+
+impl Open {
+    /// Whether two views hold the same thing to land on: the same request
+    /// (or both a scratch), with a buffer on both or on neither (§4.4).
+    pub fn same_target(&self, other: &Open) -> bool {
+        match (self, other) {
+            (Open::Request { slug: a, buffer: x }, Open::Request { slug: b, buffer: y }) => {
+                a == b && x.is_some() == y.is_some()
+            }
+            (Open::Scratch { buffer: x }, Open::Scratch { buffer: y }) => x.is_some() == y.is_some(),
+            _ => false,
+        }
+    }
+
+    /// The request's slug; `None` for a scratch.
+    pub fn slug(&self) -> Option<&str> {
+        match self {
+            Open::Request { slug, .. } => Some(slug),
+            Open::Scratch { .. } => None,
+        }
+    }
+}
+
+/// A Manage-screen row by identity: which list, which name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ListRow {
+    Env(String),
+    Space(String),
+    Var(String),
+}
+
+/// What a project step did, for its undo/redo toast (spec R2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Verb {
+    Create,
+    Rename,
+    Move { to: String },
+    Reorder,
+    Change,
+    Delete,
+    ProjectChange,
+}
+
+/// A project step's toast wording, captured when the op ran so it never
+/// names a request that merely happened to be open, nor reads a name
+/// after the file is gone (spec R2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StepLabel {
+    pub verb: Verb,
+    pub subject: String,
+}
+
+impl StepLabel {
+    fn of(verb: Verb, subject: impl Into<String>) -> Self {
+        Self { verb, subject: subject.into() }
+    }
+    pub fn create(display: impl Into<String>) -> Self { Self::of(Verb::Create, display) }
+    pub fn rename(new_display: impl Into<String>) -> Self { Self::of(Verb::Rename, new_display) }
+    pub fn moved(display: impl Into<String>, space: impl Into<String>) -> Self {
+        Self::of(Verb::Move { to: space.into() }, display)
+    }
+    pub fn moved_all(n: usize, space: impl Into<String>) -> Self {
+        let noun = if n == 1 { "request" } else { "requests" };
+        Self::of(Verb::Move { to: space.into() }, format!("{n} {noun}"))
+    }
+    pub fn reorder(what: impl Into<String>) -> Self { Self::of(Verb::Reorder, what) }
+    pub fn change(what: impl Into<String>) -> Self { Self::of(Verb::Change, what) }
+    pub fn variable(name: &str) -> Self { Self::change(format!("variable {name}")) }
+    pub fn environment(display: &str) -> Self { Self::change(format!("environment {display}")) }
+    pub fn space(display: &str) -> Self { Self::change(format!("space {display}")) }
+    pub fn project() -> Self { Self::of(Verb::ProjectChange, "") }
+    pub fn delete(what: impl Into<String>) -> Self { Self::of(Verb::Delete, what) }
+    pub fn delete_env(display: &str) -> Self { Self::delete(format!("environment {display}")) }
+    pub fn delete_space(display: &str) -> Self { Self::delete(format!("space {display}")) }
+    pub fn delete_variable(name: &str) -> Self { Self::delete(format!("\"{name}\"")) }
+    pub fn delete_option(name: &str, env: &str) -> Self {
+        Self::delete(format!("option \"{name}\" in {env}"))
+    }
+
+    /// The toast an undo (`redo == false`) or redo of this step shows.
+    pub fn toast(&self, redo: bool) -> String {
+        let done = if redo { "Redid" } else { "Undid" };
+        let s = &self.subject;
+        match &self.verb {
+            Verb::Delete if redo => format!("Deleted {s} again"),
+            Verb::Delete => format!("Restored {s}"),
+            Verb::Create => format!("{done} create of {s}"),
+            Verb::Rename => format!("{done} rename to {s}"),
+            Verb::Move { to } => format!("{done} move of {s} to {to}"),
+            Verb::Reorder => format!("{done} reorder of {s}"),
+            Verb::Change => format!("{done} change to {s}"),
+            Verb::ProjectChange => format!("{done} project change"),
+        }
+    }
 }
 
 /// Which single `HttpRequest` field changed, for burst-coalescing purposes.
@@ -511,4 +608,42 @@ mod tests {
         );
     }
 
+    #[test]
+    fn step_labels_toast_in_the_spec_wording() {
+        let cases: &[(StepLabel, &str, &str)] = &[
+            (StepLabel::create("Fresh"), "Undid create of Fresh", "Redid create of Fresh"),
+            (StepLabel::rename("Pong"), "Undid rename to Pong", "Redid rename to Pong"),
+            (StepLabel::moved("Ping", "Auth"), "Undid move of Ping to Auth", "Redid move of Ping to Auth"),
+            (StepLabel::moved_all(3, "Auth"), "Undid move of 3 requests to Auth", "Redid move of 3 requests to Auth"),
+            (StepLabel::moved_all(1, "Auth"), "Undid move of 1 request to Auth", "Redid move of 1 request to Auth"),
+            (StepLabel::reorder("space Billing"), "Undid reorder of space Billing", "Redid reorder of space Billing"),
+            (StepLabel::change("Ping"), "Undid change to Ping", "Redid change to Ping"),
+            (StepLabel::variable("base_url"), "Undid change to variable base_url", "Redid change to variable base_url"),
+            (StepLabel::environment("Staging"), "Undid change to environment Staging", "Redid change to environment Staging"),
+            (StepLabel::space("Auth v2!"), "Undid change to space Auth v2!", "Redid change to space Auth v2!"),
+            (StepLabel::project(), "Undid project change", "Redid project change"),
+            (StepLabel::delete("Fancy Name!"), "Restored Fancy Name!", "Deleted Fancy Name! again"),
+            (StepLabel::delete_env("Staging One"), "Restored environment Staging One", "Deleted environment Staging One again"),
+            (StepLabel::delete_space("Auth v2!"), "Restored space Auth v2!", "Deleted space Auth v2! again"),
+            (StepLabel::delete_variable("api_key"), "Restored \"api_key\"", "Deleted \"api_key\" again"),
+            (StepLabel::delete_option("alice", "QA"), "Restored option \"alice\" in QA", "Deleted option \"alice\" in QA again"),
+        ];
+        for (label, undo, redo) in cases {
+            assert_eq!(label.toast(false), *undo);
+            assert_eq!(label.toast(true), *redo);
+        }
+    }
+
+    #[test]
+    fn open_targets_compare_the_slug_and_whether_a_buffer_rides_along() {
+        let r = |slug: &str, buf: bool| Open::Request {
+            slug: slug.into(),
+            buffer: buf.then(|| Box::new(req("x"))),
+        };
+        assert!(r("a", false).same_target(&r("a", false)));
+        assert!(!r("a", false).same_target(&r("b", false)));
+        assert!(!r("a", false).same_target(&r("a", true)), "a buffer is part of the target");
+        assert!(Open::Scratch { buffer: None }.same_target(&Open::Scratch { buffer: None }));
+        assert!(!Open::Scratch { buffer: None }.same_target(&r("a", false)));
+    }
 }

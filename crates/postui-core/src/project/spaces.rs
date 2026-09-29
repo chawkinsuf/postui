@@ -182,11 +182,7 @@ impl Project {
         }
         spaces.remove(idx);
         let name = name.to_string();
-        let meta = EntryMeta {
-            reopen: self.local.open_request.clone(),
-            ..EntryMeta::default()
-        };
-        self.transaction("delete space", meta, |p| {
+        self.transaction("delete space", EntryMeta::default(), |p| {
             p.edit_project_toml(|doc| {
                 doc["spaces"] = toml_edit::value(meta::slug_array(&spaces));
                 meta::remove_item_table(doc, meta::Kind::Space, &name);
@@ -391,6 +387,36 @@ mod tests {
         assert!(p.local().open_request.is_none(), "the open request pointed into the deleted space");
         assert!(!read(&dir, "project.toml").unwrap().contains("[space.auth]"));
         assert!(matches!(p.delete_space("main"), Err(Error::LastSpace)));
+    }
+
+    /// A journaled `.local/state.toml` write that lands on a project where
+    /// the file has never existed must not record `before: None`: its undo
+    /// would delete the file, and the app's unjournaled `persist_local`
+    /// (fired after every action) would recreate it before redo runs.
+    /// Mirrors what the app does between undo and redo.
+    #[test]
+    fn redo_survives_a_delete_space_whose_entry_first_created_state_toml() {
+        let (dir, mut p) = fixture();
+        assert!(read(&dir, ".local/state.toml").is_none());
+        p.delete_space("auth").unwrap();
+        p.undo().unwrap().unwrap();
+        p.persist_local().unwrap();
+        p.redo().unwrap().unwrap();
+        assert_eq!(p.spaces(), ["main"]);
+    }
+
+    /// Same root cause, the other symptom: undoing a delete that was the
+    /// file's first-ever write must restore the pre-op local memory, not
+    /// reset it to defaults.
+    #[test]
+    fn undo_of_a_first_state_write_restores_the_pre_op_active_space() {
+        let (dir, mut p) = fixture();
+        assert!(read(&dir, ".local/state.toml").is_none());
+        assert_eq!(p.local().active_space, "main");
+        p.delete_space("main").unwrap();
+        assert_eq!(p.local().active_space, "auth");
+        p.undo().unwrap().unwrap();
+        assert_eq!(p.local().active_space, "main", "undo restores the pre-op active space");
     }
 
     #[test]

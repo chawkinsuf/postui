@@ -348,7 +348,6 @@ impl Project {
         EntryMeta {
             moves,
             active_env: None,
-            reopen: self.local.open_request.clone(),
         }
     }
 
@@ -669,7 +668,6 @@ mod tests {
         assert_eq!(p.journal_len(), 2);
         let e = p.journal.pop_undo().unwrap();
         assert!(matches!(e.ops[0], Op::Created { .. }));
-        assert_eq!(e.meta.reopen, None);
     }
 
     #[test]
