@@ -58,6 +58,9 @@ lines = ["id: 41, n: -7, hex: 0x1f, pad: 007"]
 [text.tabs]
 lines = ["\tone two", "\t\tthree", "four"]
 
+[text.short_last]
+lines = ["abcdefgh", "abc"]
+
 # --- harness ---------------------------------------------------------------
 
 [[group]]
@@ -90,8 +93,9 @@ at = ["bol", "fnb", "mid", "eol"]
 id = "motions/jk"
 tier = 1
 keys = ["j", "k", "3j", "3k", "9j", "9k", "<Down>", "<Up>", "jj", "jk", "$j", "$jk", "llj", "lljj",
-        "0j", "$jj"]
-on = ["json_pretty", "json_gaps", "blank_edges", "tabs", "brackets_deep", "words", "json_flat", "unicode"]
+        "0j", "$jj", "$wk", "$ek", "kbj", "2$k", "9$k", "l2$k", "$%k", "$fzk", "$3bj"]
+on = ["json_pretty", "json_gaps", "blank_edges", "tabs", "brackets_deep", "words", "json_flat", "unicode",
+      "short_last"]
 at = ["bol", "mid", "eol"]
 
 [[group]]

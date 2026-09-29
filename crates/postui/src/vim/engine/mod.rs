@@ -126,15 +126,33 @@ pub struct Target<'a, B: TextBuf> {
 pub struct BufState {
     text_at_start: Option<String>,
     edited: bool,
-    /// Vim's `w_curswant`: the column `j` and `k` aim for.
-    pub(crate) want: motion::Want,
-    /// Where the caret was when `want` was last set. A caret anywhere else
-    /// (a click, an edit, the harness placing it) makes `want` stale: Vim
-    /// resets `curswant` on every such move.
-    pub(crate) want_at: Option<Pos>,
+    /// Vim's `w_curswant` (the column `j` and `k` aim for) with the caret it
+    /// was recorded at; `None` is Vim's `w_set_curswant = TRUE`. It is
+    /// trusted only while the caret is still there.
+    ///
+    /// Every command except `j`, `k`, `$` and refused motions must call
+    /// [`BufState::forget_want`]: Vim resets `curswant` on them, including
+    /// edits that leave the caret in place (`rX`), which the position check
+    /// cannot see. Motions set it through [`BufState::set_want`].
+    curswant: Option<(motion::Want, Pos)>,
 }
 
 impl BufState {
+    /// The wanted column when it is still valid for a caret at `at`.
+    pub(crate) fn want(&self, at: Pos) -> Option<motion::Want> {
+        self.curswant.filter(|&(_, p)| p == at).map(|(w, _)| w)
+    }
+
+    pub(crate) fn set_want(&mut self, want: motion::Want, at: Pos) {
+        self.curswant = Some((want, at));
+    }
+
+    /// Vim's `w_set_curswant = TRUE`: recompute from the caret next time.
+    #[allow(dead_code)] // used from Task 7
+    pub(crate) fn forget_want(&mut self) {
+        self.curswant = None;
+    }
+
     pub fn new() -> Self {
         Self::default()
     }

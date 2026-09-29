@@ -390,7 +390,8 @@ pub(crate) fn run<B: TextBuf>(
         }
         Motion::LineEnd => {
             if n > 1 && from.row == last {
-                return Moved::refused(from);
+                // Vim's `nv_dollar` wants the end before `cursor_down` fails.
+                return Moved { to: from, kind: MKind::Inclusive, want: WantUpdate::End, failed: true, no_adjust: false };
             }
             let row = (from.row + n - 1).min(last);
             let len = buf.line_len(row);
@@ -755,19 +756,14 @@ impl Engine {
     pub(super) fn exec_move<B: TextBuf>(&mut self, motion: Motion, count: usize, buf: &mut B, st: &mut BufState) {
         let visual = matches!(self.mode, Mode::Visual(_));
         let from = buf.cursor();
-        if st.want_at != Some(from) {
-            st.want = updated_want(buf, from, WantUpdate::Here, st.want, self.tab_end(from));
-        }
-        let cx = MotionCx { op: None, visual, want: st.want };
+        let want = st
+            .want(from)
+            .unwrap_or_else(|| updated_want(buf, from, WantUpdate::Here, Want::default(), self.tab_end(from)));
+        let cx = MotionCx { op: None, visual, want };
         let m = run(buf, from, motion, count, &cx, &mut self.last_find);
-        if m.failed && m.to == from {
-            st.want_at = Some(from);
-            return;
-        }
-        let to = self.clamped(buf, m.to);
-        buf.set_cursor(to);
-        st.want = updated_want(buf, to, m.want, st.want, self.tab_end(to));
-        st.want_at = Some(to);
+        buf.set_cursor(self.clamped(buf, m.to));
+        let to = buf.cursor();
+        st.set_want(updated_want(buf, to, m.want, want, self.tab_end(to)), to);
     }
 
     /// Whether a caret at `at` on a tab sits on its last cell (Vim's
@@ -795,6 +791,17 @@ mod tests {
         assert_eq!(col_for(&cjk, Want::Col(40), true), 3);
         assert_eq!(col_for(&cjk, Want::End, false), 2);
         assert_eq!(col_for(&[], Want::End, false), 0);
+    }
+
+    #[test]
+    fn the_wanted_column_is_trusted_only_at_its_caret_until_forgotten() {
+        let mut st = BufState::new();
+        assert_eq!(st.want(Pos::new(0, 0)), None);
+        st.set_want(Want::End, Pos::new(0, 3));
+        assert_eq!(st.want(Pos::new(0, 3)), Some(Want::End));
+        assert_eq!(st.want(Pos::new(0, 4)), None, "the caret moved");
+        st.forget_want();
+        assert_eq!(st.want(Pos::new(0, 3)), None, "forgotten");
     }
 
     #[test]
