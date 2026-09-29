@@ -431,10 +431,18 @@ fn check(
             let div = divs.iter().position(|d| glob(&d.id, &case.id) && (d.buffer == "both" || d.buffer == buf_name(buf)));
             if let Some(i) = div {
                 used[i] = true;
-                if divs[i].skip {
-                    tally.skipped += 1;
-                    continue;
+            }
+            if div.is_some_and(|i| divs[i].skip) {
+                // A skip may exist because the engine panics, so catch that.
+                // Still run it: a skip the engine no longer needs is stale.
+                let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_case(case, input, buf, rows)));
+                if let Ok(Run::Done(actual)) = run
+                    && agrees(&actual, &expected(case, input, None))
+                {
+                    report.stale.push(format!("{} [{}]: the engine now matches Vim; delete the skip", case.id, buf_name(buf)));
                 }
+                tally.skipped += 1;
+                continue;
             }
             let expect = expected(case, input, div.and_then(|i| divs[i].expect.as_ref()));
             let ok = match run_case(case, input, buf, rows) {
@@ -449,7 +457,7 @@ fn check(
                 }
                 Run::Done(actual) => {
                     let ok = agrees(&actual, &expect);
-                    if ok && div.is_some() && agrees(&actual, &expected(case, input, None)) {
+                    if div.is_some() && agrees(&actual, &expected(case, input, None)) {
                         report.stale.push(format!("{} [{}]: the engine now matches Vim; delete the divergence", case.id, buf_name(buf)));
                     }
                     if !ok && case.status == "ship" {
@@ -506,6 +514,45 @@ fn the_engine_matches_vim() {
     }
     report.print(&header.vim);
     assert_eq!(report.failed(), 0, "Vim conformance failures: see the report above");
+}
+
+/// One synthetic <Esc> case, which the engine matches, in a group of the
+/// given status.
+fn synthetic(status: &str) -> (Header, Vec<Case>) {
+    let text = format!(
+        concat!(
+            r#"{{"header":{{"vim":"9","settings":"","winheight":23,"texts":{{"t":["abc"]}},"groups":{{"g":{{"status":"{}"}}}}}}}}"#,
+            "\n",
+            r#"{{"group":"g","text":"t","cursor":[1,1],"keys":"<Esc>","expect":{{"cursor":[1,1],"mode":"n","reg":"","regtype":"v"}}}}"#,
+        ),
+        status
+    );
+    load(&text)
+}
+
+fn divergence(skip: bool, patch: Option<Patch>) -> Divergence {
+    Divergence {
+        id: "g/t@1:1/<Esc>".into(),
+        buffer: "both".into(),
+        skip,
+        expect: patch,
+        who: "mine".into(),
+        why: "test".into(),
+    }
+}
+
+#[test]
+fn a_divergence_is_stale_when_the_engine_matches_vim() {
+    let real_patch = Patch { cursor: Some([1, 2]), ..Patch::default() };
+    for status in ["ship", "later"] {
+        let (header, cases) = synthetic(status);
+        for div in [divergence(false, Some(real_patch.clone())), divergence(true, None)] {
+            let skip = div.skip;
+            let report = check(&cases, &header.texts, header.winheight, &[div], None);
+            assert!(!report.stale.is_empty(), "{status} skip={skip}: engine matches Vim, so it is stale");
+            assert!(report.failed() > 0, "{status} skip={skip}: a stale entry fails the test");
+        }
+    }
 }
 
 #[test]
