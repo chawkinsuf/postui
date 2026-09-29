@@ -20,7 +20,6 @@ pub const TABSTOP: usize = 2;
 #[allow(dead_code)] // used from Task 7
 pub const UNDOLEVELS: usize = 1000;
 /// The largest count a key sequence can build (vim-mode's `seq.rs`).
-#[allow(dead_code)] // used from Task 5
 pub const MAX_COUNT: usize = 9_999;
 
 #[cfg(test)]

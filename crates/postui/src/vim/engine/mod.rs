@@ -14,13 +14,17 @@
 pub mod buf;
 mod class;
 mod class_table;
+mod keys;
 mod register;
 pub mod settings;
+#[cfg(test)]
+mod tests;
 
 pub use buf::{BodyBuf, GuiSel, OneLineBuf, Paint, Pos, TextBuf};
 pub use register::{RegKind, Register, Registers};
 
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use keys::{Cmd, InsertHow, Key, Motion, Op, ParseCx, Pending, Reach, Step};
+use ratatui::crossterm::event::KeyEvent;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shape {
@@ -150,6 +154,9 @@ impl BufState {
 #[derive(Debug, Default)]
 pub struct Engine {
     mode: Mode,
+    pending: Pending,
+    /// The fixed end of the Visual selection (the caret is the moving end).
+    visual: Option<Pos>,
     regs: Registers,
 }
 
@@ -164,12 +171,12 @@ impl Engine {
 
     /// The half-typed command for the footer (`"02d3`); `""` when none.
     pub fn echo(&self) -> String {
-        String::new()
+        self.pending.echo()
     }
 
     /// Whether a count, register, operator or prefix is in flight.
     pub fn pending(&self) -> bool {
-        false
+        !self.pending.is_empty()
     }
 
     pub fn registers(&self) -> &Registers {
@@ -182,7 +189,10 @@ impl Engine {
 
     /// The fixed end of the Visual selection; `None` outside Visual.
     pub fn visual_anchor(&self) -> Option<Pos> {
-        None
+        match self.mode {
+            Mode::Visual(_) => self.visual,
+            _ => None,
+        }
     }
 
     /// A buffer gets the caret (spec §4.2). Task 13 completes this.
@@ -190,6 +200,8 @@ impl Engine {
         let Target { buf, state } = t;
         state.text_at_start = Some(buf.text());
         state.edited = false;
+        self.pending.clear();
+        self.visual = None;
         self.mode = if start == Start::Normal { Mode::Normal } else { Mode::Insert };
         let caret = buf.cursor();
         let row = caret.row.min(buf.line_count() - 1);
@@ -200,26 +212,87 @@ impl Engine {
             Seat::End => len,
             Seat::FirstNonBlank => first_non_blank(&buf.line(row)),
         };
-        let max = if self.mode == Mode::Normal { len.saturating_sub(1) } else { len };
-        buf.set_cursor(Pos::new(row, col.min(max)));
+        buf.set_cursor(Pos::new(row, col));
+        self.clamp(buf);
         self.paint(buf);
     }
 
-    /// One key while a buffer has the caret. Task 5 replaces this body
-    /// with the parser.
-    pub fn handle<B: TextBuf>(&mut self, ev: KeyEvent, t: Target<'_, B>, _ctx: &ViewCtx) -> Outcome {
-        let _ = t;
-        if ev.code == KeyCode::Esc && ev.modifiers == KeyModifiers::NONE {
-            return Outcome::Declined { count: None, keys: vec![ev] };
+    /// One key while a buffer has the caret (spec §4.1).
+    pub fn handle<B: TextBuf>(&mut self, ev: KeyEvent, t: Target<'_, B>, ctx: &ViewCtx) -> Outcome {
+        let Target { buf, state } = t;
+        self.clamp(buf);
+        let out = match self.mode {
+            Mode::Insert => self.insert_key(ev, buf, state),
+            Mode::Normal | Mode::Visual(_) => {
+                let cx = ParseCx { visual: self.mode != Mode::Normal, multiline: B::MULTILINE };
+                match self.pending.feed(ev, cx) {
+                    Step::More => Outcome::consumed(),
+                    Step::Inert(note) => Outcome::Consumed { changed: false, note, request: None },
+                    Step::Decline { count, keys } => Outcome::Declined { count, keys },
+                    Step::Cmd(cmd) => self.run(cmd, buf, state, ctx),
+                }
+            }
+        };
+        self.clamp(buf);
+        self.paint(buf);
+        out
+    }
+
+    /// Runs one complete command.
+    fn run<B: TextBuf>(&mut self, cmd: Cmd, buf: &mut B, st: &mut BufState, ctx: &ViewCtx) -> Outcome {
+        match cmd {
+            Cmd::Move { motion, count } => {
+                self.exec_move(motion, count, buf, st);
+                Outcome::consumed()
+            }
+            Cmd::Operate { op, reach, count, reg } => self.exec_operate(op, reach, count, reg, buf, st),
+            Cmd::Put { before, count, reg } => self.exec_put(before, count, reg, buf, st),
+            Cmd::Replace { ch, count } => self.exec_replace(ch, count, buf, st),
+            Cmd::Join { count } => self.exec_join(count, buf, st),
+            Cmd::Insert { how, count } => {
+                self.exec_insert(how, count, buf, st);
+                Outcome::consumed()
+            }
+            Cmd::Undo(count) => self.exec_undo(count, false, buf, st),
+            Cmd::Redo(count) => self.exec_undo(count, true, buf, st),
+            Cmd::Repeat(count) => self.exec_repeat(count, buf, st, ctx),
+            Cmd::VisualStart(_) | Cmd::VisualSwap | Cmd::VisualExit | Cmd::VisualObject { .. } | Cmd::VisualOp { .. } => {
+                self.exec_visual(cmd, buf, st)
+            }
         }
-        Outcome::consumed()
+    }
+
+    /// Review focus 2: a change outside the engine (reload, format, app
+    /// undo) can leave the caret or the Visual anchor past the text.
+    fn clamp<B: TextBuf>(&mut self, buf: &mut B) {
+        let caret = buf.cursor();
+        let at = self.clamped(buf, caret);
+        if at != caret {
+            buf.set_cursor(at);
+        }
+        if let Some(anchor) = self.visual {
+            let row = anchor.row.min(buf.line_count() - 1);
+            self.visual = Some(Pos::new(row, anchor.col.min(buf.line_len(row))));
+        }
+    }
+
+    /// Where the caret may rest in the current mode: on a char in Normal,
+    /// also on the line's end in Insert and Visual (`selection=inclusive`).
+    fn clamped<B: TextBuf>(&self, buf: &B, at: Pos) -> Pos {
+        let row = at.row.min(buf.line_count() - 1);
+        let len = buf.line_len(row);
+        let max = if self.mode == Mode::Normal { len.saturating_sub(1) } else { len };
+        Pos::new(row, at.col.min(max))
     }
 
     fn paint<B: TextBuf>(&self, buf: &mut B) {
         buf.show(match self.mode {
             Mode::Normal => Paint::Normal,
             Mode::Insert => Paint::Insert,
-            Mode::Visual(shape) => Paint::Visual { anchor: buf.cursor(), line: shape == Shape::Line },
+            Mode::Visual(shape) => Paint::Visual {
+                anchor: self.visual.unwrap_or_else(|| buf.cursor()),
+                line: shape == Shape::Line,
+            },
         });
     }
 }
@@ -228,4 +301,66 @@ impl Engine {
 /// tab; the line's length when there is none.
 pub(crate) fn first_non_blank(line: &[char]) -> usize {
     line.iter().position(|&c| c != ' ' && c != '\t').unwrap_or(line.len())
+}
+
+// ---- Stubs ---------------------------------------------------------------
+// Each later task moves one of these into its own module with the real
+// behaviour and deletes it here. Until then its command has no effect.
+impl Engine {
+    /// Task 6 (motion.rs).
+    fn exec_move<B: TextBuf>(&mut self, _motion: Motion, _count: usize, _buf: &mut B, _st: &mut BufState) {}
+
+    /// Task 7 (op.rs).
+    fn exec_operate<B: TextBuf>(
+        &mut self,
+        _op: Op,
+        _reach: Reach,
+        _count: usize,
+        _reg: Option<char>,
+        _buf: &mut B,
+        _st: &mut BufState,
+    ) -> Outcome {
+        Outcome::consumed()
+    }
+
+    /// Task 7 (op.rs).
+    fn exec_undo<B: TextBuf>(&mut self, _count: usize, _redo: bool, _buf: &mut B, _st: &mut BufState) -> Outcome {
+        Outcome::consumed()
+    }
+
+    /// Task 9 (insert.rs).
+    fn exec_insert<B: TextBuf>(&mut self, _how: InsertHow, _count: usize, _buf: &mut B, _st: &mut BufState) {}
+
+    /// Task 9 (insert.rs). Until then Esc leaves Insert and nothing types.
+    fn insert_key<B: TextBuf>(&mut self, ev: KeyEvent, _buf: &mut B, _st: &mut BufState) -> Outcome {
+        if Key::of(&ev) == Key::Esc {
+            self.mode = Mode::Normal;
+        }
+        Outcome::consumed()
+    }
+
+    /// Task 10 (op.rs).
+    fn exec_put<B: TextBuf>(&mut self, _before: bool, _count: usize, _reg: Option<char>, _buf: &mut B, _st: &mut BufState) -> Outcome {
+        Outcome::consumed()
+    }
+
+    /// Task 10 (op.rs).
+    fn exec_replace<B: TextBuf>(&mut self, _ch: char, _count: usize, _buf: &mut B, _st: &mut BufState) -> Outcome {
+        Outcome::consumed()
+    }
+
+    /// Task 10 (op.rs).
+    fn exec_join<B: TextBuf>(&mut self, _count: usize, _buf: &mut B, _st: &mut BufState) -> Outcome {
+        Outcome::consumed()
+    }
+
+    /// Task 11 (visual.rs).
+    fn exec_visual<B: TextBuf>(&mut self, _cmd: Cmd, _buf: &mut B, _st: &mut BufState) -> Outcome {
+        Outcome::consumed()
+    }
+
+    /// Task 12 (mod.rs, `.`).
+    fn exec_repeat<B: TextBuf>(&mut self, _count: usize, _buf: &mut B, _st: &mut BufState, _ctx: &ViewCtx) -> Outcome {
+        Outcome::consumed()
+    }
 }
