@@ -1,0 +1,11 @@
+# Intentional differences from Vim 9.1 (spec §6.6). Each entry replaces the
+# golden expectation for the runs it matches. The conformance test fails if
+# an entry matches no case, or if the engine already matches Vim on a listed
+# case, so stale entries can't pile up. Target at the first release: none.
+#
+# [[divergence]]
+# id = "objects/quote/quotes@1:9/di\""     # an exact id, or a glob with *
+# buffer = "both"                          # body | one-line | both
+# expect = { lines = ["…"], cursor = [1, 9] }   # or: skip = true
+# who = "mine"                             # you | mine | earlier
+# why = "…"

@@ -1,0 +1,85 @@
+# The Vim conformance corpus (spec §6.2). Each [[group]] expands to
+# keys × suffixes × texts (`on`) × seats (`at`); `python3
+# scripts/vim_oracle/generate.py` runs every case through Vim 9.1 and writes
+# crates/postui/tests/vim_conformance/golden.jsonl.
+#
+# Seats: "bol" "fnb" "mid" "eol" (for each line; texts over 12 lines use the
+# first, middle and last), "each" (every char of every line, texts of at most
+# 12 lines), "empty" (the first empty line), or [row, col] (1-based chars;
+# skipped where the text has no such char). Default: ["bol", "mid", "eol"].
+# Keys use Vim notation; <Name>s must be listed in keys.toml. A case may not
+# end half-typed, uses '.' only after a change, and never holds : Q K q @ ! &
+# or ZZ/ZQ: if a change fails, its typed text runs as Normal commands, so
+# typed text uses harmless letters like X and Y.
+# status = "later" cases are generated and reported but do not fail the test.
+# Budget: the full 3a corpus is about 34,000 cases and 5.5 MB of golden file
+# (measured 2026-09-29); keep it under about 6 MB. Prefer named seats unless
+# the key's result depends on the char under the caret.
+
+[text.words]
+lines = ["foo bar  baz_qux.quux end"]
+
+[text.punct]
+lines = ["foo.bar(baz, qux);"]
+
+[text.url]
+lines = ["https://api.example.com/v1/users?id=42&name=a%20b#top"]
+
+[text.json_flat]
+lines = ['{"a": {"b": 1}, "c": [1, 2], "d": "x y"}']
+
+[text.json_pretty]
+lines = ['{', '  "a": {"b": 1},', '  "c": [1, 2, 3],', '  "d": "hello world"', '}']
+
+[text.json_gaps]
+lines = ['{', '  "a": 1,', '', '  "b": [', '    2', '  ],', '', '', '  "c": 3', '}']
+
+[text.brackets_deep]
+lines = ['f(a[b{c(d)e}f]g)h', '(x [y', '  {z}] w)']
+
+[text.quotes]
+lines = ['say "hi" and "a \"b\" c" or "" then', '"k": "v", "k2": "(v2}"', "x = 'one' + 'two'"]
+
+[text.unicode]
+lines = ["héllo wörld 日本語 😀 x×y a b"]
+
+[text.blank_edges]
+lines = ["", "a", "", "  b  ", ""]
+
+[text.one_char]
+lines = ["x"]
+
+[text.empty]
+lines = [""]
+
+[text.numbers]
+lines = ["id: 41, n: -7, hex: 0x1f, pad: 007"]
+
+[text.tabs]
+lines = ["\tone two", "\t\tthree", "four"]
+
+# --- harness ---------------------------------------------------------------
+
+[[group]]
+id = "harness/smoke"
+tier = 1
+keys = ["<Esc>", "<Esc><Esc>"]
+on = ["words", "punct", "url", "json_flat", "json_pretty", "json_gaps", "brackets_deep",
+      "quotes", "unicode", "blank_edges", "one_char", "empty", "numbers", "tabs"]
+at = ["bol", "mid", "eol"]
+
+[[group]]
+id = "harness/reg"
+tier = 1
+keys = ["<Esc>"]
+on = ["words", "json_pretty"]
+at = [[1, 1]]
+reg = { text = "q\n", type = "V" }
+
+# --- fuzz atoms (generate.py --fuzz); tier-1 keys only -----------------------
+
+[fuzz]
+atoms = ["w", "b", "e", "W", "x", "X", "dw", "db", "de", "j", "k", "h", "l", "$", "0", "^",
+         "p", "P", "u", "<C-r>", "ciwX<Esc>", "cwY<Esc>", "3l", "yy", "yiw", "dd", "J",
+         "AY<Esc>", "o<Esc>", "Ox<Esc>", "v$d", "Vjd", "vly", "di{", "da[", "ci\"X<Esc>",
+         "%", "f,", ";", ",", "gg", "G", "rX", "x.", "D", "C<Esc>"]
