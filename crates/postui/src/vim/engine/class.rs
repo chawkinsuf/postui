@@ -9,7 +9,6 @@ use super::class_table::TABLE;
 
 /// Vim's `utf_class()` for `c`: 0 blank, 1 punctuation, 2 word, 3 emoji,
 /// larger: a script's own word class.
-#[allow(dead_code)] // used from Task 6
 pub(crate) fn class(c: char) -> u32 {
     let c = c as u32;
     let i = TABLE.partition_point(|&(first, _, _)| first <= c);

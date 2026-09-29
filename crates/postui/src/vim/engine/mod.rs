@@ -15,6 +15,7 @@ pub mod buf;
 mod class;
 mod class_table;
 mod keys;
+mod motion;
 mod register;
 pub mod settings;
 #[cfg(test)]
@@ -23,7 +24,7 @@ mod tests;
 pub use buf::{BodyBuf, GuiSel, OneLineBuf, Paint, Pos, TextBuf};
 pub use register::{RegKind, Register, Registers};
 
-use keys::{Cmd, InsertHow, Key, Motion, Op, ParseCx, Pending, Reach, Step};
+use keys::{Cmd, InsertHow, Key, Op, ParseCx, Pending, Reach, Step};
 use ratatui::crossterm::event::KeyEvent;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,6 +126,12 @@ pub struct Target<'a, B: TextBuf> {
 pub struct BufState {
     text_at_start: Option<String>,
     edited: bool,
+    /// Vim's `w_curswant`: the column `j` and `k` aim for.
+    pub(crate) want: motion::Want,
+    /// Where the caret was when `want` was last set. A caret anywhere else
+    /// (a click, an edit, the harness placing it) makes `want` stale: Vim
+    /// resets `curswant` on every such move.
+    pub(crate) want_at: Option<Pos>,
 }
 
 impl BufState {
@@ -158,6 +165,8 @@ pub struct Engine {
     /// The fixed end of the Visual selection (the caret is the moving end).
     visual: Option<Pos>,
     regs: Registers,
+    /// The last `f` `t` `F` `T` (global, as in Vim), for `;` and `,`.
+    last_find: Option<(keys::FindKind, char)>,
 }
 
 impl Engine {
@@ -307,9 +316,6 @@ pub(crate) fn first_non_blank(line: &[char]) -> usize {
 // Each later task moves one of these into its own module with the real
 // behaviour and deletes it here. Until then its command has no effect.
 impl Engine {
-    /// Task 6 (motion.rs).
-    fn exec_move<B: TextBuf>(&mut self, _motion: Motion, _count: usize, _buf: &mut B, _st: &mut BufState) {}
-
     /// Task 7 (op.rs).
     fn exec_operate<B: TextBuf>(
         &mut self,

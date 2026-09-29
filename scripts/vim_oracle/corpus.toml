@@ -76,6 +76,75 @@ on = ["words", "json_pretty"]
 at = [[1, 1]]
 reg = { text = "q\n", type = "V" }
 
+# --- motions (Task 6) --------------------------------------------------------
+
+[[group]]
+id = "motions/hl"
+tier = 1
+keys = ["h", "l", "3h", "3l", "9l", "<Left>", "<Right>", "<BS>", "<Space>", "3<BS>", "3<Space>",
+        "9<Space>", "9<BS>", "lh"]
+on = ["words", "json_flat", "unicode", "json_pretty", "blank_edges", "one_char", "empty", "tabs"]
+at = ["bol", "fnb", "mid", "eol"]
+
+[[group]]
+id = "motions/jk"
+tier = 1
+keys = ["j", "k", "3j", "3k", "9j", "9k", "<Down>", "<Up>", "jj", "jk", "$j", "$jk", "llj", "lljj",
+        "0j", "$jj"]
+on = ["json_pretty", "json_gaps", "blank_edges", "tabs", "brackets_deep", "words", "json_flat", "unicode"]
+at = ["bol", "mid", "eol"]
+
+[[group]]
+id = "motions/line"
+tier = 1
+keys = ["0", "^", "$", "<Home>", "<End>", "2$", "3$", "9$", "$0", "10l0", "$^"]
+on = ["words", "json_flat", "json_pretty", "blank_edges", "tabs", "unicode"]
+at = ["bol", "fnb", "mid", "eol"]
+
+[[group]]
+id = "motions/file"
+tier = 1
+keys = ["gg", "G", "2G", "2gg", "9G", "9gg", "Gk", "ggj", "3G$", "G$gg"]
+on = ["json_pretty", "json_gaps", "blank_edges", "tabs", "words", "json_flat", "unicode"]
+at = ["bol", "mid", "eol"]
+
+[[group]]
+id = "motions/word"
+tier = 1
+keys = ["w", "b", "e", "W", "B", "E", "3w", "3b", "3e", "2W", "2B", "2E", "9w", "9b", "9e", "ee", "bb"]
+on = ["words", "punct", "unicode", "json_flat"]
+at = ["each"]
+
+[[group]]
+id = "motions/word-lines"
+tier = 1
+keys = ["w", "b", "e", "W", "B", "E", "3w", "3b", "3e", "9w", "9b", "9e"]
+on = ["json_pretty", "blank_edges", "json_gaps", "tabs", "url"]
+at = ["bol", "fnb", "mid", "eol"]
+
+[[group]]
+id = "motions/find"
+tier = 1
+keys = ["f<Space>", "F<Space>", "t<Space>", "T<Space>", "2f<Space>", "2t<Space>", "3F<Space>", "fa",
+        "ta;", "fa;", "fa;;", "fa,", "ta,", "Ta;", "Ta,", "f,;", "t,;", "t,,", "t,2;", ";", ",",
+        "f\"", "t\"", "fz", "2fz", "f<Tab>"]
+on = ["words", "punct", "url", "json_flat", "json_pretty", "blank_edges", "quotes", "unicode", "tabs"]
+at = ["bol", "mid", "eol"]
+
+[[group]]
+id = "motions/percent"
+tier = 1
+keys = ["%", "%%", "l%", "$%", "w%"]
+on = ["json_flat", "brackets_deep", "quotes", "punct"]
+at = ["each"]
+
+[[group]]
+id = "motions/percent-lines"
+tier = 1
+keys = ["%", "%%", "50%", "100%", "1%", "200%"]
+on = ["json_pretty", "json_gaps", "blank_edges", "words", "unicode"]
+at = ["bol", "fnb", "mid", "eol"]
+
 # --- fuzz atoms (generate.py --fuzz); tier-1 keys only -----------------------
 
 [fuzz]

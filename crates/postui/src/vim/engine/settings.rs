@@ -14,7 +14,6 @@ pub const SETTINGS_LINE: &str = "expandtab shiftwidth=2 autoindent selection=inc
 pub const SHIFTWIDTH: usize = 2;
 /// `tabstop`: a tab's width in virtual columns; Insert `Tab` (with
 /// `expandtab`) fills spaces to the next multiple.
-#[allow(dead_code)] // used from Task 6
 pub const TABSTOP: usize = 2;
 /// `undolevels`: the most steps one buffer's history keeps.
 #[allow(dead_code)] // used from Task 7

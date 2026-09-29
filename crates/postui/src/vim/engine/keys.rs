@@ -86,17 +86,14 @@ pub(crate) enum FindKind {
 }
 
 impl FindKind {
-    #[allow(dead_code)] // used from Task 6
     pub(crate) fn forward(self) -> bool {
         matches!(self, FindKind::Find | FindKind::Till)
     }
 
-    #[allow(dead_code)] // used from Task 6
     pub(crate) fn till(self) -> bool {
         matches!(self, FindKind::Till | FindKind::TillBack)
     }
 
-    #[allow(dead_code)] // used from Task 6
     pub(crate) fn reversed(self) -> Self {
         match self {
             FindKind::Find => FindKind::FindBack,
