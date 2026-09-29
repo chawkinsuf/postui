@@ -149,6 +149,49 @@ keys = ["%", "%%", "50%", "100%", "1%", "200%"]
 on = ["json_pretty", "json_gaps", "blank_edges", "words", "unicode"]
 at = ["bol", "fnb", "mid", "eol"]
 
+# --- operators: delete, yank, undo (Task 7) ----------------------------------
+
+[[group]]
+id = "ops/delete"
+tier = 1
+keys = ["dw", "de", "db", "dW", "dE", "dB", "d$", "d0", "d^", "dh", "dl", "dj", "dk", "dgg", "dG",
+        "d%", "df<Space>", "dt<Space>", "dF<Space>", "dT<Space>", "d<Space>", "d<BS>", "2d<Space>",
+        "d3w", "3dw", "2d2w", "d9w", "d9b", "d9e", "d2j", "d9k", "d;", "dfad;", "d3l", "d9l", "d9h"]
+on = ["words", "json_flat", "json_pretty", "blank_edges", "unicode", "json_gaps"]
+at = ["bol", "fnb", "mid", "eol"]
+
+[[group]]
+id = "ops/delete-lines"
+tier = 1
+keys = ["dd", "2dd", "3dd", "9dd", "D", "2D", "9D", "x", "3x", "9x", "X", "3X", "<Del>", "3<Del>",
+        "xx", "dddd"]
+on = ["words", "json_flat", "json_pretty", "blank_edges", "json_gaps", "one_char", "empty", "tabs", "unicode"]
+at = ["bol", "fnb", "mid", "eol"]
+
+[[group]]
+id = "ops/yank"
+tier = 1
+keys = ["yw", "ye", "yb", "y$", "y0", "y^", "yj", "yk", "yy", "2yy", "9yy", "Y", "yG", "ygg", "y%",
+        "yfa", "yta", "yFa", "yTa", "y3w", "yl", "yh"]
+on = ["words", "json_flat", "json_pretty", "blank_edges", "unicode"]
+at = ["bol", "fnb", "mid", "eol"]
+
+[[group]]
+id = "ops/undo"
+tier = 1
+keys = ["dw", "db", "d$", "dd", "3dd", "dG", "dgg", "dj", "dk", "x", "3x", "X", "D", "d%", "d2w"]
+suffixes = ["u", "u<C-r>"]
+on = ["words", "json_flat", "json_pretty", "blank_edges", "unicode", "json_gaps"]
+at = ["bol", "fnb", "eol"]
+
+[[group]]
+id = "ops/undo-counts"
+tier = 1
+keys = ["xxxu", "xxx2u", "xxx3u2<C-r>", "xxx9u", "xxx9u9<C-r>", "dddddu", "xux", "xuxu<C-r>",
+        "xu<C-r><C-r>", "u", "<C-r>"]
+on = ["words", "json_pretty", "blank_edges"]
+at = ["bol", "mid", "eol"]
+
 # --- fuzz atoms (generate.py --fuzz); tier-1 keys only -----------------------
 
 [fuzz]

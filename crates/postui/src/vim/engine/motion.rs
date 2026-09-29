@@ -47,16 +47,17 @@ pub(crate) enum WantUpdate {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Moved {
     pub to: Pos,
-    #[allow(dead_code)] // used from Task 7
     pub kind: MKind,
     pub want: WantUpdate,
     /// The motion failed: a waiting operator is cancelled (spec §3.6). The
     /// caret still goes to `to`, where Vim's walk ended (`9b` near the start
-    /// rests on 1:1); for most failures `to` is the start.
+    /// rests on 1:1); for most failures `to` is the start. `h` `l` `<BS>`
+    /// `<Space>` `w` `e` never fail with an operator waiting (Vim's
+    /// `nv_left`, `nv_right`, `nv_wordcmd`): `dh` in column 0 acts on an
+    /// empty range.
     pub failed: bool,
     /// `<BS>` across a line break inside `d`/`c`: the operator's end is not
     /// adjusted by the exclusive rule (Vim's `CA_NO_ADJ_OP_END`).
-    #[allow(dead_code)] // used from Task 7
     pub no_adjust: bool,
 }
 
@@ -371,7 +372,11 @@ pub(crate) fn run<B: TextBuf>(
     match motion {
         Motion::Left => {
             let to = Pos::new(from.row, from.col.saturating_sub(n));
-            if to == from { Moved::refused(from) } else { Moved::to(to, MKind::Exclusive, WantUpdate::Here) }
+            if to == from && cx.op.is_none() {
+                Moved::refused(from)
+            } else {
+                Moved::to(to, MKind::Exclusive, WantUpdate::Here)
+            }
         }
         Motion::BackWrap => back_wrap(buf, from, n, cx),
         Motion::Right => right(buf, from, n, cx, false),
@@ -485,7 +490,7 @@ fn right<B: TextBuf>(buf: &B, from: Pos, n: usize, cx: &MotionCx, wrap: bool) ->
         to: p,
         kind: if inclusive { MKind::Inclusive } else { MKind::Exclusive },
         want: WantUpdate::Here,
-        failed: p == from && !inclusive,
+        failed: p == from && !inclusive && cx.op.is_none(),
         no_adjust: false,
     }
 }
@@ -512,7 +517,7 @@ fn back_wrap<B: TextBuf>(buf: &B, from: Pos, n: usize, cx: &MotionCx) -> Moved {
             no_adjust = true;
         }
     }
-    if p == from {
+    if p == from && cx.op.is_none() {
         return Moved::refused(from);
     }
     Moved { to: p, kind: MKind::Exclusive, want: WantUpdate::Here, failed: false, no_adjust }
@@ -539,7 +544,7 @@ fn word_fwd<B: TextBuf>(buf: &B, from: Pos, n: usize, big: bool, cx: &MotionCx, 
         w.pos.col -= 1;
         kind = MKind::Inclusive;
     }
-    Moved { to: w.pos, kind, want: WantUpdate::Here, failed: !ok, no_adjust: false }
+    Moved { to: w.pos, kind, want: WantUpdate::Here, failed: !ok && cx.op.is_none(), no_adjust: false }
 }
 
 /// Vim's `searchc()`: the `n`th `ch` on the line. `stop` false skips a
@@ -756,14 +761,18 @@ impl Engine {
     pub(super) fn exec_move<B: TextBuf>(&mut self, motion: Motion, count: usize, buf: &mut B, st: &mut BufState) {
         let visual = matches!(self.mode, Mode::Visual(_));
         let from = buf.cursor();
-        let want = st
-            .want(from)
-            .unwrap_or_else(|| updated_want(buf, from, WantUpdate::Here, Want::default(), self.tab_end(from)));
+        let want = self.want_at(buf, st, from);
         let cx = MotionCx { op: None, visual, want };
         let m = run(buf, from, motion, count, &cx, &mut self.last_find);
         buf.set_cursor(self.clamped(buf, m.to));
         let to = buf.cursor();
         st.set_want(updated_want(buf, to, m.want, want, self.tab_end(to)), to);
+    }
+
+    /// The column `j` and `k` aim for from `at`: the remembered one while
+    /// the caret is still there, else the caret's own.
+    pub(super) fn want_at<B: TextBuf>(&self, buf: &B, st: &BufState, at: Pos) -> Want {
+        st.want(at).unwrap_or_else(|| updated_want(buf, at, WantUpdate::Here, Want::default(), self.tab_end(at)))
     }
 
     /// Whether a caret at `at` on a tab sits on its last cell (Vim's

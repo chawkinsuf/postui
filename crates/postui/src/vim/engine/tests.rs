@@ -82,6 +82,19 @@ impl Body {
         self.engine.handle(ev, Target { buf: &mut BodyBuf::new(&mut self.ed, Style::default()), state: &mut self.state }, &ctx)
     }
 
+    /// Plain chars, one key each; returns the last outcome.
+    pub fn keys(&mut self, s: &str) -> Outcome {
+        let mut last = Outcome::consumed();
+        for c in s.chars() {
+            last = self.key(k(c));
+        }
+        last
+    }
+
+    pub fn text(&mut self) -> String {
+        BodyBuf::new(&mut self.ed, Style::default()).text()
+    }
+
     pub fn caret(&self) -> Pos {
         Pos::new(self.ed.cursor.row, self.ed.cursor.col)
     }
@@ -161,7 +174,7 @@ fn echo_and_pending_follow_the_half_typed_command() {
 }
 
 /// Vim: `<Del>` while a count is typed drops its last digit; the count is
-/// still pending, and `<Del>` with none typed is `x` (no effect until Task 7).
+/// still pending, and `<Del>` with none typed is `x`.
 #[test]
 fn del_edits_a_typed_count_instead_of_being_x() {
     let mut f = Field::new("abc", 0);
@@ -192,4 +205,42 @@ fn a_stale_caret_is_clamped_before_any_key() {
     }
     b.key(esc());
     assert!(b.caret().row == 0 && b.caret().col <= 1);
+}
+
+#[test]
+fn u_is_declined_once_the_history_is_empty() {
+    let mut f = Field::new("abc", 0);
+    assert_eq!(f.keys("u"), Outcome::Declined { count: None, keys: vec![k('u')] });
+    assert_eq!(f.keys("3u"), Outcome::Declined { count: Some(3), keys: vec![k('u')] });
+    assert_eq!(f.key(ctrl('r')), Outcome::Declined { count: None, keys: vec![ctrl('r')] });
+    f.keys("x");
+    assert!(f.state.can_undo() && !f.state.can_redo());
+    assert!(!declined(&f.keys("u")));
+    assert_eq!(f.text(), "abc");
+    assert!(f.state.can_redo());
+    assert!(declined(&f.keys("u")), "the app history takes the next u");
+    assert!(!declined(&f.key(ctrl('r'))));
+    assert_eq!(f.text(), "bc");
+}
+
+#[test]
+fn changed_reports_a_text_change_and_edited_remembers_it() {
+    let mut f = Field::new("abc", 0);
+    assert_eq!(f.keys("l"), Outcome::Consumed { changed: false, note: None, request: None });
+    assert!(!f.state.edited());
+    assert_eq!(f.keys("x"), Outcome::Consumed { changed: true, note: None, request: None });
+    assert!(f.state.edited());
+    assert_eq!(f.keys("yw"), Outcome::Consumed { changed: false, note: None, request: None });
+}
+
+#[test]
+fn every_edit_goes_through_one_splice_path_and_one_step() {
+    let mut b = Body::new("one two three\nfour", 0, 0);
+    b.keys("d2w");
+    assert_eq!(b.text(), "three\nfour");
+    assert_eq!(b.state.history.len(), 1);
+    b.keys("dd");
+    assert_eq!(b.state.history.len(), 2);
+    b.keys("uu");
+    assert_eq!(b.text(), "one two three\nfour");
 }

@@ -10,13 +10,12 @@
 pub const SETTINGS_LINE: &str = "expandtab shiftwidth=2 autoindent selection=inclusive tabstop=2 softtabstop=0 backspace=indent,eol,start whichwrap=b,s startofline nojoinspaces nrformats=bin,hex noshiftround nosmartindent nocindent textwidth=0 noignorecase notildeop matchpairs=(:),{:},[:] iskeyword=@,48-57,_,192-255 cpoptions=aABceFs formatoptions=tcq virtualedit= wrapscan magic nosmartcase";
 
 /// `shiftwidth`: one `>` step and the autoindent unit.
-#[allow(dead_code)] // used from Task 7
+#[allow(dead_code)] // used from Task 11
 pub const SHIFTWIDTH: usize = 2;
 /// `tabstop`: a tab's width in virtual columns; Insert `Tab` (with
 /// `expandtab`) fills spaces to the next multiple.
 pub const TABSTOP: usize = 2;
 /// `undolevels`: the most steps one buffer's history keeps.
-#[allow(dead_code)] // used from Task 7
 pub const UNDOLEVELS: usize = 1000;
 /// The largest count a key sequence can build (vim-mode's `seq.rs`).
 pub const MAX_COUNT: usize = 9_999;

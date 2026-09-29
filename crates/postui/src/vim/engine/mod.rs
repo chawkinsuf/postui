@@ -14,8 +14,10 @@
 pub mod buf;
 mod class;
 mod class_table;
+mod history;
 mod keys;
 mod motion;
+mod op;
 mod register;
 pub mod settings;
 #[cfg(test)]
@@ -24,7 +26,7 @@ mod tests;
 pub use buf::{BodyBuf, GuiSel, OneLineBuf, Paint, Pos, TextBuf};
 pub use register::{RegKind, Register, Registers};
 
-use keys::{Cmd, InsertHow, Key, Op, ParseCx, Pending, Reach, Step};
+use keys::{Cmd, InsertHow, Key, ParseCx, Pending, Step};
 use ratatui::crossterm::event::KeyEvent;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,6 +137,7 @@ pub struct BufState {
     /// edits that leave the caret in place (`rX`), which the position check
     /// cannot see. Motions set it through [`BufState::set_want`].
     curswant: Option<(motion::Want, Pos)>,
+    pub(crate) history: history::History,
 }
 
 impl BufState {
@@ -148,13 +151,21 @@ impl BufState {
     }
 
     /// Vim's `w_set_curswant = TRUE`: recompute from the caret next time.
-    #[allow(dead_code)] // used from Task 7
     pub(crate) fn forget_want(&mut self) {
         self.curswant = None;
     }
 
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Whether `u` has anything left in this buffer.
+    pub fn can_undo(&self) -> bool {
+        self.history.can_undo()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        self.history.can_redo()
     }
 
     /// Whether the text changed since the last [`Engine::enter`].
@@ -260,9 +271,19 @@ impl Engine {
                 }
             }
         };
+        // A Normal or Visual command is one undo step; an Insert session
+        // keeps its step open until it ends (spec §3.11).
+        if self.mode != Mode::Insert {
+            state.history.commit();
+        }
+        let changed = state.history.take_changed();
+        state.edited |= changed;
         self.clamp(buf);
         self.paint(buf);
-        out
+        match out {
+            Outcome::Consumed { note, request, .. } => Outcome::Consumed { changed, note, request },
+            declined => declined,
+        }
     }
 
     /// Runs one complete command.
@@ -334,24 +355,6 @@ pub(crate) fn first_non_blank(line: &[char]) -> usize {
 // Each later task moves one of these into its own module with the real
 // behaviour and deletes it here. Until then its command has no effect.
 impl Engine {
-    /// Task 7 (op.rs).
-    fn exec_operate<B: TextBuf>(
-        &mut self,
-        _op: Op,
-        _reach: Reach,
-        _count: usize,
-        _reg: Option<char>,
-        _buf: &mut B,
-        _st: &mut BufState,
-    ) -> Outcome {
-        Outcome::consumed()
-    }
-
-    /// Task 7 (op.rs).
-    fn exec_undo<B: TextBuf>(&mut self, _count: usize, _redo: bool, _buf: &mut B, _st: &mut BufState) -> Outcome {
-        Outcome::consumed()
-    }
-
     /// Task 9 (insert.rs).
     fn exec_insert<B: TextBuf>(&mut self, _how: InsertHow, _count: usize, _buf: &mut B, _st: &mut BufState) {}
 

@@ -30,4 +30,19 @@ impl Registers {
     pub fn set_unnamed(&mut self, reg: Register) {
         self.unnamed = reg;
     }
+
+    /// The register a command named (`None` or `"`: the unnamed one).
+    /// Other names never get here: the parser refuses them (spec §3.10).
+    #[allow(dead_code)] // used from Task 10
+    pub(crate) fn read(&self, name: Option<char>) -> &Register {
+        debug_assert!(matches!(name, None | Some('"')), "register {name:?}");
+        &self.unnamed
+    }
+
+    /// What a delete, change or yank leaves behind. Plan 3b splits yanks
+    /// off to `"0`.
+    pub(crate) fn write(&mut self, name: Option<char>, reg: Register) {
+        debug_assert!(matches!(name, None | Some('"')), "register {name:?}");
+        self.unnamed = reg;
+    }
 }
