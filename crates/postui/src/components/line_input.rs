@@ -67,8 +67,6 @@ enum EditKind {
 pub(crate) const HISTORY_CAP: usize = 200;
 
 /// The shape of the vim engine's Visual selection (piece 3 §3.3).
-// used from Task 2
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum VisualShape {
     /// Inclusive of the char under the caret, Vim's `selection=inclusive`.
@@ -111,14 +109,10 @@ impl LineInput {
 
     /// Sets or clears the vim engine's Visual paint: the anchor (a char
     /// index) and the shape. The caret is the moving end.
-    // used from Task 2
-    #[allow(dead_code)]
     pub(crate) fn set_visual(&mut self, visual: Option<(usize, VisualShape)>) {
         self.vim_visual = visual;
     }
 
-    // used from Task 2
-    #[allow(dead_code)]
     pub(crate) fn visual(&self) -> Option<(usize, VisualShape)> {
         self.vim_visual
     }
@@ -142,8 +136,6 @@ impl LineInput {
     /// Replaces chars `start..end` with `text` and leaves the caret after
     /// it. Records nothing in this input's own history: the vim engine
     /// keeps its own (piece 3 §3.3). Drops any GUI selection.
-    // used from Task 2
-    #[allow(dead_code)]
     pub(crate) fn splice_raw(&mut self, start: usize, end: usize, text: &str) {
         let len = self.len_chars();
         let start = start.min(len);
