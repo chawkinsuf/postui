@@ -356,6 +356,51 @@ fn paste_in_normal_is_declined_for_piece_four() {
 }
 
 #[test]
+fn one_line_put_and_join_rules() {
+    let mut f = Field::new("ab", 0);
+    f.keys("J");
+    assert_eq!(f.text(), "ab", "J has no second line to join");
+    // Vim's `3J` on its last line joins that line alone and goes to column
+    // 0; the field's `J` stays a no-op whatever the count (spec §5).
+    let mut f = Field::new("ab", 1);
+    f.keys("3J");
+    assert_eq!((f.text(), f.col(), f.state.can_undo()), ("ab", 1, false), "3J is a no-op too");
+
+    let mut f = Field::new("ab", 0);
+    f.engine.registers_mut().set_unnamed(Register { text: "q\n".into(), kind: RegKind::Line });
+    f.keys("p");
+    assert_eq!((f.text(), f.col()), ("aqb", 1), "a linewise register goes in charwise");
+
+    let mut f = Field::new("ab", 1);
+    f.engine.registers_mut().set_unnamed(Register { text: "x\ny".into(), kind: RegKind::Char });
+    f.keys("P");
+    assert_eq!(f.text(), "ax yb", "line breaks become spaces");
+
+    let mut f = Field::new("  ab", 3);
+    f.keys("yy");
+    assert_eq!(f.engine.registers().unnamed(), &Register { text: "  ab\n".into(), kind: RegKind::Line });
+    f.keys("dd");
+    assert_eq!(f.text(), "", "dd takes the whole field");
+}
+
+#[test]
+fn one_register_is_shared_by_every_buffer() {
+    let mut engine = Engine::new();
+    let mut state = BufState::new();
+    let mut field = LineInput::new("one two");
+    field.set_cursor(0);
+    engine.enter(Start::Normal, Seat::Keep, Target { buf: &mut OneLineBuf::new(&mut field), state: &mut state });
+    for c in "yiw".chars() {
+        engine.handle(k(c), Target { buf: &mut OneLineBuf::new(&mut field), state: &mut state }, &ViewCtx::default());
+    }
+    let mut ed = EditorState::new(Lines::from("x"));
+    let mut body_state = BufState::new();
+    engine.enter(Start::Normal, Seat::Keep, Target { buf: &mut BodyBuf::new(&mut ed, Style::default()), state: &mut body_state });
+    engine.handle(k('p'), Target { buf: &mut BodyBuf::new(&mut ed, Style::default()), state: &mut body_state }, &ViewCtx::default());
+    assert_eq!(BodyBuf::new(&mut ed, Style::default()).text(), "xone");
+}
+
+#[test]
 fn a_cursor_key_in_insert_splits_the_undo_step() {
     let mut f = Field::new("", 0);
     f.keys("iab");

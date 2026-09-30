@@ -319,6 +319,75 @@ suffixes = ["u", "u<C-r>", "uu"]
 on = ["words", "json_pretty", "blank_edges"]
 at = ["bol", "fnb", "eol"]
 
+# --- put, replace, join (Task 10) --------------------------------------------
+
+[[group]]
+id = "ops/put-char"
+tier = 1
+keys = ["p", "P", "2p", "3P", "pp", "pu", "pu<C-r>", "Pu", "Pu<C-r>"]
+on = ["words", "json_flat", "json_pretty", "blank_edges", "empty", "one_char", "unicode"]
+at = ["bol", "fnb", "mid", "eol"]
+reg = { text = "Q", type = "v" }
+
+[[group]]
+id = "ops/put-line"
+tier = 1
+keys = ["p", "P", "2p", "3P", "pp", "pu", "pu<C-r>", "Pu", "Pu<C-r>"]
+on = ["words", "json_flat", "json_pretty", "blank_edges", "unicode", "empty", "one_char"]
+at = ["bol", "fnb", "mid", "eol"]
+reg = { text = "  q\n", type = "V" }
+
+[[group]]
+id = "ops/put-multi"
+tier = 1
+keys = ["p", "P", "2p", "pu"]
+on = ["words", "json_pretty", "blank_edges", "empty"]
+at = ["bol", "mid", "eol"]
+reg = { text = "a\nb", type = "v" }
+
+# The unnamed register holds "" (as the engine's does at start): Vim's
+# `do_put` still saves the line for undo and resets the wanted column.
+[[group]]
+id = "ops/put-empty"
+tier = 1
+keys = ["p", "P", "3p", "pu", "Pu<C-r>", "jPj", "pjuj", "xpuu"]
+on = ["words", "short_last", "brackets_deep", "blank_edges", "empty"]
+at = ["bol", "mid", "eol"]
+
+[[group]]
+id = "ops/yank-put"
+tier = 1
+keys = ["yyp", "yyP", "3yyp", "ywP", "yw$p", "yiwP", "dwwP", "xp", "ddp", "ddP", "Yp", "y$P", "yjp",
+        "yj$p", "2yy3p", "dd2P", "yawp"]
+on = ["words", "json_flat", "json_pretty", "blank_edges", "unicode"]
+at = ["bol", "fnb", "mid", "eol"]
+
+[[group]]
+id = "ops/replace"
+tier = 1
+keys = ["rX", "3rX", "9rX", "r<Tab>", "rXu", "3rXu<C-r>", "rX$rY", "r<Space>", "2r日"]
+on = ["words", "json_flat", "json_pretty", "blank_edges", "unicode", "empty", "one_char"]
+at = ["bol", "mid", "eol"]
+
+[[group]]
+id = "ops/join"
+tier = 1
+keys = ["J", "3J", "9J", "JJ", "Ju", "Ju<C-r>", "2J", "4J"]
+on = ["json_pretty", "blank_edges", "json_gaps", "tabs", "brackets_deep", "words", "json_flat", "unicode", "quotes"]
+at = ["bol", "mid", "eol"]
+
+# `r`, `p`, `P` and `J` reset the wanted column like any other command, even
+# when the caret stays put (`jrXj` differs from `jj` under a short line);
+# `{N}r<Tab>` is Vim's `{N}R<Tab><Esc>` under 'expandtab'.
+[[group]]
+id = "ops/replace-more"
+tier = 1
+keys = ["jrXj", "$jrXj", "j3rXj", "krXk", "jpj", "jPj", "$Jj", "jJj", "jr<Tab>j", "rX", "r<Tab>",
+        "2r<Tab>", "3r<Tab>u", "9Ju", "9Ju<C-r>"]
+on = ["brackets_deep", "json_gaps", "tabs", "json_pretty", "short_last"]
+at = ["bol", "mid", "eol"]
+reg = { text = "Q", type = "v" }
+
 # --- fuzz atoms (generate.py --fuzz); tier-1 keys only -----------------------
 
 [fuzz]

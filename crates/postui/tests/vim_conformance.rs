@@ -262,6 +262,18 @@ fn drive<B: TextBuf>(engine: &mut Engine, buf: &mut B, state: &mut BufState, cas
         if !B::MULTILINE && engine.mode() == Mode::Normal && !engine.pending() && matches!(token.as_str(), "o" | "O") {
             return Run::Skipped;
         }
+        // The same ruling for `J` (§6.5 names it too; a one-line field's
+        // `J` is a no-op, §5, pinned by an S test). Vim's `nv_join` turns
+        // `{N}J` with N > 2 on the last line into a join of that one line
+        // with nothing, which keeps one line but moves the caret to column
+        // 0. `J` and `2J` fail in Vim as in the field, so they still run.
+        if !B::MULTILINE
+            && engine.mode() == Mode::Normal
+            && token == "J"
+            && engine.echo().parse::<usize>().is_ok_and(|n| n > 2)
+        {
+            return Run::Skipped;
+        }
         let inserting = engine.mode() == Mode::Insert;
         let out = engine.handle(key_event(&token), Target { buf: &mut *buf, state: &mut *state }, ctx);
         // A one-line field hands Insert keys it doesn't own (Tab, Up,

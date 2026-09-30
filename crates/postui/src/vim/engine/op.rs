@@ -8,8 +8,9 @@ use super::history::Ed;
 use super::keys::{CaseOp, Cmd, Op, Reach};
 use super::motion::{self, MKind, MotionCx};
 use super::register::{RegKind, Register};
-use super::settings::SHIFTWIDTH;
+use super::settings::{SHIFTWIDTH, TABSTOP};
 use super::{BufState, Engine, Outcome, first_non_blank, first_non_blank_fix};
+use crate::components::line_input::flatten_paste;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 /// A motion's or object's reach, `start <= end` in buffer order.
@@ -177,6 +178,97 @@ pub(crate) fn shift_rows<B: TextBuf>(ed: &mut Ed<'_, B>, first: usize, last: usi
     Pos::new(first, first_non_blank(&ed.buf.line(first)))
 }
 
+/// Puts `reg` `n` times (spec §3.6 rule 6, §3.10; Vim's `do_put()`); the
+/// caret after.
+pub(crate) fn put<B: TextBuf>(ed: &mut Ed<'_, B>, reg: &Register, before: bool, n: usize) -> Pos {
+    let caret = ed.buf.cursor();
+    if reg.text.is_empty() {
+        return put_chars(ed, caret, "", before);
+    }
+    if !B::MULTILINE {
+        // A one-line field: a linewise register goes in charwise without
+        // its line break, and line breaks become spaces (key list §5).
+        let text = match reg.kind {
+            RegKind::Line => reg.text.strip_suffix('\n').unwrap_or(&reg.text),
+            RegKind::Char => &reg.text,
+        };
+        return put_chars(ed, caret, &flatten_paste(text).repeat(n), before);
+    }
+    match reg.kind {
+        RegKind::Char => put_chars(ed, caret, &reg.text.repeat(n), before),
+        RegKind::Line => {
+            let body = reg.text.repeat(n);
+            let row = if before { caret.row } else { caret.row + 1 };
+            if row < ed.buf.line_count() {
+                ed.splice(Pos::new(row, 0), Pos::new(row, 0), &body);
+            } else {
+                // After the last line: a break before the text, none after.
+                let last = ed.buf.line_count() - 1;
+                let len = ed.buf.line_len(last);
+                let lines = body.strip_suffix('\n').unwrap_or(&body);
+                ed.splice(Pos::new(last, len), Pos::new(last, len), &format!("\n{lines}"));
+            }
+            Pos::new(row, first_non_blank(&ed.buf.line(row)))
+        }
+    }
+}
+
+/// A charwise put: `p` goes after the caret's char (at column 0 on an empty
+/// line), `P` before it. One line leaves the caret on the last char put,
+/// more than one on the first. Putting nothing (the register holds `""`)
+/// is still an undo step: `do_put()` saves the caret's line before it
+/// looks at the register.
+fn put_chars<B: TextBuf>(ed: &mut Ed<'_, B>, caret: Pos, text: &str, before: bool) -> Pos {
+    if text.is_empty() {
+        ed.hist.begin(caret);
+        ed.save_line(caret.row);
+        return caret;
+    }
+    let len = ed.buf.line_len(caret.row);
+    let at = if before || len == 0 { caret } else { Pos::new(caret.row, caret.col + 1) };
+    ed.splice(at, at, text);
+    if text.contains('\n') { at } else { Pos::new(at.row, at.col + text.chars().count() - 1) }
+}
+
+/// Joins `n` lines from `row` the way `J` does: Vim's `do_join()` with
+/// `insert_space` under `nojoinspaces`. Each later line loses its leading
+/// blanks and gets one space before it, except when it is then empty,
+/// starts with `)`, the text joined so far is empty, or the line before it
+/// ended in a blank (that line's text after its own leading blanks: an
+/// all-blank line ends in nothing). The caret goes where the last line was
+/// joined.
+/// `n == 1` (a count run past the end on the last line) changes nothing
+/// but is still an undo step, and the caret goes to column 0.
+pub(crate) fn join_rows<B: TextBuf>(ed: &mut Ed<'_, B>, row: usize, n: usize) -> Pos {
+    if n < 2 {
+        ed.hist.begin(ed.buf.cursor());
+        ed.save_line(row);
+        return Pos::new(row, 0);
+    }
+    let first = ed.buf.line(row).into_owned();
+    let mut joined: Vec<char> = Vec::new();
+    let mut sum = first.len();
+    let mut end = first.last().copied();
+    let mut col = 0;
+    for t in 1..n {
+        let line = ed.buf.line(row + t);
+        let lead = first_non_blank(&line);
+        let rest = &line[lead..];
+        let space = !rest.is_empty() && rest[0] != ')' && sum != 0 && !matches!(end, Some(' ' | '\t'));
+        if space {
+            joined.push(' ');
+        }
+        col = sum;
+        sum += usize::from(space) + rest.len();
+        joined.extend_from_slice(rest);
+        end = rest.last().copied();
+    }
+    let last = row + n - 1;
+    let text: String = joined.iter().collect();
+    ed.splice(Pos::new(row, first.len()), Pos::new(last, ed.buf.line_len(last)), &text);
+    Pos::new(row, col)
+}
+
 impl Engine {
     /// An operator with its motion, object or doubled letter (spec §3.6).
     pub(super) fn exec_operate<B: TextBuf>(
@@ -229,10 +321,73 @@ impl Engine {
                 delete(&mut ed, r)
             }
         };
-        let caret = self.clamped(buf, caret);
-        buf.set_cursor(caret);
-        st.forget_want();
+        self.land_caret(caret, buf, st);
         Outcome::consumed()
+    }
+
+    /// `p` `P` with a count.
+    pub(super) fn exec_put<B: TextBuf>(&mut self, before: bool, count: usize, reg: Option<char>, buf: &mut B, st: &mut BufState) -> Outcome {
+        let reg = self.regs.read(reg).clone();
+        let caret = put(&mut Ed { buf: &mut *buf, hist: &mut st.history }, &reg, before, count.max(1));
+        self.land_caret(caret, buf, st);
+        Outcome::consumed()
+    }
+
+    /// `r{c}` with a count (Vim's `nv_replace()`): fails whole, keeping the
+    /// wanted column, when fewer than N chars remain. The caret ends on the
+    /// last char replaced.
+    pub(super) fn exec_replace<B: TextBuf>(&mut self, ch: char, count: usize, buf: &mut B, st: &mut BufState) -> Outcome {
+        let caret = buf.cursor();
+        let n = count.max(1);
+        if caret.col + n > buf.line_len(caret.row) {
+            return Outcome::consumed();
+        }
+        let mut ed = Ed { buf: &mut *buf, hist: &mut st.history };
+        let end = if ch == '\t' {
+            // Under 'expandtab' Vim runs `{N}r<Tab>` as `{N}R<Tab><Esc>`:
+            // each Tab replaces one char with spaces to the next tab stop.
+            let mut at = caret;
+            for _ in 0..n {
+                let width = TABSTOP - motion::vcol_of(&ed.buf.line(at.row), at.col) % TABSTOP;
+                ed.splice(at, Pos::new(at.row, at.col + 1), &" ".repeat(width));
+                at.col += width;
+            }
+            Pos::new(at.row, at.col - 1)
+        } else {
+            let text: String = std::iter::repeat_n(ch, n).collect();
+            ed.splice(caret, Pos::new(caret.row, caret.col + n), &text);
+            Pos::new(caret.row, caret.col + n - 1)
+        };
+        self.land_caret(end, buf, st);
+        Outcome::consumed()
+    }
+
+    /// `J` with a count (Vim's `nv_join()`); a no-op in a one-line field.
+    /// On the last line `J` fails; a bigger count joins what there is.
+    pub(super) fn exec_join<B: TextBuf>(&mut self, count: usize, buf: &mut B, st: &mut BufState) -> Outcome {
+        if !B::MULTILINE {
+            return Outcome::consumed();
+        }
+        let row = buf.cursor().row;
+        let lines = buf.line_count();
+        let mut n = count.max(2);
+        if row + n > lines {
+            if n <= 2 {
+                return Outcome::consumed();
+            }
+            n = lines - row;
+        }
+        let caret = join_rows(&mut Ed { buf: &mut *buf, hist: &mut st.history }, row, n);
+        self.land_caret(caret, buf, st);
+        Outcome::consumed()
+    }
+
+    /// Puts the caret where a command left it (clamped for the mode) and
+    /// resets the wanted column (Vim's `w_set_curswant = TRUE`).
+    pub(super) fn land_caret<B: TextBuf>(&mut self, at: Pos, buf: &mut B, st: &mut BufState) {
+        let at = self.clamped(buf, at);
+        buf.set_cursor(at);
+        st.forget_want();
     }
 
     /// What an operator acts on, or `None` when its motion or object fails
@@ -311,11 +466,10 @@ impl Engine {
                 None => break,
             }
         }
-        if let Some(at) = landed {
-            let at = self.clamped(buf, at);
-            buf.set_cursor(at);
+        match landed {
+            Some(at) => self.land_caret(at, buf, st),
+            None => st.forget_want(),
         }
-        st.forget_want();
         Outcome::consumed()
     }
 }

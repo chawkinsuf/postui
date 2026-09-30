@@ -373,21 +373,6 @@ pub(crate) fn first_non_blank_fix(line: &[char]) -> usize {
 // Each later task moves one of these into its own module with the real
 // behaviour and deletes it here. Until then its command has no effect.
 impl Engine {
-    /// Task 10 (op.rs).
-    fn exec_put<B: TextBuf>(&mut self, _before: bool, _count: usize, _reg: Option<char>, _buf: &mut B, _st: &mut BufState) -> Outcome {
-        Outcome::consumed()
-    }
-
-    /// Task 10 (op.rs).
-    fn exec_replace<B: TextBuf>(&mut self, _ch: char, _count: usize, _buf: &mut B, _st: &mut BufState) -> Outcome {
-        Outcome::consumed()
-    }
-
-    /// Task 10 (op.rs).
-    fn exec_join<B: TextBuf>(&mut self, _count: usize, _buf: &mut B, _st: &mut BufState) -> Outcome {
-        Outcome::consumed()
-    }
-
     /// Task 11 (visual.rs).
     fn exec_visual<B: TextBuf>(&mut self, _cmd: Cmd, _buf: &mut B, _st: &mut BufState) -> Outcome {
         Outcome::consumed()

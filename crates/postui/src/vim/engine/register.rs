@@ -33,7 +33,6 @@ impl Registers {
 
     /// The register a command named (`None` or `"`: the unnamed one).
     /// Other names never get here: the parser refuses them (spec §3.10).
-    #[allow(dead_code)] // used from Task 10
     pub(crate) fn read(&self, name: Option<char>) -> &Register {
         debug_assert!(matches!(name, None | Some('"')), "register {name:?}");
         &self.unnamed
