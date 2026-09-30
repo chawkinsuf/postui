@@ -697,6 +697,24 @@ fn a_session_entered_in_insert_records_as_i_for_dot() {
     assert_eq!(f.text(), "XXbc", "`i` plus what was typed");
 }
 
+/// Controller ruling (Task 13): a query box never sets `.`, as typing on
+/// Vim's command line never touches the redo buffer.
+#[test]
+fn a_query_box_session_never_records_for_dot() {
+    let mut f = Field::new("abcd", 0);
+    f.keys("x");
+    let (mut query, mut qs) = (LineInput::new(""), BufState::new());
+    f.engine.enter(Start::InsertOnly, Seat::End, Target { buf: &mut OneLineBuf::new(&mut query), state: &mut qs });
+    for ev in [k('w'), k('q'), code(KeyCode::Left), k('z')] {
+        f.engine.handle(ev, Target { buf: &mut OneLineBuf::new(&mut query), state: &mut qs }, &ViewCtx::default());
+    }
+    f.engine.leave(Target { buf: &mut OneLineBuf::new(&mut query), state: &mut qs });
+    assert_eq!(query.text(), "wzq");
+    f.engine.enter(Start::Normal, Seat::Keep, Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
+    f.keys(".");
+    assert_eq!(f.text(), "cd", "`.` still repeats the x");
+}
+
 #[test]
 fn a_mouse_sweep_is_adopted_as_visual_on_release() {
     let mut f = Field::new("abcdef", 0);

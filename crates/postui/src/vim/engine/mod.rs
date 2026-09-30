@@ -347,6 +347,13 @@ impl Engine {
     /// keys typed there are taken as `to`'s kind takes them. Visual, the
     /// pending keys and the unfinished insert record are dropped, so `.`
     /// keeps its old value.
+    ///
+    /// The caller's obligation: `carry` never sees `from`'s text, so it
+    /// cannot remember it for [`Engine::enter`]'s history check. A
+    /// `BufState` carried out of must not be reused if that buffer's text
+    /// may change outside the engine first. Call [`BufState::end_session`]
+    /// on it, or give the buffer a fresh `BufState`, as one-line fields get
+    /// each time they open (spec §3.11).
     pub fn carry<B: TextBuf>(&mut self, from: &mut BufState, to: Target<'_, B>) {
         from.history.commit();
         let inserting = self.mode == Mode::Insert;

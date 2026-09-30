@@ -526,7 +526,15 @@ impl Engine {
     /// (`resumed`) only once something was typed: Vim's `stop_arrow()`
     /// starts a fresh `1i` record only then, and until then `.` keeps what
     /// the key before it closed.
+    ///
+    /// A query box (`Start::InsertOnly`: the `:` line, the palette, the jq
+    /// bar, pickers, filters) never records: typing on Vim's command line
+    /// never touches the redo buffer (controller ruling, Task 13; spec
+    /// §4.2's `i` record is for `Start::Insert`).
     pub(super) fn finish_record(&mut self) {
+        if self.insert_only {
+            return;
+        }
         let Some(s) = &self.insert else { return };
         if s.resumed && s.typed.is_empty() {
             return;
