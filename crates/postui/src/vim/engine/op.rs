@@ -270,8 +270,16 @@ impl Engine {
                 span.no_adjust = moved.no_adjust;
                 Some(span)
             }
-            // Task 8 replaces this arm with `object::select`.
-            Reach::Object { .. } => None,
+            Reach::Object { obj, inner } => match super::object::pick(buf, from, None, obj, inner, count) {
+                Ok(picked) => Some(picked.span()),
+                Err(at) => {
+                    // Vim's `nv_object`: the operator is cancelled, the caret
+                    // stays where the object's walk ended.
+                    buf.set_cursor(self.clamped(buf, at));
+                    st.forget_want();
+                    None
+                }
+            },
         }
     }
 

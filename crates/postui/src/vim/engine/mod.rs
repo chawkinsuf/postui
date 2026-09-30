@@ -17,6 +17,7 @@ mod class_table;
 mod history;
 mod keys;
 mod motion;
+mod object;
 mod op;
 mod register;
 pub mod settings;

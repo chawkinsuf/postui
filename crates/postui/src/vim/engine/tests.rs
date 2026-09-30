@@ -233,6 +233,21 @@ fn dd_on_a_blank_field_is_undone_by_the_engine() {
     assert!(declined(&f.keys("u")), "then the history is empty");
 }
 
+/// A text object that fails cancels its operator: no change and no undo
+/// step, so the next `u` is the app history's. The caret still rests where
+/// Vim's word walk stopped (the corpus checks the column).
+#[test]
+fn a_failed_object_records_no_step() {
+    let mut f = Field::new("foo.bar(baz, qux);", 0);
+    assert_eq!(f.keys("d3aW"), Outcome::Consumed { changed: false, note: None, request: None });
+    assert_eq!((f.text(), f.input.cursor()), ("foo.bar(baz, qux);", 17));
+    assert!(declined(&f.keys("u")));
+    let mut b = Body::new("{\n  x\n}", 1, 2);
+    b.keys("di(");
+    assert_eq!(b.text(), "{\n  x\n}");
+    assert!(!b.state.can_undo());
+}
+
 #[test]
 fn changed_reports_a_text_change_and_edited_remembers_it() {
     let mut f = Field::new("abc", 0);

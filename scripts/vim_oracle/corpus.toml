@@ -192,6 +192,72 @@ keys = ["xxxu", "xxx2u", "xxx3u2<C-r>", "xxx9u", "xxx9u9<C-r>", "dddddu", "xux",
 on = ["words", "json_pretty", "blank_edges"]
 at = ["bol", "mid", "eol"]
 
+# --- text objects with d and y (Task 8) --------------------------------------
+
+[[group]]
+id = "objects/word"
+tier = 1
+keys = ["diw", "daw", "yiw", "yaw", "diW", "daW", "d2iw", "d3iw", "d2aw", "d3aW", "y2aw"]
+on = ["words", "punct", "unicode", "url"]
+at = ["each"]
+
+[[group]]
+id = "objects/word-lines"
+tier = 1
+keys = ["diw", "daw", "d2aw", "d3iw", "daW"]
+on = ["json_pretty", "blank_edges", "json_gaps", "tabs", "json_flat"]
+at = ["bol", "fnb", "mid", "eol", "empty"]
+
+[[group]]
+id = "objects/quote"
+tier = 1
+keys = ["di\"", "da\"", "yi\"", "ya\"", "d2i\"", "di'", "da'", "di`"]
+on = ["quotes", "json_flat", "json_pretty"]
+at = ["each"]
+
+[[group]]
+id = "objects/brace"
+tier = 1
+keys = ["di{", "da{", "diB", "daB", "di}", "2di{", "3di{", "yi{", "ya{"]
+on = ["json_flat", "json_pretty", "brackets_deep"]
+at = ["each"]
+
+[[group]]
+id = "objects/brace-lines"
+tier = 1
+keys = ["di{", "da{", "2di{", "yi{"]
+on = ["json_gaps", "quotes"]
+at = ["bol", "fnb", "mid", "eol", "empty"]
+
+[[group]]
+id = "objects/no-match"
+tier = 1
+keys = ["di{", "da(", "di[", "yi{", "di\"", "da\"", "yi'"]
+on = ["words", "unicode", "blank_edges", "empty"]
+at = ["bol", "fnb", "mid", "eol"]
+
+[[group]]
+id = "objects/brace-undo"
+tier = 1
+keys = ["di{", "da{", "2di{", "di(", "da["]
+suffixes = ["u", "u<C-r>"]
+on = ["json_pretty", "json_gaps", "brackets_deep"]
+at = ["bol", "fnb", "mid", "eol"]
+
+[[group]]
+id = "objects/paren"
+tier = 1
+keys = ["di(", "da(", "dib", "dab", "di)", "2di(", "yi(", "ya)"]
+on = ["brackets_deep", "punct", "json_flat", "quotes"]
+at = ["each"]
+
+[[group]]
+id = "objects/bracket"
+tier = 1
+keys = ["di[", "da[", "di]", "2di[", "yi["]
+on = ["brackets_deep", "json_pretty", "json_flat"]
+at = ["each"]
+
 # --- fuzz atoms (generate.py --fuzz); tier-1 keys only -----------------------
 
 [fuzz]

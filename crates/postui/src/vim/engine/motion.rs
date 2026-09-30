@@ -201,14 +201,12 @@ impl<'b, B: TextBuf> Walk<'b, B> {
     }
 
     /// Vim's `incl()`: `inc()` that skips over a line's NUL.
-    #[allow(dead_code)] // used from Task 8
     pub(crate) fn incl(&mut self) -> i32 {
         let r = self.inc();
         if r >= 1 && self.pos.col > 0 { self.inc() } else { r }
     }
 
     /// Vim's `decl()`: `dec()` that skips over a line's NUL.
-    #[allow(dead_code)] // used from Task 8
     pub(crate) fn decl(&mut self) -> i32 {
         let r = self.dec();
         if r == 1 && self.pos.col > 0 { self.dec() } else { r }
@@ -326,7 +324,6 @@ pub(crate) fn end_word<B: TextBuf>(w: &mut Walk<B>, count: usize, big: bool, mut
 }
 
 /// Vim's `bckend_word()` (Visual `iw` extending backwards).
-#[allow(dead_code)] // used from Task 8
 pub(crate) fn bckend_word<B: TextBuf>(w: &mut Walk<B>, count: usize, big: bool, eol: bool) -> bool {
     for _ in 0..count {
         let sclass = w.cls(big);
@@ -579,11 +576,9 @@ pub(crate) enum MatchFrom {
     Percent,
     /// Vim's `findmatch(NULL, c)`: an opening `c` searches backward for the
     /// unclosed one; a closing `c` searches forward.
-    #[allow(dead_code)] // used from Task 8
     Unclosed(char),
     /// Vim's `findmatchlimit(NULL, c, FM_FORWARD)` with an opening `c`: the
     /// next block that opens after the caret (text objects, spec §3.7).
-    #[allow(dead_code)] // used from Task 8
     NextOpen(char),
 }
 

@@ -23,6 +23,11 @@ pub(crate) fn is_word(c: char) -> bool {
     class(c) >= 2
 }
 
+/// Vim's `VIM_ISWHITE()`: a space or a tab. Text objects and Insert use it.
+pub(crate) fn white(c: char) -> bool {
+    c == ' ' || c == '\t'
+}
+
 /// Vim's `vim_isspace()`: ASCII 9–13 and space. Insert `ctrl+w` uses it.
 #[allow(dead_code)] // used from Task 9
 pub(crate) fn is_space(c: char) -> bool {
@@ -50,6 +55,7 @@ mod tests {
     #[test]
     fn helpers_follow_vim() {
         assert!(!is_space('\u{a0}'), "NBSP: blank for words, not vim_isspace");
+        assert!(white(' ') && white('\t') && !white('\n') && !white('\u{a0}'), "VIM_ISWHITE");
         assert!(is_space('\n') && is_space(' ') && is_space('\t'));
         assert!(is_word('日') && is_word('😀') && is_word('_') && !is_word('-'));
     }
