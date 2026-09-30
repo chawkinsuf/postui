@@ -383,6 +383,21 @@ fn one_line_put_and_join_rules() {
     assert_eq!(f.text(), "", "dd takes the whole field");
 }
 
+/// Vim's `do_join()` decides the space from the previous line's text after
+/// its leading blanks, not from the text joined so far, so a line ending in
+/// a blank followed by an empty line still gets a space before the next.
+/// Vim 9.1 probe: `3J` on ['a ', '', 'b'] gives 'a  b' at 1:3, on
+/// ['a', '  ', 'b'] 'a b' at 1:2. No corpus text has these lines.
+#[test]
+fn join_spaces_follow_the_previous_line_not_the_joined_text() {
+    let mut b = Body::new("a \n\nb", 0, 0);
+    b.keys("3J");
+    assert_eq!((b.text(), b.caret()), ("a  b".to_string(), Pos::new(0, 2)));
+    let mut b = Body::new("a\n  \nb", 0, 0);
+    b.keys("3J");
+    assert_eq!((b.text(), b.caret()), ("a b".to_string(), Pos::new(0, 1)));
+}
+
 #[test]
 fn one_register_is_shared_by_every_buffer() {
     let mut engine = Engine::new();

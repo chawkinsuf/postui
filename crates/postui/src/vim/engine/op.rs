@@ -220,8 +220,7 @@ pub(crate) fn put<B: TextBuf>(ed: &mut Ed<'_, B>, reg: &Register, before: bool, 
 /// looks at the register.
 fn put_chars<B: TextBuf>(ed: &mut Ed<'_, B>, caret: Pos, text: &str, before: bool) -> Pos {
     if text.is_empty() {
-        ed.hist.begin(caret);
-        ed.save_line(caret.row);
+        ed.save_cursor_line(caret);
         return caret;
     }
     let len = ed.buf.line_len(caret.row);
@@ -241,8 +240,7 @@ fn put_chars<B: TextBuf>(ed: &mut Ed<'_, B>, caret: Pos, text: &str, before: boo
 /// but is still an undo step, and the caret goes to column 0.
 pub(crate) fn join_rows<B: TextBuf>(ed: &mut Ed<'_, B>, row: usize, n: usize) -> Pos {
     if n < 2 {
-        ed.hist.begin(ed.buf.cursor());
-        ed.save_line(row);
+        ed.save_cursor_line(Pos::new(row, ed.buf.cursor().col));
         return Pos::new(row, 0);
     }
     let first = ed.buf.line(row).into_owned();
@@ -343,6 +341,9 @@ impl Engine {
             return Outcome::consumed();
         }
         let mut ed = Ed { buf: &mut *buf, hist: &mut st.history };
+        // `nv_replace()` saves the line first, so `r` that puts back the
+        // same chars (`rX` on an X, `r<Space>` on a space) is still a step.
+        ed.save_cursor_line(caret);
         let end = if ch == '\t' {
             // Under 'expandtab' Vim runs `{N}r<Tab>` as `{N}R<Tab><Esc>`:
             // each Tab replaces one char with spaces to the next tab stop.

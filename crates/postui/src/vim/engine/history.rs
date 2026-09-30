@@ -243,6 +243,15 @@ impl<B: TextBuf> Ed<'_, B> {
         self.hist.record(Edit { at: Pos::new(row, 0), removed: line.clone(), inserted: line });
     }
 
+    /// Vim's `u_save_cursor()` before a command that saves its line
+    /// whatever it then changes: opens the step at `caret` and saves that
+    /// line, so the command is an undo step even when the text ends up the
+    /// same (`rX` on an X, `p` of `""`, `J` joining one line).
+    pub(crate) fn save_cursor_line(&mut self, caret: Pos) {
+        self.hist.begin(caret);
+        self.save_line(caret.row);
+    }
+
     /// Deletes every line: Vim's buffer is then `ML_EMPTY`. Vim's
     /// `u_savedel` saves even when the buffer was already one blank line,
     /// so `dd` there is still a step `u` undoes.

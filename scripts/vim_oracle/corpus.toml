@@ -383,10 +383,20 @@ at = ["bol", "mid", "eol"]
 id = "ops/replace-more"
 tier = 1
 keys = ["jrXj", "$jrXj", "j3rXj", "krXk", "jpj", "jPj", "$Jj", "jJj", "jr<Tab>j", "rX", "r<Tab>",
-        "2r<Tab>", "3r<Tab>u", "9Ju", "9Ju<C-r>"]
+        "2r<Tab>", "3r<Tab>u", "9Ju", "9Ju<C-r>", "jJk"]
 on = ["brackets_deep", "json_gaps", "tabs", "json_pretty", "short_last"]
 at = ["bol", "mid", "eol"]
 reg = { text = "Q", type = "v" }
+
+# `r` that puts back the same chars is still an undo step (`nv_replace`
+# saves the line first): [1, 4] on words and [2, 2] on json_pretty are
+# spaces where `r<Tab>` gives one space.
+[[group]]
+id = "ops/replace-same"
+tier = 1
+keys = ["rXrXu", "rXrXu<C-r>", "r<Space>u", "xr<Space>u", "r<Tab>u", "r<Tab>u<C-r>", "2r<Space>u"]
+on = ["words", "json_pretty"]
+at = ["bol", "fnb", "mid", "eol", [1, 4], [2, 2]]
 
 # --- fuzz atoms (generate.py --fuzz); tier-1 keys only -----------------------
 
