@@ -351,6 +351,12 @@ pub(crate) fn first_non_blank(line: &[char]) -> usize {
     line.iter().position(|&c| c != ' ' && c != '\t').unwrap_or(line.len())
 }
 
+/// Vim's `beginline(BL_WHITE | BL_FIX)`: the first non-blank, but never
+/// past the last char of an all-blank line.
+pub(crate) fn first_non_blank_fix(line: &[char]) -> usize {
+    first_non_blank(line).min(line.len().saturating_sub(1))
+}
+
 // ---- Stubs ---------------------------------------------------------------
 // Each later task moves one of these into its own module with the real
 // behaviour and deletes it here. Until then its command has no effect.

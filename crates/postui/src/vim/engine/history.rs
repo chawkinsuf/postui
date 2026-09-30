@@ -4,7 +4,7 @@
 //! and the same code serves every buffer.
 
 use super::buf::{Pos, TextBuf};
-use super::first_non_blank;
+use super::first_non_blank_fix;
 use super::settings::UNDOLEVELS;
 
 /// One splice: `removed` was replaced by `inserted` at `at`.
@@ -172,11 +172,12 @@ fn block<B: TextBuf>(buf: &B, at: Pos, now: &str, then: &str) -> Block {
 /// `u_undoredo()` (undo.c), with each edit read as the block of lines its
 /// `u_save` saved. For the block nearest the top: if the saved caret is in
 /// it (or on a line next to it), the caret goes back there; otherwise to
-/// the first line in it that really changed. Then one line up when that
-/// is just below the saved caret (the `o` case), and the saved column only
-/// on the saved caret's row, else the first non-blank. A row past the end
-/// (redoing a delete of the last lines) becomes the last line's first
-/// non-blank. The golden file's `u` and `u<C-r>` cases pin all of this.
+/// the first line in it that really changed. That row is first clamped to
+/// the buffer (Vim's `check_cursor_lnum()`: redoing a delete of the last
+/// lines leaves it past the end), then goes one line up when it is just
+/// below the saved caret (the `o` case), and takes the saved column only on
+/// the saved caret's row, else `beginline(BL_SOL | BL_FIX)`. The golden
+/// file's `u` and `u<C-r>` cases pin all of this.
 fn undo_redo<B: TextBuf>(buf: &mut B, step: &Step, undo: bool) -> Pos {
     let saved = step.caret_before;
     let order: Vec<&Edit> = if undo { step.edits.iter().rev().collect() } else { step.edits.iter().collect() };
@@ -206,17 +207,13 @@ fn undo_redo<B: TextBuf>(buf: &mut B, step: &Step, undo: bool) -> Pos {
         }
         buf.splice(e.at, end_of(e.at, now), then);
     }
-    let mut row = row.unwrap_or_else(|| buf.cursor().row);
+    let mut row = row.unwrap_or_else(|| buf.cursor().row).min(buf.line_count() - 1);
     if saved.row + 1 == row && row > 0 {
         row -= 1;
     }
-    let last = buf.line_count() - 1;
-    // Past the end (a redo deleted the last lines): the last line's first
-    // non-blank.
-    let (row, col) = if row > last { (last, None) } else { (row, (saved.row == row).then_some(saved.col)) };
     let line = buf.line(row);
-    let col = col.unwrap_or_else(|| first_non_blank(&line));
-    Pos::new(row, col.min(line.len().saturating_sub(1)))
+    let col = if saved.row == row { saved.col.min(line.len().saturating_sub(1)) } else { first_non_blank_fix(&line) };
+    Pos::new(row, col)
 }
 
 /// The one way the engine changes text: splices through the buffer and
@@ -246,10 +243,59 @@ impl<B: TextBuf> Ed<'_, B> {
         self.hist.record(Edit { at: Pos::new(row, 0), removed: line.clone(), inserted: line });
     }
 
-    /// Deletes every line: Vim's buffer is then `ML_EMPTY`.
+    /// Deletes every line: Vim's buffer is then `ML_EMPTY`. Vim's
+    /// `u_savedel` saves even when the buffer was already one blank line,
+    /// so `dd` there is still a step `u` undoes.
     pub(crate) fn empty_buffer(&mut self) {
         let last = self.buf.line_count() - 1;
-        self.splice(Pos::new(0, 0), Pos::new(last, self.buf.line_len(last)), "");
+        if last == 0 && self.buf.line_len(0) == 0 {
+            self.save_line(0);
+        } else {
+            self.splice(Pos::new(0, 0), Pos::new(last, self.buf.line_len(last)), "");
+        }
         self.hist.emptied = true;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::buf::BodyBuf;
+    use super::super::op::delete_lines;
+    use super::*;
+    use edtui::{EditorState, Lines};
+    use ratatui::style::Style;
+
+    /// Review probe P4: a delete of the last line made outside an operator
+    /// (the step saved at a caret above it), undone and redone. Vim clamps
+    /// the landing row before the `o` rule and lands on the saved caret.
+    #[test]
+    fn a_redo_past_the_end_clamps_the_row_before_the_o_rule() {
+        let mut state = EditorState::new(Lines::from("a\n  b\n  c\n  d\n  e"));
+        let mut buf = BodyBuf::new(&mut state, Style::default());
+        let mut hist = History::default();
+        buf.set_cursor(Pos::new(2, 2));
+        hist.begin(Pos::new(2, 2));
+        delete_lines(&mut Ed { buf: &mut buf, hist: &mut hist }, 4, 4);
+        hist.commit();
+        assert_eq!(buf.text(), "a\n  b\n  c\n  d");
+        assert!(hist.undo(&mut buf).is_some());
+        assert_eq!(buf.text(), "a\n  b\n  c\n  d\n  e");
+        assert_eq!(hist.redo(&mut buf), Some(Pos::new(2, 2)), "Vim lands on [3,3]");
+    }
+
+    /// Review probe P1: `dd` in a buffer that is already one blank line is
+    /// still a step, so `u` is not handed to the app history.
+    #[test]
+    fn dd_on_a_blank_buffer_is_still_an_undo_step() {
+        let mut state = EditorState::new(Lines::from(""));
+        let mut buf = BodyBuf::new(&mut state, Style::default());
+        let mut hist = History::default();
+        hist.begin(Pos::new(0, 0));
+        delete_lines(&mut Ed { buf: &mut buf, hist: &mut hist }, 0, 0);
+        hist.commit();
+        assert!(hist.can_undo() && hist.emptied());
+        assert!(!hist.take_changed(), "no text changed");
+        assert_eq!(hist.undo(&mut buf), Some(Pos::new(0, 0)));
+        assert!(!hist.can_undo());
     }
 }

@@ -181,7 +181,7 @@ id = "ops/undo"
 tier = 1
 keys = ["dw", "db", "d$", "dd", "3dd", "dG", "dgg", "dj", "dk", "x", "3x", "X", "D", "d%", "d2w"]
 suffixes = ["u", "u<C-r>"]
-on = ["words", "json_flat", "json_pretty", "blank_edges", "unicode", "json_gaps"]
+on = ["words", "json_flat", "json_pretty", "blank_edges", "unicode", "json_gaps", "empty", "one_char"]
 at = ["bol", "fnb", "eol"]
 
 [[group]]

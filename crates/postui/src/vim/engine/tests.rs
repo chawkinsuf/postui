@@ -223,6 +223,16 @@ fn u_is_declined_once_the_history_is_empty() {
     assert_eq!(f.text(), "bc");
 }
 
+/// Review probe P1: Vim records `dd` on a blank field as a step, so the
+/// next `u` is the engine's, not the app history's.
+#[test]
+fn dd_on_a_blank_field_is_undone_by_the_engine() {
+    let mut f = Field::new("", 0);
+    assert_eq!(f.keys("dd"), Outcome::Consumed { changed: false, note: None, request: None });
+    assert!(!declined(&f.keys("u")));
+    assert!(declined(&f.keys("u")), "then the history is empty");
+}
+
 #[test]
 fn changed_reports_a_text_change_and_edited_remembers_it() {
     let mut f = Field::new("abc", 0);

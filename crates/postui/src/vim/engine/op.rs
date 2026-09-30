@@ -9,7 +9,7 @@ use super::keys::{CaseOp, Op, Reach};
 use super::motion::{self, MKind, MotionCx};
 use super::register::{RegKind, Register};
 use super::settings::SHIFTWIDTH;
-use super::{BufState, Engine, Outcome, first_non_blank};
+use super::{BufState, Engine, Outcome, first_non_blank, first_non_blank_fix};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 /// A motion's or object's reach, `start <= end` in buffer order.
@@ -43,12 +43,6 @@ pub(crate) struct Range {
     pub start: Pos,
     pub end: Pos,
     pub kind: RKind,
-}
-
-/// Vim's `beginline(BL_WHITE | BL_FIX)`: the first non-blank, but never
-/// past the last char of an all-blank line.
-fn first_non_blank_fix(line: &[char]) -> usize {
-    first_non_blank(line).min(line.len().saturating_sub(1))
 }
 
 /// Vim's `inindent(0)` at `at`: nothing but blanks before it on its line.
@@ -207,6 +201,7 @@ impl Engine {
             r.start
         } else if st.history.emptied() {
             // Vim's `op_delete`: nothing to do in a buffer with no lines.
+            st.forget_want();
             return Outcome::consumed();
         } else {
             let mut ed = Ed { buf: &mut *buf, hist: &mut st.history };
