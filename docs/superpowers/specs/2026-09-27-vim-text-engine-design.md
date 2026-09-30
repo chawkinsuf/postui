@@ -1,12 +1,17 @@
 # Vim text engine and Vim conformance tests (piece 3)
 
 Status: approved by the user 2026-09-28, after a section-by-section
-review (drafted 2026-09-27). Nothing is implemented. The user
+review (drafted 2026-09-27). Nothing was implemented at approval. The user
 decided all five open questions on 2026-09-27, each by accepting my
 recommendation (§9). Every decision
 is labelled: `you` (a rule you stated, or one of your 2026-09-27 decisions),
 `mine` (my recommendation, accept or reject), `earlier` (settled during the
 vim-mode rounds but not shown to be yours, so treat it as mine).
+
+Implementation: plan 3a (buffers, the conformance harness, every tier-1
+key, the session edges and the API) is `docs/superpowers/plans/2026-09-29-vim-engine-3a.md`,
+on branch `vim-engine-3a`. Plans 3b (tier-2 first wave) and 3c (second
+wave) follow. The plan lists its deviations from this text.
 
 Companion documents: the key list
 `docs/superpowers/specs/2026-09-27-vim-target-keys.md` (§1–§5 are this
@@ -578,7 +583,9 @@ happen.
   the Insert keys work, and Esc is declined. Which surface
   gets which is piece 4's rule (`earlier`). `Seat` is one of `Keep`,
   `ColZero`, `End` or `FirstNonBlank`, as in field.rs. A session opened in
-  Insert records as an `i` for `.` (`mine`).
+  Insert records as an `i` for `.` (`mine`), but only once something is
+  typed: Esc alone keeps the old `.`, as after Vim's `:startinsert` (`you`,
+  2026-09-30: "match vim"; checked against Vim 9.1).
 - **`carry(t)`**: the caret moves straight from one buffer to another in the
   same event (Tab to the next cell). Insert and Normal carry over. Visual,
   pending keys and the insert record are dropped (field.rs, `earlier`).

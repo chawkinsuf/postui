@@ -1,0 +1,580 @@
+# The Vim conformance corpus (spec §6.2). Each [[group]] expands to
+# keys × suffixes × texts (`on`) × seats (`at`); `python3
+# scripts/vim_oracle/generate.py` runs every case through Vim 9.1 and writes
+# crates/postui/tests/vim_conformance/golden.jsonl.
+#
+# Seats: "bol" "fnb" "mid" "eol" (for each line; texts over 12 lines use the
+# first, middle and last), "each" (every char of every line, texts of at most
+# 12 lines), "empty" (the first empty line), or [row, col] (1-based chars;
+# skipped where the text has no such char). Default: ["bol", "mid", "eol"].
+# Keys use Vim notation; <Name>s must be listed in keys.toml. A case may not
+# end half-typed, uses '.' only after a change, and never holds : Q K q @ ! &
+# or ZZ/ZQ: if a change fails, its typed text runs as Normal commands, so
+# typed text uses harmless letters like X and Y.
+# status = "later" cases are generated and reported but do not fail the test.
+# Budget: the full 3a corpus is about 40,000 cases and 6.75 MB of golden file
+# (measured 2026-09-30, after Task 14); keep it under about 7 MB. Prefer
+# named seats unless the key's result depends on the char under the caret.
+
+[text.words]
+lines = ["foo bar  baz_qux.quux end"]
+
+[text.punct]
+lines = ["foo.bar(baz, qux);"]
+
+[text.url]
+lines = ["https://api.example.com/v1/users?id=42&name=a%20b#top"]
+
+[text.json_flat]
+lines = ['{"a": {"b": 1}, "c": [1, 2], "d": "x y"}']
+
+[text.json_pretty]
+lines = ['{', '  "a": {"b": 1},', '  "c": [1, 2, 3],', '  "d": "hello world"', '}']
+
+[text.json_gaps]
+lines = ['{', '  "a": 1,', '', '  "b": [', '    2', '  ],', '', '', '  "c": 3', '}']
+
+[text.brackets_deep]
+lines = ['f(a[b{c(d)e}f]g)h', '(x [y', '  {z}] w)']
+
+[text.quotes]
+lines = ['say "hi" and "a \"b\" c" or "" then', '"k": "v", "k2": "(v2}"', "x = 'one' + 'two'"]
+
+[text.unicode]
+lines = ["héllo wörld 日本語 😀 x×y a b"]
+
+[text.blank_edges]
+lines = ["", "a", "", "  b  ", ""]
+
+[text.one_char]
+lines = ["x"]
+
+[text.empty]
+lines = [""]
+
+[text.numbers]
+lines = ["id: 41, n: -7, hex: 0x1f, pad: 007"]
+
+[text.tabs]
+lines = ["\tone two", "\t\tthree", "four"]
+
+[text.short_last]
+lines = ["abcdefgh", "abc"]
+
+# --- harness ---------------------------------------------------------------
+
+[[group]]
+id = "harness/smoke"
+tier = 1
+keys = ["<Esc>", "<Esc><Esc>"]
+on = ["words", "punct", "url", "json_flat", "json_pretty", "json_gaps", "brackets_deep",
+      "quotes", "unicode", "blank_edges", "one_char", "empty", "numbers", "tabs"]
+at = ["bol", "mid", "eol"]
+
+[[group]]
+id = "harness/reg"
+tier = 1
+keys = ["<Esc>"]
+on = ["words", "json_pretty"]
+at = [[1, 1]]
+reg = { text = "q\n", type = "V" }
+
+# --- motions (Task 6) --------------------------------------------------------
+
+[[group]]
+id = "motions/hl"
+tier = 1
+keys = ["h", "l", "3h", "3l", "9l", "<Left>", "<Right>", "<BS>", "<Space>", "3<BS>", "3<Space>",
+        "9<Space>", "9<BS>", "lh"]
+on = ["words", "json_flat", "unicode", "json_pretty", "blank_edges", "one_char", "empty", "tabs"]
+at = ["bol", "fnb", "mid", "eol"]
+
+[[group]]
+id = "motions/jk"
+tier = 1
+keys = ["j", "k", "3j", "3k", "9j", "9k", "<Down>", "<Up>", "jj", "jk", "$j", "$jk", "llj", "lljj",
+        "0j", "$jj", "$wk", "$ek", "kbj", "2$k", "9$k", "l2$k", "$%k", "$fzk", "$3bj", "j<C-r>k", "juk"]
+on = ["json_pretty", "json_gaps", "blank_edges", "tabs", "brackets_deep", "words", "json_flat", "unicode",
+      "short_last"]
+at = ["bol", "mid", "eol"]
+
+[[group]]
+id = "motions/line"
+tier = 1
+keys = ["0", "^", "$", "<Home>", "<End>", "2$", "3$", "9$", "$0", "10l0", "$^"]
+on = ["words", "json_flat", "json_pretty", "blank_edges", "tabs", "unicode"]
+at = ["bol", "fnb", "mid", "eol"]
+
+[[group]]
+id = "motions/file"
+tier = 1
+keys = ["gg", "G", "2G", "2gg", "9G", "9gg", "Gk", "ggj", "3G$", "G$gg"]
+on = ["json_pretty", "json_gaps", "blank_edges", "tabs", "words", "json_flat", "unicode"]
+at = ["bol", "mid", "eol"]
+
+[[group]]
+id = "motions/word"
+tier = 1
+keys = ["w", "b", "e", "W", "B", "E", "3w", "3b", "3e", "2W", "2B", "2E", "9w", "9b", "9e", "ee", "bb"]
+on = ["words", "punct", "unicode", "json_flat"]
+at = ["each"]
+
+[[group]]
+id = "motions/word-lines"
+tier = 1
+keys = ["w", "b", "e", "W", "B", "E", "3w", "3b", "3e", "9w", "9b", "9e"]
+on = ["json_pretty", "blank_edges", "json_gaps", "tabs", "url"]
+at = ["bol", "fnb", "mid", "eol"]
+
+[[group]]
+id = "motions/find"
+tier = 1
+keys = ["f<Space>", "F<Space>", "t<Space>", "T<Space>", "2f<Space>", "2t<Space>", "3F<Space>", "fa",
+        "ta;", "fa;", "fa;;", "fa,", "ta,", "Ta;", "Ta,", "f,;", "t,;", "t,,", "t,2;", ";", ",",
+        "f\"", "t\"", "fz", "2fz", "f<Tab>"]
+on = ["words", "punct", "url", "json_flat", "json_pretty", "blank_edges", "quotes", "unicode", "tabs"]
+at = ["bol", "mid", "eol"]
+
+[[group]]
+id = "motions/percent"
+tier = 1
+keys = ["%", "%%", "l%", "$%", "w%"]
+on = ["json_flat", "brackets_deep", "quotes", "punct"]
+at = ["each"]
+
+[[group]]
+id = "motions/percent-lines"
+tier = 1
+keys = ["%", "%%", "50%", "100%", "1%", "200%"]
+on = ["json_pretty", "json_gaps", "blank_edges", "words", "unicode"]
+at = ["bol", "fnb", "mid", "eol"]
+
+# --- operators: delete, yank, undo (Task 7) ----------------------------------
+
+[[group]]
+id = "ops/delete"
+tier = 1
+keys = ["dw", "de", "db", "dW", "dE", "dB", "d$", "d0", "d^", "dh", "dl", "dj", "dk", "dgg", "dG",
+        "d%", "df<Space>", "dt<Space>", "dF<Space>", "dT<Space>", "d<Space>", "d<BS>", "2d<Space>",
+        "d3w", "3dw", "2d2w", "d9w", "d9b", "d9e", "d2j", "d9k", "d;", "dfad;", "d3l", "d9l", "d9h"]
+on = ["words", "json_flat", "json_pretty", "blank_edges", "unicode", "json_gaps"]
+at = ["bol", "fnb", "mid", "eol"]
+
+[[group]]
+id = "ops/delete-lines"
+tier = 1
+keys = ["dd", "2dd", "3dd", "9dd", "D", "2D", "9D", "x", "3x", "9x", "X", "3X", "<Del>", "3<Del>",
+        "xx", "dddd"]
+on = ["words", "json_flat", "json_pretty", "blank_edges", "json_gaps", "one_char", "empty", "tabs", "unicode"]
+at = ["bol", "fnb", "mid", "eol"]
+
+[[group]]
+id = "ops/yank"
+tier = 1
+keys = ["yw", "ye", "yb", "y$", "y0", "y^", "yj", "yk", "yy", "2yy", "9yy", "Y", "yG", "ygg", "y%",
+        "yfa", "yta", "yFa", "yTa", "y3w", "yl", "yh"]
+on = ["words", "json_flat", "json_pretty", "blank_edges", "unicode"]
+at = ["bol", "fnb", "mid", "eol"]
+
+[[group]]
+id = "ops/undo"
+tier = 1
+keys = ["dw", "db", "d$", "dd", "3dd", "dG", "dgg", "dj", "dk", "x", "3x", "X", "D", "d%", "d2w"]
+suffixes = ["u", "u<C-r>"]
+on = ["words", "json_flat", "json_pretty", "blank_edges", "unicode", "json_gaps", "empty", "one_char"]
+at = ["bol", "fnb", "eol"]
+
+[[group]]
+id = "ops/undo-counts"
+tier = 1
+keys = ["xxxu", "xxx2u", "xxx3u2<C-r>", "xxx9u", "xxx9u9<C-r>", "dddddu", "xux", "xuxu<C-r>",
+        "xu<C-r><C-r>", "u", "<C-r>"]
+on = ["words", "json_pretty", "blank_edges"]
+at = ["bol", "mid", "eol"]
+
+# --- text objects with d and y (Task 8) --------------------------------------
+
+[[group]]
+id = "objects/word"
+tier = 1
+keys = ["diw", "daw", "yiw", "yaw", "diW", "daW", "d2iw", "d3iw", "d2aw", "d3aW", "y2aw"]
+on = ["words", "punct", "unicode", "url"]
+at = ["each"]
+
+[[group]]
+id = "objects/word-lines"
+tier = 1
+keys = ["diw", "daw", "d2aw", "d3iw", "daW"]
+on = ["json_pretty", "blank_edges", "json_gaps", "tabs", "json_flat"]
+at = ["bol", "fnb", "mid", "eol", "empty"]
+
+[[group]]
+id = "objects/quote"
+tier = 1
+keys = ["di\"", "da\"", "yi\"", "ya\"", "d2i\"", "di'", "da'", "di`"]
+on = ["quotes", "json_flat", "json_pretty"]
+at = ["each"]
+
+[[group]]
+id = "objects/brace"
+tier = 1
+keys = ["di{", "da{", "diB", "daB", "di}", "2di{", "3di{", "yi{", "ya{"]
+on = ["json_flat", "json_pretty", "brackets_deep"]
+at = ["each"]
+
+[[group]]
+id = "objects/brace-lines"
+tier = 1
+keys = ["di{", "da{", "2di{", "yi{"]
+on = ["json_gaps", "quotes"]
+at = ["bol", "fnb", "mid", "eol", "empty"]
+
+[[group]]
+id = "objects/no-match"
+tier = 1
+keys = ["di{", "da(", "di[", "yi{", "di\"", "da\"", "yi'"]
+on = ["words", "unicode", "blank_edges", "empty"]
+at = ["bol", "fnb", "mid", "eol"]
+
+[[group]]
+id = "objects/brace-undo"
+tier = 1
+keys = ["di{", "da{", "2di{", "di(", "da["]
+suffixes = ["u", "u<C-r>"]
+on = ["json_pretty", "json_gaps", "brackets_deep"]
+at = ["bol", "fnb", "mid", "eol"]
+
+[[group]]
+id = "objects/paren"
+tier = 1
+keys = ["di(", "da(", "dib", "dab", "di)", "2di(", "yi(", "ya)"]
+on = ["brackets_deep", "punct", "json_flat", "quotes"]
+at = ["each"]
+
+[[group]]
+id = "objects/bracket"
+tier = 1
+keys = ["di[", "da[", "di]", "2di[", "yi["]
+on = ["brackets_deep", "json_pretty", "json_flat"]
+at = ["each"]
+
+# --- Insert and change (Task 9) ----------------------------------------------
+
+[[group]]
+id = "insert/enter"
+tier = 1
+keys = ["iX<Esc>", "aX<Esc>", "IX<Esc>", "AX<Esc>", "oX<Esc>", "OX<Esc>", "i<Esc>", "a<Esc>", "I<Esc>",
+        "A<Esc>", "o<Esc>", "O<Esc>", "iab", "aX", "AX<CR>", "iX<CR>Y<Esc>", "A<CR><Esc>", "O<CR><Esc>",
+        "i<CR><CR><Esc>", "a<Space><Esc>", "oX<CR>Y<Esc>", "iX<C-[>", "o<Esc>k", "O<Esc>j", "A<CR><Esc>k"]
+on = ["words", "json_flat", "json_pretty", "blank_edges", "unicode", "tabs", "empty", "one_char"]
+at = ["bol", "fnb", "mid", "eol"]
+
+[[group]]
+id = "insert/keys"
+tier = 1
+keys = ["i<BS><Esc>", "a<BS><BS><Esc>", "A<C-w><Esc>", "A<C-u><Esc>", "iab<C-w><Esc>", "iab<C-u><Esc>",
+        "iab<C-w><C-w><Esc>", "iab<C-u><C-u><Esc>", "a<Del><Esc>", "A<Del><Esc>", "i<C-h><Esc>",
+        "iX<Left>Y<Esc>", "iX<Right>Y<Esc>", "iX<Home>Y<Esc>", "iX<End>Y<Esc>", "iX<Up>Y<Esc>",
+        "iX<Down>Y<Esc>", "o<Tab>x<Esc>", "i<Tab><Esc>", "A<Tab><Tab>x<Esc>", "I<C-u>x<Esc>",
+        "A<CR><BS><Esc>", "o<BS><Esc>", "A<C-w><C-w><C-w><Esc>", "A <C-w><Esc>", "iX<Left><BS><Esc>",
+        "A<CR>x<Up>y<Esc>", "o<Up><Esc>", "A foo <C-w><C-w><Esc>",
+        "iab<Left>X<C-w><Esc>", "iab<Left><C-w><Esc>", "iab<Left><Left><Left>X<C-w><Esc>",
+        "i<Left>X<C-w><Esc>", "iX<End>Y<C-w><Esc>", "iX<End>Y<C-u><Esc>", "iX<Down>Y<C-w><Esc>",
+        "iX<Down><End>Y<C-u><Esc>", "iX<Up>Y<C-w><Esc>", "i<BS>X<C-w><Esc>", "iX<BS><BS>Y<C-w><Esc>"]
+on = ["words", "json_flat", "json_pretty", "blank_edges", "tabs", "unicode"]
+at = ["bol", "fnb", "mid", "eol"]
+
+[[group]]
+id = "ops/change"
+tier = 1
+keys = ["cwX<Esc>", "ceX<Esc>", "cbX<Esc>", "cWX<Esc>", "c$X<Esc>", "c0X<Esc>", "c^X<Esc>", "cjX<Esc>",
+        "ckX<Esc>", "ccX<Esc>", "cc<Esc>", "3ccX<Esc>", "CX<Esc>", "C<Esc>", "sX<Esc>", "3sX<Esc>",
+        "SX<Esc>", "c2wX<Esc>", "2cwX<Esc>", "c3eX<Esc>", "cfaX<Esc>", "cFaX<Esc>", "ct<Space>X<Esc>",
+        "cT<Space>X<Esc>", "c%X<Esc>", "cGX<Esc>", "cw<Esc>", "c<Space>X<Esc>"]
+on = ["words", "json_flat", "json_pretty", "blank_edges", "unicode", "tabs"]
+at = ["bol", "fnb", "mid", "eol"]
+
+[[group]]
+id = "ops/change-cw"
+tier = 1
+keys = ["cwX<Esc>", "cWX<Esc>", "c2wX<Esc>", "c2WX<Esc>", "cw<Esc>"]
+on = ["words", "punct", "url", "unicode"]
+at = ["each"]
+
+[[group]]
+id = "objects/change"
+tier = 1
+keys = ["ciwX<Esc>", "cawX<Esc>", "ci\"X<Esc>", "ca\"X<Esc>", "ci{X<Esc>", "ca{X<Esc>", "ci{<Esc>",
+        "ci(X<Esc>", "ci[X<Esc>", "2ci{X<Esc>", "ci'X<Esc>"]
+on = ["json_flat", "json_pretty", "brackets_deep", "quotes", "json_gaps"]
+at = ["bol", "fnb", "mid", "eol"]
+
+[[group]]
+id = "insert/undo"
+tier = 1
+keys = ["iX<Esc>", "aX<Esc>", "IX<Esc>", "AX<Esc>", "AX<CR>Y<Esc>", "oX<Esc>", "OX<Esc>", "cwX<Esc>",
+        "ccX<Esc>", "CX<Esc>", "sX<Esc>", "SX<Esc>", "ci{X<Esc>", "iX<Left>Y<Esc>", "A<C-w><Esc>",
+        "2ccX<Esc>", "cjX<Esc>", "ckX<Esc>"]
+suffixes = ["u", "u<C-r>", "uu"]
+on = ["words", "json_pretty", "blank_edges"]
+at = ["bol", "fnb", "eol"]
+
+# --- put, replace, join (Task 10) --------------------------------------------
+
+[[group]]
+id = "ops/put-char"
+tier = 1
+keys = ["p", "P", "2p", "3P", "pp", "pu", "pu<C-r>", "Pu", "Pu<C-r>"]
+on = ["words", "json_flat", "json_pretty", "blank_edges", "empty", "one_char", "unicode"]
+at = ["bol", "fnb", "mid", "eol"]
+reg = { text = "Q", type = "v" }
+
+[[group]]
+id = "ops/put-line"
+tier = 1
+keys = ["p", "P", "2p", "3P", "pp", "pu", "pu<C-r>", "Pu", "Pu<C-r>"]
+on = ["words", "json_flat", "json_pretty", "blank_edges", "unicode", "empty", "one_char"]
+at = ["bol", "fnb", "mid", "eol"]
+reg = { text = "  q\n", type = "V" }
+
+[[group]]
+id = "ops/put-multi"
+tier = 1
+keys = ["p", "P", "2p", "pu"]
+on = ["words", "json_pretty", "blank_edges", "empty"]
+at = ["bol", "mid", "eol"]
+reg = { text = "a\nb", type = "v" }
+
+# The unnamed register holds "" (as the engine's does at start): Vim's
+# `do_put` still saves the line for undo and resets the wanted column.
+[[group]]
+id = "ops/put-empty"
+tier = 1
+keys = ["p", "P", "3p", "pu", "Pu<C-r>", "jPj", "pjuj", "xpuu"]
+on = ["words", "short_last", "brackets_deep", "blank_edges", "empty"]
+at = ["bol", "mid", "eol"]
+
+[[group]]
+id = "ops/yank-put"
+tier = 1
+keys = ["yyp", "yyP", "3yyp", "ywP", "yw$p", "yiwP", "dwwP", "xp", "ddp", "ddP", "Yp", "y$P", "yjp",
+        "yj$p", "2yy3p", "dd2P", "yawp"]
+on = ["words", "json_flat", "json_pretty", "blank_edges", "unicode"]
+at = ["bol", "fnb", "mid", "eol"]
+
+[[group]]
+id = "ops/replace"
+tier = 1
+keys = ["rX", "3rX", "9rX", "r<Tab>", "rXu", "3rXu<C-r>", "rX$rY", "r<Space>", "2r日"]
+on = ["words", "json_flat", "json_pretty", "blank_edges", "unicode", "empty", "one_char"]
+at = ["bol", "mid", "eol"]
+
+[[group]]
+id = "ops/join"
+tier = 1
+keys = ["J", "3J", "9J", "JJ", "Ju", "Ju<C-r>", "2J", "4J"]
+on = ["json_pretty", "blank_edges", "json_gaps", "tabs", "brackets_deep", "words", "json_flat", "unicode", "quotes"]
+at = ["bol", "mid", "eol"]
+
+# `r`, `p`, `P` and `J` reset the wanted column like any other command, even
+# when the caret stays put (`jrXj` differs from `jj` under a short line);
+# `{N}r<Tab>` is Vim's `{N}R<Tab><Esc>` under 'expandtab'.
+[[group]]
+id = "ops/replace-more"
+tier = 1
+keys = ["jrXj", "$jrXj", "j3rXj", "krXk", "jpj", "jPj", "$Jj", "jJj", "jr<Tab>j", "rX", "r<Tab>",
+        "2r<Tab>", "3r<Tab>u", "9Ju", "9Ju<C-r>", "jJk"]
+on = ["brackets_deep", "json_gaps", "tabs", "json_pretty", "short_last"]
+at = ["bol", "mid", "eol"]
+reg = { text = "Q", type = "v" }
+
+# `r` that puts back the same chars is still an undo step (`nv_replace`
+# saves the line first): [1, 4] on words and [2, 2] on json_pretty are
+# spaces where `r<Tab>` gives one space.
+[[group]]
+id = "ops/replace-same"
+tier = 1
+keys = ["rXrXu", "rXrXu<C-r>", "r<Space>u", "xr<Space>u", "r<Tab>u", "r<Tab>u<C-r>", "2r<Space>u"]
+on = ["words", "json_pretty"]
+at = ["bol", "fnb", "mid", "eol", [1, 4], [2, 2]]
+
+# --- Visual (Task 11) --------------------------------------------------------
+
+[[group]]
+id = "visual/select"
+tier = 1
+keys = ["v", "vl", "vj", "v$", "vw", "ve", "vb", "V", "Vj", "Vk", "vjo", "vllo", "vlloh", "vV", "Vv",
+        "vv", "VV", "v<Esc>", "V<Esc>", "v$j", "vG", "Vgg", "v3l", "v%", "vfa", "vl<Esc>l"]
+on = ["words", "json_pretty", "blank_edges", "json_flat", "unicode", "tabs"]
+at = ["bol", "fnb", "mid", "eol"]
+
+[[group]]
+id = "visual/objects"
+tier = 1
+keys = ["viw", "vaw", "v2iw", "viwiw", "vawaw", "viW", "vi\"", "va\"", "vi\"i\"", "vi{", "va{", "vi{i{",
+        "va{a{", "vi(", "vi[", "Viw", "vlliw", "vhhiw", "v2i{", "vi'"]
+on = ["words", "json_flat", "json_pretty", "brackets_deep", "quotes", "unicode", "blank_edges"]
+at = ["bol", "fnb", "mid", "eol"]
+
+[[group]]
+id = "visual/ops"
+tier = 1
+keys = ["vld", "vjd", "v$d", "Vd", "Vjd", "vlcX<Esc>", "VjcX<Esc>", "vly", "Vy", "vjy", "vlx", "vlX",
+        "vlD", "vlY", "vlCX<Esc>", "vlsX<Esc>", "vlSX<Esc>", "vlRX<Esc>", "vlrX", "VjrX", "vjrX", "VjJ",
+        "vjJ", "VJ", "vJ", "vl~", "vlu", "vlU", "Vj~", "Vj>", "Vj<", "v>", "Vj2>", "V3<", "viwd", "vi{d",
+        "va\"d", "vi{y", "vd", "Vjjd", "Vk~", "VkU"]
+on = ["words", "json_flat", "json_pretty", "blank_edges", "tabs", "unicode"]
+at = ["bol", "fnb", "mid", "eol"]
+
+# Spec §6.2: Visual `u` and `U` get `u` and `u<C-r>` cases too.
+[[group]]
+id = "visual/undo"
+tier = 1
+keys = ["vjd", "v$d", "Vjd", "VjcX<Esc>", "vlrX", "VjJ", "Vj>", "vl~", "vlu", "vlU", "vju", "vjU", "VjU"]
+suffixes = ["u", "u<C-r>"]
+on = ["words", "json_pretty", "blank_edges", "tabs"]
+at = ["bol", "fnb", "eol"]
+
+# A Visual command that leaves the text as it was is still an undo step
+# (Vim saves the lines first): `~` `U` on a `-`, `u` on lowercase text, `<`
+# with no indent, `>` on an empty line, `r` with the same char. `r-` (or
+# `rX` on blank_edges' "a") first makes a real change, so `u` shows which
+# step it undid.
+[[group]]
+id = "visual/undo-same"
+tier = 1
+keys = ["r-v~", "r-vlu", "r-vU", "r-V<", "r-vr-"]
+suffixes = ["u", "u<C-r>"]
+on = ["words"]
+at = ["bol", "fnb", "mid", "eol", [1, 4]]
+
+[[group]]
+id = "visual/undo-same-lines"
+tier = 1
+keys = ["ggjrXjV>", "ggjrXGV<", "ggjrXjv~", "ggjrXGvU"]
+suffixes = ["u", "u<C-r>"]
+on = ["blank_edges"]
+at = ["bol"]
+
+[[group]]
+id = "visual/put-char"
+tier = 1
+keys = ["vlp", "vlP", "Vp", "VP", "viwp", "Vjp", "v$p", "vjp", "vl2p", "ggVGp"]
+on = ["words", "json_pretty", "blank_edges", "one_char"]
+at = ["bol", "fnb", "mid", "eol"]
+reg = { text = "Q", type = "v" }
+
+[[group]]
+id = "visual/put-line"
+tier = 1
+keys = ["vlp", "vlP", "Vp", "VP", "viwp", "Vjp", "v$p", "vjp", "vl2p", "ggVGp"]
+on = ["words", "json_pretty", "blank_edges", "one_char"]
+at = ["bol", "fnb", "mid", "eol"]
+reg = { text = "  q\n", type = "V" }
+
+# Visual `p`/`P` once every line is gone (Vim's ML_EMPTY): nothing to
+# delete, but the put still runs, and no stray empty last line is left.
+[[group]]
+id = "visual/put-emptied"
+tier = 1
+keys = ["VdVp", "Vdvp", "VdVP", "yyVdvp", "ggVGdVp", "ggVGdvp"]
+on = ["words", "json_pretty", "one_char", "empty"]
+at = ["bol"]
+
+# Leaving Visual and the wanted column (Vim's cached w_virtcol): `v`/`V`
+# keep w_curswant, `Esc` rereads w_virtcol, which is recomputed only where
+# the caret moves, in the mode of the moment (a tab's first or last cell).
+[[group]]
+id = "visual/exit-want"
+tier = 1
+keys = ["vj<Esc>k", "vk<Esc>j", "vjk<Esc>j", "v0<Esc>j", "vh<Esc>j", "vlo<Esc>k", "vlo<Esc>j", "vlovk",
+        "vkvj", "vkVVj", "v$vk", "v$<Esc>k", "Vk<Esc>j"]
+on = ["tabs", "short_last", "json_pretty"]
+at = ["bol", "eol", [1, 2], [2, 2], [3, 4], [4, 19]]
+
+# The same cache is recomputed when Insert starts or ends and after any
+# undo or redo, even of a step that changed nothing.
+[[group]]
+id = "visual/virtcol"
+tier = 1
+keys = ["i<Down>", "i<Up>", "i<Esc>i<Down>", "v<Esc>i<Down>", "iX<BS><Esc>j", "a<Left><Esc>j",
+        "vhc<Esc>j", "vh~uj"]
+on = ["tabs"]
+at = [[2, 1], [2, 2]]
+
+[[group]]
+id = "visual/yank-put"
+tier = 1
+keys = ["yiwwviwp", "yiwwviwP$p", "yiwwviwp$p", "yywVp", "yyjVP", "Vyp", "vly$p", "vjyP"]
+on = ["words", "json_pretty", "blank_edges"]
+at = ["bol", "fnb", "mid", "eol"]
+
+# --- dot repeat (Task 12) ----------------------------------------------------
+
+# `{N}.` replaces the stored count, and the replay records that count for
+# the next `.` (`dw3..`). A change that ran sets `.` even when it changed
+# nothing (`x` on an empty line, `rX` on an X). `J` stores the count it
+# joined with (`9Jgg.`).
+[[group]]
+id = "dot/basic"
+tier = 1
+keys = ["x.", "x..", "dw.", "dd.", "ciwX<Esc>w.", "AX<Esc>j.", "oX<Esc>.", "3x.", "3x2.", "d2w.",
+        "2d3w.", "2d3w4.", "rX.", "3rXw.", "J.", "xp.", "ddP.", "vld.", "Vjd.", "vlcZ<Esc>w.",
+        "vlrXw.", "Vj>.", "xu.", "x.u", "x..u", "iab<Left>c<Esc>.", "cwX<Esc>.", "dt<Space>.",
+        "df<Space>;.", "yyp.", "A;<Esc>.", "IX<Esc>j.", "cc<Esc>.", "S  x<Esc>j.", "i<CR><Esc>.",
+        "a<BS><Esc>.", "9rX.", "iX<Left><Esc>.", "dw3..", "x2..", "rX3..", "cwX<Esc>2..", "CX<Esc>j.",
+        "sX<Esc>w.", "3sX<Esc>w.", "xj.", "Dj.", "rXj.", "9Jgg."]
+on = ["words", "json_flat", "json_pretty", "blank_edges", "unicode"]
+at = ["bol", "fnb", "mid", "eol"]
+
+[[group]]
+id = "dot/changes"
+tier = 1
+keys = ["dw", "de", "db", "d$", "dj", "dG", "dd", "3dd", "x", "X", "D", "diw", "daw", "di{", "da\"",
+        "ci{X<Esc>", "cwX<Esc>", "ccX<Esc>", "iX<Esc>", "aX<Esc>", "oX<Esc>", "OX<Esc>", "rX", "J",
+        "vld", "Vjd", "vl~", "Vj<", "vlrX", "vlcX<Esc>", "yyp", "yiwP", "CX<Esc>", "sX<Esc>"]
+suffixes = [".", "u."]
+on = ["words", "json_pretty", "blank_edges"]
+at = ["bol", "fnb", "eol"]
+
+# A Visual `.` reselects the same size from the caret (Vim's `redo_VIsual`):
+# linewise the same line count; charwise one line the same width in virtual
+# columns, more lines the same line count and last-line end column. After
+# `$` the end is the line's end, except that Vim 9.1 computes a one-line
+# `$` repeat as caret column + MAXCOL - 1, which overflows to column 0 once
+# the caret is past virtual column 1 (`v$dlll.`). A linewise replay starts
+# at the caret's column, not column 0 (`V~jl.`). `{N}.` keeps the Visual
+# command's own count, and the replay does not re-record the size. Visual
+# `p` repeats as the Visual `d` it began with, `P` as one into the black-hole
+# register (`yiwwvlPw.`). `Vpj.` puts an empty register over a line (Vim's
+# `setreg('"', '')` holds one empty line). Also spec §6.2's Visual `u`/`U`
+# (the leading `x` satisfies generate.py's `.` lint, which does not count
+# Visual `u`/`U` as changes).
+[[group]]
+id = "dot/visual"
+tier = 1
+keys = ["vlld$.", "vlld$.0.", "vld3.", "vjdj.", "vjlldj.", "vjhd$.", "v$dj.", "v$dlll.", "lv$dj.",
+        "v$jdj.", "v$jhdj.", "vlxj.", "vlDj.", "vlXj.", "vlCX<Esc>j.", "vlSX<Esc>j.", "vlRX<Esc>j.",
+        "vlJj.", "Vj>2.", "vl~j.", "xvlUw.", "v$~0vlu3l.", "xVjUj.", "xvjUw.", "vlcX<Esc>j.j.", "vlpw.",
+        "Vpj.", "vl2pw.", "vlrXj..", "yiwwvlPw.", "yiwwvlpw.", "V~jl.", "VrXjl.", "VJll.", "Vdll.u",
+        "V~ll.u", "Vk~jl."]
+on = ["json_pretty", "blank_edges", "tabs", "unicode", "short_last"]
+at = ["bol", "mid", "eol"]
+
+# `{N}r<Tab>` under 'expandtab' is Vim's `{N}R<Tab><Esc>` (`nv_replace()`),
+# so its `.` is an `R`: it never fails on a short line and types past the
+# end (`3r<Tab>j0.`).
+[[group]]
+id = "dot/replace-tab"
+tier = 1
+keys = ["3r<Tab>j0.", "3r<Tab>j0.u", "3r<Tab>j0.u<C-r>", "r<Tab>j$.", "2r<Tab>j3.", "3r<Tab>j0.k."]
+on = ["short_last", "blank_edges", "tabs"]
+at = ["bol", "mid", "eol"]
+
+# --- fuzz atoms (generate.py --fuzz); tier-1 keys only -----------------------
+
+[fuzz]
+atoms = ["w", "b", "e", "W", "x", "X", "dw", "db", "de", "j", "k", "h", "l", "$", "0", "^",
+         "p", "P", "u", "<C-r>", "ciwX<Esc>", "cwY<Esc>", "3l", "yy", "yiw", "dd", "J",
+         "AY<Esc>", "o<Esc>", "Ox<Esc>", "v$d", "Vjd", "vly", "di{", "da[", "ci\"X<Esc>",
+         "%", "f,", ";", ",", "gg", "G", "rX", "x.", "D", "C<Esc>"]

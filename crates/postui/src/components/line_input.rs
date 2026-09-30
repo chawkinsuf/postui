@@ -29,6 +29,11 @@ pub struct LineInput {
     /// word-by-word (the body editor's word-sweep behavior). Cleared by
     /// any plain caret placement or edit.
     word_anchor: Option<(usize, usize)>,
+    /// The vim engine's Visual selection (piece 3 §3.3): its anchor, in
+    /// chars, and its shape. Paint only, set by `OneLineBuf::show`; kept
+    /// apart from the GUI `anchor` because the engine owns the Visual
+    /// anchor. `handle_key` never reads or writes it.
+    vim_visual: Option<(usize, VisualShape)>,
     /// Snapshots taken before each step, newest last.
     undo: Vec<Snapshot>,
     /// Snapshots undone, newest last; cleared by any new edit.
@@ -61,6 +66,15 @@ enum EditKind {
 /// Most snapshots an input keeps; the app history uses the same figure.
 pub(crate) const HISTORY_CAP: usize = 200;
 
+/// The shape of the vim engine's Visual selection (piece 3 §3.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum VisualShape {
+    /// Inclusive of the char under the caret, Vim's `selection=inclusive`.
+    Char,
+    /// The whole line.
+    Line,
+}
+
 impl LineInput {
     pub fn new(text: &str) -> Self {
         let cursor = text.chars().count();
@@ -69,6 +83,7 @@ impl LineInput {
             cursor,
             anchor: None,
             word_anchor: None,
+            vim_visual: None,
             undo: Vec::new(),
             redo: Vec::new(),
             run: None,
@@ -90,6 +105,48 @@ impl LineInput {
         self.anchor = None;
         self.word_anchor = None;
         self.break_run();
+    }
+
+    /// Sets or clears the vim engine's Visual paint: the anchor (a char
+    /// index) and the shape. The caret is the moving end.
+    pub(crate) fn set_visual(&mut self, visual: Option<(usize, VisualShape)>) {
+        self.vim_visual = visual;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn visual(&self) -> Option<(usize, VisualShape)> {
+        self.vim_visual
+    }
+
+    /// The half-open char span the renderer reverses: the engine's Visual
+    /// span when one is set (the whole text for linewise, anchor..=caret
+    /// for charwise), otherwise [`Self::selection`]. `None` when empty.
+    pub(crate) fn paint_span(&self) -> Option<(usize, usize)> {
+        let len = self.len_chars();
+        let span = match self.vim_visual {
+            None => return self.selection(),
+            Some((_, VisualShape::Line)) => (0, len),
+            Some((anchor, VisualShape::Char)) => {
+                let anchor = anchor.min(len);
+                (anchor.min(self.cursor), (anchor.max(self.cursor) + 1).min(len))
+            }
+        };
+        (span.0 < span.1).then_some(span)
+    }
+
+    /// Replaces chars `start..end` with `text` and leaves the caret after
+    /// it. Records nothing in this input's own history: the vim engine
+    /// keeps its own (piece 3 §3.3). Drops any GUI selection.
+    pub(crate) fn splice_raw(&mut self, start: usize, end: usize, text: &str) {
+        let len = self.len_chars();
+        let start = start.min(len);
+        let end = end.clamp(start, len);
+        let (bs, be) = (self.byte_offset(start), self.byte_offset(end));
+        self.text.replace_range(bs..be, text);
+        self.cursor = start + text.chars().count();
+        self.anchor = None;
+        self.word_anchor = None;
+        self.run = None;
     }
 
     /// Records the state before an edit of `kind`. A same-kind edit
@@ -727,7 +784,7 @@ impl LineInput {
             None => chars.len(),
         };
         let reversed = base.add_modifier(Modifier::REVERSED);
-        let selection = self.selection();
+        let selection = self.paint_span();
         // While a selection is live the reversed range *is* the visual
         // focus; the caret cell hides so it can't dangle outside the
         // selection's edge as a stray reversed cell.
@@ -1574,5 +1631,90 @@ mod tests {
         let line = input.draw_line_windowed(false, &theme, 20);
         let rendered = line_text(&line);
         assert_eq!(rendered, text.chars().take(20).collect::<String>());
+    }
+
+    /// Piece 3 §3.3: the engine's charwise Visual paints anchor..=caret,
+    /// inclusive of the char under the caret (Vim's `selection=inclusive`).
+    #[test]
+    fn engine_visual_char_paints_through_the_caret_char() {
+        let mut input = LineInput::new("abcdef");
+        input.set_cursor(3);
+        input.set_visual(Some((1, VisualShape::Char)));
+        assert_eq!(input.paint_span(), Some((1, 4)));
+        input.set_cursor(0);
+        input.set_visual(Some((1, VisualShape::Char)));
+        assert_eq!(input.paint_span(), Some((0, 2)), "a caret before the anchor");
+    }
+
+    #[test]
+    fn engine_visual_line_paints_the_whole_text() {
+        let mut input = LineInput::new("abc");
+        input.set_cursor(1);
+        input.set_visual(Some((1, VisualShape::Line)));
+        assert_eq!(input.paint_span(), Some((0, 3)));
+        let mut empty = LineInput::new("");
+        empty.set_visual(Some((0, VisualShape::Line)));
+        assert_eq!(empty.paint_span(), None, "nothing to paint on an empty field");
+    }
+
+    #[test]
+    fn engine_visual_renders_reversed_and_clears() {
+        let mut input = LineInput::new("abcd");
+        input.set_cursor(2);
+        input.set_visual(Some((1, VisualShape::Char)));
+        let theme = Theme::dark();
+        let reversed: Vec<bool> = input
+            .draw_line(true, &theme)
+            .spans
+            .iter()
+            .flat_map(|s| s.content.chars().map(move |_| s.style.add_modifier.contains(Modifier::REVERSED)))
+            .collect();
+        assert_eq!(reversed, [false, true, true, false]);
+        input.set_visual(None);
+        assert_eq!(input.visual(), None);
+        assert_eq!(input.paint_span(), None);
+    }
+
+    /// Piece 3 §8.4: the arrows profile never touches the engine's paint,
+    /// and its own shift-selection paints exactly as before.
+    #[test]
+    fn handle_key_never_sets_the_engine_visual() {
+        let mut input = LineInput::new("hello world");
+        for ev in [
+            shifted(KeyCode::Left),
+            shifted(KeyCode::Left),
+            key('x'),
+            code(KeyCode::Home),
+            shifted(KeyCode::End),
+            code(KeyCode::Backspace),
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL | KeyModifiers::SHIFT),
+        ] {
+            input.handle_key(ev);
+            assert_eq!(input.visual(), None);
+            assert_eq!(input.paint_span(), input.selection());
+        }
+    }
+
+    #[test]
+    fn splice_raw_is_char_indexed_and_records_nothing() {
+        let mut input = LineInput::new("héllo wörld");
+        input.splice_raw(1, 2, "e");
+        assert_eq!(input.text(), "hello wörld");
+        assert_eq!(input.cursor(), 2, "the caret lands after the inserted text");
+        input.splice_raw(6, 11, "日本");
+        assert_eq!(input.text(), "hello 日本");
+        assert_eq!(input.cursor(), 8);
+        assert!(!input.edited(), "the engine keeps its own history");
+    }
+
+    #[test]
+    fn splice_raw_drops_a_gui_selection() {
+        let mut input = LineInput::new("abcdef");
+        input.set_cursor(1);
+        input.begin_mouse_selection();
+        input.extend_mouse_selection_to(4);
+        input.splice_raw(0, 0, "x");
+        assert_eq!(input.selection(), None);
+        assert_eq!(input.text(), "xabcdef");
     }
 }

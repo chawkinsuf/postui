@@ -6,6 +6,7 @@ use crate::action::Action;
 use crate::hit::ScrollbarSpec;
 use crate::layout::PaneId;
 use crate::theme::Theme;
+use crate::vim::engine::BodyVisual;
 use edtui::{
     EditorEventHandler, EditorMode, EditorState, EditorTheme, EditorView, LineNumbers, Lines,
 };
@@ -169,6 +170,13 @@ pub struct Editor {
     /// rebuilds the edtui state (and with it the highlight list).
     body_hl_text: String,
     body_hl_marker: Option<ratatui::style::Color>,
+    /// The vim engine's Visual span, written through
+    /// [`crate::vim::engine::BodyBuf`]. Draw puts it at the front of
+    /// `body.highlights`, where edtui gives it priority over the JSON
+    /// colours; `body_hl_visual` is the span currently there. Draw is the
+    /// only writer of `body.highlights`.
+    pub(crate) body_visual: BodyVisual,
+    body_hl_visual: BodyVisual,
     /// The fixed end of an in-progress body selection: planted by a left
     /// click (mouse) or the first shifted motion (keyboard), consumed by
     /// `body_drag_to`/shifted motions to rebuild `body.selection` as the
@@ -297,6 +305,8 @@ impl Default for Editor {
             body: new_body_state(""),
             body_hl_text: String::new(),
             body_hl_marker: None,
+            body_visual: None,
+            body_hl_visual: None,
             body_handler: EditorEventHandler::emacs_mode(),
             body_sel_anchor: None,
             body_word_anchor: None,
@@ -665,6 +675,7 @@ impl Editor {
         // The fresh state has no highlights; force the next draw to relex.
         self.body_hl_text.clear();
         self.body_hl_marker = None;
+        self.body_hl_visual = None;
     }
 
     /// Whether the body parses as JSON. An empty body is vacuously valid:
@@ -2929,6 +2940,19 @@ impl Editor {
                         .set_highlights(json_body_highlights(&self.body.lines, theme));
                     self.body_hl_text = text_now;
                     self.body_hl_marker = Some(theme.accent);
+                    self.body_hl_visual = None;
+                }
+                // The vim Visual span goes first: edtui styles a cell with
+                // the first highlight that contains it.
+                if self.body_hl_visual != self.body_visual {
+                    if self.body_hl_visual.is_some() {
+                        self.body.highlights.remove(0);
+                    }
+                    if let Some((from, to)) = self.body_visual {
+                        let style = Style::default().bg(theme.selection).fg(theme.text);
+                        self.body.highlights.insert(0, edtui::Highlight::new(from, to, style));
+                    }
+                    self.body_hl_visual = self.body_visual;
                 }
                 let mut edtui_theme = EditorTheme::default()
                     .base(Style::default().bg(theme.page).fg(theme.text))
@@ -3610,6 +3634,12 @@ mod tests {
     /// Draws `e` and returns the fg color of the buffer cell holding the
     /// first occurrence of `needle` inside the body area.
     fn body_cell_fg(e: &mut Editor, needle: char) -> ratatui::style::Color {
+        body_cell(e, needle).fg
+    }
+
+    /// Draws `e` and returns the buffer cell holding the first occurrence
+    /// of `needle` inside the body area.
+    fn body_cell(e: &mut Editor, needle: char) -> ratatui::buffer::Cell {
         let theme = Theme::dark();
         let ctx = DrawCtx {
             theme: &theme,
@@ -3631,11 +3661,35 @@ mod tests {
         for y in area.y..area.bottom() {
             for x in area.x..area.right() {
                 if buf[(x, y)].symbol() == needle.to_string() {
-                    return buf[(x, y)].fg;
+                    return buf[(x, y)].clone();
                 }
             }
         }
         panic!("{needle:?} not found in the body area");
+    }
+
+    /// The engine's Visual span draws over the JSON colours, survives an
+    /// edit that relexes them, and gives them back when it ends: the editor
+    /// is the only writer of `body.highlights`.
+    #[test]
+    fn the_vim_visual_span_draws_over_the_json_colours() {
+        let theme = Theme::dark();
+        let mut e = body_editor("{\"kzz\": \"vzz\"}");
+        e.method = Method::Post;
+        assert_eq!(body_cell_fg(&mut e, 'k'), theme.accent, "key colour before Visual");
+        // `"kzz"` is columns 1..=5; the span covers `kz` only.
+        e.body_visual = Some((edtui::Index2::new(0, 2), edtui::Index2::new(0, 3)));
+        let cell = body_cell(&mut e, 'k');
+        assert_eq!((cell.fg, cell.bg), (theme.text, theme.selection), "Visual paints over the key");
+        assert_eq!(body_cell_fg(&mut e, 'v'), theme.success, "outside the span keeps its colour");
+        // An edit relexes the colours; the span stays drawn.
+        e.body.lines = Lines::from("{\"kzz\": \"vzzz\"}");
+        assert_eq!(body_cell(&mut e, 'k').bg, theme.selection, "the span survives a relex");
+        assert_eq!(body_cell_fg(&mut e, 'v'), theme.success);
+        e.body_visual = None;
+        let cell = body_cell(&mut e, 'k');
+        assert_eq!(cell.fg, theme.accent, "the key colour comes back");
+        assert_ne!(cell.bg, theme.selection);
     }
 
     /// edtui repaints the caret cell on top of everything with
