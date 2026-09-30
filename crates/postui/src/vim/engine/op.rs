@@ -5,7 +5,7 @@
 
 use super::buf::{Pos, TextBuf};
 use super::history::Ed;
-use super::keys::{CaseOp, Op, Reach};
+use super::keys::{CaseOp, Cmd, Op, Reach};
 use super::motion::{self, MKind, MotionCx};
 use super::register::{RegKind, Register};
 use super::settings::SHIFTWIDTH;
@@ -188,14 +188,22 @@ impl Engine {
         buf: &mut B,
         st: &mut BufState,
     ) -> Outcome {
-        // Task 9 replaces this with the change operator.
-        if op == Op::Change {
-            return Outcome::consumed();
-        }
         let Some(span) = self.op_span(op, reach, count, buf, st) else {
             return Outcome::consumed();
         };
         let r = range(buf, span, op);
+        if op == Op::Change {
+            let origin = Cmd::Operate { op, reach, count, reg };
+            // Vim's `op_change()`: an empty region (`oap->empty`: exclusive,
+            // start == end) or a buffer with no lines writes no register.
+            let empty = span.kind == MKind::Exclusive && r.kind == RKind::Char && r.start == r.end;
+            if empty || st.history.emptied() {
+                self.change_text(r, origin, buf, st);
+            } else {
+                self.change(r, reg, origin, buf, st);
+            }
+            return Outcome::consumed();
+        }
         let caret = if op == Op::Yank {
             self.regs.write(reg, yank_of(buf, r));
             r.start

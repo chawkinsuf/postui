@@ -254,6 +254,14 @@ fn run_case(case: &Case, input: &[String], buf: Buf, rows: usize) -> Run {
 fn drive<B: TextBuf>(engine: &mut Engine, buf: &mut B, state: &mut BufState, case: &Case, ctx: &ViewCtx) -> Run {
     engine.enter(Start::Normal, Seat::Keep, Target { buf: &mut *buf, state: &mut *state });
     for token in tokens(&case.keys) {
+        // Spec §6.5: the one-line run's first rule (a one-line result) is
+        // meant to skip `o` and `O`, whose one-line behaviour (a no-op,
+        // §5) S tests pin. `o<BS>` or `oX<Esc>u` bring Vim back to one line
+        // and slip through that rule, so a Normal-mode `o`/`O` skips the run
+        // outright.
+        if !B::MULTILINE && engine.mode() == Mode::Normal && !engine.pending() && matches!(token.as_str(), "o" | "O") {
+            return Run::Skipped;
+        }
         let inserting = engine.mode() == Mode::Insert;
         let out = engine.handle(key_event(&token), Target { buf: &mut *buf, state: &mut *state }, ctx);
         // A one-line field hands Insert keys it doesn't own (Tab, Up,

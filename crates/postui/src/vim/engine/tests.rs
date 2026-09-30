@@ -59,6 +59,10 @@ impl Field {
     pub fn text(&self) -> &str {
         self.input.text()
     }
+
+    pub fn col(&self) -> usize {
+        self.input.cursor()
+    }
 }
 
 /// A body buffer with its own engine.
@@ -268,4 +272,99 @@ fn every_edit_goes_through_one_splice_path_and_one_step() {
     assert_eq!(b.state.history.len(), 2);
     b.keys("uu");
     assert_eq!(b.text(), "one two three\nfour");
+}
+
+#[test]
+fn start_insert_types_and_esc_steps_back() {
+    let mut f = Field::start("abc", 3, Start::Insert);
+    f.keys("xy");
+    assert_eq!(f.text(), "abcxy");
+    assert_eq!(f.col(), 5);
+    f.key(esc());
+    assert_eq!(f.engine.mode(), Mode::Normal);
+    assert_eq!(f.col(), 4);
+    assert!(declined(&f.key(esc())), "the second Esc goes to piece 4");
+}
+
+/// Spec §5 and §4.3: `o`/`O` in a one-line field are consumed with no
+/// effect (not declined): no text, no mode change, no undo step, caret kept.
+#[test]
+fn a_one_line_field_has_no_second_line() {
+    for keys in ["o", "O"] {
+        let mut f = Field::new("abc", 1);
+        assert_eq!(f.keys(keys), Outcome::Consumed { changed: false, note: None, request: None }, "{keys}");
+        assert_eq!((f.text(), f.engine.mode(), f.col()), ("abc", Mode::Normal, 1), "{keys}");
+        assert!(!f.state.can_undo(), "{keys}: no undo step");
+    }
+}
+
+#[test]
+fn one_line_insert_declines_the_keys_the_field_does_not_own() {
+    let mut f = Field::start("abc", 3, Start::Insert);
+    for key in [code(KeyCode::Enter), code(KeyCode::Tab), code(KeyCode::BackTab), code(KeyCode::Up), code(KeyCode::Down), ctrl('o')] {
+        assert!(declined(&f.key(key)), "{key:?}");
+        assert_eq!((f.text(), f.engine.mode()), ("abc", Mode::Insert));
+    }
+}
+
+#[test]
+fn insert_only_declines_esc() {
+    let mut f = Field::start("q", 1, Start::InsertOnly);
+    assert!(declined(&f.key(esc())));
+    assert_eq!(f.engine.mode(), Mode::Insert);
+    f.keys("x");
+    assert_eq!(f.text(), "qx");
+}
+
+#[test]
+fn paste_in_insert_is_part_of_the_session() {
+    let mut f = Field::new("ab", 0);
+    f.keys("a");
+    let out = f.engine.paste("XY", Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
+    assert_eq!(out, Outcome::Consumed { changed: true, note: None, request: None });
+    f.keys("Z");
+    f.key(esc());
+    assert_eq!(f.text(), "aXYZb");
+    f.keys("u");
+    assert_eq!(f.text(), "ab", "the paste and the typing are one step");
+}
+
+/// Review focus 4: CRLF, CR and tab in pasted text.
+#[test]
+fn pasted_line_breaks_flatten_in_a_field_and_split_in_the_body() {
+    let mut f = Field::start("", 0, Start::Insert);
+    f.engine.paste("a\r\nb\tc", Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
+    assert_eq!(f.text(), "a b c");
+    let mut f = Field::start("", 0, Start::Insert);
+    f.engine.paste("a\rb\r\n\r\nc", Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
+    assert_eq!(f.text(), "a b c", "a run of breaks is one space");
+    let mut b = Body::new("", 0, 0);
+    b.keys("i");
+    b.engine.paste("x\r\ny\rz", Target { buf: &mut BodyBuf::new(&mut b.ed, Style::default()), state: &mut b.state });
+    assert_eq!(b.text(), "x\ny\nz");
+    assert_eq!(b.caret(), Pos::new(2, 1));
+    b.engine.paste("\tw", Target { buf: &mut BodyBuf::new(&mut b.ed, Style::default()), state: &mut b.state });
+    assert_eq!(b.text(), "x\ny\nz\tw", "a pasted tab stays a tab in the body (no expandtab)");
+}
+
+#[test]
+fn paste_in_normal_is_declined_for_piece_four() {
+    let mut f = Field::new("ab", 0);
+    let out = f.engine.paste("X", Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
+    assert_eq!(out, Outcome::Declined { count: None, keys: vec![] });
+    assert_eq!(f.text(), "ab");
+}
+
+#[test]
+fn a_cursor_key_in_insert_splits_the_undo_step() {
+    let mut f = Field::new("", 0);
+    f.keys("iab");
+    f.key(code(KeyCode::Left));
+    f.keys("X");
+    f.key(esc());
+    assert_eq!(f.text(), "aXb");
+    f.keys("u");
+    assert_eq!(f.text(), "ab");
+    f.keys("u");
+    assert_eq!(f.text(), "");
 }

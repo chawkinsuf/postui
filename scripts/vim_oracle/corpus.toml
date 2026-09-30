@@ -258,6 +258,63 @@ keys = ["di[", "da[", "di]", "2di[", "yi["]
 on = ["brackets_deep", "json_pretty", "json_flat"]
 at = ["each"]
 
+# --- Insert and change (Task 9) ----------------------------------------------
+
+[[group]]
+id = "insert/enter"
+tier = 1
+keys = ["iX<Esc>", "aX<Esc>", "IX<Esc>", "AX<Esc>", "oX<Esc>", "OX<Esc>", "i<Esc>", "a<Esc>", "I<Esc>",
+        "A<Esc>", "o<Esc>", "O<Esc>", "iab", "aX", "AX<CR>", "iX<CR>Y<Esc>", "A<CR><Esc>", "O<CR><Esc>",
+        "i<CR><CR><Esc>", "a<Space><Esc>", "oX<CR>Y<Esc>", "iX<C-[>"]
+on = ["words", "json_flat", "json_pretty", "blank_edges", "unicode", "tabs", "empty", "one_char"]
+at = ["bol", "fnb", "mid", "eol"]
+
+[[group]]
+id = "insert/keys"
+tier = 1
+keys = ["i<BS><Esc>", "a<BS><BS><Esc>", "A<C-w><Esc>", "A<C-u><Esc>", "iab<C-w><Esc>", "iab<C-u><Esc>",
+        "iab<C-w><C-w><Esc>", "iab<C-u><C-u><Esc>", "a<Del><Esc>", "A<Del><Esc>", "i<C-h><Esc>",
+        "iX<Left>Y<Esc>", "iX<Right>Y<Esc>", "iX<Home>Y<Esc>", "iX<End>Y<Esc>", "iX<Up>Y<Esc>",
+        "iX<Down>Y<Esc>", "o<Tab>x<Esc>", "i<Tab><Esc>", "A<Tab><Tab>x<Esc>", "I<C-u>x<Esc>",
+        "A<CR><BS><Esc>", "o<BS><Esc>", "A<C-w><C-w><C-w><Esc>", "A <C-w><Esc>", "iX<Left><BS><Esc>",
+        "A<CR>x<Up>y<Esc>", "o<Up><Esc>", "A foo <C-w><C-w><Esc>"]
+on = ["words", "json_flat", "json_pretty", "blank_edges", "tabs", "unicode"]
+at = ["bol", "fnb", "mid", "eol"]
+
+[[group]]
+id = "ops/change"
+tier = 1
+keys = ["cwX<Esc>", "ceX<Esc>", "cbX<Esc>", "cWX<Esc>", "c$X<Esc>", "c0X<Esc>", "c^X<Esc>", "cjX<Esc>",
+        "ckX<Esc>", "ccX<Esc>", "cc<Esc>", "3ccX<Esc>", "CX<Esc>", "C<Esc>", "sX<Esc>", "3sX<Esc>",
+        "SX<Esc>", "c2wX<Esc>", "2cwX<Esc>", "c3eX<Esc>", "cfaX<Esc>", "cFaX<Esc>", "ct<Space>X<Esc>",
+        "cT<Space>X<Esc>", "c%X<Esc>", "cGX<Esc>", "cw<Esc>", "c<Space>X<Esc>"]
+on = ["words", "json_flat", "json_pretty", "blank_edges", "unicode", "tabs"]
+at = ["bol", "fnb", "mid", "eol"]
+
+[[group]]
+id = "ops/change-cw"
+tier = 1
+keys = ["cwX<Esc>", "cWX<Esc>", "c2wX<Esc>", "c2WX<Esc>", "cw<Esc>"]
+on = ["words", "punct", "url", "unicode"]
+at = ["each"]
+
+[[group]]
+id = "objects/change"
+tier = 1
+keys = ["ciwX<Esc>", "cawX<Esc>", "ci\"X<Esc>", "ca\"X<Esc>", "ci{X<Esc>", "ca{X<Esc>", "ci{<Esc>",
+        "ci(X<Esc>", "ci[X<Esc>", "2ci{X<Esc>", "ci'X<Esc>"]
+on = ["json_flat", "json_pretty", "brackets_deep", "quotes", "json_gaps"]
+at = ["bol", "fnb", "mid", "eol"]
+
+[[group]]
+id = "insert/undo"
+tier = 1
+keys = ["iX<Esc>", "aX<Esc>", "IX<Esc>", "AX<Esc>", "AX<CR>Y<Esc>", "oX<Esc>", "OX<Esc>", "cwX<Esc>",
+        "ccX<Esc>", "CX<Esc>", "sX<Esc>", "SX<Esc>", "ci{X<Esc>", "iX<Left>Y<Esc>", "A<C-w><Esc>"]
+suffixes = ["u", "u<C-r>", "uu"]
+on = ["words", "json_pretty", "blank_edges"]
+at = ["bol", "fnb", "eol"]
+
 # --- fuzz atoms (generate.py --fuzz); tier-1 keys only -----------------------
 
 [fuzz]

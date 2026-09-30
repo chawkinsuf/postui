@@ -18,7 +18,6 @@ pub(crate) fn class(c: char) -> u32 {
 }
 
 /// Vim's `vim_iswordc()`: part of a keyword.
-#[allow(dead_code)] // used from Task 9
 pub(crate) fn is_word(c: char) -> bool {
     class(c) >= 2
 }
@@ -29,7 +28,6 @@ pub(crate) fn white(c: char) -> bool {
 }
 
 /// Vim's `vim_isspace()`: ASCII 9–13 and space. Insert `ctrl+w` uses it.
-#[allow(dead_code)] // used from Task 9
 pub(crate) fn is_space(c: char) -> bool {
     matches!(c, '\t'..='\r' | ' ')
 }

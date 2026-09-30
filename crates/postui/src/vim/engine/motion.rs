@@ -771,10 +771,12 @@ impl Engine {
     }
 
     /// Whether a caret at `at` on a tab sits on its last cell (Vim's
-    /// `getvcol`: in Normal always, in Visual past the anchor).
+    /// `getvcol`: in Normal always, in Visual past the anchor, in Insert
+    /// never).
     fn tab_end(&self, at: Pos) -> bool {
         match (self.mode, self.visual) {
             (Mode::Visual(_), Some(anchor)) => at > anchor,
+            (Mode::Insert, _) => false,
             _ => true,
         }
     }

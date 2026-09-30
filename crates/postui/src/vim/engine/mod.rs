@@ -15,6 +15,7 @@ pub mod buf;
 mod class;
 mod class_table;
 mod history;
+mod insert;
 mod keys;
 mod motion;
 mod object;
@@ -27,7 +28,7 @@ mod tests;
 pub use buf::{BodyBuf, GuiSel, OneLineBuf, Paint, Pos, TextBuf};
 pub use register::{RegKind, Register, Registers};
 
-use keys::{Cmd, InsertHow, Key, ParseCx, Pending, Step};
+use keys::{Cmd, InsertHow, ParseCx, Pending, Step};
 use ratatui::crossterm::event::KeyEvent;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -197,6 +198,10 @@ pub struct Engine {
     regs: Registers,
     /// The last `f` `t` `F` `T` (global, as in Vim), for `;` and `,`.
     last_find: Option<(keys::FindKind, char)>,
+    /// The open Insert session; `None` outside Insert.
+    insert: Option<insert::Session>,
+    /// `Start::InsertOnly` (spec §4.2): Esc is declined.
+    insert_only: bool,
 }
 
 impl Engine {
@@ -242,6 +247,8 @@ impl Engine {
         self.pending.clear();
         self.visual = None;
         self.mode = if start == Start::Normal { Mode::Normal } else { Mode::Insert };
+        self.insert_only = start == Start::InsertOnly;
+        self.insert = None;
         let caret = buf.cursor();
         let row = caret.row.min(buf.line_count() - 1);
         let len = buf.line_len(row);
@@ -253,6 +260,10 @@ impl Engine {
         };
         buf.set_cursor(Pos::new(row, col));
         self.clamp(buf);
+        if self.mode == Mode::Insert {
+            // A session opened in Insert records as an `i` for `.` (§4.2).
+            self.insert = Some(insert::Session::new(buf.cursor(), Cmd::Insert { how: InsertHow::Before, count: 0 }));
+        }
         self.paint(buf);
     }
 
@@ -362,17 +373,6 @@ pub(crate) fn first_non_blank_fix(line: &[char]) -> usize {
 // Each later task moves one of these into its own module with the real
 // behaviour and deletes it here. Until then its command has no effect.
 impl Engine {
-    /// Task 9 (insert.rs).
-    fn exec_insert<B: TextBuf>(&mut self, _how: InsertHow, _count: usize, _buf: &mut B, _st: &mut BufState) {}
-
-    /// Task 9 (insert.rs). Until then Esc leaves Insert and nothing types.
-    fn insert_key<B: TextBuf>(&mut self, ev: KeyEvent, _buf: &mut B, _st: &mut BufState) -> Outcome {
-        if Key::of(&ev) == Key::Esc {
-            self.mode = Mode::Normal;
-        }
-        Outcome::consumed()
-    }
-
     /// Task 10 (op.rs).
     fn exec_put<B: TextBuf>(&mut self, _before: bool, _count: usize, _reg: Option<char>, _buf: &mut B, _st: &mut BufState) -> Outcome {
         Outcome::consumed()
