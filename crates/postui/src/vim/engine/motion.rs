@@ -82,7 +82,7 @@ pub(crate) struct MotionCx {
 }
 
 /// Display width of `c` at virtual column `vcol` (tabs run to the next stop).
-fn char_width(c: char, vcol: usize) -> usize {
+pub(crate) fn char_width(c: char, vcol: usize) -> usize {
     if c == '\t' { TABSTOP - vcol % TABSTOP } else { c.width().unwrap_or(0).max(1) }
 }
 

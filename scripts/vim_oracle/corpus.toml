@@ -12,8 +12,8 @@
 # or ZZ/ZQ: if a change fails, its typed text runs as Normal commands, so
 # typed text uses harmless letters like X and Y.
 # status = "later" cases are generated and reported but do not fail the test.
-# Budget: the full 3a corpus is about 34,000 cases and 5.5 MB of golden file
-# (measured 2026-09-29); keep it under about 6 MB. Prefer named seats unless
+# Budget: the full 3a corpus is about 39,600 cases and 6.5 MB of golden file
+# (measured 2026-09-29, after Task 12); keep it under about 7 MB. Prefer named seats unless
 # the key's result depends on the char under the caret.
 
 [text.words]
@@ -422,7 +422,7 @@ tier = 1
 keys = ["vld", "vjd", "v$d", "Vd", "Vjd", "vlcX<Esc>", "VjcX<Esc>", "vly", "Vy", "vjy", "vlx", "vlX",
         "vlD", "vlY", "vlCX<Esc>", "vlsX<Esc>", "vlSX<Esc>", "vlRX<Esc>", "vlrX", "VjrX", "vjrX", "VjJ",
         "vjJ", "VJ", "vJ", "vl~", "vlu", "vlU", "Vj~", "Vj>", "Vj<", "v>", "Vj2>", "V3<", "viwd", "vi{d",
-        "va\"d", "vi{y", "vd", "Vjjd"]
+        "va\"d", "vi{y", "vd", "Vjjd", "Vk~", "VkU"]
 on = ["words", "json_flat", "json_pretty", "blank_edges", "tabs", "unicode"]
 at = ["bol", "fnb", "mid", "eol"]
 
@@ -508,6 +508,58 @@ tier = 1
 keys = ["yiwwviwp", "yiwwviwP$p", "yiwwviwp$p", "yywVp", "yyjVP", "Vyp", "vly$p", "vjyP"]
 on = ["words", "json_pretty", "blank_edges"]
 at = ["bol", "fnb", "mid", "eol"]
+
+# --- dot repeat (Task 12) ----------------------------------------------------
+
+# `{N}.` replaces the stored count, and the replay records that count for
+# the next `.` (`dw3..`). A change that ran sets `.` even when it changed
+# nothing (`x` on an empty line, `rX` on an X). `J` stores the count it
+# joined with (`9Jgg.`).
+[[group]]
+id = "dot/basic"
+tier = 1
+keys = ["x.", "x..", "dw.", "dd.", "ciwX<Esc>w.", "AX<Esc>j.", "oX<Esc>.", "3x.", "3x2.", "d2w.",
+        "2d3w.", "2d3w4.", "rX.", "3rXw.", "J.", "xp.", "ddP.", "vld.", "Vjd.", "vlcZ<Esc>w.",
+        "vlrXw.", "Vj>.", "xu.", "x.u", "x..u", "iab<Left>c<Esc>.", "cwX<Esc>.", "dt<Space>.",
+        "df<Space>;.", "yyp.", "A;<Esc>.", "IX<Esc>j.", "cc<Esc>.", "S  x<Esc>j.", "i<CR><Esc>.",
+        "a<BS><Esc>.", "9rX.", "iX<Left><Esc>.", "dw3..", "x2..", "rX3..", "cwX<Esc>2..", "CX<Esc>j.",
+        "sX<Esc>w.", "3sX<Esc>w.", "xj.", "Dj.", "rXj.", "9Jgg."]
+on = ["words", "json_flat", "json_pretty", "blank_edges", "unicode"]
+at = ["bol", "fnb", "mid", "eol"]
+
+[[group]]
+id = "dot/changes"
+tier = 1
+keys = ["dw", "de", "db", "d$", "dj", "dG", "dd", "3dd", "x", "X", "D", "diw", "daw", "di{", "da\"",
+        "ci{X<Esc>", "cwX<Esc>", "ccX<Esc>", "iX<Esc>", "aX<Esc>", "oX<Esc>", "OX<Esc>", "rX", "J",
+        "vld", "Vjd", "vl~", "Vj<", "vlrX", "vlcX<Esc>", "yyp", "yiwP", "CX<Esc>", "sX<Esc>"]
+suffixes = [".", "u."]
+on = ["words", "json_pretty", "blank_edges"]
+at = ["bol", "fnb", "eol"]
+
+# A Visual `.` reselects the same size from the caret (Vim's `redo_VIsual`):
+# linewise the same line count; charwise one line the same width in virtual
+# columns, more lines the same line count and last-line end column. After
+# `$` the end is the line's end, except that Vim 9.1 computes a one-line
+# `$` repeat as caret column + MAXCOL - 1, which overflows to column 0 once
+# the caret is past virtual column 1 (`v$dlll.`). A linewise replay starts
+# at the caret's column, not column 0 (`V~jl.`). `{N}.` keeps the Visual
+# command's own count, and the replay does not re-record the size. Visual
+# `p` repeats as the Visual `d` it began with, `P` as one into the black-hole
+# register (`yiwwvlPw.`). `Vpj.` puts an empty register over a line (Vim's
+# `setreg('"', '')` holds one empty line). Also spec §6.2's Visual `u`/`U`
+# (the leading `x` satisfies generate.py's `.` lint, which does not count
+# Visual `u`/`U` as changes).
+[[group]]
+id = "dot/visual"
+tier = 1
+keys = ["vlld$.", "vlld$.0.", "vld3.", "vjdj.", "vjlldj.", "vjhd$.", "v$dj.", "v$dlll.", "lv$dj.",
+        "v$jdj.", "v$jhdj.", "vlxj.", "vlDj.", "vlXj.", "vlCX<Esc>j.", "vlSX<Esc>j.", "vlRX<Esc>j.",
+        "vlJj.", "Vj>2.", "vl~j.", "xvlUw.", "v$~0vlu3l.", "xVjUj.", "xvjUw.", "vlcX<Esc>j.j.", "vlpw.",
+        "Vpj.", "vl2pw.", "vlrXj..", "yiwwvlPw.", "yiwwvlpw.", "V~jl.", "VrXjl.", "VJll.", "Vdll.u",
+        "V~ll.u", "Vk~jl."]
+on = ["json_pretty", "blank_edges", "tabs", "unicode", "short_last"]
+at = ["bol", "mid", "eol"]
 
 # --- fuzz atoms (generate.py --fuzz); tier-1 keys only -----------------------
 

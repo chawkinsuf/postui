@@ -145,9 +145,9 @@ fn recase(how: CaseOp, c: char) -> char {
     }
 }
 
-/// Visual `~ u U` (and plan 3b's `g~` `gu` `gU`) over `r`; the caret goes
-/// to its start (column 0 for linewise).
-pub(crate) fn recase_range<B: TextBuf>(ed: &mut Ed<'_, B>, how: CaseOp, r: Range) -> Pos {
+/// Visual `~ u U` (and plan 3b's `g~` `gu` `gU`) over `r` (whole rows when
+/// linewise).
+pub(crate) fn recase_range<B: TextBuf>(ed: &mut Ed<'_, B>, how: CaseOp, r: Range) {
     let (start, end) = match r.kind {
         RKind::Char => (r.start, r.end),
         RKind::Line => (Pos::new(r.start.row, 0), Pos::new(r.end.row, ed.buf.line_len(r.end.row))),
@@ -155,7 +155,6 @@ pub(crate) fn recase_range<B: TextBuf>(ed: &mut Ed<'_, B>, how: CaseOp, r: Range
     let text = ed.buf.slice(start, end);
     let new: String = text.chars().map(|c| if c == '\n' { c } else { recase(how, c) }).collect();
     ed.splice(start, end, &new);
-    start
 }
 
 /// Visual `>` `<` over rows `first..=last`, `amount` shiftwidths each;
@@ -267,6 +266,8 @@ pub(crate) fn join_rows<B: TextBuf>(ed: &mut Ed<'_, B>, row: usize, n: usize) ->
 
 impl Engine {
     /// An operator with its motion, object or doubled letter (spec §3.6).
+    /// `false` when its motion or object failed and it did not run (Vim
+    /// then sets no `.`).
     pub(super) fn exec_operate<B: TextBuf>(
         &mut self,
         op: Op,
@@ -275,9 +276,9 @@ impl Engine {
         reg: Option<char>,
         buf: &mut B,
         st: &mut BufState,
-    ) -> Outcome {
+    ) -> bool {
         let Some(span) = self.op_span(op, reach, count, buf, st) else {
-            return Outcome::consumed();
+            return false;
         };
         let r = range(buf, span, op);
         if op == Op::Change {
@@ -290,7 +291,7 @@ impl Engine {
             } else {
                 self.change(r, reg, origin, buf, st);
             }
-            return Outcome::consumed();
+            return true;
         }
         let caret = if op == Op::Yank {
             self.regs.write(reg, yank_of(buf, r));
@@ -298,7 +299,7 @@ impl Engine {
         } else if st.history.emptied() {
             // Vim's `op_delete`: nothing to do in a buffer with no lines.
             st.forget_want();
-            return Outcome::consumed();
+            return true;
         } else {
             let mut ed = Ed { buf: &mut *buf, hist: &mut st.history };
             // Vim's `u_save` runs with the caret on the range start.
@@ -318,25 +319,24 @@ impl Engine {
             }
         };
         self.land_caret(caret, buf, st);
-        Outcome::consumed()
+        true
     }
 
     /// `p` `P` with a count.
-    pub(super) fn exec_put<B: TextBuf>(&mut self, before: bool, count: usize, reg: Option<char>, buf: &mut B, st: &mut BufState) -> Outcome {
+    pub(super) fn exec_put<B: TextBuf>(&mut self, before: bool, count: usize, reg: Option<char>, buf: &mut B, st: &mut BufState) {
         let reg = self.regs.read(reg).clone();
         let caret = put(&mut Ed { buf: &mut *buf, hist: &mut st.history }, &reg, before, count.max(1));
         self.land_caret(caret, buf, st);
-        Outcome::consumed()
     }
 
     /// `r{c}` with a count (Vim's `nv_replace()`): fails whole, keeping the
-    /// wanted column, when fewer than N chars remain. The caret ends on the
-    /// last char replaced.
-    pub(super) fn exec_replace<B: TextBuf>(&mut self, ch: char, count: usize, buf: &mut B, st: &mut BufState) -> Outcome {
+    /// wanted column, when fewer than N chars remain (`false`: no `.`). The
+    /// caret ends on the last char replaced.
+    pub(super) fn exec_replace<B: TextBuf>(&mut self, ch: char, count: usize, buf: &mut B, st: &mut BufState) -> bool {
         let caret = buf.cursor();
         let n = count.max(1);
         if caret.col + n > buf.line_len(caret.row) {
-            return Outcome::consumed();
+            return false;
         }
         let mut ed = Ed { buf: &mut *buf, hist: &mut st.history };
         // `nv_replace()` saves the line first, so `r` that puts back the
@@ -358,27 +358,30 @@ impl Engine {
             Pos::new(caret.row, caret.col + n - 1)
         };
         self.land_caret(end, buf, st);
-        Outcome::consumed()
+        true
     }
 
     /// `J` with a count (Vim's `nv_join()`); a no-op in a one-line field.
     /// On the last line `J` fails; a bigger count joins what there is.
-    pub(super) fn exec_join<B: TextBuf>(&mut self, count: usize, buf: &mut B, st: &mut BufState) -> Outcome {
+    /// Returns the count it joined with, which is what Vim stores for `.`
+    /// (`9J` two lines above the end repeats as `3J`); `None` when it
+    /// failed.
+    pub(super) fn exec_join<B: TextBuf>(&mut self, count: usize, buf: &mut B, st: &mut BufState) -> Option<usize> {
         if !B::MULTILINE {
-            return Outcome::consumed();
+            return None;
         }
         let row = buf.cursor().row;
         let lines = buf.line_count();
         let mut n = count.max(2);
         if row + n > lines {
             if n <= 2 {
-                return Outcome::consumed();
+                return None;
             }
             n = lines - row;
         }
         let caret = join_rows(&mut Ed { buf: &mut *buf, hist: &mut st.history }, row, n);
         self.land_caret(caret, buf, st);
-        Outcome::consumed()
+        Some(n)
     }
 
     /// Puts the caret where a command left it (clamped for the mode) and

@@ -495,3 +495,31 @@ fn a_cursor_key_in_insert_splits_the_undo_step() {
     f.keys("u");
     assert_eq!(f.text(), "");
 }
+
+#[test]
+fn dot_is_global_across_buffers() {
+    let mut engine = Engine::new();
+    let (mut s1, mut s2) = (BufState::new(), BufState::new());
+    let mut url = LineInput::new("aaa bbb");
+    url.set_cursor(0);
+    engine.enter(Start::Normal, Seat::Keep, Target { buf: &mut OneLineBuf::new(&mut url), state: &mut s1 });
+    for ev in [k('c'), k('w'), k('Z'), esc()] {
+        engine.handle(ev, Target { buf: &mut OneLineBuf::new(&mut url), state: &mut s1 }, &ViewCtx::default());
+    }
+    let mut cell = LineInput::new("ccc ddd");
+    cell.set_cursor(0);
+    engine.enter(Start::Normal, Seat::Keep, Target { buf: &mut OneLineBuf::new(&mut cell), state: &mut s2 });
+    engine.handle(k('.'), Target { buf: &mut OneLineBuf::new(&mut cell), state: &mut s2 }, &ViewCtx::default());
+    assert_eq!((url.text(), cell.text()), ("Z bbb", "Z ddd"));
+}
+
+#[test]
+fn dot_is_one_undo_step() {
+    let mut f = Field::new("abcdef", 0);
+    f.keys("2x");
+    let steps = f.state.history.len();
+    f.keys(".");
+    assert_eq!((f.text(), f.state.history.len()), ("ef", steps + 1));
+    f.keys("u");
+    assert_eq!(f.text(), "cdef");
+}

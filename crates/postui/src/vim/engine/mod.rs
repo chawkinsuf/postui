@@ -29,7 +29,8 @@ mod visual;
 pub use buf::{BodyBuf, GuiSel, OneLineBuf, Paint, Pos, TextBuf};
 pub use register::{RegKind, Register, Registers};
 
-use keys::{Cmd, InsertHow, ParseCx, Pending, Step};
+use insert::InsertKey;
+use keys::{Cmd, InsertHow, Op, ParseCx, Pending, Step, VisualOp};
 use ratatui::crossterm::event::KeyEvent;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -208,6 +209,29 @@ impl BufState {
     }
 }
 
+/// The last change, for `.` (spec §3.12): Vim's redo buffer.
+#[derive(Debug, Clone)]
+struct Dot {
+    cmd: Cmd,
+    /// The keys an Insert session typed after `cmd` opened it.
+    insert: Option<Vec<InsertKey>>,
+    /// A Visual command's selection size, replayed from the caret.
+    visual: Option<VisualSize>,
+}
+
+/// How big a Visual selection was, for `.` (Vim's `resel_VIsual_*`).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct VisualSize {
+    pub line: bool,
+    pub rows: usize,
+    /// Charwise, in virtual columns (Vim's `resel_VIsual_vcol`): the width
+    /// on one row, else the last cell of the end on the last row. The end
+    /// on a line's end counts as one cell there.
+    pub cols: usize,
+    /// The wanted column was the line's end (`$`, Vim's `MAXCOL`).
+    pub to_end: bool,
+}
+
 /// The state Vim keeps globally (spec §4.1): the mode, the half-typed
 /// command, registers, `.`, the last find. The app owns one.
 #[derive(Debug, Default)]
@@ -223,6 +247,13 @@ pub struct Engine {
     insert: Option<insert::Session>,
     /// `Start::InsertOnly` (spec §4.2): Esc is declined.
     insert_only: bool,
+    /// The last change, global as in Vim: `.` in another buffer repeats it.
+    dot: Option<Dot>,
+    /// `.` is replaying a Visual command (Vim's `redo_VIsual_busy`), which
+    /// leaves the record as it was.
+    replaying_visual: bool,
+    /// The size of the selection the last Visual operator acted on.
+    last_visual_size: Option<VisualSize>,
 }
 
 impl Engine {
@@ -334,15 +365,39 @@ impl Engine {
 
     /// Runs one complete command.
     fn run<B: TextBuf>(&mut self, cmd: Cmd, buf: &mut B, st: &mut BufState, ctx: &ViewCtx) -> Outcome {
-        match cmd {
+        // What `.` repeats (spec §3.12): a change that ran, even when the
+        // text ends up the same (`x` on an empty line, `rX` on an X), as
+        // Vim's `prep_redo()` runs once the command is under way. A change
+        // that fails (its motion, `r` past the end, `J` on the last line)
+        // sets nothing. A change that opens Insert records when the session
+        // ends (`finish_record`).
+        let mut record = None;
+        let out = match cmd {
             Cmd::Move { motion, count } => {
                 self.exec_move(motion, count, buf, st);
                 Outcome::consumed()
             }
-            Cmd::Operate { op, reach, count, reg } => self.exec_operate(op, reach, count, reg, buf, st),
-            Cmd::Put { before, count, reg } => self.exec_put(before, count, reg, buf, st),
-            Cmd::Replace { ch, count } => self.exec_replace(ch, count, buf, st),
-            Cmd::Join { count } => self.exec_join(count, buf, st),
+            Cmd::Operate { op, reach, count, reg } => {
+                if self.exec_operate(op, reach, count, reg, buf, st) && op != Op::Yank {
+                    record = Some(cmd);
+                }
+                Outcome::consumed()
+            }
+            Cmd::Put { before, count, reg } => {
+                self.exec_put(before, count, reg, buf, st);
+                record = Some(cmd);
+                Outcome::consumed()
+            }
+            Cmd::Replace { ch, count } => {
+                if self.exec_replace(ch, count, buf, st) {
+                    record = Some(cmd);
+                }
+                Outcome::consumed()
+            }
+            Cmd::Join { count } => {
+                record = self.exec_join(count, buf, st).map(|count| Cmd::Join { count });
+                Outcome::consumed()
+            }
             Cmd::Insert { how, count } => {
                 self.exec_insert(how, count, buf, st);
                 Outcome::consumed()
@@ -351,9 +406,102 @@ impl Engine {
             Cmd::Redo(count) => self.exec_undo(count, true, buf, st),
             Cmd::Repeat(count) => self.exec_repeat(count, buf, st, ctx),
             Cmd::VisualStart(_) | Cmd::VisualSwap | Cmd::VisualExit | Cmd::VisualObject { .. } | Cmd::VisualOp { .. } => {
+                if let Cmd::VisualOp { op, .. } = cmd
+                    && !matches!(op, VisualOp::Yank | VisualOp::YankLines)
+                {
+                    record = Some(cmd);
+                }
                 self.exec_visual(cmd, buf, st)
             }
+        };
+        if let Some(cmd) = record
+            && self.mode != Mode::Insert
+        {
+            self.remember(cmd, None);
         }
+        out
+    }
+
+    /// Remembers a finished change for `.`. A Visual replay leaves the
+    /// record alone (Vim's `redo_VIsual_busy`); any other replay records
+    /// itself again, so the count `{N}.` gave it stays for the next `.`.
+    fn remember(&mut self, cmd: Cmd, insert: Option<Vec<InsertKey>>) {
+        if self.replaying_visual {
+            return;
+        }
+        let visual = if matches!(cmd, Cmd::VisualOp { .. }) { self.last_visual_size } else { None };
+        self.dot = Some(Dot { cmd, insert, visual });
+    }
+
+    /// `.` with an optional new count (spec §3.12, Vim's `start_redo()`):
+    /// one undo step, since `handle` commits once after it.
+    fn exec_repeat<B: TextBuf>(&mut self, count: usize, buf: &mut B, st: &mut BufState, ctx: &ViewCtx) -> Outcome {
+        let Some(dot) = self.dot.clone() else { return Outcome::consumed() };
+        let out = match (dot.visual, dot.cmd) {
+            (Some(size), Cmd::VisualOp { op, count: own, .. }) => {
+                // Vim's `redo_VIsual`: the same size from the caret, and the
+                // command's own count (`{N}.` is ignored).
+                self.replaying_visual = true;
+                self.reselect(size, buf, st);
+                match op {
+                    // Visual `p`/`P` repeat as the delete they begin with
+                    // (`nv_put()`); `P`'s goes to the black-hole register.
+                    VisualOp::Put { before } => {
+                        let kept = before.then(|| self.regs.unnamed().clone());
+                        let out = self.run(Cmd::VisualOp { op: VisualOp::Delete, count: own, reg: None }, buf, st, ctx);
+                        if let Some(reg) = kept {
+                            self.regs.set_unnamed(reg);
+                        }
+                        out
+                    }
+                    _ => self.run(dot.cmd, buf, st, ctx),
+                }
+            }
+            (_, cmd) => self.run(if count > 0 { with_count(cmd, count) } else { cmd }, buf, st, ctx),
+        };
+        if let Some(keys) = dot.insert
+            && self.mode == Mode::Insert
+        {
+            for key in keys {
+                self.insert_input(key, buf, st);
+            }
+            self.end_insert(buf, st, true);
+        }
+        self.replaying_visual = false;
+        out
+    }
+
+    /// Selects the size of a recorded Visual command from the caret (Vim's
+    /// `do_pending_operator()` with `redo_VIsual_busy`): the caret goes down
+    /// `rows - 1` lines. Charwise over one line it goes to virtual column
+    /// `w_virtcol + cols - 1`, over more to `cols`, then `coladvance()`.
+    /// After `$` it goes to the line's end, except that over one line Vim
+    /// computes `w_virtcol + MAXCOL - 1`, which overflows to a negative
+    /// column (so column 0) once `w_virtcol` is past 1.
+    fn reselect<B: TextBuf>(&mut self, size: VisualSize, buf: &mut B, st: &BufState) {
+        let caret = buf.cursor();
+        // Vim's `w_virtcol`, with the tab rule of the mode the `.` was
+        // typed in.
+        let virtcol = match motion::updated_want(buf, caret, motion::WantUpdate::Here, motion::Want::default(), self.tab_rule(st, caret)) {
+            motion::Want::Col(v) => v,
+            motion::Want::End => 0,
+        };
+        let row = (caret.row + size.rows - 1).min(buf.line_count() - 1);
+        let want = match (size.line, size.to_end) {
+            (true, false) => None,
+            (_, true) if !size.line && size.rows == 1 && virtcol > 1 => Some(motion::Want::Col(0)),
+            (_, true) => Some(motion::Want::End),
+            (false, false) if size.rows == 1 => Some(motion::Want::Col(virtcol + size.cols - 1)),
+            (false, false) => Some(motion::Want::Col(size.cols)),
+        };
+        let line = buf.line(row);
+        let col = match want {
+            Some(want) => motion::col_for(&line, want, true),
+            None => caret.col.min(line.len()),
+        };
+        self.visual = Some(caret);
+        self.mode = Mode::Visual(if size.line { Shape::Line } else { Shape::Char });
+        buf.set_cursor(Pos::new(row, col));
     }
 
     /// Review focus 2: a change outside the engine (reload, format, app
@@ -391,6 +539,19 @@ impl Engine {
     }
 }
 
+/// A recorded command with the count `{N}.` gave it. A Visual command
+/// keeps its own (see `exec_repeat`).
+fn with_count(cmd: Cmd, count: usize) -> Cmd {
+    match cmd {
+        Cmd::Operate { op, reach, reg, .. } => Cmd::Operate { op, reach, count, reg },
+        Cmd::Put { before, reg, .. } => Cmd::Put { before, count, reg },
+        Cmd::Replace { ch, .. } => Cmd::Replace { ch, count },
+        Cmd::Join { .. } => Cmd::Join { count },
+        Cmd::Insert { how, .. } => Cmd::Insert { how, count },
+        other => other,
+    }
+}
+
 /// Vim's `beginline(BL_WHITE)`: the first char that is not a space or a
 /// tab; the line's length when there is none.
 pub(crate) fn first_non_blank(line: &[char]) -> usize {
@@ -401,14 +562,4 @@ pub(crate) fn first_non_blank(line: &[char]) -> usize {
 /// past the last char of an all-blank line.
 pub(crate) fn first_non_blank_fix(line: &[char]) -> usize {
     first_non_blank(line).min(line.len().saturating_sub(1))
-}
-
-// ---- Stubs ---------------------------------------------------------------
-// Each later task moves one of these into its own module with the real
-// behaviour and deletes it here. Until then its command has no effect.
-impl Engine {
-    /// Task 12 (mod.rs, `.`).
-    fn exec_repeat<B: TextBuf>(&mut self, _count: usize, _buf: &mut B, _st: &mut BufState, _ctx: &ViewCtx) -> Outcome {
-        Outcome::consumed()
-    }
 }

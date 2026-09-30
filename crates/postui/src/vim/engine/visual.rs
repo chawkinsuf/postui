@@ -5,11 +5,11 @@
 use super::buf::{Pos, TextBuf};
 use super::history::Ed;
 use super::keys::{Cmd, Object, VisualOp};
-use super::motion::{Want, WantUpdate, updated_want};
+use super::motion::{Want, WantUpdate, char_width, updated_want, vcol_of};
 use super::object;
 use super::op::{RKind, Range, delete, join_rows, put, recase_range, shift_rows, yank_of};
 use super::register::RegKind;
-use super::{BufState, Engine, Mode, Outcome, Shape, first_non_blank};
+use super::{BufState, Engine, Mode, Outcome, Shape, VisualSize, first_non_blank};
 
 impl Engine {
     pub(super) fn exec_visual<B: TextBuf>(&mut self, cmd: Cmd, buf: &mut B, st: &mut BufState) -> Outcome {
@@ -101,11 +101,15 @@ impl Engine {
     /// a line's end below which there is a line. Linewise starts at the
     /// anchor's column 0 unless the caret comes first, where Vim leaves the
     /// caret (so `Vy` goes to column 0 and `Vky` keeps the caret's column).
+    /// A `.` replay starts at the anchor itself (the caret `.` was typed
+    /// at): Vim's `redo_VIsual_busy` branch takes `oap->start` from the
+    /// cursor and skips the column-0 rule.
     pub(super) fn visual_range<B: TextBuf>(&self, buf: &B, lines: bool) -> Range {
         let caret = buf.cursor();
         let anchor = self.visual.unwrap_or(caret);
         if lines || self.mode == Mode::Visual(Shape::Line) {
-            let start = Pos::new(anchor.row, 0).min(caret);
+            let from = if self.replaying_visual { anchor } else { Pos::new(anchor.row, 0) };
+            let start = from.min(caret);
             let end = anchor.max(caret);
             return Range { start, end: Pos::new(end.row, 0), kind: RKind::Line };
         }
@@ -129,8 +133,31 @@ impl Engine {
         (anchor.row.min(caret.row), anchor.row.max(caret.row))
     }
 
+    /// The selection's size for `.` (Vim's `resel_VIsual_*`, taken in
+    /// `do_pending_operator()` from the ordered ends before a linewise
+    /// selection is widened). `D` `X` `Y` `C` `S` `R` make it linewise
+    /// (`v_visop()` sets `VIsual_mode = 'V'`).
+    fn visual_size<B: TextBuf>(&self, lines: bool, buf: &B, st: &BufState) -> VisualSize {
+        let caret = buf.cursor();
+        let anchor = self.visual.unwrap_or(caret);
+        let (lo, hi) = if anchor <= caret { (anchor, caret) } else { (caret, anchor) };
+        // `getvvcol()`: the end's last cell, the start's first; a position
+        // on the line's end is one cell there.
+        let hi_line = buf.line(hi.row);
+        let hi_start = vcol_of(&hi_line, hi.col);
+        let end_vcol = hi_start + hi_line.get(hi.col).map_or(1, |&c| char_width(c, hi_start)) - 1;
+        let cols = if hi.row == lo.row { end_vcol + 1 - vcol_of(&buf.line(lo.row), lo.col) } else { end_vcol };
+        VisualSize {
+            line: lines || self.mode == Mode::Visual(Shape::Line),
+            rows: hi.row - lo.row + 1,
+            cols,
+            to_end: st.want(caret) == Some(Want::End),
+        }
+    }
+
     fn visual_op<B: TextBuf>(&mut self, op: VisualOp, count: usize, reg: Option<char>, buf: &mut B, st: &mut BufState) -> Outcome {
         let lines = matches!(op, VisualOp::DeleteLines | VisualOp::YankLines | VisualOp::ChangeLines);
+        self.last_visual_size = Some(self.visual_size(lines, buf, st));
         let r = self.visual_range(buf, lines);
         let (first, last) = self.visual_rows(buf);
         self.leave_visual();
@@ -182,7 +209,10 @@ impl Engine {
                 // Vim's `op_tilde()` saves the lines first, so a case change
                 // that changes nothing is still an undo step.
                 ed.save_rows(r.start, r.start.row, r.end.row);
-                recase_range(&mut ed, how, r)
+                recase_range(&mut ed, how, r);
+                // `op_tilde()` leaves the caret on `oap->start`, which keeps
+                // its column when linewise (`Vk~`, a `.` replay).
+                r.start
             }
             VisualOp::Shift { right } => {
                 let mut ed = Ed { buf: &mut *buf, hist: &mut st.history };
@@ -238,8 +268,9 @@ impl Engine {
         let empty = st.history.emptied();
         let n = count.max(1);
         let mut ed = Ed { buf: &mut *buf, hist: &mut st.history };
-        let mut caret = if text.text.is_empty() {
-            // Vim: "Nothing in register"; the delete stays.
+        let mut caret = if text.text.is_empty() && r.kind == RKind::Char {
+            // An empty register (Vim's `setreg('"', '')`: one empty
+            // charwise line) puts nothing between chars; the delete stays.
             ed.buf.cursor()
         } else if r.kind == RKind::Line && !B::MULTILINE {
             // A one-line field: the field's put rules give the text (a
@@ -247,6 +278,7 @@ impl Engine {
             // the first non-blank as Vim's put of lines leaves it.
             ed.buf.set_cursor(Pos::new(0, 0));
             put(&mut ed, &text, true, n);
+            ed.put_a_line();
             Pos::new(0, first_non_blank(&ed.buf.line(0)))
         } else if r.kind == RKind::Line {
             // Replacing lines: the register goes in as lines of its own.

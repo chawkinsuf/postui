@@ -53,7 +53,6 @@ pub(crate) struct Session {
     /// `arrow_used`).
     arrow_used: bool,
     /// The command that opened the session, for `.`.
-    #[allow(dead_code)] // read by `.` (Task 12)
     pub origin: Cmd,
     pub typed: Vec<InsertKey>,
     /// The row whose indent `autoindent` added with nothing typed after it
@@ -62,7 +61,6 @@ pub(crate) struct Session {
     pub ai_row: Option<usize>,
     /// Typing resumed after a cursor key: `.` only takes this record if
     /// something is typed (Vim's pretend `1i`).
-    #[allow(dead_code)] // read by `.` (Task 12)
     pub resumed: bool,
 }
 
@@ -468,9 +466,19 @@ impl Engine {
         st.forget_want();
     }
 
-    /// `.` bookkeeping for a session that ends or is split by a cursor key.
-    /// Task 12 fills this in.
-    fn finish_record(&mut self) {}
+    /// Records the session for `.` when it ends or a cursor key splits it:
+    /// its opening command plus the keys typed. After a cursor key
+    /// (`resumed`) only once something was typed: Vim's `stop_arrow()`
+    /// starts a fresh `1i` record only then, and until then `.` keeps what
+    /// the key before it closed.
+    fn finish_record(&mut self) {
+        let Some(s) = &self.insert else { return };
+        if s.resumed && s.typed.is_empty() {
+            return;
+        }
+        let (cmd, typed) = (s.origin, s.typed.clone());
+        self.remember(cmd, Some(typed));
+    }
 
     /// The change operator (spec §3.6, Vim's `op_change()`): the text goes
     /// to the register and a session opens at the range start.

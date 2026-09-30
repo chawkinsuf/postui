@@ -260,6 +260,13 @@ impl<B: TextBuf> Ed<'_, B> {
         self.save_rows(caret, caret.row, caret.row);
     }
 
+    /// A line was put in, so the buffer has one again (Vim's `ML_EMPTY`
+    /// ends) even when the put spliced nothing: a one-line field puts an
+    /// empty linewise register as no text.
+    pub(crate) fn put_a_line(&mut self) {
+        self.hist.emptied = false;
+    }
+
     /// Deletes every line: Vim's buffer is then `ML_EMPTY`. Vim's
     /// `u_savedel` saves even when the buffer was already one blank line,
     /// so `dd` there is still a step `u` undoes.
