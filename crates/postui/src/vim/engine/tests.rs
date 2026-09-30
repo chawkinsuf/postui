@@ -416,6 +416,73 @@ fn one_register_is_shared_by_every_buffer() {
 }
 
 #[test]
+fn visual_modes_track_their_anchor_and_paint_it() {
+    let mut f = Field::new("abcdef", 1);
+    f.keys("v");
+    assert_eq!(f.engine.mode(), Mode::Visual(Shape::Char));
+    assert_eq!(f.engine.visual_anchor(), Some(Pos::new(0, 1)));
+    f.keys("ll");
+    assert_eq!(f.input.paint_span(), Some((1, 4)), "the paint is what `d` would take");
+    f.keys("o");
+    assert_eq!((f.engine.visual_anchor(), f.col()), (Some(Pos::new(0, 3)), 1));
+    f.keys("V");
+    assert_eq!(f.engine.mode(), Mode::Visual(Shape::Line));
+    f.keys("V");
+    assert_eq!((f.engine.mode(), f.engine.visual_anchor()), (Mode::Normal, None));
+    assert_eq!(f.input.paint_span(), None);
+}
+
+#[test]
+fn one_line_visual_j_and_k_are_failed_motions_not_declines() {
+    let mut f = Field::new("abc", 1);
+    f.keys("vl");
+    assert!(!declined(&f.keys("j")));
+    assert!(!declined(&f.keys("k")));
+    assert_eq!((f.engine.mode(), f.col()), (Mode::Visual(Shape::Char), 2));
+}
+
+#[test]
+fn capital_v_y_then_p_is_a_characterwise_put_in_a_field() {
+    let mut f = Field::new("ab", 1);
+    f.keys("Vy");
+    assert_eq!(f.engine.registers().unnamed().kind, RegKind::Line);
+    f.keys("p");
+    assert_eq!(f.text(), "aabb");
+}
+
+#[test]
+fn visual_p_swaps_the_register_and_capital_p_keeps_it() {
+    let mut f = Field::new("one two", 0);
+    f.keys("yiwwviwp");
+    assert_eq!(f.text(), "one one");
+    assert_eq!(f.engine.registers().unnamed().text, "two");
+    let mut f = Field::new("one two", 0);
+    f.keys("yiwwviwP");
+    assert_eq!(f.engine.registers().unnamed().text, "one");
+}
+
+/// Task 2's `BodyBuf::show` paints a linewise selection on an empty row as
+/// a `Highlight` from column 0 to column 0, past the row's last char; edtui
+/// must render it without indexing out of range.
+#[test]
+fn a_linewise_highlight_on_an_empty_row_renders() {
+    use edtui::EditorView;
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    use ratatui::widgets::Widget;
+    let mut b = Body::new("a\n\n\nb", 1, 0);
+    b.keys("V");
+    assert_eq!(b.ed.highlights.len(), 1);
+    let area = Rect::new(0, 0, 20, 6);
+    EditorView::new(&mut b.ed).render(area, &mut Buffer::empty(area));
+    b.keys("j");
+    EditorView::new(&mut b.ed).render(area, &mut Buffer::empty(area));
+    let mut b = Body::new("", 0, 0);
+    b.keys("V");
+    EditorView::new(&mut b.ed).render(area, &mut Buffer::empty(area));
+}
+
+#[test]
 fn a_cursor_key_in_insert_splits_the_undo_step() {
     let mut f = Field::new("", 0);
     f.keys("iab");

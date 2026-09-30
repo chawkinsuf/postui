@@ -24,6 +24,7 @@ mod register;
 pub mod settings;
 #[cfg(test)]
 mod tests;
+mod visual;
 
 pub use buf::{BodyBuf, GuiSel, OneLineBuf, Paint, Pos, TextBuf};
 pub use register::{RegKind, Register, Registers};
@@ -373,11 +374,6 @@ pub(crate) fn first_non_blank_fix(line: &[char]) -> usize {
 // Each later task moves one of these into its own module with the real
 // behaviour and deletes it here. Until then its command has no effect.
 impl Engine {
-    /// Task 11 (visual.rs).
-    fn exec_visual<B: TextBuf>(&mut self, _cmd: Cmd, _buf: &mut B, _st: &mut BufState) -> Outcome {
-        Outcome::consumed()
-    }
-
     /// Task 12 (mod.rs, `.`).
     fn exec_repeat<B: TextBuf>(&mut self, _count: usize, _buf: &mut B, _st: &mut BufState, _ctx: &ViewCtx) -> Outcome {
         Outcome::consumed()

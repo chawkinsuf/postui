@@ -27,9 +27,24 @@ impl Picked {
     }
 }
 
-/// `inner` is `i`, otherwise `a`. `count` 0 means none typed. `Err`: no
-/// such object here; it holds where the caret goes, since Vim's word
-/// walk moves the caret before it fails (`d3aW` running off the buffer).
+/// No such object here, and what Vim's walk left behind before it failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Missed {
+    /// Where the caret goes: Vim's word walk moves the caret before it
+    /// fails (`d3aW` running off the buffer).
+    pub at: Pos,
+    /// In Visual, the anchor Vim had already moved to the first word's
+    /// start before a later count failed (`v2iw` on a line's last word).
+    pub anchor: Option<Pos>,
+}
+
+impl Missed {
+    fn at(at: Pos) -> Self {
+        Self { at, anchor: None }
+    }
+}
+
+/// `inner` is `i`, otherwise `a`. `count` 0 means none typed.
 pub(crate) fn pick<B: TextBuf>(
     buf: &B,
     caret: Pos,
@@ -37,12 +52,12 @@ pub(crate) fn pick<B: TextBuf>(
     obj: Object,
     inner: bool,
     count: usize,
-) -> Result<Picked, Pos> {
+) -> Result<Picked, Missed> {
     let count = count.max(1);
     match obj {
         Object::Word { big } => word(buf, caret, vis, count, !inner, big),
-        Object::Quote(q) => quote(buf, caret, vis, count, !inner, q).ok_or(caret),
-        Object::Block(open) => block(buf, caret, vis, count, !inner, open).ok_or(caret),
+        Object::Quote(q) => quote(buf, caret, vis, count, !inner, q).ok_or(Missed::at(caret)),
+        Object::Block(open) => block(buf, caret, vis, count, !inner, open).ok_or(Missed::at(caret)),
     }
 }
 
@@ -67,8 +82,9 @@ fn back_in_line<B: TextBuf>(w: &mut Walk<B>, big: bool) {
     }
 }
 
-/// Vim's `current_word()`. `Err` holds where the walk stopped.
-fn word<B: TextBuf>(buf: &B, caret: Pos, vis: Option<Pos>, count: usize, include: bool, big: bool) -> Result<Picked, Pos> {
+/// Vim's `current_word()`. `Err` holds where the walk stopped and, once
+/// the first word set it (Vim's `VIsual = start_pos`), the Visual anchor.
+fn word<B: TextBuf>(buf: &B, caret: Pos, vis: Option<Pos>, count: usize, include: bool, big: bool) -> Result<Picked, Missed> {
     let mut w = Walk::new(buf, caret);
     let mut count = count;
     let mut start = vis.unwrap_or(caret);
@@ -79,7 +95,7 @@ fn word<B: TextBuf>(buf: &B, caret: Pos, vis: Option<Pos>, count: usize, include
         start = w.pos;
         if (w.cls(big) == 0) == include {
             if !end_word(&mut w, 1, big, true, true) {
-                return Err(w.pos);
+                return Err(Missed::at(w.pos));
             }
         } else {
             fwd_word(&mut w, 1, big, true);
@@ -94,31 +110,33 @@ fn word<B: TextBuf>(buf: &B, caret: Pos, vis: Option<Pos>, count: usize, include
         }
         count -= 1;
     }
+    // From here `start` is the Visual anchor (Vim's `VIsual`), already
+    // moved when the first word was taken above.
+    let missed = |w: &Walk<B>| Missed { at: w.pos, anchor: vis.map(|_| start) };
     while count > 0 {
         inclusive = true;
-        // `start` is the Visual anchor here (Vim's `VIsual`).
         if vis.is_some() && w.pos < start {
             // In Visual with the caret at the start: move it back.
             if w.decl() == -1 {
-                return Err(w.pos);
+                return Err(missed(&w));
             }
             if include != (w.cls(big) != 0) {
                 if !bck_word(&mut w, 1, big, true) {
-                    return Err(w.pos);
+                    return Err(missed(&w));
                 }
             } else {
                 if !bckend_word(&mut w, 1, big, true) {
-                    return Err(w.pos);
+                    return Err(missed(&w));
                 }
                 w.incl();
             }
         } else {
             if w.incl() == -1 {
-                return Err(w.pos);
+                return Err(missed(&w));
             }
             if include != (w.cls(big) == 0) {
                 if !fwd_word(&mut w, 1, big, true) && count > 1 {
-                    return Err(w.pos);
+                    return Err(missed(&w));
                 }
                 // If the end is just past a line break, don't take the next
                 // line's first char: rest on the last blank.
@@ -128,7 +146,7 @@ fn word<B: TextBuf>(buf: &B, caret: Pos, vis: Option<Pos>, count: usize, include
                     w.pos.col -= 1;
                 }
             } else if !end_word(&mut w, 1, big, true, true) {
-                return Err(w.pos);
+                return Err(missed(&w));
             }
         }
         count -= 1;

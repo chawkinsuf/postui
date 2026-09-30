@@ -239,8 +239,15 @@ impl<B: TextBuf> Ed<'_, B> {
     /// Vim's `u_save_cursor()` with no change after it: `u` then undoes a
     /// step that changed nothing (`dh` in column 0).
     pub(crate) fn save_line(&mut self, row: usize) {
-        let line: String = self.buf.line(row).iter().collect();
-        self.hist.record(Edit { at: Pos::new(row, 0), removed: line.clone(), inserted: line });
+        self.save_lines(row, row);
+    }
+
+    /// Vim's `u_save(first - 1, last + 1)`: rows `first..=last` are saved
+    /// before an operator changes them, so the step exists even when the
+    /// text ends up the same (Visual `~` on a space, `<` with no indent).
+    pub(crate) fn save_lines(&mut self, first: usize, last: usize) {
+        let text = self.buf.slice(Pos::new(first, 0), Pos::new(last, self.buf.line_len(last)));
+        self.hist.record(Edit { at: Pos::new(first, 0), removed: text.clone(), inserted: text });
     }
 
     /// Vim's `u_save_cursor()` before a command that saves its line

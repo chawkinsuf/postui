@@ -10,7 +10,6 @@
 pub const SETTINGS_LINE: &str = "expandtab shiftwidth=2 autoindent selection=inclusive tabstop=2 softtabstop=0 backspace=indent,eol,start whichwrap=b,s startofline nojoinspaces nrformats=bin,hex noshiftround nosmartindent nocindent textwidth=0 noignorecase notildeop matchpairs=(:),{:},[:] iskeyword=@,48-57,_,192-255 cpoptions=aABceFs formatoptions=tcq virtualedit= wrapscan magic nosmartcase";
 
 /// `shiftwidth`: one `>` step and the autoindent unit.
-#[allow(dead_code)] // used from Task 11
 pub const SHIFTWIDTH: usize = 2;
 /// `tabstop`: a tab's width in virtual columns; Insert `Tab` (with
 /// `expandtab`) fills spaces to the next multiple.

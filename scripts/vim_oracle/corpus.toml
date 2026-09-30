@@ -398,6 +398,87 @@ keys = ["rXrXu", "rXrXu<C-r>", "r<Space>u", "xr<Space>u", "r<Tab>u", "r<Tab>u<C-
 on = ["words", "json_pretty"]
 at = ["bol", "fnb", "mid", "eol", [1, 4], [2, 2]]
 
+# --- Visual (Task 11) --------------------------------------------------------
+
+[[group]]
+id = "visual/select"
+tier = 1
+keys = ["v", "vl", "vj", "v$", "vw", "ve", "vb", "V", "Vj", "Vk", "vjo", "vllo", "vlloh", "vV", "Vv",
+        "vv", "VV", "v<Esc>", "V<Esc>", "v$j", "vG", "Vgg", "v3l", "v%", "vfa", "vl<Esc>l"]
+on = ["words", "json_pretty", "blank_edges", "json_flat", "unicode", "tabs"]
+at = ["bol", "fnb", "mid", "eol"]
+
+[[group]]
+id = "visual/objects"
+tier = 1
+keys = ["viw", "vaw", "v2iw", "viwiw", "vawaw", "viW", "vi\"", "va\"", "vi\"i\"", "vi{", "va{", "vi{i{",
+        "va{a{", "vi(", "vi[", "Viw", "vlliw", "vhhiw", "v2i{", "vi'"]
+on = ["words", "json_flat", "json_pretty", "brackets_deep", "quotes", "unicode", "blank_edges"]
+at = ["bol", "fnb", "mid", "eol"]
+
+[[group]]
+id = "visual/ops"
+tier = 1
+keys = ["vld", "vjd", "v$d", "Vd", "Vjd", "vlcX<Esc>", "VjcX<Esc>", "vly", "Vy", "vjy", "vlx", "vlX",
+        "vlD", "vlY", "vlCX<Esc>", "vlsX<Esc>", "vlSX<Esc>", "vlRX<Esc>", "vlrX", "VjrX", "vjrX", "VjJ",
+        "vjJ", "VJ", "vJ", "vl~", "vlu", "vlU", "Vj~", "Vj>", "Vj<", "v>", "Vj2>", "V3<", "viwd", "vi{d",
+        "va\"d", "vi{y", "vd", "Vjjd"]
+on = ["words", "json_flat", "json_pretty", "blank_edges", "tabs", "unicode"]
+at = ["bol", "fnb", "mid", "eol"]
+
+# Spec §6.2: Visual `u` and `U` get `u` and `u<C-r>` cases too.
+[[group]]
+id = "visual/undo"
+tier = 1
+keys = ["vjd", "v$d", "Vjd", "VjcX<Esc>", "vlrX", "VjJ", "Vj>", "vl~", "vlu", "vlU", "vju", "vjU", "VjU"]
+suffixes = ["u", "u<C-r>"]
+on = ["words", "json_pretty", "blank_edges", "tabs"]
+at = ["bol", "fnb", "eol"]
+
+# A Visual command that leaves the text as it was is still an undo step
+# (Vim saves the lines first): `~` `U` on a `-`, `u` on lowercase text, `<`
+# with no indent, `>` on an empty line, `r` with the same char. `r-` (or
+# `rX` on blank_edges' "a") first makes a real change, so `u` shows which
+# step it undid.
+[[group]]
+id = "visual/undo-same"
+tier = 1
+keys = ["r-v~", "r-vlu", "r-vU", "r-V<", "r-vr-"]
+suffixes = ["u", "u<C-r>"]
+on = ["words"]
+at = ["bol", "fnb", "mid", "eol", [1, 4]]
+
+[[group]]
+id = "visual/undo-same-lines"
+tier = 1
+keys = ["ggjrXjV>", "ggjrXGV<", "ggjrXjv~", "ggjrXGvU"]
+suffixes = ["u", "u<C-r>"]
+on = ["blank_edges"]
+at = ["bol"]
+
+[[group]]
+id = "visual/put-char"
+tier = 1
+keys = ["vlp", "vlP", "Vp", "VP", "viwp", "Vjp", "v$p", "vjp", "vl2p", "ggVGp"]
+on = ["words", "json_pretty", "blank_edges", "one_char"]
+at = ["bol", "fnb", "mid", "eol"]
+reg = { text = "Q", type = "v" }
+
+[[group]]
+id = "visual/put-line"
+tier = 1
+keys = ["vlp", "vlP", "Vp", "VP", "viwp", "Vjp", "v$p", "vjp", "vl2p", "ggVGp"]
+on = ["words", "json_pretty", "blank_edges", "one_char"]
+at = ["bol", "fnb", "mid", "eol"]
+reg = { text = "  q\n", type = "V" }
+
+[[group]]
+id = "visual/yank-put"
+tier = 1
+keys = ["yiwwviwp", "yiwwviwP$p", "yiwwviwp$p", "yywVp", "yyjVP", "Vyp", "vly$p", "vjyP"]
+on = ["words", "json_pretty", "blank_edges"]
+at = ["bol", "fnb", "mid", "eol"]
+
 # --- fuzz atoms (generate.py --fuzz); tier-1 keys only -----------------------
 
 [fuzz]

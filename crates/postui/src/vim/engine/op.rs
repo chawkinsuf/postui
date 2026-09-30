@@ -147,7 +147,6 @@ fn recase(how: CaseOp, c: char) -> char {
 
 /// Visual `~ u U` (and plan 3b's `g~` `gu` `gU`) over `r`; the caret goes
 /// to its start (column 0 for linewise).
-#[allow(dead_code)] // used from Task 11
 pub(crate) fn recase_range<B: TextBuf>(ed: &mut Ed<'_, B>, how: CaseOp, r: Range) -> Pos {
     let (start, end) = match r.kind {
         RKind::Char => (r.start, r.end),
@@ -162,7 +161,6 @@ pub(crate) fn recase_range<B: TextBuf>(ed: &mut Ed<'_, B>, how: CaseOp, r: Range
 /// Visual `>` `<` over rows `first..=last`, `amount` shiftwidths each;
 /// empty rows are skipped and the new indent is spaces (`expandtab`). The
 /// caret goes to the first row's first non-blank.
-#[allow(dead_code)] // used from Task 11
 pub(crate) fn shift_rows<B: TextBuf>(ed: &mut Ed<'_, B>, first: usize, last: usize, right: bool, amount: usize) -> Pos {
     let step = SHIFTWIDTH * amount.max(1);
     for row in first..=last {
@@ -436,10 +434,10 @@ impl Engine {
             }
             Reach::Object { obj, inner } => match super::object::pick(buf, from, None, obj, inner, count) {
                 Ok(picked) => Some(picked.span()),
-                Err(at) => {
+                Err(missed) => {
                     // Vim's `nv_object`: the operator is cancelled, the caret
                     // stays where the object's walk ended.
-                    buf.set_cursor(self.clamped(buf, at));
+                    buf.set_cursor(self.clamped(buf, missed.at));
                     st.forget_want();
                     None
                 }
