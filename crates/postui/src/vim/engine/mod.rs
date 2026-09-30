@@ -270,6 +270,11 @@ pub struct Engine {
     replaying_visual: bool,
     /// The size of the selection the last Visual operator acted on.
     last_visual_size: Option<VisualSize>,
+    /// Where the engine last left the caret (after a key, a paste or a
+    /// session edge). [`Engine::settle`] compares it with the caret to see
+    /// that a click or a key piece 4 handled moved the caret in Insert,
+    /// which splits the session as Vim's `ins_mouse()` does.
+    rested: Option<Pos>,
 }
 
 impl Engine {
@@ -341,26 +346,25 @@ impl Engine {
     }
 
     /// The caret moves straight from one buffer to another in the same
-    /// event (Tab to the next cell, spec §4.2). The undo step open in
-    /// `from` closes. Insert and Normal carry over: Insert opens a fresh
-    /// session in `to` that `.` takes only once something is typed, and
-    /// keys typed there are taken as `to`'s kind takes them. Visual, the
-    /// pending keys and the unfinished insert record are dropped, so `.`
-    /// keeps its old value.
-    ///
-    /// The caller's obligation: `carry` never sees `from`'s text, so it
-    /// cannot remember it for [`Engine::enter`]'s history check. A
-    /// `BufState` carried out of must not be reused if that buffer's text
-    /// may change outside the engine first. Call [`BufState::end_session`]
-    /// on it, or give the buffer a fresh `BufState`, as one-line fields get
-    /// each time they open (spec §3.11).
-    pub fn carry<B: TextBuf>(&mut self, from: &mut BufState, to: Target<'_, B>) {
-        from.history.commit();
+    /// event: Tab to the next cell, a click into the next field, or out of
+    /// the body (spec §4.2, profile spec §3.3). `from` is left as
+    /// [`Engine::leave`] leaves it: its undo step closes, an unused
+    /// autoindent is stripped, its Visual paint and Insert caret go, and its
+    /// text is remembered for the next [`Engine::enter`]'s history check.
+    /// The one difference is that the unfinished insert record is dropped,
+    /// so `.` keeps its old value. Insert and Normal carry over: Insert
+    /// opens a fresh session in `to` that `.` takes only once something is
+    /// typed, and keys typed there are taken as `to`'s kind takes them.
+    /// Visual and pending keys are dropped.
+    pub fn carry<A: TextBuf, B: TextBuf>(&mut self, from: Target<'_, A>, to: Target<'_, B>) {
         let inserting = self.mode == Mode::Insert;
-        self.pending.clear();
-        self.visual = None;
-        // The unfinished insert record is dropped: `.` keeps its old value.
-        self.insert = None;
+        let insert_only = self.insert_only;
+        let Target { buf, state } = from;
+        if inserting {
+            self.drop_session(buf, state);
+        }
+        self.leave(Target { buf, state });
+        self.insert_only = insert_only;
         let Target { buf, state } = to;
         state.begin_session(buf.text());
         self.mode = if inserting { Mode::Insert } else { Mode::Normal };
@@ -378,14 +382,32 @@ impl Engine {
     /// Normal or Insert; during a `Sweep` only the mode flips, and the
     /// geometry and paint stay the mouse's. A `Click` with no selection
     /// ends Visual. A query box has no Visual layer, so its GUI selection
-    /// stays (typing replaces it). Then the caret is clamped and becomes
+    /// stays (typing replaces it). A click drops a half-typed command. In
+    /// Insert, a caret the event moved splits the session as a cursor key
+    /// does (Vim's `ins_mouse()`). Then the caret is clamped and becomes
     /// the wanted column.
     pub fn settle<B: TextBuf>(&mut self, t: Target<'_, B>, how: Settled) {
         let Target { buf, state } = t;
+        if matches!(how, Settled::Click | Settled::Release) {
+            self.pending.clear();
+        }
+        let caret = self.clamped(buf, buf.cursor());
+        if self.mode == Mode::Insert
+            && let Some(from) = self.rested
+            && from != caret
+        {
+            // Vim's `ins_mouse()` → `start_arrow(&tpos)`: before and after
+            // are separate undo steps, only what is typed next is redone
+            // (as an `i`), and an unused autoindent is stripped where the
+            // caret was, not where it went.
+            self.split_insert(from, caret, buf, state);
+        }
         if !self.insert_only {
             match buf.gui_selection() {
                 Some(sel) if how == Settled::Sweep => {
                     self.enter_visual_from(sel.anchor, buf, state);
+                    // No `rest`: the caret, the paint and the wanted column
+                    // stay the mouse's until the `Release` settle rests them.
                     return;
                 }
                 Some(sel) if how != Settled::Key || !matches!(self.mode, Mode::Visual(_)) => {
@@ -393,7 +415,9 @@ impl Engine {
                     buf.clear_gui_selection();
                     buf.set_cursor(sel.head);
                 }
-                Some(_) => {}
+                // A GUI key in Visual: the engine's selection stands, and the
+                // GUI one goes, so a later settle does not adopt it stale.
+                Some(_) => buf.clear_gui_selection(),
                 None if how == Settled::Click && matches!(self.mode, Mode::Visual(_)) => {
                     self.visual = None;
                     self.mode = Mode::Normal;
@@ -405,7 +429,9 @@ impl Engine {
     }
 
     /// Adopts a GUI selection's anchor as charwise Visual. An open Insert
-    /// session ends first, as `leave` ends it (no step back).
+    /// session ends first, as `leave` ends it (no step back). `settle` has
+    /// already split a session the event moved, so an unused autoindent
+    /// went where the caret was, not where the mouse put it.
     fn enter_visual_from<B: TextBuf>(&mut self, anchor: Pos, buf: &mut B, state: &mut BufState) {
         if self.mode == Mode::Insert {
             self.end_insert(buf, state, false);
@@ -438,20 +464,25 @@ impl Engine {
     /// [`Splicer`], and the whole call is one undo step, not repeatable
     /// with `.`. In Insert it splits the session as a cursor key does: the
     /// typing before it is its own step and record, and typing after it
-    /// starts a fresh record. Returns whether the text changed.
+    /// starts a fresh record. Visual and a half-typed command end first:
+    /// they no longer fit the changed text. `t` must be the live buffer
+    /// (the one with the caret), since the engine's mode is that buffer's.
+    /// Returns whether the text changed.
     pub fn external_edit<B: TextBuf>(&mut self, t: Target<'_, B>, f: impl FnOnce(&mut Splicer<'_, B>)) -> bool {
         let Target { buf, state } = t;
+        self.pending.clear();
+        if matches!(self.mode, Mode::Visual(_)) {
+            self.visual = None;
+            self.mode = Mode::Normal;
+        }
         self.clamp(buf);
-        let inserting = self.mode == Mode::Insert;
-        if inserting {
-            self.finish_record();
+        if self.mode == Mode::Insert {
+            let caret = buf.cursor();
+            self.split_insert(caret, caret, buf, state);
         }
         state.history.commit();
         f(&mut Splicer { ed: history::Ed { buf: &mut *buf, hist: &mut state.history } });
         state.history.commit();
-        if inserting {
-            self.resume_insert(buf.cursor());
-        }
         self.rest(buf, state)
     }
 
@@ -467,6 +498,7 @@ impl Engine {
         state.edited |= changed;
         state.forget_want();
         state.forget_virtcol();
+        self.rested = Some(buf.cursor());
         self.paint(buf);
         changed
     }
@@ -507,6 +539,7 @@ impl Engine {
         if changed || after != before || was_insert != (self.mode == Mode::Insert) {
             state.virtcol = Some((after, self.tab_end(after)));
         }
+        self.rested = Some(after);
         self.paint(buf);
         match out {
             Outcome::Consumed { note, request, .. } => Outcome::Consumed { changed, note, request },

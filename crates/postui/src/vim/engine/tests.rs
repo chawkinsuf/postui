@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::components::line_input::LineInput;
-use edtui::{EditorState, Lines};
+use edtui::{EditorMode, EditorState, Lines};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::Style;
 
@@ -640,15 +640,71 @@ fn carry_keeps_insert_and_drops_visual_and_the_record() {
     engine.enter(Start::Insert, Seat::End, Target { buf: &mut OneLineBuf::new(&mut a), state: &mut s1 });
     engine.handle(k('X'), Target { buf: &mut OneLineBuf::new(&mut a), state: &mut s1 }, &ViewCtx::default());
     b.set_cursor(0);
-    engine.carry(&mut s1, Target { buf: &mut OneLineBuf::new(&mut b), state: &mut s2 });
+    engine.carry(Target { buf: &mut OneLineBuf::new(&mut a), state: &mut s1 }, Target { buf: &mut OneLineBuf::new(&mut b), state: &mut s2 });
     assert_eq!(engine.mode(), Mode::Insert);
     assert!(s1.can_undo(), "the step open in the field left behind closed");
     engine.handle(k('Y'), Target { buf: &mut OneLineBuf::new(&mut b), state: &mut s2 }, &ViewCtx::default());
     assert_eq!((a.text(), b.text()), ("abX", "Ycd"));
     engine.handle(esc(), Target { buf: &mut OneLineBuf::new(&mut b), state: &mut s2 }, &ViewCtx::default());
     engine.handle(k('v'), Target { buf: &mut OneLineBuf::new(&mut b), state: &mut s2 }, &ViewCtx::default());
-    engine.carry(&mut s2, Target { buf: &mut OneLineBuf::new(&mut a), state: &mut s1 });
+    assert!(b.paint_span().is_some());
+    engine.carry(Target { buf: &mut OneLineBuf::new(&mut b), state: &mut s2 }, Target { buf: &mut OneLineBuf::new(&mut a), state: &mut s1 });
     assert_eq!((engine.mode(), engine.visual_anchor()), (Mode::Normal, None));
+    assert_eq!(b.paint_span(), None, "the field left behind no longer paints Visual");
+}
+
+/// Fix round 1 ruling: `carry` leaves the body as `leave` does. Its Visual
+/// paint goes, and its text is remembered, so a later entry drops the
+/// history if the text changed outside the engine.
+#[test]
+fn carry_out_of_the_body_clears_its_visual_and_keeps_the_history_check() {
+    let body_ctx = ViewCtx { viewport_rows: Some(20) };
+    let mut engine = Engine::new();
+    let (mut body, mut cell) = (BufState::new(), BufState::new());
+    let mut ed = EditorState::new(Lines::from("abc\ndef"));
+    let mut field = LineInput::new("q");
+    engine.enter(Start::Normal, Seat::Keep, Target { buf: &mut BodyBuf::new(&mut ed, Style::default()), state: &mut body });
+    for ev in [k('x'), k('v'), k('j')] {
+        engine.handle(ev, Target { buf: &mut BodyBuf::new(&mut ed, Style::default()), state: &mut body }, &body_ctx);
+    }
+    assert_eq!((ed.mode, ed.highlights.len()), (EditorMode::Visual, 1));
+    engine.carry(
+        Target { buf: &mut BodyBuf::new(&mut ed, Style::default()), state: &mut body },
+        Target { buf: &mut OneLineBuf::new(&mut field), state: &mut cell },
+    );
+    assert_eq!((engine.mode(), ed.mode, ed.highlights.len()), (Mode::Normal, EditorMode::Normal, 0));
+    engine.carry(
+        Target { buf: &mut OneLineBuf::new(&mut field), state: &mut cell },
+        Target { buf: &mut BodyBuf::new(&mut ed, Style::default()), state: &mut body },
+    );
+    assert!(body.can_undo(), "unchanged text: the history stays");
+    engine.carry(
+        Target { buf: &mut BodyBuf::new(&mut ed, Style::default()), state: &mut body },
+        Target { buf: &mut OneLineBuf::new(&mut field), state: &mut cell },
+    );
+    ed.lines = Lines::from("reloaded");
+    engine.enter(Start::Normal, Seat::Keep, Target { buf: &mut BodyBuf::new(&mut ed, Style::default()), state: &mut body });
+    assert!(!body.can_undo(), "the text changed outside the engine after the carry");
+}
+
+/// `carry` out of an Insert session strips an autoindent nothing followed
+/// in the buffer it leaves, as `leave` does, and closes its Insert paint.
+#[test]
+fn carry_strips_an_unused_autoindent_in_the_body_it_leaves() {
+    let body_ctx = ViewCtx { viewport_rows: Some(20) };
+    let mut engine = Engine::new();
+    let (mut body, mut cell) = (BufState::new(), BufState::new());
+    let mut ed = EditorState::new(Lines::from("  a"));
+    let mut field = LineInput::new("q");
+    engine.enter(Start::Normal, Seat::Keep, Target { buf: &mut BodyBuf::new(&mut ed, Style::default()), state: &mut body });
+    engine.handle(k('o'), Target { buf: &mut BodyBuf::new(&mut ed, Style::default()), state: &mut body }, &body_ctx);
+    assert_eq!(BodyBuf::new(&mut ed, Style::default()).text(), "  a\n  ");
+    engine.carry(
+        Target { buf: &mut BodyBuf::new(&mut ed, Style::default()), state: &mut body },
+        Target { buf: &mut OneLineBuf::new(&mut field), state: &mut cell },
+    );
+    assert_eq!(BodyBuf::new(&mut ed, Style::default()).text(), "  a\n");
+    assert_eq!((engine.mode(), ed.mode), (Mode::Insert, EditorMode::Normal));
 }
 
 /// `carry` keeps Insert across buffer kinds: the new buffer takes keys as
@@ -666,7 +722,10 @@ fn carry_from_the_body_into_a_field_takes_the_fields_keys() {
         engine.handle(ev, Target { buf: &mut BodyBuf::new(&mut ed, Style::default()), state: &mut body }, &body_ctx);
     }
     let mut field = LineInput::new("q");
-    engine.carry(&mut body, Target { buf: &mut OneLineBuf::new(&mut field), state: &mut cell });
+    engine.carry(
+        Target { buf: &mut BodyBuf::new(&mut ed, Style::default()), state: &mut body },
+        Target { buf: &mut OneLineBuf::new(&mut field), state: &mut cell },
+    );
     assert!(body.can_undo());
     assert_eq!(engine.mode(), Mode::Insert);
     let out = engine.handle(code(KeyCode::Enter), Target { buf: &mut OneLineBuf::new(&mut field), state: &mut cell }, &ViewCtx::default());
@@ -742,6 +801,136 @@ fn a_click_ends_visual_and_a_gui_key_selection_is_adopted_from_normal() {
     f.input.select_all();
     f.engine.settle(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, Settled::Key);
     assert_eq!((f.engine.mode(), f.engine.visual_anchor(), f.col()), (Mode::Visual(Shape::Char), Some(Pos::new(0, 0)), 5));
+}
+
+/// Fix round 1: a click that moves the caret in Insert splits the session
+/// as Vim's `ins_mouse()` does. Before and after are separate undo steps,
+/// and `.` repeats only what was typed after the click.
+#[test]
+fn a_click_in_insert_splits_the_session() {
+    let mut f = Field::new("abcd", 0);
+    f.keys("iXY");
+    f.input.set_cursor(5);
+    f.engine.settle(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, Settled::Click);
+    assert_eq!(f.engine.mode(), Mode::Insert);
+    f.keys("Z");
+    f.key(esc());
+    assert_eq!((f.text(), f.col(), f.state.history.len()), ("XYabcZd", 5, 2));
+    f.keys(".");
+    assert_eq!(f.text(), "XYabcZZd", "`.` is `1i` + Z, not the whole session");
+    f.keys("uu");
+    assert_eq!(f.text(), "XYabcd");
+    f.keys("u");
+    assert_eq!(f.text(), "abcd");
+}
+
+/// The same split through a key piece 4 handled; and a settle that leaves
+/// the caret where the engine rested it splits nothing.
+#[test]
+fn a_settle_that_does_not_move_the_caret_does_not_split() {
+    let mut f = Field::new("ab", 0);
+    f.keys("aX");
+    f.engine.settle(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, Settled::Click);
+    f.engine.settle(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, Settled::Key);
+    f.keys("Y");
+    f.key(esc());
+    assert_eq!((f.text(), f.state.history.len()), ("aXYb", 1));
+    f.keys("A");
+    f.input.set_cursor(0);
+    f.engine.settle(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, Settled::Key);
+    f.keys("Q");
+    f.key(esc());
+    assert_eq!((f.text(), f.col()), ("QaXYb", 0));
+    f.keys(".");
+    assert_eq!(f.text(), "QQaXYb", "a moved caret splits on a Key settle too: `.` is `1i` + Q, not `A` + Q");
+}
+
+/// Vim's `start_arrow(&tpos)`: an autoindent nothing followed is stripped
+/// where the caret was before the click, not where it went.
+#[test]
+fn a_click_off_an_unused_autoindent_strips_it() {
+    let mut b = Body::new("  a\nb", 0, 0);
+    b.keys("o");
+    assert_eq!((b.text(), b.caret()), ("  a\n  \nb".to_string(), Pos::new(1, 2)));
+    b.ed.cursor = edtui::Index2::new(2, 0);
+    b.engine.settle(Target { buf: &mut BodyBuf::new(&mut b.ed, Style::default()), state: &mut b.state }, Settled::Click);
+    assert_eq!((b.text(), b.engine.mode()), ("  a\n\nb".to_string(), Mode::Insert));
+    b.keys("Z");
+    assert_eq!(b.text(), "  a\n\nZb");
+}
+
+/// A mouse selection made in Insert off an unused autoindent: the indent
+/// goes where the caret was (Vim's `tpos`), and the selection is adopted.
+#[test]
+fn a_sweep_from_insert_strips_the_autoindent_where_the_caret_was() {
+    use edtui::actions::{Execute, SwitchMode};
+    let mut b = Body::new("  a\nbcd", 0, 0);
+    b.keys("o");
+    b.ed.cursor = edtui::Index2::new(2, 0);
+    SwitchMode(EditorMode::Visual).execute(&mut b.ed);
+    b.ed.selection.as_mut().expect("a selection").end = edtui::Index2::new(2, 2);
+    b.ed.cursor = edtui::Index2::new(2, 2);
+    b.engine.settle(Target { buf: &mut BodyBuf::new(&mut b.ed, Style::default()), state: &mut b.state }, Settled::Release);
+    assert_eq!(b.text(), "  a\n\nbcd");
+    assert_eq!((b.engine.mode(), b.engine.visual_anchor(), b.caret()), (Mode::Visual(Shape::Char), Some(Pos::new(2, 0)), Pos::new(2, 2)));
+}
+
+/// A sweep that starts in Insert in a one-line field keeps the mouse's
+/// selection while it runs (ending Insert does not reset the caret).
+#[test]
+fn a_sweep_from_insert_keeps_the_mouse_selection() {
+    let mut f = Field::start("abcdef", 1, Start::Insert);
+    f.input.begin_mouse_selection();
+    f.input.extend_mouse_selection_to(4);
+    f.engine.settle(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, Settled::Sweep);
+    assert_eq!((f.engine.mode(), f.input.selection()), (Mode::Visual(Shape::Char), Some((1, 4))));
+    f.engine.settle(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, Settled::Release);
+    assert_eq!((f.engine.visual_anchor(), f.col()), (Some(Pos::new(0, 1)), 3));
+}
+
+/// Fix round 1 minor: a click drops a half-typed command.
+#[test]
+fn a_click_drops_a_pending_operator() {
+    let mut f = Field::new("abc def", 0);
+    f.keys("d");
+    assert!(f.engine.pending());
+    f.input.set_cursor(4);
+    f.engine.settle(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, Settled::Click);
+    assert!(!f.engine.pending());
+    f.keys("w");
+    assert_eq!(f.text(), "abc def", "`w` is a motion now, not `dw`");
+}
+
+/// Fix round 1 minor: in Visual a GUI-key settle drops the GUI selection,
+/// so a later settle from Normal does not adopt it stale.
+#[test]
+fn a_gui_selection_left_in_visual_is_not_adopted_later() {
+    use edtui::actions::{Execute, SwitchMode};
+    let mut b = Body::new("abc\ndef", 0, 0);
+    b.keys("v");
+    SwitchMode(EditorMode::Visual).execute(&mut b.ed);
+    b.engine.settle(Target { buf: &mut BodyBuf::new(&mut b.ed, Style::default()), state: &mut b.state }, Settled::Key);
+    assert_eq!(b.ed.selection, None);
+    b.key(esc());
+    b.engine.settle(Target { buf: &mut BodyBuf::new(&mut b.ed, Style::default()), state: &mut b.state }, Settled::Key);
+    assert_eq!(b.engine.mode(), Mode::Normal);
+}
+
+/// Fix round 1 minor: an external edit ends Visual and a pending command.
+#[test]
+fn external_edit_ends_visual_and_a_pending_command() {
+    let mut f = Field::new("abcdef", 0);
+    f.keys("vl");
+    f.engine.external_edit(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, |s| {
+        s.splice(Pos::new(0, 0), Pos::new(0, 3), "");
+    });
+    assert_eq!((f.text(), f.engine.mode(), f.engine.visual_anchor()), ("def", Mode::Normal, None));
+    assert_eq!(f.input.paint_span(), None);
+    f.keys("d");
+    f.engine.external_edit(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, |s| {
+        s.splice(Pos::new(0, 0), Pos::new(0, 0), "x");
+    });
+    assert!(!f.engine.pending());
 }
 
 #[test]

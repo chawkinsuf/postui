@@ -482,14 +482,7 @@ impl Engine {
             Key::Down if c.row < last => Pos::new(c.row + 1, col_for(&buf.line(c.row + 1), want, true)),
             _ => return,
         };
-        // `stop_insert()` strips an unused autoindent only when the caret
-        // leaves its line (`cpoptions` has no `I`), and the caret then goes
-        // to the new line regardless.
-        if to.row != c.row {
-            self.strip_autoindent(c, buf, st);
-        }
-        st.history.commit();
-        self.finish_record();
+        self.split_insert(c, to, buf, st);
         buf.set_cursor(to);
         match key {
             // `j`/`k` style: the wanted column survives.
@@ -499,7 +492,34 @@ impl Engine {
             Key::End if st.want(c).is_some() => st.set_want(Want::End, to),
             _ => st.forget_want(),
         }
+    }
+
+    /// Vim's `start_arrow()`: the caret went from `from` to `to` in Insert
+    /// without typing (a cursor key, a click, an external edit). An unused
+    /// autoindent on `from`'s line is stripped when the caret left that
+    /// line (`stop_insert()`; `cpoptions` has no `I`), the undo step and the
+    /// `.` record end there, and typing at `to` starts a fresh `1i` record.
+    /// The caller moves the caret.
+    pub(super) fn split_insert<B: TextBuf>(&mut self, from: Pos, to: Pos, buf: &mut B, st: &mut BufState) {
+        if to.row != from.row {
+            self.strip_autoindent(from, buf, st);
+        }
+        st.history.commit();
+        self.finish_record();
         self.resume_insert(to);
+    }
+
+    /// Ends the open session with no `.` record (`carry`): an unused
+    /// autoindent is stripped and the session dropped. The caller closes
+    /// the undo step and leaves Insert.
+    pub(super) fn drop_session<B: TextBuf>(&mut self, buf: &mut B, st: &mut BufState) {
+        let caret = buf.cursor();
+        if let Some(at) = self.strip_autoindent(caret, buf, st)
+            && at != caret
+        {
+            buf.set_cursor(at);
+        }
+        self.insert = None;
     }
 
     /// Leaves Insert: `Esc` (`step_back`), or `leave`. An indent
@@ -517,7 +537,11 @@ impl Engine {
         if step_back && caret.col > 0 {
             caret.col -= 1;
         }
-        buf.set_cursor(caret);
+        // Only when it moves: a one-line field drops its GUI selection on
+        // any `set_cursor`, and a mouse sweep that ends Insert keeps it.
+        if caret != buf.cursor() {
+            buf.set_cursor(caret);
+        }
         st.forget_want();
     }
 
@@ -603,6 +627,7 @@ impl Engine {
         }
         let changed = state.history.take_changed();
         state.edited |= changed;
+        self.rested = Some(buf.cursor());
         self.paint(buf);
         Outcome::Consumed { changed, note: None, request: None }
     }
