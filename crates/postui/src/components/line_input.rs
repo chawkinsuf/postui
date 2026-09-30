@@ -113,6 +113,7 @@ impl LineInput {
         self.vim_visual = visual;
     }
 
+    #[cfg(test)]
     pub(crate) fn visual(&self) -> Option<(usize, VisualShape)> {
         self.vim_visual
     }

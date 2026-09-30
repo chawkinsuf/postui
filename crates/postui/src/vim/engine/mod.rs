@@ -26,7 +26,7 @@ pub mod settings;
 mod tests;
 mod visual;
 
-pub use buf::{BodyBuf, GuiSel, OneLineBuf, Paint, Pos, TextBuf};
+pub use buf::{BodyBuf, BodyVisual, GuiSel, OneLineBuf, Paint, Pos, TextBuf};
 pub use register::{RegKind, Register, Registers};
 
 use insert::InsertKey;
@@ -521,9 +521,7 @@ impl Engine {
                     Step::More => Outcome::consumed(),
                     Step::Inert(note) => Outcome::Consumed { changed: false, note, request: None },
                     Step::Decline { count, keys } => Outcome::Declined { count, keys },
-                    // A declined `u` / `ctrl+r` hands back the key as typed.
-                    Step::Cmd(Cmd::Undo(count)) => self.exec_undo(count, false, ev, buf, state),
-                    Step::Cmd(Cmd::Redo(count)) => self.exec_undo(count, true, ev, buf, state),
+                    Step::Undo { redo, count, declined } => self.exec_undo(count, redo, declined, buf, state),
                     Step::Cmd(cmd) => self.run(cmd, buf, state, ctx),
                 }
             }
@@ -533,21 +531,29 @@ impl Engine {
         if self.mode != Mode::Insert {
             state.history.commit();
         }
+        let changed = self.finish_key(before, was_insert, buf, state);
+        match out {
+            Outcome::Consumed { note, request, .. } => Outcome::Consumed { changed, note, request },
+            declined => declined,
+        }
+    }
+
+    /// The end of every key ([`Engine::handle`], [`Engine::paste`]): the
+    /// caret is clamped for the mode, a text change is noted, and the
+    /// buffer is painted. `w_virtcol` is recomputed where the caret moved,
+    /// the text changed, or Insert started or ended (see
+    /// `BufState::virtcol`). Returns whether the text changed.
+    fn finish_key<B: TextBuf>(&mut self, before: Pos, was_insert: bool, buf: &mut B, state: &mut BufState) -> bool {
         let changed = state.history.take_changed();
         state.edited |= changed;
         self.clamp(buf);
         let after = buf.cursor();
-        // `w_virtcol` is recomputed where the caret moved, the text changed,
-        // or Insert started or ended (see `BufState::virtcol`).
         if changed || after != before || was_insert != (self.mode == Mode::Insert) {
             state.virtcol = Some((after, self.tab_end(after)));
         }
         self.rested = Some(after);
         self.paint(buf);
-        match out {
-            Outcome::Consumed { note, request, .. } => Outcome::Consumed { changed, note, request },
-            declined => declined,
-        }
+        changed
     }
 
     /// Runs one complete command.
@@ -589,9 +595,6 @@ impl Engine {
                 self.exec_insert(how, count, buf, st);
                 Outcome::consumed()
             }
-            // Never recorded for `.`, so only `handle` meets them (it needs
-            // the typed key to hand back when the history is empty).
-            Cmd::Undo(_) | Cmd::Redo(_) => Outcome::consumed(),
             Cmd::Repeat(count) => self.exec_repeat(count, buf, st, ctx),
             Cmd::VisualStart(_) | Cmd::VisualSwap | Cmd::VisualExit | Cmd::VisualObject { .. } | Cmd::VisualOp { .. } => {
                 if let Cmd::VisualOp { op, .. } = cmd

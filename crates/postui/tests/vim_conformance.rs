@@ -16,7 +16,6 @@ use postui::vim::engine::{
     TextBuf, ViewCtx,
 };
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::style::Style;
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap};
 
@@ -238,7 +237,8 @@ fn run_case(case: &Case, input: &[String], buf: Buf, rows: usize) -> Run {
     match buf {
         Buf::Body => {
             let mut ed = EditorState::new(Lines::from(input.join("\n")));
-            let mut body = BodyBuf::new(&mut ed, Style::default());
+            let mut visual = None;
+            let mut body = BodyBuf::new(&mut ed, &mut visual);
             body.set_cursor(at);
             drive(&mut engine, &mut body, &mut state, case, &ViewCtx { viewport_rows: Some(rows) })
         }
@@ -248,6 +248,17 @@ fn run_case(case: &Case, input: &[String], buf: Buf, rows: usize) -> Run {
             one.set_cursor(at);
             drive(&mut engine, &mut one, &mut state, case, &ViewCtx { viewport_rows: None })
         }
+    }
+}
+
+/// The echo past a complete register prefix (`""3` → `3`): the skip
+/// rules read the count, which a register leaves alone. A bare `"` is
+/// still waiting for its name, so it stays.
+fn count_echo(echo: &str) -> &str {
+    let mut rest = echo.chars();
+    match (rest.next(), rest.next()) {
+        (Some('"'), Some(_)) => rest.as_str(),
+        _ => echo,
     }
 }
 
@@ -270,7 +281,7 @@ fn drive<B: TextBuf>(engine: &mut Engine, buf: &mut B, state: &mut BufState, cas
         if !B::MULTILINE
             && engine.mode() == Mode::Normal
             && token == "J"
-            && engine.echo().parse::<usize>().is_ok_and(|n| n > 2)
+            && count_echo(&engine.echo()).parse::<usize>().is_ok_and(|n| n > 2)
         {
             return Run::Skipped;
         }
@@ -282,7 +293,7 @@ fn drive<B: TextBuf>(engine: &mut Engine, buf: &mut B, state: &mut BufState, cas
         if !B::MULTILINE
             && engine.mode() == Mode::Normal
             && matches!(token.as_str(), "p" | "P")
-            && engine.echo().chars().all(|c| c.is_ascii_digit())
+            && count_echo(&engine.echo()).chars().all(|c| c.is_ascii_digit())
             && engine.registers().unnamed().kind == RegKind::Line
         {
             return Run::Skipped;
@@ -585,6 +596,25 @@ fn a_divergence_is_stale_when_the_engine_matches_vim() {
             assert!(!report.stale.is_empty(), "{status} skip={skip}: engine matches Vim, so it is stale");
             assert!(report.failed() > 0, "{status} skip={skip}: a stale entry fails the test");
         }
+    }
+}
+
+/// The one-line skip rules read the count through a register prefix:
+/// `yy""p` is a linewise put and `""3J` a counted join, as without it.
+#[test]
+fn one_line_skip_rules_see_through_a_register_prefix() {
+    for keys in ["yyp", "yy\\\"\\\"p", "3J", "\\\"\\\"3J"] {
+        let text = format!(
+            concat!(
+                r#"{{"header":{{"vim":"9","settings":"","winheight":23,"texts":{{"t":["abc"]}},"groups":{{"g":{{"status":"ship"}}}}}}}}"#,
+                "\n",
+                r#"{{"group":"g","text":"t","cursor":[1,1],"keys":"{}","expect":{{"cursor":[1,1],"mode":"n","reg":"","regtype":"v"}}}}"#,
+            ),
+            keys
+        );
+        let (_, cases) = load(&text);
+        let run = run_case(&cases[0], &["abc".to_string()], Buf::OneLine, 23);
+        assert!(matches!(run, Run::Skipped), "{:?} runs in a one-line field", cases[0].keys);
     }
 }
 

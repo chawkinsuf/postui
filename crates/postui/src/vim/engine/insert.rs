@@ -637,13 +637,11 @@ impl Engine {
             return Outcome::Declined { count: None, keys: Vec::new() };
         }
         self.clamp(buf);
+        let before = buf.cursor();
         if let Some(key) = InsertKey::Paste(text.to_string()).for_buffer::<B>() {
             self.insert_input(key, buf, state);
         }
-        let changed = state.history.take_changed();
-        state.edited |= changed;
-        self.rested = Some(buf.cursor());
-        self.paint(buf);
+        let changed = self.finish_key(before, true, buf, state);
         Outcome::Consumed { changed, note: None, request: None }
     }
 }

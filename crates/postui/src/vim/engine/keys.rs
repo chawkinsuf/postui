@@ -198,8 +198,6 @@ pub(crate) enum Cmd {
     Replace { ch: char, count: usize },
     Join { count: usize },
     Insert { how: InsertHow, count: usize },
-    Undo(usize),
-    Redo(usize),
     Repeat(usize),
     VisualStart(Shape),
     VisualSwap,
@@ -219,6 +217,10 @@ pub(crate) enum Step {
     /// One more key of a half-typed command.
     More,
     Cmd(Cmd),
+    /// `u` or `ctrl+r` (`count` 0 when none was typed). Not a [`Cmd`]: `.`
+    /// never repeats it, and an empty history declines it, handing back
+    /// `declined` (the count and keys a `Decline` would carry).
+    Undo { redo: bool, count: usize, declined: (Option<usize>, Vec<KeyEvent>) },
     /// Not the engine's key (spec §4.3).
     Decline { count: Option<usize>, keys: Vec<KeyEvent> },
     /// Consumed with no effect, maybe with a footer note.
@@ -398,7 +400,7 @@ impl Pending {
             Key::Esc if self.is_empty() => self.decline(ev),
             Key::Esc => self.inert(None),
             Key::Ctrl(_) if cx.visual || self.op.is_some() => self.decline_alone(ev),
-            Key::Ctrl(_) => self.cmd(|count, _| Cmd::Redo(count)),
+            Key::Ctrl(_) => self.undo(true, ev),
             _ if self.op.is_some() => self.operator_arg(key, ev),
             _ if cx.visual => self.visual_key(key, ev),
             _ => self.normal_key(key, ev, cx),
@@ -433,10 +435,7 @@ impl Pending {
 
     /// Declines with every key swallowed since the count.
     fn decline(&mut self, ev: KeyEvent) -> Step {
-        let count = (self.count1 > 0).then_some(self.count1);
-        let mut keys = std::mem::take(&mut self.keys);
-        keys.push(ev);
-        self.clear();
+        let (count, keys) = self.swallowed(ev);
         Step::Decline { count, keys }
     }
 
@@ -444,10 +443,33 @@ impl Pending {
     /// key goes to the app alone, with the count when only a count was
     /// typed (field.rs's rule, which keeps ctrl+c reaching the app).
     fn decline_alone(&mut self, ev: KeyEvent) -> Step {
+        let (count, keys) = self.swallowed_alone(ev);
+        Step::Decline { count, keys }
+    }
+
+    /// What [`Self::decline`] hands back; clears the pending command.
+    fn swallowed(&mut self, ev: KeyEvent) -> (Option<usize>, Vec<KeyEvent>) {
+        let count = (self.count1 > 0).then_some(self.count1);
+        let mut keys = std::mem::take(&mut self.keys);
+        keys.push(ev);
+        self.clear();
+        (count, keys)
+    }
+
+    /// What [`Self::decline_alone`] hands back; clears the pending command.
+    fn swallowed_alone(&mut self, ev: KeyEvent) -> (Option<usize>, Vec<KeyEvent>) {
         let only_count = self.op.is_none() && self.prefix.is_none() && self.reg.is_none();
         let count = (only_count && self.count1 > 0).then_some(self.count1);
         self.clear();
-        Step::Decline { count, keys: vec![ev] }
+        (count, vec![ev])
+    }
+
+    /// `u` (a plain key, declined as [`Self::decline`] would) or `ctrl+r`
+    /// (a chord, declined alone). A register prefix is ignored, as in Vim.
+    fn undo(&mut self, redo: bool, ev: KeyEvent) -> Step {
+        let count = combine_counts(self.count1, self.count2);
+        let declined = if redo { self.swallowed_alone(ev) } else { self.swallowed(ev) };
+        Step::Undo { redo, count, declined }
     }
 
     fn inert(&mut self, note: Option<String>) -> Step {
@@ -504,7 +526,7 @@ impl Pending {
             }
             'v' => self.cmd(|_, _| Cmd::VisualStart(Shape::Char)),
             'V' => self.cmd(|_, _| Cmd::VisualStart(Shape::Line)),
-            'u' => self.cmd(|count, _| Cmd::Undo(count)),
+            'u' => self.undo(false, ev),
             '.' => self.cmd(|count, _| Cmd::Repeat(count)),
             ':' | 'Z' | 'q' | '@' | 'm' | '\'' | '`' => self.decline(ev),
             'U' | 'K' | 'Q' | '&' => self.inert(Some(format!("{ch} not supported"))),
@@ -677,10 +699,26 @@ mod tests {
         assert_eq!(cmd("A", NORMAL), Cmd::Insert { how: InsertHow::LineEnd, count: 0 });
         assert_eq!(cmd("O", NORMAL), Cmd::Insert { how: InsertHow::OpenAbove, count: 0 });
         assert_eq!(cmd("V", NORMAL), Cmd::VisualStart(Shape::Line));
-        assert_eq!(cmd("3u", NORMAL), Cmd::Undo(3));
         assert_eq!(cmd("4.", NORMAL), Cmd::Repeat(4));
+        let ctrl_r = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL);
+        assert_eq!(
+            feed(&mut Pending::default(), "3u", NORMAL),
+            Step::Undo { redo: false, count: 3, declined: (Some(3), vec![ev('u')]) }
+        );
+        assert_eq!(
+            feed(&mut Pending::default(), "\"\"2u", NORMAL),
+            Step::Undo { redo: false, count: 2, declined: (Some(2), vec![ev('"'), ev('"'), ev('u')]) },
+            "a plain key hands back the register prefix too"
+        );
         let mut p = Pending::default();
-        assert!(matches!(p.feed(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL), NORMAL), Step::Cmd(Cmd::Redo(0))));
+        assert_eq!(p.feed(ctrl_r, NORMAL), Step::Undo { redo: true, count: 0, declined: (None, vec![ctrl_r]) });
+        feed(&mut p, "\"\"2", NORMAL);
+        assert_eq!(
+            p.feed(ctrl_r, NORMAL),
+            Step::Undo { redo: true, count: 2, declined: (None, vec![ctrl_r]) },
+            "a chord is declined alone"
+        );
+        assert!(p.is_empty());
     }
 
     #[test]

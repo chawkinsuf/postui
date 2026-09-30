@@ -3,8 +3,7 @@
 //! edtui's `EditorState` (the request body).
 
 use crate::components::line_input::{LineInput, VisualShape};
-use edtui::{EditorMode, EditorState, Highlight, Index2, RowIndex};
-use ratatui::style::Style;
+use edtui::{EditorMode, EditorState, Index2, RowIndex};
 use std::borrow::Cow;
 
 /// A position in chars, never bytes (spec §3.2). A one-line buffer always
@@ -21,7 +20,7 @@ impl Pos {
     }
 }
 
-/// What a buffer paints for the engine's mode: the caret shape and, in
+/// What a buffer paints for the engine's mode (see [`TextBuf::show`]): in
 /// Visual, the selection (inclusive, the caret is the moving end). Paint
 /// only: the engine never reads it back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,7 +56,9 @@ pub trait TextBuf {
     /// `(row + 1, 0)` to take the line break after `row`; `text` may hold
     /// `'\n'` only when [`TextBuf::MULTILINE`].
     fn splice(&mut self, start: Pos, end: Pos, text: &str);
-    /// Paint only: the mode's caret shape and the Visual span.
+    /// Paint only: the Visual span, and for the body edtui's mode (its
+    /// caret shape). A one-line field has no caret shape of its own; the
+    /// app draws its caret from `Engine::mode` (spec §3.3).
     fn show(&mut self, paint: Paint);
     /// Rows scrolled off the top (always 0 for a one-line field).
     fn top(&self) -> usize;
@@ -111,6 +112,14 @@ impl TextBuf for OneLineBuf<'_> {
         Cow::Owned(self.0.text().chars().collect())
     }
 
+    fn line_len(&self, _row: usize) -> usize {
+        self.0.text().chars().count()
+    }
+
+    fn text(&self) -> String {
+        self.0.text().to_string()
+    }
+
     fn cursor(&self) -> Pos {
         Pos::new(0, self.0.cursor())
     }
@@ -139,35 +148,37 @@ impl TextBuf for OneLineBuf<'_> {
 
     fn set_top(&mut self, _row: usize) {}
 
+    /// The GUI `anchor` only: the engine's Visual paint lives apart from it
+    /// (`LineInput::vim_visual`), so it is never read back as one.
     fn gui_selection(&self) -> Option<GuiSel> {
-        if self.0.visual().is_some() {
-            return None;
-        }
         let (start, end) = self.0.selection()?;
         let (anchor, head) = if self.0.cursor() == end { (start, end - 1) } else { (end - 1, start) };
         Some(GuiSel { anchor: Pos::new(0, anchor), head: Pos::new(0, head) })
     }
 
     fn clear_gui_selection(&mut self) {
-        if self.0.visual().is_none() {
-            self.0.clear_selection();
-        }
+        self.0.clear_selection();
     }
 }
 
+/// The body's Visual span as [`BodyBuf::show`] paints it: inclusive, in
+/// edtui's coordinates, `None` outside Visual. edtui's own `Selection`
+/// can't be built from outside the crate, so the editor draws this as a
+/// `Highlight` ahead of its JSON colours (deviation 1). The editor is the
+/// only writer of `EditorState::highlights`.
+pub type BodyVisual = Option<(Index2, Index2)>;
+
 /// The request body. Uses only edtui's public surface: `lines`, `cursor`,
-/// `mode`, `selection`, `highlights` and the viewport offset. Never
-/// `execute`, edtui's undo, its event handler or its clipboard.
+/// `mode`, `selection` and the viewport offset. Never `execute`, edtui's
+/// undo, its event handler or its clipboard, and never `highlights`.
 pub struct BodyBuf<'a> {
     state: &'a mut EditorState,
-    /// How Visual paints: edtui's own `Selection` can't be built from
-    /// outside the crate, so Visual is a `Highlight` (deviation 1).
-    visual_style: Style,
+    visual: &'a mut BodyVisual,
 }
 
 impl<'a> BodyBuf<'a> {
-    pub fn new(state: &'a mut EditorState, visual_style: Style) -> Self {
-        Self { state, visual_style }
+    pub fn new(state: &'a mut EditorState, visual: &'a mut BodyVisual) -> Self {
+        Self { state, visual }
     }
 }
 
@@ -231,26 +242,24 @@ impl TextBuf for BodyBuf<'_> {
     }
 
     fn show(&mut self, paint: Paint) {
-        self.state.highlights.clear();
         self.state.mode = match paint {
             Paint::Normal => EditorMode::Normal,
             Paint::Insert => EditorMode::Insert,
             Paint::Visual { .. } => EditorMode::Visual,
         };
-        if let Paint::Visual { anchor, line } = paint {
-            let caret = self.cursor();
-            let (lo, hi) = if anchor <= caret { (anchor, caret) } else { (caret, anchor) };
-            let (from, to) = if line {
-                (Pos::new(lo.row, 0), Pos::new(hi.row, self.line_len(hi.row).saturating_sub(1)))
-            } else {
-                (lo, hi)
-            };
-            self.state.highlights.push(Highlight::new(
-                Index2::new(from.row, from.col),
-                Index2::new(to.row, to.col),
-                self.visual_style,
-            ));
-        }
+        *self.visual = match paint {
+            Paint::Visual { anchor, line } => {
+                let caret = self.cursor();
+                let (lo, hi) = if anchor <= caret { (anchor, caret) } else { (caret, anchor) };
+                let (from, to) = if line {
+                    (Pos::new(lo.row, 0), Pos::new(hi.row, self.line_len(hi.row).saturating_sub(1)))
+                } else {
+                    (lo, hi)
+                };
+                Some((Index2::new(from.row, from.col), Index2::new(to.row, to.col)))
+            }
+            Paint::Normal | Paint::Insert => None,
+        };
     }
 
     fn top(&self) -> usize {
@@ -315,13 +324,14 @@ mod tests {
     #[test]
     fn body_buf_meets_the_one_line_contract() {
         let mut state = EditorState::new(Lines::from("héllo wörld"));
-        one_line_contract(&mut BodyBuf::new(&mut state, Style::default()));
+        one_line_contract(&mut BodyBuf::new(&mut state, &mut None));
     }
 
     #[test]
     fn body_splices_across_line_breaks() {
         let mut state = EditorState::new(Lines::from("ab\ncd\nef"));
-        let mut b = BodyBuf::new(&mut state, Style::default());
+        let mut visual = None;
+        let mut b = BodyBuf::new(&mut state, &mut visual);
         b.splice(Pos::new(0, 1), Pos::new(1, 1), "");
         assert_eq!(rows(&b), ["ad", "ef"]);
         b.splice(Pos::new(0, 2), Pos::new(1, 0), "");
@@ -339,7 +349,8 @@ mod tests {
     fn an_empty_body_is_one_empty_line_and_still_renders() {
         let mut state = EditorState::new(Lines::from(""));
         assert_eq!(state.lines.len(), 0);
-        let mut b = BodyBuf::new(&mut state, Style::default());
+        let mut visual = None;
+        let mut b = BodyBuf::new(&mut state, &mut visual);
         assert_eq!(b.line_count(), 1);
         assert!(b.line(0).is_empty());
         assert_eq!(b.text(), "");
@@ -358,7 +369,8 @@ mod tests {
         let mut state = EditorState::new(Lines::from(text.join("\n")));
         state.set_viewport_offset(0, 50);
         state.cursor = Index2::new(55, 0);
-        let mut b = BodyBuf::new(&mut state, Style::default());
+        let mut visual = None;
+        let mut b = BodyBuf::new(&mut state, &mut visual);
         b.splice(Pos::new(5, 0), Pos::new(59, 7), "");
         b.set_cursor(Pos::new(5, 0));
         assert_eq!(b.line_count(), 6);
@@ -380,20 +392,21 @@ mod tests {
     }
 
     #[test]
-    fn body_show_paints_visual_as_a_highlight_and_leaves_the_selection_alone() {
+    fn body_show_records_the_visual_span_and_leaves_selection_and_highlights_alone() {
         let mut state = EditorState::new(Lines::from("abc\ndef\nghi"));
-        let style = Style::default().bg(ratatui::style::Color::Blue);
+        let mut visual = None;
         state.cursor = Index2::new(1, 1);
-        let mut b = BodyBuf::new(&mut state, style);
+        let mut b = BodyBuf::new(&mut state, &mut visual);
         b.show(Paint::Visual { anchor: Pos::new(0, 2), line: false });
         assert_eq!(state.mode, EditorMode::Visual);
         assert_eq!(state.selection, None);
-        assert_eq!(state.highlights, vec![Highlight::new(Index2::new(0, 2), Index2::new(1, 1), style)]);
-        BodyBuf::new(&mut state, style).show(Paint::Visual { anchor: Pos::new(2, 1), line: true });
-        assert_eq!(state.highlights, vec![Highlight::new(Index2::new(1, 0), Index2::new(2, 2), style)]);
-        BodyBuf::new(&mut state, style).show(Paint::Insert);
-        assert_eq!(state.mode, EditorMode::Insert);
         assert!(state.highlights.is_empty());
+        assert_eq!(visual, Some((Index2::new(0, 2), Index2::new(1, 1))));
+        BodyBuf::new(&mut state, &mut visual).show(Paint::Visual { anchor: Pos::new(2, 1), line: true });
+        assert_eq!(visual, Some((Index2::new(1, 0), Index2::new(2, 2))));
+        BodyBuf::new(&mut state, &mut visual).show(Paint::Insert);
+        assert_eq!(state.mode, EditorMode::Insert);
+        assert_eq!(visual, None);
     }
 
     #[test]
@@ -426,7 +439,8 @@ mod tests {
         state.cursor = Index2::new(0, 1);
         SwitchMode(EditorMode::Visual).execute(&mut state);
         state.selection.as_mut().unwrap().end = Index2::new(1, 2);
-        let mut b = BodyBuf::new(&mut state, Style::default());
+        let mut visual = None;
+        let mut b = BodyBuf::new(&mut state, &mut visual);
         assert_eq!(b.gui_selection(), Some(GuiSel { anchor: Pos::new(0, 1), head: Pos::new(1, 2) }));
         b.clear_gui_selection();
         assert_eq!(state.selection, None);

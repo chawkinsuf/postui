@@ -294,7 +294,6 @@ mod tests {
     use super::super::op::delete_lines;
     use super::*;
     use edtui::{EditorState, Lines};
-    use ratatui::style::Style;
 
     /// Review probe P4: a delete of the last line made outside an operator
     /// (the step saved at a caret above it), undone and redone. Vim clamps
@@ -302,7 +301,8 @@ mod tests {
     #[test]
     fn a_redo_past_the_end_clamps_the_row_before_the_o_rule() {
         let mut state = EditorState::new(Lines::from("a\n  b\n  c\n  d\n  e"));
-        let mut buf = BodyBuf::new(&mut state, Style::default());
+        let mut visual = None;
+        let mut buf = BodyBuf::new(&mut state, &mut visual);
         let mut hist = History::default();
         buf.set_cursor(Pos::new(2, 2));
         hist.begin(Pos::new(2, 2));
@@ -319,7 +319,8 @@ mod tests {
     #[test]
     fn dd_on_a_blank_buffer_is_still_an_undo_step() {
         let mut state = EditorState::new(Lines::from(""));
-        let mut buf = BodyBuf::new(&mut state, Style::default());
+        let mut visual = None;
+        let mut buf = BodyBuf::new(&mut state, &mut visual);
         let mut hist = History::default();
         hist.begin(Pos::new(0, 0));
         delete_lines(&mut Ed { buf: &mut buf, hist: &mut hist }, 0, 0);

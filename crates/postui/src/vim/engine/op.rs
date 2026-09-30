@@ -3,6 +3,7 @@
 //! `~ u U > <` reuse the ranges. Also undo/redo, put, replace and join.
 
 use super::buf::{Pos, TextBuf};
+use super::class::white;
 use super::history::Ed;
 use super::keys::{CaseOp, Cmd, Op, Reach};
 use super::motion::{self, MKind, MotionCx};
@@ -47,7 +48,7 @@ pub(crate) struct Range {
 
 /// Vim's `inindent(0)` at `at`: nothing but blanks before it on its line.
 fn in_indent<B: TextBuf>(buf: &B, at: Pos) -> bool {
-    buf.line(at.row).iter().take(at.col).all(|&c| c == ' ' || c == '\t')
+    buf.line(at.row).iter().take(at.col).all(|&c| white(c))
 }
 
 fn step_over<B: TextBuf>(buf: &B, p: Pos) -> Pos {
@@ -76,7 +77,7 @@ pub(crate) fn range<B: TextBuf>(buf: &B, span: Span, op: Op) -> Range {
     // Rule 1b (op_delete): a multi-line charwise delete that leaves only
     // blanks after its end and starts within the indent is linewise.
     if op == Op::Delete && range.end.row > range.start.row {
-        let rest_blank = buf.line(range.end.row).iter().skip(range.end.col).all(|&c| c == ' ' || c == '\t');
+        let rest_blank = buf.line(range.end.row).iter().skip(range.end.col).all(|&c| white(c));
         if rest_blank && in_indent(buf, start) {
             range.kind = RKind::Line;
         }
@@ -473,12 +474,20 @@ impl Engine {
     /// `nv_redo_or_register()` set `w_set_curswant` even when
     /// `u_doit()` finds nothing to do (`j<C-r>k` aims for the caret's own
     /// column, not the one `j` kept).
-    /// `key` is the event as typed; a declined command hands it back.
-    pub(super) fn exec_undo<B: TextBuf>(&mut self, count: usize, redo: bool, key: KeyEvent, buf: &mut B, st: &mut BufState) -> Outcome {
+    /// `declined` is what a declined command hands back (`Step::Undo`).
+    pub(super) fn exec_undo<B: TextBuf>(
+        &mut self,
+        count: usize,
+        redo: bool,
+        declined: (Option<usize>, Vec<KeyEvent>),
+        buf: &mut B,
+        st: &mut BufState,
+    ) -> Outcome {
         let available = if redo { st.history.can_redo() } else { st.history.can_undo() };
         if !available {
             st.forget_want();
-            return Outcome::Declined { count: (count > 0).then_some(count), keys: vec![key] };
+            let (count, keys) = declined;
+            return Outcome::Declined { count, keys };
         }
         let mut landed = None;
         for _ in 0..count.max(1) {
