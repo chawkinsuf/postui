@@ -1,4 +1,4 @@
-{"header":{"vim":"9.1.0697","patches":"1-16, 647, 678, 697","settings":"expandtab shiftwidth=2 autoindent selection=inclusive tabstop=2 softtabstop=0 backspace=indent,eol,start whichwrap=b,s startofline nojoinspaces nrformats=bin,hex noshiftround nosmartindent nocindent textwidth=0 noignorecase notildeop matchpairs=(:),{:},[:] iskeyword=@,48-57,_,192-255 cpoptions=aABceFs formatoptions=tcq virtualedit= wrapscan magic nosmartcase","winheight":23,"corpus_sha256":"0a94918a9236239196e636ed2f40a2b96840afd2ebf28a509cd2bb7ed64b649a","texts":{"words":["foo bar  baz_qux.quux end"],"punct":["foo.bar(baz, qux);"],"url":["https://api.example.com/v1/users?id=42&name=a%20b#top"],"json_flat":["{\"a\": {\"b\": 1}, \"c\": [1, 2], \"d\": \"x y\"}"],"json_pretty":["{","  \"a\": {\"b\": 1},","  \"c\": [1, 2, 3],","  \"d\": \"hello world\"","}"],"json_gaps":["{","  \"a\": 1,","","  \"b\": [","    2","  ],","","","  \"c\": 3","}"],"brackets_deep":["f(a[b{c(d)e}f]g)h","(x [y","  {z}] w)"],"quotes":["say \"hi\" and \"a \\\"b\\\" c\" or \"\" then","\"k\": \"v\", \"k2\": \"(v2}\"","x = 'one' + 'two'"],"unicode":["héllo wörld 日本語 😀 x×y a b"],"blank_edges":["","a","","  b  ",""],"one_char":["x"],"empty":[""],"numbers":["id: 41, n: -7, hex: 0x1f, pad: 007"],"tabs":["\tone two","\t\tthree","four"],"short_last":["abcdefgh","abc"]},"groups":{"harness/smoke":{"tier":1,"status":"ship"},"harness/reg":{"tier":1,"status":"ship"},"motions/hl":{"tier":1,"status":"ship"},"motions/jk":{"tier":1,"status":"ship"},"motions/line":{"tier":1,"status":"ship"},"motions/file":{"tier":1,"status":"ship"},"motions/word":{"tier":1,"status":"ship"},"motions/word-lines":{"tier":1,"status":"ship"},"motions/find":{"tier":1,"status":"ship"},"motions/percent":{"tier":1,"status":"ship"},"motions/percent-lines":{"tier":1,"status":"ship"},"ops/delete":{"tier":1,"status":"ship"},"ops/delete-lines":{"tier":1,"status":"ship"},"ops/yank":{"tier":1,"status":"ship"},"ops/undo":{"tier":1,"status":"ship"},"ops/undo-counts":{"tier":1,"status":"ship"},"objects/word":{"tier":1,"status":"ship"},"objects/word-lines":{"tier":1,"status":"ship"},"objects/quote":{"tier":1,"status":"ship"},"objects/brace":{"tier":1,"status":"ship"},"objects/brace-lines":{"tier":1,"status":"ship"},"objects/no-match":{"tier":1,"status":"ship"},"objects/brace-undo":{"tier":1,"status":"ship"},"objects/paren":{"tier":1,"status":"ship"},"objects/bracket":{"tier":1,"status":"ship"},"insert/enter":{"tier":1,"status":"ship"},"insert/keys":{"tier":1,"status":"ship"},"ops/change":{"tier":1,"status":"ship"},"ops/change-cw":{"tier":1,"status":"ship"},"objects/change":{"tier":1,"status":"ship"},"insert/undo":{"tier":1,"status":"ship"},"ops/put-char":{"tier":1,"status":"ship"},"ops/put-line":{"tier":1,"status":"ship"},"ops/put-multi":{"tier":1,"status":"ship"},"ops/put-empty":{"tier":1,"status":"ship"},"ops/yank-put":{"tier":1,"status":"ship"},"ops/replace":{"tier":1,"status":"ship"},"ops/join":{"tier":1,"status":"ship"},"ops/replace-more":{"tier":1,"status":"ship"},"ops/replace-same":{"tier":1,"status":"ship"},"visual/select":{"tier":1,"status":"ship"},"visual/objects":{"tier":1,"status":"ship"},"visual/ops":{"tier":1,"status":"ship"},"visual/undo":{"tier":1,"status":"ship"},"visual/undo-same":{"tier":1,"status":"ship"},"visual/undo-same-lines":{"tier":1,"status":"ship"},"visual/put-char":{"tier":1,"status":"ship"},"visual/put-line":{"tier":1,"status":"ship"},"visual/yank-put":{"tier":1,"status":"ship"}}}}
+{"header":{"vim":"9.1.0697","patches":"1-16, 647, 678, 697","settings":"expandtab shiftwidth=2 autoindent selection=inclusive tabstop=2 softtabstop=0 backspace=indent,eol,start whichwrap=b,s startofline nojoinspaces nrformats=bin,hex noshiftround nosmartindent nocindent textwidth=0 noignorecase notildeop matchpairs=(:),{:},[:] iskeyword=@,48-57,_,192-255 cpoptions=aABceFs formatoptions=tcq virtualedit= wrapscan magic nosmartcase","winheight":23,"corpus_sha256":"fc2561821f77e7929b5cf3619574ab841377c824cefc43819e887f870f0c1cf2","texts":{"words":["foo bar  baz_qux.quux end"],"punct":["foo.bar(baz, qux);"],"url":["https://api.example.com/v1/users?id=42&name=a%20b#top"],"json_flat":["{\"a\": {\"b\": 1}, \"c\": [1, 2], \"d\": \"x y\"}"],"json_pretty":["{","  \"a\": {\"b\": 1},","  \"c\": [1, 2, 3],","  \"d\": \"hello world\"","}"],"json_gaps":["{","  \"a\": 1,","","  \"b\": [","    2","  ],","","","  \"c\": 3","}"],"brackets_deep":["f(a[b{c(d)e}f]g)h","(x [y","  {z}] w)"],"quotes":["say \"hi\" and \"a \\\"b\\\" c\" or \"\" then","\"k\": \"v\", \"k2\": \"(v2}\"","x = 'one' + 'two'"],"unicode":["héllo wörld 日本語 😀 x×y a b"],"blank_edges":["","a","","  b  ",""],"one_char":["x"],"empty":[""],"numbers":["id: 41, n: -7, hex: 0x1f, pad: 007"],"tabs":["\tone two","\t\tthree","four"],"short_last":["abcdefgh","abc"]},"groups":{"harness/smoke":{"tier":1,"status":"ship"},"harness/reg":{"tier":1,"status":"ship"},"motions/hl":{"tier":1,"status":"ship"},"motions/jk":{"tier":1,"status":"ship"},"motions/line":{"tier":1,"status":"ship"},"motions/file":{"tier":1,"status":"ship"},"motions/word":{"tier":1,"status":"ship"},"motions/word-lines":{"tier":1,"status":"ship"},"motions/find":{"tier":1,"status":"ship"},"motions/percent":{"tier":1,"status":"ship"},"motions/percent-lines":{"tier":1,"status":"ship"},"ops/delete":{"tier":1,"status":"ship"},"ops/delete-lines":{"tier":1,"status":"ship"},"ops/yank":{"tier":1,"status":"ship"},"ops/undo":{"tier":1,"status":"ship"},"ops/undo-counts":{"tier":1,"status":"ship"},"objects/word":{"tier":1,"status":"ship"},"objects/word-lines":{"tier":1,"status":"ship"},"objects/quote":{"tier":1,"status":"ship"},"objects/brace":{"tier":1,"status":"ship"},"objects/brace-lines":{"tier":1,"status":"ship"},"objects/no-match":{"tier":1,"status":"ship"},"objects/brace-undo":{"tier":1,"status":"ship"},"objects/paren":{"tier":1,"status":"ship"},"objects/bracket":{"tier":1,"status":"ship"},"insert/enter":{"tier":1,"status":"ship"},"insert/keys":{"tier":1,"status":"ship"},"ops/change":{"tier":1,"status":"ship"},"ops/change-cw":{"tier":1,"status":"ship"},"objects/change":{"tier":1,"status":"ship"},"insert/undo":{"tier":1,"status":"ship"},"ops/put-char":{"tier":1,"status":"ship"},"ops/put-line":{"tier":1,"status":"ship"},"ops/put-multi":{"tier":1,"status":"ship"},"ops/put-empty":{"tier":1,"status":"ship"},"ops/yank-put":{"tier":1,"status":"ship"},"ops/replace":{"tier":1,"status":"ship"},"ops/join":{"tier":1,"status":"ship"},"ops/replace-more":{"tier":1,"status":"ship"},"ops/replace-same":{"tier":1,"status":"ship"},"visual/select":{"tier":1,"status":"ship"},"visual/objects":{"tier":1,"status":"ship"},"visual/ops":{"tier":1,"status":"ship"},"visual/undo":{"tier":1,"status":"ship"},"visual/undo-same":{"tier":1,"status":"ship"},"visual/undo-same-lines":{"tier":1,"status":"ship"},"visual/put-char":{"tier":1,"status":"ship"},"visual/put-line":{"tier":1,"status":"ship"},"visual/put-emptied":{"tier":1,"status":"ship"},"visual/exit-want":{"tier":1,"status":"ship"},"visual/yank-put":{"tier":1,"status":"ship"}}}}
 {"group":"harness/reg","text":"json_pretty","cursor":[1,1],"keys":"<Esc>","reg":{"text":"q\n","type":"V"},"expect":{"cursor":[1,1],"mode":"n","reg":"q\n","regtype":"V"}}
 {"group":"harness/reg","text":"words","cursor":[1,1],"keys":"<Esc>","reg":{"text":"q\n","type":"V"},"expect":{"cursor":[1,1],"mode":"n","reg":"q\n","regtype":"V"}}
 {"group":"harness/smoke","text":"blank_edges","cursor":[1,1],"keys":"<Esc>","expect":{"cursor":[1,1],"mode":"n","reg":"","regtype":"v"}}
@@ -29790,6 +29790,306 @@
 {"group":"ops/yank","text":"words","cursor":[1,25],"keys":"yta","expect":{"cursor":[1,25],"mode":"n","reg":"","regtype":"v"}}
 {"group":"ops/yank","text":"words","cursor":[1,25],"keys":"yw","expect":{"cursor":[1,25],"mode":"n","reg":"d","regtype":"v"}}
 {"group":"ops/yank","text":"words","cursor":[1,25],"keys":"yy","expect":{"cursor":[1,25],"mode":"n","reg":"foo bar  baz_qux.quux end\n","regtype":"V"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[1,1],"keys":"Vk<Esc>j","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[1,1],"keys":"v$<Esc>k","expect":{"cursor":[1,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[1,1],"keys":"v$vk","expect":{"cursor":[1,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[1,1],"keys":"v0<Esc>j","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[1,1],"keys":"vh<Esc>j","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[1,1],"keys":"vj<Esc>k","expect":{"cursor":[1,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[1,1],"keys":"vjk<Esc>j","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[1,1],"keys":"vk<Esc>j","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[1,1],"keys":"vkVVj","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[1,1],"keys":"vkvj","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[1,1],"keys":"vlo<Esc>k","expect":{"cursor":[1,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[1,1],"keys":"vlovk","expect":{"cursor":[1,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[2,1],"keys":"Vk<Esc>j","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[2,1],"keys":"v$<Esc>k","expect":{"cursor":[1,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[2,1],"keys":"v$vk","expect":{"cursor":[1,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[2,1],"keys":"v0<Esc>j","expect":{"cursor":[3,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[2,1],"keys":"vh<Esc>j","expect":{"cursor":[3,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[2,1],"keys":"vj<Esc>k","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[2,1],"keys":"vjk<Esc>j","expect":{"cursor":[3,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[2,1],"keys":"vk<Esc>j","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[2,1],"keys":"vkVVj","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[2,1],"keys":"vkvj","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[2,1],"keys":"vlo<Esc>k","expect":{"cursor":[1,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[2,1],"keys":"vlovk","expect":{"cursor":[1,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[2,16],"keys":"Vk<Esc>j","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[2,16],"keys":"v$<Esc>k","expect":{"cursor":[1,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[2,16],"keys":"v$vk","expect":{"cursor":[1,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[2,16],"keys":"v0<Esc>j","expect":{"cursor":[3,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[2,16],"keys":"vh<Esc>j","expect":{"cursor":[3,15],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[2,16],"keys":"vj<Esc>k","expect":{"cursor":[2,16],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[2,16],"keys":"vjk<Esc>j","expect":{"cursor":[3,16],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[2,16],"keys":"vk<Esc>j","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[2,16],"keys":"vkVVj","expect":{"cursor":[2,16],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[2,16],"keys":"vkvj","expect":{"cursor":[2,16],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[2,16],"keys":"vlo<Esc>k","expect":{"cursor":[1,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[2,16],"keys":"vlovk","expect":{"cursor":[1,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[2,2],"keys":"Vk<Esc>j","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[2,2],"keys":"v$<Esc>k","expect":{"cursor":[1,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[2,2],"keys":"v$vk","expect":{"cursor":[1,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[2,2],"keys":"v0<Esc>j","expect":{"cursor":[3,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[2,2],"keys":"vh<Esc>j","expect":{"cursor":[3,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[2,2],"keys":"vj<Esc>k","expect":{"cursor":[2,2],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[2,2],"keys":"vjk<Esc>j","expect":{"cursor":[3,2],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[2,2],"keys":"vk<Esc>j","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[2,2],"keys":"vkVVj","expect":{"cursor":[2,2],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[2,2],"keys":"vkvj","expect":{"cursor":[2,2],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[2,2],"keys":"vlo<Esc>k","expect":{"cursor":[1,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[2,2],"keys":"vlovk","expect":{"cursor":[1,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[3,1],"keys":"Vk<Esc>j","expect":{"cursor":[3,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[3,1],"keys":"v$<Esc>k","expect":{"cursor":[2,16],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[3,1],"keys":"v$vk","expect":{"cursor":[2,16],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[3,1],"keys":"v0<Esc>j","expect":{"cursor":[4,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[3,1],"keys":"vh<Esc>j","expect":{"cursor":[4,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[3,1],"keys":"vj<Esc>k","expect":{"cursor":[3,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[3,1],"keys":"vjk<Esc>j","expect":{"cursor":[4,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[3,1],"keys":"vk<Esc>j","expect":{"cursor":[3,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[3,1],"keys":"vkVVj","expect":{"cursor":[3,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[3,1],"keys":"vkvj","expect":{"cursor":[3,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[3,1],"keys":"vlo<Esc>k","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[3,1],"keys":"vlovk","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[3,17],"keys":"Vk<Esc>j","expect":{"cursor":[3,16],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[3,17],"keys":"v$<Esc>k","expect":{"cursor":[2,16],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[3,17],"keys":"v$vk","expect":{"cursor":[2,16],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[3,17],"keys":"v0<Esc>j","expect":{"cursor":[4,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[3,17],"keys":"vh<Esc>j","expect":{"cursor":[4,16],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[3,17],"keys":"vj<Esc>k","expect":{"cursor":[3,17],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[3,17],"keys":"vjk<Esc>j","expect":{"cursor":[4,17],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[3,17],"keys":"vk<Esc>j","expect":{"cursor":[3,16],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[3,17],"keys":"vkVVj","expect":{"cursor":[3,17],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[3,17],"keys":"vkvj","expect":{"cursor":[3,17],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[3,17],"keys":"vlo<Esc>k","expect":{"cursor":[2,16],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[3,17],"keys":"vlovk","expect":{"cursor":[2,16],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[3,4],"keys":"Vk<Esc>j","expect":{"cursor":[3,4],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[3,4],"keys":"v$<Esc>k","expect":{"cursor":[2,16],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[3,4],"keys":"v$vk","expect":{"cursor":[2,16],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[3,4],"keys":"v0<Esc>j","expect":{"cursor":[4,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[3,4],"keys":"vh<Esc>j","expect":{"cursor":[4,3],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[3,4],"keys":"vj<Esc>k","expect":{"cursor":[3,4],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[3,4],"keys":"vjk<Esc>j","expect":{"cursor":[4,4],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[3,4],"keys":"vk<Esc>j","expect":{"cursor":[3,4],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[3,4],"keys":"vkVVj","expect":{"cursor":[3,4],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[3,4],"keys":"vkvj","expect":{"cursor":[3,4],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[3,4],"keys":"vlo<Esc>k","expect":{"cursor":[2,4],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[3,4],"keys":"vlovk","expect":{"cursor":[2,4],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[4,1],"keys":"Vk<Esc>j","expect":{"cursor":[4,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[4,1],"keys":"v$<Esc>k","expect":{"cursor":[3,17],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[4,1],"keys":"v$vk","expect":{"cursor":[3,17],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[4,1],"keys":"v0<Esc>j","expect":{"cursor":[5,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[4,1],"keys":"vh<Esc>j","expect":{"cursor":[5,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[4,1],"keys":"vj<Esc>k","expect":{"cursor":[4,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[4,1],"keys":"vjk<Esc>j","expect":{"cursor":[5,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[4,1],"keys":"vk<Esc>j","expect":{"cursor":[4,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[4,1],"keys":"vkVVj","expect":{"cursor":[4,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[4,1],"keys":"vkvj","expect":{"cursor":[4,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[4,1],"keys":"vlo<Esc>k","expect":{"cursor":[3,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[4,1],"keys":"vlovk","expect":{"cursor":[3,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[4,19],"keys":"Vk<Esc>j","expect":{"cursor":[4,17],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[4,19],"keys":"v$<Esc>k","expect":{"cursor":[3,17],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[4,19],"keys":"v$vk","expect":{"cursor":[3,17],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[4,19],"keys":"v0<Esc>j","expect":{"cursor":[5,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[4,19],"keys":"vh<Esc>j","expect":{"cursor":[5,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[4,19],"keys":"vj<Esc>k","expect":{"cursor":[4,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[4,19],"keys":"vjk<Esc>j","expect":{"cursor":[5,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[4,19],"keys":"vk<Esc>j","expect":{"cursor":[4,17],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[4,19],"keys":"vkVVj","expect":{"cursor":[4,19],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[4,19],"keys":"vkvj","expect":{"cursor":[4,19],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[4,19],"keys":"vlo<Esc>k","expect":{"cursor":[3,17],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[4,19],"keys":"vlovk","expect":{"cursor":[3,17],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[4,20],"keys":"Vk<Esc>j","expect":{"cursor":[4,17],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[4,20],"keys":"v$<Esc>k","expect":{"cursor":[3,17],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[4,20],"keys":"v$vk","expect":{"cursor":[3,17],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[4,20],"keys":"v0<Esc>j","expect":{"cursor":[5,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[4,20],"keys":"vh<Esc>j","expect":{"cursor":[5,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[4,20],"keys":"vj<Esc>k","expect":{"cursor":[4,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[4,20],"keys":"vjk<Esc>j","expect":{"cursor":[5,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[4,20],"keys":"vk<Esc>j","expect":{"cursor":[4,17],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[4,20],"keys":"vkVVj","expect":{"cursor":[4,20],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[4,20],"keys":"vkvj","expect":{"cursor":[4,20],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[4,20],"keys":"vlo<Esc>k","expect":{"cursor":[3,17],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[4,20],"keys":"vlovk","expect":{"cursor":[3,17],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[5,1],"keys":"Vk<Esc>j","expect":{"cursor":[5,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[5,1],"keys":"v$<Esc>k","expect":{"cursor":[4,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[5,1],"keys":"v$vk","expect":{"cursor":[4,20],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[5,1],"keys":"v0<Esc>j","expect":{"cursor":[5,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[5,1],"keys":"vh<Esc>j","expect":{"cursor":[5,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[5,1],"keys":"vj<Esc>k","expect":{"cursor":[4,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[5,1],"keys":"vjk<Esc>j","expect":{"cursor":[5,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[5,1],"keys":"vk<Esc>j","expect":{"cursor":[5,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[5,1],"keys":"vkVVj","expect":{"cursor":[5,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[5,1],"keys":"vkvj","expect":{"cursor":[5,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[5,1],"keys":"vlo<Esc>k","expect":{"cursor":[4,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"json_pretty","cursor":[5,1],"keys":"vlovk","expect":{"cursor":[4,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[1,1],"keys":"Vk<Esc>j","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[1,1],"keys":"v$<Esc>k","expect":{"cursor":[1,8],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[1,1],"keys":"v$vk","expect":{"cursor":[1,8],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[1,1],"keys":"v0<Esc>j","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[1,1],"keys":"vh<Esc>j","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[1,1],"keys":"vj<Esc>k","expect":{"cursor":[1,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[1,1],"keys":"vjk<Esc>j","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[1,1],"keys":"vk<Esc>j","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[1,1],"keys":"vkVVj","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[1,1],"keys":"vkvj","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[1,1],"keys":"vlo<Esc>k","expect":{"cursor":[1,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[1,1],"keys":"vlovk","expect":{"cursor":[1,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[1,2],"keys":"Vk<Esc>j","expect":{"cursor":[2,2],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[1,2],"keys":"v$<Esc>k","expect":{"cursor":[1,8],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[1,2],"keys":"v$vk","expect":{"cursor":[1,8],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[1,2],"keys":"v0<Esc>j","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[1,2],"keys":"vh<Esc>j","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[1,2],"keys":"vj<Esc>k","expect":{"cursor":[1,2],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[1,2],"keys":"vjk<Esc>j","expect":{"cursor":[2,2],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[1,2],"keys":"vk<Esc>j","expect":{"cursor":[2,2],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[1,2],"keys":"vkVVj","expect":{"cursor":[2,2],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[1,2],"keys":"vkvj","expect":{"cursor":[2,2],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[1,2],"keys":"vlo<Esc>k","expect":{"cursor":[1,2],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[1,2],"keys":"vlovk","expect":{"cursor":[1,2],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[1,8],"keys":"Vk<Esc>j","expect":{"cursor":[2,3],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[1,8],"keys":"v$<Esc>k","expect":{"cursor":[1,8],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[1,8],"keys":"v$vk","expect":{"cursor":[1,8],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[1,8],"keys":"v0<Esc>j","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[1,8],"keys":"vh<Esc>j","expect":{"cursor":[2,3],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[1,8],"keys":"vj<Esc>k","expect":{"cursor":[1,3],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[1,8],"keys":"vjk<Esc>j","expect":{"cursor":[2,3],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[1,8],"keys":"vk<Esc>j","expect":{"cursor":[2,3],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[1,8],"keys":"vkVVj","expect":{"cursor":[2,3],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[1,8],"keys":"vkvj","expect":{"cursor":[2,3],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[1,8],"keys":"vlo<Esc>k","expect":{"cursor":[1,8],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[1,8],"keys":"vlovk","expect":{"cursor":[1,8],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[2,1],"keys":"Vk<Esc>j","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[2,1],"keys":"v$<Esc>k","expect":{"cursor":[1,3],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[2,1],"keys":"v$vk","expect":{"cursor":[1,8],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[2,1],"keys":"v0<Esc>j","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[2,1],"keys":"vh<Esc>j","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[2,1],"keys":"vj<Esc>k","expect":{"cursor":[1,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[2,1],"keys":"vjk<Esc>j","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[2,1],"keys":"vk<Esc>j","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[2,1],"keys":"vkVVj","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[2,1],"keys":"vkvj","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[2,1],"keys":"vlo<Esc>k","expect":{"cursor":[1,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[2,1],"keys":"vlovk","expect":{"cursor":[1,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[2,2],"keys":"Vk<Esc>j","expect":{"cursor":[2,2],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[2,2],"keys":"v$<Esc>k","expect":{"cursor":[1,3],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[2,2],"keys":"v$vk","expect":{"cursor":[1,8],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[2,2],"keys":"v0<Esc>j","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[2,2],"keys":"vh<Esc>j","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[2,2],"keys":"vj<Esc>k","expect":{"cursor":[1,2],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[2,2],"keys":"vjk<Esc>j","expect":{"cursor":[2,2],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[2,2],"keys":"vk<Esc>j","expect":{"cursor":[2,2],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[2,2],"keys":"vkVVj","expect":{"cursor":[2,2],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[2,2],"keys":"vkvj","expect":{"cursor":[2,2],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[2,2],"keys":"vlo<Esc>k","expect":{"cursor":[1,2],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[2,2],"keys":"vlovk","expect":{"cursor":[1,2],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[2,3],"keys":"Vk<Esc>j","expect":{"cursor":[2,3],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[2,3],"keys":"v$<Esc>k","expect":{"cursor":[1,3],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[2,3],"keys":"v$vk","expect":{"cursor":[1,8],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[2,3],"keys":"v0<Esc>j","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[2,3],"keys":"vh<Esc>j","expect":{"cursor":[2,2],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[2,3],"keys":"vj<Esc>k","expect":{"cursor":[1,3],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[2,3],"keys":"vjk<Esc>j","expect":{"cursor":[2,3],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[2,3],"keys":"vk<Esc>j","expect":{"cursor":[2,3],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[2,3],"keys":"vkVVj","expect":{"cursor":[2,3],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[2,3],"keys":"vkvj","expect":{"cursor":[2,3],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[2,3],"keys":"vlo<Esc>k","expect":{"cursor":[1,3],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"short_last","cursor":[2,3],"keys":"vlovk","expect":{"cursor":[1,3],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[1,1],"keys":"Vk<Esc>j","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[1,1],"keys":"v$<Esc>k","expect":{"cursor":[1,8],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[1,1],"keys":"v$vk","expect":{"cursor":[1,8],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[1,1],"keys":"v0<Esc>j","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[1,1],"keys":"vh<Esc>j","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[1,1],"keys":"vj<Esc>k","expect":{"cursor":[1,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[1,1],"keys":"vjk<Esc>j","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[1,1],"keys":"vk<Esc>j","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[1,1],"keys":"vkVVj","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[1,1],"keys":"vkvj","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[1,1],"keys":"vlo<Esc>k","expect":{"cursor":[1,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[1,1],"keys":"vlovk","expect":{"cursor":[1,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[1,2],"keys":"Vk<Esc>j","expect":{"cursor":[2,2],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[1,2],"keys":"v$<Esc>k","expect":{"cursor":[1,8],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[1,2],"keys":"v$vk","expect":{"cursor":[1,8],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[1,2],"keys":"v0<Esc>j","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[1,2],"keys":"vh<Esc>j","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[1,2],"keys":"vj<Esc>k","expect":{"cursor":[1,3],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[1,2],"keys":"vjk<Esc>j","expect":{"cursor":[2,2],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[1,2],"keys":"vk<Esc>j","expect":{"cursor":[2,2],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[1,2],"keys":"vkVVj","expect":{"cursor":[2,2],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[1,2],"keys":"vkvj","expect":{"cursor":[2,2],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[1,2],"keys":"vlo<Esc>k","expect":{"cursor":[1,2],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[1,2],"keys":"vlovk","expect":{"cursor":[1,2],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[1,8],"keys":"Vk<Esc>j","expect":{"cursor":[2,7],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[1,8],"keys":"v$<Esc>k","expect":{"cursor":[1,8],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[1,8],"keys":"v$vk","expect":{"cursor":[1,8],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[1,8],"keys":"v0<Esc>j","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[1,8],"keys":"vh<Esc>j","expect":{"cursor":[2,6],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[1,8],"keys":"vj<Esc>k","expect":{"cursor":[1,8],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[1,8],"keys":"vjk<Esc>j","expect":{"cursor":[2,7],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[1,8],"keys":"vk<Esc>j","expect":{"cursor":[2,7],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[1,8],"keys":"vkVVj","expect":{"cursor":[2,7],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[1,8],"keys":"vkvj","expect":{"cursor":[2,7],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[1,8],"keys":"vlo<Esc>k","expect":{"cursor":[1,8],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[1,8],"keys":"vlovk","expect":{"cursor":[1,8],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[2,1],"keys":"Vk<Esc>j","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[2,1],"keys":"v$<Esc>k","expect":{"cursor":[1,8],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[2,1],"keys":"v$vk","expect":{"cursor":[1,8],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[2,1],"keys":"v0<Esc>j","expect":{"cursor":[3,2],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[2,1],"keys":"vh<Esc>j","expect":{"cursor":[3,2],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[2,1],"keys":"vj<Esc>k","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[2,1],"keys":"vjk<Esc>j","expect":{"cursor":[3,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[2,1],"keys":"vk<Esc>j","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[2,1],"keys":"vkVVj","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[2,1],"keys":"vkvj","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[2,1],"keys":"vlo<Esc>k","expect":{"cursor":[1,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[2,1],"keys":"vlovk","expect":{"cursor":[1,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[2,2],"keys":"Vk<Esc>j","expect":{"cursor":[2,2],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[2,2],"keys":"v$<Esc>k","expect":{"cursor":[1,8],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[2,2],"keys":"v$vk","expect":{"cursor":[1,8],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[2,2],"keys":"v0<Esc>j","expect":{"cursor":[3,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[2,2],"keys":"vh<Esc>j","expect":{"cursor":[3,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[2,2],"keys":"vj<Esc>k","expect":{"cursor":[2,2],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[2,2],"keys":"vjk<Esc>j","expect":{"cursor":[3,3],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[2,2],"keys":"vk<Esc>j","expect":{"cursor":[2,2],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[2,2],"keys":"vkVVj","expect":{"cursor":[2,2],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[2,2],"keys":"vkvj","expect":{"cursor":[2,2],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[2,2],"keys":"vlo<Esc>k","expect":{"cursor":[1,2],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[2,2],"keys":"vlovk","expect":{"cursor":[1,2],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[2,7],"keys":"Vk<Esc>j","expect":{"cursor":[2,7],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[2,7],"keys":"v$<Esc>k","expect":{"cursor":[1,8],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[2,7],"keys":"v$vk","expect":{"cursor":[1,8],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[2,7],"keys":"v0<Esc>j","expect":{"cursor":[3,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[2,7],"keys":"vh<Esc>j","expect":{"cursor":[3,4],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[2,7],"keys":"vj<Esc>k","expect":{"cursor":[2,2],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[2,7],"keys":"vjk<Esc>j","expect":{"cursor":[3,4],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[2,7],"keys":"vk<Esc>j","expect":{"cursor":[2,7],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[2,7],"keys":"vkVVj","expect":{"cursor":[2,7],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[2,7],"keys":"vkvj","expect":{"cursor":[2,7],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[2,7],"keys":"vlo<Esc>k","expect":{"cursor":[1,8],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[2,7],"keys":"vlovk","expect":{"cursor":[1,8],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[3,1],"keys":"Vk<Esc>j","expect":{"cursor":[3,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[3,1],"keys":"v$<Esc>k","expect":{"cursor":[2,2],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[3,1],"keys":"v$vk","expect":{"cursor":[2,7],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[3,1],"keys":"v0<Esc>j","expect":{"cursor":[3,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[3,1],"keys":"vh<Esc>j","expect":{"cursor":[3,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[3,1],"keys":"vj<Esc>k","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[3,1],"keys":"vjk<Esc>j","expect":{"cursor":[3,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[3,1],"keys":"vk<Esc>j","expect":{"cursor":[3,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[3,1],"keys":"vkVVj","expect":{"cursor":[3,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[3,1],"keys":"vkvj","expect":{"cursor":[3,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[3,1],"keys":"vlo<Esc>k","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[3,1],"keys":"vlovk","expect":{"cursor":[2,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[3,4],"keys":"Vk<Esc>j","expect":{"cursor":[3,3],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[3,4],"keys":"v$<Esc>k","expect":{"cursor":[2,2],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[3,4],"keys":"v$vk","expect":{"cursor":[2,7],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[3,4],"keys":"v0<Esc>j","expect":{"cursor":[3,1],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[3,4],"keys":"vh<Esc>j","expect":{"cursor":[3,3],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[3,4],"keys":"vj<Esc>k","expect":{"cursor":[2,2],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[3,4],"keys":"vjk<Esc>j","expect":{"cursor":[3,3],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[3,4],"keys":"vk<Esc>j","expect":{"cursor":[3,3],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[3,4],"keys":"vkVVj","expect":{"cursor":[3,4],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[3,4],"keys":"vkvj","expect":{"cursor":[3,4],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[3,4],"keys":"vlo<Esc>k","expect":{"cursor":[2,2],"mode":"n","reg":"","regtype":"v"}}
+{"group":"visual/exit-want","text":"tabs","cursor":[3,4],"keys":"vlovk","expect":{"cursor":[2,2],"mode":"n","reg":"","regtype":"v"}}
 {"group":"visual/objects","text":"blank_edges","cursor":[1,1],"keys":"Viw","expect":{"cursor":[1,1],"mode":"v","reg":"","regtype":"v","visual":[1,1]}}
 {"group":"visual/objects","text":"blank_edges","cursor":[1,1],"keys":"v2iw","expect":{"cursor":[2,1],"mode":"v","reg":"","regtype":"v","visual":[1,1]}}
 {"group":"visual/objects","text":"blank_edges","cursor":[1,1],"keys":"v2i{","expect":{"cursor":[1,1],"mode":"v","reg":"","regtype":"v","visual":[1,1]}}
@@ -32660,6 +32960,54 @@
 {"group":"visual/put-char","text":"words","cursor":[1,25],"keys":"vl2p","reg":{"text":"Q","type":"v"},"expect":{"cursor":[1,26],"mode":"n","reg":"d","regtype":"v","lines":["foo bar  baz_qux.quux enQQ"]}}
 {"group":"visual/put-char","text":"words","cursor":[1,25],"keys":"vlP","reg":{"text":"Q","type":"v"},"expect":{"cursor":[1,25],"mode":"n","reg":"Q","regtype":"v","lines":["foo bar  baz_qux.quux enQ"]}}
 {"group":"visual/put-char","text":"words","cursor":[1,25],"keys":"vlp","reg":{"text":"Q","type":"v"},"expect":{"cursor":[1,25],"mode":"n","reg":"d","regtype":"v","lines":["foo bar  baz_qux.quux enQ"]}}
+{"group":"visual/put-emptied","text":"empty","cursor":[1,1],"keys":"VdVP","expect":{"cursor":[1,1],"mode":"n","reg":"\n","regtype":"V"}}
+{"group":"visual/put-emptied","text":"empty","cursor":[1,1],"keys":"VdVp","expect":{"cursor":[1,1],"mode":"n","reg":"\n","regtype":"V"}}
+{"group":"visual/put-emptied","text":"empty","cursor":[1,1],"keys":"Vdvp","expect":{"cursor":[2,1],"mode":"n","reg":"\n","regtype":"V","lines":["",""]}}
+{"group":"visual/put-emptied","text":"empty","cursor":[1,1],"keys":"ggVGdVp","expect":{"cursor":[1,1],"mode":"n","reg":"\n","regtype":"V"}}
+{"group":"visual/put-emptied","text":"empty","cursor":[1,1],"keys":"ggVGdvp","expect":{"cursor":[2,1],"mode":"n","reg":"\n","regtype":"V","lines":["",""]}}
+{"group":"visual/put-emptied","text":"empty","cursor":[1,1],"keys":"yyVdvp","expect":{"cursor":[2,1],"mode":"n","reg":"\n","regtype":"V","lines":["",""]}}
+{"group":"visual/put-emptied","text":"json_pretty","cursor":[1,1],"keys":"VdVP","expect":{"cursor":[1,1],"mode":"n","reg":"{\n","regtype":"V","lines":["{","  \"c\": [1, 2, 3],","  \"d\": \"hello world\"","}"]}}
+{"group":"visual/put-emptied","text":"json_pretty","cursor":[1,1],"keys":"VdVp","expect":{"cursor":[1,1],"mode":"n","reg":"  \"a\": {\"b\": 1},\n","regtype":"V","lines":["{","  \"c\": [1, 2, 3],","  \"d\": \"hello world\"","}"]}}
+{"group":"visual/put-emptied","text":"json_pretty","cursor":[1,1],"keys":"Vdvp","expect":{"cursor":[2,1],"mode":"n","reg":"\"","regtype":"v","lines":["  ","{","a\": {\"b\": 1},","  \"c\": [1, 2, 3],","  \"d\": \"hello world\"","}"]}}
+{"group":"visual/put-emptied","text":"json_pretty","cursor":[1,1],"keys":"ggVGdVp","expect":{"cursor":[1,1],"mode":"n","reg":"{\n  \"a\": {\"b\": 1},\n  \"c\": [1, 2, 3],\n  \"d\": \"hello world\"\n}\n","regtype":"V"}}
+{"group":"visual/put-emptied","text":"json_pretty","cursor":[1,1],"keys":"ggVGdvp","expect":{"cursor":[2,1],"mode":"n","reg":"{\n  \"a\": {\"b\": 1},\n  \"c\": [1, 2, 3],\n  \"d\": \"hello world\"\n}\n","regtype":"V","lines":["","{","  \"a\": {\"b\": 1},","  \"c\": [1, 2, 3],","  \"d\": \"hello world\"","}"]}}
+{"group":"visual/put-emptied","text":"json_pretty","cursor":[1,1],"keys":"yyVdvp","expect":{"cursor":[2,1],"mode":"n","reg":"\"","regtype":"v","lines":["  ","{","a\": {\"b\": 1},","  \"c\": [1, 2, 3],","  \"d\": \"hello world\"","}"]}}
+{"group":"visual/put-emptied","text":"json_pretty","cursor":[2,1],"keys":"VdVP","expect":{"cursor":[2,3],"mode":"n","reg":"  \"a\": {\"b\": 1},\n","regtype":"V","lines":["{","  \"a\": {\"b\": 1},","  \"d\": \"hello world\"","}"]}}
+{"group":"visual/put-emptied","text":"json_pretty","cursor":[2,1],"keys":"VdVp","expect":{"cursor":[2,3],"mode":"n","reg":"  \"c\": [1, 2, 3],\n","regtype":"V","lines":["{","  \"a\": {\"b\": 1},","  \"d\": \"hello world\"","}"]}}
+{"group":"visual/put-emptied","text":"json_pretty","cursor":[2,1],"keys":"Vdvp","expect":{"cursor":[3,3],"mode":"n","reg":"\"","regtype":"v","lines":["{","  ","  \"a\": {\"b\": 1},","c\": [1, 2, 3],","  \"d\": \"hello world\"","}"]}}
+{"group":"visual/put-emptied","text":"json_pretty","cursor":[2,1],"keys":"ggVGdVp","expect":{"cursor":[1,1],"mode":"n","reg":"{\n  \"a\": {\"b\": 1},\n  \"c\": [1, 2, 3],\n  \"d\": \"hello world\"\n}\n","regtype":"V"}}
+{"group":"visual/put-emptied","text":"json_pretty","cursor":[2,1],"keys":"ggVGdvp","expect":{"cursor":[2,1],"mode":"n","reg":"{\n  \"a\": {\"b\": 1},\n  \"c\": [1, 2, 3],\n  \"d\": \"hello world\"\n}\n","regtype":"V","lines":["","{","  \"a\": {\"b\": 1},","  \"c\": [1, 2, 3],","  \"d\": \"hello world\"","}"]}}
+{"group":"visual/put-emptied","text":"json_pretty","cursor":[2,1],"keys":"yyVdvp","expect":{"cursor":[3,3],"mode":"n","reg":"\"","regtype":"v","lines":["{","  ","  \"a\": {\"b\": 1},","c\": [1, 2, 3],","  \"d\": \"hello world\"","}"]}}
+{"group":"visual/put-emptied","text":"json_pretty","cursor":[3,1],"keys":"VdVP","expect":{"cursor":[3,3],"mode":"n","reg":"  \"c\": [1, 2, 3],\n","regtype":"V","lines":["{","  \"a\": {\"b\": 1},","  \"c\": [1, 2, 3],","}"]}}
+{"group":"visual/put-emptied","text":"json_pretty","cursor":[3,1],"keys":"VdVp","expect":{"cursor":[3,3],"mode":"n","reg":"  \"d\": \"hello world\"\n","regtype":"V","lines":["{","  \"a\": {\"b\": 1},","  \"c\": [1, 2, 3],","}"]}}
+{"group":"visual/put-emptied","text":"json_pretty","cursor":[3,1],"keys":"Vdvp","expect":{"cursor":[4,3],"mode":"n","reg":"\"","regtype":"v","lines":["{","  \"a\": {\"b\": 1},","  ","  \"c\": [1, 2, 3],","d\": \"hello world\"","}"]}}
+{"group":"visual/put-emptied","text":"json_pretty","cursor":[3,1],"keys":"ggVGdVp","expect":{"cursor":[1,1],"mode":"n","reg":"{\n  \"a\": {\"b\": 1},\n  \"c\": [1, 2, 3],\n  \"d\": \"hello world\"\n}\n","regtype":"V"}}
+{"group":"visual/put-emptied","text":"json_pretty","cursor":[3,1],"keys":"ggVGdvp","expect":{"cursor":[2,1],"mode":"n","reg":"{\n  \"a\": {\"b\": 1},\n  \"c\": [1, 2, 3],\n  \"d\": \"hello world\"\n}\n","regtype":"V","lines":["","{","  \"a\": {\"b\": 1},","  \"c\": [1, 2, 3],","  \"d\": \"hello world\"","}"]}}
+{"group":"visual/put-emptied","text":"json_pretty","cursor":[3,1],"keys":"yyVdvp","expect":{"cursor":[4,3],"mode":"n","reg":"\"","regtype":"v","lines":["{","  \"a\": {\"b\": 1},","  ","  \"c\": [1, 2, 3],","d\": \"hello world\"","}"]}}
+{"group":"visual/put-emptied","text":"json_pretty","cursor":[4,1],"keys":"VdVP","expect":{"cursor":[4,3],"mode":"n","reg":"  \"d\": \"hello world\"\n","regtype":"V","lines":["{","  \"a\": {\"b\": 1},","  \"c\": [1, 2, 3],","  \"d\": \"hello world\""]}}
+{"group":"visual/put-emptied","text":"json_pretty","cursor":[4,1],"keys":"VdVp","expect":{"cursor":[4,3],"mode":"n","reg":"}\n","regtype":"V","lines":["{","  \"a\": {\"b\": 1},","  \"c\": [1, 2, 3],","  \"d\": \"hello world\""]}}
+{"group":"visual/put-emptied","text":"json_pretty","cursor":[4,1],"keys":"Vdvp","expect":{"cursor":[5,3],"mode":"n","reg":"}","regtype":"v","lines":["{","  \"a\": {\"b\": 1},","  \"c\": [1, 2, 3],","","  \"d\": \"hello world\"",""]}}
+{"group":"visual/put-emptied","text":"json_pretty","cursor":[4,1],"keys":"ggVGdVp","expect":{"cursor":[1,1],"mode":"n","reg":"{\n  \"a\": {\"b\": 1},\n  \"c\": [1, 2, 3],\n  \"d\": \"hello world\"\n}\n","regtype":"V"}}
+{"group":"visual/put-emptied","text":"json_pretty","cursor":[4,1],"keys":"ggVGdvp","expect":{"cursor":[2,1],"mode":"n","reg":"{\n  \"a\": {\"b\": 1},\n  \"c\": [1, 2, 3],\n  \"d\": \"hello world\"\n}\n","regtype":"V","lines":["","{","  \"a\": {\"b\": 1},","  \"c\": [1, 2, 3],","  \"d\": \"hello world\"","}"]}}
+{"group":"visual/put-emptied","text":"json_pretty","cursor":[4,1],"keys":"yyVdvp","expect":{"cursor":[5,3],"mode":"n","reg":"}","regtype":"v","lines":["{","  \"a\": {\"b\": 1},","  \"c\": [1, 2, 3],","","  \"d\": \"hello world\"",""]}}
+{"group":"visual/put-emptied","text":"json_pretty","cursor":[5,1],"keys":"VdVP","expect":{"cursor":[4,1],"mode":"n","reg":"}\n","regtype":"V","lines":["{","  \"a\": {\"b\": 1},","  \"c\": [1, 2, 3],","}"]}}
+{"group":"visual/put-emptied","text":"json_pretty","cursor":[5,1],"keys":"VdVp","expect":{"cursor":[4,1],"mode":"n","reg":"  \"d\": \"hello world\"\n","regtype":"V","lines":["{","  \"a\": {\"b\": 1},","  \"c\": [1, 2, 3],","}"]}}
+{"group":"visual/put-emptied","text":"json_pretty","cursor":[5,1],"keys":"Vdvp","expect":{"cursor":[5,1],"mode":"n","reg":"\"","regtype":"v","lines":["{","  \"a\": {\"b\": 1},","  \"c\": [1, 2, 3],","  ","}","d\": \"hello world\""]}}
+{"group":"visual/put-emptied","text":"json_pretty","cursor":[5,1],"keys":"ggVGdVp","expect":{"cursor":[1,1],"mode":"n","reg":"{\n  \"a\": {\"b\": 1},\n  \"c\": [1, 2, 3],\n  \"d\": \"hello world\"\n}\n","regtype":"V"}}
+{"group":"visual/put-emptied","text":"json_pretty","cursor":[5,1],"keys":"ggVGdvp","expect":{"cursor":[2,1],"mode":"n","reg":"{\n  \"a\": {\"b\": 1},\n  \"c\": [1, 2, 3],\n  \"d\": \"hello world\"\n}\n","regtype":"V","lines":["","{","  \"a\": {\"b\": 1},","  \"c\": [1, 2, 3],","  \"d\": \"hello world\"","}"]}}
+{"group":"visual/put-emptied","text":"json_pretty","cursor":[5,1],"keys":"yyVdvp","expect":{"cursor":[5,1],"mode":"n","reg":"\"","regtype":"v","lines":["{","  \"a\": {\"b\": 1},","  \"c\": [1, 2, 3],","  ","}","d\": \"hello world\""]}}
+{"group":"visual/put-emptied","text":"one_char","cursor":[1,1],"keys":"VdVP","expect":{"cursor":[1,1],"mode":"n","reg":"x\n","regtype":"V"}}
+{"group":"visual/put-emptied","text":"one_char","cursor":[1,1],"keys":"VdVp","expect":{"cursor":[1,1],"mode":"n","reg":"x\n","regtype":"V"}}
+{"group":"visual/put-emptied","text":"one_char","cursor":[1,1],"keys":"Vdvp","expect":{"cursor":[2,1],"mode":"n","reg":"x\n","regtype":"V","lines":["","x"]}}
+{"group":"visual/put-emptied","text":"one_char","cursor":[1,1],"keys":"ggVGdVp","expect":{"cursor":[1,1],"mode":"n","reg":"x\n","regtype":"V"}}
+{"group":"visual/put-emptied","text":"one_char","cursor":[1,1],"keys":"ggVGdvp","expect":{"cursor":[2,1],"mode":"n","reg":"x\n","regtype":"V","lines":["","x"]}}
+{"group":"visual/put-emptied","text":"one_char","cursor":[1,1],"keys":"yyVdvp","expect":{"cursor":[2,1],"mode":"n","reg":"x\n","regtype":"V","lines":["","x"]}}
+{"group":"visual/put-emptied","text":"words","cursor":[1,1],"keys":"VdVP","expect":{"cursor":[1,1],"mode":"n","reg":"foo bar  baz_qux.quux end\n","regtype":"V"}}
+{"group":"visual/put-emptied","text":"words","cursor":[1,1],"keys":"VdVp","expect":{"cursor":[1,1],"mode":"n","reg":"foo bar  baz_qux.quux end\n","regtype":"V"}}
+{"group":"visual/put-emptied","text":"words","cursor":[1,1],"keys":"Vdvp","expect":{"cursor":[2,1],"mode":"n","reg":"foo bar  baz_qux.quux end\n","regtype":"V","lines":["","foo bar  baz_qux.quux end"]}}
+{"group":"visual/put-emptied","text":"words","cursor":[1,1],"keys":"ggVGdVp","expect":{"cursor":[1,1],"mode":"n","reg":"foo bar  baz_qux.quux end\n","regtype":"V"}}
+{"group":"visual/put-emptied","text":"words","cursor":[1,1],"keys":"ggVGdvp","expect":{"cursor":[2,1],"mode":"n","reg":"foo bar  baz_qux.quux end\n","regtype":"V","lines":["","foo bar  baz_qux.quux end"]}}
+{"group":"visual/put-emptied","text":"words","cursor":[1,1],"keys":"yyVdvp","expect":{"cursor":[2,1],"mode":"n","reg":"foo bar  baz_qux.quux end\n","regtype":"V","lines":["","foo bar  baz_qux.quux end"]}}
 {"group":"visual/put-line","text":"blank_edges","cursor":[1,1],"keys":"VP","reg":{"text":"  q\n","type":"V"},"expect":{"cursor":[1,3],"mode":"n","reg":"  q\n","regtype":"V","lines":["  q","a","","  b  ",""]}}
 {"group":"visual/put-line","text":"blank_edges","cursor":[1,1],"keys":"Vjp","reg":{"text":"  q\n","type":"V"},"expect":{"cursor":[1,3],"mode":"n","reg":"\na\n","regtype":"V","lines":["  q","","  b  ",""]}}
 {"group":"visual/put-line","text":"blank_edges","cursor":[1,1],"keys":"Vp","reg":{"text":"  q\n","type":"V"},"expect":{"cursor":[1,3],"mode":"n","reg":"\n","regtype":"V","lines":["  q","a","","  b  ",""]}}

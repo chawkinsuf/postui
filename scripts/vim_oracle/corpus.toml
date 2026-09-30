@@ -472,6 +472,26 @@ on = ["words", "json_pretty", "blank_edges", "one_char"]
 at = ["bol", "fnb", "mid", "eol"]
 reg = { text = "  q\n", type = "V" }
 
+# Visual `p`/`P` once every line is gone (Vim's ML_EMPTY): nothing to
+# delete, but the put still runs, and no stray empty last line is left.
+[[group]]
+id = "visual/put-emptied"
+tier = 1
+keys = ["VdVp", "Vdvp", "VdVP", "yyVdvp", "ggVGdVp", "ggVGdvp"]
+on = ["words", "json_pretty", "one_char", "empty"]
+at = ["bol"]
+
+# Leaving Visual and the wanted column (Vim's cached w_virtcol): `v`/`V`
+# keep w_curswant, `Esc` rereads w_virtcol, which is recomputed only where
+# the caret moves, in the mode of the moment (a tab's first or last cell).
+[[group]]
+id = "visual/exit-want"
+tier = 1
+keys = ["vj<Esc>k", "vk<Esc>j", "vjk<Esc>j", "v0<Esc>j", "vh<Esc>j", "vlo<Esc>k", "vlovk", "vkvj",
+        "vkVVj", "v$vk", "v$<Esc>k", "Vk<Esc>j"]
+on = ["tabs", "short_last", "json_pretty"]
+at = ["bol", "eol", [1, 2], [2, 2], [3, 4], [4, 19]]
+
 [[group]]
 id = "visual/yank-put"
 tier = 1

@@ -140,6 +140,12 @@ pub struct BufState {
     /// edits that leave the caret in place (`rX`), which the position check
     /// cannot see. Motions set it through [`BufState::set_want`].
     curswant: Option<(motion::Want, Pos)>,
+    /// Vim's cached `w_virtcol`, as the tab rule (does a caret on a tab
+    /// count from its last cell?) in force where the caret last moved or
+    /// the text last changed. Vim recomputes it only then
+    /// (`check_cursor_moved()`), so a mode change alone (`v`, `Esc`) keeps
+    /// the old value, and the next `w_curswant` is read from it.
+    virtcol: Option<(Pos, bool)>,
     pub(crate) history: history::History,
 }
 
@@ -156,6 +162,11 @@ impl BufState {
     /// Vim's `w_set_curswant = TRUE`: recompute from the caret next time.
     pub(crate) fn forget_want(&mut self) {
         self.curswant = None;
+    }
+
+    /// The cached tab rule when the cache is for a caret at `at`.
+    pub(crate) fn cached_tab_rule(&self, at: Pos) -> Option<bool> {
+        self.virtcol.filter(|&(p, _)| p == at).map(|(_, t)| t)
     }
 
     pub fn new() -> Self {
@@ -245,6 +256,7 @@ impl Engine {
         let Target { buf, state } = t;
         state.text_at_start = Some(buf.text());
         state.edited = false;
+        state.virtcol = None;
         self.pending.clear();
         self.visual = None;
         self.mode = if start == Start::Normal { Mode::Normal } else { Mode::Insert };
@@ -272,6 +284,11 @@ impl Engine {
     pub fn handle<B: TextBuf>(&mut self, ev: KeyEvent, t: Target<'_, B>, ctx: &ViewCtx) -> Outcome {
         let Target { buf, state } = t;
         self.clamp(buf);
+        let before = buf.cursor();
+        if state.cached_tab_rule(before).is_none() {
+            // Vim validates `w_virtcol` before a command, in its mode.
+            state.virtcol = Some((before, self.tab_end(before)));
+        }
         let out = match self.mode {
             Mode::Insert => self.insert_key(ev, buf, state),
             Mode::Normal | Mode::Visual(_) => {
@@ -292,6 +309,10 @@ impl Engine {
         let changed = state.history.take_changed();
         state.edited |= changed;
         self.clamp(buf);
+        let after = buf.cursor();
+        if changed || after != before {
+            state.virtcol = Some((after, self.tab_end(after)));
+        }
         self.paint(buf);
         match out {
             Outcome::Consumed { note, request, .. } => Outcome::Consumed { changed, note, request },

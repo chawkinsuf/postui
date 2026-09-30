@@ -761,19 +761,26 @@ impl Engine {
         let m = run(buf, from, motion, count, &cx, &mut self.last_find);
         buf.set_cursor(self.clamped(buf, m.to));
         let to = buf.cursor();
-        st.set_want(updated_want(buf, to, m.want, want, self.tab_end(to)), to);
+        st.set_want(updated_want(buf, to, m.want, want, self.tab_rule(st, to)), to);
     }
 
     /// The column `j` and `k` aim for from `at`: the remembered one while
     /// the caret is still there, else the caret's own.
     pub(super) fn want_at<B: TextBuf>(&self, buf: &B, st: &BufState, at: Pos) -> Want {
-        st.want(at).unwrap_or_else(|| updated_want(buf, at, WantUpdate::Here, Want::default(), self.tab_end(at)))
+        st.want(at).unwrap_or_else(|| updated_want(buf, at, WantUpdate::Here, Want::default(), self.tab_rule(st, at)))
+    }
+
+    /// The tab rule Vim's `w_virtcol` holds for a caret at `at`: the cached
+    /// one while the caret has not moved (`v0j` on a tab keeps Normal's
+    /// last cell), else the current mode's.
+    pub(super) fn tab_rule(&self, st: &BufState, at: Pos) -> bool {
+        st.cached_tab_rule(at).unwrap_or_else(|| self.tab_end(at))
     }
 
     /// Whether a caret at `at` on a tab sits on its last cell (Vim's
     /// `getvcol`: in Normal always, in Visual past the anchor, in Insert
     /// never).
-    fn tab_end(&self, at: Pos) -> bool {
+    pub(super) fn tab_end(&self, at: Pos) -> bool {
         match (self.mode, self.visual) {
             (Mode::Visual(_), Some(anchor)) => at > anchor,
             (Mode::Insert, _) => false,

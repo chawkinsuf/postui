@@ -238,25 +238,26 @@ impl<B: TextBuf> Ed<'_, B> {
 
     /// Vim's `u_save_cursor()` with no change after it: `u` then undoes a
     /// step that changed nothing (`dh` in column 0).
+    /// A step already open keeps its caret; a new one opens at column 0.
     pub(crate) fn save_line(&mut self, row: usize) {
-        self.save_lines(row, row);
+        self.save_rows(Pos::new(row, 0), row, row);
     }
 
-    /// Vim's `u_save(first - 1, last + 1)`: rows `first..=last` are saved
-    /// before an operator changes them, so the step exists even when the
-    /// text ends up the same (Visual `~` on a space, `<` with no indent).
-    pub(crate) fn save_lines(&mut self, first: usize, last: usize) {
+    /// Vim's `u_save(first - 1, last + 1)` before a command that saves its
+    /// lines whatever it then changes: opens the step at `caret` (Vim's
+    /// `uh_cursor`) and saves rows `first..=last`, so the command is an undo
+    /// step even when the text ends up the same (Visual `~` on a space, `<`
+    /// with no indent).
+    pub(crate) fn save_rows(&mut self, caret: Pos, first: usize, last: usize) {
+        self.hist.begin(caret);
         let text = self.buf.slice(Pos::new(first, 0), Pos::new(last, self.buf.line_len(last)));
         self.hist.record(Edit { at: Pos::new(first, 0), removed: text.clone(), inserted: text });
     }
 
-    /// Vim's `u_save_cursor()` before a command that saves its line
-    /// whatever it then changes: opens the step at `caret` and saves that
-    /// line, so the command is an undo step even when the text ends up the
-    /// same (`rX` on an X, `p` of `""`, `J` joining one line).
+    /// Vim's `u_save_cursor()`: [`Ed::save_rows`] for the caret's line (`rX`
+    /// on an X, `p` of `""`, `J` joining one line).
     pub(crate) fn save_cursor_line(&mut self, caret: Pos) {
-        self.hist.begin(caret);
-        self.save_line(caret.row);
+        self.save_rows(caret, caret.row, caret.row);
     }
 
     /// Deletes every line: Vim's buffer is then `ML_EMPTY`. Vim's
