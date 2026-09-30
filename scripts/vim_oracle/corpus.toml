@@ -487,10 +487,20 @@ at = ["bol"]
 [[group]]
 id = "visual/exit-want"
 tier = 1
-keys = ["vj<Esc>k", "vk<Esc>j", "vjk<Esc>j", "v0<Esc>j", "vh<Esc>j", "vlo<Esc>k", "vlovk", "vkvj",
-        "vkVVj", "v$vk", "v$<Esc>k", "Vk<Esc>j"]
+keys = ["vj<Esc>k", "vk<Esc>j", "vjk<Esc>j", "v0<Esc>j", "vh<Esc>j", "vlo<Esc>k", "vlo<Esc>j", "vlovk",
+        "vkvj", "vkVVj", "v$vk", "v$<Esc>k", "Vk<Esc>j"]
 on = ["tabs", "short_last", "json_pretty"]
 at = ["bol", "eol", [1, 2], [2, 2], [3, 4], [4, 19]]
+
+# The same cache is recomputed when Insert starts or ends and after any
+# undo or redo, even of a step that changed nothing.
+[[group]]
+id = "visual/virtcol"
+tier = 1
+keys = ["i<Down>", "i<Up>", "i<Esc>i<Down>", "v<Esc>i<Down>", "iX<BS><Esc>j", "a<Left><Esc>j",
+        "vhc<Esc>j", "vh~uj"]
+on = ["tabs"]
+at = [[2, 1], [2, 2]]
 
 [[group]]
 id = "visual/yank-put"

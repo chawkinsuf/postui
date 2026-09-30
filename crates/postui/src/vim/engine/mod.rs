@@ -141,10 +141,14 @@ pub struct BufState {
     /// cannot see. Motions set it through [`BufState::set_want`].
     curswant: Option<(motion::Want, Pos)>,
     /// Vim's cached `w_virtcol`, as the tab rule (does a caret on a tab
-    /// count from its last cell?) in force where the caret last moved or
-    /// the text last changed. Vim recomputes it only then
-    /// (`check_cursor_moved()`), so a mode change alone (`v`, `Esc`) keeps
-    /// the old value, and the next `w_curswant` is read from it.
+    /// count from its last cell?) in force when it was last computed. Vim
+    /// recomputes it only when the caret moves or the text changes
+    /// (`check_cursor_moved()`), when Insert starts (`edit()` calls
+    /// `curs_columns(TRUE)`) or ends (`ins_esc()` drops it on a tab), and
+    /// after any undo or redo (`u_undoredo()` calls `changed_lines()`). So
+    /// a Visual mode change alone (`v`, `Esc`) keeps the old value, and the
+    /// next `w_curswant` is read from it. `None`: computed afresh, in the
+    /// mode of the moment, when next needed.
     virtcol: Option<(Pos, bool)>,
     pub(crate) history: history::History,
 }
@@ -167,6 +171,11 @@ impl BufState {
     /// The cached tab rule when the cache is for a caret at `at`.
     pub(crate) fn cached_tab_rule(&self, at: Pos) -> Option<bool> {
         self.virtcol.filter(|&(p, _)| p == at).map(|(_, t)| t)
+    }
+
+    /// Drops the cached `w_virtcol` (see the field).
+    pub(crate) fn forget_virtcol(&mut self) {
+        self.virtcol = None;
     }
 
     pub fn new() -> Self {
@@ -285,6 +294,7 @@ impl Engine {
         let Target { buf, state } = t;
         self.clamp(buf);
         let before = buf.cursor();
+        let was_insert = self.mode == Mode::Insert;
         if state.cached_tab_rule(before).is_none() {
             // Vim validates `w_virtcol` before a command, in its mode.
             state.virtcol = Some((before, self.tab_end(before)));
@@ -310,7 +320,9 @@ impl Engine {
         state.edited |= changed;
         self.clamp(buf);
         let after = buf.cursor();
-        if changed || after != before {
+        // `w_virtcol` is recomputed where the caret moved, the text changed,
+        // or Insert started or ended (see `BufState::virtcol`).
+        if changed || after != before || was_insert != (self.mode == Mode::Insert) {
             state.virtcol = Some((after, self.tab_end(after)));
         }
         self.paint(buf);

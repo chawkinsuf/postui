@@ -469,6 +469,9 @@ impl Engine {
             Some(at) => self.land_caret(at, buf, st),
             None => st.forget_want(),
         }
+        // Vim's `u_undoredo()` calls `changed_lines()` even for a step that
+        // changed nothing, which drops the cached `w_virtcol`.
+        st.forget_virtcol();
         Outcome::consumed()
     }
 }
