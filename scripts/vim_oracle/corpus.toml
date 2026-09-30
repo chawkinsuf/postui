@@ -12,9 +12,9 @@
 # or ZZ/ZQ: if a change fails, its typed text runs as Normal commands, so
 # typed text uses harmless letters like X and Y.
 # status = "later" cases are generated and reported but do not fail the test.
-# Budget: the full 3a corpus is about 39,600 cases and 6.5 MB of golden file
-# (measured 2026-09-29, after Task 12); keep it under about 7 MB. Prefer named seats unless
-# the key's result depends on the char under the caret.
+# Budget: the full 3a corpus is about 39,700 cases and 6.5 MB of golden file
+# (measured 2026-09-30, after Task 12); keep it under about 7 MB. Prefer
+# named seats unless the key's result depends on the char under the caret.
 
 [text.words]
 lines = ["foo bar  baz_qux.quux end"]
@@ -559,6 +559,16 @@ keys = ["vlld$.", "vlld$.0.", "vld3.", "vjdj.", "vjlldj.", "vjhd$.", "v$dj.", "v
         "Vpj.", "vl2pw.", "vlrXj..", "yiwwvlPw.", "yiwwvlpw.", "V~jl.", "VrXjl.", "VJll.", "Vdll.u",
         "V~ll.u", "Vk~jl."]
 on = ["json_pretty", "blank_edges", "tabs", "unicode", "short_last"]
+at = ["bol", "mid", "eol"]
+
+# `{N}r<Tab>` under 'expandtab' is Vim's `{N}R<Tab><Esc>` (`nv_replace()`),
+# so its `.` is an `R`: it never fails on a short line and types past the
+# end (`3r<Tab>j0.`).
+[[group]]
+id = "dot/replace-tab"
+tier = 1
+keys = ["3r<Tab>j0.", "3r<Tab>j0.u", "3r<Tab>j0.u<C-r>", "r<Tab>j$.", "2r<Tab>j3.", "3r<Tab>j0.k."]
+on = ["short_last", "blank_edges", "tabs"]
 at = ["bol", "mid", "eol"]
 
 # --- fuzz atoms (generate.py --fuzz); tier-1 keys only -----------------------

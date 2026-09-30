@@ -33,6 +33,23 @@ pub(crate) enum InsertKey {
     Paste(String),
 }
 
+impl InsertKey {
+    /// The key as a buffer of kind `B` takes it, typed now or replayed by
+    /// `.` (controller ruling, Task 12 fix round 1: a replay acts as if its
+    /// keys were typed in the target buffer). A one-line field has no
+    /// Enter or Tab (`None`: typed, they are declined; replayed, dropped)
+    /// and flattens a paste (`flatten_paste`); the body takes CRLF and CR
+    /// as line breaks.
+    fn for_buffer<B: TextBuf>(self) -> Option<Self> {
+        match self {
+            InsertKey::Enter | InsertKey::Tab if !B::MULTILINE => None,
+            InsertKey::Paste(text) if B::MULTILINE => Some(InsertKey::Paste(text.replace("\r\n", "\n").replace('\r', "\n"))),
+            InsertKey::Paste(text) => Some(InsertKey::Paste(flatten_paste(&text))),
+            key => Some(key),
+        }
+    }
+}
+
 /// An open Insert session (spec §3.8).
 #[derive(Debug, Clone)]
 pub(crate) struct Session {
@@ -170,8 +187,8 @@ impl Engine {
                 return Outcome::consumed();
             }
             Key::Char(c) => InsertKey::Char(c),
-            Key::Enter if B::MULTILINE => InsertKey::Enter,
-            Key::Tab if B::MULTILINE => InsertKey::Tab,
+            Key::Enter => InsertKey::Enter,
+            Key::Tab => InsertKey::Tab,
             Key::Backspace | Key::Ctrl('h') => InsertKey::Backspace,
             Key::Ctrl('w') => InsertKey::CtrlW,
             Key::Ctrl('u') => InsertKey::CtrlU,
@@ -186,8 +203,18 @@ impl Engine {
             }
             _ => return decline,
         };
+        let Some(input) = input.for_buffer::<B>() else { return decline };
         self.insert_input(input, buf, st);
         Outcome::consumed()
+    }
+
+    /// Replays an Insert session's recorded keys for `.`, as if typed in
+    /// this buffer (see [`InsertKey::for_buffer`]): a key the buffer would
+    /// decline is dropped and the replay goes on.
+    pub(super) fn replay_insert<B: TextBuf>(&mut self, keys: Vec<InsertKey>, buf: &mut B, st: &mut BufState) {
+        for key in keys.into_iter().filter_map(InsertKey::for_buffer::<B>) {
+            self.insert_input(key, buf, st);
+        }
     }
 
     /// One recorded Insert key: typed now, or replayed by `.`. Every one of
@@ -535,8 +562,9 @@ impl Engine {
             return Outcome::Declined { count: None, keys: Vec::new() };
         }
         self.clamp(buf);
-        let text = if B::MULTILINE { text.replace("\r\n", "\n").replace('\r', "\n") } else { flatten_paste(text) };
-        self.insert_input(InsertKey::Paste(text), buf, state);
+        if let Some(key) = InsertKey::Paste(text.to_string()).for_buffer::<B>() {
+            self.insert_input(key, buf, state);
+        }
         let changed = state.history.take_changed();
         state.edited |= changed;
         self.paint(buf);

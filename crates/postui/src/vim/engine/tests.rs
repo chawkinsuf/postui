@@ -513,6 +513,56 @@ fn dot_is_global_across_buffers() {
     assert_eq!((url.text(), cell.text()), ("Z bbb", "Z ddd"));
 }
 
+/// Controller ruling (Task 12 fix round 1): a replay types its keys as if
+/// typed in the target buffer, so in a one-line field Enter and Tab are
+/// dropped and the rest still goes in.
+#[test]
+fn a_body_insert_replayed_in_a_field_drops_enter_and_tab() {
+    let body_ctx = ViewCtx { viewport_rows: Some(20) };
+    let mut engine = Engine::new();
+    let mut body = BufState::new();
+    let mut ed = EditorState::new(Lines::from("a"));
+    engine.enter(Start::Normal, Seat::Keep, Target { buf: &mut BodyBuf::new(&mut ed, Style::default()), state: &mut body });
+    for ev in [k('A'), k(','), code(KeyCode::Enter), k('x'), esc()] {
+        engine.handle(ev, Target { buf: &mut BodyBuf::new(&mut ed, Style::default()), state: &mut body }, &body_ctx);
+    }
+    assert_eq!(BodyBuf::new(&mut ed, Style::default()).text(), "a,\nx");
+    let mut state = BufState::new();
+    let mut field = LineInput::new("q");
+    engine.enter(Start::Normal, Seat::Keep, Target { buf: &mut OneLineBuf::new(&mut field), state: &mut state });
+    engine.handle(k('.'), Target { buf: &mut OneLineBuf::new(&mut field), state: &mut state }, &ViewCtx::default());
+    assert_eq!(field.text(), "q,x");
+
+    for ev in [k('j'), k('A'), code(KeyCode::Tab), k('y'), esc()] {
+        engine.handle(ev, Target { buf: &mut BodyBuf::new(&mut ed, Style::default()), state: &mut body }, &body_ctx);
+    }
+    assert_eq!(BodyBuf::new(&mut ed, Style::default()).text(), "a,\nx y");
+    engine.handle(k('.'), Target { buf: &mut OneLineBuf::new(&mut field), state: &mut state }, &ViewCtx::default());
+    assert_eq!(field.text(), "q,xy");
+}
+
+/// The same ruling: a paste recorded in the body is flattened when `.`
+/// replays it in a one-line field, as a paste typed there would be.
+#[test]
+fn a_body_paste_replayed_in_a_field_is_flattened() {
+    let body_ctx = ViewCtx { viewport_rows: Some(20) };
+    let mut engine = Engine::new();
+    let mut body = BufState::new();
+    let mut ed = EditorState::new(Lines::from("a"));
+    engine.enter(Start::Normal, Seat::Keep, Target { buf: &mut BodyBuf::new(&mut ed, Style::default()), state: &mut body });
+    engine.handle(k('A'), Target { buf: &mut BodyBuf::new(&mut ed, Style::default()), state: &mut body }, &body_ctx);
+    engine.paste("1\n2", Target { buf: &mut BodyBuf::new(&mut ed, Style::default()), state: &mut body });
+    engine.handle(esc(), Target { buf: &mut BodyBuf::new(&mut ed, Style::default()), state: &mut body }, &body_ctx);
+    assert_eq!(BodyBuf::new(&mut ed, Style::default()).text(), "a1\n2");
+    let mut state = BufState::new();
+    let mut field = LineInput::new("q");
+    engine.enter(Start::Normal, Seat::Keep, Target { buf: &mut OneLineBuf::new(&mut field), state: &mut state });
+    engine.handle(k('.'), Target { buf: &mut OneLineBuf::new(&mut field), state: &mut state }, &ViewCtx::default());
+    let flat = crate::components::line_input::flatten_paste("1\n2");
+    assert!(!flat.contains('\n'));
+    assert_eq!(field.text(), format!("q{flat}"));
+}
+
 #[test]
 fn dot_is_one_undo_step() {
     let mut f = Field::new("abcdef", 0);

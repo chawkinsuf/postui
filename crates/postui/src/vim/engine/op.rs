@@ -338,27 +338,38 @@ impl Engine {
         if caret.col + n > buf.line_len(caret.row) {
             return false;
         }
+        if ch == '\t' {
+            self.replace_tabs(n, buf, st);
+            return true;
+        }
         let mut ed = Ed { buf: &mut *buf, hist: &mut st.history };
         // `nv_replace()` saves the line first, so `r` that puts back the
         // same chars (`rX` on an X, `r<Space>` on a space) is still a step.
         ed.save_cursor_line(caret);
-        let end = if ch == '\t' {
-            // Under 'expandtab' Vim runs `{N}r<Tab>` as `{N}R<Tab><Esc>`:
-            // each Tab replaces one char with spaces to the next tab stop.
-            let mut at = caret;
-            for _ in 0..n {
-                let width = TABSTOP - motion::vcol_of(&ed.buf.line(at.row), at.col) % TABSTOP;
-                ed.splice(at, Pos::new(at.row, at.col + 1), &" ".repeat(width));
-                at.col += width;
-            }
-            Pos::new(at.row, at.col - 1)
-        } else {
-            let text: String = std::iter::repeat_n(ch, n).collect();
-            ed.splice(caret, Pos::new(caret.row, caret.col + n), &text);
-            Pos::new(caret.row, caret.col + n - 1)
-        };
-        self.land_caret(end, buf, st);
+        let text: String = std::iter::repeat_n(ch, n).collect();
+        ed.splice(caret, Pos::new(caret.row, caret.col + n), &text);
+        self.land_caret(Pos::new(caret.row, caret.col + n - 1), buf, st);
         true
+    }
+
+    /// `{N}R<Tab><Esc>`, which Vim's `nv_replace()` runs for `{N}r<Tab>`
+    /// under 'expandtab' once the length check passed: each Tab replaces
+    /// one char with spaces to the next tab stop, and past the line's end
+    /// only inserts them. Its `.` repeats this `R`, so the replay has no
+    /// length check (`3r<Tab>j0.` on a shorter line). The line is saved
+    /// first, so spaces put back over spaces are still a step.
+    pub(super) fn replace_tabs<B: TextBuf>(&mut self, n: usize, buf: &mut B, st: &mut BufState) {
+        let caret = buf.cursor();
+        let mut ed = Ed { buf: &mut *buf, hist: &mut st.history };
+        ed.save_cursor_line(caret);
+        let mut at = caret;
+        for _ in 0..n {
+            let width = TABSTOP - motion::vcol_of(&ed.buf.line(at.row), at.col) % TABSTOP;
+            let end = (at.col + 1).min(ed.buf.line_len(at.row));
+            ed.splice(at, Pos::new(at.row, end), &" ".repeat(width));
+            at.col += width;
+        }
+        self.land_caret(Pos::new(at.row, at.col - 1), buf, st);
     }
 
     /// `J` with a count (Vim's `nv_join()`); a no-op in a one-line field.

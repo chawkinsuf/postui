@@ -447,6 +447,7 @@ impl Engine {
                     // Visual `p`/`P` repeat as the delete they begin with
                     // (`nv_put()`); `P`'s goes to the black-hole register.
                     VisualOp::Put { before } => {
+                        // 3b: once numbered registers exist this needs a real `"_`.
                         let kept = before.then(|| self.regs.unnamed().clone());
                         let out = self.run(Cmd::VisualOp { op: VisualOp::Delete, count: own, reg: None }, buf, st, ctx);
                         if let Some(reg) = kept {
@@ -457,14 +458,22 @@ impl Engine {
                     _ => self.run(dot.cmd, buf, st, ctx),
                 }
             }
+            (_, Cmd::Replace { ch: '\t', count: own }) => {
+                // `{N}r<Tab>` was stored as Vim's `{N}R<Tab><Esc>`: an `R`
+                // that never fails on a short line (`replace_tabs`).
+                let count = if count > 0 { count } else { own };
+                self.replace_tabs(count.max(1), buf, st);
+                self.remember(Cmd::Replace { ch: '\t', count }, None);
+                Outcome::consumed()
+            }
             (_, cmd) => self.run(if count > 0 { with_count(cmd, count) } else { cmd }, buf, st, ctx),
         };
         if let Some(keys) = dot.insert
             && self.mode == Mode::Insert
         {
-            for key in keys {
-                self.insert_input(key, buf, st);
-            }
+            // As if typed here: `.` is global, so a session recorded in the
+            // body can replay in a one-line field (`replay_insert`).
+            self.replay_insert(keys, buf, st);
             self.end_insert(buf, st, true);
         }
         self.replaying_visual = false;
@@ -484,7 +493,7 @@ impl Engine {
         // typed in.
         let virtcol = match motion::updated_want(buf, caret, motion::WantUpdate::Here, motion::Want::default(), self.tab_rule(st, caret)) {
             motion::Want::Col(v) => v,
-            motion::Want::End => 0,
+            motion::Want::End => unreachable!("WantUpdate::Here always gives a column"),
         };
         let row = (caret.row + size.rows - 1).min(buf.line_count() - 1);
         let want = match (size.line, size.to_end) {
