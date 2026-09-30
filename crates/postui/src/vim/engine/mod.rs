@@ -30,7 +30,7 @@ pub use buf::{BodyBuf, GuiSel, OneLineBuf, Paint, Pos, TextBuf};
 pub use register::{RegKind, Register, Registers};
 
 use insert::InsertKey;
-use keys::{Cmd, InsertHow, Op, ParseCx, Pending, Step, VisualOp};
+use keys::{Cmd, Op, ParseCx, Pending, Step, VisualOp};
 use ratatui::crossterm::event::KeyEvent;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,6 +132,12 @@ pub struct Target<'a, B: TextBuf> {
 pub struct BufState {
     text_at_start: Option<String>,
     edited: bool,
+    /// The text when the buffer last lost the caret ([`Engine::leave`]).
+    /// The next [`Engine::enter`] drops the history if the text differs
+    /// (reload, format, app undo, `$EDITOR`; spec §3.11). `None` while the
+    /// buffer has the caret, and after a [`Engine::carry`] away, which
+    /// cannot see the text it leaves.
+    text_at_leave: Option<String>,
     /// Vim's `w_curswant` (the column `j` and `k` aim for) with the caret it
     /// was recorded at; `None` is Vim's `w_set_curswant = TRUE`. It is
     /// trusted only while the caret is still there.
@@ -181,6 +187,16 @@ impl BufState {
 
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The buffer gets the caret with `text` in it: a history that no
+    /// longer fits the text is dropped (§3.11), and the start text noted.
+    fn begin_session(&mut self, text: String) {
+        if self.text_at_leave.take().is_some_and(|left| left != text) {
+            self.history.clear();
+        }
+        self.text_at_start = Some(text);
+        self.edited = false;
     }
 
     /// Whether `u` has anything left in this buffer.
@@ -291,17 +307,18 @@ impl Engine {
         }
     }
 
-    /// A buffer gets the caret (spec §4.2). Task 13 completes this.
+    /// A buffer gets the caret (spec §4.2). Pending keys and Visual are
+    /// dropped, and the caret is seated, clamped for the mode. The history
+    /// is dropped if the text changed since the last [`Engine::leave`]
+    /// (§3.11), and the session's start text is noted.
     pub fn enter<B: TextBuf>(&mut self, start: Start, seat: Seat, t: Target<'_, B>) {
         let Target { buf, state } = t;
-        state.text_at_start = Some(buf.text());
-        state.edited = false;
-        state.virtcol = None;
+        state.begin_session(buf.text());
         self.pending.clear();
         self.visual = None;
-        self.mode = if start == Start::Normal { Mode::Normal } else { Mode::Insert };
-        self.insert_only = start == Start::InsertOnly;
         self.insert = None;
+        self.insert_only = start == Start::InsertOnly;
+        self.mode = if start == Start::Normal { Mode::Normal } else { Mode::Insert };
         let caret = buf.cursor();
         let row = caret.row.min(buf.line_count() - 1);
         let len = buf.line_len(row);
@@ -314,10 +331,137 @@ impl Engine {
         buf.set_cursor(Pos::new(row, col));
         self.clamp(buf);
         if self.mode == Mode::Insert {
-            // A session opened in Insert records as an `i` for `.` (§4.2).
-            self.insert = Some(insert::Session::new(buf.cursor(), Cmd::Insert { how: InsertHow::Before, count: 0 }));
+            // Spec §4.2: a session opened in Insert records as an `i` for
+            // `.`, even when nothing is typed (Esc alone makes `.` a bare
+            // `i`). `true` here would record it only once something is
+            // typed, as after a cursor key.
+            self.open_resumed(buf.cursor(), false);
         }
+        self.rest(buf, state);
+    }
+
+    /// The caret moves straight from one buffer to another in the same
+    /// event (Tab to the next cell, spec §4.2). The undo step open in
+    /// `from` closes. Insert and Normal carry over: Insert opens a fresh
+    /// session in `to` that `.` takes only once something is typed, and
+    /// keys typed there are taken as `to`'s kind takes them. Visual, the
+    /// pending keys and the unfinished insert record are dropped, so `.`
+    /// keeps its old value.
+    pub fn carry<B: TextBuf>(&mut self, from: &mut BufState, to: Target<'_, B>) {
+        from.history.commit();
+        let inserting = self.mode == Mode::Insert;
+        self.pending.clear();
+        self.visual = None;
+        // The unfinished insert record is dropped: `.` keeps its old value.
+        self.insert = None;
+        let Target { buf, state } = to;
+        state.begin_session(buf.text());
+        self.mode = if inserting { Mode::Insert } else { Mode::Normal };
+        self.clamp(buf);
+        if inserting {
+            self.open_resumed(buf.cursor(), true);
+        }
+        self.rest(buf, state);
+    }
+
+    /// Rests the caret and the mode after an event the engine did not
+    /// handle: a click, a mouse sweep, a key piece 4 handled (spec §4.2).
+    /// A GUI selection (mouse, double-click, shift+arrow, select-all) is
+    /// adopted as charwise Visual on `Click`, `Release`, or a `Key` from
+    /// Normal or Insert; during a `Sweep` only the mode flips, and the
+    /// geometry and paint stay the mouse's. A `Click` with no selection
+    /// ends Visual. A query box has no Visual layer, so its GUI selection
+    /// stays (typing replaces it). Then the caret is clamped and becomes
+    /// the wanted column.
+    pub fn settle<B: TextBuf>(&mut self, t: Target<'_, B>, how: Settled) {
+        let Target { buf, state } = t;
+        if !self.insert_only {
+            match buf.gui_selection() {
+                Some(sel) if how == Settled::Sweep => {
+                    self.enter_visual_from(sel.anchor, buf, state);
+                    return;
+                }
+                Some(sel) if how != Settled::Key || !matches!(self.mode, Mode::Visual(_)) => {
+                    self.enter_visual_from(sel.anchor, buf, state);
+                    buf.clear_gui_selection();
+                    buf.set_cursor(sel.head);
+                }
+                Some(_) => {}
+                None if how == Settled::Click && matches!(self.mode, Mode::Visual(_)) => {
+                    self.visual = None;
+                    self.mode = Mode::Normal;
+                }
+                None => {}
+            }
+        }
+        self.rest(buf, state);
+    }
+
+    /// Adopts a GUI selection's anchor as charwise Visual. An open Insert
+    /// session ends first, as `leave` ends it (no step back).
+    fn enter_visual_from<B: TextBuf>(&mut self, anchor: Pos, buf: &mut B, state: &mut BufState) {
+        if self.mode == Mode::Insert {
+            self.end_insert(buf, state, false);
+        }
+        self.pending.clear();
+        self.visual = Some(anchor);
+        self.mode = Mode::Visual(Shape::Char);
+    }
+
+    /// The buffer loses the caret (spec §4.2). An open Insert session ends
+    /// as one undo step, recorded for `.`, without the caret stepping back.
+    /// Visual and pending keys are dropped and the mode becomes Normal. The
+    /// text is remembered for the next [`Engine::enter`]'s history check.
+    pub fn leave<B: TextBuf>(&mut self, t: Target<'_, B>) {
+        let Target { buf, state } = t;
+        if self.mode == Mode::Insert {
+            self.end_insert(buf, state, false);
+        }
+        state.history.commit();
+        self.pending.clear();
+        self.visual = None;
+        self.insert_only = false;
+        self.mode = Mode::Normal;
+        self.rest(buf, state);
+        state.text_at_leave = Some(buf.text());
+    }
+
+    /// A change made outside the key path: a picked `{{token}}`, format or
+    /// minify, a Normal-mode paste (spec §4.2). `f` edits through the
+    /// [`Splicer`], and the whole call is one undo step, not repeatable
+    /// with `.`. In Insert it splits the session as a cursor key does: the
+    /// typing before it is its own step and record, and typing after it
+    /// starts a fresh record. Returns whether the text changed.
+    pub fn external_edit<B: TextBuf>(&mut self, t: Target<'_, B>, f: impl FnOnce(&mut Splicer<'_, B>)) -> bool {
+        let Target { buf, state } = t;
+        self.clamp(buf);
+        let inserting = self.mode == Mode::Insert;
+        if inserting {
+            self.finish_record();
+        }
+        state.history.commit();
+        f(&mut Splicer { ed: history::Ed { buf: &mut *buf, hist: &mut state.history } });
+        state.history.commit();
+        if inserting {
+            self.resume_insert(buf.cursor());
+        }
+        self.rest(buf, state)
+    }
+
+    /// Where every session edge ends. The caret is clamped for the mode and
+    /// a text change is noted. The wanted column and the cached `w_virtcol`
+    /// are dropped, to be recomputed from the caret when next needed: the
+    /// edge may have changed the text, the caret or the mode where `handle`
+    /// did not see it (Vim's `changed_lines()` and `w_set_curswant`). Returns
+    /// whether the text changed.
+    fn rest<B: TextBuf>(&mut self, buf: &mut B, state: &mut BufState) -> bool {
+        self.clamp(buf);
+        let changed = state.history.take_changed();
+        state.edited |= changed;
+        state.forget_want();
+        state.forget_virtcol();
         self.paint(buf);
+        changed
     }
 
     /// One key while a buffer has the caret (spec §4.1).
@@ -545,6 +689,28 @@ impl Engine {
                 line: shape == Shape::Line,
             },
         });
+    }
+}
+
+/// What [`Engine::external_edit`] hands its closure: every splice is
+/// recorded in the buffer's history.
+pub struct Splicer<'x, B: TextBuf> {
+    ed: history::Ed<'x, B>,
+}
+
+impl<B: TextBuf> Splicer<'_, B> {
+    /// Replaces `[start, end)` with `text` (see [`TextBuf::splice`]).
+    pub fn splice(&mut self, start: Pos, end: Pos, text: &str) {
+        self.ed.splice(start, end, text);
+    }
+
+    /// Raw; the engine clamps the caret for the mode afterwards.
+    pub fn set_cursor(&mut self, at: Pos) {
+        self.ed.buf.set_cursor(at);
+    }
+
+    pub fn buf(&self) -> &B {
+        &*self.ed.buf
     }
 }
 

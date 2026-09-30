@@ -90,9 +90,16 @@ impl History {
         std::mem::take(&mut self.changed)
     }
 
-    /// Vim's `ML_EMPTY` (see the field).
-    pub(crate) fn emptied(&self) -> bool {
-        self.emptied
+    /// Vim's `ML_EMPTY` (see the field), which only a blank buffer can be:
+    /// text put in outside the engine (piece 4, a reload) ends it.
+    pub(crate) fn emptied<B: TextBuf>(&self, buf: &B) -> bool {
+        self.emptied && is_blank_buffer(buf)
+    }
+
+    /// Forgets every step: the text changed outside the engine, so none of
+    /// them fits it any more (spec §3.11).
+    pub(crate) fn clear(&mut self) {
+        *self = Self::default();
     }
 
     /// Undoes the newest step; the caret it lands on.
@@ -317,7 +324,7 @@ mod tests {
         hist.begin(Pos::new(0, 0));
         delete_lines(&mut Ed { buf: &mut buf, hist: &mut hist }, 0, 0);
         hist.commit();
-        assert!(hist.can_undo() && hist.emptied());
+        assert!(hist.can_undo() && hist.emptied(&buf));
         assert!(!hist.take_changed(), "no text changed");
         assert_eq!(hist.undo(&mut buf), Some(Pos::new(0, 0)));
         assert!(!hist.can_undo());

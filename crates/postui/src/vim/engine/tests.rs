@@ -198,17 +198,37 @@ fn modes_start_where_enter_says() {
     assert_eq!(Field::start("abc", 0, Start::InsertOnly).engine.mode(), Mode::Insert);
 }
 
-/// Review focus 2: a change outside the engine leaves the caret past the
-/// text; the next key must clamp, not panic.
+/// Review focus 2: a change outside the engine (reload, format, app undo)
+/// leaves the caret past the text. `handle` clamps it for the mode before
+/// the command runs, so the command acts on the last char of the last line
+/// (clamping after would act on nothing and then land there), and never
+/// panics.
 #[test]
 fn a_stale_caret_is_clamped_before_any_key() {
-    let mut b = Body::new("one\ntwo\nthree", 2, 4);
+    let stale = || {
+        let mut b = Body::new("one\ntwo\nthree", 2, 4);
+        b.ed.lines = Lines::from("abc\ndef");
+        b
+    };
+    let mut b = stale();
+    b.keys("x");
+    assert_eq!((b.text(), b.caret()), ("abc\nde".to_string(), Pos::new(1, 1)), "x takes the clamped caret's char");
+    let mut b = stale();
+    b.keys("iZ");
+    b.key(esc());
+    assert_eq!((b.text(), b.caret()), ("abc\ndeZf".to_string(), Pos::new(1, 2)), "i opens before the last char, as in Normal");
+    let mut b = stale();
+    b.keys("yl");
+    assert_eq!(b.engine.registers().unnamed().text, "f");
+    let mut b = stale();
     b.ed.lines = Lines::from("x");
     for key in ['l', 'x', 'j', 'k', 'w', 'b', 'e', '$', 'p', 'u', 'd'] {
         b.key(k(key));
+        let (caret, len) = (b.caret(), b.text().chars().count());
+        assert!(caret.row == 0 && caret.col <= len.saturating_sub(1), "{key}: {caret:?} rests on a char");
     }
     b.key(esc());
-    assert!(b.caret().row == 0 && b.caret().col <= 1);
+    assert_eq!(b.caret().row, 0);
 }
 
 #[test]
@@ -572,4 +592,230 @@ fn dot_is_one_undo_step() {
     assert_eq!((f.text(), f.state.history.len()), ("ef", steps + 1));
     f.keys("u");
     assert_eq!(f.text(), "cdef");
+}
+
+#[test]
+fn enter_seats_the_caret() {
+    for (start, seat, col) in [
+        (Start::Normal, Seat::ColZero, 0),
+        (Start::Normal, Seat::End, 4),
+        (Start::Normal, Seat::FirstNonBlank, 2),
+        (Start::Normal, Seat::Keep, 3),
+        (Start::Insert, Seat::End, 5),
+    ] {
+        let mut f = Field::new("  abc", 3);
+        f.engine.enter(start, seat, Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
+        assert_eq!(f.col(), col, "{start:?} {seat:?}");
+    }
+}
+
+#[test]
+fn buf_state_reports_the_session() {
+    let mut f = Field::new("ab", 0);
+    assert_eq!((f.state.text_at_start(), f.state.edited()), (Some("ab"), false));
+    f.keys("x");
+    assert!(f.state.edited() && f.state.can_undo());
+    f.state.end_session();
+    assert_eq!((f.state.text_at_start(), f.state.edited(), f.state.can_undo()), (None, false, false));
+}
+
+#[test]
+fn the_body_history_survives_a_trip_away_but_not_an_outside_change() {
+    let mut b = Body::new("abc", 0, 0);
+    b.keys("x");
+    b.engine.leave(Target { buf: &mut BodyBuf::new(&mut b.ed, Style::default()), state: &mut b.state });
+    b.engine.enter(Start::Normal, Seat::Keep, Target { buf: &mut BodyBuf::new(&mut b.ed, Style::default()), state: &mut b.state });
+    assert!(b.state.can_undo(), "unchanged text: `u` still undoes the last small edit");
+    b.engine.leave(Target { buf: &mut BodyBuf::new(&mut b.ed, Style::default()), state: &mut b.state });
+    b.ed.lines = Lines::from("reloaded");
+    b.engine.enter(Start::Normal, Seat::Keep, Target { buf: &mut BodyBuf::new(&mut b.ed, Style::default()), state: &mut b.state });
+    assert!(!b.state.can_undo(), "the text changed outside the engine");
+}
+
+#[test]
+fn carry_keeps_insert_and_drops_visual_and_the_record() {
+    let mut engine = Engine::new();
+    let (mut s1, mut s2) = (BufState::new(), BufState::new());
+    let (mut a, mut b) = (LineInput::new("ab"), LineInput::new("cd"));
+    engine.enter(Start::Insert, Seat::End, Target { buf: &mut OneLineBuf::new(&mut a), state: &mut s1 });
+    engine.handle(k('X'), Target { buf: &mut OneLineBuf::new(&mut a), state: &mut s1 }, &ViewCtx::default());
+    b.set_cursor(0);
+    engine.carry(&mut s1, Target { buf: &mut OneLineBuf::new(&mut b), state: &mut s2 });
+    assert_eq!(engine.mode(), Mode::Insert);
+    assert!(s1.can_undo(), "the step open in the field left behind closed");
+    engine.handle(k('Y'), Target { buf: &mut OneLineBuf::new(&mut b), state: &mut s2 }, &ViewCtx::default());
+    assert_eq!((a.text(), b.text()), ("abX", "Ycd"));
+    engine.handle(esc(), Target { buf: &mut OneLineBuf::new(&mut b), state: &mut s2 }, &ViewCtx::default());
+    engine.handle(k('v'), Target { buf: &mut OneLineBuf::new(&mut b), state: &mut s2 }, &ViewCtx::default());
+    engine.carry(&mut s2, Target { buf: &mut OneLineBuf::new(&mut a), state: &mut s1 });
+    assert_eq!((engine.mode(), engine.visual_anchor()), (Mode::Normal, None));
+}
+
+/// `carry` keeps Insert across buffer kinds: the new buffer takes keys as
+/// its own kind does (`InsertKey::for_buffer`), and the body's unfinished
+/// record (with its Enter) is dropped, so `.` repeats only what was typed
+/// after the carry.
+#[test]
+fn carry_from_the_body_into_a_field_takes_the_fields_keys() {
+    let body_ctx = ViewCtx { viewport_rows: Some(20) };
+    let mut engine = Engine::new();
+    let (mut body, mut cell) = (BufState::new(), BufState::new());
+    let mut ed = EditorState::new(Lines::from("a"));
+    engine.enter(Start::Normal, Seat::Keep, Target { buf: &mut BodyBuf::new(&mut ed, Style::default()), state: &mut body });
+    for ev in [k('A'), code(KeyCode::Enter), k('b')] {
+        engine.handle(ev, Target { buf: &mut BodyBuf::new(&mut ed, Style::default()), state: &mut body }, &body_ctx);
+    }
+    let mut field = LineInput::new("q");
+    engine.carry(&mut body, Target { buf: &mut OneLineBuf::new(&mut field), state: &mut cell });
+    assert!(body.can_undo());
+    assert_eq!(engine.mode(), Mode::Insert);
+    let out = engine.handle(code(KeyCode::Enter), Target { buf: &mut OneLineBuf::new(&mut field), state: &mut cell }, &ViewCtx::default());
+    assert!(declined(&out), "a field declines Enter");
+    for ev in [k('z'), esc()] {
+        engine.handle(ev, Target { buf: &mut OneLineBuf::new(&mut field), state: &mut cell }, &ViewCtx::default());
+    }
+    assert_eq!(field.text(), "qz");
+    engine.enter(Start::Normal, Seat::Keep, Target { buf: &mut BodyBuf::new(&mut ed, Style::default()), state: &mut body });
+    engine.handle(k('.'), Target { buf: &mut BodyBuf::new(&mut ed, Style::default()), state: &mut body }, &body_ctx);
+    assert_eq!(BodyBuf::new(&mut ed, Style::default()).text(), "a\nzb");
+}
+
+/// Spec §4.2: a session opened by `enter(Start::Insert)` records as an `i`
+/// for `.`, even when nothing is typed (controller decision, Task 13).
+#[test]
+fn a_session_entered_in_insert_records_as_i_for_dot() {
+    let mut f = Field::new("abc", 0);
+    f.keys("x");
+    f.engine.enter(Start::Insert, Seat::ColZero, Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
+    f.key(esc());
+    f.keys(".");
+    assert_eq!(f.text(), "bc", "`.` is a bare `i` now, not the `x`");
+    f.engine.enter(Start::Insert, Seat::ColZero, Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
+    f.keys("X");
+    f.key(esc());
+    f.keys(".");
+    assert_eq!(f.text(), "XXbc", "`i` plus what was typed");
+}
+
+#[test]
+fn a_mouse_sweep_is_adopted_as_visual_on_release() {
+    let mut f = Field::new("abcdef", 0);
+    f.input.set_cursor(1);
+    f.input.begin_mouse_selection();
+    f.input.extend_mouse_selection_to(4);
+    f.engine.settle(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, Settled::Sweep);
+    assert_eq!(f.engine.mode(), Mode::Visual(Shape::Char));
+    assert_eq!(f.input.selection(), Some((1, 4)), "mid-sweep the mouse owns the geometry");
+    f.engine.settle(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, Settled::Release);
+    assert_eq!((f.engine.visual_anchor(), f.col()), (Some(Pos::new(0, 1)), 3));
+    assert_eq!(f.input.selection(), None);
+    assert_eq!(f.input.paint_span(), Some((1, 4)), "the same chars, now painted as Visual");
+    f.keys("d");
+    assert_eq!(f.text(), "aef");
+}
+
+#[test]
+fn a_click_ends_visual_and_a_gui_key_selection_is_adopted_from_normal() {
+    let mut f = Field::new("abcdef", 0);
+    f.keys("vl");
+    f.input.set_cursor(4);
+    f.engine.settle(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, Settled::Click);
+    assert_eq!((f.engine.mode(), f.col()), (Mode::Normal, 4));
+    f.input.select_all();
+    f.engine.settle(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, Settled::Key);
+    assert_eq!((f.engine.mode(), f.engine.visual_anchor(), f.col()), (Mode::Visual(Shape::Char), Some(Pos::new(0, 0)), 5));
+}
+
+#[test]
+fn a_query_box_keeps_its_gui_selection_and_typing_replaces_it() {
+    let mut f = Field::start("hello", 5, Start::InsertOnly);
+    f.input.select_all();
+    f.engine.settle(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, Settled::Key);
+    assert_eq!(f.engine.mode(), Mode::Insert);
+    f.keys("x");
+    assert_eq!(f.text(), "x");
+}
+
+#[test]
+fn leave_during_insert_is_one_step_without_stepping_back() {
+    let mut f = Field::new("ab", 0);
+    f.keys("aXY");
+    f.engine.leave(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
+    assert_eq!((f.text(), f.col(), f.engine.mode()), ("aXYb", 3, Mode::Normal));
+    assert_eq!(f.state.history.len(), 1);
+}
+
+#[test]
+fn external_edit_is_one_step_and_not_dot_repeatable() {
+    let mut f = Field::new("abcd", 0);
+    f.keys("x");
+    let changed = f.engine.external_edit(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, |s| {
+        s.splice(Pos::new(0, 0), Pos::new(0, 0), "{{t}}");
+        s.set_cursor(Pos::new(0, 5));
+    });
+    assert!(changed);
+    assert_eq!(f.text(), "{{t}}bcd");
+    assert_eq!(f.state.history.len(), 2);
+    f.keys(".");
+    assert_eq!(f.text(), "{{t}}cd", "`.` still repeats the x");
+    f.keys("uu");
+    assert_eq!(f.text(), "bcd");
+    let moved = f.engine.external_edit(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, |s| {
+        assert_eq!(s.buf().text(), "bcd");
+        s.set_cursor(Pos::new(0, 9));
+    });
+    assert!(!moved, "only the caret moved");
+    assert_eq!((f.col(), f.state.history.len()), (2, 1), "clamped to Normal's last char; no new step");
+}
+
+/// In Insert an external edit splits the session as a cursor key does:
+/// the typing before it, the edit, and the typing after it are three undo
+/// steps, and `.` repeats only what was typed after it.
+#[test]
+fn external_edit_in_insert_splits_the_session() {
+    let mut f = Field::new("ab", 0);
+    f.keys("aX");
+    f.engine.external_edit(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, |s| {
+        s.splice(Pos::new(0, 2), Pos::new(0, 2), "{{t}}");
+        s.set_cursor(Pos::new(0, 7));
+    });
+    assert_eq!(f.engine.mode(), Mode::Insert);
+    f.keys("Y");
+    f.key(esc());
+    assert_eq!((f.text(), f.col()), ("aX{{t}}Yb", 7));
+    assert_eq!(f.state.history.len(), 3);
+    f.keys(".");
+    assert_eq!(f.text(), "aX{{t}}YYb");
+    f.keys("uuu");
+    assert_eq!(f.text(), "aXb");
+    f.keys("u");
+    assert_eq!(f.text(), "ab");
+}
+
+/// Task 7 review: Vim's `ML_EMPTY` holds only while the buffer is still
+/// blank. Text put in outside the engine (piece 4, a reload) ends it, so
+/// `dd` deletes again.
+#[test]
+fn a_buffer_filled_outside_the_engine_is_no_longer_emptied() {
+    let mut f = Field::new("x", 0);
+    f.keys("dd");
+    assert_eq!(f.text(), "");
+    f.input.set_text("abc");
+    f.keys("dd");
+    assert_eq!(f.text(), "", "dd deletes the new text");
+}
+
+#[test]
+fn the_history_keeps_undolevels_steps() {
+    let n = settings::UNDOLEVELS;
+    let mut f = Field::new(&"x".repeat(n + 5), 0);
+    for _ in 0..n + 5 {
+        f.keys("x");
+    }
+    assert_eq!(f.state.history.len(), n);
+    for _ in 0..n {
+        assert!(!declined(&f.keys("u")));
+    }
+    assert!(declined(&f.keys("u")));
+    assert_eq!(f.text().len(), n);
 }

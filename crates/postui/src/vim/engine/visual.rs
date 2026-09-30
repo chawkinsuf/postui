@@ -167,7 +167,7 @@ impl Engine {
         let caret = match op {
             VisualOp::Change | VisualOp::ChangeLines => {
                 let origin = Cmd::VisualOp { op, count, reg };
-                if empty || st.history.emptied() {
+                if empty || st.history.emptied(&*buf) {
                     self.change_text(r, origin, buf, st);
                 } else {
                     self.change(r, reg, origin, buf, st);
@@ -186,7 +186,7 @@ impl Engine {
                 r.start
             }
             VisualOp::Replace(ch) => {
-                if empty || st.history.emptied() {
+                if empty || st.history.emptied(&*buf) {
                     // Vim's `op_replace()` returns before saving anything.
                     r.start
                 } else {
@@ -230,7 +230,7 @@ impl Engine {
     /// with no lines. An empty area writes no register but is still an undo
     /// step (`u_save_cursor()`).
     fn visual_delete<B: TextBuf>(&mut self, r: Range, reg: Option<char>, buf: &mut B, st: &mut BufState) -> bool {
-        if st.history.emptied() {
+        if st.history.emptied(&*buf) {
             st.forget_want();
             return false;
         }
@@ -265,7 +265,7 @@ impl Engine {
         self.regs.write(reg, text.clone());
         // Vim's `empty`: every line is gone, so the put leaves a stray empty
         // last line that `nv_put()` deletes.
-        let empty = st.history.emptied();
+        let empty = st.history.emptied(&*buf);
         let n = count.max(1);
         let mut ed = Ed { buf: &mut *buf, hist: &mut st.history };
         let mut caret = if text.text.is_empty() && r.kind == RKind::Char {

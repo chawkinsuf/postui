@@ -20,6 +20,11 @@ use super::{BufState, Engine, Mode, Outcome, Target, first_non_blank};
 use crate::components::line_input::flatten_paste;
 use ratatui::crossterm::event::KeyEvent;
 
+/// The `.` record of typing that did not start with an Insert command: a
+/// session `enter` or `carry` opened, or typing after a cursor key (Vim's
+/// pretend `1i`).
+const ONE_I: Cmd = Cmd::Insert { how: InsertHow::Before, count: 1 };
+
 /// A key typed in Insert, kept so `.` can replay the session (spec §3.12).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum InsertKey {
@@ -134,13 +139,44 @@ fn indent_before(line: &[char], col: usize) -> String {
 }
 
 impl Engine {
+    /// The open session. Insert mode always has one: `enter`, `carry` and
+    /// the Insert commands open it, and only leaving Insert drops it. A
+    /// missing one is a bug in those edges; release builds open a stand-in
+    /// rather than panic.
     fn session(&mut self) -> &mut Session {
-        self.insert.get_or_insert_with(|| Session::new(Pos::default(), Cmd::Insert { how: InsertHow::Before, count: 0 }))
+        debug_assert!(self.insert.is_some(), "Insert mode with no open session");
+        self.insert.get_or_insert_with(|| Session::new(Pos::default(), ONE_I))
     }
 
     pub(super) fn open_session(&mut self, at: Pos, origin: Cmd, ai_row: Option<usize>) {
         self.mode = Mode::Insert;
         self.insert = Some(Session { ai_row, ..Session::new(at, origin) });
+    }
+
+    /// Typing from the caret on starts a fresh record for `.`, as an `i`
+    /// (Vim's pretend `1i`). With no session open (`enter`, `carry`) one
+    /// opens at `at`. An open one is split as Vim's `start_arrow()` splits
+    /// it (a cursor key, an external edit; its undo step is already
+    /// closed): it keeps its `ctrl+w` stop, and the new stretch's start is
+    /// set when typing resumes (`stop_arrow()`). `resumed`: `.` takes the
+    /// record only once something is typed, and keeps its old value until
+    /// then.
+    pub(super) fn open_resumed(&mut self, at: Pos, resumed: bool) {
+        self.mode = Mode::Insert;
+        let s = self.insert.get_or_insert_with(|| Session::new(at, ONE_I));
+        s.arrow_used = true;
+        s.origin = ONE_I;
+        s.typed.clear();
+        s.ai_row = None;
+        s.resumed = resumed;
+        s.key_done();
+    }
+
+    /// Typing after a break in the open session (a cursor key, an external
+    /// edit) starts a fresh `1i` record.
+    pub(super) fn resume_insert(&mut self, at: Pos) {
+        debug_assert!(self.insert.is_some(), "only an open session is split");
+        self.open_resumed(at, true);
     }
 
     /// `i a I A o O` (spec §3.8, Vim's `nv_edit()` and `n_opencmd()`).
@@ -463,15 +499,7 @@ impl Engine {
             Key::End if st.want(c).is_some() => st.set_want(Want::End, to),
             _ => st.forget_want(),
         }
-        // The new stretch's start is set when typing resumes
-        // (`stop_arrow()`), not here.
-        let s = self.session();
-        s.arrow_used = true;
-        s.origin = Cmd::Insert { how: InsertHow::Before, count: 1 };
-        s.typed.clear();
-        s.ai_row = None;
-        s.resumed = true;
-        s.key_done();
+        self.resume_insert(to);
     }
 
     /// Leaves Insert: `Esc` (`step_back`), or `leave`. An indent
@@ -498,7 +526,7 @@ impl Engine {
     /// (`resumed`) only once something was typed: Vim's `stop_arrow()`
     /// starts a fresh `1i` record only then, and until then `.` keeps what
     /// the key before it closed.
-    fn finish_record(&mut self) {
+    pub(super) fn finish_record(&mut self) {
         let Some(s) = &self.insert else { return };
         if s.resumed && s.typed.is_empty() {
             return;
@@ -520,7 +548,7 @@ impl Engine {
     /// region, or a buffer with no lines), Vim still saves the line, so `u`
     /// undoes the step.
     pub(super) fn change_text<B: TextBuf>(&mut self, r: Range, origin: Cmd, buf: &mut B, st: &mut BufState) {
-        let emptied = st.history.emptied();
+        let emptied = st.history.emptied(&*buf);
         let mut ed = Ed { buf: &mut *buf, hist: &mut st.history };
         // Vim's first `u_save` runs with the caret on the range start,
         // except that a linewise change of several lines deletes all but

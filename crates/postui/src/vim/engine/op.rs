@@ -286,7 +286,7 @@ impl Engine {
             // Vim's `op_change()`: an empty region (`oap->empty`: exclusive,
             // start == end) or a buffer with no lines writes no register.
             let empty = span.kind == MKind::Exclusive && r.kind == RKind::Char && r.start == r.end;
-            if empty || st.history.emptied() {
+            if empty || st.history.emptied(&*buf) {
                 self.change_text(r, origin, buf, st);
             } else {
                 self.change(r, reg, origin, buf, st);
@@ -296,7 +296,7 @@ impl Engine {
         let caret = if op == Op::Yank {
             self.regs.write(reg, yank_of(buf, r));
             r.start
-        } else if st.history.emptied() {
+        } else if st.history.emptied(&*buf) {
             // Vim's `op_delete`: nothing to do in a buffer with no lines.
             st.forget_want();
             return true;
