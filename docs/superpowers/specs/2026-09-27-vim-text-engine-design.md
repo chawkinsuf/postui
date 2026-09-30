@@ -583,7 +583,9 @@ happen.
   the Insert keys work, and Esc is declined. Which surface
   gets which is piece 4's rule (`earlier`). `Seat` is one of `Keep`,
   `ColZero`, `End` or `FirstNonBlank`, as in field.rs. A session opened in
-  Insert records as an `i` for `.` (`mine`).
+  Insert records as an `i` for `.` (`mine`), but only once something is
+  typed: Esc alone keeps the old `.`, as after Vim's `:startinsert` (`you`,
+  2026-09-30: "match vim"; checked against Vim 9.1).
 - **`carry(t)`**: the caret moves straight from one buffer to another in the
   same event (Tab to the next cell). Insert and Normal carry over. Visual,
   pending keys and the insert record are dropped (field.rs, `earlier`).

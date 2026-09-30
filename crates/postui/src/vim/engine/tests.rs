@@ -765,21 +765,30 @@ fn carry_from_the_body_into_a_field_takes_the_fields_keys() {
     assert_eq!(BodyBuf::new(&mut ed, &mut None).text(), "a\nzb");
 }
 
-/// Spec §4.2: a session opened by `enter(Start::Insert)` records as an `i`
-/// for `.`, even when nothing is typed.
+/// A session opened by `enter(Start::Insert)` is Vim's `:startinsert`: `.`
+/// takes it as an `i` plus what was typed, and only once something is
+/// typed (user ruling 2026-09-30, "match vim"; Vim 9.1: `x`,
+/// `:startinsert`, `<Esc>`, `0.` gives `bdef` from `abcdef`, and with `Z`
+/// typed gives `ZabZdef`).
 #[test]
-fn a_session_entered_in_insert_records_as_i_for_dot() {
-    let mut f = Field::new("abc", 0);
+fn a_session_entered_in_insert_records_as_i_once_something_is_typed() {
+    let enter = |f: &mut Field| {
+        f.engine.enter(Start::Insert, Seat::Keep, Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
+    };
+    let mut f = Field::new("abcdef", 2);
     f.keys("x");
-    f.engine.enter(Start::Insert, Seat::ColZero, Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
+    enter(&mut f);
     f.key(esc());
-    f.keys(".");
-    assert_eq!(f.text(), "bc", "`.` is a bare `i` now, not the `x`");
-    f.engine.enter(Start::Insert, Seat::ColZero, Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
-    f.keys("X");
+    f.keys("0.");
+    assert_eq!(f.text(), "bdef", "nothing typed: `.` is still the `x`");
+
+    let mut f = Field::new("abcdef", 2);
+    f.keys("x");
+    enter(&mut f);
+    f.keys("Z");
     f.key(esc());
-    f.keys(".");
-    assert_eq!(f.text(), "XXbc", "`i` plus what was typed");
+    f.keys("0.");
+    assert_eq!(f.text(), "ZabZdef", "`i` plus what was typed");
 }
 
 /// A query box never sets `.`, as typing on Vim's command line never

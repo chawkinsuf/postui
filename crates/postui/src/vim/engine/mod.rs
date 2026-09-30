@@ -336,11 +336,11 @@ impl Engine {
         buf.set_cursor(Pos::new(row, col));
         self.clamp(buf);
         if self.mode == Mode::Insert {
-            // Spec §4.2: a session opened in Insert records as an `i` for
-            // `.`, even when nothing is typed (Esc alone makes `.` a bare
-            // `i`). `true` here would record it only once something is
-            // typed, as after a cursor key.
-            self.open_resumed(buf.cursor(), false);
+            // Vim's `:startinsert`: a session opened in Insert records as an
+            // `i` for `.`, but only once something is typed; Esc alone keeps
+            // the old `.` (user ruling 2026-09-30, overriding spec §4.2's
+            // "even when nothing is typed").
+            self.open_resumed(buf.cursor(), true);
         }
         self.rest(buf, state);
     }
