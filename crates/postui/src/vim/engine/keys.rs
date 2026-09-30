@@ -363,7 +363,7 @@ impl Pending {
         s
     }
 
-    /// One key. See the grammar table in the plan (Task 5) and spec §4.3.
+    /// One key. The grammar is the key table in spec §4.3.
     pub(crate) fn feed(&mut self, ev: KeyEvent, cx: ParseCx) -> Step {
         let key = Key::of(&ev);
         if matches!(key, Key::Other) || (matches!(key, Key::Ctrl(_)) && key != Key::Ctrl('r')) {

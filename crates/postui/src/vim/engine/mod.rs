@@ -71,7 +71,7 @@ pub enum Seat {
     FirstNonBlank,
 }
 
-/// What just happened, for [`Engine::settle`] (Task 13).
+/// What just happened, for [`Engine::settle`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Settled {
     /// A key piece 4 handled itself.
@@ -135,8 +135,8 @@ pub struct BufState {
     /// The text when the buffer last lost the caret ([`Engine::leave`]).
     /// The next [`Engine::enter`] drops the history if the text differs
     /// (reload, format, app undo, `$EDITOR`; spec §3.11). `None` while the
-    /// buffer has the caret, and after a [`Engine::carry`] away, which
-    /// cannot see the text it leaves.
+    /// buffer has the caret. [`Engine::carry`] leaves its source buffer
+    /// the same way, so it records the text too.
     text_at_leave: Option<String>,
     /// Vim's `w_curswant` (the column `j` and `k` aim for) with the caret it
     /// was recorded at; `None` is Vim's `w_set_curswant = TRUE`. It is
@@ -521,6 +521,9 @@ impl Engine {
                     Step::More => Outcome::consumed(),
                     Step::Inert(note) => Outcome::Consumed { changed: false, note, request: None },
                     Step::Decline { count, keys } => Outcome::Declined { count, keys },
+                    // A declined `u` / `ctrl+r` hands back the key as typed.
+                    Step::Cmd(Cmd::Undo(count)) => self.exec_undo(count, false, ev, buf, state),
+                    Step::Cmd(Cmd::Redo(count)) => self.exec_undo(count, true, ev, buf, state),
                     Step::Cmd(cmd) => self.run(cmd, buf, state, ctx),
                 }
             }
@@ -586,8 +589,9 @@ impl Engine {
                 self.exec_insert(how, count, buf, st);
                 Outcome::consumed()
             }
-            Cmd::Undo(count) => self.exec_undo(count, false, buf, st),
-            Cmd::Redo(count) => self.exec_undo(count, true, buf, st),
+            // Never recorded for `.`, so only `handle` meets them (it needs
+            // the typed key to hand back when the history is empty).
+            Cmd::Undo(_) | Cmd::Redo(_) => Outcome::consumed(),
             Cmd::Repeat(count) => self.exec_repeat(count, buf, st, ctx),
             Cmd::VisualStart(_) | Cmd::VisualSwap | Cmd::VisualExit | Cmd::VisualObject { .. } | Cmd::VisualOp { .. } => {
                 if let Cmd::VisualOp { op, .. } = cmd

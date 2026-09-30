@@ -7,7 +7,7 @@ use super::history::Ed;
 use super::keys::{Cmd, Object, VisualOp};
 use super::motion::{Want, WantUpdate, char_width, updated_want, vcol_of};
 use super::object;
-use super::op::{RKind, Range, delete, join_rows, put, recase_range, shift_rows, yank_of};
+use super::op::{RKind, Range, delete, join_rows, put, put_lines, recase_range, shift_rows, yank_of};
 use super::register::RegKind;
 use super::{BufState, Engine, Mode, Outcome, Shape, VisualSize, first_non_blank};
 
@@ -286,17 +286,7 @@ impl Engine {
                 RegKind::Line => text.text.repeat(n),
                 RegKind::Char => format!("{}\n", text.text).repeat(n),
             };
-            let lines = ed.buf.line_count();
-            let row = r.start.row;
-            if row < lines {
-                ed.splice(Pos::new(row, 0), Pos::new(row, 0), &body);
-                Pos::new(row, first_non_blank(&ed.buf.line(row)))
-            } else {
-                let last = lines - 1;
-                let len = ed.buf.line_len(last);
-                ed.splice(Pos::new(last, len), Pos::new(last, len), &format!("\n{}", body.strip_suffix('\n').unwrap_or(&body)));
-                Pos::new(last + 1, first_non_blank(&ed.buf.line(last + 1)))
-            }
+            put_lines(&mut ed, r.start.row, &body)
         } else {
             let at = r.start;
             let len = ed.buf.line_len(at.row);

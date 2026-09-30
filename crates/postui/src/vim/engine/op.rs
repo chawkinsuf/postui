@@ -1,7 +1,6 @@
 //! Operators (spec §3.6): a motion's or object's reach becomes a range
-//! under Vim's operator rules, and `d` `y` (Task 9: `c`) apply to it; Visual
-//! `~ u U > <` (Task 11) reuse the ranges. Also undo/redo, and (Task 10)
-//! put, replace and join.
+//! under Vim's operator rules, and `d` `y` `c` apply to it; Visual
+//! `~ u U > <` reuse the ranges. Also undo/redo, put, replace and join.
 
 use super::buf::{Pos, TextBuf};
 use super::history::Ed;
@@ -11,7 +10,7 @@ use super::register::{RegKind, Register};
 use super::settings::{SHIFTWIDTH, TABSTOP};
 use super::{BufState, Engine, Outcome, first_non_blank, first_non_blank_fix};
 use crate::components::line_input::flatten_paste;
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::KeyEvent;
 
 /// A motion's or object's reach, `start <= end` in buffer order.
 #[derive(Debug, Clone, Copy)]
@@ -195,19 +194,28 @@ pub(crate) fn put<B: TextBuf>(ed: &mut Ed<'_, B>, reg: &Register, before: bool, 
         RegKind::Char => put_chars(ed, caret, &reg.text.repeat(n), before),
         RegKind::Line => {
             let body = reg.text.repeat(n);
-            let row = if before { caret.row } else { caret.row + 1 };
-            if row < ed.buf.line_count() {
-                ed.splice(Pos::new(row, 0), Pos::new(row, 0), &body);
-            } else {
-                // After the last line: a break before the text, none after.
-                let last = ed.buf.line_count() - 1;
-                let len = ed.buf.line_len(last);
-                let lines = body.strip_suffix('\n').unwrap_or(&body);
-                ed.splice(Pos::new(last, len), Pos::new(last, len), &format!("\n{lines}"));
-            }
-            Pos::new(row, first_non_blank(&ed.buf.line(row)))
+            put_lines(ed, if before { caret.row } else { caret.row + 1 }, &body)
         }
     }
+}
+
+/// Inserts linewise `body` (each line ended by `'\n'`) as whole rows
+/// starting at `row`; the caret goes to the first new row's first
+/// non-blank. After the last line there is no row to go before, so the text
+/// takes a break before it and none after.
+pub(crate) fn put_lines<B: TextBuf>(ed: &mut Ed<'_, B>, row: usize, body: &str) -> Pos {
+    let lines = ed.buf.line_count();
+    let row = if row < lines {
+        ed.splice(Pos::new(row, 0), Pos::new(row, 0), body);
+        row
+    } else {
+        let last = lines - 1;
+        let len = ed.buf.line_len(last);
+        let text = body.strip_suffix('\n').unwrap_or(body);
+        ed.splice(Pos::new(last, len), Pos::new(last, len), &format!("\n{text}"));
+        last + 1
+    };
+    Pos::new(row, first_non_blank(&ed.buf.line(row)))
 }
 
 /// A charwise put: `p` goes after the caret's char (at column 0 on an empty
@@ -465,15 +473,11 @@ impl Engine {
     /// `nv_redo_or_register()` set `w_set_curswant` even when
     /// `u_doit()` finds nothing to do (`j<C-r>k` aims for the caret's own
     /// column, not the one `j` kept).
-    pub(super) fn exec_undo<B: TextBuf>(&mut self, count: usize, redo: bool, buf: &mut B, st: &mut BufState) -> Outcome {
+    /// `key` is the event as typed; a declined command hands it back.
+    pub(super) fn exec_undo<B: TextBuf>(&mut self, count: usize, redo: bool, key: KeyEvent, buf: &mut B, st: &mut BufState) -> Outcome {
         let available = if redo { st.history.can_redo() } else { st.history.can_undo() };
         if !available {
             st.forget_want();
-            let key = if redo {
-                KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL)
-            } else {
-                KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE)
-            };
             return Outcome::Declined { count: (count > 0).then_some(count), keys: vec![key] };
         }
         let mut landed = None;

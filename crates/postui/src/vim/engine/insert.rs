@@ -40,8 +40,8 @@ pub(crate) enum InsertKey {
 
 impl InsertKey {
     /// The key as a buffer of kind `B` takes it, typed now or replayed by
-    /// `.` (controller ruling, Task 12 fix round 1: a replay acts as if its
-    /// keys were typed in the target buffer). A one-line field has no
+    /// `.` (a replay acts as if its keys were typed in the target buffer,
+    /// spec §4.2). A one-line field has no
     /// Enter or Tab (`None`: typed, they are declined; replayed, dropped)
     /// and flattens a paste (`flatten_paste`); the body takes CRLF and CR
     /// as line breaks.
@@ -213,7 +213,8 @@ impl Engine {
         self.open_session(at, Cmd::Insert { how, count }, ai_row);
     }
 
-    /// One key in Insert (the table in the plan, Task 9).
+    /// One key in Insert (the Insert key table, spec §4.3). A key the
+    /// engine does not take is declined as typed.
     pub(super) fn insert_key<B: TextBuf>(&mut self, ev: KeyEvent, buf: &mut B, st: &mut BufState) -> Outcome {
         let decline = Outcome::Declined { count: None, keys: vec![ev] };
         let input = match Key::of(&ev) {
@@ -567,8 +568,8 @@ impl Engine {
     ///
     /// A query box (`Start::InsertOnly`: the `:` line, the palette, the jq
     /// bar, pickers, filters) never records: typing on Vim's command line
-    /// never touches the redo buffer (controller ruling, Task 13; spec
-    /// §4.2's `i` record is for `Start::Insert`).
+    /// never touches the redo buffer (spec §4.2's `i` record is for
+    /// `Start::Insert` only).
     pub(super) fn finish_record(&mut self) {
         if self.insert_only {
             return;

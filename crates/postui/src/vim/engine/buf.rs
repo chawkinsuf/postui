@@ -49,7 +49,9 @@ pub trait TextBuf {
     fn line_count(&self) -> usize;
     fn line(&self, row: usize) -> Cow<'_, [char]>;
     fn cursor(&self) -> Pos;
-    /// Raw: no clamping and no side effects beyond the caret.
+    /// Moves the caret and nothing else of the text. `BodyBuf` stores `at`
+    /// raw, unclamped. `OneLineBuf` goes through `LineInput::set_cursor`,
+    /// which clamps the column to the text and drops any GUI selection.
     fn set_cursor(&mut self, at: Pos);
     /// The one mutation: replaces `[start, end)` with `text`. `end` may be
     /// `(row + 1, 0)` to take the line break after `row`; `text` may hold
@@ -193,6 +195,14 @@ impl TextBuf for BodyBuf<'_> {
         if lines.is_empty() {
             lines.push(Vec::<char>::new());
         }
+        // The engine never panics: a stale undo step (the text changed
+        // outside the engine) may name rows past the end, so clamp the
+        // range into the text (an `end` past the last row means "to the end
+        // of the last row") and keep `start <= end`.
+        let last = lines.len() - 1;
+        let start = Pos::new(start.row.min(last), start.col);
+        let end = if end.row > last { Pos::new(last, usize::MAX) } else { end };
+        let end = end.max(start);
         let head: Vec<char> = lines
             .get(RowIndex::new(start.row))
             .map(|r| r[..start.col.min(r.len())].to_vec())
