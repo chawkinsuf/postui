@@ -36,9 +36,22 @@ pub(crate) enum InsertKey {
 /// An open Insert session (spec §3.8).
 #[derive(Debug, Clone)]
 pub(crate) struct Session {
-    /// Where typing began (Vim's `Insstart_orig`): `ctrl+w` and `ctrl+u`
-    /// stop here once.
+    /// Where the current stretch of typing began (Vim's `Insstart`): the
+    /// session's start, reset when typing resumes after a cursor key, and
+    /// moved up when `BS` joins its line to the one above.
     pub start: Pos,
+    /// Where `ctrl+w` and `ctrl+u` stop once (Vim's `Insstart_orig`). It
+    /// follows `start` after every key until `orig_fixed`.
+    orig: Pos,
+    /// Vim's `update_Insstart_orig = FALSE`: typing resumed right of
+    /// `orig`'s column after something was already changed, so `orig`
+    /// stays where it is for the rest of the session.
+    orig_fixed: bool,
+    /// Something was changed in this session (Vim's `!ins_need_undo`).
+    changed: bool,
+    /// A cursor key was used and no change followed yet (Vim's
+    /// `arrow_used`).
+    arrow_used: bool,
     /// The command that opened the session, for `.`.
     #[allow(dead_code)] // read by `.` (Task 12)
     pub origin: Cmd,
@@ -55,7 +68,39 @@ pub(crate) struct Session {
 
 impl Session {
     pub(crate) fn new(start: Pos, origin: Cmd) -> Self {
-        Self { start, origin, typed: Vec::new(), ai_row: None, resumed: false }
+        Self {
+            start,
+            orig: start,
+            orig_fixed: false,
+            changed: false,
+            arrow_used: false,
+            origin,
+            typed: Vec::new(),
+            ai_row: None,
+            resumed: false,
+        }
+    }
+
+    /// Vim's `stop_arrow()`, run before each change: after a cursor key the
+    /// new stretch of typing starts at `caret`, and `orig` freezes when that
+    /// is right of it and the session already changed something.
+    fn stop_arrow(&mut self, caret: Pos) {
+        if self.arrow_used {
+            self.start = caret;
+            if caret.col > self.orig.col && self.changed {
+                self.orig_fixed = true;
+            }
+            self.arrow_used = false;
+        }
+        self.changed = true;
+    }
+
+    /// The top of Vim's Insert loop, after every key:
+    /// `if (update_Insstart_orig) Insstart_orig = Insstart`.
+    fn key_done(&mut self) {
+        if !self.orig_fixed {
+            self.orig = self.start;
+        }
     }
 }
 
@@ -152,6 +197,11 @@ impl Engine {
     /// `w_set_curswant` until a cursor key is used).
     pub(super) fn insert_input<B: TextBuf>(&mut self, key: InsertKey, buf: &mut B, st: &mut BufState) {
         st.forget_want();
+        // `ins_bs()` runs `stop_arrow()` only once it knows it can delete.
+        if !matches!(key, InsertKey::Backspace | InsertKey::CtrlW | InsertKey::CtrlU) {
+            let caret = buf.cursor();
+            self.session().stop_arrow(caret);
+        }
         match key {
             InsertKey::Char(c) => self.type_text(&c.to_string(), InsertKey::Char(c), buf, st),
             InsertKey::Paste(text) => {
@@ -171,6 +221,7 @@ impl Engine {
             InsertKey::CtrlU => self.backspace(Erase::Line, buf, st),
             InsertKey::Delete => self.delete_forward(buf, st),
         }
+        self.session().key_done();
     }
 
     /// A query box has no Visual layer, so typing over a mouse or GUI-key
@@ -230,15 +281,19 @@ impl Engine {
             Erase::Word => InsertKey::CtrlW,
             Erase::Line => InsertKey::CtrlU,
         };
+        let caret = buf.cursor();
         if self.replace_gui_selection(buf, st) {
-            self.session().typed.push(record);
+            let s = self.session();
+            s.stop_arrow(caret);
+            s.typed.push(record);
             return;
         }
-        let caret = buf.cursor();
+        // Vim beeps at the start of the buffer, before `stop_arrow()`.
         if caret == Pos::new(0, 0) {
             return;
         }
-        let start = self.session().start;
+        self.session().stop_arrow(caret);
+        let Session { start, orig, .. } = *self.session();
         let joined = caret.col == 0;
         let to = if joined {
             // `backspace=eol`: join with the line above (no space).
@@ -272,20 +327,21 @@ impl Engine {
                 }
                 // `backspace=start` crosses the insert start, but `ctrl+w`
                 // and `ctrl+u` stop there once.
-                if mode == Erase::Char || col <= mincol || Pos::new(caret.row, col) == start {
+                if mode == Erase::Char || col <= mincol || Pos::new(caret.row, col) == orig {
                     break;
                 }
             }
             let to = Pos::new(caret.row, col);
             Ed { buf: &mut *buf, hist: &mut st.history }.splice(to, caret, "");
-            let s = self.session();
-            if s.start.row == caret.row && col < s.start.col {
-                s.start.col = col;
-            }
             to
         };
         buf.set_cursor(to);
         let s = self.session();
+        // "If deleted before the insertion point, adjust it" (`ins_bs()`);
+        // unless frozen, `key_done` then puts it back on `start`.
+        if to.row == s.orig.row && to.col < s.orig.col {
+            s.orig.col = to.col;
+        }
         s.typed.push(record);
         // Vim keeps `did_ai` over a BS unless it joined lines or left the
         // caret in column 0 or 1.
@@ -382,12 +438,15 @@ impl Engine {
             Key::End if st.want(c).is_some() => st.set_want(Want::End, to),
             _ => st.forget_want(),
         }
+        // The new stretch's start is set when typing resumes
+        // (`stop_arrow()`), not here.
         let s = self.session();
-        s.start = to;
+        s.arrow_used = true;
         s.origin = Cmd::Insert { how: InsertHow::Before, count: 1 };
         s.typed.clear();
         s.ai_row = None;
         s.resumed = true;
+        s.key_done();
     }
 
     /// Leaves Insert: `Esc` (`step_back`), or `leave`. An indent

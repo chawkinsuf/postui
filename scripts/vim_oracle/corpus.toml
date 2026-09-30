@@ -277,7 +277,10 @@ keys = ["i<BS><Esc>", "a<BS><BS><Esc>", "A<C-w><Esc>", "A<C-u><Esc>", "iab<C-w><
         "iX<Left>Y<Esc>", "iX<Right>Y<Esc>", "iX<Home>Y<Esc>", "iX<End>Y<Esc>", "iX<Up>Y<Esc>",
         "iX<Down>Y<Esc>", "o<Tab>x<Esc>", "i<Tab><Esc>", "A<Tab><Tab>x<Esc>", "I<C-u>x<Esc>",
         "A<CR><BS><Esc>", "o<BS><Esc>", "A<C-w><C-w><C-w><Esc>", "A <C-w><Esc>", "iX<Left><BS><Esc>",
-        "A<CR>x<Up>y<Esc>", "o<Up><Esc>", "A foo <C-w><C-w><Esc>"]
+        "A<CR>x<Up>y<Esc>", "o<Up><Esc>", "A foo <C-w><C-w><Esc>",
+        "iab<Left>X<C-w><Esc>", "iab<Left><C-w><Esc>", "iab<Left><Left><Left>X<C-w><Esc>",
+        "i<Left>X<C-w><Esc>", "iX<End>Y<C-w><Esc>", "iX<End>Y<C-u><Esc>", "iX<Down>Y<C-w><Esc>",
+        "iX<Down><End>Y<C-u><Esc>", "iX<Up>Y<C-w><Esc>", "i<BS>X<C-w><Esc>", "iX<BS><BS>Y<C-w><Esc>"]
 on = ["words", "json_flat", "json_pretty", "blank_edges", "tabs", "unicode"]
 at = ["bol", "fnb", "mid", "eol"]
 
@@ -310,7 +313,8 @@ at = ["bol", "fnb", "mid", "eol"]
 id = "insert/undo"
 tier = 1
 keys = ["iX<Esc>", "aX<Esc>", "IX<Esc>", "AX<Esc>", "AX<CR>Y<Esc>", "oX<Esc>", "OX<Esc>", "cwX<Esc>",
-        "ccX<Esc>", "CX<Esc>", "sX<Esc>", "SX<Esc>", "ci{X<Esc>", "iX<Left>Y<Esc>", "A<C-w><Esc>"]
+        "ccX<Esc>", "CX<Esc>", "sX<Esc>", "SX<Esc>", "ci{X<Esc>", "iX<Left>Y<Esc>", "A<C-w><Esc>",
+        "2ccX<Esc>", "cjX<Esc>", "ckX<Esc>"]
 suffixes = ["u", "u<C-r>", "uu"]
 on = ["words", "json_pretty", "blank_edges"]
 at = ["bol", "fnb", "eol"]
