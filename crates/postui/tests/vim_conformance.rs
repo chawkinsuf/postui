@@ -274,6 +274,19 @@ fn drive<B: TextBuf>(engine: &mut Engine, buf: &mut B, state: &mut BufState, cas
         {
             return Run::Skipped;
         }
+        // And for a Normal-mode put of a linewise register (§6.5 names
+        // `yyp`): Vim opens a new line, the field puts the text charwise
+        // (§5, pinned by an S test). A later `dd` or `u` brings Vim back to
+        // one line and slips through the first rule (fuzz seed 30:
+        // `yyf,<C-r>pcwY<Esc>dd<Esc>`), so the put skips the run outright.
+        if !B::MULTILINE
+            && engine.mode() == Mode::Normal
+            && matches!(token.as_str(), "p" | "P")
+            && engine.echo().chars().all(|c| c.is_ascii_digit())
+            && engine.registers().unnamed().kind == RegKind::Line
+        {
+            return Run::Skipped;
+        }
         let inserting = engine.mode() == Mode::Insert;
         let out = engine.handle(key_event(&token), Target { buf: &mut *buf, state: &mut *state }, ctx);
         // A one-line field hands Insert keys it doesn't own (Tab, Up,

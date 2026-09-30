@@ -231,6 +231,20 @@ def read_golden():
     return {case_id(r): r for r in map(json.loads, lines[1:])}
 
 
+def fuzz_keys(atoms, rng):
+    """One to six atoms and a closing <Esc>. An atom that starts with `O`
+    never follows one that ends with <Esc>: Vim reads `<Esc>O` plus the next
+    key as a keypad termcode (`<Esc>Ox`), so the case would test the
+    terminal, not the editor. Such an atom is drawn again."""
+    keys = ""
+    for _ in range(rng.randint(1, 6)):
+        atom = rng.choice(atoms)
+        while keys.endswith("<Esc>") and atom.startswith("O"):
+            atom = rng.choice(atoms)
+        keys += atom
+    return keys + "<Esc>"
+
+
 def fuzz(corpus, names, n, seed, settings):
     atoms = corpus["fuzz"]["atoms"]
     rng = random.Random(seed)
@@ -241,7 +255,7 @@ def fuzz(corpus, names, n, seed, settings):
         lines = texts[name]
         r = rng.randrange(len(lines)) + 1
         c = rng.randrange(max(1, len(lines[r - 1]))) + 1
-        keys = "".join(rng.choice(atoms) for _ in range(rng.randint(1, 6))) + "<Esc>"
+        keys = fuzz_keys(atoms, rng)
         cid = f"fuzz/{seed}/{i}/{name}@{r}:{c}/{keys}"
         cases[cid] = {"id": cid, "group": "fuzz", "tier": 1, "status": "ship", "text": name,
                       "lines": lines, "cursor": [r, c], "keys": keys,

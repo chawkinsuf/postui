@@ -1026,3 +1026,71 @@ fn the_history_keeps_undolevels_steps() {
     assert!(declined(&f.keys("u")));
     assert_eq!(f.text().len(), n);
 }
+
+/// Review focus 1: edtui holds an empty body as zero rows; every tier-1
+/// edit must work on it and edtui must still render it.
+#[test]
+fn every_tier_one_edit_works_on_an_empty_body() {
+    use edtui::EditorView;
+    use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
+    for keys in ["x", "X", "dd", "D", "dw", "cwX\u{1b}", "ccX\u{1b}", "p", "P", "J", "rX", "o\u{1b}",
+                 "Ox\u{1b}", "iab\u{1b}", "A\u{1b}", "yyp", "vd", "Vd", "vy", "u", "x.", "v~", "Vp",
+                 "di{", "ci\"x\u{1b}", "%", "G", "w", "e", "b", "$"] {
+        let mut b = Body::new("", 0, 0);
+        for c in keys.chars() {
+            b.key(if c == '\u{1b}' { esc() } else { k(c) });
+        }
+        let lines = BodyBuf::new(&mut b.ed, Style::default()).line_count();
+        assert!(b.caret().row < lines, "{keys:?} left the caret off the text");
+        let area = Rect::new(0, 0, 20, 5);
+        EditorView::new(&mut b.ed).render(area, &mut Buffer::empty(area));
+    }
+}
+
+/// Spec §8.5: debug build, 5,000-line body.
+#[test]
+fn a_5000_line_body_stays_fast() {
+    let rows: Vec<String> = (0..5000).map(|i| format!("  \"k{i}\": {{\"v\": [{i}, 2]}},")).collect();
+    let text = format!("{{\n{}\n}}", rows.join("\n"));
+    for keys in ["dG", "dGu", "ci{"] {
+        let mut b = Body::new(&text, 2500, 4);
+        let started = std::time::Instant::now();
+        b.keys(keys);
+        let ms = started.elapsed().as_millis();
+        assert!(ms < 50, "{keys} took {ms} ms");
+    }
+    let mut b = Body::new(&text, 2500, 4);
+    b.keys("i");
+    let started = std::time::Instant::now();
+    for _ in 0..200 {
+        b.key(k('x'));
+    }
+    let ms = started.elapsed().as_millis();
+    assert!(ms < 200, "typing 200 chars took {ms} ms");
+}
+
+/// Spec §2: no engine file names an app type, except `buf.rs` (and this
+/// test file, which names them to look for them).
+#[test]
+fn no_engine_file_names_an_app_type() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/vim/engine");
+    let ident = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+    let mut checked = 0;
+    for entry in std::fs::read_dir(&dir).expect("the engine directory") {
+        let path = entry.expect("a directory entry").path();
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_string();
+        if !name.ends_with(".rs") || name == "buf.rs" || name == "tests.rs" {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).expect("a readable source file");
+        for word in ["App", "Action", "Editor", "FieldId"] {
+            for (i, _) in text.match_indices(word) {
+                let before = text[..i].chars().next_back();
+                let after = text[i + word.len()..].chars().next();
+                assert!(ident(before) || ident(after), "{name} names the app type {word}");
+            }
+        }
+        checked += 1;
+    }
+    assert!(checked >= 12, "only {checked} engine files were checked");
+}

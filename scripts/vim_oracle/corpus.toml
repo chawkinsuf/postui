@@ -12,8 +12,8 @@
 # or ZZ/ZQ: if a change fails, its typed text runs as Normal commands, so
 # typed text uses harmless letters like X and Y.
 # status = "later" cases are generated and reported but do not fail the test.
-# Budget: the full 3a corpus is about 39,700 cases and 6.5 MB of golden file
-# (measured 2026-09-30, after Task 12); keep it under about 7 MB. Prefer
+# Budget: the full 3a corpus is about 40,000 cases and 6.75 MB of golden file
+# (measured 2026-09-30, after Task 14); keep it under about 7 MB. Prefer
 # named seats unless the key's result depends on the char under the caret.
 
 [text.words]
@@ -93,7 +93,7 @@ at = ["bol", "fnb", "mid", "eol"]
 id = "motions/jk"
 tier = 1
 keys = ["j", "k", "3j", "3k", "9j", "9k", "<Down>", "<Up>", "jj", "jk", "$j", "$jk", "llj", "lljj",
-        "0j", "$jj", "$wk", "$ek", "kbj", "2$k", "9$k", "l2$k", "$%k", "$fzk", "$3bj"]
+        "0j", "$jj", "$wk", "$ek", "kbj", "2$k", "9$k", "l2$k", "$%k", "$fzk", "$3bj", "j<C-r>k", "juk"]
 on = ["json_pretty", "json_gaps", "blank_edges", "tabs", "brackets_deep", "words", "json_flat", "unicode",
       "short_last"]
 at = ["bol", "mid", "eol"]
@@ -265,7 +265,7 @@ id = "insert/enter"
 tier = 1
 keys = ["iX<Esc>", "aX<Esc>", "IX<Esc>", "AX<Esc>", "oX<Esc>", "OX<Esc>", "i<Esc>", "a<Esc>", "I<Esc>",
         "A<Esc>", "o<Esc>", "O<Esc>", "iab", "aX", "AX<CR>", "iX<CR>Y<Esc>", "A<CR><Esc>", "O<CR><Esc>",
-        "i<CR><CR><Esc>", "a<Space><Esc>", "oX<CR>Y<Esc>", "iX<C-[>"]
+        "i<CR><CR><Esc>", "a<Space><Esc>", "oX<CR>Y<Esc>", "iX<C-[>", "o<Esc>k", "O<Esc>j", "A<CR><Esc>k"]
 on = ["words", "json_flat", "json_pretty", "blank_edges", "unicode", "tabs", "empty", "one_char"]
 at = ["bol", "fnb", "mid", "eol"]
 

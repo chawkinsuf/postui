@@ -461,9 +461,14 @@ impl Engine {
 
     /// `u` / `ctrl+r` with a count. Nothing left in this buffer: declined,
     /// and piece 4 hands the key to the app history (spec §3.11, §4.3).
+    /// Either way the wanted column resets: Vim's `nv_kundo()` and
+    /// `nv_redo_or_register()` set `w_set_curswant` even when
+    /// `u_doit()` finds nothing to do (`j<C-r>k` aims for the caret's own
+    /// column, not the one `j` kept).
     pub(super) fn exec_undo<B: TextBuf>(&mut self, count: usize, redo: bool, buf: &mut B, st: &mut BufState) -> Outcome {
         let available = if redo { st.history.can_redo() } else { st.history.can_undo() };
         if !available {
+            st.forget_want();
             let key = if redo {
                 KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL)
             } else {

@@ -525,11 +525,21 @@ impl Engine {
     /// Leaves Insert: `Esc` (`step_back`), or `leave`. An indent
     /// `autoindent` added that nothing followed is removed, the session's
     /// undo step closes, and the caret steps back unless at column 0.
+    ///
+    /// The wanted column follows `ins_esc()`: Insert's loop last set it to
+    /// the caret's Insert-mode virtual column (`update_curswant()` before
+    /// each key), and `w_set_curswant` is set again only when
+    /// `stop_insert()` left the caret's column where it was. When removing
+    /// the autoindent moved it, the wanted column stays after the indent
+    /// (`o<Esc>k` aims for the indent's width).
     pub(super) fn end_insert<B: TextBuf>(&mut self, buf: &mut B, st: &mut BufState, step_back: bool) {
         let mut caret = buf.cursor();
+        let temp = caret.col;
+        let insert_want = Want::Col(vcol_of(&buf.line(caret.row), caret.col));
         if let Some(at) = self.strip_autoindent(caret, buf, st) {
             caret = at;
         }
+        let keep_want = caret.col != temp;
         st.history.commit();
         self.finish_record();
         self.insert = None;
@@ -542,7 +552,11 @@ impl Engine {
         if caret != buf.cursor() {
             buf.set_cursor(caret);
         }
-        st.forget_want();
+        if keep_want {
+            st.set_want(insert_want, caret);
+        } else {
+            st.forget_want();
+        }
     }
 
     /// Records the session for `.` when it ends or a cursor key splits it:
