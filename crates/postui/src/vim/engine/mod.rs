@@ -12,6 +12,8 @@
 //! case of the generated golden file against this engine.
 
 pub mod buf;
+mod case;
+mod case_table;
 mod class;
 mod class_table;
 mod history;
@@ -591,6 +593,12 @@ impl Engine {
                 record = self.exec_join(count, buf, st).map(|count| Cmd::Join { count });
                 Outcome::consumed()
             }
+            Cmd::Tilde { count } => {
+                if self.exec_tilde(count, buf, st) {
+                    record = Some(cmd);
+                }
+                Outcome::consumed()
+            }
             Cmd::Insert { how, count } => {
                 self.exec_insert(how, count, buf, st);
                 Outcome::consumed()
@@ -765,6 +773,7 @@ fn with_count(cmd: Cmd, count: usize) -> Cmd {
         Cmd::Put { before, reg, .. } => Cmd::Put { before, count, reg },
         Cmd::Replace { ch, .. } => Cmd::Replace { ch, count },
         Cmd::Join { .. } => Cmd::Join { count },
+        Cmd::Tilde { .. } => Cmd::Tilde { count },
         Cmd::Insert { how, .. } => Cmd::Insert { how, count },
         other => other,
     }

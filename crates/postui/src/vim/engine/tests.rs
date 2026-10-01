@@ -1233,3 +1233,20 @@ fn a_linewise_zero_register_puts_charwise_in_a_field() {
     f.keys("\"0p");
     assert_eq!((f.text(), f.col()), ("bab", 2));
 }
+
+/// Plan 3b Task 2: the case operators echo and cancel as Vim's do.
+#[test]
+fn case_operators_echo_and_cancel() {
+    let mut f = Field::new("abc", 0);
+    for (keys, echo) in [("gU", "gU"), ("g~g", "g~g"), ("2gu3", "2gu3"), ("\"0g~", "\"0g~")] {
+        f.keys(keys);
+        assert_eq!(f.engine.echo(), echo, "{keys:?}");
+        f.key(esc());
+        assert!(!f.engine.pending());
+    }
+    for keys in ["gUu", "g~u", "gu~", "gUd", "dgU"] {
+        assert_eq!(f.keys(keys), Outcome::Consumed { changed: false, note: None, request: None }, "{keys:?} cancels");
+        assert!(!f.engine.pending(), "{keys:?}");
+        assert_eq!(f.text(), "abc");
+    }
+}

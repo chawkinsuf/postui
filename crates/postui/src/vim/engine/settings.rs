@@ -6,8 +6,9 @@
 
 /// The exact `:set` arguments the oracle runs Vim with (spec §3.4, plus
 /// deviation 8: `cpoptions`, `formatoptions`, `virtualedit` and the
-/// search options, all Vim defaults, pinned).
-pub const SETTINGS_LINE: &str = "expandtab shiftwidth=2 autoindent selection=inclusive tabstop=2 softtabstop=0 backspace=indent,eol,start whichwrap=b,s startofline nojoinspaces nrformats=bin,hex noshiftround nosmartindent nocindent textwidth=0 noignorecase notildeop matchpairs=(:),{:},[:] iskeyword=@,48-57,_,192-255 cpoptions=aABceFs formatoptions=tcq virtualedit= wrapscan magic nosmartcase";
+/// search options, all Vim defaults, pinned; plan 3b adds `casemap`, which
+/// Vim's case mapping depends on).
+pub const SETTINGS_LINE: &str = "expandtab shiftwidth=2 autoindent selection=inclusive tabstop=2 softtabstop=0 backspace=indent,eol,start whichwrap=b,s startofline nojoinspaces nrformats=bin,hex noshiftround nosmartindent nocindent textwidth=0 noignorecase notildeop matchpairs=(:),{:},[:] iskeyword=@,48-57,_,192-255 cpoptions=aABceFs formatoptions=tcq virtualedit= wrapscan magic nosmartcase casemap=internal,keepascii";
 
 /// `shiftwidth`: one `>` step and the autoindent unit.
 pub const SHIFTWIDTH: usize = 2;

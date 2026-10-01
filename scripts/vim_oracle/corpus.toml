@@ -589,6 +589,49 @@ keys = ["yiwdw\"0p", "yiwdwP\"0P", "yiw\"\"dw\"0p", "yiw\"0dw\"0p", "yiw\"0dwp",
 on = ["words", "json_pretty", "blank_edges", "unicode"]
 at = ["bol", "mid", "eol"]
 
+# --- plan 3b: case (Task 2) ---------------------------------------------------
+
+# Vim's own case rules: `ß` becomes "SS" under gU and Visual U only; `ǅ`
+# and `ǈ` count as lower case (gu leaves them); `İ` lowercases to `i`.
+[text.case_edges]
+lines = ["straße ǅx İı ſ Σς ǈ ÿŸ"]
+
+[text.case_lines]
+lines = ["ß ǅ", "  straße", "", "İı ǈ"]
+
+# `~` (notildeop): count chars on the caret's line; fails on an empty line
+# (no undo step, the wanted column kept: `$j~k` vs `$jj~k` on short lines).
+[[group]]
+id = "ops/tilde"
+tier = 2
+keys = ["~", "3~", "9~", "~~", "~u", "~u<C-r>", "2~.", "3~u", "~j", "$j~k", "~.", "3~2."]
+on = ["words", "unicode", "case_edges", "case_lines", "blank_edges", "json_pretty", "empty", "one_char"]
+at = ["bol", "mid", "eol"]
+
+[[group]]
+id = "ops/case"
+tier = 2
+keys = ["g~~", "g~g~", "guu", "gugu", "gUU", "gUgU", "gUu", "g~u", "gu~", "gUw", "g~e", "gUiw", "gUaw",
+        "gU$", "gu0", "gUj", "gUk", "gUgg", "gugg", "2g~~", "g~2~", "gUi{", "gUfa", "g~%", "gUU.", "gUiwj."]
+on = ["words", "json_pretty", "case_edges", "case_lines"]
+at = ["bol", "fnb", "mid", "eol"]
+
+[[group]]
+id = "ops/case-undo"
+tier = 2
+keys = ["g~~", "gUiw", "guj", "gU$", "3~", "gUU", "~"]
+suffixes = ["u", "u<C-r>"]
+on = ["words", "json_pretty", "case_lines"]
+at = ["bol", "fnb", "eol"]
+
+# Tier-1 Visual ~ u U on Vim's case table, and Visual g~ gu gU.
+[[group]]
+id = "visual/case-edges"
+tier = 2
+keys = ["v$~", "v$u", "v$U", "viwU", "Vu", "VU", "vlU", "vlg~", "vlgu", "vlgU", "vjU", "Vj~", "vlg~u"]
+on = ["case_edges", "case_lines", "words"]
+at = ["bol", "mid", "eol"]
+
 # --- fuzz atoms (generate.py --fuzz); tier-1 keys only -----------------------
 
 [fuzz]

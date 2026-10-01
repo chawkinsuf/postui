@@ -54,12 +54,14 @@ impl Key {
     }
 }
 
-/// The tier-1 operators. Tier 2 (`gu gU g~ > <` as operators) is plan 3b.
+/// The operators. Tier 2 adds `g~ gu gU` (plan 3b Task 2) and `> <` (Task 3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Op {
     Delete,
     Change,
     Yank,
+    /// `g~` `gu` `gU`
+    Case(CaseOp),
 }
 
 /// What Visual `~` `u` `U` do to the selection.
@@ -197,6 +199,8 @@ pub(crate) enum Cmd {
     Put { before: bool, count: usize, reg: Option<char> },
     Replace { ch: char, count: usize },
     Join { count: usize },
+    /// `~` (`notildeop`): toggle the case of `count` chars.
+    Tilde { count: usize },
     Insert { how: InsertHow, count: usize },
     Repeat(usize),
     VisualStart(Shape),
@@ -267,6 +271,33 @@ pub(crate) fn op_name(op: Op) -> &'static str {
         Op::Delete => "d",
         Op::Change => "c",
         Op::Yank => "y",
+        Op::Case(CaseOp::Toggle) => "g~",
+        Op::Case(CaseOp::Lower) => "gu",
+        Op::Case(CaseOp::Upper) => "gU",
+    }
+}
+
+/// The key that doubles `op` into its linewise form (Vim's `nv_lineop()`):
+/// `dd` `cc` `yy`, and the last letter of `g~ gu gU` (`g~~`, `guu`, `gUU`:
+/// Vim's `nv_tilde()`, `nv_undo()` and `nv_Undo()` read `~ u U` as the
+/// pending operator again). The ledger's 3a trap: `op_name(op).starts_with`
+/// would make `gug` complete, but `gugg` is `gu` with the motion `gg`.
+fn doubles(op: Op, ch: char) -> bool {
+    match op {
+        Op::Delete => ch == 'd',
+        Op::Change => ch == 'c',
+        Op::Yank => ch == 'y',
+        Op::Case(CaseOp::Toggle) => ch == '~',
+        Op::Case(CaseOp::Lower) => ch == 'u',
+        Op::Case(CaseOp::Upper) => ch == 'U',
+    }
+}
+
+fn case_of(c: char) -> CaseOp {
+    match c {
+        '~' => CaseOp::Toggle,
+        'u' => CaseOp::Lower,
+        _ => CaseOp::Upper,
     }
 }
 
@@ -524,6 +555,7 @@ impl Pending {
                 };
                 self.cmd(|count, _| Cmd::Insert { how, count })
             }
+            '~' => self.cmd(|count, _| Cmd::Tilde { count }),
             'v' => self.cmd(|_, _| Cmd::VisualStart(Shape::Char)),
             'V' => self.cmd(|_, _| Cmd::VisualStart(Shape::Line)),
             'u' => self.undo(false, ev),
@@ -542,7 +574,7 @@ impl Pending {
         }
         let Key::Char(ch) = key else { return self.inert(None) };
         match ch {
-            _ if op_name(op).starts_with(ch) => self.cmd(|count, reg| Cmd::Operate { op, reach: Reach::Line, count, reg }),
+            _ if doubles(op, ch) => self.cmd(|count, reg| Cmd::Operate { op, reach: Reach::Line, count, reg }),
             'i' | 'a' => self.arm(ev, Prefix::Object { inner: ch == 'i' }),
             'f' | 't' | 'F' | 'T' => self.arm(ev, Prefix::Find(find_kind(ch))),
             'g' => self.arm(ev, Prefix::G),
@@ -599,6 +631,19 @@ impl Pending {
             Prefix::G => match key {
                 Key::Char('g') => self.motion_done(Motion::FirstLine),
                 Key::Char('J') => self.inert(Some("gJ not supported".to_string())),
+                Key::Char(c @ ('~' | 'u' | 'U')) => match self.op {
+                    // `g~g~` `gugu` `gUgU`: the doubled form spelled out.
+                    Some(op) if doubles(op, c) => self.cmd(|count, reg| Cmd::Operate { op, reach: Reach::Line, count, reg }),
+                    // Another operator while one is pending cancels both
+                    // (Vim's `checkclearop()`).
+                    Some(_) => self.inert(None),
+                    None if cx.visual => self.cmd(|count, reg| Cmd::VisualOp { op: VisualOp::Case(case_of(c)), count, reg }),
+                    None => {
+                        self.keys.push(ev);
+                        self.op = Some(Op::Case(case_of(c)));
+                        Step::More
+                    }
+                },
                 Key::Esc => self.inert(None),
                 _ if self.op.is_none() && !cx.visual => self.decline(ev),
                 _ => self.inert(None),
@@ -858,6 +903,27 @@ mod tests {
         assert_eq!(combine_counts(0, 0), 0);
         assert_eq!(combine_counts(0, 3), 3);
         assert_eq!(accumulate_count(MAX_COUNT, 9), MAX_COUNT);
+    }
+
+    #[test]
+    fn case_operators_parse() {
+        use Motion::*;
+        let op = |op, reach, count| Cmd::Operate { op, reach, count, reg: None };
+        let (t, l, u) = (Op::Case(CaseOp::Toggle), Op::Case(CaseOp::Lower), Op::Case(CaseOp::Upper));
+        assert_eq!(cmd("g~w", NORMAL), op(t, Reach::Motion(WordFwd { big: false }), 0));
+        assert_eq!(cmd("g~~", NORMAL), op(t, Reach::Line, 0));
+        assert_eq!(cmd("g~g~", NORMAL), op(t, Reach::Line, 0));
+        assert_eq!(cmd("guu", NORMAL), op(l, Reach::Line, 0));
+        assert_eq!(cmd("gugu", NORMAL), op(l, Reach::Line, 0));
+        assert_eq!(cmd("gUU", NORMAL), op(u, Reach::Line, 0));
+        assert_eq!(cmd("gugg", NORMAL), op(l, Reach::Motion(FirstLine), 0), "gg is a motion after gu");
+        assert_eq!(cmd("2g~~", NORMAL), op(t, Reach::Line, 2));
+        assert_eq!(cmd("g~2~", NORMAL), op(t, Reach::Line, 2));
+        assert_eq!(cmd("3~", NORMAL), Cmd::Tilde { count: 3 });
+        let vop = |c| Cmd::VisualOp { op: VisualOp::Case(c), count: 0, reg: None };
+        assert_eq!(cmd("g~", VISUAL), vop(CaseOp::Toggle));
+        assert_eq!(cmd("gu", VISUAL), vop(CaseOp::Lower));
+        assert_eq!(cmd("gU", VISUAL), vop(CaseOp::Upper));
     }
 
     /// Review focus 5: terminals spell printable keys differently.

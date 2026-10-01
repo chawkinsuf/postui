@@ -3,6 +3,7 @@
 //! `~ u U > <` reuse the ranges. Also undo/redo, put, replace and join.
 
 use super::buf::{Pos, TextBuf};
+use super::case;
 use super::class::white;
 use super::history::Ed;
 use super::keys::{CaseOp, Cmd, Op, Reach};
@@ -126,35 +127,60 @@ pub(crate) fn delete<B: TextBuf>(ed: &mut Ed<'_, B>, r: Range) -> Pos {
     }
 }
 
-/// One char when the case mapping gives one, else the char unchanged
-/// (Vim keeps `ß` under `gU`).
-fn one(mut mapped: impl Iterator<Item = char>, c: char) -> char {
-    match (mapped.next(), mapped.next()) {
-        (Some(x), None) => x,
-        _ => c,
-    }
-}
-
-fn recase(how: CaseOp, c: char) -> char {
-    match how {
-        CaseOp::Upper => one(c.to_uppercase(), c),
-        CaseOp::Lower => one(c.to_lowercase(), c),
-        CaseOp::Toggle if c.is_lowercase() => one(c.to_uppercase(), c),
-        CaseOp::Toggle if c.is_uppercase() => one(c.to_lowercase(), c),
-        CaseOp::Toggle => c,
-    }
-}
-
-/// Visual `~ u U` (and plan 3b's `g~` `gu` `gU`) over `r` (whole rows when
-/// linewise).
+/// `g~` `gu` `gU` and Visual `~ u U` over `r` (whole rows when linewise),
+/// with Vim's case rules (`case::swap`; `ß` may become "SS", so the text can
+/// grow).
 pub(crate) fn recase_range<B: TextBuf>(ed: &mut Ed<'_, B>, how: CaseOp, r: Range) {
     let (start, end) = match r.kind {
         RKind::Char => (r.start, r.end),
         RKind::Line => (Pos::new(r.start.row, 0), Pos::new(r.end.row, ed.buf.line_len(r.end.row))),
     };
     let text = ed.buf.slice(start, end);
-    let new: String = text.chars().map(|c| if c == '\n' { c } else { recase(how, c) }).collect();
+    let mut new = String::with_capacity(text.len());
+    for c in text.chars() {
+        if c == '\n' {
+            new.push(c);
+        } else {
+            case::swap(how, c, &mut new);
+        }
+    }
     ed.splice(start, end, &new);
+}
+
+/// `g~ gu gU {motion}` over `r`, which `span` gave (Vim's `op_tilde()`; see
+/// `case::op_tilde` for why it walks bytes). The caret it leaves.
+fn recase_op<B: TextBuf>(ed: &mut Ed<'_, B>, how: CaseOp, span: Span, r: Range) -> Pos {
+    let total = ed.buf.line_count();
+    // Where Vim's `oap->end` is, in bytes: an inclusive end covers its last
+    // byte; an exclusive one that rule 1 pulled back to the previous line is
+    // inclusive when that line has chars.
+    let end = match (r.kind, span.kind) {
+        (RKind::Char, MKind::Inclusive) => {
+            let line = ed.buf.line(span.end.row);
+            let last = line.get(span.end.col).map_or(0, |c| c.len_utf8() - 1);
+            case::End { row: span.end.row, col: case::bytes(&line[..span.end.col.min(line.len())]) + last, inclusive: true }
+        }
+        (RKind::Char, _) if r.end.row < span.end.row => {
+            let n = case::bytes(&ed.buf.line(r.end.row));
+            case::End { row: r.end.row, col: n.saturating_sub(1), inclusive: n > 0 }
+        }
+        (RKind::Char, _) => {
+            let line = ed.buf.line(r.end.row);
+            case::End { row: r.end.row, col: case::bytes(&line[..r.end.col.min(line.len())]), inclusive: false }
+        }
+        (RKind::Line, _) => case::End { row: r.end.row, col: 0, inclusive: false },
+    };
+    let first = r.start.row;
+    let last = (end.row.max(first) + 1).min(total - 1);
+    let old: Vec<Vec<char>> = (first..=last).map(|row| ed.buf.line(row).into_owned()).collect();
+    let mut new = old.clone();
+    let at = case::op_tilde(&mut new, first, total, how, (r.start.row, r.start.col), end, r.kind == RKind::Line);
+    for (i, (was, now)) in old.iter().zip(&new).enumerate() {
+        if was != now {
+            ed.splice(Pos::new(first + i, 0), Pos::new(first + i, was.len()), &now.iter().collect::<String>());
+        }
+    }
+    Pos::new(at.0, at.1)
 }
 
 /// Visual `>` `<` over rows `first..=last`, `amount` shiftwidths each;
@@ -302,6 +328,16 @@ impl Engine {
             }
             return true;
         }
+        if let Op::Case(how) = op {
+            let mut ed = Ed { buf: &mut *buf, hist: &mut st.history };
+            // Vim's `op_tilde()` saves the lines first, so a case change that
+            // changes nothing is still an undo step; the caret stays on the
+            // range start's byte (spec §3.6 rule 5).
+            ed.save_rows(r.start, r.start.row, r.end.row);
+            let caret = recase_op(&mut ed, how, span, r);
+            self.land_caret(caret, buf, st);
+            return true;
+        }
         let caret = if op == Op::Yank {
             self.regs.yank(reg, yank_of(buf, r));
             r.start
@@ -379,6 +415,26 @@ impl Engine {
             at.col += width;
         }
         self.land_caret(Pos::new(at.row, at.col - 1), buf, st);
+    }
+
+    /// `~` with a count (`notildeop`, Vim's `n_swapchar()`): toggles the case
+    /// of `count` chars from the caret on its line; the caret lands after
+    /// the last one, clamped to the last char. On an empty line it fails
+    /// (`false`: no undo step, no `.`, the wanted column kept); otherwise the
+    /// line is saved first, so `~` on `-` is still an undo step.
+    pub(super) fn exec_tilde<B: TextBuf>(&mut self, count: usize, buf: &mut B, st: &mut BufState) -> bool {
+        let caret = buf.cursor();
+        let len = buf.line_len(caret.row);
+        if len == 0 {
+            return false;
+        }
+        let n = count.max(1).min(len - caret.col);
+        let mut ed = Ed { buf: &mut *buf, hist: &mut st.history };
+        ed.save_cursor_line(caret);
+        let end = Pos::new(caret.row, caret.col + n);
+        recase_range(&mut ed, CaseOp::Toggle, Range { start: caret, end, kind: RKind::Char });
+        self.land_caret(Pos::new(caret.row, (caret.col + n).min(len - 1)), buf, st);
+        true
     }
 
     /// `J` with a count (Vim's `nv_join()`); a no-op in a one-line field.
