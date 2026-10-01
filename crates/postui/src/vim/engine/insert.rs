@@ -324,28 +324,30 @@ impl Engine {
     /// BS, `ctrl+w` and `ctrl+u` act as those keys, the last three going
     /// in literally when `literal`. Any other char goes in as it is. A
     /// one-line field takes the text flattened, as `p` puts it (key list
-    /// §5).
+    /// §5): with no line break or Tab left, it goes in as one typed run
+    /// (recorded as one, so `.` and a count put it in the same way), not a
+    /// key per char, each of which would rebuild the field.
     fn insert_register_text<B: TextBuf>(&mut self, name: char, literal: bool, buf: &mut B, st: &mut BufState) {
         let reg = self.regs.read(Some(name)).clone();
-        let keys: Vec<InsertKey> = if B::MULTILINE {
-            reg.text
-                .chars()
-                .map(|c| match c {
-                    '\n' | '\r' => InsertKey::Enter,
-                    '\t' => InsertKey::Tab,
-                    '\u{8}' if !literal => InsertKey::Backspace,
-                    '\u{17}' if !literal => InsertKey::CtrlW,
-                    '\u{15}' if !literal => InsertKey::CtrlU,
-                    c => InsertKey::Char(c),
-                })
-                .collect()
-        } else {
+        if !B::MULTILINE {
             let text = match reg.kind {
                 RegKind::Line => reg.text.strip_suffix('\n').unwrap_or(&reg.text),
                 RegKind::Char => &reg.text,
             };
-            flatten_paste(text).chars().map(InsertKey::Char).collect()
-        };
+            let flat = flatten_paste(text);
+            if !flat.is_empty() {
+                self.insert_input(InsertKey::Paste(flat), buf, st);
+            }
+            return;
+        }
+        let keys = reg.text.chars().map(|c| match c {
+            '\n' | '\r' => InsertKey::Enter,
+            '\t' => InsertKey::Tab,
+            '\u{8}' if !literal => InsertKey::Backspace,
+            '\u{17}' if !literal => InsertKey::CtrlW,
+            '\u{15}' if !literal => InsertKey::CtrlU,
+            c => InsertKey::Char(c),
+        });
         for key in keys {
             self.insert_input(key, buf, st);
         }

@@ -1455,6 +1455,35 @@ fn insert_ctrl_r_flattens_into_a_field_and_a_query_box() {
     assert_eq!(f.text(), "x\u{8}y", "a field takes a control char as a char, as a paste does");
 }
 
+/// Final review M3: Insert `ctrl+r` types the flattened register into a
+/// one-line field as one run, not a key per char (each of which rebuilt
+/// the field: quadratic). The limit is loose on purpose (a debug build
+/// under parallel tests); char by char took seconds. `.` and a counted
+/// insert still put the same text in.
+#[test]
+fn insert_ctrl_r_into_a_field_is_one_run() {
+    let big = "abcd".repeat(10_000);
+    let mut f = Field::start("", 0, Start::Insert);
+    f.engine.registers_mut().set_unnamed(Register { text: big.clone(), kind: RegKind::Char });
+    let started = std::time::Instant::now();
+    f.key(ctrl('r'));
+    f.keys("\"");
+    let ms = started.elapsed().as_millis();
+    assert_eq!(f.text(), big);
+    assert!(ms < 200, "a 40,000-char register took {ms} ms");
+    let mut f = Field::new("ab", 0);
+    f.engine.registers_mut().set_unnamed(Register { text: "x\ny".into(), kind: RegKind::Char });
+    f.keys("2a");
+    f.key(ctrl('r'));
+    f.keys("\"");
+    f.key(esc());
+    assert_eq!((f.text(), f.col()), ("ax yx yb", 6));
+    f.keys(".");
+    assert_eq!((f.text(), f.col()), ("ax yx yx yx yb", 12));
+    f.keys("u");
+    assert_eq!(f.text(), "ax yx yb", "the repeat is one undo step");
+}
+
 /// Review focus 4: a half-typed `ctrl+r` never outlives a click, a paste
 /// or the buffer.
 #[test]
