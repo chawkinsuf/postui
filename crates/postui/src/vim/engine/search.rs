@@ -189,7 +189,7 @@ pub(crate) fn compile(source: &str, dir: Dir) -> Result<Pattern, String> {
             '~' => return Err("~".into()),
             c => {
                 i += 1;
-                atom(&mut out, &regex::escape(&c.to_string()), &mut prev);
+                atom(&mut out, &regex::escape(&text_char(c).to_string()), &mut prev);
             }
         }
     }
@@ -229,11 +229,13 @@ fn collection(src: &[char]) -> Result<(String, usize), String> {
                 'e' => '\u{1b}',
                 'r' => '\r',
                 'b' => '\u{8}',
-                'n' => '\n',
+                // A line break: multi-line patterns are out of the subset.
+                'n' => return Err("\\n".into()),
                 other => return Err(format!("\\{other}")),
             }
         } else if c == '[' && src.get(i + 1) == Some(&':') {
-            let end = src[i..].iter().collect::<String>().find(":]").ok_or("[:")?;
+            // A char index, never a byte offset: the class name may be any text.
+            let end = src[i..].windows(2).position(|w| w == [':', ']']).ok_or("[:")?;
             return Err(src[i..i + end + 2].iter().collect());
         } else {
             i += 1;
@@ -248,19 +250,24 @@ fn collection(src: &[char]) -> Result<(String, usize), String> {
             items.push(item);
         }
     }
-    let mut re = String::from("[");
-    if negate {
-        re.push('^');
-        re.push_str(NOT_SENTINEL);
-    }
+    // The members as the haystack spells them (`text_char`): a range whose
+    // end is a private-use char reaches U+E003 instead.
+    let mut set = String::new();
     for c in items {
-        re.push_str(&regex::escape(&c.to_string()));
+        set.push_str(&regex::escape(&text_char(c).to_string()));
     }
     for (lo, hi) in ranges {
-        re.push_str(&format!("{}-{}", regex::escape(&lo.to_string()), regex::escape(&hi.to_string())));
+        let (lo, hi) = (text_char(lo), text_char(hi));
+        set.push_str(&format!("{}-{}", regex::escape(&lo.to_string()), regex::escape(&hi.to_string())));
     }
-    re.push(']');
-    Ok((re, i))
+    // Either way the class never takes a sentinel.
+    Ok((if negate { format!("[^{NOT_SENTINEL}{set}]") } else { format!("[[{set}]--[{NOT_SENTINEL}]]") }, i))
+}
+
+/// A text char as the haystack holds it: the four private-use chars
+/// U+E000–U+E003 all read as U+E003, on the pattern's side too.
+fn text_char(c: char) -> char {
+    if (BOW..=TEXT_SENTINEL).contains(&c) { TEXT_SENTINEL } else { c }
 }
 
 /// Vim's `BOW`: a word-class char whose previous char has another class.
@@ -306,8 +313,7 @@ impl Hay {
                 }
             }
             if let Some(&c) = line.get(i) {
-                let c = if (BOW..=TEXT_SENTINEL).contains(&c) { TEXT_SENTINEL } else { c };
-                push(c, i, &mut text, &mut cols);
+                push(text_char(c), i, &mut text, &mut cols);
             }
         }
         cols.push(line.len());
@@ -516,7 +522,9 @@ mod tests {
         compile(pat, dir).expect(pat).chain(&chars(line))
     }
 
-    /// Each row was probed on Vim 9.1 (plan 3c, batches p4 and p7).
+    /// Vim 9.1's answers (plan 3c, batches p4 and p7). Three rows were
+    /// re-probed on 2026-10-01: `x\?` and `[a-` (mis-transcribed from p4 and
+    /// p7) and `?x` (in no batch). The refused atoms are the subset's edge.
     #[test]
     fn the_subset_translates_and_the_rest_is_refused() {
         for (pat, dir, line, want) in [
@@ -579,6 +587,7 @@ mod tests {
             ("a\\nb", "\\n"), ("~", "~"), ("\\_s", "\\_"), ("\\a", "\\a"), ("\\%d", "\\%"), ("\\V.", "\\V"), ("\\c", "\\c"),
             ("\\q", "\\q"), ("b[[:upper:]]r", "[:upper:]"), ("b\\)", "\\)"), ("\\(b", "\\("), ("\\{2}b", "\\{"), ("\\+b", "\\+"),
             ("^\\+b", "\\+"), ("b**r", "*"), ("o\\{", "\\{"), ("a\\{-1,}b", "\\{-"), ("\\<*", "*"), ("\\1", "\\1"),
+            ("[[:日本:]", "[:日本:]"), ("x[[:é:]]", "[:é:]"), ("b[\\n]r", "\\n"),
         ] {
             assert_eq!(compile(pat, Dir::Forward).err().as_deref(), Some(atom), "{pat:?}");
         }
@@ -593,6 +602,23 @@ mod tests {
         assert_eq!(chain("\\<ab\\>", Dir::Forward, "ab ab\u{E000}ab"), vec![(0, 2)]);
         assert_eq!(chain(".", Dir::Forward, "a\u{E001}b")[1], (1, 2));
         assert_eq!(chain("\\<[^a]", Dir::Forward, "a b"), vec![(2, 3)]);
+        // A collection never takes a sentinel, even when its range spans them.
+        assert_eq!(chain("\\<a[a-\u{F000}]", Dir::Forward, "a b"), vec![]);
+        assert_eq!(chain("\\<a[a-\u{F000}]", Dir::Forward, "ab"), vec![(0, 2)]);
+    }
+
+    /// U+E000–U+E003 in the pattern read as the haystack reads them in the
+    /// text (Vim's class 2: part of a keyword). Vim: `*` on
+    /// `ab\u{E000} x ab\u{E000}` from 1:1 lands on 1:7.
+    #[test]
+    fn private_use_chars_in_the_pattern_match_themselves() {
+        let line = chars("ab\u{E000} x ab\u{E000}");
+        let pat = ident_pattern(&line, 0, 3, false);
+        assert_eq!(compile(&pat, Dir::Forward).expect(&pat).chain(&line), vec![(0, 3), (6, 9)]);
+        assert_eq!(chain("\u{E002}", Dir::Forward, "a\u{E002}b"), vec![(1, 2)]);
+        assert_eq!(chain("[\u{E001}]", Dir::Forward, "a\u{E000}b"), vec![(1, 2)]);
+        assert_eq!(chain("[\u{E000}-\u{E001}]", Dir::Forward, "a\u{E003}b"), vec![(1, 2)]);
+        assert_eq!(chain("[b-\u{E001}]", Dir::Forward, "a\u{E002}"), vec![(1, 2)]);
     }
 
     /// `find_ident_at_pos(FIND_IDENT | FIND_STRING)` as the C reads.

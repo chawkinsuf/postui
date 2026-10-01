@@ -95,7 +95,8 @@ pub enum Settled {
     Release,
 }
 
-/// Footer text for a key a vim user expects but the engine does not do.
+/// Footer text: a key a vim user expects but the engine does not do
+/// (`Unsupported`), or a status message such as a search's (`Message`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Note {
     Unsupported(String),

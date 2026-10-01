@@ -72,6 +72,12 @@ impl Moved {
     fn refused(from: Pos) -> Self {
         Self { to: from, kind: MKind::Exclusive, want: WantUpdate::Keep, failed: true, no_adjust: false }
     }
+
+    /// A search that failed (Vim's `normal_search()`): the caret stays and
+    /// the wanted column is reset, since `w_set_curswant` is set first.
+    fn search_failed(from: Pos) -> Self {
+        Self { to: from, kind: MKind::Exclusive, want: WantUpdate::Here, failed: true, no_adjust: false }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -893,7 +899,7 @@ impl Engine {
                     // `normal_search()` resets the wanted column before
                     // `do_search()` finds no pattern (probed: `jnj`).
                     self.note = Some(Note::Message("No previous regular expression".into()));
-                    return Moved { to: from, kind: MKind::Exclusive, want: WantUpdate::Here, failed: true, no_adjust: false };
+                    return Moved::search_failed(from);
                 };
                 let dir = match (last.dir, reverse) {
                     (Dir::Forward, false) | (Dir::Backward, true) => Dir::Forward,
@@ -927,7 +933,7 @@ impl Engine {
             Ok(p) => p,
             Err(atom) => {
                 self.note = Some(Note::Message(format!("pattern not supported: {atom}")));
-                return Moved { to: from, kind: MKind::Exclusive, want: WantUpdate::Here, failed: true, no_adjust: false };
+                return Moved::search_failed(from);
             }
         };
         match search::search(buf, from, dir, count, &pat) {
@@ -945,7 +951,7 @@ impl Engine {
             }
             None => {
                 self.note = Some(Note::Message(format!("Pattern not found: {text}")));
-                Moved { to: from, kind: MKind::Exclusive, want: WantUpdate::Here, failed: true, no_adjust: false }
+                Moved::search_failed(from)
             }
         }
     }
