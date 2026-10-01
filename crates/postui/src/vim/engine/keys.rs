@@ -140,6 +140,14 @@ pub(crate) enum Motion {
     RepeatFind { reverse: bool },
     /// `%`
     MatchPair,
+    /// `ge` `gE`
+    WordEndBack { big: bool },
+    /// `}` (`forward`) and `{`
+    Paragraph { forward: bool },
+    /// `+` and `<CR>`: down to the first non-blank
+    DownFirstNonBlank,
+    /// `-`: up to the first non-blank
+    UpFirstNonBlank,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -345,6 +353,10 @@ fn motion_of(key: Key) -> Option<Motion> {
         Key::Char(';') => Motion::RepeatFind { reverse: false },
         Key::Char(',') => Motion::RepeatFind { reverse: true },
         Key::Char('%') => Motion::MatchPair,
+        Key::Char('}') => Motion::Paragraph { forward: true },
+        Key::Char('{') => Motion::Paragraph { forward: false },
+        Key::Char('+') | Key::Enter => Motion::DownFirstNonBlank,
+        Key::Char('-') => Motion::UpFirstNonBlank,
         _ => return None,
     })
 }
@@ -636,6 +648,8 @@ impl Pending {
             },
             Prefix::G => match key {
                 Key::Char('g') => self.motion_done(Motion::FirstLine),
+                Key::Char('e') => self.motion_done(Motion::WordEndBack { big: false }),
+                Key::Char('E') => self.motion_done(Motion::WordEndBack { big: true }),
                 Key::Char('J') => self.inert(Some("gJ not supported".to_string())),
                 Key::Char(c @ ('~' | 'u' | 'U')) => match self.op {
                     // `g~g~` `gugu` `gUgU`: the doubled form spelled out.
@@ -942,6 +956,25 @@ mod tests {
         assert_eq!(cmd(">j", NORMAL), op(r, Reach::Motion(Down), 0));
         assert_eq!(cmd("2>3j", NORMAL), op(r, Reach::Motion(Down), 6));
         assert!(matches!(feed(&mut Pending::default(), "><", NORMAL), Step::Inert(None)), "another operator cancels");
+    }
+
+    #[test]
+    fn plan_3b_motions_parse() {
+        use Motion::*;
+        let mv = |motion, count| Cmd::Move { motion, count };
+        assert_eq!(cmd("ge", NORMAL), mv(WordEndBack { big: false }, 0));
+        assert_eq!(cmd("3gE", NORMAL), mv(WordEndBack { big: true }, 3));
+        assert_eq!(cmd("}", NORMAL), mv(Paragraph { forward: true }, 0));
+        assert_eq!(cmd("2{", NORMAL), mv(Paragraph { forward: false }, 2));
+        assert_eq!(cmd("+", NORMAL), mv(DownFirstNonBlank, 0));
+        assert_eq!(cmd("-", NORMAL), mv(UpFirstNonBlank, 0));
+        assert_eq!(Pending::default().feed(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), NORMAL), Step::Cmd(mv(DownFirstNonBlank, 0)));
+        assert!(matches!(Pending::default().feed(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), ONE_LINE), Step::Decline { .. }));
+        assert_eq!(
+            cmd("dge", NORMAL),
+            Cmd::Operate { op: Op::Delete, reach: Reach::Motion(WordEndBack { big: false }), count: 0, reg: None }
+        );
+        assert_eq!(cmd("ge", VISUAL), mv(WordEndBack { big: false }, 0));
     }
 
     /// Review focus 5: terminals spell printable keys differently.

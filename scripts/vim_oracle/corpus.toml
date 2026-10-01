@@ -645,6 +645,68 @@ keys = [">>", "<<", "3>>", "3<<", ">j", "<j", ">k", ">G", ">gg", "<G", ">w", ">2
 on = ["indent", "json_pretty", "tabs", "words"]
 at = ["bol", "fnb", "eol"]
 
+# --- plan 3b: ge gE, { }, + - <CR> (Task 4) ------------------------------------
+
+# `{ }` stop at empty lines, not blank-only ones (line 5 is two spaces); `ip
+# ap` (Task 5) treat blank-only lines as blank.
+[text.paras]
+lines = ["a", "b", "", "c", "  ", "d", "", "", "e"]
+
+# nroff macro lines and a form feed end paragraphs too (Vim's 'paragraphs'
+# and 'sections'); `.x`, `. ` and `.` do not.
+[text.nroff]
+lines = ["a", ".PP", "b", ".SH x", "c", ".x", "d", "\f", "e", ".H", "f", ". ", "g", "."]
+
+[[group]]
+id = "motions/ge"
+tier = 2
+keys = ["ge", "gE", "3ge", "3gE", "9ge", "vge"]
+on = ["words", "punct", "unicode", "json_flat"]
+at = ["each"]
+
+[[group]]
+id = "motions/ge-lines"
+tier = 2
+keys = ["ge", "gE", "3ge", "9ge", "9gE", "$jgek"]
+on = ["json_pretty", "blank_edges", "json_gaps", "tabs", "url"]
+at = ["bol", "fnb", "mid", "eol"]
+
+[[group]]
+id = "ops/ge"
+tier = 2
+keys = ["dge", "dgE", "d3ge", "d9ge", "cgeX<Esc>", "ygE", "vgEd", "dgeu", "dge.", "gUge", "xhdgeu"]
+on = ["words", "blank_edges", "json_pretty", "unicode"]
+at = ["bol", "mid", "eol"]
+
+[[group]]
+id = "motions/para"
+tier = 2
+keys = ["}", "{", "2}", "2{", "3}", "3{", "9}", "9{", "}}", "{{", "}j", "{k", "$j9}k", "$j9{k", "v}", "v{", "V}"]
+on = ["paras", "json_gaps", "blank_edges", "words", "empty"]
+at = ["bol", "mid", "eol"]
+
+[[group]]
+id = "motions/para-nroff"
+tier = 2
+keys = ["}", "{", "2}", "3}", "4}", "5}", "6}", "2{", "3{", "d}", "y{"]
+on = ["nroff"]
+at = [[1, 1], [3, 1], [5, 1], [7, 1], [9, 1], [11, 1], [14, 1]]
+
+[[group]]
+id = "ops/para"
+tier = 2
+keys = ["d}", "d{", "y}", "y{", "c}X<Esc>", "d2}", "v}d", "V}d", "d}u", "d{u<C-r>", "d}.", ">}", "gu}", "d}j."]
+on = ["paras", "json_gaps", "blank_edges", "words", "empty"]
+at = ["bol", "mid", "eol"]
+
+[[group]]
+id = "motions/plus-minus"
+tier = 2
+keys = ["+", "-", "<CR>", "3+", "9+", "3-", "9-", "+-", "$j+k", "$+k", "d+", "d-", "c+X<Esc>", "y<CR>", "v+",
+        "V-d", "d+u", "d-.", "3<CR>", ">+"]
+on = ["json_pretty", "blank_edges", "words", "one_char", "empty", "indent"]
+at = ["bol", "mid", "eol"]
+
 # --- fuzz atoms (generate.py --fuzz); tier-1 keys only -----------------------
 
 [fuzz]

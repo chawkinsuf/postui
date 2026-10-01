@@ -7,8 +7,8 @@
 use super::buf::{Pos, TextBuf};
 use super::class::class;
 use super::keys::{FindKind, Motion, Op};
-use super::settings::TABSTOP;
-use super::{BufState, Engine, Mode, first_non_blank};
+use super::settings::{PARAGRAPHS, SECTIONS, TABSTOP};
+use super::{BufState, Engine, Mode, first_non_blank, first_non_blank_fix};
 use unicode_width::UnicodeWidthChar;
 
 /// How an operator treats a motion (`:help exclusive`, `:help linewise`).
@@ -429,6 +429,26 @@ pub(crate) fn run<B: TextBuf>(
             let stop = !(n == 1 && kind.till());
             found(find(buf, from, kind, ch, n, stop), from, kind)
         }
+        Motion::WordEndBack { big } => {
+            // Vim's `nv_g_cmd()` 'e': the wanted column resets first;
+            // `bckend_word()` fails only when it starts on the first char.
+            let mut w = Walk::new(buf, from);
+            let ok = bckend_word(&mut w, n, big, false);
+            Moved { to: w.pos, kind: MKind::Inclusive, want: WantUpdate::Here, failed: !ok, no_adjust: false }
+        }
+        Motion::Paragraph { forward } => match find_par(buf, from.row, forward, n) {
+            Some((row, true)) => Moved::to(Pos::new(row, buf.line_len(row) - 1), MKind::Inclusive, WantUpdate::Here),
+            Some((row, false)) => Moved::to(Pos::new(row, 0), MKind::Exclusive, WantUpdate::Here),
+            // Vim's `nv_findpar()` resets the wanted column before it looks.
+            None => Moved { to: from, kind: MKind::Exclusive, want: WantUpdate::Here, failed: true, no_adjust: false },
+        },
+        Motion::DownFirstNonBlank | Motion::UpFirstNonBlank => {
+            let row = if motion == Motion::DownFirstNonBlank { (from.row + n).min(last) } else { from.row.saturating_sub(n) };
+            if row == from.row {
+                return Moved::refused(from);
+            }
+            Moved::to(Pos::new(row, first_non_blank_fix(&buf.line(row))), MKind::Linewise, WantUpdate::Here)
+        }
         Motion::MatchPair if count > 0 => {
             if count > 100 {
                 return Moved::refused(from);
@@ -449,6 +469,67 @@ fn found(to: Option<Pos>, from: Pos, kind: FindKind) -> Moved {
         Some(to) => Moved::to(to, if kind.forward() { MKind::Inclusive } else { MKind::Exclusive }, WantUpdate::Here),
         None => Moved::refused(from),
     }
+}
+
+/// Vim's `findpar(dir, count, NUL, FALSE)` for `}` (`forward`) and `{`: the
+/// row it stops on, and whether it ran onto the last line going forward
+/// (the motion then takes that line's last char and is inclusive). `None`
+/// when a count is left over at the first or last line.
+fn find_par<B: TextBuf>(buf: &B, start: usize, forward: bool, count: usize) -> Option<(usize, bool)> {
+    let last = buf.line_count() - 1;
+    let mut curr = start;
+    for left in (0..count).rev() {
+        let mut did_skip = false;
+        let mut first = true;
+        loop {
+            if buf.line_len(curr) > 0 {
+                did_skip = true;
+            }
+            if !first && did_skip && starts_paragraph(&buf.line(curr)) {
+                break;
+            }
+            first = false;
+            let next = if forward { (curr < last).then_some(curr + 1) } else { curr.checked_sub(1) };
+            match next {
+                Some(row) => curr = row,
+                None if left > 0 => return None,
+                None => break,
+            }
+        }
+    }
+    Some((curr, forward && curr == last && buf.line_len(curr) > 0))
+}
+
+/// Vim's `startPS(lnum, NUL, FALSE)`: the line starts a paragraph for `{ }`
+/// and `ip ap`. It is empty, starts with a form feed, or is an nroff macro
+/// line from 'paragraphs' or 'sections' (`.PP`, `.SH`).
+pub(crate) fn starts_paragraph(line: &[char]) -> bool {
+    match line.first() {
+        None | Some('\u{c}') => true,
+        Some('.') => in_macro(SECTIONS, &line[1..]) || in_macro(PARAGRAPHS, &line[1..]),
+        _ => false,
+    }
+}
+
+/// Vim's `inmacro()`: the two chars after the `.` match one of `opt`'s
+/// two-char names; a space in a name matches a space or the line's end.
+fn in_macro(opt: &str, s: &[char]) -> bool {
+    let names: Vec<char> = opt.chars().collect();
+    let (s0, s1) = (s.first().copied(), s.get(1).copied());
+    let mut i = 0;
+    while let Some(&m0) = names.get(i) {
+        let m1 = names.get(i + 1).copied();
+        let first = Some(m0) == s0 || (m0 == ' ' && matches!(s0, None | Some(' ')));
+        let second = m1 == s1 || (matches!(m1, None | Some(' ')) && (s0.is_none() || matches!(s1, None | Some(' '))));
+        if first && second {
+            return true;
+        }
+        if m1.is_none() {
+            break;
+        }
+        i += 2;
+    }
+    false
 }
 
 /// Vim's `nv_right()` for `l`, `<Right>` and (`wrap`) `<Space>`.
@@ -815,6 +896,19 @@ mod tests {
         assert_eq!(st.want(Pos::new(0, 4)), None, "the caret moved");
         st.forget_want();
         assert_eq!(st.want(Pos::new(0, 3)), None, "forgotten");
+    }
+
+    /// Vim's `startPS(lnum, NUL, FALSE)` with the pinned 'paragraphs' and
+    /// 'sections' (probed, batch p3).
+    #[test]
+    fn paragraph_starts_follow_vims_start_ps() {
+        let starts = |s: &str| starts_paragraph(&s.chars().collect::<Vec<_>>());
+        for (line, yes) in [
+            ("", true), ("\u{c}", true), ("  ", false), ("x", false), (".PP", true), (".SH x", true),
+            (".H", true), (".IP", true), (".x", false), (". ", false), (".", false), ("{", false),
+        ] {
+            assert_eq!(starts(line), yes, "{line:?}");
+        }
     }
 
     #[test]

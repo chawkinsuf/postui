@@ -62,7 +62,9 @@ def settings_line():
     m = re.search(r'pub const SETTINGS_LINE: &str =\s*"([^"]+)";', src)
     if not m:
         die(f"no SETTINGS_LINE in {SETTINGS_RS}")
-    return m.group(1)
+    # The Rust literal escapes a backslash as `\\`; `:set` and the golden
+    # header see the value itself (`paragraphs=IPLPPPQPP\ TPHP…`).
+    return m.group(1).replace("\\\\", "\\")
 
 
 def glob_match(pattern, s):

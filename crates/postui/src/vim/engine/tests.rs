@@ -129,7 +129,7 @@ fn a_one_line_field_declines_row_keys_and_the_body_keeps_them() {
     }
     let mut b = Body::new("a\nb", 0, 0);
     assert!(!declined(&b.key(k('j'))));
-    assert!(!declined(&b.key(code(KeyCode::Enter))), "body Enter is consumed until plan 3b's motion");
+    assert!(!declined(&b.key(code(KeyCode::Enter))), "body Enter is the + motion (plan 3b)");
 }
 
 #[test]
