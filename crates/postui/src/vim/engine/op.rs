@@ -149,6 +149,30 @@ pub(crate) fn recase_range<B: TextBuf>(ed: &mut Ed<'_, B>, how: CaseOp, r: Range
     ed.splice(start, end, &new);
 }
 
+/// Where a case operator over `r` leaves the caret, given the range start's
+/// row `line` before the re-case: the range start, moved right by the chars
+/// the re-case adds before it on that row. A linewise range re-cases its
+/// first row from column 0, so `gUj` with the caret after a `ß` lands past
+/// the "SS" it became: Vim keeps the caret's byte offset, and `ß` and "SS"
+/// are both two bytes, so it stays on the same letter. A charwise range
+/// starts at the caret, so nothing before it changes.
+fn recased_caret(line: &[char], how: CaseOp, r: Range) -> Pos {
+    let from = match r.kind {
+        RKind::Char => r.start.col,
+        RKind::Line => 0,
+    };
+    let mut out = String::new();
+    let added: usize = line[from..r.start.col.min(line.len())]
+        .iter()
+        .map(|&c| {
+            out.clear();
+            case::swap(how, c, &mut out);
+            out.chars().count() - 1
+        })
+        .sum();
+    Pos::new(r.start.row, r.start.col + added)
+}
+
 /// Visual `>` `<` over rows `first..=last`, `amount` shiftwidths each;
 /// empty rows are skipped and the new indent is spaces (`expandtab`). The
 /// caret goes to the first row's first non-blank.
@@ -304,10 +328,12 @@ impl Engine {
             let mut ed = Ed { buf: &mut *buf, hist: &mut st.history };
             // Vim's `op_tilde()` saves the lines first, so a case change that
             // changes nothing is still an undo step; the caret goes to the
-            // range start (spec §3.6 rule 5).
+            // range start (spec §3.6 rule 5), on the same letter when the
+            // re-case grew the row before it (`recased_caret`).
             ed.save_rows(r.start, r.start.row, r.end.row);
+            let at = recased_caret(&ed.buf.line(r.start.row), how, r);
             recase_range(&mut ed, how, r);
-            self.land_caret(r.start, buf, st);
+            self.land_caret(at, buf, st);
             return true;
         }
         if let Op::Shift { right } = op {
