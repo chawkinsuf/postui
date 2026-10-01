@@ -20,6 +20,7 @@ mod history;
 mod insert;
 mod keys;
 mod motion;
+mod number;
 mod object;
 mod op;
 mod register;
@@ -599,6 +600,13 @@ impl Engine {
                 }
                 Outcome::consumed()
             }
+            Cmd::AddSub { add, count } => {
+                // Vim's `nv_addsub()` prepares `.` before it looks for a
+                // number, so a `ctrl+a` that finds none still repeats.
+                self.exec_addsub(add, count, buf, st);
+                record = Some(cmd);
+                Outcome::consumed()
+            }
             Cmd::Insert { how, count } => {
                 self.exec_insert(how, count, buf, st);
                 Outcome::consumed()
@@ -774,6 +782,7 @@ fn with_count(cmd: Cmd, count: usize) -> Cmd {
         Cmd::Replace { ch, .. } => Cmd::Replace { ch, count },
         Cmd::Join { .. } => Cmd::Join { count },
         Cmd::Tilde { .. } => Cmd::Tilde { count },
+        Cmd::AddSub { add, .. } => Cmd::AddSub { add, count },
         Cmd::Insert { how, .. } => Cmd::Insert { how, count },
         other => other,
     }

@@ -213,6 +213,8 @@ pub(crate) enum Cmd {
     Join { count: usize },
     /// `~` (`notildeop`): toggle the case of `count` chars.
     Tilde { count: usize },
+    /// `ctrl+a` (`add`) / `ctrl+x` with a count.
+    AddSub { add: bool, count: usize },
     Insert { how: InsertHow, count: usize },
     Repeat(usize),
     VisualStart(Shape),
@@ -419,7 +421,9 @@ impl Pending {
     /// One key. The grammar is the key table in spec §4.3.
     pub(crate) fn feed(&mut self, ev: KeyEvent, cx: ParseCx) -> Step {
         let key = Key::of(&ev);
-        if matches!(key, Key::Other) || (matches!(key, Key::Ctrl(_)) && key != Key::Ctrl('r')) {
+        // The engine's own Normal chords are `ctrl+r`, `ctrl+a` and `ctrl+x`
+        // (spec §4.3); every other chord goes to the app alone.
+        if matches!(key, Key::Other) || matches!(key, Key::Ctrl(c) if !matches!(c, 'r' | 'a' | 'x')) {
             return self.decline_alone(ev);
         }
         // A pending `r f t F T` takes `Tab` as its argument, even in a
@@ -451,7 +455,8 @@ impl Pending {
             Key::Esc if self.is_empty() => self.decline(ev),
             Key::Esc => self.inert(None),
             Key::Ctrl(_) if cx.visual || self.op.is_some() => self.decline_alone(ev),
-            Key::Ctrl(_) => self.undo(true, ev),
+            Key::Ctrl('r') => self.undo(true, ev),
+            Key::Ctrl(c) => self.cmd(|count, _| Cmd::AddSub { add: c == 'a', count }),
             _ if self.op.is_some() => self.operator_arg(key, ev),
             _ if cx.visual => self.visual_key(key, ev),
             _ => self.normal_key(key, ev, cx),
@@ -1001,5 +1006,19 @@ mod tests {
         assert_eq!(m(KeyCode::Left, KeyModifiers::SHIFT), Key::Other);
         assert_eq!(m(KeyCode::BackTab, KeyModifiers::SHIFT), Key::BackTab);
         assert_eq!(m(KeyCode::F(2), KeyModifiers::NONE), Key::Other);
+    }
+
+    #[test]
+    fn ctrl_a_and_ctrl_x_are_the_engines_own_in_normal_only() {
+        let ctrl = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+        assert_eq!(Pending::default().feed(ctrl('a'), NORMAL), Step::Cmd(Cmd::AddSub { add: true, count: 0 }));
+        let mut p = Pending::default();
+        feed(&mut p, "12", NORMAL);
+        assert_eq!(p.feed(ctrl('x'), NORMAL), Step::Cmd(Cmd::AddSub { add: false, count: 12 }));
+        assert_eq!(Pending::default().feed(ctrl('a'), VISUAL), Step::Decline { count: None, keys: vec![ctrl('a')] });
+        let mut p = Pending::default();
+        feed(&mut p, "d", NORMAL);
+        assert_eq!(p.feed(ctrl('a'), NORMAL), Step::Decline { count: None, keys: vec![ctrl('a')] });
+        assert!(p.is_empty(), "the operator is dropped");
     }
 }

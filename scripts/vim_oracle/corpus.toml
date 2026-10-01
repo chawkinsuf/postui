@@ -725,6 +725,47 @@ keys = ["vip", "vap", "Vip", "vipip", "vipipip", "vapap", "vipkip", "Vkip", "Vka
 on = ["paras", "json_gaps", "blank_edges", "words", "empty"]
 at = ["bol", "mid", "eol", "empty"]
 
+# --- plan 3b: ctrl+a ctrl+x (Task 6) ------------------------------------------
+
+[text.hexbin]
+lines = ["0xg 0b2 0B11 0XfF 0x0F -0x10 x-1 a-1 --2 é5 0x"]
+
+[text.bignum]
+lines = ["18446744073709551615 18446744073709551616 -18446744073709551615 -0 9 99 0b0 0x0 0b11111111 0x7fffffffffffffff"]
+
+[[group]]
+id = "ops/addsub-each"
+tier = 2
+keys = ["<C-a>", "<C-x>", "7<C-a>", "8<C-x>"]
+on = ["numbers", "hexbin"]
+at = ["each"]
+
+# Each seat is on or just before one of the numbers.
+[[group]]
+id = "ops/addsub-big"
+tier = 2
+keys = ["<C-a>", "<C-x>", "5<C-a>", "5<C-x>", "9999<C-a>", "9999<C-x>"]
+on = ["bignum"]
+at = [[1, 1], [1, 20], [1, 22], [1, 43], [1, 50], [1, 65], [1, 66], [1, 68], [1, 70], [1, 73], [1, 77], [1, 81],
+      [1, 92], [1, 100]]
+
+[[group]]
+id = "ops/addsub"
+tier = 2
+keys = ["<C-a>", "<C-x>", "<C-a>u", "<C-a>u<C-r>", "<C-a>.", "3<C-a>.", "3<C-a>2.", "<C-x><C-x>", "<C-a>w<C-a>",
+        "2<C-a>u", "x<C-a>u"]
+on = ["words", "json_pretty", "url", "blank_edges", "empty", "unicode", "numbers"]
+at = ["bol", "mid", "eol"]
+
+# A ctrl+a that finds no number keeps the wanted column; one that does
+# resets it.
+[[group]]
+id = "ops/addsub-want"
+tier = 2
+keys = ["$j<C-a>k", "$j<C-x>k", "j<C-a>k", "$j<C-a>u", "$jj<C-a>k"]
+on = ["short_last", "json_pretty", "blank_edges", "paras"]
+at = ["bol", "eol"]
+
 # --- fuzz atoms (generate.py --fuzz); tier-1 keys only -----------------------
 
 [fuzz]
