@@ -5,7 +5,7 @@
 use super::buf::{Pos, TextBuf};
 use super::case;
 use super::class::white;
-use super::history::Ed;
+use super::history::{Ed, MarkMove};
 use super::keys::{CaseOp, Cmd, Op, Reach};
 use super::motion::{self, MKind, MotionCx};
 use super::register::{RegKind, Register};
@@ -103,10 +103,10 @@ pub(crate) fn delete_lines<B: TextBuf>(ed: &mut Ed<'_, B>, first: usize, last: u
     let lines = ed.buf.line_count();
     let last_len = ed.buf.line_len(last);
     if last + 1 < lines {
-        ed.splice(Pos::new(first, 0), Pos::new(last + 1, 0), "");
+        ed.splice_moving(Pos::new(first, 0), Pos::new(last + 1, 0), "", MarkMove::DeleteLines { first, last });
     } else if first > 0 {
         let prev = ed.buf.line_len(first - 1);
-        ed.splice(Pos::new(first - 1, prev), Pos::new(last, last_len), "");
+        ed.splice_moving(Pos::new(first - 1, prev), Pos::new(last, last_len), "", MarkMove::DeleteLines { first, last });
     } else {
         ed.empty_buffer();
     }
@@ -198,14 +198,15 @@ pub(crate) fn put<B: TextBuf>(ed: &mut Ed<'_, B>, reg: &Register, before: bool, 
 /// takes a break before it and none after.
 pub(crate) fn put_lines<B: TextBuf>(ed: &mut Ed<'_, B>, row: usize, body: &str) -> Pos {
     let lines = ed.buf.line_count();
+    let count = body.matches('\n').count();
     let row = if row < lines {
-        ed.splice(Pos::new(row, 0), Pos::new(row, 0), body);
+        ed.splice_moving(Pos::new(row, 0), Pos::new(row, 0), body, MarkMove::InsertLines { at: row, count });
         row
     } else {
         let last = lines - 1;
         let len = ed.buf.line_len(last);
         let text = body.strip_suffix('\n').unwrap_or(body);
-        ed.splice(Pos::new(last, len), Pos::new(last, len), &format!("\n{text}"));
+        ed.splice_moving(Pos::new(last, len), Pos::new(last, len), &format!("\n{text}"), MarkMove::InsertLines { at: last + 1, count });
         last + 1
     };
     Pos::new(row, first_non_blank(&ed.buf.line(row)))
@@ -246,11 +247,16 @@ pub(crate) fn join_rows<B: TextBuf>(ed: &mut Ed<'_, B>, row: usize, n: usize) ->
     let mut sum = first.len();
     let mut end = first.last().copied();
     let mut col = 0;
+    let mut moves: Vec<(isize, isize)> = Vec::with_capacity(n - 1);
     for t in 1..n {
         let line = ed.buf.line(row + t);
         let lead = first_non_blank(&line);
         let rest = &line[lead..];
         let space = !rest.is_empty() && rest[0] != ')' && sum != 0 && !matches!(end, Some(' ' | '\t'));
+        // Vim's `do_join()` moves this line's marks by where its text now
+        // starts, less the blanks it lost (`mark_col_adjust()`).
+        let spaces_removed = lead as isize - isize::from(space);
+        moves.push((sum as isize - spaces_removed, spaces_removed));
         if space {
             joined.push(' ');
         }
@@ -261,7 +267,7 @@ pub(crate) fn join_rows<B: TextBuf>(ed: &mut Ed<'_, B>, row: usize, n: usize) ->
     }
     let last = row + n - 1;
     let text: String = joined.iter().collect();
-    ed.splice(Pos::new(row, first.len()), Pos::new(last, ed.buf.line_len(last)), &text);
+    ed.splice_moving(Pos::new(row, first.len()), Pos::new(last, ed.buf.line_len(last)), &text, MarkMove::Join { row, lines: &moves });
     Pos::new(row, col)
 }
 

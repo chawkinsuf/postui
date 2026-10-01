@@ -1298,3 +1298,55 @@ fn a_huge_counted_insert_finishes() {
     let ms = started.elapsed().as_millis();
     assert!(ms < 5000, "took {ms} ms");
 }
+
+/// Deviation 7: `leave` sets `'^`, so `gi` after coming back resumes where
+/// Insert ended (Vim's `:stopinsert` sets it too).
+#[test]
+fn gi_resumes_where_leave_ended_insert() {
+    let mut f = Field::new("abcd", 0);
+    f.keys("lliX");
+    f.engine.leave(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
+    f.engine.enter(Start::Normal, Seat::ColZero, Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
+    f.keys("giY");
+    f.key(esc());
+    assert_eq!(f.text(), "abXYcd");
+}
+
+/// Deviation 7: `carry` sets `'^` in the buffer it leaves.
+#[test]
+fn gi_resumes_where_carry_left_a_buffer() {
+    let mut engine = Engine::new();
+    let (mut s1, mut s2) = (BufState::new(), BufState::new());
+    let (mut a, mut b) = (LineInput::new("ab"), LineInput::new("cd"));
+    engine.enter(Start::Insert, Seat::End, Target { buf: &mut OneLineBuf::new(&mut a), state: &mut s1 });
+    engine.handle(k('X'), Target { buf: &mut OneLineBuf::new(&mut a), state: &mut s1 }, &ViewCtx::default());
+    b.set_cursor(0);
+    engine.carry(Target { buf: &mut OneLineBuf::new(&mut a), state: &mut s1 }, Target { buf: &mut OneLineBuf::new(&mut b), state: &mut s2 });
+    engine.leave(Target { buf: &mut OneLineBuf::new(&mut b), state: &mut s2 });
+    engine.enter(Start::Normal, Seat::ColZero, Target { buf: &mut OneLineBuf::new(&mut a), state: &mut s1 });
+    for ev in [k('g'), k('i'), k('Y'), esc()] {
+        engine.handle(ev, Target { buf: &mut OneLineBuf::new(&mut a), state: &mut s1 }, &ViewCtx::default());
+    }
+    assert_eq!(a.text(), "abXY");
+}
+
+/// Review focus 3: a change outside the engine. With no `enter`, a `'^`
+/// past the text clamps into it; after an `enter` that sees the change it
+/// is gone with the history, and `gi` is a plain `i`.
+#[test]
+fn gi_after_an_outside_change_clamps_or_forgets() {
+    let mut b = Body::new("abc\ndef\nghi", 2, 1);
+    b.keys("aX");
+    b.key(esc());
+    b.ed.lines = Lines::from("a");
+    b.ed.cursor = edtui::Index2::new(0, 0);
+    b.keys("giY");
+    b.key(esc());
+    assert_eq!(b.text(), "aY", "clamped to the end of the only line");
+    b.engine.leave(Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state });
+    b.ed.lines = Lines::from("reloaded");
+    b.engine.enter(Start::Normal, Seat::ColZero, Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state });
+    b.keys("giZ");
+    b.key(esc());
+    assert_eq!(b.text(), "Zreloaded");
+}

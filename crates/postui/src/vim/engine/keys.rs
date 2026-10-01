@@ -215,6 +215,8 @@ pub(crate) enum Cmd {
     Tilde { count: usize },
     /// `ctrl+a` (`add`) / `ctrl+x` with a count.
     AddSub { add: bool, count: usize },
+    /// `gi`: Insert where Insert last ended.
+    Gi { count: usize },
     Insert { how: InsertHow, count: usize },
     Repeat(usize),
     VisualStart(Shape),
@@ -672,6 +674,7 @@ impl Pending {
                         Step::More
                     }
                 },
+                Key::Char('i') if self.op.is_none() && !cx.visual => self.cmd(|count, _| Cmd::Gi { count }),
                 Key::Esc => self.inert(None),
                 _ if self.op.is_none() && !cx.visual => self.decline(ev),
                 _ => self.inert(None),

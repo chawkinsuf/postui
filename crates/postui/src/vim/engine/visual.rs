@@ -3,7 +3,7 @@
 //! buffer only paints it.
 
 use super::buf::{Pos, TextBuf};
-use super::history::Ed;
+use super::history::{Ed, MarkMove};
 use super::keys::{Cmd, Object, VisualOp};
 use super::motion::{Want, WantUpdate, char_width, updated_want, vcol_of};
 use super::object;
@@ -308,7 +308,8 @@ impl Engine {
         let last = ed.buf.line_count() - 1;
         if empty && last > 0 && ed.buf.line_len(last) == 0 {
             let len = ed.buf.line_len(last - 1);
-            ed.splice(Pos::new(last - 1, len), Pos::new(last, 0), "");
+            // `nv_put()` deletes it with `deleted_lines()`: no mark moves.
+            ed.splice_moving(Pos::new(last - 1, len), Pos::new(last, 0), "", MarkMove::Keep);
             if caret.row == last {
                 // The caret was on that line: the end of the new last line.
                 caret = Pos::new(last - 1, len);

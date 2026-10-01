@@ -611,6 +611,10 @@ impl Engine {
                 self.exec_insert(how, count, buf, st);
                 Outcome::consumed()
             }
+            Cmd::Gi { count } => {
+                self.exec_gi(count, buf, st);
+                Outcome::consumed()
+            }
             Cmd::Repeat(count) => self.exec_repeat(count, buf, st, ctx),
             Cmd::VisualStart(_) | Cmd::VisualSwap | Cmd::VisualExit | Cmd::VisualObject { .. } | Cmd::VisualOp { .. } => {
                 if let Cmd::VisualOp { op, .. } = cmd

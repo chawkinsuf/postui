@@ -11,7 +11,7 @@
 
 use super::buf::{Pos, TextBuf};
 use super::class::{class, is_space, is_word, white};
-use super::history::{Ed, end_of};
+use super::history::{Ed, MarkMove, end_of};
 use super::keys::{Cmd, InsertHow, Key};
 use super::motion::{Want, col_for, vcol_of};
 use super::op::{RKind, Range, yank_of};
@@ -198,10 +198,12 @@ impl Engine {
                 // The step's caret is where `o` was typed (`n_opencmd`'s `u_save`).
                 let mut ed = Ed { buf: &mut *buf, hist: &mut st.history };
                 let at = if how == InsertHow::OpenBelow {
-                    ed.splice(Pos::new(caret.row, len), Pos::new(caret.row, len), &format!("\n{indent}"));
+                    let opened = MarkMove::InsertLines { at: caret.row + 1, count: 1 };
+                    ed.splice_moving(Pos::new(caret.row, len), Pos::new(caret.row, len), &format!("\n{indent}"), opened);
                     Pos::new(caret.row + 1, indent.len())
                 } else {
-                    ed.splice(Pos::new(caret.row, 0), Pos::new(caret.row, 0), &format!("{indent}\n"));
+                    let opened = MarkMove::InsertLines { at: caret.row, count: 1 };
+                    ed.splice_moving(Pos::new(caret.row, 0), Pos::new(caret.row, 0), &format!("{indent}\n"), opened);
                     Pos::new(caret.row, indent.len())
                 };
                 ai_row = Some(at.row);
@@ -211,6 +213,17 @@ impl Engine {
         buf.set_cursor(at);
         st.forget_want();
         self.open_session(at, Cmd::Insert { how, count }, ai_row);
+    }
+
+    /// `gi` (Vim's `nv_gi_cmd()`): Insert where Insert last ended in this
+    /// buffer (`'^`), clamped into the text; with no such place, at the
+    /// caret. `.` repeats it as the `i` it becomes.
+    pub(super) fn exec_gi<B: TextBuf>(&mut self, count: usize, buf: &mut B, st: &mut BufState) {
+        if let Some(at) = st.history.marks.insert {
+            let row = at.row.min(buf.line_count() - 1);
+            buf.set_cursor(Pos::new(row, at.col.min(buf.line_len(row))));
+        }
+        self.exec_insert(InsertHow::Before, count, buf, st);
     }
 
     /// One key in Insert (the Insert key table, spec §4.3). A key the
@@ -516,12 +529,15 @@ impl Engine {
     /// autoindent is stripped and the session dropped. The caller closes
     /// the undo step and leaves Insert.
     pub(super) fn drop_session<B: TextBuf>(&mut self, buf: &mut B, st: &mut BufState) {
-        let caret = buf.cursor();
-        if let Some(at) = self.strip_autoindent(caret, buf, st)
-            && at != caret
+        let mut at = buf.cursor();
+        if let Some(stripped) = self.strip_autoindent(at, buf, st)
+            && stripped != at
         {
-            buf.set_cursor(at);
+            buf.set_cursor(stripped);
+            at = stripped;
         }
+        // `gi` in the buffer left behind resumes here, as after `leave`.
+        st.history.marks.insert = Some(at);
         self.insert = None;
     }
 
@@ -571,6 +587,9 @@ impl Engine {
         if let Some(at) = self.strip_autoindent(caret, buf, st) {
             caret = at;
         }
+        // Vim's `'^` mark, for `gi`: where the caret was when Insert ended,
+        // before it steps back.
+        st.history.marks.insert = Some(caret);
         let keep_want = caret.col != temp;
         st.history.commit();
         self.finish_record();
@@ -648,6 +667,10 @@ impl Engine {
         };
         if ed.buf.slice(from, to).is_empty() {
             ed.save_line(from.row);
+        } else if r.kind == RKind::Line && r.end.row > r.start.row {
+            // Vim's `op_change()` deletes the lines after the first
+            // (`del_lines()`), then empties the first after its indent.
+            ed.splice_moving(from, to, "", MarkMove::DeleteLines { first: r.start.row + 1, last: r.end.row });
         } else {
             ed.splice(from, to, "");
         }

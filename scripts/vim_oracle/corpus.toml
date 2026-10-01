@@ -794,6 +794,25 @@ keys = ["3iX<Esc>.", "iX<Esc>3.", "3iX<Esc>2.", "3oX<Esc>.", "AX<Esc>j3.", "3aX<
 on = ["words", "json_pretty", "blank_edges"]
 at = ["bol", "mid", "eol"]
 
+# --- plan 3b: gi and the marks edits move (Task 8) ----------------------------
+
+# `'^` moves as Vim moves its marks: dd above shifts it, a join brings it
+# along, a charwise delete over lines adds the first line's kept length, a
+# linewise delete of its line drops it (gi is then a plain i), an undo moves
+# it back.
+[[group]]
+id = "insert/gi"
+tier = 2
+keys = ["aX<Esc>jgiY<Esc>", "giY<Esc>", "gi<Esc>", "AX<Esc>ggdd0giY<Esc>", "AX<Esc>jddkgiY<Esc>",
+        "AX<Esc>x0giY<Esc>", "AX<Esc>ugiY<Esc>", "AX<Esc>kJgiY<Esc>", "iX<Esc>kJ0giY<Esc>", "3giX<Esc>",
+        "aX<Esc>0gi<Esc>", "aX<Esc>j0giY<Esc>0.", "aX<Left><Esc>j0giY<Esc>", "aX<CR><Esc>ggj0giY<Esc>",
+        "o<Esc>kgiY<Esc>", "AX<Esc>ggOZ<Esc>0giY<Esc>", "iX<Esc>ggvjd0giY<Esc>", "AX<Esc>ggdj0giY<Esc>",
+        "AX<Esc>Gdk0giY<Esc>", "AX<Esc>ggdju0giY<Esc>", "iX<Esc>kJu0giY<Esc>", "AX<Esc>k0dd0giY<Esc>",
+        "AX<Esc>kyyP0giY<Esc>", "AX<Esc>kyyp0giY<Esc>", "iX<Esc>k0i<CR><Esc>G0giY<Esc>",
+        "AX<Esc>k$a<Del><Esc>jgiY<Esc>", "3aX<Esc>0giY<Esc>"]
+on = ["json_pretty", "blank_edges", "short_last", "words"]
+at = ["bol", "fnb", "eol"]
+
 # --- fuzz atoms (generate.py --fuzz); tier-1 keys only -----------------------
 
 [fuzz]
