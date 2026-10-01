@@ -88,7 +88,6 @@ impl Engine {
         };
         caret.col = new_col.max(0) as usize;
         buf.set_cursor(caret);
-        st.forget_want();
         let s = self.session();
         if caret.row == s.start.row && s.start.col != 0 {
             s.start.col = if (s.start.col as isize) <= insstart_less { 0 } else { (s.start.col as isize - insstart_less) as usize };

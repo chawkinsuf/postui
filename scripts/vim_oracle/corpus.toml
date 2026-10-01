@@ -1012,7 +1012,8 @@ keys = ["i<C-t><Esc>", "a<C-t><Esc>", "A<C-t>x<Esc>", "i<C-d><Esc>", "i<C-d><C-d
         "i<C-t><Down><C-t><Esc>", "i0<C-d><Esc>u", "yiwA<C-r>\"<C-d><Esc>", "i<C-t><CR>x<Esc>", "i<C-d><CR>x<Esc>",
         "o<C-t><C-t><Esc>", "o<C-d><Esc>", "ix<C-t><Esc>", "ix<C-d><Esc>", "A<C-t><C-d><Esc>", "i<C-t><BS><Esc>",
         "i<C-t>x<BS><BS><Esc>", "3i<C-t><Esc>", "i<C-t><Esc>.", "ix<C-t><Esc>j.",
-        "i^<C-d><Space><Space><CR><C-d><CR>x<Esc>"]
+        "i^<C-d><Space><Space><CR><C-d><CR>x<Esc>", "A0<Right><C-d><Esc>", "i0<Up><C-d><Esc>",
+        "i0<C-r>\"<C-d><Esc>", "R0<C-d><Esc>", "R^<C-d><CR>x<Esc>", "Rxy0<C-d><BS><BS><Esc>"]
 on = ["indent", "tabs", "words", "json_pretty", "blank_edges", "empty", "one_char"]
 at = ["bol", "fnb", "mid", "eol"]
 

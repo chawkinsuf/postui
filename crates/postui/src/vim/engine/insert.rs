@@ -283,7 +283,12 @@ impl Engine {
     /// One key in Insert (the Insert key table, spec §4.3). A key the
     /// engine does not take is declined as typed.
     pub(super) fn insert_key<B: TextBuf>(&mut self, ev: KeyEvent, buf: &mut B, st: &mut BufState) -> Outcome {
+        // Vim's `lastc` is every key of the Insert loop: one taken here
+        // without `insert_input` (`ctrl+r`, its register name, a cursor
+        // key) leaves no `0` or `^` before the next `ctrl+d`. A register's
+        // text sets it again as it is typed.
         if let Some(how) = self.reg_pending.take() {
+            self.session().last_key = None;
             return self.insert_register(how, ev, buf, st);
         }
         let decline = Outcome::Declined { count: None, keys: vec![ev] };
@@ -294,6 +299,7 @@ impl Engine {
                 return Outcome::consumed();
             }
             Key::Ctrl('r') => {
+                self.session().last_key = None;
                 self.reg_pending = Some(RegPending::Typed);
                 return Outcome::consumed();
             }
@@ -341,7 +347,7 @@ impl Engine {
                 self.reg_pending = Some(RegPending::Unsupported(c));
                 Outcome::consumed()
             }
-            (_, Key::Ctrl('w' | 'u' | 'h' | 'r')) => Outcome::consumed(),
+            (_, Key::Ctrl('w' | 'u' | 'h' | 'r' | 't' | 'd')) => Outcome::consumed(),
             (_, Key::Ctrl(_) | Key::Other) => Outcome::Declined { count: None, keys: vec![ev] },
             (how, Key::Char(name @ ('"' | '0'))) => {
                 self.insert_register_text(name, how == RegPending::Literal, buf, st);
@@ -355,11 +361,11 @@ impl Engine {
     /// Types register `name`'s text into the session (Vim's `insert_reg()`
     /// and `stuffescaped()`). In the body each line break is an Enter
     /// (`autoindent` applies), a linewise register ends with one, and Tab,
-    /// BS, `ctrl+w` and `ctrl+u` act as those keys, the last three going
-    /// in literally when `literal`. Any other char goes in as it is, a run
-    /// of them between those keys as one typed run (recorded as one, so `.`
-    /// and a count put it in the same way), not a key per char, each of
-    /// which would rebuild the line. A one-line field takes the text
+    /// BS, `ctrl+w`, `ctrl+u`, `ctrl+t` and `ctrl+d` act as those keys, all
+    /// but Tab going in literally when `literal`. Any other char goes in as
+    /// it is, a run of them between those keys as one typed run (recorded
+    /// as one, so `.` and a count put it in the same way), not a key per
+    /// char, each of which would rebuild the line. A one-line field takes the text
     /// flattened, as `p` puts it (key list §5): with no line break or Tab
     /// left, it is one run.
     fn insert_register_text<B: TextBuf>(&mut self, name: char, literal: bool, buf: &mut B, st: &mut BufState) {
@@ -383,6 +389,8 @@ impl Engine {
                 '\u{8}' if !literal => InsertKey::Backspace,
                 '\u{17}' if !literal => InsertKey::CtrlW,
                 '\u{15}' if !literal => InsertKey::CtrlU,
+                '\u{14}' if !literal => InsertKey::CtrlT,
+                '\u{4}' if !literal => InsertKey::CtrlD,
                 c => {
                     run.push(c);
                     continue;
@@ -425,7 +433,11 @@ impl Engine {
             let caret = buf.cursor();
             self.session().stop_arrow(caret);
         }
-        let key_for_last = key.clone();
+        // Vim's `lastc` for the next key: a typed run counts as its last char.
+        let last_key = match &key {
+            InsertKey::Paste(text) => text.chars().last().map_or(InsertKey::Paste(String::new()), InsertKey::Char),
+            other => other.clone(),
+        };
         match key {
             InsertKey::Char(c) => self.type_text(&c.to_string(), InsertKey::Char(c), buf, st),
             InsertKey::Paste(text) => {
@@ -469,10 +481,7 @@ impl Engine {
             InsertKey::Delete => self.delete_forward(buf, st),
         }
         let s = self.session();
-        s.last_key = Some(match &key_for_last {
-            InsertKey::Paste(text) => text.chars().last().map_or(InsertKey::Paste(String::new()), InsertKey::Char),
-            other => other.clone(),
-        });
+        s.last_key = Some(last_key);
         s.key_done();
     }
 
@@ -825,8 +834,10 @@ impl Engine {
     /// A cursor key in Insert. One that moves calls Vim's `start_arrow()`:
     /// the undo step and the `.` record end, and typing after it starts a
     /// fresh `i` record. One that cannot move (`Left` in column 0, `Up` on
-    /// the first line) only beeps in Vim, so nothing ends.
+    /// the first line) only beeps in Vim, so nothing ends, but it is still
+    /// the key before the next one (`lastc`).
     fn insert_arrow<B: TextBuf>(&mut self, key: Key, buf: &mut B, st: &mut BufState) {
+        self.session().last_key = None;
         let c = buf.cursor();
         let len = buf.line_len(c.row);
         let last = buf.line_count() - 1;
@@ -843,7 +854,6 @@ impl Engine {
             _ => return,
         };
         self.split_insert(c, to, buf, st);
-        self.session().last_key = None;
         buf.set_cursor(to);
         match key {
             // `j`/`k` style: the wanted column survives.

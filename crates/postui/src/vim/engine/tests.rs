@@ -1777,3 +1777,45 @@ fn insert_ctrl_t_and_ctrl_d_indent_a_field() {
     assert!(!declined(&q.key(ctrl('t'))), "a query box takes it too");
     assert_eq!(q.text(), "  ");
 }
+
+/// Task 3 review: Insert `ctrl+r` runs a register's `ctrl+t` and `ctrl+d`
+/// chars in the body (Vim's `stuffescaped()`), and `ctrl+r ctrl+r` puts
+/// them in literally. Probed in Vim 9.1 on "abc": register "x^Ty" gives
+/// "  xyabc" (caret on y after Esc); literally, "x^Tyabc"; register
+/// "^T^Tx^D" then `j.` (j fails on one line) gives "    xxabc". After
+/// `ctrl+r`, `ctrl+t` and `ctrl+d` are the engine's own chords, swallowed
+/// as Vim swallows them, never handed to the app.
+#[test]
+fn insert_ctrl_r_runs_ctrl_t_and_ctrl_d_from_a_register() {
+    let mut b = Body::new("abc", 0, 0);
+    b.engine.registers_mut().set_unnamed(Register { text: "x\u{14}y".into(), kind: RegKind::Char });
+    b.keys("i");
+    b.key(ctrl('r'));
+    b.keys("\"");
+    b.key(esc());
+    assert_eq!((b.text(), b.caret()), ("  xyabc".into(), Pos::new(0, 3)));
+    let mut b = Body::new("abc", 0, 0);
+    b.engine.registers_mut().set_unnamed(Register { text: "x\u{14}y".into(), kind: RegKind::Char });
+    b.keys("i");
+    b.key(ctrl('r'));
+    b.key(ctrl('r'));
+    b.keys("\"");
+    b.key(esc());
+    assert_eq!((b.text(), b.caret()), ("x\u{14}yabc".into(), Pos::new(0, 2)), "ctrl+r ctrl+r: literal");
+    let mut b = Body::new("abc", 0, 0);
+    b.engine.registers_mut().set_unnamed(Register { text: "\u{14}\u{14}x\u{4}".into(), kind: RegKind::Char });
+    b.keys("i");
+    b.key(ctrl('r'));
+    b.keys("\"");
+    b.key(esc());
+    assert_eq!(b.text(), "  xabc");
+    b.keys("j.");
+    assert_eq!((b.text(), b.caret()), ("    xxabc".into(), Pos::new(0, 4)), "the record holds the register's keys");
+    for chord in ['t', 'd'] {
+        let mut b = Body::new("  abc", 0, 2);
+        b.keys("i");
+        b.key(ctrl('r'));
+        assert!(!declined(&b.key(ctrl(chord))), "ctrl+r ctrl+{chord} is swallowed");
+        assert_eq!(b.text(), "  abc", "ctrl+r ctrl+{chord} does nothing");
+    }
+}
