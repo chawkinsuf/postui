@@ -305,6 +305,11 @@ pub struct Engine {
     restart: Option<Restart>,
     /// The change before `dot` (Vim's `old_redobuff`), for `.` inside `ctrl+o`.
     dot_prev: Option<Dot>,
+    /// What the last command asks the app to do; `handle` takes it.
+    request: Option<AppRequest>,
+    /// A message the last command left; `handle` takes it (a note from a
+    /// motion, a search).
+    note: Option<Note>,
 }
 
 impl Engine {
@@ -350,6 +355,23 @@ impl Engine {
         &mut self.regs
     }
 
+    /// A yank into `reg` (`Registers::yank`); `"+` also asks the app to
+    /// copy the text out (the engine cannot reach the clipboard).
+    pub(super) fn reg_yank(&mut self, reg: Option<char>, r: Register) {
+        if reg == Some('+') {
+            self.request = Some(AppRequest::CopyToClipboard(r.text.clone()));
+        }
+        self.regs.yank(reg, r);
+    }
+
+    /// A delete or change into `reg`; `"+` copies out too (a cut).
+    pub(super) fn reg_delete(&mut self, reg: Option<char>, r: Register) {
+        if reg == Some('+') {
+            self.request = Some(AppRequest::CopyToClipboard(r.text.clone()));
+        }
+        self.regs.delete(reg, r);
+    }
+
     /// The fixed end of the Visual selection; `None` outside Visual.
     pub fn visual_anchor(&self) -> Option<Pos> {
         match self.mode {
@@ -366,6 +388,8 @@ impl Engine {
         let Target { buf, state } = t;
         state.begin_session(buf.text());
         self.clear_pending();
+        self.note = None;
+        self.request = None;
         self.visual = None;
         self.insert = None;
         self.restart = None;
@@ -405,6 +429,8 @@ impl Engine {
     /// Visual and pending keys are dropped.
     pub fn carry<A: TextBuf, B: TextBuf>(&mut self, from: Target<'_, A>, to: Target<'_, B>) {
         self.restart = None;
+        self.note = None;
+        self.request = None;
         let inserting = self.in_insert().then_some(self.mode);
         let insert_only = self.insert_only;
         let Target { buf, state } = from;
@@ -439,6 +465,8 @@ impl Engine {
     /// the wanted column.
     pub fn settle<B: TextBuf>(&mut self, t: Target<'_, B>, how: Settled) {
         let Target { buf, state } = t;
+        self.note = None;
+        self.request = None;
         if matches!(how, Settled::Click | Settled::Release) {
             self.clear_pending();
         }
@@ -513,6 +541,8 @@ impl Engine {
         state.history.commit();
         self.clear_pending();
         self.restart = None;
+        self.note = None;
+        self.request = None;
         if matches!(self.mode, Mode::Visual(_)) {
             self.end_visual(buf.cursor(), &*buf, state);
         }
@@ -534,6 +564,8 @@ impl Engine {
     pub fn external_edit<B: TextBuf>(&mut self, t: Target<'_, B>, f: impl FnOnce(&mut Splicer<'_, B>)) -> bool {
         let Target { buf, state } = t;
         self.clear_pending();
+        self.note = None;
+        self.request = None;
         if matches!(self.mode, Mode::Visual(_)) {
             self.end_visual(buf.cursor(), &*buf, state);
         }
@@ -617,8 +649,11 @@ impl Engine {
             self.resume_after_ctrl_o(buf, state);
         }
         let changed = self.finish_key(before, was_insert, buf, state, ctx);
+        let (left_note, left_request) = (self.note.take(), self.request.take());
         match out {
-            Outcome::Consumed { note, request, .. } => Outcome::Consumed { changed, note, request },
+            Outcome::Consumed { note, request, .. } => {
+                Outcome::Consumed { changed, note: note.or(left_note), request: request.or(left_request) }
+            }
             declined => declined,
         }
     }
@@ -683,7 +718,10 @@ impl Engine {
             }
             Cmd::Put { before, count, reg } => {
                 self.exec_put(before, count, reg, buf, st);
-                record = Some(cmd);
+                // A `"+` put is refused with a note: nothing for `.`.
+                if reg != Some('+') {
+                    record = Some(cmd);
+                }
                 Outcome::consumed()
             }
             Cmd::Replace { ch, count } => {
@@ -731,8 +769,9 @@ impl Engine {
             }
             Cmd::Repeat(count) => self.exec_repeat(count, buf, st, ctx),
             Cmd::VisualStart(_) | Cmd::VisualSwap | Cmd::VisualExit | Cmd::VisualObject { .. } | Cmd::VisualOp { .. } => {
-                if let Cmd::VisualOp { op, .. } = cmd
+                if let Cmd::VisualOp { op, reg, .. } = cmd
                     && !matches!(op, VisualOp::Yank | VisualOp::YankLines)
+                    && !(matches!(op, VisualOp::Put { .. }) && reg == Some('+'))
                 {
                     record = Some(cmd);
                 }

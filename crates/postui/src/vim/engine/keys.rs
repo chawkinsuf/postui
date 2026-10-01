@@ -713,7 +713,7 @@ impl Pending {
     fn after_prefix(&mut self, prefix: Prefix, key: Key, ev: KeyEvent, cx: ParseCx) -> Step {
         match prefix {
             Prefix::Register => match key {
-                Key::Char(c @ ('"' | '0')) => {
+                Key::Char(c @ ('"' | '0' | '+')) => {
                     self.keys.push(ev);
                     self.reg = Some(c);
                     Step::More

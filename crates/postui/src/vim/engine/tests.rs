@@ -2066,3 +2066,32 @@ fn z_takes_a_count_and_swallows_the_next_key() {
     f.keys("x");
     assert_eq!(f.text(), "ac");
 }
+
+/// Plan 3c Task 8: `"+y` yanks as a plain yank and asks the app to copy;
+/// `"+d` deletes as a plain delete and asks too; `"+p` and Insert
+/// `ctrl+r +` show the note and change nothing; the echo shows `"+`.
+#[test]
+fn the_plus_register_copies_out_and_never_pastes_in() {
+    let mut f = Field::new("abc def", 0);
+    f.keys("\"+");
+    assert_eq!(f.engine.echo(), "\"+");
+    assert_eq!(f.keys("yiw"), Outcome::Consumed { changed: false, note: None, request: Some(AppRequest::CopyToClipboard("abc".into())) });
+    assert_eq!(f.engine.registers().unnamed().text, "abc");
+    assert_eq!(f.engine.registers().zero().text, "abc");
+    assert_eq!(f.keys("\"+dw"), Outcome::Consumed { changed: true, note: None, request: Some(AppRequest::CopyToClipboard("abc ".into())) });
+    assert_eq!(f.engine.registers().zero().text, "abc", "a delete leaves \"0 alone");
+    let note = |out: Outcome| match out {
+        Outcome::Consumed { note: Some(Note::Unsupported(n)), changed, .. } => (n, changed),
+        other => panic!("no note: {other:?}"),
+    };
+    assert_eq!(note(f.keys("\"+p")), ("paste with your terminal (ctrl+v)".into(), false));
+    assert!(!f.state.can_undo() || f.text() == "def", "no undo step for a refused put");
+    f.keys("v");
+    assert!(matches!(f.keys("\"+y"), Outcome::Consumed { request: Some(AppRequest::CopyToClipboard(_)), .. }));
+    f.keys("v\"+d");
+    assert_eq!(f.text(), "ef");
+    f.keys("A");
+    f.key(ctrl('r'));
+    assert_eq!(note(f.keys("+")).0, "paste with your terminal (ctrl+v)");
+    assert_eq!(f.text(), "ef");
+}

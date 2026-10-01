@@ -334,7 +334,8 @@ impl Engine {
     }
 
     /// The key after Insert `ctrl+r` (Vim's `ins_reg()`). `"` and `0` put
-    /// their text in; any other register name shows a note. `ctrl+r` again
+    /// their text in; `+` notes how to paste instead (the engine cannot
+    /// read the clipboard); any other register name shows a note. `ctrl+r` again
     /// makes it literal; `ctrl+o` and `ctrl+p` are not supported and take
     /// one more key, whatever it is. The engine's own Insert chords are
     /// swallowed (a third `ctrl+r` too: Vim beeps at it as a register
@@ -359,6 +360,7 @@ impl Engine {
                 self.insert_register_text(name, how == RegPending::Literal, buf, st);
                 Outcome::consumed()
             }
+            (_, Key::Char('+')) => note("paste with your terminal (ctrl+v)".into()),
             (_, Key::Char(c)) => note(format!("register \"{c} not supported")),
             _ => Outcome::consumed(),
         }
@@ -1056,7 +1058,7 @@ impl Engine {
     /// The change operator (spec §3.6, Vim's `op_change()`): the text goes
     /// to the register and a session opens at the range start.
     pub(super) fn change<B: TextBuf>(&mut self, r: Range, reg: Option<char>, origin: Cmd, buf: &mut B, st: &mut BufState) {
-        self.regs.delete(reg, yank_of(buf, r));
+        self.reg_delete(reg, yank_of(buf, r));
         self.change_text(r, origin, buf, st);
     }
 
@@ -1122,6 +1124,6 @@ impl Engine {
             self.insert_input(key, buf, state);
         }
         let changed = self.finish_key(before, true, buf, state, &ViewCtx::default());
-        Outcome::Consumed { changed, note: None, request: None }
+        Outcome::Consumed { changed, note: self.note.take(), request: self.request.take() }
     }
 }

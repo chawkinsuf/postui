@@ -10,7 +10,7 @@ use super::keys::{CaseOp, Cmd, Op, Reach};
 use super::motion::{self, MKind, MotionCx};
 use super::register::{RegKind, Register};
 use super::settings::{SHIFTWIDTH, TABSTOP};
-use super::{BufState, Engine, Mode, Outcome, ViewCtx, first_non_blank, first_non_blank_fix};
+use super::{BufState, Engine, Mode, Note, Outcome, ViewCtx, first_non_blank, first_non_blank_fix};
 use crate::components::line_input::flatten_paste;
 use ratatui::crossterm::event::KeyEvent;
 
@@ -354,7 +354,7 @@ impl Engine {
             return true;
         }
         let caret = if op == Op::Yank {
-            self.regs.yank(reg, yank_of(buf, r));
+            self.reg_yank(reg, yank_of(buf, r));
             r.start
         } else if st.history.emptied(&*buf) {
             // Vim's `op_delete`: nothing to do in a buffer with no lines.
@@ -374,7 +374,7 @@ impl Engine {
                 }
                 r.start
             } else {
-                self.regs.delete(reg, yank_of(ed.buf, r));
+                self.reg_delete(reg, yank_of(ed.buf, r));
                 delete(&mut ed, r)
             }
         };
@@ -382,8 +382,13 @@ impl Engine {
         true
     }
 
-    /// `p` `P` with a count.
+    /// `p` `P` with a count. `"+p` puts nothing: the engine cannot read
+    /// the clipboard, so a note says how to paste (Deviation 14).
     pub(super) fn exec_put<B: TextBuf>(&mut self, before: bool, count: usize, reg: Option<char>, buf: &mut B, st: &mut BufState) {
+        if reg == Some('+') {
+            self.note = Some(Note::Unsupported("paste with your terminal (ctrl+v)".into()));
+            return;
+        }
         let reg = self.regs.read(reg).clone();
         let mut caret = put(&mut Ed { buf: &mut *buf, hist: &mut st.history }, &reg, before, count.max(1));
         if self.put_ends_after(&reg) {

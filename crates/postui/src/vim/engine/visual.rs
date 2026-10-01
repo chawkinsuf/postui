@@ -9,7 +9,7 @@ use super::motion::{Want, WantUpdate, char_width, updated_want, vcol_of};
 use super::object;
 use super::op::{RKind, Range, delete, join_rows, put, put_lines, recase_range, recased_caret, shift_rows, yank_of};
 use super::register::RegKind;
-use super::{BufState, Engine, Mode, Outcome, Shape, VisualSize, first_non_blank};
+use super::{BufState, Engine, Mode, Note, Outcome, Shape, VisualSize, first_non_blank};
 
 impl Engine {
     pub(super) fn exec_visual<B: TextBuf>(&mut self, cmd: Cmd, buf: &mut B, st: &mut BufState) -> Outcome {
@@ -228,7 +228,7 @@ impl Engine {
                 buf.cursor()
             }
             VisualOp::Yank | VisualOp::YankLines => {
-                self.regs.yank(reg, yank_of(buf, r));
+                self.reg_yank(reg, yank_of(buf, r));
                 r.start
             }
             VisualOp::Replace(ch) => {
@@ -289,7 +289,7 @@ impl Engine {
         } else {
             // Vim's `u_save` runs with the caret on the range start.
             ed.hist.begin(r.start);
-            self.regs.delete(reg, yank_of(ed.buf, r));
+            self.reg_delete(reg, yank_of(ed.buf, r));
             delete(&mut ed, r)
         };
         buf.set_cursor(at);
@@ -301,7 +301,13 @@ impl Engine {
     /// register, so it holds the replaced text afterwards; `P` deletes into
     /// the black hole and changes no register (Vim 9.1). `"0` is never
     /// written, so `yiw` then `viwp` … `viw"0p` keeps putting the yank.
+    /// `"+p` changes nothing (the selection just ends), with a note (see
+    /// `exec_put`).
     fn visual_put<B: TextBuf>(&mut self, r: Range, before: bool, count: usize, reg: Option<char>, buf: &mut B, st: &mut BufState) -> Outcome {
+        if reg == Some('+') {
+            self.note = Some(Note::Unsupported("paste with your terminal (ctrl+v)".into()));
+            return Outcome::consumed();
+        }
         // What to put, read before the delete writes the unnamed register
         // (Vim's `reg1`).
         let text = self.regs.read(reg).clone();
