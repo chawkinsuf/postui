@@ -814,6 +814,38 @@ keys = ["aX<Esc>jgiY<Esc>", "giY<Esc>", "gi<Esc>", "AX<Esc>ggdd0giY<Esc>", "AX<E
 on = ["json_pretty", "blank_edges", "short_last", "words"]
 at = ["bol", "fnb", "eol"]
 
+# --- plan 3b: gv (Task 9) -----------------------------------------------------
+
+[[group]]
+id = "visual/gv"
+tier = 2
+keys = ["vl<Esc>0gv", "gv", "vjy0gv", "Vj>gv", "Vj>gv>", "vl<Esc>jvgv", "vl<Esc>jvgvgv", "vl<Esc>jVgv",
+        "vj$<Esc>ggjgv", "vj$<Esc>ggjgvj", "vj$<Esc>0gvd", "vl<Esc>ggOZ<Esc>gv", "vl<Esc>ggddgv", "vl<Esc>ddgv",
+        "vl<Esc>jddgv", "vl<Esc>0xgv", "vl<Esc>kJgv", "vl<Esc>Jgv", "vjd0gv", "vjdugv", "vly$gv", "yiw0viwpgv",
+        "yyjVpgv", "yiw0viwPgv", "vlc<Esc>gv", "vlcXYZ<Esc>gv", "v$<Esc>0gv", "v$<Esc>0gvj", "vl~gv",
+        "vl<Esc>dgv", "viw<Esc>ugv", "vlxugv", "vlxu<C-r>gv", "vlxjvl<Esc>ugv", "vl<Esc>2gv", "vl<Esc>jvkdgv",
+        "vj<Esc>gvo", "vj<Esc>gvod", "Vj<Esc>gvv", "vjdgvd", "vj>gv", "vjJgv", "VjJgv", "vjrXgv", "vjcX<Esc>gv",
+        "ViwUgv", "viwgv", "vl<Esc>jgv<Esc>gv", "vipgv", "vl<Esc>0i<CR><Esc>gv", "vl<Esc>jI<BS><Esc>gv",
+        "vl<Esc>jdd.gv", "vl<Esc>ggdGgv", "vl<Esc>kVdgv", "vl<Esc>A<Del><Esc>gv", "vl~j.0gv"]
+on = ["json_pretty", "words", "short_last"]
+at = ["bol", "mid", "eol"]
+
+[[group]]
+id = "visual/gv-put-char"
+tier = 2
+keys = ["vl<Esc>0Pgv", "vl<Esc>0pgv", "vlpgv", "vjpgv", "Vpgv", "vl<Esc>$pgv"]
+on = ["json_pretty", "words"]
+at = ["bol", "mid", "eol"]
+reg = { text = "X\nY", type = "v" }
+
+[[group]]
+id = "visual/gv-put-line"
+tier = 2
+keys = ["vl<Esc>Pgv", "vl<Esc>pgv", "vlpgv", "Vpgv", "Vjpgv", "ggVGpgv"]
+on = ["json_pretty", "words"]
+at = ["bol", "mid", "eol"]
+reg = { text = "  q\n", type = "V" }
+
 # --- fuzz atoms (generate.py --fuzz); tier-1 keys only -----------------------
 
 [fuzz]

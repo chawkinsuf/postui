@@ -3,8 +3,10 @@
 //! owns the body's undo in the vim profile (open question 1, decided A),
 //! and the same code serves every buffer.
 
+use super::Shape;
 use super::buf::{Pos, TextBuf};
 use super::first_non_blank_fix;
+use super::motion::Want;
 use super::settings::UNDOLEVELS;
 
 /// One splice: `removed` was replaced by `inserted` at `at`.
@@ -18,11 +20,24 @@ pub(crate) struct Edit {
     pub joined: bool,
 }
 
+/// A buffer's last Visual area, for `gv` (Vim's `b_visual`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LastVisual {
+    pub anchor: Pos,
+    pub caret: Pos,
+    pub shape: Shape,
+    /// The wanted column when Visual ended (Vim's `vi_curswant`); `gv`
+    /// restores it.
+    pub want: Want,
+}
+
 /// The positions Vim keeps per buffer and moves with its edits (its
-/// marks): where Insert last ended, for `gi` (Vim's `'^`).
+/// marks): where Insert last ended, for `gi` (Vim's `'^`), and the last
+/// Visual area, for `gv` (Vim's `b_visual`, its `'<` and `'>`).
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Marks {
     pub insert: Option<Pos>,
+    pub visual: Option<LastVisual>,
 }
 
 impl Marks {
@@ -31,6 +46,11 @@ impl Marks {
     /// are never deleted (the Visual area); `'^` can be.
     fn each(&mut self, f: impl Fn(Pos, bool) -> Option<Pos>) {
         self.insert = self.insert.and_then(|p| f(p, false));
+        if let Some(v) = &mut self.visual {
+            // `nodel`: the Visual area's marks only ever move.
+            v.anchor = f(v.anchor, true).unwrap_or(v.anchor);
+            v.caret = f(v.caret, true).unwrap_or(v.caret);
+        }
     }
 
     fn adjust(&mut self, at: Pos, removed: &str, inserted: &str, how: MarkMove<'_>) {
@@ -163,6 +183,8 @@ struct Step {
     /// Vim's `ML_EMPTY` before and after the step (`UH_EMPTYBUF`).
     empty_before: bool,
     empty_after: bool,
+    /// The Visual area when the change began (Vim's `uh_visual`); undo puts it back.
+    visual: Option<LastVisual>,
 }
 
 #[derive(Debug, Default)]
@@ -186,7 +208,8 @@ impl History {
     pub(crate) fn begin(&mut self, caret: Pos) {
         if self.open.is_none() {
             let empty_before = self.emptied;
-            self.open = Some(Step { edits: Vec::new(), caret_before: caret, empty_before, empty_after: false });
+            let visual = self.marks.visual;
+            self.open = Some(Step { edits: Vec::new(), caret_before: caret, empty_before, empty_after: false, visual });
         }
     }
 
@@ -245,8 +268,8 @@ impl History {
 
     /// Undoes the newest step; the caret it lands on.
     pub(crate) fn undo<B: TextBuf>(&mut self, buf: &mut B) -> Option<Pos> {
-        let step = self.undo.pop()?;
-        let at = undo_redo(buf, &step, true, &mut self.marks);
+        let mut step = self.undo.pop()?;
+        let at = undo_redo(buf, &mut step, true, &mut self.marks);
         self.emptied = step.empty_before && is_blank_buffer(buf);
         self.changed |= step.changes();
         self.redo.push(step);
@@ -255,12 +278,28 @@ impl History {
 
     /// Redoes the newest undone step; the caret it lands on.
     pub(crate) fn redo<B: TextBuf>(&mut self, buf: &mut B) -> Option<Pos> {
-        let step = self.redo.pop()?;
-        let at = undo_redo(buf, &step, false, &mut self.marks);
+        let mut step = self.redo.pop()?;
+        let at = undo_redo(buf, &mut step, false, &mut self.marks);
         self.emptied = step.empty_after && is_blank_buffer(buf);
         self.changed |= step.changes();
         self.undo.push(step);
         Some(at)
+    }
+
+    /// What the open step's last splice put in, as Vim's `'[` and `']` marks
+    /// after a put: its first and last char. A leading line break (lines put
+    /// after the last line, or a line split) is not part of it; a trailing
+    /// one ends the last line.
+    pub(crate) fn last_put(&self) -> Option<(Pos, Pos)> {
+        let e = self.open.as_ref()?.edits.last()?;
+        let (mut start, mut text) = (e.at, e.inserted.as_str());
+        if let Some(rest) = text.strip_prefix('\n') {
+            start = Pos::new(start.row + 1, 0);
+            text = rest;
+        }
+        let text = text.strip_suffix('\n').unwrap_or(text);
+        let end = end_of(start, text);
+        Some((start, Pos::new(end.row, end.col.saturating_sub(1))))
     }
 }
 
@@ -329,7 +368,8 @@ fn block<B: TextBuf>(buf: &B, at: Pos, now: &str, then: &str, join: bool) -> Blo
 /// file's `u` and `u<C-r>` cases pin all of this. The marks move as
 /// `u_undoredo()`'s `mark_adjust()` moves them for each block that changes
 /// size.
-fn undo_redo<B: TextBuf>(buf: &mut B, step: &Step, undo: bool, marks: &mut Marks) -> Pos {
+fn undo_redo<B: TextBuf>(buf: &mut B, step: &mut Step, undo: bool, marks: &mut Marks) -> Pos {
+    let before = marks.visual;
     let saved = step.caret_before;
     let order: Vec<&Edit> = if undo { step.edits.iter().rev().collect() } else { step.edits.iter().collect() };
     // Vim's `newlnum`, as a 0-based row of the first line in a block.
@@ -358,6 +398,12 @@ fn undo_redo<B: TextBuf>(buf: &mut B, step: &Step, undo: bool, marks: &mut Marks
         }
         buf.splice(e.at, end_of(e.at, now), then);
         marks.lines_replaced(b.first, b.now, b.lines.len());
+    }
+    // Vim's `u_undoredo()` puts back the Visual area the change was made
+    // with and keeps the one it replaces, for the way back.
+    if let Some(v) = step.visual {
+        marks.visual = Some(v);
+        step.visual = before;
     }
     let mut row = row.unwrap_or_else(|| buf.cursor().row).min(buf.line_count() - 1);
     if saved.row + 1 == row && row > 0 {

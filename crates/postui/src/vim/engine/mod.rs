@@ -422,8 +422,9 @@ impl Engine {
                 // GUI one goes, so a later settle does not adopt it stale.
                 Some(_) => buf.clear_gui_selection(),
                 None if how == Settled::Click && matches!(self.mode, Mode::Visual(_)) => {
-                    self.visual = None;
-                    self.mode = Mode::Normal;
+                    // The area as it was before the click moved the caret.
+                    let at = self.rested.unwrap_or(caret);
+                    self.end_visual(at, &*buf, state);
                 }
                 None => {}
             }
@@ -446,8 +447,9 @@ impl Engine {
 
     /// The buffer loses the caret (spec §4.2). An open Insert session ends
     /// as one undo step, recorded for `.`, without the caret stepping back.
-    /// Visual and pending keys are dropped and the mode becomes Normal. The
-    /// text is remembered for the next [`Engine::enter`]'s history check.
+    /// Visual ends (its area remembered for `gv`), pending keys are dropped,
+    /// and the mode becomes Normal. The text is remembered for the next
+    /// [`Engine::enter`]'s history check.
     pub fn leave<B: TextBuf>(&mut self, t: Target<'_, B>) {
         let Target { buf, state } = t;
         if self.mode == Mode::Insert {
@@ -455,7 +457,9 @@ impl Engine {
         }
         state.history.commit();
         self.pending.clear();
-        self.visual = None;
+        if matches!(self.mode, Mode::Visual(_)) {
+            self.end_visual(buf.cursor(), &*buf, state);
+        }
         self.insert_only = false;
         self.mode = Mode::Normal;
         self.rest(buf, state);
@@ -475,8 +479,7 @@ impl Engine {
         let Target { buf, state } = t;
         self.pending.clear();
         if matches!(self.mode, Mode::Visual(_)) {
-            self.visual = None;
-            self.mode = Mode::Normal;
+            self.end_visual(buf.cursor(), &*buf, state);
         }
         self.clamp(buf);
         if self.mode == Mode::Insert {
@@ -613,6 +616,10 @@ impl Engine {
             }
             Cmd::Gi { count } => {
                 self.exec_gi(count, buf, st);
+                Outcome::consumed()
+            }
+            Cmd::Gv => {
+                self.exec_gv(buf, st);
                 Outcome::consumed()
             }
             Cmd::Repeat(count) => self.exec_repeat(count, buf, st, ctx),

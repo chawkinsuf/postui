@@ -3,7 +3,7 @@
 //! buffer only paints it.
 
 use super::buf::{Pos, TextBuf};
-use super::history::{Ed, MarkMove};
+use super::history::{Ed, LastVisual, MarkMove};
 use super::keys::{Cmd, Object, VisualOp};
 use super::motion::{Want, WantUpdate, char_width, updated_want, vcol_of};
 use super::object;
@@ -21,7 +21,7 @@ impl Engine {
                     // the caret off a line's end but keeps `w_curswant`; one
                     // still unset was taken before this command, in Visual.
                     let want = self.want_at(buf, st, caret);
-                    self.leave_to_normal(buf);
+                    self.leave_to_normal(buf, st);
                     st.set_want(want, buf.cursor());
                 }
                 Mode::Visual(_) => self.mode = Mode::Visual(shape),
@@ -48,7 +48,7 @@ impl Engine {
                 // the caret stays put (taken where it last moved, in
                 // Visual), else recomputed in Normal.
                 let here = updated_want(buf, caret, WantUpdate::Here, Want::default(), self.tab_rule(st, caret));
-                self.leave_to_normal(buf);
+                self.leave_to_normal(buf, st);
                 if buf.cursor() == caret {
                     st.set_want(here, caret);
                 } else {
@@ -62,16 +62,48 @@ impl Engine {
         Outcome::consumed()
     }
 
-    fn leave_visual(&mut self) {
+    /// Vim's `end_visual_mode()`: the area is remembered for `gv` with the
+    /// caret at `caret` (not while `.` replays a Visual command, which never
+    /// saves it: Vim's `redo_VIsual_busy`), and the mode becomes Normal.
+    pub(super) fn end_visual<B: TextBuf>(&mut self, caret: Pos, buf: &B, st: &mut BufState) {
+        if let (Mode::Visual(shape), Some(anchor)) = (self.mode, self.visual)
+            && !self.replaying_visual
+        {
+            let want = self.want_at(buf, st, caret);
+            st.history.marks.visual = Some(LastVisual { anchor, caret, shape, want });
+        }
         self.mode = Mode::Normal;
         self.visual = None;
     }
 
     /// Leaves Visual with no operator: the caret steps off a line's end.
-    fn leave_to_normal<B: TextBuf>(&mut self, buf: &mut B) {
-        self.leave_visual();
+    fn leave_to_normal<B: TextBuf>(&mut self, buf: &mut B, st: &mut BufState) {
+        self.end_visual(buf.cursor(), &*buf, st);
         let at = self.clamped(buf, buf.cursor());
         buf.set_cursor(at);
+    }
+
+    /// `gv` (Vim's `nv_gv_cmd()`): reselects the buffer's last Visual area
+    /// with its shape and wanted column, each end clamped into the text
+    /// (Visual allows the line's end). In Visual the current area and the
+    /// remembered one swap. With nothing remembered, or the area's start past
+    /// the last line, nothing happens (Vim beeps).
+    pub(super) fn exec_gv<B: TextBuf>(&mut self, buf: &mut B, st: &mut BufState) {
+        let Some(last) = st.history.marks.visual else { return };
+        if last.anchor.row >= buf.line_count() {
+            return;
+        }
+        if let (Mode::Visual(shape), Some(anchor)) = (self.mode, self.visual) {
+            let caret = buf.cursor();
+            let want = self.want_at(buf, st, caret);
+            st.history.marks.visual = Some(LastVisual { anchor, caret, shape, want });
+        }
+        self.mode = Mode::Visual(last.shape);
+        let anchor = self.clamped(buf, last.anchor);
+        let caret = self.clamped(buf, last.caret);
+        self.visual = Some(anchor);
+        buf.set_cursor(caret);
+        st.set_want(last.want, caret);
     }
 
     /// Vim's `nv_object()` in Visual: the object's start becomes the anchor
@@ -164,7 +196,7 @@ impl Engine {
         self.last_visual_size = Some(self.visual_size(lines, buf, st));
         let r = self.visual_range(buf, lines);
         let (first, last) = self.visual_rows(buf);
-        self.leave_visual();
+        self.end_visual(buf.cursor(), &*buf, st);
         // Vim's `oap->empty`: the charwise selection is only the end of the
         // last line (an empty last line).
         let empty = r.kind == RKind::Char && r.start == r.end;
@@ -305,6 +337,9 @@ impl Engine {
                 put(&mut ed, &text, !forward, n)
             }
         };
+        // Vim's `nv_put()`: `gv` afterwards selects what was put (the `'[`
+        // `']` marks), keeping the Visual shape.
+        let put_area = if text.text.is_empty() { None } else { ed.hist.last_put() };
         let last = ed.buf.line_count() - 1;
         if empty && last > 0 && ed.buf.line_len(last) == 0 {
             let len = ed.buf.line_len(last - 1);
@@ -316,6 +351,11 @@ impl Engine {
             }
         }
         self.land_caret(caret, buf, st);
+        if let Some(v) = &mut st.history.marks.visual {
+            let (start, end) = put_area.unwrap_or((caret, caret));
+            v.anchor = start;
+            v.caret = end;
+        }
         Outcome::consumed()
     }
 }

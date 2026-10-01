@@ -217,6 +217,8 @@ pub(crate) enum Cmd {
     AddSub { add: bool, count: usize },
     /// `gi`: Insert where Insert last ended.
     Gi { count: usize },
+    /// `gv`: reselect the last Visual area.
+    Gv,
     Insert { how: InsertHow, count: usize },
     Repeat(usize),
     VisualStart(Shape),
@@ -675,6 +677,7 @@ impl Pending {
                     }
                 },
                 Key::Char('i') if self.op.is_none() && !cx.visual => self.cmd(|count, _| Cmd::Gi { count }),
+                Key::Char('v') if self.op.is_none() => self.cmd(|_, _| Cmd::Gv),
                 Key::Esc => self.inert(None),
                 _ if self.op.is_none() && !cx.visual => self.decline(ev),
                 _ => self.inert(None),

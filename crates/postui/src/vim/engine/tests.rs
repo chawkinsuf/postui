@@ -1350,3 +1350,50 @@ fn gi_after_an_outside_change_clamps_or_forgets() {
     b.key(esc());
     assert_eq!(b.text(), "Zreloaded");
 }
+
+/// Deviation 7: `leave` in Visual remembers the area, so `gv` after
+/// coming back reselects it.
+#[test]
+fn gv_reselects_what_leave_ended() {
+    let mut f = Field::new("abcdef", 1);
+    f.keys("vl");
+    f.engine.leave(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
+    assert_eq!(f.engine.mode(), Mode::Normal);
+    f.engine.enter(Start::Normal, Seat::ColZero, Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
+    f.keys("gv");
+    assert_eq!((f.engine.mode(), f.engine.visual_anchor(), f.col()), (Mode::Visual(Shape::Char), Some(Pos::new(0, 1)), 2));
+}
+
+/// Deviation 7: a click that ends Visual remembers the area as it was
+/// before the click moved the caret.
+#[test]
+fn a_click_ending_visual_remembers_the_area_before_the_click() {
+    let mut f = Field::new("abcdef", 1);
+    f.keys("vl");
+    f.input.set_cursor(5);
+    f.engine.settle(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, Settled::Click);
+    assert_eq!(f.engine.mode(), Mode::Normal);
+    f.keys("gv");
+    assert_eq!((f.engine.visual_anchor(), f.col()), (Some(Pos::new(0, 1)), 2));
+}
+
+/// Review focus 3: `gv` after an outside change. With no `enter`, an area
+/// past the text clamps into it; after an `enter` that sees the change,
+/// there is nothing to reselect.
+#[test]
+fn gv_after_an_outside_change_clamps_or_does_nothing() {
+    let mut b = Body::new("abc\ndef\nghi", 1, 0);
+    b.keys("vjl");
+    b.key(esc());
+    b.ed.lines = Lines::from("xy\nz");
+    b.ed.cursor = edtui::Index2::new(0, 0);
+    b.keys("gv");
+    assert_eq!(b.engine.mode(), Mode::Visual(Shape::Char));
+    assert_eq!((b.engine.visual_anchor(), b.caret()), (Some(Pos::new(1, 0)), Pos::new(1, 1)));
+    b.key(esc());
+    b.engine.leave(Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state });
+    b.ed.lines = Lines::from("reloaded");
+    b.engine.enter(Start::Normal, Seat::ColZero, Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state });
+    b.keys("gv");
+    assert_eq!(b.engine.mode(), Mode::Normal, "the area went with the history");
+}
