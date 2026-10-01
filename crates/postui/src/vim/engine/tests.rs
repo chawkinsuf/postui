@@ -1397,3 +1397,85 @@ fn gv_after_an_outside_change_clamps_or_does_nothing() {
     b.keys("gv");
     assert_eq!(b.engine.mode(), Mode::Normal, "the area went with the history");
 }
+
+/// Plan 3b Task 10: Insert `ctrl+r` waits for a register name. The echo
+/// and `pending()` show it; anything but `"` or `0` is a note or is
+/// swallowed, and a foreign chord reaches the app.
+#[test]
+fn insert_ctrl_r_takes_the_next_key_as_the_register() {
+    let note = |out: Outcome| match out {
+        Outcome::Consumed { note: Some(Note::Unsupported(n)), .. } => n,
+        other => panic!("no note: {other:?}"),
+    };
+    let mut f = Field::new("ab", 0);
+    f.keys("yiwA");
+    f.key(ctrl('r'));
+    assert!(f.engine.pending());
+    assert_eq!(f.engine.echo(), "^R");
+    assert_eq!(f.keys("\""), Outcome::Consumed { changed: true, note: None, request: None });
+    assert_eq!(f.text(), "abab");
+    assert!(!f.engine.pending());
+    f.key(ctrl('r'));
+    assert_eq!(note(f.keys("a")), "register \"a not supported");
+    f.key(ctrl('r'));
+    f.key(ctrl('r'));
+    assert_eq!(f.engine.echo(), "^R^R");
+    f.keys("0");
+    assert_eq!(f.text(), "ababab");
+    f.key(ctrl('r'));
+    f.key(ctrl('o'));
+    assert_eq!(f.engine.echo(), "^R^O");
+    assert_eq!(note(f.keys("\"")), "ctrl+r ctrl+o not supported");
+    f.key(ctrl('r'));
+    assert_eq!(f.key(esc()), Outcome::Consumed { changed: false, note: None, request: None }, "Esc names no register");
+    assert_eq!(f.engine.mode(), Mode::Insert);
+    f.key(ctrl('r'));
+    assert_eq!(f.key(ctrl('c')), Outcome::Declined { count: None, keys: vec![ctrl('c')] });
+    assert!(!f.engine.pending());
+    f.keys("Z");
+    assert_eq!(f.text(), "abababZ");
+}
+
+/// Review focus 2: a register with line breaks, tabs or control chars goes
+/// into a one-line field or a query box flattened, as `p` puts it; nothing
+/// is declined, so no Enter reaches the app.
+#[test]
+fn insert_ctrl_r_flattens_into_a_field_and_a_query_box() {
+    for start in [Start::Insert, Start::InsertOnly] {
+        let mut f = Field::start("", 0, start);
+        f.engine.registers_mut().set_unnamed(Register { text: "a\nb\tc\n".into(), kind: RegKind::Line });
+        f.key(ctrl('r'));
+        assert!(!declined(&f.key(k('"'))), "{start:?}");
+        assert_eq!(f.text(), "a b c", "{start:?}");
+    }
+    let mut f = Field::start("", 0, Start::Insert);
+    f.engine.registers_mut().set_unnamed(Register { text: "x\u{8}y".into(), kind: RegKind::Char });
+    f.key(ctrl('r'));
+    f.keys("\"");
+    assert_eq!(f.text(), "x\u{8}y", "a field takes a control char as a char, as a paste does");
+}
+
+/// Review focus 4: a half-typed `ctrl+r` never outlives a click, a paste
+/// or the buffer.
+#[test]
+fn a_half_typed_ctrl_r_is_dropped_at_every_edge() {
+    let mut f = Field::start("ab", 2, Start::Insert);
+    f.key(ctrl('r'));
+    f.engine.settle(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, Settled::Click);
+    assert!(!f.engine.pending());
+    f.keys("\"");
+    assert_eq!(f.text(), "ab\"", "the quote is typed, not read as a register");
+    f.key(ctrl('r'));
+    f.engine.paste("X", Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
+    assert!(!f.engine.pending());
+    f.key(ctrl('r'));
+    let (mut other, mut os) = (LineInput::new("q"), BufState::new());
+    other.set_cursor(0);
+    f.engine.carry(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, Target { buf: &mut OneLineBuf::new(&mut other), state: &mut os });
+    assert!(!f.engine.pending());
+    f.engine.handle(k('0'), Target { buf: &mut OneLineBuf::new(&mut other), state: &mut os }, &ViewCtx::default());
+    assert_eq!(other.text(), "0q", "typed in the new field, not read as \"0");
+    f.engine.handle(ctrl('r'), Target { buf: &mut OneLineBuf::new(&mut other), state: &mut os }, &ViewCtx::default());
+    f.engine.leave(Target { buf: &mut OneLineBuf::new(&mut other), state: &mut os });
+    assert!(!f.engine.pending());
+}

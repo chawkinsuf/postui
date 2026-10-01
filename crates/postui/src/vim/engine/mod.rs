@@ -32,7 +32,7 @@ mod visual;
 pub use buf::{BodyBuf, BodyVisual, GuiSel, OneLineBuf, Paint, Pos, TextBuf};
 pub use register::{RegKind, Register, Registers};
 
-use insert::InsertKey;
+use insert::{InsertKey, RegPending};
 use keys::{Cmd, Op, ParseCx, Pending, Step, VisualOp};
 use ratatui::crossterm::event::KeyEvent;
 
@@ -278,6 +278,8 @@ pub struct Engine {
     /// that a click or a key piece 4 handled moved the caret in Insert,
     /// which splits the session as Vim's `ins_mouse()` does.
     rested: Option<Pos>,
+    /// Insert `ctrl+r` waiting for its register name.
+    reg_pending: Option<RegPending>,
 }
 
 impl Engine {
@@ -289,14 +291,25 @@ impl Engine {
         self.mode
     }
 
-    /// The half-typed command for the footer (`"02d3`); `""` when none.
+    /// The half-typed command for the footer (`"02d3`, or `^R` while
+    /// Insert `ctrl+r` waits for a register); `""` when none.
     pub fn echo(&self) -> String {
-        self.pending.echo()
+        match self.reg_pending {
+            Some(reg) => reg.echo(),
+            None => self.pending.echo(),
+        }
     }
 
-    /// Whether a count, register, operator or prefix is in flight.
+    /// Whether a count, register, operator or prefix is in flight, or an
+    /// Insert `ctrl+r`.
     pub fn pending(&self) -> bool {
-        !self.pending.is_empty()
+        !self.pending.is_empty() || self.reg_pending.is_some()
+    }
+
+    /// Drops a half-typed command: Normal's, or an Insert `ctrl+r`.
+    fn clear_pending(&mut self) {
+        self.pending.clear();
+        self.reg_pending = None;
     }
 
     pub fn registers(&self) -> &Registers {
@@ -322,7 +335,7 @@ impl Engine {
     pub fn enter<B: TextBuf>(&mut self, start: Start, seat: Seat, t: Target<'_, B>) {
         let Target { buf, state } = t;
         state.begin_session(buf.text());
-        self.pending.clear();
+        self.clear_pending();
         self.visual = None;
         self.insert = None;
         self.insert_only = start == Start::InsertOnly;
@@ -392,7 +405,7 @@ impl Engine {
     pub fn settle<B: TextBuf>(&mut self, t: Target<'_, B>, how: Settled) {
         let Target { buf, state } = t;
         if matches!(how, Settled::Click | Settled::Release) {
-            self.pending.clear();
+            self.clear_pending();
         }
         let caret = self.clamped(buf, buf.cursor());
         if self.mode == Mode::Insert
@@ -440,7 +453,7 @@ impl Engine {
         if self.mode == Mode::Insert {
             self.end_insert(buf, state, false);
         }
-        self.pending.clear();
+        self.clear_pending();
         self.visual = Some(anchor);
         self.mode = Mode::Visual(Shape::Char);
     }
@@ -456,7 +469,7 @@ impl Engine {
             self.end_insert(buf, state, false);
         }
         state.history.commit();
-        self.pending.clear();
+        self.clear_pending();
         if matches!(self.mode, Mode::Visual(_)) {
             self.end_visual(buf.cursor(), &*buf, state);
         }
@@ -477,7 +490,7 @@ impl Engine {
     /// Returns whether the text changed.
     pub fn external_edit<B: TextBuf>(&mut self, t: Target<'_, B>, f: impl FnOnce(&mut Splicer<'_, B>)) -> bool {
         let Target { buf, state } = t;
-        self.pending.clear();
+        self.clear_pending();
         if matches!(self.mode, Mode::Visual(_)) {
             self.end_visual(buf.cursor(), &*buf, state);
         }

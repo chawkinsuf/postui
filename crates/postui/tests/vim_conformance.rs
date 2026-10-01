@@ -305,6 +305,22 @@ fn drive<B: TextBuf>(engine: &mut Engine, buf: &mut B, state: &mut BufState, cas
         {
             return Run::Skipped;
         }
+        // And for Insert `<C-r>` of a register holding a line break, a tab
+        // or another control char: Vim types them (Enter, a tab expanded to
+        // spaces, BS …), a field puts the text flattened as a paste (key
+        // list §5, pinned by S tests; plan 3b).
+        if !B::MULTILINE
+            && engine.mode() == Mode::Insert
+            && engine.echo().starts_with("^R")
+            && let Some(reg) = match token.as_str() {
+                "\"" => Some(engine.registers().unnamed()),
+                "0" => Some(engine.registers().zero()),
+                _ => None,
+            }
+            && reg.text.chars().any(|c| c < ' ')
+        {
+            return Run::Skipped;
+        }
         let inserting = engine.mode() == Mode::Insert;
         let out = engine.handle(key_event(&token), Target { buf: &mut *buf, state: &mut *state }, ctx);
         // A one-line field hands Insert keys it doesn't own (Tab, Up,

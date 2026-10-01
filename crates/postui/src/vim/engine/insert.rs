@@ -15,8 +15,9 @@ use super::history::{Ed, MarkMove, end_of};
 use super::keys::{Cmd, InsertHow, Key};
 use super::motion::{Want, col_for, vcol_of};
 use super::op::{RKind, Range, yank_of};
+use super::register::RegKind;
 use super::settings::TABSTOP;
-use super::{BufState, Engine, Mode, Outcome, Target, first_non_blank};
+use super::{BufState, Engine, Mode, Note, Outcome, Target, first_non_blank};
 use crate::components::line_input::flatten_paste;
 use ratatui::crossterm::event::KeyEvent;
 
@@ -51,6 +52,29 @@ impl InsertKey {
             InsertKey::Paste(text) if B::MULTILINE => Some(InsertKey::Paste(text.replace("\r\n", "\n").replace('\r', "\n"))),
             InsertKey::Paste(text) => Some(InsertKey::Paste(flatten_paste(&text))),
             key => Some(key),
+        }
+    }
+}
+
+/// Insert `ctrl+r` waiting for its register name (Vim's `ins_reg()`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RegPending {
+    /// `ctrl+r`: the text goes in as typed.
+    Typed,
+    /// `ctrl+r ctrl+r`: control chars go in literally.
+    Literal,
+    /// `ctrl+r ctrl+o` or `ctrl+r ctrl+p`: Vim puts the register instead.
+    /// Not supported; the register name is taken with a note.
+    Unsupported(char),
+}
+
+impl RegPending {
+    /// The footer echo, as Vim's showcmd shows it.
+    pub(crate) fn echo(self) -> String {
+        match self {
+            RegPending::Typed => "^R".to_string(),
+            RegPending::Literal => "^R^R".to_string(),
+            RegPending::Unsupported(c) => format!("^R^{}", c.to_ascii_uppercase()),
         }
     }
 }
@@ -229,11 +253,18 @@ impl Engine {
     /// One key in Insert (the Insert key table, spec §4.3). A key the
     /// engine does not take is declined as typed.
     pub(super) fn insert_key<B: TextBuf>(&mut self, ev: KeyEvent, buf: &mut B, st: &mut BufState) -> Outcome {
+        if let Some(how) = self.reg_pending.take() {
+            return self.insert_register(how, ev, buf, st);
+        }
         let decline = Outcome::Declined { count: None, keys: vec![ev] };
         let input = match Key::of(&ev) {
             Key::Esc if self.insert_only => return decline,
             Key::Esc => {
                 self.end_insert(buf, st, true);
+                return Outcome::consumed();
+            }
+            Key::Ctrl('r') => {
+                self.reg_pending = Some(RegPending::Typed);
                 return Outcome::consumed();
             }
             Key::Char(c) => InsertKey::Char(c),
@@ -256,6 +287,68 @@ impl Engine {
         let Some(input) = input.for_buffer::<B>() else { return decline };
         self.insert_input(input, buf, st);
         Outcome::consumed()
+    }
+
+    /// The key after Insert `ctrl+r` (Vim's `ins_reg()`). `"` and `0` put
+    /// their text in; any other register name shows a note. `ctrl+r` again
+    /// makes it literal; `ctrl+o` and `ctrl+p` are not supported and take
+    /// one more key. The engine's own Insert chords are swallowed, a foreign
+    /// chord goes to the app (the half-typed `ctrl+r` is dropped), and any
+    /// other key is swallowed, as Vim swallows it (plan 3b Deviation 5).
+    fn insert_register<B: TextBuf>(&mut self, how: RegPending, ev: KeyEvent, buf: &mut B, st: &mut BufState) -> Outcome {
+        let note = |text: String| Outcome::Consumed { changed: false, note: Some(Note::Unsupported(text)), request: None };
+        match (how, Key::of(&ev)) {
+            (RegPending::Typed, Key::Ctrl('r')) => {
+                self.reg_pending = Some(RegPending::Literal);
+                Outcome::consumed()
+            }
+            (RegPending::Typed, Key::Ctrl(c @ ('o' | 'p'))) => {
+                self.reg_pending = Some(RegPending::Unsupported(c));
+                Outcome::consumed()
+            }
+            (_, Key::Ctrl('w' | 'u' | 'h')) => Outcome::consumed(),
+            (_, Key::Ctrl(_) | Key::Other) => Outcome::Declined { count: None, keys: vec![ev] },
+            (RegPending::Unsupported(c), _) => note(format!("ctrl+r ctrl+{c} not supported")),
+            (how, Key::Char(name @ ('"' | '0'))) => {
+                self.insert_register_text(name, how == RegPending::Literal, buf, st);
+                Outcome::consumed()
+            }
+            (_, Key::Char(c)) => note(format!("register \"{c} not supported")),
+            _ => Outcome::consumed(),
+        }
+    }
+
+    /// Types register `name`'s text into the session (Vim's `insert_reg()`
+    /// and `stuffescaped()`). In the body each line break is an Enter
+    /// (`autoindent` applies), a linewise register ends with one, and Tab,
+    /// BS, `ctrl+w` and `ctrl+u` act as those keys, the last three going
+    /// in literally when `literal`. Any other char goes in as it is. A
+    /// one-line field takes the text flattened, as `p` puts it (key list
+    /// §5).
+    fn insert_register_text<B: TextBuf>(&mut self, name: char, literal: bool, buf: &mut B, st: &mut BufState) {
+        let reg = self.regs.read(Some(name)).clone();
+        let keys: Vec<InsertKey> = if B::MULTILINE {
+            reg.text
+                .chars()
+                .map(|c| match c {
+                    '\n' | '\r' => InsertKey::Enter,
+                    '\t' => InsertKey::Tab,
+                    '\u{8}' if !literal => InsertKey::Backspace,
+                    '\u{17}' if !literal => InsertKey::CtrlW,
+                    '\u{15}' if !literal => InsertKey::CtrlU,
+                    c => InsertKey::Char(c),
+                })
+                .collect()
+        } else {
+            let text = match reg.kind {
+                RegKind::Line => reg.text.strip_suffix('\n').unwrap_or(&reg.text),
+                RegKind::Char => &reg.text,
+            };
+            flatten_paste(text).chars().map(InsertKey::Char).collect()
+        };
+        for key in keys {
+            self.insert_input(key, buf, st);
+        }
     }
 
     /// Replays an Insert session's recorded keys for `.`, as if typed in
@@ -594,6 +687,7 @@ impl Engine {
         st.history.commit();
         self.finish_record();
         self.insert = None;
+        self.reg_pending = None;
         self.mode = Mode::Normal;
         if step_back && caret.col > 0 {
             caret.col -= 1;
@@ -690,6 +784,7 @@ impl Engine {
         if self.mode != Mode::Insert {
             return Outcome::Declined { count: None, keys: Vec::new() };
         }
+        self.reg_pending = None;
         self.clamp(buf);
         let before = buf.cursor();
         if let Some(key) = InsertKey::Paste(text.to_string()).for_buffer::<B>() {

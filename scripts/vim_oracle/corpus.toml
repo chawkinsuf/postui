@@ -875,6 +875,54 @@ on = ["json_pretty", "words", "short_last"]
 at = ["bol", "eol"]
 reg = { text = "\n", type = "V" }
 
+# --- plan 3b: Insert ctrl+r (Task 10) -----------------------------------------
+
+[[group]]
+id = "insert/ctrl-r"
+tier = 2
+keys = ["yiwA<C-r>\"<Esc>", "yiwA<C-r>0<Esc>", "yyjA<C-r>\"<Esc>", "yyggo<C-r>\"<Esc>", "yjGo<C-r>\"<Esc>",
+        "yjGo<C-r>\"<Esc>u", "yiwA<C-r>\"<Esc>.", "yiwA<C-r>\"<Esc>j.", "yiwA<C-r>\"<Esc>0dwA<C-r>0<Esc>",
+        "yiwA<C-r><C-r>\"<Esc>", "A<C-r>aZ<Esc>", "A<C-r><Esc>Z<Esc>", "A<C-r>\"Z<Esc>", "yiw3A<C-r>\"<Esc>",
+        "yiwi<C-r>\"<Left><Esc>", "yiwiZ<C-r>\"<C-w><Esc>", "yiwi<C-r>\"<BS><Esc>u", "yiwxA<C-r>0Z<Esc>",
+        "yiwA<C-r>0<C-r>\"<Esc>", "yiwo<C-r>0<Esc>", "yiwA<C-r>\"<Esc>u<C-r>"]
+on = ["words", "json_pretty", "blank_edges", "unicode", "tabs"]
+at = ["bol", "mid", "eol"]
+
+[[group]]
+id = "insert/ctrl-r-lines"
+tier = 2
+keys = ["A<C-r>\"<Esc>", "o<C-r>\"<Esc>", "i<C-r>\"<Esc>", "A<C-r><C-r>\"<Esc>", "3A<C-r>\"<Esc>",
+        "A<C-r>\"<Esc>u", "A<C-r>\"<Esc>j."]
+on = ["words", "json_pretty", "blank_edges"]
+at = ["bol", "eol"]
+reg = { text = "  x\n  y\n", type = "V" }
+
+[[group]]
+id = "insert/ctrl-r-chars"
+tier = 2
+keys = ["A<C-r>\"<Esc>", "i<C-r>\"<Esc>", "3A<C-r>\"<Esc>", "A<C-r>\"<Esc>u"]
+on = ["words", "json_pretty"]
+at = ["bol", "eol"]
+reg = { text = "x\n  y", type = "v" }
+
+[[group]]
+id = "insert/ctrl-r-tab"
+tier = 2
+keys = ["A<C-r>\"<Esc>", "i<C-r>\"<Esc>", "A<C-r><C-r>\"<Esc>"]
+on = ["words", "json_pretty"]
+at = ["bol", "mid", "eol"]
+reg = { text = "a\tb", type = "v" }
+
+# Typed, a register's BS, ctrl+w and ctrl+u act as those keys; with
+# ctrl+r ctrl+r they go in literally.
+[[group]]
+id = "insert/ctrl-r-ctrl"
+tier = 2
+keys = ["A<C-r>\"<Esc>", "A<C-r><C-r>\"<Esc>", "i<C-r>\"<Esc>"]
+on = ["words", "json_pretty"]
+at = ["bol", "eol"]
+reg = { text = "a\u0008b\u0017c\u0015d", type = "v" }
+
 # --- fuzz atoms (generate.py --fuzz); tier-1 keys only -----------------------
 
 [fuzz]
