@@ -167,6 +167,8 @@ pub struct BufState {
     /// mode of the moment, when next needed.
     virtcol: Option<(Pos, bool)>,
     pub(crate) history: history::History,
+    /// Vim's window-local 'scroll': the half page a counted ctrl+d/ctrl+u set; None is half the height.
+    pub(crate) scroll: Option<usize>,
 }
 
 impl BufState {
@@ -705,6 +707,10 @@ impl Engine {
                 // number, so a `ctrl+a` that finds none still repeats.
                 self.exec_addsub(add, count, buf, st);
                 record = Some(cmd);
+                Outcome::consumed()
+            }
+            Cmd::Scroll { how, count } => {
+                self.exec_scroll(how, count, buf, st, ctx);
                 Outcome::consumed()
             }
             Cmd::Insert { how, count } => {

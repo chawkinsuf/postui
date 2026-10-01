@@ -5,8 +5,9 @@
 //! loop does before each command. The golden file compares `top` on texts
 //! of 21 lines and more.
 
-use super::ViewCtx;
-use super::buf::TextBuf;
+use super::buf::{Pos, TextBuf};
+use super::keys::Scroll;
+use super::{BufState, Engine, ViewCtx, first_non_blank_fix};
 
 /// `scrolljump`.
 const SCROLLJUMP: usize = 1;
@@ -192,7 +193,7 @@ impl View {
             buf.set_top((top + line_count).min(lines - 1));
             if buf.cursor().row < buf.top() {
                 let t = buf.top();
-                buf.set_cursor(super::buf::Pos::new(t, 0));
+                buf.set_cursor(Pos::new(t, 0));
             }
         }
     }
@@ -247,5 +248,187 @@ impl View {
             }
         }
         buf.set_top(topline);
+    }
+
+    /// Vim's `cursor_correct()` with `scrolloff=0`: the caret is pulled
+    /// into the window when it sits outside it.
+    pub(crate) fn cursor_correct<B: TextBuf>(self, buf: &mut B) {
+        let lines = buf.line_count();
+        let top = buf.top();
+        let bot = self.botline(buf);
+        let cur = buf.cursor();
+        if cur.row >= top && cur.row < bot {
+            return;
+        }
+        if cur.row < top && top > 0 {
+            buf.set_cursor(Pos::new(top, cur.col));
+        }
+        let cur = buf.cursor();
+        if cur.row >= bot && bot < lines {
+            buf.set_cursor(Pos::new(bot - 1, cur.col));
+        }
+    }
+
+    /// Vim's `halfpage()`: scroll `'scroll'` lines (a count sets it, capped
+    /// at the height) and move the caret as many; when the text's end (or
+    /// start) is reached the caret moves the rest. Ends with
+    /// `cursor_correct()`; the caller lands on the first non-blank.
+    pub(crate) fn halfpage<B: TextBuf>(self, buf: &mut B, down: bool, count: usize, scroll: &mut Option<usize>) {
+        if count > 0 {
+            *scroll = Some(count.min(self.height));
+        }
+        let mut n = scroll.unwrap_or(self.height / 2).min(self.height);
+        // Clamps `top` too, before the window helpers read it.
+        self.update_topline(buf);
+        let lines = buf.line_count();
+        let mut top = buf.top();
+        let mut cur = buf.cursor().row;
+        if down {
+            while n > 0 && top + self.height < lines {
+                n -= 1;
+                top += 1;
+                if cur + 1 < lines {
+                    cur += 1;
+                }
+            }
+            if n > 0 {
+                cur = (cur + n).min(lines - 1);
+            }
+        } else {
+            while n > 0 && top > 0 {
+                n -= 1;
+                top -= 1;
+                cur = cur.saturating_sub(1);
+            }
+            if n > 0 {
+                cur = cur.saturating_sub(n);
+            }
+        }
+        buf.set_top(top);
+        let col = buf.cursor().col;
+        buf.set_cursor(Pos::new(cur, col));
+        self.cursor_correct(buf);
+    }
+
+    /// Vim's `onepage()` for `count` pages: forward keeps two lines of
+    /// overlap and, once the last line shows, puts it at the top; backward
+    /// makes the line above the window (plus the overlap) the bottom line,
+    /// scrolling at least one. `false` when it beeped: a one-line text, or
+    /// no further page (the caller then skips the first-non-blank landing).
+    pub(crate) fn onepage<B: TextBuf>(self, buf: &mut B, down: bool, count: usize) -> bool {
+        let lines = buf.line_count();
+        if lines == 1 {
+            return false;
+        }
+        // The window helpers need `top` inside the text.
+        self.clamp_top(buf);
+        let mut ok = true;
+        for _ in 0..count {
+            let top = buf.top();
+            let bot = self.botline(buf);
+            if down {
+                if top >= lines - 1 && bot >= lines {
+                    ok = false;
+                    break;
+                }
+                if bot >= lines {
+                    buf.set_top(lines - 1);
+                } else {
+                    // `get_scroll_overlap(loff = botline, -1)`.
+                    let new_top = self.overlap_up(bot);
+                    buf.set_top(new_top);
+                    let col = buf.cursor().col;
+                    buf.set_cursor(Pos::new(new_top, col));
+                }
+            } else {
+                if top == 0 {
+                    ok = false;
+                    break;
+                }
+                // `get_scroll_overlap(loff = topline - 1, +1)`.
+                let lp = self.overlap_down(top - 1, lines).min(lines - 1);
+                let col = buf.cursor().col;
+                buf.set_cursor(Pos::new(lp, col));
+                // The line just above the new topline: `height + 1` rows up,
+                // then two forward again; past the start, the top is row 0.
+                match lp.checked_sub(self.height + 1) {
+                    None => buf.set_top(0),
+                    Some(above) if above + 2 >= top => {
+                        // Always scroll at least one line.
+                        buf.set_top(top - 1);
+                        let bot = self.botline(buf);
+                        buf.set_cursor(Pos::new(bot - 1, col));
+                    }
+                    Some(above) => buf.set_top(above + 2),
+                }
+            }
+        }
+        self.cursor_correct(buf);
+        ok
+    }
+
+    /// `get_scroll_overlap(lp, -1)` with one-row lines: from the row `below`
+    /// the window, the new top is two rows up when three rows above it
+    /// exist and fit, one row up when only two do, else `below` itself.
+    fn overlap_up(self, below: usize) -> usize {
+        let min_height = self.height.saturating_sub(2);
+        // h2 or h3 missing (`MAXCOL`) or too tall: no overlap.
+        if 2 > min_height || below < 2 {
+            return below;
+        }
+        // h4 missing or too tall: one line of overlap.
+        if 3 > min_height || below < 3 {
+            return below - 1;
+        }
+        below - 2
+    }
+
+    /// `get_scroll_overlap(lp, +1)`: from the row `above` the window, the
+    /// new bottom is two rows down when three rows below it exist and fit,
+    /// one row down when only two do, else `above` itself.
+    fn overlap_down(self, above: usize, lines: usize) -> usize {
+        let min_height = self.height.saturating_sub(2);
+        // h2 or h3 missing (`MAXCOL`) or too tall: no overlap.
+        if 2 > min_height || above + 2 >= lines {
+            return above;
+        }
+        // h4 missing or too tall: one line of overlap.
+        if 3 > min_height || above + 3 >= lines {
+            return above + 1;
+        }
+        above + 2
+    }
+}
+
+impl Engine {
+    /// `ctrl+d ctrl+u ctrl+f ctrl+b` (Vim's `nv_halfpage()` and
+    /// `nv_page()`). A one-line field never gets here in Normal (declined)
+    /// and treats them as failed motions in Visual: nothing happens.
+    pub(super) fn exec_scroll<B: TextBuf>(&mut self, how: Scroll, count: usize, buf: &mut B, st: &mut BufState, ctx: &ViewCtx) {
+        let Some(view) = View::of::<B>(ctx) else { return };
+        let lines = buf.line_count();
+        let cur = buf.cursor().row;
+        let ok = match how {
+            Scroll::HalfDown | Scroll::HalfUp => {
+                let down = how == Scroll::HalfDown;
+                // `nv_halfpage()`: at the edge it beeps before `'scroll'` is set.
+                if (down && cur == lines - 1) || (!down && cur == 0) {
+                    return;
+                }
+                view.halfpage(buf, down, count, &mut st.scroll);
+                true
+            }
+            Scroll::PageDown => view.onepage(buf, true, count.max(1)),
+            Scroll::PageUp => view.onepage(buf, false, count.max(1)),
+        };
+        if ok {
+            let row = buf.cursor().row;
+            let col = first_non_blank_fix(&buf.line(row));
+            buf.set_cursor(Pos::new(row, col));
+        }
+        // Visual keeps its anchor; the caret may rest on the line's end there.
+        let at = self.clamped(buf, buf.cursor());
+        buf.set_cursor(at);
+        st.forget_want();
     }
 }

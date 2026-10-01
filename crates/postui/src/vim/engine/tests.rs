@@ -1961,3 +1961,26 @@ fn the_view_survives_odd_viewports_and_outside_changes() {
     b.keys("k");
     assert_eq!(b.ed.viewport_offset().1, 0, "clamped into the shrunk text");
 }
+
+/// Plan 3c Task 6: the scroll chords in a one-line field are declined with
+/// their count in Normal (piece 4 pages the surface) and consumed as failed
+/// motions in Visual; in the body with an operator pending they cancel it.
+#[test]
+fn scroll_chords_in_a_field_and_after_an_operator() {
+    let mut f = Field::new("abc", 1);
+    for c in ['d', 'u', 'f', 'b'] {
+        assert_eq!(f.keys("3").clone(), Outcome::consumed());
+        assert_eq!(f.key(ctrl(c)), Outcome::Declined { count: Some(3), keys: vec![ctrl(c)] }, "{c}");
+    }
+    f.keys("v");
+    assert!(!declined(&f.key(ctrl('d'))));
+    assert_eq!((f.engine.mode(), f.col()), (Mode::Visual(Shape::Char), 1));
+    let mut b = Body::new("a\nb\nc", 0, 0);
+    b.keys("d");
+    assert_eq!(b.key(ctrl('d')), Outcome::Consumed { changed: false, note: None, request: None });
+    assert!(!b.engine.pending(), "the operator is cancelled");
+    assert_eq!(b.text(), "a\nb\nc");
+    b.keys("3");
+    b.key(ctrl('d'));
+    assert_eq!(b.state.scroll, Some(3));
+}

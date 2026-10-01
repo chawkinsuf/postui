@@ -1076,6 +1076,37 @@ keys = ["G", "Ggg", "50G", "24j", "30G", "23j", "22j", "G30k", "G50k", "G57k", "
 on = ["long", "lines25"]
 at = ["bol", "mid", "eol"]
 
+# --- plan 3c: ctrl+d ctrl+u ctrl+f ctrl+b (Task 6) ---------------------------------
+
+[[group]]
+id = "view/halfpage"
+tier = 2
+keys = ["<C-d>", "<C-u>", "<C-d><C-d>", "G<C-u>", "<C-d>G<C-u>", "3<C-d>", "3<C-d><C-d>",
+        "3<C-d><C-u>", "G<C-d>", "<C-u>x", "<C-d>k", "<C-d>j", "<C-d>u", "x<C-d>.", "5<C-d>", "<C-d>5<C-u>", "25<C-u>",
+        "G25<C-u>", "G23<C-u>", "G99<C-u>", "G99<C-u><C-d>", "99<C-d>", "9999<C-d>", "9999<C-d><C-u>", "23<C-d>", "24<C-d>", "23<C-d>k",
+        "<C-d><C-d><C-d><C-d><C-d><C-d><C-d><C-d><C-d>", "G<C-u><C-u><C-u><C-u><C-u>", "<C-d><C-u>", "G<C-u><C-d>", "v<C-d>d",
+        "V<C-d>d", "v<C-d>", "d<C-d>", "d<C-u>", "y<C-d>x", "<C-d>$", "$<C-d>", "<C-d>iX<Esc>", "<C-d>o<Esc>", "3<C-d>G3<C-u>"]
+on = ["long", "lines25", "json_pretty", "one_char", "empty"]
+at = ["bol", "mid", "eol"]
+
+[[group]]
+id = "view/page"
+tier = 2
+keys = ["<C-f>", "<C-b>", "<C-f><C-b>", "<C-f><C-f>", "<C-f><C-f><C-f><C-f>", "<C-f><C-f><C-f><C-f><C-f>",
+        "<C-f><C-f><C-f><C-f><C-f><C-f>", "<C-f><C-f><C-f><C-f><C-f><C-b>", "G<C-f>", "G<C-f>x", "<C-b>x", "G<C-b>", "G<C-b><C-f>",
+        "G2<C-b>", "G<C-b><C-b>", "G<C-b><C-b><C-b>", "G<C-b><C-b><C-b><C-b>", "G<C-b><C-b><C-b><C-b><C-b>", "2<C-f>", "3<C-f>",
+        "9<C-f>", "G9<C-b>", "<C-f>x", "v<C-f>", "v<C-f>d", "y<C-f>", "d<C-f>x", "<C-f>u", "x<C-f>.",
+        "<C-f>k", "<C-f>j", "<C-b>j", "<C-f>$", "<C-f>iX<Esc>"]
+on = ["long", "lines25", "json_pretty", "one_char", "empty"]
+at = ["bol", "mid", "eol"]
+
+[[group]]
+id = "view/seats"
+tier = 2
+keys = ["<C-d>", "<C-u>", "<C-f>", "<C-b>", "k", "j", "<C-d>k", "<C-f>k"]
+on = ["long"]
+at = [[2, 1], [12, 1], [13, 1], [23, 1], [24, 1], [25, 1], [26, 1], [77, 1], [78, 1], [79, 1], [100, 1]]
+
 # --- fuzz atoms (generate.py --fuzz); tier 1 and the tier-2 first wave ------
 
 [fuzz]

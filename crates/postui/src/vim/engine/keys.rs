@@ -188,6 +188,15 @@ pub(crate) enum InsertHow {
     Replace,
 }
 
+/// `ctrl+d ctrl+u ctrl+f ctrl+b` (plan 3c).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Scroll {
+    HalfDown,
+    HalfUp,
+    PageDown,
+    PageUp,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum VisualOp {
     Delete,
@@ -222,6 +231,8 @@ pub(crate) enum Cmd {
     /// `gv`: reselect the last Visual area.
     Gv,
     Insert { how: InsertHow, count: usize },
+    /// A scroll chord with its count (a half page's new size, or pages).
+    Scroll { how: Scroll, count: usize },
     Repeat(usize),
     VisualStart(Shape),
     VisualSwap,
@@ -428,9 +439,24 @@ impl Pending {
     /// One key. The grammar is the key table in spec §4.3.
     pub(crate) fn feed(&mut self, ev: KeyEvent, cx: ParseCx) -> Step {
         let key = Key::of(&ev);
-        // The engine's own Normal chords are `ctrl+r`, `ctrl+a` and `ctrl+x`
-        // (spec §4.3); every other chord goes to the app alone.
-        if matches!(key, Key::Other) || matches!(key, Key::Ctrl(c) if !matches!(c, 'r' | 'a' | 'x')) {
+        // The engine's own Normal chords are `ctrl+r`, `ctrl+a`, `ctrl+x`
+        // and, in the body, the scroll chords (spec §4.3); every other chord
+        // goes to the app alone.
+        let scroll = |c: char| match c {
+            'd' => Some(Scroll::HalfDown),
+            'u' => Some(Scroll::HalfUp),
+            'f' => Some(Scroll::PageDown),
+            'b' => Some(Scroll::PageUp),
+            _ => None,
+        };
+        if matches!(key, Key::Other) {
+            return self.decline_alone(ev);
+        }
+        if let Key::Ctrl(c) = key
+            && !matches!(c, 'r' | 'a' | 'x')
+            && !(cx.multiline && scroll(c).is_some())
+            && !(cx.visual && scroll(c).is_some())
+        {
             return self.decline_alone(ev);
         }
         // A pending `r f t F T` takes `Tab` as its argument, even in a
@@ -463,6 +489,12 @@ impl Pending {
             Key::Esc if self.is_empty() && cx.restart => self.inert(None),
             Key::Esc if self.is_empty() => self.decline(ev),
             Key::Esc => self.inert(None),
+            // A scroll chord with an operator pending cancels it (Vim's
+            // `checkclearop()`); in a one-line field's Visual it is a
+            // failed motion (consumed), in its Normal it was declined above.
+            Key::Ctrl(c) if self.op.is_some() && scroll(c).is_some() => self.inert(None),
+            Key::Ctrl(c) if scroll(c).is_some() && !cx.multiline => self.inert(None),
+            Key::Ctrl(c) if let Some(how) = scroll(c) => self.cmd(|count, _| Cmd::Scroll { how, count }),
             Key::Ctrl(_) if cx.visual || self.op.is_some() => self.decline_alone(ev),
             Key::Ctrl('r') => self.undo(true, ev),
             Key::Ctrl(c) => self.cmd(|count, _| Cmd::AddSub { add: c == 'a', count }),

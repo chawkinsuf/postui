@@ -393,10 +393,10 @@ fn agrees(a: &Actual, e: &Expect) -> bool {
 fn diff(case: &Case, buf: Buf, input: &[String], e: &Expect, a: &Actual) -> String {
     let said = if case.errmsg.is_empty() { String::new() } else { format!("\n    vim said {:?}", case.errmsg) };
     format!(
-        "{} [{}] keys {:?}\n    input  {:?} @{:?}\n    vim    {:?} @{:?} {} visual {:?} reg {:?}/{}\n    engine {:?} @{:?} {} visual {:?} reg {:?}/{}{said}",
+        "{} [{}] keys {:?}\n    input  {:?} @{:?}\n    vim    {:?} @{:?} {} visual {:?} reg {:?}/{} top {:?}\n    engine {:?} @{:?} {} visual {:?} reg {:?}/{} top {:?}{said}",
         case.id, buf_name(buf), case.keys, input, case.cursor,
-        e.lines.as_ref().expect("resolved"), e.cursor, e.mode, e.visual, e.reg, e.regtype,
-        a.lines, a.cursor, a.mode, a.visual, a.reg, a.regtype,
+        e.lines.as_ref().expect("resolved"), e.cursor, e.mode, e.visual, e.reg, e.regtype, e.top,
+        a.lines, a.cursor, a.mode, a.visual, a.reg, a.regtype, a.top,
     )
 }
 
