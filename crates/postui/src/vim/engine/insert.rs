@@ -361,7 +361,9 @@ impl Engine {
             // `backspace=eol`: join with the line above (no space).
             let prev = buf.line_len(caret.row - 1);
             let to = Pos::new(caret.row - 1, prev);
-            Ed { buf: &mut *buf, hist: &mut st.history }.splice(to, caret, "");
+            // `ins_bs()` and `do_join()` save both lines (`u_save`), so
+            // `u` finds the saved caret in a block of two, not one.
+            Ed { buf: &mut *buf, hist: &mut st.history }.splice_lines_joined(to, caret);
             if caret.row == start.row {
                 self.session().start = to;
             }
@@ -523,6 +525,29 @@ impl Engine {
         self.insert = None;
     }
 
+    /// Vim's `ins_esc()` for a counted insert (`3iX<Esc>`, `3o…`): what was
+    /// typed goes in `count - 1` more times, and each `o`/`O` repeat starts
+    /// on a new line (`start_redo_ins()` stuffs a line break first). A
+    /// session a cursor key split no longer has its count: its record
+    /// restarted as `1i` (Vim's `arrow_used`). `.` keeps the keys typed
+    /// once, with the count (Vim's `block_redo`).
+    fn repeat_insert<B: TextBuf>(&mut self, buf: &mut B, st: &mut BufState) {
+        let Some(s) = &self.insert else { return };
+        let Cmd::Insert { how, count } = s.origin else { return };
+        if count < 2 {
+            return;
+        }
+        let typed = s.typed.clone();
+        let open = B::MULTILINE && matches!(how, InsertHow::OpenBelow | InsertHow::OpenAbove);
+        for _ in 1..count {
+            if open {
+                self.insert_input(InsertKey::Enter, buf, st);
+            }
+            self.replay_insert(typed.clone(), buf, st);
+        }
+        self.session().typed = typed;
+    }
+
     /// Leaves Insert: `Esc` (`step_back`), or `leave`. An indent
     /// `autoindent` added that nothing followed is removed, the session's
     /// undo step closes, and the caret steps back unless at column 0.
@@ -532,8 +557,14 @@ impl Engine {
     /// each key), and `w_set_curswant` is set again only when
     /// `stop_insert()` left the caret's column where it was. When removing
     /// the autoindent moved it, the wanted column stays after the indent
-    /// (`o<Esc>k` aims for the indent's width).
+    /// (`o<Esc>k` aims for the indent's width). Esc repeats a counted insert
+    /// first (`repeat_insert`).
     pub(super) fn end_insert<B: TextBuf>(&mut self, buf: &mut B, st: &mut BufState, step_back: bool) {
+        // Esc first repeats a counted insert (Vim's `ins_esc()`); `leave`
+        // never does (Vim's `:stopinsert` drops the count).
+        if step_back {
+            self.repeat_insert(buf, st);
+        }
         let mut caret = buf.cursor();
         let temp = caret.col;
         let insert_want = Want::Col(vcol_of(&buf.line(caret.row), caret.col));

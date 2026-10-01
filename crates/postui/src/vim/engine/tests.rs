@@ -1264,3 +1264,37 @@ fn shift_operators_echo_and_indent_a_field() {
     f.keys("<<");
     assert_eq!((f.text(), f.col()), ("ab", 0));
 }
+
+/// Deviation 8: a counted insert repeats on Esc only; `leave` ends it
+/// once, as Vim's `:stopinsert` drops the count.
+#[test]
+fn a_counted_insert_repeats_on_esc_only() {
+    let mut f = Field::new("ab", 0);
+    f.keys("3iX");
+    f.key(esc());
+    assert_eq!(f.text(), "XXXab");
+    let mut f = Field::new("ab", 0);
+    f.keys("3iX");
+    f.engine.leave(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
+    assert_eq!(f.text(), "Xab");
+}
+
+/// Review focus 1: the largest count repeats an insert quickly, as one undo
+/// step. The limit is loose on purpose (a debug build under parallel
+/// tests); it catches an accidental quadratic.
+#[test]
+fn a_huge_counted_insert_finishes() {
+    let started = std::time::Instant::now();
+    let mut b = Body::new("{\n  \"a\": 1\n}", 1, 2);
+    b.keys("9999iX");
+    b.key(esc());
+    assert_eq!(b.text().matches('X').count(), 9999);
+    b.keys("u");
+    assert_eq!(b.text(), "{\n  \"a\": 1\n}", "one undo step");
+    let mut f = Field::new("ab", 0);
+    f.keys("999aYZ");
+    f.key(esc());
+    assert_eq!(f.text().chars().count(), 2 + 999 * 2);
+    let ms = started.elapsed().as_millis();
+    assert!(ms < 5000, "took {ms} ms");
+}

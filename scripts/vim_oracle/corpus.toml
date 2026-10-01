@@ -766,6 +766,34 @@ keys = ["$j<C-a>k", "$j<C-x>k", "j<C-a>k", "$j<C-a>u", "$jj<C-a>k"]
 on = ["short_last", "json_pretty", "blank_edges", "paras"]
 at = ["bol", "eol"]
 
+# --- plan 3b: counted inserts (Task 7) ----------------------------------------
+
+[[group]]
+id = "insert/count"
+tier = 2
+keys = ["3iX<Esc>", "3aXY<Esc>", "3IX<Esc>", "3AX<Esc>", "3oX<Esc>", "3OX<Esc>", "3o<Esc>", "2oX<CR>Y<Esc>",
+        "3ia<CR>b<Esc>", "3iab<BS><Esc>", "3iab<Left>c<Esc>", "3iab<Left><Esc>", "3iX<C-w>Y<Esc>",
+        "3a<Tab>x<Esc>", "2o<Tab>x<Esc>", "3i<Esc>", "3iX<Del><Esc>", "3iX<C-u><Esc>", "3cwX<Esc>", "3sX<Esc>",
+        "2SX<Esc>", "10aX<Esc>", "2i<CR><Esc>", "3A <Esc>"]
+on = ["words", "json_pretty", "blank_edges", "unicode", "empty", "tabs"]
+at = ["bol", "fnb", "eol"]
+
+[[group]]
+id = "insert/count-undo"
+tier = 2
+keys = ["3iX<Esc>", "3oX<Esc>", "3AX<CR>Y<Esc>", "2OX<Esc>", "3a<C-w><Esc>"]
+suffixes = ["u", "u<C-r>", "uu"]
+on = ["words", "json_pretty", "blank_edges"]
+at = ["bol", "eol"]
+
+[[group]]
+id = "dot/count-insert"
+tier = 2
+keys = ["3iX<Esc>.", "iX<Esc>3.", "3iX<Esc>2.", "3oX<Esc>.", "AX<Esc>j3.", "3aX<Esc>j.", "3OX<Esc>2.",
+        "3cwX<Esc>w.", "ciwX<Esc>w3."]
+on = ["words", "json_pretty", "blank_edges"]
+at = ["bol", "mid", "eol"]
+
 # --- fuzz atoms (generate.py --fuzz); tier-1 keys only -----------------------
 
 [fuzz]

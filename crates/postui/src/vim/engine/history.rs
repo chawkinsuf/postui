@@ -13,6 +13,9 @@ pub(crate) struct Edit {
     pub at: Pos,
     pub removed: String,
     pub inserted: String,
+    /// A line join that saved both lines (`Ed::splice_lines_joined`): its
+    /// undo block is always the charwise one.
+    pub joined: bool,
 }
 
 /// One undo step: the edits of one Normal command, or of an Insert session
@@ -152,16 +155,17 @@ struct Block {
 }
 
 /// `now` is the text the buffer holds at `at`, `then` what replaces it.
-fn block<B: TextBuf>(buf: &B, at: Pos, now: &str, then: &str) -> Block {
+fn block<B: TextBuf>(buf: &B, at: Pos, now: &str, then: &str, join: bool) -> Block {
     let nl = |s: &str| s.matches('\n').count();
     let whole = |s: &str| s.is_empty() || s.ends_with('\n');
     let joined = |s: &str| s.is_empty() || s.starts_with('\n');
-    if at.col == 0 && whole(now) && whole(then) {
+    // A join that saved both lines skips the whole-line rules.
+    if !join && at.col == 0 && whole(now) && whole(then) {
         // Whole lines taken or given (`dd` in the middle, `p` linewise).
         let lines = then.split_terminator('\n').map(str::to_string).collect();
         return Block { first: at.row, now: nl(now), lines };
     }
-    if at.col == buf.line_len(at.row) && joined(now) && joined(then) {
+    if !join && at.col == buf.line_len(at.row) && joined(now) && joined(then) {
         // Whole lines after `at`'s row, the break before them included
         // (`dd` on the last line, `o`).
         let lines = then.split('\n').skip(1).map(str::to_string).collect();
@@ -193,7 +197,7 @@ fn undo_redo<B: TextBuf>(buf: &mut B, step: &Step, undo: bool) -> Pos {
     let mut row = None;
     for (n, e) in order.iter().enumerate() {
         let (now, then) = if undo { (&e.inserted, &e.removed) } else { (&e.removed, &e.inserted) };
-        let b = block(buf, e.at, now, then);
+        let b = block(buf, e.at, now, then, e.joined);
         if b.first < newlnum {
             if saved.row + 1 >= b.first && saved.row <= b.first + b.lines.len() {
                 row = Some(saved.row);
@@ -233,6 +237,19 @@ pub(crate) struct Ed<'x, B: TextBuf> {
 
 impl<B: TextBuf> Ed<'_, B> {
     pub(crate) fn splice(&mut self, start: Pos, end: Pos, text: &str) {
+        self.splice_as(start, end, text, false);
+    }
+
+    /// Joins the line `end` is on to the one `start` is on, deleting the
+    /// break between them (`start` is the end of the upper line, `end` the
+    /// start of the lower). Vim's `do_join()` and `ins_bs()` save both
+    /// lines, so the undo block is the two lines, even when they are empty
+    /// and the edit looks like deleting a whole line.
+    pub(crate) fn splice_lines_joined(&mut self, start: Pos, end: Pos) {
+        self.splice_as(start, end, "", true);
+    }
+
+    fn splice_as(&mut self, start: Pos, end: Pos, text: &str, joined: bool) {
         let removed = self.buf.slice(start, end);
         if removed == text {
             return;
@@ -240,7 +257,7 @@ impl<B: TextBuf> Ed<'_, B> {
         self.hist.begin(self.buf.cursor());
         self.buf.splice(start, end, text);
         self.hist.emptied = false;
-        self.hist.record(Edit { at: start, removed, inserted: text.to_string() });
+        self.hist.record(Edit { at: start, removed, inserted: text.to_string(), joined });
     }
 
     /// Vim's `u_save_cursor()` with no change after it: `u` then undoes a
@@ -258,7 +275,7 @@ impl<B: TextBuf> Ed<'_, B> {
     pub(crate) fn save_rows(&mut self, caret: Pos, first: usize, last: usize) {
         self.hist.begin(caret);
         let text = self.buf.slice(Pos::new(first, 0), Pos::new(last, self.buf.line_len(last)));
-        self.hist.record(Edit { at: Pos::new(first, 0), removed: text.clone(), inserted: text });
+        self.hist.record(Edit { at: Pos::new(first, 0), removed: text.clone(), inserted: text, joined: false });
     }
 
     /// Vim's `u_save_cursor()`: [`Ed::save_rows`] for the caret's line (`rX`
