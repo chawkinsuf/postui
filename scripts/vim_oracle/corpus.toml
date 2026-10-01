@@ -923,10 +923,12 @@ on = ["words", "json_pretty"]
 at = ["bol", "eol"]
 reg = { text = "a\u0008b\u0017c\u0015d", type = "v" }
 
-# --- fuzz atoms (generate.py --fuzz); tier-1 keys only -----------------------
+# --- fuzz atoms (generate.py --fuzz); tier 1 and the tier-2 first wave ------
 
 [fuzz]
 atoms = ["w", "b", "e", "W", "x", "X", "dw", "db", "de", "j", "k", "h", "l", "$", "0", "^",
          "p", "P", "u", "<C-r>", "ciwX<Esc>", "cwY<Esc>", "3l", "yy", "yiw", "dd", "J",
          "AY<Esc>", "o<Esc>", "Ox<Esc>", "v$d", "Vjd", "vly", "di{", "da[", "ci\"X<Esc>",
-         "%", "f,", ";", ",", "gg", "G", "rX", "x.", "D", "C<Esc>"]
+         "%", "f,", ";", ",", "gg", "G", "rX", "x.", "D", "C<Esc>",
+         "ge", "gE", "}", "{", "+", "-", "~", "g~iw", "gUw", "guu", ">>", "<<", ">j", "<C-a>", "<C-x>",
+         "3iX<Esc>", "2oY<Esc>", "gv<Esc>", "giZ<Esc>", "\"0p", "dip", "vapd", "yyA<C-r>\"<Esc>", "3~"]

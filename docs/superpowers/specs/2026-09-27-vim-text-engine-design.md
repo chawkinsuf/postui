@@ -10,8 +10,10 @@ vim-mode rounds but not shown to be yours, so treat it as mine).
 
 Implementation: plan 3a (buffers, the conformance harness, every tier-1
 key, the session edges and the API) is `docs/superpowers/plans/2026-09-29-vim-engine-3a.md`,
-on branch `vim-engine-3a`. Plans 3b (tier-2 first wave) and 3c (second
-wave) follow. The plan lists its deviations from this text.
+on branch `vim-engine-3a`.
+Plan 3b (the tier-2 first wave) is `docs/superpowers/plans/2026-09-30-vim-engine-3b.md`,
+on branch `vim-engine-3b`; plan 3c (the second wave) follows. Each plan
+lists its deviations from this text.
 
 Companion documents: the key list
 `docs/superpowers/specs/2026-09-27-vim-target-keys.md` (§1–§5 are this
@@ -280,7 +282,11 @@ forward on the line when the caret is not on a bracket, and crosses lines.
   `autoindent`. This is the command that matters most for JSON, so the
   corpus runs every bracket object on both `json_flat` and `json_pretty` at
   every nesting depth.
-- **`ip` `ap`** (tier 2): paragraphs separated by blank lines.
+- **`ip` `ap`** (tier 2): paragraphs separated by blank lines, as Vim
+  defines them (`you`, 2026-09-30, accepting my recommendation). `ip` and
+  `ap` treat a blank-only line as blank. `{` and `}` stop only at an empty
+  line, a form feed, or an nroff macro line (`.PP`, `.SH`: Vim's default
+  `paragraphs` and `sections`, pinned in `SETTINGS_LINE`).
 
 ### 3.8 Insert and Replace sessions
 
@@ -668,6 +674,11 @@ Beyond the key list, the Normal motions `+`, `-` and `Enter` in the body
 (tier 2, `mine`) are cheap and complete the line motions. `Space` and `BS`
 follow `whichwrap=b,s`.
 
+The key list marks `>> << > <`, `{ }` and `ip ap` "body". They act as
+Vim in one-line fields too (`you`, 2026-09-30, accepting my
+recommendation): `>>` indents the field, `}` goes to its end, and `dip`
+empties it, as 3a's Visual `>` and `<` already did.
+
 ## 6. Conformance harness
 
 ### 6.1 Files
@@ -762,7 +773,7 @@ case, `oracle.vim` does the following:
   optional register preset with `setreg('"', text, type)`.
 - `cursor(row, 1)`, then `setcursorcharpos(row, col)`.
 - `feedkeys(keys . "\<Cmd>call Capture()\<CR>", 'ntx')`.
-- `bwipeout!`.
+- `setline(1, 'wiped')`, then `bwipeout!` (trap 11).
 
 `Capture()` records everything from inside the final mode: `mode(1)`,
 `getline(1, '$')`, the cursor (`line('.')`, `charcol('.')`),
@@ -809,6 +820,14 @@ Traps (from the spike, plus the ones this design adds):
     generator still treats a missing capture as a harness error, never
     as a result. The search cases also pin `nohlsearch noincsearch` so
     that no redraw state leaks between cases.
+11. **An empty buffer is reused, not wiped** (found 2026-09-30 by the 3b
+    fuzz on Vim 9.1.0697). `bwipeout!` of the only buffer opens an empty
+    one in its place, and Vim reuses the current buffer for that when it
+    is empty, so a case that ends with the text empty left the next case
+    its Visual area and marks: `gv` there reselected the previous case's
+    area. The runner fills the buffer before wiping it. With the
+    fix, all 53,109 corpus cases regenerated unchanged; only two fuzz
+    cases (seed 31) had read a stale area.
 
 The golden header records `vim_version`, `v:versionlong`, the patch list,
 `SETTINGS_LINE`, `winheight`, and the corpus file's SHA-256. The generator

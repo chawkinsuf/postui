@@ -60,6 +60,10 @@ for s:c in s:cases
     execute "normal! \<Esc>"
   endif
   call add(s:out, json_encode({'id': s:c.id, 'capture': g:oracle_cap, 'errmsg': v:errmsg}))
+  " Wiping the only buffer opens an empty one in its place, and Vim reuses
+  " the current buffer for that when it is empty: a case that ends with the
+  " text empty would hand the next case its Visual area and marks (trap 11).
+  call setline(1, 'wiped')
   bwipeout!
 endfor
 call writefile(s:out, g:oracle_out)

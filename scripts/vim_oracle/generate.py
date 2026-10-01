@@ -243,11 +243,16 @@ def fuzz_keys(atoms, rng):
     """One to six atoms and a closing <Esc>. An atom that starts with `O`
     never follows one that ends with <Esc>: Vim reads `<Esc>O` plus the next
     key as a keypad termcode (`<Esc>Ox`), so the case would test the
-    terminal, not the editor. Such an atom is drawn again."""
+    terminal, not the editor. Such an atom is drawn again. So is one whose
+    join would read differently from its atoms: `<<`, `yy`, `k`, `e`, `>j`
+    spell the key name `<yyke>`."""
+    def joins(keys, atom):
+        return TOKEN.findall(keys + atom) == TOKEN.findall(keys) + TOKEN.findall(atom)
+
     keys = ""
     for _ in range(rng.randint(1, 6)):
         atom = rng.choice(atoms)
-        while keys.endswith("<Esc>") and atom.startswith("O"):
+        while (keys.endswith("<Esc>") and atom.startswith("O")) or not joins(keys, atom):
             atom = rng.choice(atoms)
         keys += atom
     return keys + "<Esc>"

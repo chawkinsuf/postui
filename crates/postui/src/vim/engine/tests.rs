@@ -1479,3 +1479,56 @@ fn a_half_typed_ctrl_r_is_dropped_at_every_edge() {
     f.engine.leave(Target { buf: &mut OneLineBuf::new(&mut other), state: &mut os });
     assert!(!f.engine.pending());
 }
+
+/// A key spelled as one char, for the sweeps below: `\u{1}` is ctrl+a,
+/// `\u{18}` ctrl+x, `\u{12}` ctrl+r, `\u{1b}` Esc, `\r` Enter.
+fn key_of(c: char) -> KeyEvent {
+    match c {
+        '\u{1}' => ctrl('a'),
+        '\u{18}' => ctrl('x'),
+        '\u{12}' => ctrl('r'),
+        '\u{1b}' => esc(),
+        '\r' => code(KeyCode::Enter),
+        c => k(c),
+    }
+}
+
+/// Review focus 5: edtui holds an empty body as zero rows; every
+/// first-wave key must work on it and edtui must still render it.
+#[test]
+fn every_first_wave_key_works_on_an_empty_body() {
+    use edtui::EditorView;
+    use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
+    for keys in ["~", "3~", "g~~", "gUw", "guiw", ">>", "<<", ">j", "}", "{", "d}", "ge", "dge", "+", "-", "\r",
+                 "dip", "dap", "vip", "yap", "vipd", "\u{1}", "\u{18}", "3iX\u{1b}", "3o\u{1b}", "3OY\u{1b}",
+                 "gv", "vl\u{1b}gv", "giX\u{1b}", "aX\u{1b}giY\u{1b}", "A\u{12}\"\u{1b}", "yyA\u{12}0\u{1b}",
+                 "\"0p", "yy\"0P", "vp", "\"0yiw", "x.", "3iX\u{1b}u"] {
+        let mut b = Body::new("", 0, 0);
+        for c in keys.chars() {
+            b.key(key_of(c));
+        }
+        let lines = BodyBuf::new(&mut b.ed, &mut b.visual).line_count();
+        assert!(b.caret().row < lines, "{keys:?} left the caret off the text");
+        let area = Rect::new(0, 0, 20, 5);
+        EditorView::new(&mut b.ed).render(area, &mut Buffer::empty(area));
+    }
+}
+
+/// Review focus 1: the largest count on every first-wave command finishes
+/// quickly and never panics. The limit is loose on purpose (a debug build
+/// under parallel tests); it catches an accidental quadratic.
+#[test]
+fn first_wave_commands_survive_the_largest_count() {
+    let rows: Vec<String> = (0..200).map(|i| format!("  \"k{i}\": [{i}, 0x1f],")).collect();
+    let text = format!("{{\n{}\n}}", rows.join("\n"));
+    for keys in ["9999~", "9999g~~", "9999>>", "9999<<", "9999}", "9999{", "9999ge", "9999+", "9999-",
+                 "9999\u{1}", "9999\u{18}", "d9999ip", "v9999ap", "9999gv", "9999giX\u{1b}", "x9999."] {
+        let mut b = Body::new(&text, 100, 4);
+        let started = std::time::Instant::now();
+        for c in keys.chars() {
+            b.key(key_of(c));
+        }
+        let ms = started.elapsed().as_millis();
+        assert!(ms < 2000, "{keys:?} took {ms} ms");
+    }
+}
