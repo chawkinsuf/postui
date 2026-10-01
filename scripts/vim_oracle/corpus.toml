@@ -1061,6 +1061,21 @@ keys = ["a<C-o>jX<Esc>", "A<C-o>jX<Esc>", "a<C-o>j<C-o>kX<Esc>", "A<C-o>j<C-o>kX
 on = ["json_pretty", "tabs", "short_last", "blank_edges", "indent", "words"]
 at = ["bol", "fnb", "eol"]
 
+# --- plan 3c: the window model (Task 5) -------------------------------------------
+
+# `top` (Vim's line('w0')) after plain motions and edits on a long text:
+# update_topline's halfway/bottom/top rules with scrolloff=0.
+[[group]]
+id = "view/topline"
+tier = 2
+keys = ["G", "Ggg", "50G", "24j", "30G", "23j", "22j", "G30k", "G50k", "G57k", "G66k", "Go<Esc>", "dG", "dGu", "yyGp",
+        "GVkkd", "40G", "25G", "26G", "47G", "48G", "49G", "99j", "99k", "50jk", "yy50jp", "yy50jP", "50jo<Esc>", "50jO<Esc>",
+        "50jdd", "50jddu", "50jVjjd", "50j}", "50j{", "30jiX<Esc>", "30jA<CR>Y<Esc>", "k", "23k", "22k", "j", "gg", "$",
+        "G$", "Gkkk", "dj", "dk", "v30jd", "v30jy", "77Gjjjjjjjjjjjjjjjjjjjjjjjj", "ggjjjjjjjjjjjjjjjjjjjjjjjjjj", "50Gdjjj",
+        "GddGdd", "GdGdG", "ggVGd", "ggVGdu", "GOX<Esc>", "G2OX<Esc>", "60GA<CR><CR><CR><Esc>", "40Gdd.", "40Gddu<C-r>"]
+on = ["long", "lines25"]
+at = ["bol", "mid", "eol"]
+
 # --- fuzz atoms (generate.py --fuzz); tier 1 and the tier-2 first wave ------
 
 [fuzz]

@@ -1918,3 +1918,46 @@ fn a_click_ending_visual_inside_ctrl_o_resumes_insert() {
     f.keys("Z");
     assert_eq!(f.text(), "XabZc", "typing lands at the clicked caret");
 }
+
+/// Plan 3c Task 5: the body's `top` follows Vim's `update_topline` for the
+/// viewport the app passes; a one-line field and a body with no viewport
+/// never scroll.
+#[test]
+fn the_body_top_follows_the_caret() {
+    let text: Vec<String> = (1..=100).map(|i| format!("line {i}")).collect();
+    let mut b = Body::new(&text.join("\n"), 0, 0);
+    b.keys("G");
+    assert_eq!(b.ed.viewport_offset().1, 80, "a 20-row view shows 81..100");
+    b.keys("50G");
+    assert_eq!(b.ed.viewport_offset().1, 40, "centred: 50 - 20/2");
+    b.keys("gg");
+    assert_eq!(b.ed.viewport_offset().1, 0);
+    b.keys("21j");
+    assert_eq!(b.ed.viewport_offset().1, 2, "one row below the window scrolls two");
+    let mut f = Field::new("abc", 0);
+    f.keys("$");
+    assert_eq!(f.input.cursor(), 2);
+}
+
+/// Review focus 2: a tiny or missing viewport, and a text that shrank
+/// under `top`, never panic and keep the caret visible.
+#[test]
+fn the_view_survives_odd_viewports_and_outside_changes() {
+    let text: Vec<String> = (1..=50).map(|i| format!("l{i}")).collect();
+    for rows in [Some(0), Some(1), Some(2), None] {
+        let mut b = Body::new(&text.join("\n"), 0, 0);
+        let ctx = ViewCtx { viewport_rows: rows };
+        for key in [k('G'), k('g'), k('g'), k('2'), k('5'), k('G'), k('j'), k('k')] {
+            b.engine.handle(key, Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state }, &ctx);
+        }
+        let top = b.ed.viewport_offset().1;
+        assert!(top <= b.caret().row, "{rows:?}: top {top} past the caret");
+    }
+    let mut b = Body::new(&text.join("\n"), 49, 0);
+    b.keys("G");
+    assert!(b.ed.viewport_offset().1 > 0);
+    b.ed.lines = Lines::from("a\nb");
+    b.ed.cursor = edtui::Index2::new(1, 0);
+    b.keys("k");
+    assert_eq!(b.ed.viewport_offset().1, 0, "clamped into the shrunk text");
+}

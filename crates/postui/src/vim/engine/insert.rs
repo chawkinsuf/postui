@@ -17,7 +17,7 @@ use super::motion::{Want, col_for, vcol_of};
 use super::op::{RKind, Range, yank_of};
 use super::register::RegKind;
 use super::settings::TABSTOP;
-use super::{BufState, Engine, Mode, Note, Outcome, Restart, Target, first_non_blank};
+use super::{BufState, Engine, Mode, Note, Outcome, Restart, Target, ViewCtx, first_non_blank};
 use crate::components::line_input::flatten_paste;
 use ratatui::crossterm::event::KeyEvent;
 
@@ -1105,7 +1105,8 @@ impl Engine {
     /// body takes CRLF and CR as line breaks and keeps tabs (Vim pastes
     /// with `paste` set: no autoindent, no expandtab). In Normal or Visual
     /// it is declined; piece 4 routes it through `external_edit`
-    /// (deviation 13).
+    /// (deviation 13). It takes no view: `top` is brought up to date by
+    /// the next key.
     pub fn paste<B: TextBuf>(&mut self, text: &str, t: Target<'_, B>) -> Outcome {
         let Target { buf, state } = t;
         if matches!(self.mode, Mode::InsertNormal { .. }) && !self.pending() {
@@ -1120,7 +1121,7 @@ impl Engine {
         if let Some(key) = InsertKey::Paste(text.to_string()).for_buffer::<B>() {
             self.insert_input(key, buf, state);
         }
-        let changed = self.finish_key(before, true, buf, state);
+        let changed = self.finish_key(before, true, buf, state, &ViewCtx::default());
         Outcome::Consumed { changed, note: None, request: None }
     }
 }

@@ -28,6 +28,7 @@ mod register;
 pub mod settings;
 #[cfg(test)]
 mod tests;
+mod view;
 mod visual;
 
 pub use buf::{BodyBuf, BodyVisual, GuiSel, OneLineBuf, Paint, Pos, TextBuf};
@@ -570,6 +571,10 @@ impl Engine {
     pub fn handle<B: TextBuf>(&mut self, ev: KeyEvent, t: Target<'_, B>, ctx: &ViewCtx) -> Outcome {
         let Target { buf, state } = t;
         self.clamp(buf);
+        // Vim's main loop validates `w_topline` before every command.
+        if let Some(view) = view::View::of::<B>(ctx) {
+            view.update_topline(buf);
+        }
         let before = buf.cursor();
         let was_insert = self.in_insert();
         if state.cached_tab_rule(before).is_none() {
@@ -609,7 +614,7 @@ impl Engine {
         {
             self.resume_after_ctrl_o(buf, state);
         }
-        let changed = self.finish_key(before, was_insert, buf, state);
+        let changed = self.finish_key(before, was_insert, buf, state, ctx);
         match out {
             Outcome::Consumed { note, request, .. } => Outcome::Consumed { changed, note, request },
             declined => declined,
@@ -620,11 +625,23 @@ impl Engine {
     /// caret is clamped for the mode, a text change is noted, and the
     /// buffer is painted. `w_virtcol` is recomputed where the caret moved,
     /// the text changed, or Insert started or ended (see
-    /// `BufState::virtcol`). Returns whether the text changed.
-    fn finish_key<B: TextBuf>(&mut self, before: Pos, was_insert: bool, buf: &mut B, state: &mut BufState) -> bool {
+    /// `BufState::virtcol`), and `top` follows the caret. Returns whether
+    /// the text changed.
+    fn finish_key<B: TextBuf>(
+        &mut self,
+        before: Pos,
+        was_insert: bool,
+        buf: &mut B,
+        state: &mut BufState,
+        ctx: &ViewCtx,
+    ) -> bool {
         let changed = state.history.take_changed();
         state.edited |= changed;
         self.clamp(buf);
+        // And before the screen is redrawn: the caret after the key is shown.
+        if let Some(view) = view::View::of::<B>(ctx) {
+            view.update_topline(buf);
+        }
         let after = buf.cursor();
         if changed || after != before || was_insert != self.in_insert() {
             state.virtcol = Some((after, self.tab_end(after)));
