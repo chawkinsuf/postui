@@ -398,6 +398,9 @@ impl Engine {
             ed.splice(at, Pos::new(at.row, end), &" ".repeat(width));
             at.col += width;
         }
+        // The `R` session ends in `ins_esc()`, which sets `'^` before the
+        // step back.
+        st.history.marks.insert = Some(at);
         self.land_caret(Pos::new(at.row, at.col - 1), buf, st);
     }
 

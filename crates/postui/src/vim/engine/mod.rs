@@ -763,6 +763,8 @@ pub struct Splicer<'x, B: TextBuf> {
 
 impl<B: TextBuf> Splicer<'_, B> {
     /// Replaces `[start, end)` with `text` (see [`TextBuf::splice`]).
+    /// The marks move by the charwise rule (`MarkMove::Chars`),
+    /// which has no Vim counterpart here; harmless, since `gi` clamps.
     pub fn splice(&mut self, start: Pos, end: Pos, text: &str) {
         self.ed.splice(start, end, text);
     }
