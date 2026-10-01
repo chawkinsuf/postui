@@ -66,14 +66,22 @@ impl Engine {
     /// caret at `caret` (not while `.` replays a Visual command, which never
     /// saves it: Vim's `redo_VIsual_busy`), and the mode becomes Normal.
     pub(super) fn end_visual<B: TextBuf>(&mut self, caret: Pos, buf: &B, st: &mut BufState) {
-        if let (Mode::Visual(shape), Some(anchor)) = (self.mode, self.visual)
-            && !self.replaying_visual
+        if !self.replaying_visual
+            && let Some(area) = self.area_at(caret, buf, st)
         {
-            let want = self.want_at(buf, st, caret);
-            st.history.marks.visual = Some(LastVisual { anchor, caret, shape, want });
+            st.history.marks.visual = Some(area);
         }
         self.mode = Mode::Normal;
         self.visual = None;
+    }
+
+    /// The current Visual area with the caret at `caret`, as `gv` remembers
+    /// it (Vim's `b_visual`); `None` outside Visual.
+    fn area_at<B: TextBuf>(&self, caret: Pos, buf: &B, st: &BufState) -> Option<LastVisual> {
+        match (self.mode, self.visual) {
+            (Mode::Visual(shape), Some(anchor)) => Some(LastVisual { anchor, caret, shape, want: self.want_at(buf, st, caret) }),
+            _ => None,
+        }
     }
 
     /// Leaves Visual with no operator: the caret steps off a line's end.
@@ -93,10 +101,8 @@ impl Engine {
         if last.anchor.row >= buf.line_count() {
             return;
         }
-        if let (Mode::Visual(shape), Some(anchor)) = (self.mode, self.visual) {
-            let caret = buf.cursor();
-            let want = self.want_at(buf, st, caret);
-            st.history.marks.visual = Some(LastVisual { anchor, caret, shape, want });
+        if let Some(area) = self.area_at(buf.cursor(), buf, st) {
+            st.history.marks.visual = Some(area);
         }
         self.mode = Mode::Visual(last.shape);
         let anchor = self.clamped(buf, last.anchor);
@@ -304,10 +310,12 @@ impl Engine {
         let empty = st.history.emptied(&*buf);
         let n = count.max(1);
         let mut ed = Ed { buf: &mut *buf, hist: &mut st.history };
-        let mut caret = if text.text.is_empty() && r.kind == RKind::Char {
+        // Each way of putting gives the caret and what was put, Vim's `'[`
+        // and `']` marks (`do_put()`), which `gv` selects afterwards.
+        let (mut caret, put_area) = if text.text.is_empty() && r.kind == RKind::Char {
             // An empty register (Vim's `setreg('"', '')`: one empty
             // charwise line) puts nothing between chars; the delete stays.
-            ed.buf.cursor()
+            (ed.buf.cursor(), None)
         } else if r.kind == RKind::Line && !B::MULTILINE {
             // A one-line field: the field's put rules give the text (a
             // linewise register loses its line break), and the caret goes to
@@ -315,31 +323,37 @@ impl Engine {
             ed.buf.set_cursor(Pos::new(0, 0));
             put(&mut ed, &text, true, n);
             ed.put_a_line();
-            Pos::new(0, first_non_blank(&ed.buf.line(0)))
+            (Pos::new(0, first_non_blank(&ed.buf.line(0))), Some(lines_put(ed.buf, 0, 1)))
         } else if r.kind == RKind::Line {
             // Replacing lines: the register goes in as lines of its own.
             let body = match text.kind {
                 RegKind::Line => text.text.repeat(n),
                 RegKind::Char => format!("{}\n", text.text).repeat(n),
             };
-            put_lines(&mut ed, r.start.row, &body)
+            let caret = put_lines(&mut ed, r.start.row, &body);
+            (caret, Some(lines_put(ed.buf, caret.row, body.matches('\n').count())))
         } else {
             let at = r.start;
             let len = ed.buf.line_len(at.row);
             if text.kind == RegKind::Line && B::MULTILINE {
                 // Linewise text replacing chars splits the line around it.
-                ed.splice(at, at, &format!("\n{}", text.text.repeat(n)));
-                Pos::new(at.row + 1, first_non_blank(&ed.buf.line(at.row + 1)))
+                let body = text.text.repeat(n);
+                ed.splice(at, at, &format!("\n{body}"));
+                let caret = Pos::new(at.row + 1, first_non_blank(&ed.buf.line(at.row + 1)));
+                (caret, Some(lines_put(ed.buf, caret.row, body.matches('\n').count())))
             } else {
                 // The delete reached the line's end: put after its last char.
                 let forward = len > 0 && at.col >= len;
                 ed.buf.set_cursor(Pos::new(at.row, if forward { len - 1 } else { at.col.min(len) }));
-                put(&mut ed, &text, !forward, n)
+                let caret = put(&mut ed, &text, !forward, n);
+                // `do_put()` moves `'[` past the caret's char only when the
+                // register's first line is not empty (`yanklen`): text that
+                // starts with a line break leaves it on that char.
+                let stays = forward && text.text.starts_with('\n');
+                let area = ed.hist.last_put().map(|(start, end)| if stays { (Pos::new(start.row, start.col - 1), end) } else { (start, end) });
+                (caret, area)
             }
         };
-        // Vim's `nv_put()`: `gv` afterwards selects what was put (the `'[`
-        // `']` marks), keeping the Visual shape.
-        let put_area = if text.text.is_empty() { None } else { ed.hist.last_put() };
         let last = ed.buf.line_count() - 1;
         if empty && last > 0 && ed.buf.line_len(last) == 0 {
             let len = ed.buf.line_len(last - 1);
@@ -358,6 +372,14 @@ impl Engine {
         }
         Outcome::consumed()
     }
+}
+
+/// Vim's `'[` and `']` after `rows` whole lines were put from row `first`
+/// (`do_put()` with `MLINE`): column 0 of the first, the last char of the
+/// last (column 0 when it is empty).
+fn lines_put<B: TextBuf>(buf: &B, first: usize, rows: usize) -> (Pos, Pos) {
+    let last = first + rows.max(1) - 1;
+    (Pos::new(first, 0), Pos::new(last, buf.line_len(last).saturating_sub(1)))
 }
 
 /// Visual `r{c}` (Vim's `op_replace()`): every char of the range except

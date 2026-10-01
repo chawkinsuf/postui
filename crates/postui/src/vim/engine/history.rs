@@ -287,19 +287,14 @@ impl History {
     }
 
     /// What the open step's last splice put in, as Vim's `'[` and `']` marks
-    /// after a put: its first and last char. A leading line break (lines put
-    /// after the last line, or a line split) is not part of it; a trailing
-    /// one ends the last line.
+    /// after a charwise put: where the text starts, and the last char of its
+    /// last line (column 0 when that line is empty, as after a text ending
+    /// in a line break). A put of whole lines does not use this: its splice
+    /// can carry a line break that is not part of the text.
     pub(crate) fn last_put(&self) -> Option<(Pos, Pos)> {
         let e = self.open.as_ref()?.edits.last()?;
-        let (mut start, mut text) = (e.at, e.inserted.as_str());
-        if let Some(rest) = text.strip_prefix('\n') {
-            start = Pos::new(start.row + 1, 0);
-            text = rest;
-        }
-        let text = text.strip_suffix('\n').unwrap_or(text);
-        let end = end_of(start, text);
-        Some((start, Pos::new(end.row, end.col.saturating_sub(1))))
+        let end = end_of(e.at, &e.inserted);
+        Some((e.at, Pos::new(end.row, end.col.saturating_sub(1))))
     }
 }
 

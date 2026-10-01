@@ -826,7 +826,8 @@ keys = ["vl<Esc>0gv", "gv", "vjy0gv", "Vj>gv", "Vj>gv>", "vl<Esc>jvgv", "vl<Esc>
         "vl<Esc>dgv", "viw<Esc>ugv", "vlxugv", "vlxu<C-r>gv", "vlxjvl<Esc>ugv", "vl<Esc>2gv", "vl<Esc>jvkdgv",
         "vj<Esc>gvo", "vj<Esc>gvod", "Vj<Esc>gvv", "vjdgvd", "vj>gv", "vjJgv", "VjJgv", "vjrXgv", "vjcX<Esc>gv",
         "ViwUgv", "viwgv", "vl<Esc>jgv<Esc>gv", "vipgv", "vl<Esc>0i<CR><Esc>gv", "vl<Esc>jI<BS><Esc>gv",
-        "vl<Esc>jdd.gv", "vl<Esc>ggdGgv", "vl<Esc>kVdgv", "vl<Esc>A<Del><Esc>gv", "vl~j.0gv"]
+        "vl<Esc>jdd.gv", "vl<Esc>ggdGgv", "vl<Esc>kVdgv", "vl<Esc>A<Del><Esc>gv", "vl~j.0gv",
+        "v$y0jviwpgv", "v$yjVpgv"]
 on = ["json_pretty", "words", "short_last"]
 at = ["bol", "mid", "eol"]
 
@@ -845,6 +846,34 @@ keys = ["vl<Esc>Pgv", "vl<Esc>pgv", "vlpgv", "Vpgv", "Vjpgv", "ggVGpgv"]
 on = ["json_pretty", "words"]
 at = ["bol", "mid", "eol"]
 reg = { text = "  q\n", type = "V" }
+
+# The put area is Vim's '[ and '], which follow the register's kind: a
+# charwise register ending in a line break ends at the next line's start, one
+# starting with a break begins on the put's own row, and a linewise empty
+# line is one new line.
+[[group]]
+id = "visual/gv-put-char-nl-end"
+tier = 2
+keys = ["vlpgv", "viwpgv", "Vpgv", "Vjpgv", "vl<Esc>$pgv"]
+on = ["json_pretty", "words", "short_last"]
+at = ["bol", "eol"]
+reg = { text = "X\n", type = "v" }
+
+[[group]]
+id = "visual/gv-put-char-nl-start"
+tier = 2
+keys = ["vlpgv", "viwpgv", "Vpgv", "Vjpgv", "vl<Esc>$pgv"]
+on = ["json_pretty", "words", "short_last"]
+at = ["bol", "eol"]
+reg = { text = "\nX", type = "v" }
+
+[[group]]
+id = "visual/gv-put-blank-line"
+tier = 2
+keys = ["vlpgv", "viwpgv", "Vpgv", "Vjpgv", "vl<Esc>$pgv"]
+on = ["json_pretty", "words", "short_last"]
+at = ["bol", "eol"]
+reg = { text = "\n", type = "V" }
 
 # --- fuzz atoms (generate.py --fuzz); tier-1 keys only -----------------------
 
