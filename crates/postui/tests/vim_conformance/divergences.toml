@@ -9,3 +9,69 @@
 # expect = { lines = ["…"], cursor = [1, 9] }   # or: skip = true
 # who = "mine"                             # you | mine | earlier
 # why = "…"
+
+# Plan 3b Task 2: Vim's op_tilde() counts bytes (case.rs history, task-2
+# report). Each entry below is that one quirk.
+
+[[divergence]]
+id = "ops/case/case_lines@1:2/gUj"
+buffer = "body"
+expect = { lines = ["SS Ǆ", "  STRASSE", "", "İı ǈ"], cursor = [1, 2] }
+who = "you"
+why = "Vim's op_tilde counts bytes and never moves the cursor, so it keeps the old byte offset: ß becoming SS changes the char count before the caret and Vim lands one char right. User decided 2026-09-30: case ops re-case only their range, char by char; the caret goes to the range start; undo exact."
+
+[[divergence]]
+id = "ops/case/case_lines@1:3/gUj"
+buffer = "body"
+expect = { lines = ["SS Ǆ", "  STRASSE", "", "İı ǈ"], cursor = [1, 3] }
+who = "you"
+why = "Vim's op_tilde counts bytes and never moves the cursor, so it keeps the old byte offset: ß becoming SS changes the char count before the caret and Vim lands one char right. User decided 2026-09-30: case ops re-case only their range, char by char; the caret goes to the range start; undo exact."
+
+[[divergence]]
+id = "ops/case/case_lines@2:3/gUk"
+buffer = "body"
+expect = { lines = ["SS Ǆ", "  STRASSE", "", "İı ǈ"], cursor = [1, 3] }
+who = "you"
+why = "Vim's op_tilde counts bytes and never moves the cursor, so it keeps the old byte offset: ß becoming SS changes the char count before the caret and Vim lands one char right. User decided 2026-09-30: case ops re-case only their range, char by char; the caret goes to the range start; undo exact."
+
+[[divergence]]
+id = "ops/case/case_lines@2:5/gUk"
+buffer = "body"
+expect = { lines = ["SS Ǆ", "  STRASSE", "", "İı ǈ"], cursor = [1, 3] }
+who = "you"
+why = "Vim's op_tilde counts bytes and never moves the cursor, so it keeps the old byte offset: ß becoming SS changes the char count before the caret and Vim lands one char right. User decided 2026-09-30: case ops re-case only their range, char by char; the caret goes to the range start; undo exact."
+
+[[divergence]]
+id = "ops/case/case_lines@2:8/gUj"
+buffer = "body"
+expect = { lines = ["ß ǅ", "  STRASSE", "", "İı ǈ"], cursor = [2, 8] }
+who = "you"
+why = "Vim's op_tilde counts bytes and never moves the cursor, so it keeps the old byte offset: ß becoming SS changes the char count before the caret and Vim lands one char right. User decided 2026-09-30: case ops re-case only their range, char by char; the caret goes to the range start; undo exact."
+
+[[divergence]]
+id = "ops/case/case_lines@2:8/gUk"
+buffer = "body"
+expect = { lines = ["SS Ǆ", "  STRASSE", "", "İı ǈ"], cursor = [1, 3] }
+who = "you"
+why = "Vim's op_tilde counts bytes and never moves the cursor, so it keeps the old byte offset: ß becoming SS changes the char count before the caret and Vim lands one char right. User decided 2026-09-30: case ops re-case only their range, char by char; the caret goes to the range start; undo exact."
+
+[[divergence]]
+id = "ops/case/case_lines@2:8/g~e"
+buffer = "body"
+expect = { lines = ["ß ǅ", "  straßE", "", "iI ǈ"], cursor = [2, 8] }
+who = "you"
+why = "Vim's op_tilde counts bytes: İ and ı shrink from 2 bytes to 1 when re-cased, so its walk stops before the range's end byte and carries on, re-casing ǈ outside the range (and its undo does not restore that). User decided 2026-09-30: case ops re-case only their range, char by char; undo exact."
+
+[[divergence]]
+id = "ops/case/case_lines@3:1/g~e"
+buffer = "body"
+expect = { lines = ["ß ǅ", "  straße", "", "iI ǈ"], cursor = [3, 1] }
+who = "you"
+why = "Vim's op_tilde counts bytes: İ and ı shrink from 2 bytes to 1 when re-cased, so its walk stops before the range's end byte and carries on, re-casing ǈ outside the range (and its undo does not restore that). User decided 2026-09-30: case ops re-case only their range, char by char; undo exact."
+
+[[divergence]]
+id = "ops/case/case_lines@4:1/gu0"
+buffer = "body"
+expect = { lines = ["ß ǅ", "  straße", "", "İı ǈ"], cursor = [4, 1] }
+who = "you"
+why = "Vim's op_tilde on an empty exclusive range in column 0 steps its end back onto the previous line and so re-cases the whole line (here İ becomes i). User decided 2026-09-30: case ops re-case only their range, char by char; an empty range changes nothing."
