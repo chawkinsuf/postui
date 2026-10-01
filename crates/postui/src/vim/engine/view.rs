@@ -6,7 +6,7 @@
 //! of 21 lines and more.
 
 use super::buf::{Pos, TextBuf};
-use super::keys::Scroll;
+use super::keys::{Screen, Scroll};
 use super::{BufState, Engine, ViewCtx, first_non_blank_fix};
 
 /// `scrolljump`.
@@ -269,6 +269,46 @@ impl View {
         }
     }
 
+    /// Vim's `nv_scroll()` target row for `H` (`count` from the top), `M`
+    /// (the middle of the lines shown) and `L` (`count` from the bottom).
+    pub(crate) fn screen_line<B: TextBuf>(self, buf: &B, place: Screen, count: usize) -> usize {
+        let lines = buf.line_count();
+        let top = buf.top();
+        let bot = self.botline(buf);
+        let count1 = count.max(1);
+        match place {
+            // A count past the window's top lands on the text's first line.
+            Screen::Bottom => (bot - 1).saturating_sub(count1 - 1),
+            Screen::Middle => {
+                let half = (self.height - self.empty_rows(buf)).div_ceil(2);
+                let mut used = 0;
+                let mut n = 0;
+                while top + n < lines - 1 {
+                    used += 1;
+                    if used >= half {
+                        break;
+                    }
+                    n += 1;
+                }
+                (top + n).min(lines - 1)
+            }
+            Screen::Top => (top + count1 - 1).min(lines - 1),
+        }
+    }
+
+    /// `cursor_correct()` for a row the caret is about to take.
+    pub(crate) fn corrected_row<B: TextBuf>(self, buf: &B, row: usize) -> usize {
+        let top = buf.top();
+        let bot = self.botline(buf);
+        if row < top && top > 0 {
+            return top;
+        }
+        if row >= bot && bot < buf.line_count() {
+            return bot - 1;
+        }
+        row
+    }
+
     /// Vim's `halfpage()`: scroll `'scroll'` lines (a count sets it, capped
     /// at the height) and move the caret as many; when the text's end (or
     /// start) is reached the caret moves the rest. Ends with
@@ -435,6 +475,25 @@ impl Engine {
         match st.want(before) {
             Some(want) if !ok => st.set_want(want, at),
             _ => st.forget_want(),
+        }
+    }
+
+    /// `zt` `zz` `zb` (Vim's `nv_zet()`): a count is the line to go to (the
+    /// column clamped), then the window is placed; the caret's column stays.
+    pub(super) fn exec_scroll_cursor<B: TextBuf>(&mut self, place: Screen, count: usize, buf: &mut B, st: &mut BufState, ctx: &ViewCtx) {
+        let Some(view) = View::of::<B>(ctx) else { return };
+        if count > 0 {
+            let row = (count - 1).min(buf.line_count() - 1);
+            if row != buf.cursor().row {
+                let col = buf.cursor().col;
+                buf.set_cursor(self.clamped(buf, Pos::new(row, col)));
+                st.forget_want();
+            }
+        }
+        match place {
+            Screen::Top => view.scroll_cursor_top(buf, 0, true),
+            Screen::Middle => view.scroll_cursor_halfway(buf, true, false),
+            Screen::Bottom => view.scroll_cursor_bot(buf, 0, true),
         }
     }
 }

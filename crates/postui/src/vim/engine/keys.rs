@@ -148,6 +148,8 @@ pub(crate) enum Motion {
     DownFirstNonBlank,
     /// `-`: up to the first non-blank
     UpFirstNonBlank,
+    /// `H` `M` `L`: linewise, by the window
+    ScreenLine(Screen),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -197,6 +199,14 @@ pub(crate) enum Scroll {
     PageUp,
 }
 
+/// `H M L` and the `z` commands' places.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Screen {
+    Top,
+    Middle,
+    Bottom,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum VisualOp {
     Delete,
@@ -233,6 +243,8 @@ pub(crate) enum Cmd {
     Insert { how: InsertHow, count: usize },
     /// A scroll chord with its count (a half page's new size, or pages).
     Scroll { how: Scroll, count: usize },
+    /// `zt` `zz` `zb`; `count` is a line number (0: none)
+    ScrollCursor { place: Screen, count: usize },
     Repeat(usize),
     VisualStart(Shape),
     VisualSwap,
@@ -270,6 +282,7 @@ enum Prefix {
     Object { inner: bool },
     Find(FindKind),
     Replace,
+    Z,
 }
 
 /// The half-typed command (spec §3.5).
@@ -379,6 +392,9 @@ fn motion_of(key: Key) -> Option<Motion> {
         Key::Char('{') => Motion::Paragraph { forward: false },
         Key::Char('+') | Key::Enter => Motion::DownFirstNonBlank,
         Key::Char('-') => Motion::UpFirstNonBlank,
+        Key::Char('H') => Motion::ScreenLine(Screen::Top),
+        Key::Char('M') => Motion::ScreenLine(Screen::Middle),
+        Key::Char('L') => Motion::ScreenLine(Screen::Bottom),
         _ => return None,
     })
 }
@@ -432,6 +448,7 @@ impl Pending {
             Some(Prefix::Object { inner }) => s.push(if inner { 'i' } else { 'a' }),
             Some(Prefix::Find(k)) => s.push(find_char(k)),
             Some(Prefix::Replace) => s.push('r'),
+            Some(Prefix::Z) => s.push('z'),
         }
         s
     }
@@ -600,6 +617,7 @@ impl Pending {
                 Step::More
             }
             'g' => self.arm(ev, Prefix::G),
+            'z' => self.arm(ev, Prefix::Z),
             'f' | 't' | 'F' | 'T' => self.arm(ev, Prefix::Find(find_kind(ch))),
             'r' => self.arm(ev, Prefix::Replace),
             'x' => self.cmd(op(Op::Delete, Reach::Motion(Motion::Right))),
@@ -646,6 +664,9 @@ impl Pending {
             'i' | 'a' => self.arm(ev, Prefix::Object { inner: ch == 'i' }),
             'f' | 't' | 'F' | 'T' => self.arm(ev, Prefix::Find(find_kind(ch))),
             'g' => self.arm(ev, Prefix::G),
+            // Vim's `nv_zet()` takes the next key before `checkclearop()`
+            // cancels the operator: `dzz` ends with nothing pending.
+            'z' => self.arm(ev, Prefix::Z),
             ':' => self.inert(Some(format!("{}: not supported", op_name(op)))),
             c if SEARCH_KEYS.contains(&c) => self.inert(Some(format!("{}{c} not supported yet", op_name(op)))),
             _ => self.inert(None),
@@ -662,6 +683,7 @@ impl Pending {
             '"' => self.arm(ev, Prefix::Register),
             'i' | 'a' => self.arm(ev, Prefix::Object { inner: ch == 'i' }),
             'g' => self.arm(ev, Prefix::G),
+            'z' => self.arm(ev, Prefix::Z),
             'f' | 't' | 'F' | 'T' => self.arm(ev, Prefix::Find(find_kind(ch))),
             'r' => self.arm(ev, Prefix::Replace),
             'd' | 'x' => self.cmd(vop(VisualOp::Delete)),
@@ -745,6 +767,20 @@ impl Pending {
                     self.cmd(|count, _| Cmd::Replace { ch, count })
                 }
             }
+            Prefix::Z => match key {
+                Key::Char(c @ ('t' | 'z' | 'b')) if cx.multiline && self.op.is_none() => {
+                    let place = match c {
+                        't' => Screen::Top,
+                        'z' => Screen::Middle,
+                        _ => Screen::Bottom,
+                    };
+                    self.cmd(|count, _| Cmd::ScrollCursor { place, count })
+                }
+                // A one-line field has nothing to scroll; `zo` and friends are
+                // list keys, never text keys. After an operator every `z`
+                // command cancels it (`checkclearop()`).
+                _ => self.inert(None),
+            },
         }
     }
 }

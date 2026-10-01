@@ -6,9 +6,10 @@
 
 use super::buf::{Pos, TextBuf};
 use super::class::class;
-use super::keys::{FindKind, Motion, Op};
+use super::keys::{FindKind, Motion, Op, Screen};
 use super::settings::{PARAGRAPHS, SECTIONS, TABSTOP};
-use super::{BufState, Engine, Mode, first_non_blank, first_non_blank_fix};
+use super::view::View;
+use super::{BufState, Engine, Mode, ViewCtx, first_non_blank, first_non_blank_fix};
 use unicode_width::UnicodeWidthChar;
 
 /// How an operator treats a motion (`:help exclusive`, `:help linewise`).
@@ -461,6 +462,7 @@ pub(crate) fn run<B: TextBuf>(
             Some(to) => Moved::to(to, MKind::Inclusive, WantUpdate::Here),
             None => Moved::refused(from),
         },
+        Motion::ScreenLine(_) => unreachable!("Engine::run_motion takes the window motions"),
     }
 }
 
@@ -838,12 +840,12 @@ pub(crate) fn find_match<B: TextBuf>(buf: &B, from: Pos, how: MatchFrom, quotes:
 
 impl Engine {
     /// A bare motion in Normal or Visual.
-    pub(super) fn exec_move<B: TextBuf>(&mut self, motion: Motion, count: usize, buf: &mut B, st: &mut BufState) {
+    pub(super) fn exec_move<B: TextBuf>(&mut self, motion: Motion, count: usize, buf: &mut B, st: &mut BufState, ctx: &ViewCtx) {
         let visual = matches!(self.mode, Mode::Visual(_));
         let from = buf.cursor();
         let want = self.want_at(buf, st, from);
         let cx = MotionCx { op: None, visual, want };
-        let m = run(buf, from, motion, count, &cx, &mut self.last_find);
+        let m = self.run_motion(buf, from, motion, count, &cx, ctx);
         let mut to = self.clamped(buf, m.to);
         if matches!(self.mode, Mode::InsertNormal { .. }) {
             // Inside `ctrl+o` a motion still stops on a char (`oneright()`,
@@ -858,6 +860,31 @@ impl Engine {
             // the tab rule of that moment (Deviation 9).
             WantUpdate::Here => st.forget_want(),
             update => st.set_want(updated_want(buf, to, update, want, self.tab_rule(st, to)), to),
+        }
+    }
+
+    /// Every motion: the window-relative ones here, the rest in [`run`].
+    pub(super) fn run_motion<B: TextBuf>(&mut self, buf: &B, from: Pos, motion: Motion, count: usize, cx: &MotionCx, ctx: &ViewCtx) -> Moved {
+        match motion {
+            Motion::ScreenLine(place) => {
+                let row = match View::of::<B>(ctx) {
+                    Some(view) => view.screen_line(buf, place, count),
+                    // No window: the whole text is one (Deviation 12).
+                    None => match place {
+                        Screen::Top => (count.max(1) - 1).min(buf.line_count() - 1),
+                        Screen::Middle => (buf.line_count() - 1) / 2,
+                        Screen::Bottom => (buf.line_count() - 1).saturating_sub(count.max(1) - 1),
+                    },
+                };
+                // Without an operator `cursor_correct()` pulls the row into
+                // the window; `beginline(BL_SOL | BL_FIX)`.
+                let row = match (cx.op, View::of::<B>(ctx)) {
+                    (None, Some(view)) => view.corrected_row(buf, row),
+                    _ => row,
+                };
+                Moved::to(Pos::new(row, first_non_blank_fix(&buf.line(row))), MKind::Linewise, WantUpdate::Here)
+            }
+            _ => run(buf, from, motion, count, cx, &mut self.last_find),
         }
     }
 

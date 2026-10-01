@@ -2000,3 +2000,26 @@ fn a_one_row_window_half_pages_by_one_line() {
     key(&mut b, ctrl('u'));
     assert_eq!((b.caret().row, b.ed.viewport_offset().1), (0, 0));
 }
+
+/// Plan 3c Task 7: `H M L` in a one-line field go to the first non-blank
+/// (Vim on a one-line buffer), `zz zt zb` are inert there, `z` + another
+/// key is inert everywhere, and the parser echoes `z`.
+#[test]
+fn screen_lines_and_z_in_a_field() {
+    let mut f = Field::new("  abc", 4);
+    f.keys("H");
+    assert_eq!(f.col(), 2);
+    f.keys("$L");
+    assert_eq!(f.col(), 2);
+    f.keys("$M");
+    assert_eq!(f.col(), 2);
+    f.keys("$");
+    f.keys("z");
+    assert_eq!(f.engine.echo(), "z");
+    assert!(!declined(&f.keys("z")));
+    assert_eq!(f.col(), 4);
+    assert_eq!(f.keys("zo"), Outcome::consumed());
+    assert!(!f.engine.pending());
+    assert_eq!(f.keys("dH"), Outcome::Consumed { changed: true, note: None, request: None });
+    assert_eq!(f.text(), "", "dH takes the line");
+}

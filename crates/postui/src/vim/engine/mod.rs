@@ -672,11 +672,11 @@ impl Engine {
         }
         let out = match cmd {
             Cmd::Move { motion, count } => {
-                self.exec_move(motion, count, buf, st);
+                self.exec_move(motion, count, buf, st, ctx);
                 Outcome::consumed()
             }
             Cmd::Operate { op, reach, count, reg } => {
-                if self.exec_operate(op, reach, count, reg, buf, st) && op != Op::Yank {
+                if self.exec_operate(op, reach, count, reg, buf, st, ctx) && op != Op::Yank {
                     record = Some(cmd);
                 }
                 Outcome::consumed()
@@ -711,6 +711,10 @@ impl Engine {
             }
             Cmd::Scroll { how, count } => {
                 self.exec_scroll(how, count, buf, st, ctx);
+                Outcome::consumed()
+            }
+            Cmd::ScrollCursor { place, count } => {
+                self.exec_scroll_cursor(place, count, buf, st, ctx);
                 Outcome::consumed()
             }
             Cmd::Insert { how, count } => {

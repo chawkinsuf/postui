@@ -10,7 +10,7 @@ use super::keys::{CaseOp, Cmd, Op, Reach};
 use super::motion::{self, MKind, MotionCx};
 use super::register::{RegKind, Register};
 use super::settings::{SHIFTWIDTH, TABSTOP};
-use super::{BufState, Engine, Mode, Outcome, first_non_blank, first_non_blank_fix};
+use super::{BufState, Engine, Mode, Outcome, ViewCtx, first_non_blank, first_non_blank_fix};
 use crate::components::line_input::flatten_paste;
 use ratatui::crossterm::event::KeyEvent;
 
@@ -302,6 +302,7 @@ impl Engine {
     /// An operator with its motion, object or doubled letter (spec §3.6).
     /// `false` when its motion or object failed and it did not run (Vim
     /// then sets no `.`).
+    #[allow(clippy::too_many_arguments)] // `ctx` for the window motions (`dL`)
     pub(super) fn exec_operate<B: TextBuf>(
         &mut self,
         op: Op,
@@ -310,8 +311,9 @@ impl Engine {
         reg: Option<char>,
         buf: &mut B,
         st: &mut BufState,
+        ctx: &ViewCtx,
     ) -> bool {
-        let Some(span) = self.op_span(op, reach, count, buf, st) else {
+        let Some(span) = self.op_span(op, reach, count, buf, st, ctx) else {
             return false;
         };
         let r = range(buf, span, op);
@@ -505,6 +507,7 @@ impl Engine {
         count: usize,
         buf: &mut B,
         st: &mut BufState,
+        ctx: &ViewCtx,
     ) -> Option<Span> {
         let from = buf.cursor();
         match reach {
@@ -526,7 +529,7 @@ impl Engine {
             Reach::Motion(m) => {
                 let want = self.want_at(buf, st, from);
                 let cx = MotionCx { op: Some(op), visual: false, want };
-                let moved = motion::run(buf, from, m, count, &cx, &mut self.last_find);
+                let moved = self.run_motion(buf, from, m, count, &cx, ctx);
                 if moved.failed {
                     // The caret still goes where Vim's walk ended.
                     buf.set_cursor(self.clamped(buf, moved.to));

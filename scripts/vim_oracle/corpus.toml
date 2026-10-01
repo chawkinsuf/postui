@@ -1107,6 +1107,54 @@ keys = ["<C-d>", "<C-u>", "<C-f>", "<C-b>", "k", "j", "<C-d>k", "<C-f>k"]
 on = ["long"]
 at = [[2, 1], [12, 1], [13, 1], [23, 1], [24, 1], [25, 1], [26, 1], [77, 1], [78, 1], [79, 1], [100, 1]]
 
+# --- plan 3c: H M L, zz zt zb (Task 7) ---------------------------------------------
+
+# `xH.` stands in for the plan's `H.` (a `.` needs a change earlier in the
+# case, trap 8) and `zJ` for `zq` (`q` is UNSAFE as a token); `zJ` is no Vim
+# command either, so it still checks that `z` + an unknown key is inert.
+
+[[group]]
+id = "view/hml"
+tier = 2
+keys = ["H", "M", "L", "3H", "3L", "9H", "99L", "dL", "dH", "dM", "yL", "yH", "cLX<Esc>", "GH", "GM", "GL", "G3H", "GdH", "GyH",
+        "GdM", "vLd", "vMd", "vHd", "VLd", "50GzzH", "50GzzL", "50Gzz9H", "50Gzz99L", "50Gzz99H", "GzbL", "GzbH", "GzbM", "ztM",
+        "50zzM", "90GztM", "90GztL", "Hx", "Lx", "Mx", "xH.", "LjH", "Lu", "dLu", "Mdd", "L$", "H$M"]
+on = ["lines25", "json_pretty", "json_gaps", "blank_edges", "words", "one_char", "empty", "indent"]
+at = ["bol", "mid", "eol"]
+
+# `view/hml` on `long`, seated at column 1 only (the golden file's size budget).
+[[group]]
+id = "view/hml-long"
+tier = 2
+keys = ["H", "M", "L", "3H", "3L", "9H", "99L", "dL", "dH", "dM", "yL", "yH", "cLX<Esc>", "GH", "GM", "GL", "G3H", "GdH", "GyH",
+        "GdM", "vLd", "vMd", "vHd", "VLd", "50GzzH", "50GzzL", "50Gzz9H", "50Gzz99L", "50Gzz99H", "GzbL", "GzbH", "GzbM", "ztM",
+        "50zzM", "90GztM", "90GztL", "Hx", "Lx", "Mx", "xH.", "LjH", "Lu", "dLu", "Mdd", "L$", "H$M"]
+on = ["long"]
+at = [[1, 1], [50, 1], [100, 1]]
+
+# The six `50Gzz`/`90Gzt` scroll keys moved here from Task 6's groups (they
+# need `zz`/`zt`).
+[[group]]
+id = "view/z"
+tier = 2
+keys = ["zz", "zt", "zb", "10zt", "50zz", "50zb", "Gzz", "Gzt", "Gzb", "12zz", "13zb", "zbj", "23jzt", "23jzb", "23jzz", "2zt",
+        "2zb", "0zz", "200zt", "ztzb", "Gztzz", "GztH", "<C-d>Gzz", "97Gzz", "97Gzt", "90Gzt", "zb<C-d>", "zt<C-u>", "$zz",
+        "$50zt", "zzx", "ztdd", "zbu", "dzz", "vzzd", "Vztd", "z<Esc>x", "zox", "zJ", "3zz", "zzzb", "zzzt", "zbzz",
+        "50Gzz<C-d>", "50Gzz<C-u>", "50Gzz<C-f>", "50Gzz<C-b>", "90Gzt<C-f>", "90Gzt<C-f><C-b>"]
+on = ["lines25", "json_pretty", "blank_edges", "words", "one_char", "empty"]
+at = ["bol", "mid", "eol"]
+
+# `view/z` on `long`, seated at column 1 only (the golden file's size budget).
+[[group]]
+id = "view/z-long"
+tier = 2
+keys = ["zz", "zt", "zb", "10zt", "50zz", "50zb", "Gzz", "Gzt", "Gzb", "12zz", "13zb", "zbj", "23jzt", "23jzb", "23jzz", "2zt",
+        "2zb", "0zz", "200zt", "ztzb", "Gztzz", "GztH", "<C-d>Gzz", "97Gzz", "97Gzt", "90Gzt", "zb<C-d>", "zt<C-u>", "$zz",
+        "$50zt", "zzx", "ztdd", "zbu", "dzz", "vzzd", "Vztd", "z<Esc>x", "zox", "zJ", "3zz", "zzzb", "zzzt", "zbzz",
+        "50Gzz<C-d>", "50Gzz<C-u>", "50Gzz<C-f>", "50Gzz<C-b>", "90Gzt<C-f>", "90Gzt<C-f><C-b>"]
+on = ["long"]
+at = [[1, 1], [50, 1], [100, 1]]
+
 # --- fuzz atoms (generate.py --fuzz); tier 1 and the tier-2 first wave ------
 
 [fuzz]
