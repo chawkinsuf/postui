@@ -64,14 +64,18 @@ impl Engine {
 
     /// Vim's `end_visual_mode()`: the area is remembered for `gv` with the
     /// caret at `caret` (not while `.` replays a Visual command, which never
-    /// saves it: Vim's `redo_VIsual_busy`), and the mode becomes Normal.
+    /// saves it: Vim's `redo_VIsual_busy`), and the mode becomes Normal, or
+    /// Insert `ctrl+o`'s when Visual opened inside it.
     pub(super) fn end_visual<B: TextBuf>(&mut self, caret: Pos, buf: &B, st: &mut BufState) {
         if !self.replaying_visual
             && let Some(area) = self.area_at(caret, buf, st)
         {
             st.history.marks.visual = Some(area);
         }
-        self.mode = Mode::Normal;
+        self.mode = match self.restart {
+            Some(r) => Mode::InsertNormal { replace: r.replace },
+            None => Mode::Normal,
+        };
         self.visual = None;
     }
 

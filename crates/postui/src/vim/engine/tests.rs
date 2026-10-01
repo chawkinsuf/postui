@@ -322,7 +322,7 @@ fn a_one_line_field_has_no_second_line() {
 #[test]
 fn one_line_insert_declines_the_keys_the_field_does_not_own() {
     let mut f = Field::start("abc", 3, Start::Insert);
-    for key in [code(KeyCode::Enter), code(KeyCode::Tab), code(KeyCode::BackTab), code(KeyCode::Up), code(KeyCode::Down), ctrl('o')] {
+    for key in [code(KeyCode::Enter), code(KeyCode::Tab), code(KeyCode::BackTab), code(KeyCode::Up), code(KeyCode::Down)] {
         assert!(declined(&f.key(key)), "{key:?}");
         assert_eq!((f.text(), f.engine.mode()), ("abc", Mode::Insert));
     }
@@ -1818,4 +1818,86 @@ fn insert_ctrl_r_runs_ctrl_t_and_ctrl_d_from_a_register() {
         assert!(!declined(&b.key(ctrl(chord))), "ctrl+r ctrl+{chord} is swallowed");
         assert_eq!(b.text(), "  abc", "ctrl+r ctrl+{chord} does nothing");
     }
+}
+
+/// Plan 3c Task 4: the mode during `ctrl+o`, its echo, and the keys the
+/// engine does not own there: Esc is inert and Insert resumes, a declined
+/// key resumes Insert first, a query box declines `ctrl+o` itself.
+#[test]
+fn ctrl_o_runs_one_normal_command_then_resumes() {
+    let mut f = Field::new("abc def", 0);
+    f.keys("iX");
+    f.key(ctrl('o'));
+    assert_eq!(f.engine.mode(), Mode::InsertNormal { replace: false });
+    f.keys("2");
+    assert_eq!((f.engine.echo(), f.engine.mode()), ("2".into(), Mode::InsertNormal { replace: false }));
+    f.keys("w");
+    // Vim 9.1: `iX<C-o>2wY<Esc>` on "abc def" gives "Xabc deYf".
+    assert_eq!((f.engine.mode(), f.col()), (Mode::Insert, 7));
+    f.key(ctrl('o'));
+    assert_eq!(f.key(esc()), Outcome::Consumed { changed: false, note: None, request: None }, "Esc is inert");
+    assert_eq!(f.engine.mode(), Mode::Insert);
+    f.key(ctrl('o'));
+    assert_eq!(f.keys("j"), Outcome::Declined { count: None, keys: vec![k('j')] }, "declined after resuming");
+    assert_eq!(f.engine.mode(), Mode::Insert);
+    f.key(ctrl('o'));
+    assert_eq!(f.key(ctrl('c')), Outcome::Declined { count: None, keys: vec![ctrl('c')] });
+    assert_eq!(f.engine.mode(), Mode::Insert);
+    f.key(ctrl('o'));
+    assert_eq!(f.key(ctrl('o')), Outcome::Declined { count: None, keys: vec![ctrl('o')] }, "Normal ctrl+o is the app's");
+    assert_eq!(f.engine.mode(), Mode::Insert);
+    let mut q = Field::start("ab", 1, Start::InsertOnly);
+    assert!(declined(&q.key(ctrl('o'))));
+    let mut r = Field::new("abc", 0);
+    r.keys("Rx");
+    r.key(ctrl('o'));
+    assert_eq!(r.engine.mode(), Mode::InsertNormal { replace: true });
+    r.keys("l");
+    assert_eq!(r.engine.mode(), Mode::Replace);
+    r.keys("Y");
+    assert_eq!(r.text(), "xbY");
+}
+
+/// Review focus 3: a pending restart never outlives a session edge, and a
+/// click resumes Insert as a command would.
+#[test]
+fn ctrl_o_at_the_session_edges() {
+    let mut f = Field::new("abc", 0);
+    f.keys("iX");
+    f.key(ctrl('o'));
+    f.engine.leave(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
+    assert_eq!(f.engine.mode(), Mode::Normal);
+    f.engine.enter(Start::Normal, Seat::Keep, Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
+    f.keys("l");
+    assert_eq!(f.engine.mode(), Mode::Normal, "nothing resumed");
+    f.keys("iY");
+    f.key(ctrl('o'));
+    let (mut other, mut os) = (LineInput::new("pq"), BufState::new());
+    other.set_cursor(0);
+    f.engine.carry(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, Target { buf: &mut OneLineBuf::new(&mut other), state: &mut os });
+    assert_eq!(f.engine.mode(), Mode::Normal, "a restart carries as Normal");
+    let mut f = Field::new("abc", 0);
+    f.keys("iX");
+    f.key(ctrl('o'));
+    f.input.set_cursor(2);
+    f.engine.settle(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, Settled::Click);
+    assert_eq!(f.engine.mode(), Mode::Insert, "a click is the command");
+    f.keys("Z");
+    assert_eq!(f.text(), "XaZbc");
+    let mut f = Field::new("abc", 0);
+    f.keys("iX");
+    f.key(ctrl('o'));
+    f.keys("v");
+    f.engine.external_edit(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, |ed| {
+        ed.splice(Pos::new(0, 0), Pos::new(0, 0), "Q");
+        ed.set_cursor(Pos::new(0, 2));
+    });
+    assert_eq!(f.engine.mode(), Mode::Insert);
+    f.keys("W");
+    assert_eq!(f.text(), "QXWabc", "typing resumes at the caret");
+    let mut f = Field::new("abc", 0);
+    f.keys("iX");
+    f.key(ctrl('o'));
+    f.engine.paste("P", Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
+    assert_eq!((f.engine.mode(), f.text()), (Mode::Insert, "XPabc"), "a paste resumes and types");
 }

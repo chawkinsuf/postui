@@ -17,7 +17,7 @@ use super::motion::{Want, col_for, vcol_of};
 use super::op::{RKind, Range, yank_of};
 use super::register::RegKind;
 use super::settings::TABSTOP;
-use super::{BufState, Engine, Mode, Note, Outcome, Target, first_non_blank};
+use super::{BufState, Engine, Mode, Note, Outcome, Restart, Target, first_non_blank};
 use crate::components::line_input::flatten_paste;
 use ratatui::crossterm::event::KeyEvent;
 
@@ -189,6 +189,8 @@ impl Engine {
     }
 
     pub(super) fn open_session(&mut self, at: Pos, origin: Cmd, ai_row: Option<usize>) {
+        // A nested insert replaces a `ctrl+o` restart (Vim's `edit()` clears it).
+        self.restart = None;
         self.mode = Mode::Insert;
         self.insert = Some(Session { ai_row, ..Session::new(at, origin) });
     }
@@ -296,6 +298,10 @@ impl Engine {
             Key::Esc if self.insert_only => return decline,
             Key::Esc => {
                 self.end_insert(buf, st, true);
+                return Outcome::consumed();
+            }
+            Key::Ctrl('o') if !self.insert_only => {
+                self.ctrl_o(buf, st);
                 return Outcome::consumed();
             }
             Key::Ctrl('r') => {
@@ -966,6 +972,65 @@ impl Engine {
         }
     }
 
+    /// Insert `ctrl+o` (Vim's `ins_ctrl_o()` then `ins_esc()` with no count):
+    /// the session ends as on Esc, except that the caret steps back only at
+    /// a line's end, the wanted column stays the Insert caret's, and the
+    /// restart is noted so one Normal command runs before Insert resumes.
+    pub(super) fn ctrl_o<B: TextBuf>(&mut self, buf: &mut B, st: &mut BufState) {
+        let replace = self.session().replace.is_some();
+        let arrow_used = {
+            let s = self.session();
+            s.resumed && s.typed.is_empty()
+        };
+        let mut caret = buf.cursor();
+        let at_eol = caret.col >= buf.line_len(caret.row);
+        let want = self.want_at(buf, st, caret);
+        if !arrow_used
+            && let Some(at) = self.strip_autoindent(caret, buf, st)
+        {
+            caret = at;
+        }
+        st.history.marks.insert = Some(caret);
+        st.history.commit();
+        self.finish_record();
+        self.insert = None;
+        self.reg_pending = None;
+        if caret.col > 0 && caret.col >= buf.line_len(caret.row) {
+            caret.col -= 1;
+        }
+        buf.set_cursor(caret);
+        st.set_want(want, caret);
+        self.mode = Mode::InsertNormal { replace };
+        self.restart = Some(Restart { replace, at_eol, row: caret.row, old_redo: !arrow_used });
+    }
+
+    /// Vim's `edit()` restarting after `ctrl+o`: the caret goes past the
+    /// line's end when the Insert caret was there before and the line is
+    /// the same, or when the wanted column is right of it; a wanted column a
+    /// Normal command set is recomputed under Insert's tab rule; typing
+    /// starts a fresh record and a fresh undo step.
+    pub(super) fn resume_after_ctrl_o<B: TextBuf>(&mut self, buf: &mut B, st: &mut BufState) {
+        let Some(r) = self.restart.take() else { return };
+        self.mode = if r.replace { Mode::Replace } else { Mode::Insert };
+        let mut caret = buf.cursor();
+        let line = buf.line(caret.row);
+        let want = self.want_at(buf, st, caret);
+        let vcol = vcol_of(&line, caret.col);
+        let past = match want {
+            Want::End => true,
+            Want::Col(w) => w > vcol,
+        };
+        if ((r.at_eol && caret.row == r.row) || past) && caret.col + 1 == line.len() {
+            caret.col += 1;
+            buf.set_cursor(caret);
+        }
+        st.set_want(want, caret);
+        self.open_resumed(caret, true);
+        if r.replace {
+            self.session().replace = Some(Vec::new());
+        }
+    }
+
     /// Records the session for `.` when it ends or a cursor key splits it:
     /// its opening command plus the keys typed. After a cursor key
     /// (`resumed`) only once something was typed: Vim's `stop_arrow()`
@@ -1043,6 +1108,9 @@ impl Engine {
     /// (deviation 13).
     pub fn paste<B: TextBuf>(&mut self, text: &str, t: Target<'_, B>) -> Outcome {
         let Target { buf, state } = t;
+        if matches!(self.mode, Mode::InsertNormal { .. }) && !self.pending() {
+            self.resume_after_ctrl_o(buf, state);
+        }
         if !self.in_insert() {
             return Outcome::Declined { count: None, keys: Vec::new() };
         }

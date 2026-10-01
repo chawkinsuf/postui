@@ -222,6 +222,8 @@ fn mode_name(m: Mode) -> &'static str {
         Mode::Normal => "n",
         Mode::Insert => "i",
         Mode::Replace => "R",
+        Mode::InsertNormal { replace: false } => "niI",
+        Mode::InsertNormal { replace: true } => "niR",
         Mode::Visual(Shape::Char) => "v",
         Mode::Visual(Shape::Line) => "V",
     }
@@ -322,7 +324,7 @@ fn drive<B: TextBuf>(engine: &mut Engine, buf: &mut B, state: &mut BufState, cas
         {
             return Run::Skipped;
         }
-        let inserting = matches!(engine.mode(), Mode::Insert | Mode::Replace);
+        let inserting = matches!(engine.mode(), Mode::Insert | Mode::Replace | Mode::InsertNormal { .. });
         let out = engine.handle(key_event(&token), Target { buf: &mut *buf, state: &mut *state }, ctx);
         // A one-line field hands Insert keys it doesn't own (Tab, Up,
         // Down) to the app, where Vim gives them an effect (spec §6.5).

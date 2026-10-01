@@ -234,6 +234,7 @@ pub(crate) enum Cmd {
 pub(crate) struct ParseCx {
     pub visual: bool,
     pub multiline: bool,
+    pub restart: bool,
 }
 
 #[derive(Debug, PartialEq)]
@@ -458,6 +459,8 @@ impl Pending {
                 self.clear();
                 Step::Cmd(Cmd::VisualExit)
             }
+            // Inside Insert `ctrl+o` an idle Esc beeps and Insert resumes.
+            Key::Esc if self.is_empty() && cx.restart => self.inert(None),
             Key::Esc if self.is_empty() => self.decline(ev),
             Key::Esc => self.inert(None),
             Key::Ctrl(_) if cx.visual || self.op.is_some() => self.decline_alone(ev),
@@ -722,9 +725,9 @@ mod tests {
         KeyEvent::new(KeyCode::Char(c), if c.is_uppercase() { KeyModifiers::SHIFT } else { KeyModifiers::NONE })
     }
 
-    const NORMAL: ParseCx = ParseCx { visual: false, multiline: true };
-    const VISUAL: ParseCx = ParseCx { visual: true, multiline: true };
-    const ONE_LINE: ParseCx = ParseCx { visual: false, multiline: false };
+    const NORMAL: ParseCx = ParseCx { visual: false, multiline: true, restart: false };
+    const VISUAL: ParseCx = ParseCx { visual: true, multiline: true, restart: false };
+    const ONE_LINE: ParseCx = ParseCx { visual: false, multiline: false, restart: false };
 
     /// Feeds `keys` (plain chars) and returns the last step.
     fn feed(p: &mut Pending, keys: &str, cx: ParseCx) -> Step {
@@ -841,7 +844,7 @@ mod tests {
         let mut p = Pending::default();
         assert!(matches!(p.feed(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), VISUAL), Step::Cmd(Cmd::VisualExit)));
         assert!(
-            matches!(feed(&mut Pending::default(), "j", ParseCx { visual: true, multiline: false }), Step::Cmd(Cmd::Move { .. })),
+            matches!(feed(&mut Pending::default(), "j", ParseCx { visual: true, multiline: false, restart: false }), Step::Cmd(Cmd::Move { .. })),
             "a one-line buffer consumes Visual j as a failed motion"
         );
     }

@@ -34,7 +34,7 @@ pub use buf::{BodyBuf, BodyVisual, GuiSel, OneLineBuf, Paint, Pos, TextBuf};
 pub use register::{RegKind, Register, Registers};
 
 use insert::{InsertKey, RegPending};
-use keys::{Cmd, Op, ParseCx, Pending, Step, VisualOp};
+use keys::{Cmd, Motion, Op, ParseCx, Pending, Reach, Step, VisualOp};
 use ratatui::crossterm::event::KeyEvent;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,6 +51,9 @@ pub enum Mode {
     Insert,
     /// An `R` session: typing overwrites (plan 3c).
     Replace,
+    /// Insert `ctrl+o`: one Normal command, then the session resumes
+    /// (Vim's `niI`; `replace` is `niR`).
+    InsertNormal { replace: bool },
     Visual(Shape),
 }
 
@@ -240,6 +243,19 @@ struct Dot {
     visual: Option<VisualSize>,
 }
 
+/// A pending Insert restart (Vim's `restart_edit`, `ins_at_eol`, `o_lnum`):
+/// `ctrl+o` left Insert for one Normal command.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Restart {
+    pub(crate) replace: bool,
+    /// The Insert caret was past the line's end, on `row`.
+    pub(crate) at_eol: bool,
+    pub(crate) row: usize,
+    /// `.` repeats the change before the insert (Vim's old redo buffer),
+    /// not the insert itself.
+    pub(crate) old_redo: bool,
+}
+
 /// How big a Visual selection was, for `.` (Vim's `resel_VIsual_*`).
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct VisualSize {
@@ -282,6 +298,10 @@ pub struct Engine {
     rested: Option<Pos>,
     /// Insert `ctrl+r` waiting for its register name.
     reg_pending: Option<RegPending>,
+    /// Insert `ctrl+o` in progress: Insert resumes after one command.
+    restart: Option<Restart>,
+    /// The change before `dot` (Vim's `old_redobuff`), for `.` inside `ctrl+o`.
+    dot_prev: Option<Dot>,
 }
 
 impl Engine {
@@ -345,6 +365,7 @@ impl Engine {
         self.clear_pending();
         self.visual = None;
         self.insert = None;
+        self.restart = None;
         self.insert_only = start == Start::InsertOnly;
         self.mode = if start == Start::Normal { Mode::Normal } else { Mode::Insert };
         let caret = buf.cursor();
@@ -380,6 +401,7 @@ impl Engine {
     /// typed, and keys typed there are taken as `to`'s kind takes them.
     /// Visual and pending keys are dropped.
     pub fn carry<A: TextBuf, B: TextBuf>(&mut self, from: Target<'_, A>, to: Target<'_, B>) {
+        self.restart = None;
         let inserting = self.in_insert().then_some(self.mode);
         let insert_only = self.insert_only;
         let Target { buf, state } = from;
@@ -417,6 +439,9 @@ impl Engine {
         if matches!(how, Settled::Click | Settled::Release) {
             self.clear_pending();
         }
+        if matches!(self.mode, Mode::InsertNormal { .. }) && !self.pending() {
+            self.resume_after_ctrl_o(buf, state);
+        }
         let caret = self.clamped(buf, buf.cursor());
         if self.in_insert()
             && let Some(from) = self.rested
@@ -448,6 +473,10 @@ impl Engine {
                     // The area as it was before the click moved the caret.
                     let at = self.rested.unwrap_or(caret);
                     self.end_visual(at, &*buf, state);
+                    // Visual opened inside `ctrl+o`: the click is the command.
+                    if matches!(self.mode, Mode::InsertNormal { .. }) {
+                        self.resume_after_ctrl_o(buf, state);
+                    }
                 }
                 None => {}
             }
@@ -480,6 +509,7 @@ impl Engine {
         }
         state.history.commit();
         self.clear_pending();
+        self.restart = None;
         if matches!(self.mode, Mode::Visual(_)) {
             self.end_visual(buf.cursor(), &*buf, state);
         }
@@ -503,6 +533,10 @@ impl Engine {
         self.clear_pending();
         if matches!(self.mode, Mode::Visual(_)) {
             self.end_visual(buf.cursor(), &*buf, state);
+        }
+        // After Visual: one opened inside `ctrl+o` ends back in it.
+        if matches!(self.mode, Mode::InsertNormal { .. }) {
+            self.resume_after_ctrl_o(buf, state);
         }
         self.clamp(buf);
         if self.in_insert() {
@@ -544,8 +578,12 @@ impl Engine {
         }
         let out = match self.mode {
             Mode::Insert | Mode::Replace => self.insert_key(ev, buf, state),
-            Mode::Normal | Mode::Visual(_) => {
-                let cx = ParseCx { visual: self.mode != Mode::Normal, multiline: B::MULTILINE };
+            Mode::Normal | Mode::Visual(_) | Mode::InsertNormal { .. } => {
+                let cx = ParseCx {
+                    visual: matches!(self.mode, Mode::Visual(_)),
+                    multiline: B::MULTILINE,
+                    restart: matches!(self.mode, Mode::InsertNormal { .. }),
+                };
                 match self.pending.feed(ev, cx) {
                     Step::More => Outcome::consumed(),
                     Step::Inert(note) => Outcome::Consumed { changed: false, note, request: None },
@@ -559,6 +597,17 @@ impl Engine {
         // keeps its step open until it ends (spec §3.11).
         if !self.in_insert() {
             state.history.commit();
+        }
+        // Vim's `normal_cmd()` tail: Insert restarts after one complete
+        // command, and before a key the engine hands back (the app sees it
+        // from Insert). Visual entered inside `ctrl+o` keeps the restart.
+        // Only after a key the Normal parser took: `ctrl+o` itself is an
+        // Insert key.
+        if !was_insert
+            && matches!(self.mode, Mode::InsertNormal { .. })
+            && (!self.pending() || matches!(out, Outcome::Declined { .. }))
+        {
+            self.resume_after_ctrl_o(buf, state);
         }
         let changed = self.finish_key(before, was_insert, buf, state);
         match out {
@@ -594,6 +643,14 @@ impl Engine {
         // sets nothing. A change that opens Insert records when the session
         // ends (`finish_record`).
         let mut record = None;
+        // Vim's `nv_beginline()` and `nv_home()`: "Don't move cursor past
+        // eol (only necessary in a one-character line)" when Insert resumes.
+        if let Cmd::Move { motion: m, .. } | Cmd::Operate { reach: Reach::Motion(m), .. } = cmd
+            && matches!(m, Motion::LineStart | Motion::FirstNonBlank)
+            && let Some(r) = &mut self.restart
+        {
+            r.at_eol = false;
+        }
         let out = match cmd {
             Cmd::Move { motion, count } => {
                 self.exec_move(motion, count, buf, st);
@@ -671,13 +728,21 @@ impl Engine {
             return;
         }
         let visual = if matches!(cmd, Cmd::VisualOp { .. }) { self.last_visual_size } else { None };
+        self.dot_prev = self.dot.take();
         self.dot = Some(Dot { cmd, insert, visual });
     }
 
     /// `.` with an optional new count (spec §3.12, Vim's `start_redo()`):
     /// one undo step, since `handle` commits once after it.
     fn exec_repeat<B: TextBuf>(&mut self, count: usize, buf: &mut B, st: &mut BufState, ctx: &ViewCtx) -> Outcome {
-        let Some(dot) = self.dot.clone() else { return Outcome::consumed() };
+        // Inside `ctrl+o` the insert itself is the newest record; Vim's
+        // `start_redo(old_redo)` runs the one before it, unless a cursor key
+        // split the insert and nothing was typed since (then the newest).
+        let old = matches!(self.mode, Mode::InsertNormal { .. }) && self.restart.is_some_and(|r| r.old_redo);
+        let Some(dot) = (if old { self.dot_prev.clone() } else { self.dot.clone() }) else { return Outcome::consumed() };
+        // A replayed insert replaces the restart while it runs (`invoke_edit`
+        // with something stuffed keeps it); put it back after.
+        let restart = self.restart.take();
         let out = match (dot.visual, dot.cmd) {
             (Some(size), Cmd::VisualOp { op, count: own, .. }) => {
                 // Vim's `redo_VIsual`: the same size from the caret, and the
@@ -714,6 +779,12 @@ impl Engine {
             self.end_insert(buf, st, true);
         }
         self.replaying_visual = false;
+        if let Some(r) = restart
+            && !self.in_insert()
+        {
+            self.restart = Some(r);
+            self.mode = Mode::InsertNormal { replace: r.replace };
+        }
         out
     }
 
@@ -765,7 +836,11 @@ impl Engine {
     }
 
     /// Where the caret may rest in the current mode: on a char in Normal,
-    /// also on the line's end in Insert and Visual (`selection=inclusive`).
+    /// also on the line's end in Insert and Visual (`selection=inclusive`),
+    /// and after a command inside Insert `ctrl+o` (Vim's `check_cursor_col()`
+    /// with `restart_edit` set: `x` on a line's last char leaves the caret on
+    /// the end, and Insert resumes there). A bare motion still stops on a
+    /// char there (`exec_move`).
     fn clamped<B: TextBuf>(&self, buf: &B, at: Pos) -> Pos {
         let row = at.row.min(buf.line_count() - 1);
         let len = buf.line_len(row);
@@ -775,7 +850,7 @@ impl Engine {
 
     fn paint<B: TextBuf>(&self, buf: &mut B) {
         buf.show(match self.mode {
-            Mode::Normal => Paint::Normal,
+            Mode::Normal | Mode::InsertNormal { .. } => Paint::Normal,
             Mode::Insert | Mode::Replace => Paint::Insert,
             Mode::Visual(shape) => Paint::Visual {
                 anchor: self.visual.unwrap_or_else(|| buf.cursor()),

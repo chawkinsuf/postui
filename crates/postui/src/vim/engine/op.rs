@@ -10,7 +10,7 @@ use super::keys::{CaseOp, Cmd, Op, Reach};
 use super::motion::{self, MKind, MotionCx};
 use super::register::{RegKind, Register};
 use super::settings::{SHIFTWIDTH, TABSTOP};
-use super::{BufState, Engine, Outcome, first_non_blank, first_non_blank_fix};
+use super::{BufState, Engine, Mode, Outcome, first_non_blank, first_non_blank_fix};
 use crate::components::line_input::flatten_paste;
 use ratatui::crossterm::event::KeyEvent;
 
@@ -383,7 +383,12 @@ impl Engine {
     /// `p` `P` with a count.
     pub(super) fn exec_put<B: TextBuf>(&mut self, before: bool, count: usize, reg: Option<char>, buf: &mut B, st: &mut BufState) {
         let reg = self.regs.read(reg).clone();
-        let caret = put(&mut Ed { buf: &mut *buf, hist: &mut st.history }, &reg, before, count.max(1));
+        let mut caret = put(&mut Ed { buf: &mut *buf, hist: &mut st.history }, &reg, before, count.max(1));
+        // Vim's `do_put()`: "For CTRL-O p in Insert mode, put cursor after
+        // last char" of a one-line charwise put.
+        if matches!(self.mode, Mode::InsertNormal { .. }) && reg.kind == RegKind::Char && !reg.text.is_empty() && !reg.text.contains('\n') {
+            caret.col += 1;
+        }
         self.land_caret(caret, buf, st);
     }
 
@@ -449,7 +454,10 @@ impl Engine {
         ed.save_cursor_line(caret);
         let end = Pos::new(caret.row, caret.col + n);
         recase_range(&mut ed, CaseOp::Toggle, Range { start: caret, end, kind: RKind::Char });
-        self.land_caret(Pos::new(caret.row, (caret.col + n).min(len - 1)), buf, st);
+        // Inside Insert `ctrl+o` the caret may stay past the last char
+        // (`check_cursor()` with `restart_edit`): Insert resumes there.
+        let to = if matches!(self.mode, Mode::InsertNormal { .. }) { caret.col + n } else { (caret.col + n).min(len - 1) };
+        self.land_caret(Pos::new(caret.row, to), buf, st);
         true
     }
 

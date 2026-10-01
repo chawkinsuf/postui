@@ -1027,6 +1027,40 @@ keys = ["i<C-d><Esc>", "i<C-t><Esc>", "i<C-d><C-d><C-d><Esc>", "ix<C-d><Esc>", "
 on = ["deep_indent"]
 at = ["each"]
 
+# --- plan 3c: Insert ctrl+o (Task 4) ---------------------------------------------
+
+# One Normal command, then Insert resumes: the caret goes back past the end
+# when it was there, or when the wanted column is right of it; a nested
+# insert replaces the restart; `.` repeats the change before the insert; the
+# undo step and the record end at ctrl+o. A case may end in niI/niR.
+[[group]]
+id = "insert/ctrl-o"
+tier = 2
+keys = ["iXY<C-o>0Z<Esc>", "iXY<C-o>0Z<Esc>u", "iXY<C-o>0Z<Esc>uu", "A<C-o>0Z<Esc>", "A<C-o>hZ<Esc>", "i<C-o>$Z<Esc>",
+        "xiX<C-o>.Y<Esc>", "iX<C-o>aY<Esc>W", "iX<C-o>rWY<Esc>", "iX<C-o>vlldY<Esc>", "iX<C-o><Esc>Y<Esc>", "iX<C-o>3lY<Esc>",
+        "xiX<C-o>uY<Esc>", "yiwiX<C-o>pY<Esc>", "iX<C-o>dwY<Esc>", "iX<C-o>2dwY<Esc>", "iX<C-o>d<Esc>Y<Esc>", "i<C-o>",
+        "3iX<C-o>lY<Esc>", "a<C-o>lX<Esc>", "iX<Left><C-o>.Y<Esc>", "iX<C-o>vl<Esc>Y<Esc>", "iX<C-o>JY<Esc>", "iX<C-o>0Y<Esc>k",
+        "A<C-o>0<Esc>j", "iX<C-o>ggY<Esc>", "iX<C-o>giY<Esc>", "iX<C-o>cwY<Esc>W", "iX<C-o>wY<Esc>u", "iX<C-o>xY<Esc>u",
+        "iX<C-o>xY<Esc>uu", "iX<C-o>xY<Esc>.", "iX<C-o>wY<Esc>.", "iX<C-o>w<C-o>wY<Esc>u", "iX<C-o>0<C-o>$Y<Esc>", "iX<C-o>yiwY<Esc>",
+        "iX<C-o>~Y<Esc>", "iX<C-o>v<Esc>Y<Esc>", "iX<C-o>viwY<Esc>", "iX<C-o>f<Esc>Y<Esc>", "iX<C-o>f Y<Esc>", "iX<C-o>kY<Esc>",
+        "iX<C-o><Left>Y<Esc>", "iX<C-o>iY<Esc>W", "iX<C-o>AY<Esc>W", "a<C-o>0<C-o>$X<Esc>", "i<C-o>$<C-o>0X<Esc>", "i<C-o>$<C-o>hX<Esc>",
+        "iX<C-o>3lY<Esc>u", "iX<C-o><C-r>Y<Esc>", "yiwiX<C-o>\"0pY<Esc>", "iX<C-o>2xY<Esc>", "iX<C-o>2xY<Esc>.", "Rx<C-o>lY<Esc>",
+        "R<C-o>", "R<C-o>v", "iX<C-o>v", "iX<C-o>gY<Esc>", "A<C-o>", "A<C-o>x", "iX<C-o>ciwY<Esc>W", "iX<C-o>oY<Esc>W",
+        "iX<C-o>ddY<Esc>", "iX<C-o>>>Y<Esc>", "iX<C-o>guiwY<Esc>", "iX<C-o>%Y<Esc>", "3iX<C-o>.Y<Esc>", "iX<C-o>nY<Esc>",
+        "iX<Esc>A<C-o>.Y<Esc>", "a<C-o>Y<Esc>", "iX<C-o>$<C-o>$Y<Esc>", "iX<C-o><C-a>Y<Esc>", "A<C-o>vd", "A<C-o>vdY<Esc>",
+        "iX<C-o>ggdGY<Esc>"]
+on = ["words", "json_pretty", "blank_edges", "tabs", "unicode", "empty", "one_char", "numbers"]
+at = ["bol", "mid", "eol"]
+
+[[group]]
+id = "insert/ctrl-o-lines"
+tier = 2
+keys = ["a<C-o>jX<Esc>", "A<C-o>jX<Esc>", "a<C-o>j<C-o>kX<Esc>", "A<C-o>j<C-o>kX<Esc>", "A<C-o>j<C-o>k<C-o>jX<Esc>", "o<C-o>kX<Esc>",
+        "O<C-o>jX<Esc>", "A<C-o>jjX<Esc>", "a<C-o>kX<Esc>", "A<C-o>GX<Esc>", "A<C-o>ggX<Esc>", "I<C-o>jX<Esc>", "A<C-o>jX<Esc>u",
+        "o<C-o>k<Esc>", "A<CR><C-o>kX<Esc>", "A<CR>X<C-o>kY<Esc>", "A<C-o>jX<C-o>kY<Esc>"]
+on = ["json_pretty", "tabs", "short_last", "blank_edges", "indent", "words"]
+at = ["bol", "fnb", "eol"]
+
 # --- fuzz atoms (generate.py --fuzz); tier 1 and the tier-2 first wave ------
 
 [fuzz]

@@ -844,9 +844,21 @@ impl Engine {
         let want = self.want_at(buf, st, from);
         let cx = MotionCx { op: None, visual, want };
         let m = run(buf, from, motion, count, &cx, &mut self.last_find);
-        buf.set_cursor(self.clamped(buf, m.to));
+        let mut to = self.clamped(buf, m.to);
+        if matches!(self.mode, Mode::InsertNormal { .. }) {
+            // Inside `ctrl+o` a motion still stops on a char (`oneright()`,
+            // `adjust_cursor()`); `j`, `k` and `$` reach the end through
+            // the wanted column when Insert resumes.
+            to.col = to.col.min(buf.line_len(to.row).saturating_sub(1));
+        }
+        buf.set_cursor(to);
         let to = buf.cursor();
-        st.set_want(updated_want(buf, to, m.want, want, self.tab_rule(st, to)), to);
+        match m.want {
+            // Vim's `w_set_curswant = TRUE`: computed when next needed, with
+            // the tab rule of that moment (Deviation 9).
+            WantUpdate::Here => st.forget_want(),
+            update => st.set_want(updated_want(buf, to, update, want, self.tab_rule(st, to)), to),
+        }
     }
 
     /// The column `j` and `k` aim for from `at`: the remembered one while
