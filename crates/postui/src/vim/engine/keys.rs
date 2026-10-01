@@ -62,6 +62,8 @@ pub(crate) enum Op {
     Yank,
     /// `g~` `gu` `gU`
     Case(CaseOp),
+    /// `>` `<`
+    Shift { right: bool },
 }
 
 /// What Visual `~` `u` `U` do to the selection.
@@ -274,6 +276,8 @@ pub(crate) fn op_name(op: Op) -> &'static str {
         Op::Case(CaseOp::Toggle) => "g~",
         Op::Case(CaseOp::Lower) => "gu",
         Op::Case(CaseOp::Upper) => "gU",
+        Op::Shift { right: true } => ">",
+        Op::Shift { right: false } => "<",
     }
 }
 
@@ -290,6 +294,7 @@ fn doubles(op: Op, ch: char) -> bool {
         Op::Case(CaseOp::Toggle) => ch == '~',
         Op::Case(CaseOp::Lower) => ch == 'u',
         Op::Case(CaseOp::Upper) => ch == 'U',
+        Op::Shift { right } => ch == if right { '>' } else { '<' },
     }
 }
 
@@ -523,12 +528,13 @@ impl Pending {
         };
         match ch {
             '"' => self.arm(ev, Prefix::Register),
-            'd' | 'c' | 'y' => {
+            'd' | 'c' | 'y' | '>' | '<' => {
                 self.keys.push(ev);
                 self.op = Some(match ch {
                     'd' => Op::Delete,
                     'c' => Op::Change,
-                    _ => Op::Yank,
+                    'y' => Op::Yank,
+                    _ => Op::Shift { right: ch == '>' },
                 });
                 Step::More
             }
@@ -924,6 +930,18 @@ mod tests {
         assert_eq!(cmd("g~", VISUAL), vop(CaseOp::Toggle));
         assert_eq!(cmd("gu", VISUAL), vop(CaseOp::Lower));
         assert_eq!(cmd("gU", VISUAL), vop(CaseOp::Upper));
+    }
+
+    #[test]
+    fn shift_operators_parse() {
+        use Motion::*;
+        let op = |op, reach, count| Cmd::Operate { op, reach, count, reg: None };
+        let (r, l) = (Op::Shift { right: true }, Op::Shift { right: false });
+        assert_eq!(cmd(">>", NORMAL), op(r, Reach::Line, 0));
+        assert_eq!(cmd("3<<", NORMAL), op(l, Reach::Line, 3));
+        assert_eq!(cmd(">j", NORMAL), op(r, Reach::Motion(Down), 0));
+        assert_eq!(cmd("2>3j", NORMAL), op(r, Reach::Motion(Down), 6));
+        assert!(matches!(feed(&mut Pending::default(), "><", NORMAL), Step::Inert(None)), "another operator cancels");
     }
 
     /// Review focus 5: terminals spell printable keys differently.

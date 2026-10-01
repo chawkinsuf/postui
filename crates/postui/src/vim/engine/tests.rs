@@ -1250,3 +1250,17 @@ fn case_operators_echo_and_cancel() {
         assert_eq!(f.text(), "abc");
     }
 }
+
+/// Plan 3b Task 3: the shift operators echo; in a one-line field `>>`
+/// indents the field as Vim indents a one-line buffer (Deviation 3).
+#[test]
+fn shift_operators_echo_and_indent_a_field() {
+    let mut f = Field::new("ab", 1);
+    f.keys("2>");
+    assert_eq!(f.engine.echo(), "2>");
+    f.key(esc());
+    f.keys(">>");
+    assert_eq!((f.text(), f.col()), ("  ab", 2));
+    f.keys("<<");
+    assert_eq!((f.text(), f.col()), ("ab", 0));
+}

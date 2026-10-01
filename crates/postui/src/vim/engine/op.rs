@@ -304,6 +304,18 @@ impl Engine {
             self.land_caret(r.start, buf, st);
             return true;
         }
+        if let Op::Shift { right } = op {
+            let (first, last) = (r.start.row, r.end.row);
+            let mut ed = Ed { buf: &mut *buf, hist: &mut st.history };
+            // Vim's `op_shift()`: the lines are saved first (so `<<` with no
+            // indent is still an undo step), each non-empty line moves one
+            // shiftwidth (an operator's count counts lines, not shifts), and
+            // the caret goes to the first line's first non-blank.
+            ed.save_rows(r.start, first, last);
+            let caret = shift_rows(&mut ed, first, last, right, 1);
+            self.land_caret(caret, buf, st);
+            return true;
+        }
         let caret = if op == Op::Yank {
             self.regs.yank(reg, yank_of(buf, r));
             r.start

@@ -632,6 +632,19 @@ keys = ["v$~", "v$u", "v$U", "viwU", "Vu", "VU", "vlU", "vlg~", "vlgu", "vlgU", 
 on = ["case_edges", "case_lines", "words"]
 at = ["bol", "mid", "eol"]
 
+# --- plan 3b: shift (Task 3) --------------------------------------------------
+
+[text.indent]
+lines = ["a", "  b", "", "\tc", "    d"]
+
+[[group]]
+id = "ops/shift"
+tier = 2
+keys = [">>", "<<", "3>>", "3<<", ">j", "<j", ">k", ">G", ">gg", "<G", ">w", ">2w", ">l", ">%", "2>>", "9>>",
+        ">>..", "<<.", ">>j.", ">i{", "2>j", ">>u", ">>u<C-r>", "<<u<C-r>", ">Gu"]
+on = ["indent", "json_pretty", "tabs", "words"]
+at = ["bol", "fnb", "eol"]
+
 # --- fuzz atoms (generate.py --fuzz); tier-1 keys only -----------------------
 
 [fuzz]
