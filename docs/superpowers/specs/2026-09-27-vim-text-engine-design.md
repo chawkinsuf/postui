@@ -60,7 +60,8 @@ Success criteria:
   on the body buffer. It also passes on the one-line buffer wherever Vim's
   result is one line (§6.5). Divergences are allowed only through
   `divergences.toml`, each one labelled and explained. Target at the first
-  release: zero divergences.
+  release: zero divergences, apart from the case-operator ones the user
+  accepted (§6.6).
 - `cargo test` needs no Vim installed. The golden file is committed.
 - The tier-2 rows marked "first wave" in §5 pass before piece 4 ships. The
   rest are generated into the golden file but reported as "not yet" without
@@ -858,7 +859,10 @@ up to two buffers:
   `Down` among them. Vim gives those keys an effect (spaces, an indent,
   an undo break), while the one-line field hands them to the app, so
   "declined = no effect" would be false. The first rule skips `o`,
-  `yyp`, `J` and Insert `Enter`; both rules' one-line behaviour is
+  `yyp`, `J` and Insert `Enter`; plan 3b (its Deviation 10) adds a
+  counted `o`/`O` (`3oX`), a put from a linewise `"0` (`yy"0p`), and
+  Insert `ctrl+r` of a register holding a control char (Vim types the
+  char's key, a field flattens it). Every rule's one-line behaviour is
   covered by S tests. The buffer is `LineInput::new(line)`.
 
 For each run the test does the following:
@@ -896,6 +900,16 @@ fails if an entry matches no case, or if the engine now matches Vim on a
 listed case, so stale entries can't pile up. Divergences should be rare.
 The one-line rules in §5 need none, because those cases are skipped by the
 one-line-result rule and pinned by S tests instead.
+
+Case operators (`you`, decided 2026-09-30): `g~ gu gU`, `~` and Visual
+`~ u U` re-case only their range, char by char, and their undo is exact.
+Vim's `op_tilde()` walks the range by a byte count, so it overruns the range
+when re-casing changes a char's UTF-8 length (`İ ı ſ K`), re-cases a whole
+line for `gu0` over an empty range in column 0, and its undo leaves the
+overrun text changed. Three `divergences.toml` entries record this, the
+only exceptions to the zero-divergence target (§2). Where the caret lands
+still follows Vim: after a linewise `gU` it stays on the same letter when a
+`ß` before it became "SS".
 
 ### 6.7 Regenerating
 
