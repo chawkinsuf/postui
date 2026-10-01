@@ -2095,3 +2095,37 @@ fn the_plus_register_copies_out_and_never_pastes_in() {
     assert_eq!(note(f.keys("+")).0, "paste with your terminal (ctrl+v)");
     assert_eq!(f.text(), "ef");
 }
+
+/// Plan 3c Task 10: `n` with nothing to repeat, `*` with nothing under the
+/// caret, a hit that wraps, and the last pattern shared by every buffer.
+#[test]
+fn search_motions_messages_and_the_shared_pattern() {
+    let message = |out: Outcome| match out {
+        Outcome::Consumed { note: Some(Note::Message(m)), .. } => m,
+        other => panic!("no message: {other:?}"),
+    };
+    let mut f = Field::new("foo bar foo", 0);
+    assert_eq!(message(f.keys("n")), "No previous regular expression");
+    assert!(!f.engine.hlsearch());
+    assert_eq!(f.keys("*"), Outcome::consumed());
+    assert_eq!(f.col(), 8);
+    assert!(f.engine.hlsearch());
+    assert_eq!(f.engine.last_search(), Some("\\<foo\\>"));
+    assert_eq!(message(f.keys("n")), "search hit BOTTOM, continuing at TOP");
+    assert_eq!(f.col(), 0);
+    assert_eq!(message(f.keys("N")), "search hit TOP, continuing at BOTTOM");
+    let mut g = Field::new("x foo", 0);
+    g.engine = f.engine;
+    g.keys("n");
+    assert_eq!(g.col(), 2, "the pattern is the engine's, not the buffer's");
+    let mut e = Field::new("   ", 1);
+    assert_eq!(message(e.keys("*")), "No string under cursor");
+    assert!(!e.engine.pending());
+    let mut b = Body::new("foo\nbar", 0, 0);
+    b.keys("d*");
+    assert_eq!(b.text(), "foo\nbar", "a wrap to itself deletes nothing");
+    b.keys("gv");
+    let mut q = Field::new("ab", 0);
+    q.keys("g*");
+    assert!(matches!(q.engine.mode(), Mode::Normal));
+}

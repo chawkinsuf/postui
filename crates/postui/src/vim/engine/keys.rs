@@ -150,6 +150,10 @@ pub(crate) enum Motion {
     UpFirstNonBlank,
     /// `H` `M` `L`: linewise, by the window
     ScreenLine(Screen),
+    /// `n` (`reverse` false) and `N`
+    SearchNext { reverse: bool },
+    /// `*` (`backward` false) and `#`
+    Ident { backward: bool },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -397,6 +401,10 @@ fn motion_of(key: Key) -> Option<Motion> {
         Key::Char('H') => Motion::ScreenLine(Screen::Top),
         Key::Char('M') => Motion::ScreenLine(Screen::Middle),
         Key::Char('L') => Motion::ScreenLine(Screen::Bottom),
+        Key::Char('n') => Motion::SearchNext { reverse: false },
+        Key::Char('N') => Motion::SearchNext { reverse: true },
+        Key::Char('*') => Motion::Ident { backward: false },
+        Key::Char('#') => Motion::Ident { backward: true },
         _ => return None,
     })
 }
@@ -415,7 +423,7 @@ fn object_of(key: Key) -> Option<Object> {
     })
 }
 
-const SEARCH_KEYS: [char; 6] = ['/', '?', 'n', 'N', '*', '#'];
+const SEARCH_KEYS: [char; 2] = ['/', '?'];
 
 impl Pending {
     pub(crate) fn is_empty(&self) -> bool {
@@ -742,6 +750,7 @@ impl Pending {
                 Key::Char('i') if self.op.is_none() && !cx.visual => self.cmd(|count, _| Cmd::Gi { count }),
                 Key::Char('v') if self.op.is_none() => self.cmd(|_, _| Cmd::Gv),
                 Key::Esc => self.inert(None),
+                Key::Char(c @ ('*' | '#' | 'n' | 'N')) => self.inert(Some(format!("g{c} not supported"))),
                 _ if self.op.is_none() && !cx.visual => self.decline(ev),
                 _ => self.inert(None),
             },
@@ -993,7 +1002,8 @@ mod tests {
         assert_eq!(note(feed(&mut Pending::default(), "gJ", NORMAL)), "gJ not supported");
         assert_eq!(note(feed(&mut Pending::default(), "d:", NORMAL)), "d: not supported");
         assert_eq!(note(feed(&mut Pending::default(), "d/", NORMAL)), "d/ not supported yet");
-        assert_eq!(note(feed(&mut Pending::default(), "n", NORMAL)), "n not supported yet");
+        assert_eq!(note(feed(&mut Pending::default(), "?", NORMAL)), "? not supported yet");
+        assert_eq!(note(feed(&mut Pending::default(), "g*", NORMAL)), "g* not supported");
         let mut p = Pending::default();
         assert_eq!(note(feed(&mut p, "\"a", NORMAL)), "register \"a not supported");
         assert!(p.is_empty(), "nothing is armed after an unsupported register");

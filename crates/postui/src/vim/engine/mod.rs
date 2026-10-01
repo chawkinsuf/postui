@@ -25,6 +25,7 @@ mod number;
 mod object;
 mod op;
 mod register;
+mod search;
 pub mod settings;
 #[cfg(test)]
 mod tests;
@@ -33,6 +34,7 @@ mod visual;
 
 pub use buf::{BodyBuf, BodyVisual, GuiSel, OneLineBuf, Paint, Pos, TextBuf};
 pub use register::{RegKind, Register, Registers};
+pub use search::Dir;
 
 use insert::{InsertKey, RegPending};
 use keys::{Cmd, Motion, Op, ParseCx, Pending, Reach, Step, VisualOp};
@@ -97,6 +99,8 @@ pub enum Settled {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Note {
     Unsupported(String),
+    /// A status message (the search messages): shown like a note, nothing is unsupported.
+    Message(String),
 }
 
 /// Something only the app can do (tier 2: `"+y`, plan 3c).
@@ -246,6 +250,14 @@ struct Dot {
     visual: Option<VisualSize>,
 }
 
+/// The last search (Vim's `spats[0]`): global, so `n` in a field repeats a
+/// search made in the body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LastSearch {
+    pub text: String,
+    pub dir: Dir,
+}
+
 /// A pending Insert restart (Vim's `restart_edit`, `ins_at_eol`, `o_lnum`):
 /// `ctrl+o` left Insert for one Normal command.
 #[derive(Debug, Clone, Copy)]
@@ -310,6 +322,10 @@ pub struct Engine {
     /// A message the last command left; `handle` takes it (a note from a
     /// motion, a search).
     note: Option<Note>,
+    /// The last pattern and its direction, for `n` and `N`.
+    last_search: Option<LastSearch>,
+    /// Vim's `hlsearch` state: on after any search command until `no_hlsearch`.
+    hl: bool,
 }
 
 impl Engine {
@@ -345,6 +361,21 @@ impl Engine {
     fn clear_pending(&mut self) {
         self.pending.clear();
         self.reg_pending = None;
+    }
+
+    /// The last pattern as typed, or made by `*`/`#`.
+    pub fn last_search(&self) -> Option<&str> {
+        self.last_search.as_ref().map(|s| s.text.as_str())
+    }
+
+    /// Whether the body should paint the last pattern's matches.
+    pub fn hlsearch(&self) -> bool {
+        self.hl && self.last_search.is_some()
+    }
+
+    /// `:noh` (piece 4): the highlight goes until the next search.
+    pub fn no_hlsearch(&mut self) {
+        self.hl = false;
     }
 
     pub fn registers(&self) -> &Registers {

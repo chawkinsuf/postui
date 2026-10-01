@@ -1159,6 +1159,40 @@ keys = ["zz", "zt", "zb", "10zt", "50zz", "50zb", "Gzz", "Gzt", "Gzb", "12zz", "
 on = ["long"]
 at = [[1, 1], [50, 1], [100, 1]]
 
+# --- plan 3c: search motions n N * # (Task 10) ---------------------------------------
+
+[text.search]
+lines = ["foo bar foo", "baz foo", "foobar a.b a*b", "x×y 日本語x 日本", "... --- a_b", "", "zzz"]
+
+[[group]]
+id = "search/ident"
+tier = 2
+keys = ["*", "#", "*n", "*N", "#n", "#N", "2*", "3*", "*nn", "d*", "c*X<Esc>", "y*P", "v*d", "*vNd", "*d2n", "*2n", "*vn", "*vN",
+        "V*d", "*u", "x*.", "d*u", "d*.", "*ggn", "*GN", "x*j.", "n", "N", "9n", "*9n", "#9N", "*x", "#x", "*<Esc>", "d*x",
+        "yiwjviwp*", "*0", "#$", "*v", "*V", "*vd", "*hn", "*ln", "*dnu", "*cnX<Esc>", "*ynP", "*vnd", "*vNo", "*3n", "*dN",
+        "*Nx", "x*n.", "**", "##", "*#", "#*", "3#", "*vd*", "jnj", "jNj", "j*j"]
+on = ["search", "words", "json_pretty", "unicode", "punct", "url", "quotes", "blank_edges", "empty", "one_char", "long"]
+at = ["bol", "mid", "eol"]
+
+[[group]]
+id = "search/ident-each"
+tier = 2
+keys = ["*", "#", "*n"]
+on = ["search", "punct", "unicode"]
+at = ["each"]
+
+# `#` escapes `?`, and `do_search()` keeps it unescaped: `N` after `#`
+# searches forward for a literal `?`.
+[text.search_question]
+lines = ["?? x ??", "a ??", "\\? b \\?"]
+
+[[group]]
+id = "search/ident-question"
+tier = 2
+keys = ["#", "#N", "#n", "*N", "#Nn"]
+on = ["search_question"]
+at = ["bol", "eol"]
+
 # --- fuzz atoms (generate.py --fuzz); tier 1 and the tier-2 first wave ------
 
 [fuzz]

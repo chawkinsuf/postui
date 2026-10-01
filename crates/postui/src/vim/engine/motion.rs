@@ -8,8 +8,9 @@ use super::buf::{Pos, TextBuf};
 use super::class::class;
 use super::keys::{FindKind, Motion, Op, Screen};
 use super::settings::{PARAGRAPHS, SECTIONS, TABSTOP};
+use super::search::{self, Dir};
 use super::view::View;
-use super::{BufState, Engine, Mode, ViewCtx, first_non_blank, first_non_blank_fix};
+use super::{BufState, Engine, LastSearch, Mode, Note, ViewCtx, first_non_blank, first_non_blank_fix};
 use unicode_width::UnicodeWidthChar;
 
 /// How an operator treats a motion (`:help exclusive`, `:help linewise`).
@@ -462,7 +463,9 @@ pub(crate) fn run<B: TextBuf>(
             Some(to) => Moved::to(to, MKind::Inclusive, WantUpdate::Here),
             None => Moved::refused(from),
         },
-        Motion::ScreenLine(_) => unreachable!("Engine::run_motion takes the window motions"),
+        Motion::ScreenLine(_) | Motion::SearchNext { .. } | Motion::Ident { .. } => {
+            unreachable!("Engine::run_motion takes the window and search motions")
+        }
     }
 }
 
@@ -885,7 +888,65 @@ impl Engine {
                 };
                 Moved::to(Pos::new(row, first_non_blank_fix(&buf.line(row))), MKind::Linewise, WantUpdate::Here)
             }
+            Motion::SearchNext { reverse } => {
+                let Some(last) = self.last_search.clone() else {
+                    // `normal_search()` resets the wanted column before
+                    // `do_search()` finds no pattern (probed: `jnj`).
+                    self.note = Some(Note::Message("No previous regular expression".into()));
+                    return Moved { to: from, kind: MKind::Exclusive, want: WantUpdate::Here, failed: true, no_adjust: false };
+                };
+                let dir = match (last.dir, reverse) {
+                    (Dir::Forward, false) | (Dir::Backward, true) => Dir::Forward,
+                    _ => Dir::Backward,
+                };
+                self.search_motion(buf, from, &last.text, dir, count)
+            }
+            Motion::Ident { backward } => {
+                let line = buf.line(from.row);
+                let Some((start, end)) = search::find_ident(&line, from.col) else {
+                    self.note = Some(Note::Message("No string under cursor".into()));
+                    return Moved::refused(from);
+                };
+                let dir = if backward { Dir::Backward } else { Dir::Forward };
+                // Vim's `do_search()` keeps the pattern as its delimiter
+                // leaves it: `#`'s `\?` becomes `?`.
+                let text = search::as_stored(&search::ident_pattern(&line, start, end, backward), dir);
+                self.last_search = Some(LastSearch { text: text.clone(), dir });
+                self.search_motion(buf, Pos::new(from.row, start), &text, dir, count)
+            }
             _ => run(buf, from, motion, count, cx, &mut self.last_find),
+        }
+    }
+
+    /// A search as a motion (Vim's `normal_search()`): exclusive, charwise,
+    /// the wanted column reset even on failure; a wrap or a miss leaves its
+    /// message, and the highlight goes on.
+    pub(super) fn search_motion<B: TextBuf>(&mut self, buf: &B, from: Pos, text: &str, dir: Dir, count: usize) -> Moved {
+        self.hl = true;
+        let pat = match search::compile(text, dir) {
+            Ok(p) => p,
+            Err(atom) => {
+                self.note = Some(Note::Message(format!("pattern not supported: {atom}")));
+                return Moved { to: from, kind: MKind::Exclusive, want: WantUpdate::Here, failed: true, no_adjust: false };
+            }
+        };
+        match search::search(buf, from, dir, count, &pat) {
+            Some((to, wrapped)) => {
+                if wrapped {
+                    self.note = Some(Note::Message(
+                        match dir {
+                            Dir::Forward => "search hit BOTTOM, continuing at TOP",
+                            Dir::Backward => "search hit TOP, continuing at BOTTOM",
+                        }
+                        .into(),
+                    ));
+                }
+                Moved::to(to, MKind::Exclusive, WantUpdate::Here)
+            }
+            None => {
+                self.note = Some(Note::Message(format!("Pattern not found: {text}")));
+                Moved { to: from, kind: MKind::Exclusive, want: WantUpdate::Here, failed: true, no_adjust: false }
+            }
         }
     }
 
