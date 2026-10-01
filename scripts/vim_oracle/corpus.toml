@@ -810,7 +810,8 @@ keys = ["aX<Esc>jgiY<Esc>", "giY<Esc>", "gi<Esc>", "AX<Esc>ggdd0giY<Esc>", "AX<E
         "AX<Esc>Gdk0giY<Esc>", "AX<Esc>ggdju0giY<Esc>", "iX<Esc>kJu0giY<Esc>", "AX<Esc>k0dd0giY<Esc>",
         "AX<Esc>kyyP0giY<Esc>", "AX<Esc>kyyp0giY<Esc>", "iX<Esc>k0i<CR><Esc>G0giY<Esc>",
         "AX<Esc>k$a<Del><Esc>jgiY<Esc>", "3aX<Esc>0giY<Esc>", "j0r<Tab>gg0giY<Esc>", "3r<Tab>j0giY<Esc>",
-        "r<Tab>j0.gg0giY<Esc>"]
+        "r<Tab>j0.gg0giY<Esc>", "AX<CR><BS><Esc>u0giY<Esc>", "jAX<CR><BS><Esc>uggjgiY<Esc>",
+        "AX<CR><BS><Esc>u<C-r>0giY<Esc>"]
 on = ["json_pretty", "blank_edges", "short_last", "words"]
 at = ["bol", "fnb", "eol"]
 

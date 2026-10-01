@@ -360,9 +360,10 @@ fn block<B: TextBuf>(buf: &B, at: Pos, now: &str, then: &str, join: bool) -> Blo
 /// lines leaves it past the end), then goes one line up when it is just
 /// below the saved caret (the `o` case), and takes the saved column only on
 /// the saved caret's row, else `beginline(BL_SOL | BL_FIX)`. The golden
-/// file's `u` and `u<C-r>` cases pin all of this. The marks move as
-/// `u_undoredo()`'s `mark_adjust()` moves them for each block that changes
-/// size.
+/// file's `u` and `u<C-r>` cases pin all of this. The marks move once, as
+/// `u_undoredo()`'s `mark_adjust()` moves them for an undo entry whose size
+/// changed, by the step's net block: from the first row any edit touched to
+/// the last, sized before and after.
 fn undo_redo<B: TextBuf>(buf: &mut B, step: &mut Step, undo: bool, marks: &mut Marks) -> Pos {
     let before = marks.visual;
     let saved = step.caret_before;
@@ -370,9 +371,15 @@ fn undo_redo<B: TextBuf>(buf: &mut B, step: &mut Step, undo: bool, marks: &mut M
     // Vim's `newlnum`, as a 0-based row of the first line in a block.
     let mut newlnum = usize::MAX;
     let mut row = None;
+    // The step's net block, for the marks: the rows before its first block
+    // and after its last one, which no edit touches.
+    let lines_before = buf.line_count();
+    let (mut head, mut tail) = (usize::MAX, usize::MAX);
     for (n, e) in order.iter().enumerate() {
         let (now, then) = if undo { (&e.inserted, &e.removed) } else { (&e.removed, &e.inserted) };
         let b = block(buf, e.at, now, then, e.joined);
+        head = head.min(b.first);
+        tail = tail.min(buf.line_count().saturating_sub(b.first + b.now));
         if b.first < newlnum {
             if saved.row + 1 >= b.first && saved.row <= b.first + b.lines.len() {
                 row = Some(saved.row);
@@ -392,7 +399,15 @@ fn undo_redo<B: TextBuf>(buf: &mut B, step: &mut Step, undo: bool, marks: &mut M
             }
         }
         buf.splice(e.at, end_of(e.at, now), then);
-        marks.lines_replaced(b.first, b.now, b.lines.len());
+    }
+    // Vim's `u_undoredo()` moves the marks by each undo entry's net size,
+    // and one change (a whole Insert session) is one entry: a session whose
+    // line count changed and changed back moves no mark. The step's net
+    // block stands in for that entry.
+    if head != usize::MAX {
+        let now = lines_before.saturating_sub(head + tail);
+        let new = buf.line_count().saturating_sub(head + tail);
+        marks.lines_replaced(head, now, new);
     }
     // Vim's `u_undoredo()` puts back the Visual area the change was made
     // with and keeps the one it replaces, for the way back.
