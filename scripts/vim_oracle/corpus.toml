@@ -707,6 +707,24 @@ keys = ["+", "-", "<CR>", "3+", "9+", "3-", "9-", "+-", "$j+k", "$+k", "d+", "d-
 on = ["json_pretty", "blank_edges", "words", "one_char", "empty", "indent"]
 at = ["bol", "mid", "eol"]
 
+# --- plan 3b: ip ap (Task 5) --------------------------------------------------
+
+[[group]]
+id = "objects/para"
+tier = 2
+keys = ["dip", "dap", "yip", "yap", "cipX<Esc>", "d2ip", "d3ip", "d2ap", "d9ap", "dipu", "dip.", ">ip", "g~ap",
+        "dapu<C-r>", "y2ap"]
+on = ["paras", "json_gaps", "blank_edges", "nroff", "words", "empty"]
+at = ["bol", "mid", "eol", "empty"]
+
+[[group]]
+id = "objects/para-visual"
+tier = 2
+keys = ["vip", "vap", "Vip", "vipip", "vipipip", "vapap", "vipkip", "Vkip", "Vkap", "Vipip", "vjip", "v9ip",
+        "vj9ip", "vipd", "vipdj.", "vipo", "Vjap", "vkip"]
+on = ["paras", "json_gaps", "blank_edges", "words", "empty"]
+at = ["bol", "mid", "eol", "empty"]
+
 # --- fuzz atoms (generate.py --fuzz); tier-1 keys only -----------------------
 
 [fuzz]

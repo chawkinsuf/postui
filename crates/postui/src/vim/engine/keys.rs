@@ -157,6 +157,8 @@ pub(crate) enum Object {
     Quote(char),
     /// The opening char: `(`, `[` or `{`.
     Block(char),
+    /// `ip` `ap`
+    Paragraph,
 }
 
 /// What an operator acts on.
@@ -366,6 +368,7 @@ fn object_of(key: Key) -> Option<Object> {
     Some(match c {
         'w' => Object::Word { big: false },
         'W' => Object::Word { big: true },
+        'p' => Object::Paragraph,
         '"' | '\'' | '`' => Object::Quote(c),
         '(' | ')' | 'b' => Object::Block('('),
         '[' | ']' => Object::Block('['),
@@ -975,6 +978,14 @@ mod tests {
             Cmd::Operate { op: Op::Delete, reach: Reach::Motion(WordEndBack { big: false }), count: 0, reg: None }
         );
         assert_eq!(cmd("ge", VISUAL), mv(WordEndBack { big: false }, 0));
+    }
+
+    #[test]
+    fn paragraph_objects_parse() {
+        let par = |inner| Reach::Object { obj: Object::Paragraph, inner };
+        assert_eq!(cmd("dip", NORMAL), Cmd::Operate { op: Op::Delete, reach: par(true), count: 0, reg: None });
+        assert_eq!(cmd("y2ap", NORMAL), Cmd::Operate { op: Op::Yank, reach: par(false), count: 2, reg: None });
+        assert_eq!(cmd("ap", VISUAL), Cmd::VisualObject { obj: Object::Paragraph, inner: false, count: 0 });
     }
 
     /// Review focus 5: terminals spell printable keys differently.

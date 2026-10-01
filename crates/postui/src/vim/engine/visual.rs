@@ -75,16 +75,20 @@ impl Engine {
     }
 
     /// Vim's `nv_object()` in Visual: the object's start becomes the anchor
-    /// and its end the caret, and a linewise selection turns charwise. When
-    /// there is no such object the shape stays, but the caret goes where
-    /// the object's walk stopped (and the anchor where Vim had moved it).
+    /// and its end the caret. A word, quote or block makes the selection
+    /// charwise; a paragraph makes it linewise, or keeps its shape when it
+    /// grows a selection over more than one line. When there is no such
+    /// object, the shape stays, but the caret goes where the object's walk
+    /// stopped (and the anchor where Vim had moved it).
     fn visual_object<B: TextBuf>(&mut self, obj: Object, inner: bool, count: usize, buf: &mut B, st: &mut BufState) {
         let caret = buf.cursor();
         let anchor = self.visual.unwrap_or(caret);
-        match object::pick(buf, caret, Some(anchor), obj, inner, count) {
+        match object::pick(buf, caret, Some(anchor), self.mode == Mode::Visual(Shape::Line), obj, inner, count) {
             Ok(p) => {
                 self.visual = Some(p.start);
-                self.mode = Mode::Visual(Shape::Char);
+                if let Some(shape) = p.shape {
+                    self.mode = Mode::Visual(shape);
+                }
                 self.land_caret(p.end, buf, st);
             }
             Err(missed) => {

@@ -489,7 +489,7 @@ impl Engine {
                 span.no_adjust = moved.no_adjust;
                 Some(span)
             }
-            Reach::Object { obj, inner } => match super::object::pick(buf, from, None, obj, inner, count) {
+            Reach::Object { obj, inner } => match super::object::pick(buf, from, None, false, obj, inner, count) {
                 Ok(picked) => Some(picked.span()),
                 Err(missed) => {
                     // Vim's `nv_object`: the operator is cancelled, the caret
