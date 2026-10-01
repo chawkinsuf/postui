@@ -65,10 +65,12 @@ for s:c in s:cases
   " mode and clears a pending Insert restart (a case ending inside Insert
   " ctrl+o, or in Visual entered from it), which `:normal! <Esc>` cannot,
   " since `:normal` saves and restores it (trap 13).
-  try
-    call feedkeys(s:keys . "\<Cmd>call Capture()\<CR>\<C-\>\<C-n>", 'ntx')
-  catch
-  endtry
+  " Trap 15: no `try` (and no `silent!`) around it. Inside a `try` an error
+  " (E486) becomes an exception, and with `silent!` it returns early: either
+  " way `emsg()` skips `flush_buffers()`, so a `.` whose search fails runs the
+  " rest of its redo as commands, which real Vim never does (proven
+  " 2026-10-01: `c/o<CR>Y<Esc>j.` yanked the line under both, not plain).
+  call feedkeys(s:keys . "\<Cmd>call Capture()\<CR>\<C-\>\<C-n>", 'ntx')
   call add(s:out, json_encode({'id': s:c.id, 'capture': g:oracle_cap, 'errmsg': v:errmsg}))
   " Wiping the only buffer opens an empty one in its place, and Vim reuses
   " the current buffer for that when it is empty: a case that ends with the

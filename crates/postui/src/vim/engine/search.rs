@@ -524,26 +524,105 @@ pub(crate) fn ident_pattern(line: &[char], start: usize, end: usize, backward: b
 /// literal `?` in any direction. `*`'s and `#`'s patterns go through it
 /// too, so `#` on `??` stores `??`.
 pub(crate) fn as_stored(pat: &str, dir: Dir) -> String {
-    if dir == Dir::Forward {
-        return pat.to_string();
-    }
     let src: Vec<char> = pat.chars().collect();
-    let mut out = String::with_capacity(pat.len());
-    let mut i = 0;
-    while i < src.len() {
-        // A backslash pair is one item (`\\?` keeps its `\\`).
-        if src[i] == '\\' && i + 1 < src.len() {
-            if src[i + 1] != '?' {
+    skip_regexp(&src, dir, false).0
+}
+
+/// Vim's `skip_regexp_ex()`: the pattern typed for `dir` as `do_search()`
+/// keeps it (`\?` becomes `?` in a `?` search), and where it ends: at the
+/// first `dir.delim()` that is neither escaped nor inside a `[…]` when
+/// `stop` is set, else at the end. A `[` with no closing `]` takes the
+/// rest of the line (`/[/` is the pattern `[/`). `\v` and `\V` switch
+/// whether a bare `[` opens a collection, as in Vim.
+fn skip_regexp(src: &[char], dir: Dir, stop: bool) -> (String, usize) {
+    let delim = dir.delim();
+    let mut out = String::with_capacity(src.len());
+    // Vim's `mymagic >= MAGIC_ON`.
+    let mut magic = true;
+    let mut p = 0;
+    while p < src.len() {
+        let c = src[p];
+        if stop && c == delim {
+            break;
+        }
+        if (c == '[' && magic) || (c == '\\' && src.get(p + 1) == Some(&'[') && !magic) {
+            // `skip_anyof(p + 1)`, as the C passes it in both cases.
+            let close = skip_anyof(src, p + 1);
+            if close >= src.len() {
+                out.extend(&src[p..]);
+                return (out, src.len());
+            }
+            out.extend(&src[p..=close]);
+            p = close + 1;
+        } else if c == '\\' && p + 1 < src.len() {
+            // A backslash pair is one item (`\\?` keeps its `\\`).
+            let n = src[p + 1];
+            if !(dir == Dir::Backward && n == '?') {
                 out.push('\\');
             }
-            out.push(src[i + 1]);
-            i += 2;
+            out.push(n);
+            match n {
+                'v' => magic = true,
+                'V' => magic = false,
+                _ => {}
+            }
+            p += 2;
         } else {
-            out.push(src[i]);
-            i += 1;
+            out.push(c);
+            p += 1;
         }
     }
-    out
+    (out, p)
+}
+
+/// Vim's `skip_anyof()` from just after a `[`: the index of the `]` that
+/// closes the collection, or `src.len()` when none does.
+fn skip_anyof(src: &[char], mut p: usize) -> usize {
+    const CLASSES: [&str; 19] = [
+        "alnum", "alpha", "blank", "cntrl", "digit", "graph", "lower", "print", "punct", "space", "upper", "xdigit", "tab",
+        "return", "backspace", "escape", "ident", "keyword", "fname",
+    ];
+    if src.get(p) == Some(&'^') {
+        p += 1;
+    }
+    if matches!(src.get(p), Some(']' | '-')) {
+        p += 1;
+    }
+    while p < src.len() && src[p] != ']' {
+        let c = src[p];
+        if c == '-' {
+            p += 1;
+            if p < src.len() && src[p] != ']' {
+                p += 1;
+            }
+        } else if c == '\\' && src.get(p + 1).is_some_and(|n| "]^-n\\".contains(*n) || "nrtebdoxuU".contains(*n)) {
+            p += 2;
+        } else if c == '[' {
+            // `[:name:]` with a known name, `[=x=]`, `[.x.]`: one item.
+            let class = src.get(p + 1) == Some(&':')
+                && src[p + 2..].windows(2).position(|w| w == [':', ']']).is_some_and(|end| {
+                    let name: String = src[p + 2..p + 2 + end].iter().collect();
+                    if CLASSES.contains(&name.as_str()) {
+                        p += 2 + end + 2;
+                        true
+                    } else {
+                        false
+                    }
+                });
+            let equiv = !class
+                && matches!(src.get(p + 1), Some('=' | '.'))
+                && src.get(p + 3) == src.get(p + 1)
+                && src.get(p + 4) == Some(&']');
+            if equiv {
+                p += 5;
+            } else if !class {
+                p += 1;
+            }
+        } else {
+            p += 1;
+        }
+    }
+    p
 }
 
 /// The `/` or `?` line while it is typed (spec §3.14, Deviation 16; Vim's
@@ -613,27 +692,14 @@ impl Prompt {
         self.cursor = 0;
     }
 
-    /// The pattern and the offset: the text up to the first unescaped
-    /// delimiter (`/` or `?` for this direction), and what follows it.
+    /// The pattern and the offset: the text up to the first delimiter (`/`
+    /// or `?` for this direction) that is neither escaped nor inside a
+    /// `[…]` (Vim's `skip_regexp()`), and what follows it.
     pub(crate) fn split(&self) -> (String, String) {
-        let delim = self.dir.delim();
-        let mut pat = String::new();
-        let mut i = 0;
-        while i < self.text.len() {
-            let c = self.text[i];
-            if c == '\\' && i + 1 < self.text.len() {
-                pat.push(c);
-                pat.push(self.text[i + 1]);
-                i += 2;
-                continue;
-            }
-            if c == delim {
-                return (pat, self.text[i + 1..].iter().collect());
-            }
-            pat.push(c);
-            i += 1;
-        }
-        (pat, String::new())
+        let (_, end) = skip_regexp(&self.text, self.dir, true);
+        let pat = self.text[..end].iter().collect();
+        let offset = self.text.get(end + 1..).map_or(String::new(), |rest| rest.iter().collect());
+        (pat, offset)
     }
 }
 
@@ -823,5 +889,30 @@ mod tests {
             q.insert(c);
         }
         assert_eq!(q.split(), ("a/b".to_string(), String::new()));
+    }
+
+    /// Vim's `skip_regexp()` skips a `[…]`: a delimiter inside one does not
+    /// end the pattern, an unclosed `[` takes the rest, and `\?` inside one
+    /// is kept as typed.
+    #[test]
+    fn the_delimiter_inside_brackets_is_text() {
+        let split = |dir: Dir, typed: &str| {
+            let mut p = Prompt::new(dir);
+            for c in typed.chars() {
+                p.insert(c);
+            }
+            p.split()
+        };
+        let s = |a: &str, b: &str| (a.to_string(), b.to_string());
+        assert_eq!(split(Dir::Forward, "a[/]b"), s("a[/]b", ""));
+        assert_eq!(split(Dir::Forward, "a[/]b/e"), s("a[/]b", "e"));
+        assert_eq!(split(Dir::Forward, "[/"), s("[/", ""));
+        assert_eq!(split(Dir::Forward, "[]/]x/"), s("[]/]x", ""));
+        assert_eq!(split(Dir::Forward, "[[:alpha:]/]/e"), s("[[:alpha:]/]", "e"));
+        assert_eq!(split(Dir::Backward, "x[?]y"), s("x[?]y", ""));
+        assert_eq!(split(Dir::Backward, "[?"), s("[?", ""));
+        assert_eq!(split(Dir::Backward, "a\\[?b"), s("a\\[", "b"));
+        assert_eq!(as_stored("\\?[\\?]", Dir::Backward), "?[\\?]");
+        assert_eq!(chain(&as_stored("x[?]y", Dir::Backward), "x?y"), vec![(0, 3)]);
     }
 }

@@ -1214,7 +1214,7 @@ keys = ["d/foo<CR>", "c/bar<CR>X<Esc>", "y/foo<CR>P", "v/foo<CR>d", "d?foo<CR>",
         "d/zzz<CR>", "d/zzz<CR>x", "d2/foo<CR>", "2d/foo<CR>", "d/foo<CR>u", "d/foo<CR>u<C-r>", "d/foo<CR>ddu", "V/foo<CR>d",
         "v/foo<CR>", "v?foo<CR>d", "vd?foo<CR>", "d/foo<Esc>x", "d/a<CR>", "c/a<CR>X<Esc>", "y/o<CR>P", "d?a<CR>", "d/<CR>", "d/x*<CR>",
         "d/$<CR>", "d/^<CR>", "d?^<CR>", "d?$<CR>", "d/\\<lt>foo\\><CR>", "gU/o<CR>", ">/foo<CR>", "d/foo<CR>d/foo<CR>", "v/o<CR>o/o<CR>d",
-        "d/foo<CR>2.", "d/o<CR>j.", "c/o<CR>Y<Esc>j.", "/bar<CR>d/<CR>/foo<CR>."]
+        "d/foo<CR>2.", "d/o<CR>j.", "c/o<CR>Y<Esc>j.", "/bar<CR>d/<CR>/foo<CR>.", "/a<CR>d?<CR>/a<CR>.n"]
 on = ["search", "words", "json_pretty", "unicode", "blank_edges", "empty", "one_char"]
 at = ["bol", "mid", "eol"]
 
@@ -1232,7 +1232,8 @@ keys = ["/\\<lt>foo\\><CR>", "/fo*<CR>", "/f.o<CR>", "/^baz<CR>", "/foo$<CR>", "
         "/\\d\\+<CR>", "/\\q<CR>", "/\\/<CR>", "?\\?<CR>", "?\\/<CR>", "/\\?<CR>", "/?<CR>", "/r?<CR>", "/foo?<CR>", "?foo/<CR>",
         "/a\\\\r<CR>", "/\\\\<CR>", "/\\~<CR>", "/\\{2,3}<CR>", "/a\\{2,3}b<CR>", "/a\\{2,}b<CR>", "/a\\{,2}b<CR>", "/a\\{}b<CR>",
         "/\\<lt>ab\\>\\<lt><CR>", "/a\\<lt>b<CR>", "/a\\>\\<lt>b<CR>", "/b\\>ar<CR>", "/\\(\\<lt>ba\\)<CR>", "/a[]-]b<CR>", "/a[\\]]b<CR>",
-        "/a[[]b<CR>", "/b\\sc<CR>", "/a\\Wb<CR>", "/a\\wb<CR>", "/b[a^]r<CR>", "/b[\\n]r<CR>", "/b[\\.]r<CR>"]
+        "/a[[]b<CR>", "/b\\sc<CR>", "/a\\Wb<CR>", "/a\\wb<CR>", "/b[a^]r<CR>", "/b[\\n]r<CR>", "/b[\\.]r<CR>",
+        "/a[/]b<CR>", "?x[?]y<CR>", "/[/<CR>", "?[?<CR>"]
 on = ["search", "words", "punct", "quotes", "unicode", "tabs"]
 at = ["bol", "eol"]
 
@@ -1249,9 +1250,22 @@ keys = ["/\\<lt>foo\\><CR>", "/a[]-]b<CR>", "/a[\\]]b<CR>", "/a[^X]b<CR>", "/a[[
         "/\\\\<CR>", "/\\~<CR>", "/b[-]r<CR>", "/b[a-]r<CR>", "/b[\\-]r<CR>", "/b[\\\\]r<CR>", "/b[\\^]r<CR>", "/b[a^]r<CR>", "/b[\\t]r<CR>",
         "/b[.]r<CR>", "/b[\\.]r<CR>", "/b[]]r<CR>", "/b[^]]r<CR>", "/\\(x\\)\\{2}<CR>", "/\\(x\\|r\\)*<CR>", "/\\d\\+<CR>", "/\\D<CR>",
         "/\\S<CR>", "/\\W<CR>", "/a\\/b<CR>", "/a/b<CR>", "?x\\?<CR>", "?r\\?<CR>", "/r?<CR>", "/?<CR>", "?\\?<CR>", "?\\/<CR>", "/\\/<CR>",
-        "/a \\<lt>b<CR>", "/a\\<lt>b<CR>", "/a\\>\\<lt>b<CR>", "/aa<CR>", "/ab<CR>", "?ab<CR>", "?ab<CR>N"]
+        "/a \\<lt>b<CR>", "/a\\<lt>b<CR>", "/a\\>\\<lt>b<CR>", "/aa<CR>", "/ab<CR>", "?ab<CR>", "?ab<CR>N",
+        "/a[/]b<CR>", "?x[?]y<CR>", "/[/<CR>", "?[?<CR>"]
 on = ["search_cases"]
 at = ["bol", "mid", "eol"]
+
+# Vim's skip_regexp() skips a [...] when it looks for the delimiter: `/a[/]b`
+# is one pattern, and an unclosed `[` takes the rest (`/[/` is `[/`).
+[text.search_brackets]
+lines = ["ab x?y a/b", "[/ z [? x"]
+
+[[group]]
+id = "search/patterns-brackets"
+tier = 2
+keys = ["/a[/]b<CR>", "?x[?]y<CR>", "/[/<CR>", "?[?<CR>", "?x[?]y<CR>n", "/[/<CR>N", "?[?<CR>N"]
+on = ["search_brackets"]
+at = ["bol", "eol"]
 
 [[group]]
 id = "search/edit"

@@ -260,9 +260,9 @@ struct Dot {
     insert: Option<Vec<InsertKey>>,
     /// A Visual command's selection size, replayed from the caret.
     visual: Option<VisualSize>,
-    /// The pattern a search motion typed; `.` makes it the last pattern
-    /// again (Vim re-types it). `None` for an empty prompt (`d/<CR>`),
-    /// whose `.` uses the last pattern of its moment, as Vim's does.
+    /// What a search motion typed, re-typed by `.` as Vim's redo buffer
+    /// does: a pattern becomes the last one again; an empty one (`d?<CR>`,
+    /// `text` empty) uses the last pattern of its moment in its direction.
     search: Option<LastSearch>,
 }
 
@@ -344,7 +344,7 @@ pub struct Engine {
     hl: bool,
     /// The `/` or `?` prompt while it is open; `mode` is the mode under it.
     search: Option<search::Prompt>,
-    /// The pattern the running search motion typed (`None` for an empty
+    /// What the running search motion typed (an empty `text` for an empty
     /// prompt), for the `.` record (`Dot::search`).
     typed_search: Option<LastSearch>,
 }
@@ -468,16 +468,7 @@ impl Engine {
     fn run_search<B: TextBuf>(&mut self, buf: &mut B, st: &mut BufState, ctx: &ViewCtx) -> Outcome {
         let p = self.search.take().expect("the prompt is open");
         let (pat, offset) = p.split();
-        if pat.is_empty() {
-            if let Some(last) = &mut self.last_search {
-                last.dir = p.dir;
-            }
-            self.typed_search = None;
-        } else {
-            let last = LastSearch { text: search::as_stored(&pat, p.dir), dir: p.dir };
-            self.last_search = Some(last.clone());
-            self.typed_search = Some(last);
-        }
+        self.type_search(LastSearch { text: search::as_stored(&pat, p.dir), dir: p.dir });
         if !offset.is_empty() {
             self.pending.clear();
             return Outcome::Consumed { changed: false, note: Some(Note::Message("search offsets not supported".into())), request: None };
@@ -486,6 +477,21 @@ impl Engine {
             Step::Cmd(cmd) => self.run(cmd, buf, st, ctx),
             _ => unreachable!("search_done always completes the command"),
         }
+    }
+
+    /// What typing a pattern on the prompt does (Vim's `do_search()`), and
+    /// what `.` re-types: a pattern replaces the last one; an empty one
+    /// keeps it and gives it the typed direction, which `n` then follows.
+    /// Either way it is remembered for the `.` record (`Dot::search`).
+    fn type_search(&mut self, typed: LastSearch) {
+        if typed.text.is_empty() {
+            if let Some(last) = &mut self.last_search {
+                last.dir = typed.dir;
+            }
+        } else {
+            self.last_search = Some(typed.clone());
+        }
+        self.typed_search = Some(typed);
     }
 
     /// The prompt for the footer or the body's bottom row (spec §3.14).
@@ -1015,9 +1021,9 @@ impl Engine {
         // Vim's redo buffer holds the typed pattern (`cpoptions` has no
         // `r`): `d/foo<CR>.` searches `foo` again and makes it the last
         // pattern. An empty prompt's `.` uses the last pattern of its moment.
-        self.typed_search = dot.search.clone();
-        if let Some(s) = &dot.search {
-            self.last_search = Some(s.clone());
+        self.typed_search = None;
+        if let Some(s) = dot.search.clone() {
+            self.type_search(s);
         }
         // A replayed insert replaces the restart while it runs (`invoke_edit`
         // with something stuffed keeps it); put it back after.
