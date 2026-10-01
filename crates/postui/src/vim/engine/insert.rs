@@ -108,6 +108,11 @@ pub(crate) struct Session {
     /// Typing resumed after a cursor key: `.` only takes this record if
     /// something is typed (Vim's pretend `1i`).
     pub resumed: bool,
+    /// `Some` in a Replace session: Vim's replace stack. `None` is a NUL
+    /// marker (a char typed past the line's end, a line break, an indent
+    /// `autoindent` added: nothing to put back); `Some(c)` is the char a
+    /// typed char overwrote, pushed after its marker. `BS` pops it.
+    pub replace: Option<Vec<Option<char>>>,
 }
 
 impl Session {
@@ -122,6 +127,7 @@ impl Session {
             typed: Vec::new(),
             ai_row: None,
             resumed: false,
+            replace: None,
         }
     }
 
@@ -167,7 +173,7 @@ impl Engine {
     /// the Insert commands open it, and only leaving Insert drops it. A
     /// missing one is a bug in those edges; release builds open a stand-in
     /// rather than panic.
-    fn session(&mut self) -> &mut Session {
+    pub(super) fn session(&mut self) -> &mut Session {
         debug_assert!(self.insert.is_some(), "Insert mode with no open session");
         self.insert.get_or_insert_with(|| Session::new(Pos::default(), ONE_I))
     }
@@ -186,13 +192,21 @@ impl Engine {
     /// record only once something is typed, and keeps its old value until
     /// then.
     pub(super) fn open_resumed(&mut self, at: Pos, resumed: bool) {
-        self.mode = Mode::Insert;
+        // A split Replace session stays Replace.
+        if !self.in_insert() {
+            self.mode = Mode::Insert;
+        }
         let s = self.insert.get_or_insert_with(|| Session::new(at, ONE_I));
         s.arrow_used = true;
         s.origin = ONE_I;
         s.typed.clear();
         s.ai_row = None;
         s.resumed = resumed;
+        // A cursor key ends the stretch (`stop_insert()` → `replace_flush()`):
+        // the stack empties, the session stays Replace.
+        if let Some(stack) = &mut s.replace {
+            stack.clear();
+        }
         s.key_done();
     }
 
@@ -211,6 +225,7 @@ impl Engine {
         let mut ai_row = None;
         let at = match how {
             InsertHow::Before => caret,
+            InsertHow::Replace => caret,
             InsertHow::After => Pos::new(caret.row, (caret.col + 1).min(len)),
             InsertHow::LineStart => Pos::new(caret.row, first_non_blank(&buf.line(caret.row))),
             InsertHow::LineEnd => Pos::new(caret.row, len),
@@ -237,6 +252,10 @@ impl Engine {
         buf.set_cursor(at);
         st.forget_want();
         self.open_session(at, Cmd::Insert { how, count }, ai_row);
+        if how == InsertHow::Replace {
+            self.session().replace = Some(Vec::new());
+            self.mode = Mode::Replace;
+        }
     }
 
     /// `gi` (Vim's `nv_gi_cmd()`): Insert where Insert last ended in this
@@ -403,9 +422,24 @@ impl Engine {
             InsertKey::Tab => {
                 // `ins_tab()` with `expandtab`: spaces to the next stop,
                 // counted from the caret's virtual column (a tab's start).
+                // In Replace the first space replaces a char (`ins_char()`)
+                // and the rest are inserted, a marker each (`ins_str()`).
                 let caret = buf.cursor();
                 let v = vcol_of(&buf.line(caret.row), caret.col);
-                self.type_text(&" ".repeat(TABSTOP - v % TABSTOP), InsertKey::Tab, buf, st);
+                let width = TABSTOP - v % TABSTOP;
+                if self.session().replace.is_some() {
+                    self.overwrite(" ", buf, st);
+                    let caret = buf.cursor();
+                    let rest = " ".repeat(width - 1);
+                    Ed { buf: &mut *buf, hist: &mut st.history }.splice(caret, caret, &rest);
+                    buf.set_cursor(Pos::new(caret.row, caret.col + width - 1));
+                    let s = self.session();
+                    s.replace.as_mut().expect("a Replace session").extend(std::iter::repeat_n(None, width - 1));
+                    s.typed.push(InsertKey::Tab);
+                    s.ai_row = None;
+                } else {
+                    self.type_text(&" ".repeat(width), InsertKey::Tab, buf, st);
+                }
             }
             InsertKey::Backspace => self.backspace(Erase::Char, buf, st),
             InsertKey::CtrlW => self.backspace(Erase::Word, buf, st),
@@ -432,12 +466,85 @@ impl Engine {
 
     fn type_text<B: TextBuf>(&mut self, text: &str, record: InsertKey, buf: &mut B, st: &mut BufState) {
         self.replace_gui_selection(buf, st);
+        if self.session().replace.is_some() {
+            // Replace: each line of the text overwrites from the caret
+            // (`ins_char_bytes()` per char, one splice per line), and a line
+            // break between them is an Enter.
+            let mut first = true;
+            for seg in text.split('\n') {
+                if !first {
+                    self.newline(buf, st);
+                }
+                first = false;
+                if !seg.is_empty() {
+                    self.overwrite(seg, buf, st);
+                }
+            }
+            let s = self.session();
+            s.typed.push(record);
+            s.ai_row = None;
+            return;
+        }
         let caret = buf.cursor();
         Ed { buf: &mut *buf, hist: &mut st.history }.splice(caret, caret, text);
         buf.set_cursor(end_of(caret, text));
         let s = self.session();
         s.typed.push(record);
         s.ai_row = None;
+    }
+
+    /// Replace mode's `ins_char_bytes()` for a run of chars with no line
+    /// break: the chars under the caret are overwritten (each pushed after
+    /// its NUL marker), the rest appended (a marker each). One splice.
+    fn overwrite<B: TextBuf>(&mut self, text: &str, buf: &mut B, st: &mut BufState) {
+        let caret = buf.cursor();
+        let line = buf.line(caret.row).into_owned();
+        let n = text.chars().count();
+        let covered = n.min(line.len().saturating_sub(caret.col));
+        let stack = self.session().replace.as_mut().expect("a Replace session");
+        for i in 0..n {
+            stack.push(None);
+            if i < covered {
+                stack.push(Some(line[caret.col + i]));
+            }
+        }
+        let mut ed = Ed { buf: &mut *buf, hist: &mut st.history };
+        if covered == n && line[caret.col..caret.col + n].iter().copied().eq(text.chars()) {
+            // Each char over itself: no text changes, but Vim's
+            // `u_save_cursor()` still opens the undo step at the caret.
+            ed.save_cursor_line(caret);
+        } else {
+            ed.splice(caret, Pos::new(caret.row, caret.col + covered), text);
+        }
+        buf.set_cursor(Pos::new(caret.row, caret.col + n));
+    }
+
+    /// Vim's `replace_do_bs()` after the caret stepped back onto a char:
+    /// `Some(c)`: the typed char goes and `c` comes back (plus any more
+    /// chars down to the next marker, which is consumed, each put in before
+    /// the ones already back: `replace_pop_ins()`); `None`: the char was
+    /// typed over nothing, so it goes; an empty stack: nothing.
+    fn replace_bs<B: TextBuf>(&mut self, buf: &mut B, st: &mut BufState) {
+        let caret = buf.cursor();
+        let stack = self.session().replace.as_mut().expect("a Replace session");
+        match stack.pop() {
+            Some(Some(c)) => {
+                let mut back = String::from(c);
+                while let Some(Some(more)) = stack.last() {
+                    back.insert(0, *more);
+                    stack.pop();
+                }
+                stack.pop(); // the marker
+                let end = Pos::new(caret.row, (caret.col + 1).min(buf.line_len(caret.row)));
+                Ed { buf: &mut *buf, hist: &mut st.history }.splice(caret, end, &back);
+            }
+            Some(None) => {
+                let end = Pos::new(caret.row, (caret.col + 1).min(buf.line_len(caret.row)));
+                Ed { buf: &mut *buf, hist: &mut st.history }.splice(caret, end, "");
+            }
+            None => {}
+        }
+        buf.set_cursor(caret);
     }
 
     /// Insert `Enter` in the body: Vim's `ins_eol()` and `open_line()` with
@@ -457,6 +564,15 @@ impl Engine {
             }
         }
         let rest = caret.col + line[caret.col..].iter().take_while(|&&c| white(c)).count();
+        if let Some(stack) = self.session().replace.as_mut() {
+            // `ins_eol()`: the break replaces nothing; `open_line()`: a
+            // marker ending the stripped blanks, the blanks themselves, and
+            // a marker per char of the new line's indent.
+            stack.push(None);
+            stack.push(None);
+            stack.extend(line[caret.col..rest].iter().map(|&c| Some(c)));
+            stack.extend(std::iter::repeat_n(None, indent.len()));
+        }
         Ed { buf: &mut *buf, hist: &mut st.history }.splice(Pos::new(caret.row, cut), Pos::new(caret.row, rest), &format!("\n{indent}"));
         let at = Pos::new(caret.row + 1, indent.len());
         buf.set_cursor(at);
@@ -487,12 +603,47 @@ impl Engine {
         let Session { start, orig, .. } = *self.session();
         let joined = caret.col == 0;
         let to = if joined {
-            // `backspace=eol`: join with the line above (no space).
             let prev = buf.line_len(caret.row - 1);
             let to = Pos::new(caret.row - 1, prev);
-            // `ins_bs()` and `do_join()` save both lines (`u_save`), so
-            // `u` finds the saved caret in a block of two, not one.
-            Ed { buf: &mut *buf, hist: &mut st.history }.splice_lines_joined(to, caret);
+            if let Some(stack) = self.session().replace.as_mut() {
+                // `ins_bs()` in Replace: the top entry says what the break
+                // covered. On the session's start line the caret only moves.
+                let top = stack.pop();
+                if caret.row <= start.row {
+                    buf.set_cursor(to);
+                    let s = self.session();
+                    s.typed.push(record);
+                    s.ai_row = None;
+                    return;
+                }
+                Ed { buf: &mut *buf, hist: &mut st.history }.splice_lines_joined(to, caret);
+                // Then the blanks `autoindent` stripped come back after the
+                // caret, and the break's own marker is consumed. Vim puts
+                // each popped blank in at the caret, before the ones already
+                // back, so they return in their old order.
+                let mut back = String::new();
+                let mut top = top;
+                while let Some(Some(c)) = top {
+                    back.insert(0, c);
+                    top = stack.pop();
+                }
+                if !back.is_empty() {
+                    Ed { buf: &mut *buf, hist: &mut st.history }.splice(to, to, &back);
+                }
+                while let Some(Some(c)) = stack.last().copied() {
+                    // Vim's `replace_pop_ins()`: anything left before the next marker.
+                    stack.pop();
+                    Ed { buf: &mut *buf, hist: &mut st.history }.splice(to, to, &c.to_string());
+                }
+                if matches!(stack.last(), Some(None)) {
+                    stack.pop();
+                }
+            } else {
+                // `backspace=eol`: join with the line above (no space).
+                // `ins_bs()` and `do_join()` save both lines (`u_save`), so
+                // `u` finds the saved caret in a block of two, not one.
+                Ed { buf: &mut *buf, hist: &mut st.history }.splice_lines_joined(to, caret);
+            }
             if caret.row == start.row {
                 self.session().start = to;
             }
@@ -525,7 +676,17 @@ impl Engine {
                 }
             }
             let to = Pos::new(caret.row, col);
-            Ed { buf: &mut *buf, hist: &mut st.history }.splice(to, caret, "");
+            if self.session().replace.is_some() {
+                // Replace: one `replace_do_bs()` per char stepped over.
+                let mut at = caret;
+                while at.col > col {
+                    at.col -= 1;
+                    buf.set_cursor(at);
+                    self.replace_bs(buf, st);
+                }
+            } else {
+                Ed { buf: &mut *buf, hist: &mut st.history }.splice(to, caret, "");
+            }
             to
         };
         buf.set_cursor(to);
@@ -804,7 +965,7 @@ impl Engine {
     /// (deviation 13).
     pub fn paste<B: TextBuf>(&mut self, text: &str, t: Target<'_, B>) -> Outcome {
         let Target { buf, state } = t;
-        if self.mode != Mode::Insert {
+        if !self.in_insert() {
             return Outcome::Declined { count: None, keys: Vec::new() };
         }
         self.reg_pending = None;

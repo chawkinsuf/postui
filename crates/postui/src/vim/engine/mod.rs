@@ -43,12 +43,13 @@ pub enum Shape {
 }
 
 /// The engine's mode (spec §4.1). Global: only one buffer has the caret.
-/// Plan 3c adds `InsertNormal`, `Replace` and `Search`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Mode {
     #[default]
     Normal,
     Insert,
+    /// An `R` session: typing overwrites (plan 3c).
+    Replace,
     Visual(Shape),
 }
 
@@ -291,6 +292,11 @@ impl Engine {
         self.mode
     }
 
+    /// A session is open: Insert or Replace share every Insert key.
+    fn in_insert(&self) -> bool {
+        matches!(self.mode, Mode::Insert | Mode::Replace)
+    }
+
     /// The half-typed command for the footer (`"02d3`, or `^R` while
     /// Insert `ctrl+r` waits for a register); `""` when none.
     pub fn echo(&self) -> String {
@@ -351,7 +357,7 @@ impl Engine {
         };
         buf.set_cursor(Pos::new(row, col));
         self.clamp(buf);
-        if self.mode == Mode::Insert {
+        if self.in_insert() {
             // Vim's `:startinsert`: a session opened in Insert records as an
             // `i` for `.`, but only once something is typed; Esc alone keeps
             // the old `.` (user ruling 2026-09-30, overriding spec §4.2's
@@ -373,20 +379,23 @@ impl Engine {
     /// typed, and keys typed there are taken as `to`'s kind takes them.
     /// Visual and pending keys are dropped.
     pub fn carry<A: TextBuf, B: TextBuf>(&mut self, from: Target<'_, A>, to: Target<'_, B>) {
-        let inserting = self.mode == Mode::Insert;
+        let inserting = self.in_insert().then_some(self.mode);
         let insert_only = self.insert_only;
         let Target { buf, state } = from;
-        if inserting {
+        if inserting.is_some() {
             self.drop_session(buf, state);
         }
         self.leave(Target { buf, state });
         self.insert_only = insert_only;
         let Target { buf, state } = to;
         state.begin_session(buf.text());
-        self.mode = if inserting { Mode::Insert } else { Mode::Normal };
+        self.mode = inserting.unwrap_or(Mode::Normal);
         self.clamp(buf);
-        if inserting {
+        if inserting.is_some() {
             self.open_resumed(buf.cursor(), true);
+            if self.mode == Mode::Replace {
+                self.session().replace = Some(Vec::new());
+            }
         }
         self.rest(buf, state);
     }
@@ -408,7 +417,7 @@ impl Engine {
             self.clear_pending();
         }
         let caret = self.clamped(buf, buf.cursor());
-        if self.mode == Mode::Insert
+        if self.in_insert()
             && let Some(from) = self.rested
             && from != caret
         {
@@ -450,7 +459,7 @@ impl Engine {
     /// already split a session the event moved, so an unused autoindent
     /// went where the caret was, not where the mouse put it.
     fn enter_visual_from<B: TextBuf>(&mut self, anchor: Pos, buf: &mut B, state: &mut BufState) {
-        if self.mode == Mode::Insert {
+        if self.in_insert() {
             self.end_insert(buf, state, false);
         }
         self.clear_pending();
@@ -465,7 +474,7 @@ impl Engine {
     /// [`Engine::enter`]'s history check.
     pub fn leave<B: TextBuf>(&mut self, t: Target<'_, B>) {
         let Target { buf, state } = t;
-        if self.mode == Mode::Insert {
+        if self.in_insert() {
             self.end_insert(buf, state, false);
         }
         state.history.commit();
@@ -495,7 +504,7 @@ impl Engine {
             self.end_visual(buf.cursor(), &*buf, state);
         }
         self.clamp(buf);
-        if self.mode == Mode::Insert {
+        if self.in_insert() {
             let caret = buf.cursor();
             self.split_insert(caret, caret, buf, state);
         }
@@ -527,13 +536,13 @@ impl Engine {
         let Target { buf, state } = t;
         self.clamp(buf);
         let before = buf.cursor();
-        let was_insert = self.mode == Mode::Insert;
+        let was_insert = self.in_insert();
         if state.cached_tab_rule(before).is_none() {
             // Vim validates `w_virtcol` before a command, in its mode.
             state.virtcol = Some((before, self.tab_end(before)));
         }
         let out = match self.mode {
-            Mode::Insert => self.insert_key(ev, buf, state),
+            Mode::Insert | Mode::Replace => self.insert_key(ev, buf, state),
             Mode::Normal | Mode::Visual(_) => {
                 let cx = ParseCx { visual: self.mode != Mode::Normal, multiline: B::MULTILINE };
                 match self.pending.feed(ev, cx) {
@@ -547,7 +556,7 @@ impl Engine {
         };
         // A Normal or Visual command is one undo step; an Insert session
         // keeps its step open until it ends (spec §3.11).
-        if self.mode != Mode::Insert {
+        if !self.in_insert() {
             state.history.commit();
         }
         let changed = self.finish_key(before, was_insert, buf, state);
@@ -567,7 +576,7 @@ impl Engine {
         state.edited |= changed;
         self.clamp(buf);
         let after = buf.cursor();
-        if changed || after != before || was_insert != (self.mode == Mode::Insert) {
+        if changed || after != before || was_insert != self.in_insert() {
             state.virtcol = Some((after, self.tab_end(after)));
         }
         self.rested = Some(after);
@@ -646,7 +655,7 @@ impl Engine {
             }
         };
         if let Some(cmd) = record
-            && self.mode != Mode::Insert
+            && !self.in_insert()
         {
             self.remember(cmd, None);
         }
@@ -696,7 +705,7 @@ impl Engine {
             (_, cmd) => self.run(if count > 0 { with_count(cmd, count) } else { cmd }, buf, st, ctx),
         };
         if let Some(keys) = dot.insert
-            && self.mode == Mode::Insert
+            && self.in_insert()
         {
             // As if typed here: `.` is global, so a session recorded in the
             // body can replay in a one-line field (`replay_insert`).
@@ -766,7 +775,7 @@ impl Engine {
     fn paint<B: TextBuf>(&self, buf: &mut B) {
         buf.show(match self.mode {
             Mode::Normal => Paint::Normal,
-            Mode::Insert => Paint::Insert,
+            Mode::Insert | Mode::Replace => Paint::Insert,
             Mode::Visual(shape) => Paint::Visual {
                 anchor: self.visual.unwrap_or_else(|| buf.cursor()),
                 line: shape == Shape::Line,

@@ -959,6 +959,42 @@ on = ["words", "json_pretty"]
 at = ["bol", "eol"]
 reg = { text = "a\u0008b\u0017c\u0015d", type = "v" }
 
+# --- plan 3c: Replace mode (Task 2) -------------------------------------------
+
+# Vim's replace stack: BS puts the replaced char back, deletes an appended
+# one, and only moves before the session's start; Enter replaces nothing and
+# BS over it joins the lines back and restores the blanks autoindent stripped.
+[[group]]
+id = "insert/replace"
+tier = 2
+keys = ["Rxy<Esc>", "Rxy<BS><BS><BS><Esc>", "Rxyz<Esc>", "Rxyz<BS><BS><Esc>", "3Rxy<Esc>", "Rxy<Esc>u", "Rxy<Esc>w.",
+        "Rxy<C-w><Esc>", "Rxy z<C-w><Esc>", "Rxyz<C-u><Esc>", "Rx<Del>y<Esc>", "R<Tab>x<Esc>", "R<Tab><BS><BS>x<Esc>",
+        "Rx<Left>y<Esc>", "Rx<Left><BS>y<Esc>", "yiwR<C-r>\"<Esc>", "Rab<Esc>0giX<Esc>", "Rx<Esc>.", "2Rx<Esc>w.",
+        "Rxy<Esc>u<C-r>", "3Rxy<Esc>u", "Rxyzw<BS><BS><Esc>", "Rxyzw<BS><BS><Esc>u", "lRx<BS><BS><Esc>", "Rxy<C-w>z<Esc>",
+        "R<C-w>z<Esc>", "R<Esc>", "R<Esc>u", "Rxy<Esc>0R<BS><Esc>", "Ra<Esc>", "Ra<Esc>u", "Rabc<Esc>u", "3Rx<Esc>.",
+        "3Rx<Esc>2.", "Rxyz<BS><BS><BS><BS><Esc>", "Rx<BS>y<Esc>", "9Rx<Esc>", "RX<C-u><C-u><Esc>", "RXY<C-w><C-w>Z<Esc>",
+        "R<Space><Esc>", "R<Space><BS><Esc>", "yiwRx<C-r>\"<BS><BS><Esc>", "A<BS>Rx<Esc>", "Rx<Esc>u.", "Rab<Esc>ugiY<Esc>"]
+on = ["words", "json_pretty", "blank_edges", "unicode", "tabs", "empty", "one_char", "numbers"]
+at = ["bol", "mid", "eol"]
+
+[[group]]
+id = "insert/replace-lines"
+tier = 2
+keys = ["Rx<CR>y<Esc>", "Rx<CR>y<BS><BS><BS><Esc>", "Rx<CR>y<BS><BS><BS><BS><Esc>", "R<CR>x<Esc>", "R<CR><BS><BS><BS><Esc>",
+        "R<CR><Esc>", "Rxy<CR>zw<Esc>", "Rxy<CR>zw<Esc>u", "Rxy<CR>zw<BS><BS><BS><BS><Esc>", "Rxy<CR>zw<BS><BS><BS><BS><BS><Esc>",
+        "Rx<Up><Esc>", "Rx<Down>y<Esc>", "Rx<Down>y<BS><BS><Esc>", "3Rx<CR><Esc>", "Rab<CR><Esc>", "Rab<CR><BS><Esc>",
+        "yjRx<C-r>\"<Esc>", "yjRx<C-r>\"<BS><BS><BS><Esc>", "R<CR><CR><BS><BS><Esc>", "Rx<CR><Esc>u", "Rx<CR>y<Esc>."]
+on = ["json_pretty", "indent", "blank_edges", "words", "short_last", "tabs"]
+at = ["bol", "fnb", "mid", "eol"]
+
+[[group]]
+id = "insert/replace-reg"
+tier = 2
+keys = ["R<C-r>\"<Esc>", "Rx<C-r>\"<BS><BS><Esc>", "3R<C-r>\"<Esc>", "R<C-r>\"<Esc>u"]
+on = ["words", "json_pretty"]
+at = ["bol", "eol"]
+reg = { text = "ab\n  cd", type = "v" }
+
 # --- fuzz atoms (generate.py --fuzz); tier 1 and the tier-2 first wave ------
 
 [fuzz]

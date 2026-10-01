@@ -221,6 +221,7 @@ fn mode_name(m: Mode) -> &'static str {
     match m {
         Mode::Normal => "n",
         Mode::Insert => "i",
+        Mode::Replace => "R",
         Mode::Visual(Shape::Char) => "v",
         Mode::Visual(Shape::Line) => "V",
     }
@@ -310,7 +311,7 @@ fn drive<B: TextBuf>(engine: &mut Engine, buf: &mut B, state: &mut BufState, cas
         // spaces, BS …), a field puts the text flattened as a paste (key
         // list §5, pinned by S tests; plan 3b).
         if !B::MULTILINE
-            && engine.mode() == Mode::Insert
+            && matches!(engine.mode(), Mode::Insert | Mode::Replace)
             && engine.echo().starts_with("^R")
             && let Some(reg) = match token.as_str() {
                 "\"" => Some(engine.registers().unnamed()),
@@ -321,7 +322,7 @@ fn drive<B: TextBuf>(engine: &mut Engine, buf: &mut B, state: &mut BufState, cas
         {
             return Run::Skipped;
         }
-        let inserting = engine.mode() == Mode::Insert;
+        let inserting = matches!(engine.mode(), Mode::Insert | Mode::Replace);
         let out = engine.handle(key_event(&token), Target { buf: &mut *buf, state: &mut *state }, ctx);
         // A one-line field hands Insert keys it doesn't own (Tab, Up,
         // Down) to the app, where Vim gives them an effect (spec §6.5).

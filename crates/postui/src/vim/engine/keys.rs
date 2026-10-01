@@ -184,6 +184,8 @@ pub(crate) enum InsertHow {
     OpenBelow,
     /// `O`
     OpenAbove,
+    /// `R`: a Replace session
+    Replace,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -574,14 +576,15 @@ impl Pending {
             'Y' => self.cmd(op(Op::Yank, Reach::Line)),
             'p' | 'P' => self.cmd(|count, reg| Cmd::Put { before: ch == 'P', count, reg }),
             'J' => self.cmd(|count, _| Cmd::Join { count }),
-            'i' | 'a' | 'I' | 'A' | 'o' | 'O' => {
+            'i' | 'a' | 'I' | 'A' | 'o' | 'O' | 'R' => {
                 let how = match ch {
                     'i' => InsertHow::Before,
                     'a' => InsertHow::After,
                     'I' => InsertHow::LineStart,
                     'A' => InsertHow::LineEnd,
                     'o' => InsertHow::OpenBelow,
-                    _ => InsertHow::OpenAbove,
+                    'O' => InsertHow::OpenAbove,
+                    _ => InsertHow::Replace,
                 };
                 self.cmd(|count, _| Cmd::Insert { how, count })
             }

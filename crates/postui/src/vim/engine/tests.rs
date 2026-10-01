@@ -1635,3 +1635,101 @@ fn first_wave_commands_survive_the_largest_count() {
         assert!(ms < 2000, "{keys:?} took {ms} ms");
     }
 }
+
+/// Plan 3c Task 2: `R` opens a Replace session. Typing overwrites, Esc
+/// steps back and sets `'^`, and the mode is reported as Replace.
+#[test]
+fn replace_mode_overwrites_and_reports_its_mode() {
+    let mut f = Field::new("abcd", 1);
+    f.keys("R");
+    assert_eq!(f.engine.mode(), Mode::Replace);
+    f.keys("xy");
+    assert_eq!((f.text(), f.col()), ("axyd", 3));
+    f.keys("zw");
+    assert_eq!(f.text(), "axyzw", "past the end it appends");
+    f.key(code(KeyCode::Backspace));
+    f.key(code(KeyCode::Backspace));
+    assert_eq!(f.text(), "axyd", "an appended char is deleted, a replaced one comes back");
+    f.key(esc());
+    assert_eq!((f.engine.mode(), f.col()), (Mode::Normal, 2));
+    assert_eq!(f.state.history.marks.insert, Some(Pos::new(0, 3)));
+    f.keys("u");
+    assert_eq!(f.text(), "abcd", "one undo step");
+}
+
+/// Review focus 4: Replace at the edges never panics and matches Vim's
+/// rules: a tab and a multibyte char are one char each, `BS` before the
+/// session's start only moves, a paste with line breaks splits lines in the
+/// body and flattens in a field.
+#[test]
+fn replace_edges() {
+    let mut b = Body::new("", 0, 0);
+    b.keys("Rab");
+    assert_eq!(b.text(), "ab");
+    let mut b = Body::new("a\tb", 0, 0);
+    b.keys("Rxy");
+    assert_eq!(b.text(), "xyb");
+    b.key(code(KeyCode::Backspace));
+    assert_eq!(b.text(), "x\tb", "the tab comes back");
+    let mut b = Body::new("héllo", 0, 1);
+    b.keys("Rxy");
+    b.key(code(KeyCode::Backspace));
+    assert_eq!((b.text(), b.caret()), ("hxllo".into(), Pos::new(0, 2)));
+    let mut b = Body::new("abc", 0, 2);
+    b.keys("Rx");
+    b.key(code(KeyCode::Backspace));
+    b.key(code(KeyCode::Backspace));
+    assert_eq!((b.text(), b.caret()), ("abc".into(), Pos::new(0, 1)), "only moves before the start");
+    let mut b = Body::new("abcdef\nxy", 0, 1);
+    b.keys("R");
+    b.engine.paste("12\n34", Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state });
+    // Vim's `ins_eol()` replaces nothing, so "34" goes over "de" (probed:
+    // Vim 9.1 `R12<CR>34<Esc>` on "abcdef" gives "a12" / "34f").
+    assert_eq!(b.text(), "a12\n34f\nxy", "a paste replaces char by char and a line break splits");
+    let mut f = Field::new("abcdef", 1);
+    f.keys("R");
+    f.engine.paste("12\n34", Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
+    assert_eq!(f.text(), "a12 34", "a field takes it flattened");
+    assert!(!declined(&f.key(code(KeyCode::Enter))) || f.engine.mode() == Mode::Replace, "Enter is the field's");
+}
+
+/// `BS` over a Replace line break puts the blanks `Enter` stripped back in
+/// their old order (probed in Vim 9.1: `R<CR><BS>` on "x \tb" at the space
+/// keeps "x \tb"; the corpus texts have no mixed blanks after a non-blank).
+#[test]
+fn replace_bs_over_a_break_restores_mixed_blanks_in_order() {
+    for text in ["x \tb", "x\t b"] {
+        let mut b = Body::new(text, 0, 1);
+        b.keys("R");
+        b.key(code(KeyCode::Enter));
+        assert_eq!(b.text(), "x\nb");
+        b.key(code(KeyCode::Backspace));
+        assert_eq!((b.text(), b.caret()), (text.to_string(), Pos::new(0, 1)));
+    }
+}
+
+/// A cursor key or a click flushes the replace stack but keeps Replace; a
+/// Replace session carries into the next field as Replace, and `gi` after
+/// it opens Insert.
+#[test]
+fn replace_survives_a_split_and_a_carry() {
+    let mut f = Field::new("abcd", 0);
+    f.keys("Rxy");
+    f.key(code(KeyCode::Left));
+    assert_eq!(f.engine.mode(), Mode::Replace);
+    f.key(code(KeyCode::Backspace));
+    assert_eq!((f.text(), f.col()), ("xycd", 0), "the flushed stack has nothing to put back");
+    f.keys("Z");
+    assert_eq!(f.text(), "Zycd");
+    let (mut other, mut os) = (LineInput::new("pq"), BufState::new());
+    other.set_cursor(0);
+    f.engine.carry(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, Target { buf: &mut OneLineBuf::new(&mut other), state: &mut os });
+    assert_eq!(f.engine.mode(), Mode::Replace);
+    f.engine.handle(k('W'), Target { buf: &mut OneLineBuf::new(&mut other), state: &mut os }, &ViewCtx::default());
+    assert_eq!(other.text(), "Wq");
+    f.engine.handle(esc(), Target { buf: &mut OneLineBuf::new(&mut other), state: &mut os }, &ViewCtx::default());
+    f.engine.handle(k('0'), Target { buf: &mut OneLineBuf::new(&mut other), state: &mut os }, &ViewCtx::default());
+    f.engine.handle(k('g'), Target { buf: &mut OneLineBuf::new(&mut other), state: &mut os }, &ViewCtx::default());
+    f.engine.handle(k('i'), Target { buf: &mut OneLineBuf::new(&mut other), state: &mut os }, &ViewCtx::default());
+    assert_eq!(f.engine.mode(), Mode::Insert, "gi is always Insert");
+}
