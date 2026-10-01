@@ -36,6 +36,8 @@ pub(crate) enum InsertKey {
     CtrlW,
     CtrlU,
     Tab,
+    CtrlT,
+    CtrlD,
     Paste(String),
 }
 
@@ -113,6 +115,12 @@ pub(crate) struct Session {
     /// `autoindent` added: nothing to put back); `Some(c)` is the char a
     /// typed char overwrote, pushed after its marker. `BS` pops it.
     pub replace: Option<Vec<Option<char>>>,
+    /// The key typed before this one in the session (Vim's `lastc`): `0`
+    /// or `^` before `ctrl+d` removes the whole indent.
+    pub last_key: Option<InsertKey>,
+    /// The indent `^<C-d>` removed, given to the next Enter's line (Vim's
+    /// `old_indent`).
+    pub old_indent: Option<usize>,
 }
 
 impl Session {
@@ -128,6 +136,8 @@ impl Session {
             ai_row: None,
             resumed: false,
             replace: None,
+            last_key: None,
+            old_indent: None,
         }
     }
 
@@ -202,6 +212,7 @@ impl Engine {
         s.typed.clear();
         s.ai_row = None;
         s.resumed = resumed;
+        s.last_key = None;
         // A cursor key ends the stretch (`stop_insert()` → `replace_flush()`):
         // the stack empties, the session stays Replace.
         if let Some(stack) = &mut s.replace {
@@ -286,6 +297,8 @@ impl Engine {
                 self.reg_pending = Some(RegPending::Typed);
                 return Outcome::consumed();
             }
+            Key::Ctrl('t') => InsertKey::CtrlT,
+            Key::Ctrl('d') => InsertKey::CtrlD,
             Key::Char(c) => InsertKey::Char(c),
             Key::Enter => InsertKey::Enter,
             Key::Tab => InsertKey::Tab,
@@ -412,6 +425,7 @@ impl Engine {
             let caret = buf.cursor();
             self.session().stop_arrow(caret);
         }
+        let key_for_last = key.clone();
         match key {
             InsertKey::Char(c) => self.type_text(&c.to_string(), InsertKey::Char(c), buf, st),
             InsertKey::Paste(text) => {
@@ -441,12 +455,25 @@ impl Engine {
                     self.type_text(&" ".repeat(width), InsertKey::Tab, buf, st);
                 }
             }
+            InsertKey::CtrlT => {
+                self.ins_shift(false, buf, st);
+                self.session().typed.push(InsertKey::CtrlT);
+            }
+            InsertKey::CtrlD => {
+                self.ins_shift(true, buf, st);
+                self.session().typed.push(InsertKey::CtrlD);
+            }
             InsertKey::Backspace => self.backspace(Erase::Char, buf, st),
             InsertKey::CtrlW => self.backspace(Erase::Word, buf, st),
             InsertKey::CtrlU => self.backspace(Erase::Line, buf, st),
             InsertKey::Delete => self.delete_forward(buf, st),
         }
-        self.session().key_done();
+        let s = self.session();
+        s.last_key = Some(match &key_for_last {
+            InsertKey::Paste(text) => text.chars().last().map_or(InsertKey::Paste(String::new()), InsertKey::Char),
+            other => other.clone(),
+        });
+        s.key_done();
     }
 
     /// A query box has no Visual layer, so typing over a mouse or GUI-key
@@ -553,6 +580,25 @@ impl Engine {
         buf.set_cursor(caret);
     }
 
+    /// Vim's `replace_pop_ins()` at the caret: the chars on the stack down
+    /// to the next marker come back after the caret, the marker is consumed.
+    pub(super) fn replace_restore_at<B: TextBuf>(&mut self, buf: &mut B, st: &mut BufState) {
+        let caret = buf.cursor();
+        let stack = self.session().replace.as_mut().expect("a Replace session");
+        let mut back = String::new();
+        while let Some(Some(c)) = stack.last().copied() {
+            stack.pop();
+            back.push(c);
+        }
+        if matches!(stack.last(), Some(None)) {
+            stack.pop();
+        }
+        if !back.is_empty() {
+            Ed { buf: &mut *buf, hist: &mut st.history }.splice(caret, caret, &back);
+            buf.set_cursor(caret);
+        }
+    }
+
     /// Insert `Enter` in the body: Vim's `ins_eol()` and `open_line()` with
     /// `autoindent`. The new line gets the indent of the text before the
     /// caret; the moved text loses its leading blanks; a line that holds
@@ -562,7 +608,14 @@ impl Engine {
     fn newline<B: TextBuf>(&mut self, buf: &mut B, st: &mut BufState) {
         let caret = buf.cursor();
         let line = buf.line(caret.row).into_owned();
-        let indent = indent_before(&line, caret.col);
+        let mut indent = indent_before(&line, caret.col);
+        // `ins_eol()` clears `old_indent` after every break, used or not.
+        if let Some(old) = self.session().old_indent.take()
+            && indent.is_empty()
+        {
+            // `^<C-d>` on the line above: `open_line(…, second_line_indent)`.
+            indent = " ".repeat(old);
+        }
         let mut cut = caret.col;
         if self.session().ai_row == Some(caret.row) {
             while cut > 0 && white(line[cut - 1]) {
@@ -790,6 +843,7 @@ impl Engine {
             _ => return,
         };
         self.split_insert(c, to, buf, st);
+        self.session().last_key = None;
         buf.set_cursor(to);
         match key {
             // `j`/`k` style: the wanted column survives.

@@ -1749,3 +1749,31 @@ fn replace_survives_a_split_and_a_carry() {
     f.engine.handle(k('i'), Target { buf: &mut OneLineBuf::new(&mut other), state: &mut os }, &ViewCtx::default());
     assert_eq!(f.engine.mode(), Mode::Insert, "gi is always Insert");
 }
+
+/// Plan 3c Task 3: `ctrl+t` and `ctrl+d` indent a one-line field as they
+/// indent the body (Deviation 11), rounding to shiftwidth, and are not
+/// declined there. `0<C-d>` removes the indent; `.` repeats the keys.
+#[test]
+fn insert_ctrl_t_and_ctrl_d_indent_a_field() {
+    let mut f = Field::new("   abc", 3);
+    f.keys("i");
+    assert!(!declined(&f.key(ctrl('t'))));
+    assert_eq!((f.text(), f.col()), ("    abc", 4));
+    f.key(ctrl('d'));
+    f.key(ctrl('d'));
+    assert_eq!((f.text(), f.col()), ("abc", 0));
+    f.keys("0");
+    f.key(ctrl('d'));
+    assert_eq!(f.text(), "abc", "0 then ctrl+d: the 0 goes with the indent");
+    f.key(ctrl('t'));
+    f.keys("x");
+    f.key(esc());
+    assert_eq!(f.text(), "  xabc");
+    // The record is every key: `<C-t><C-d><C-d>0<C-d><C-t>x`, so the
+    // repeat ends on one shiftwidth (probed: Vim 9.1 gives "  xxabc").
+    f.keys(".");
+    assert_eq!(f.text(), "  xxabc", "the repeat replays the keys and types x");
+    let mut q = Field::start("", 0, Start::InsertOnly);
+    assert!(!declined(&q.key(ctrl('t'))), "a query box takes it too");
+    assert_eq!(q.text(), "  ");
+}

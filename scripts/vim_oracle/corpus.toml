@@ -996,6 +996,36 @@ on = ["words", "json_pretty"]
 at = ["bol", "eol"]
 reg = { text = "ab\n  cd", type = "v" }
 
+# --- plan 3c: Insert ctrl+t ctrl+d (Task 3) ------------------------------------
+
+# Always rounded to a multiple of shiftwidth (change_indent's round), unlike
+# `>>`; 0^D and ^^D remove the indent, and ^^D remembers it for the next
+# Enter; the caret keeps its place relative to the first non-blank.
+[[group]]
+id = "insert/shift"
+tier = 2
+keys = ["i<C-t><Esc>", "a<C-t><Esc>", "A<C-t>x<Esc>", "i<C-d><Esc>", "i<C-d><C-d><Esc>", "i<C-t>x<Esc>", "i0<C-d><Esc>",
+        "i^<C-d><Esc>", "ix0<C-d><Esc>", "i<C-t>0<C-d><Esc>", "o<C-t><Esc>", "o<C-t>x<Esc>", "O<C-d>x<Esc>", "i<C-t><Esc>u",
+        "i<C-t><C-t><Esc>u<C-r>", "ix<C-t>y<Esc>.", "3i<C-t>x<Esc>", "Rx<C-t>y<Esc>", "Rx<C-d>y<BS><BS><BS><Esc>",
+        "i<C-t><Left><C-d><Esc>", "i<C-t><C-w><Esc>", "i<C-t>x<C-u><Esc>", "A<C-d><Esc>", "i^<C-d><CR>x<Esc>",
+        "i<Tab><C-d><Esc>", "i<C-t><Tab>x<Esc>", "i<C-t><Esc>j", "2i<C-t><Esc>", "i<C-t><C-t><C-t><Esc>", "i<C-d><Esc>u",
+        "i<C-t><Down><C-t><Esc>", "i0<C-d><Esc>u", "yiwA<C-r>\"<C-d><Esc>", "i<C-t><CR>x<Esc>", "i<C-d><CR>x<Esc>",
+        "o<C-t><C-t><Esc>", "o<C-d><Esc>", "ix<C-t><Esc>", "ix<C-d><Esc>", "A<C-t><C-d><Esc>", "i<C-t><BS><Esc>",
+        "i<C-t>x<BS><BS><Esc>", "3i<C-t><Esc>", "i<C-t><Esc>.", "ix<C-t><Esc>j.",
+        "i^<C-d><Space><Space><CR><C-d><CR>x<Esc>"]
+on = ["indent", "tabs", "words", "json_pretty", "blank_edges", "empty", "one_char"]
+at = ["bol", "fnb", "mid", "eol"]
+
+[text.deep_indent]
+lines = ["      abc", "   def", "x"]
+
+[[group]]
+id = "insert/shift-deep"
+tier = 2
+keys = ["i<C-d><Esc>", "i<C-t><Esc>", "i<C-d><C-d><C-d><Esc>", "ix<C-d><Esc>", "i<C-d>x<Esc>", "A<C-d><C-d><Esc>", "I<C-d><Esc>"]
+on = ["deep_indent"]
+at = ["each"]
+
 # --- fuzz atoms (generate.py --fuzz); tier 1 and the tier-2 first wave ------
 
 [fuzz]

@@ -17,6 +17,7 @@ mod case_table;
 mod class;
 mod class_table;
 mod history;
+mod indent;
 mod insert;
 mod keys;
 mod motion;
