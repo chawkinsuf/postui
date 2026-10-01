@@ -2052,6 +2052,7 @@ dependencies = [
  "postui",
  "postui-core",
  "ratatui",
+ "regex",
  "reqwest",
  "rustix",
  "serde",

@@ -41,6 +41,11 @@ for s:c in s:cases
   call setreg('"', '')
   call setreg('0', '')
   call setcharsearch({'char': ''})
+  " The window's 'scroll' (a counted ctrl+d/ctrl+u sets it), the last search
+  " pattern and the search direction outlive a buffer too (trap 12).
+  setlocal scroll=0
+  let @/ = ''
+  let v:searchforward = 1
   if type(s:c.reg) == v:t_dict
     call setreg('"', s:c.reg.text, s:c.reg.type)
   endif
@@ -52,13 +57,14 @@ for s:c in s:cases
   " in the keys needs no escaping.
   let s:keys = join(map(copy(s:c.tokens),
         \ {_, t -> t =~# '^<.\+>$' ? eval('"\' . t . '"') : t}), '')
+  " CTRL-\ CTRL-N after the capture, inside the same feedkeys: it ends any
+  " mode and clears a pending Insert restart (a case ending inside Insert
+  " ctrl+o, or in Visual entered from it), which `:normal! <Esc>` cannot,
+  " since `:normal` saves and restores it (trap 13).
   try
-    call feedkeys(s:keys . "\<Cmd>call Capture()\<CR>", 'ntx')
+    call feedkeys(s:keys . "\<Cmd>call Capture()\<CR>\<C-\>\<C-n>", 'ntx')
   catch
   endtry
-  if mode(1) !=# 'n'
-    execute "normal! \<Esc>"
-  endif
   call add(s:out, json_encode({'id': s:c.id, 'capture': g:oracle_cap, 'errmsg': v:errmsg}))
   " Wiping the only buffer opens an empty one in its place, and Vim reuses
   " the current buffer for that when it is empty: a case that ends with the

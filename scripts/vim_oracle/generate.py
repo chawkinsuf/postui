@@ -188,6 +188,8 @@ def golden_rows(cases, results):
             die(f"{c['id']}: no capture. The case ends half-typed (§6.2 lint) or the harness broke")
         if cap["mode"].startswith("no"):
             die(f"{c['id']}: ends with an operator pending (§6.2 lint, trap 9)")
+        if cap["mode"] == "c":
+            die(f"{c['id']}: ends in the search prompt (§6.2 lint, trap 9)")
         expect = {"cursor": cap["cursor"], "mode": cap["mode"], "reg": cap["reg"], "regtype": cap["regtype"]}
         if cap["lines"] != c["lines"]:
             expect["lines"] = cap["lines"]

@@ -767,8 +767,8 @@ stdin, stdout and stderr go to `/dev/null`, and there is a timeout. For each
 case, `oracle.vim` does the following:
 
 - `enew!` with `buftype=nofile noswapfile`, then `setline(1, lines)`.
-- `let &undolevels = &undolevels` sets an undo break, so `u` cannot undo
-  the setup.
+- `set undolevels=-1` around the `setline()`, which clears the history, so
+  `u` cannot undo the setup (an undo break alone does not stop it).
 - Resets the state that outlives a buffer: `setreg('"', '')`,
   `setreg('0', '')`, `setcharsearch({'char': ''})`, and applies the
   optional register preset with `setreg('"', text, type)`.
@@ -829,6 +829,19 @@ Traps (from the spike, plus the ones this design adds):
     area. The runner fills the buffer before wiping it. With the
     fix, all 53,109 corpus cases regenerated unchanged; only two fuzz
     cases (seed 31) had read a stale area.
+12. **`'scroll'`, the last pattern and the search direction outlive a
+    buffer** (found 2026-10-01 by plan 3c's probes). A counted `ctrl+d`
+    sets the window's `'scroll'` for every later case, `n` in the next
+    case found the previous case's pattern, and `?` left the direction
+    backward. The runner resets all three per case (`setlocal scroll=0`,
+    `let @/ = ''`, `let v:searchforward = 1`).
+13. **A pending Insert restart outlives a case** (found 2026-10-01). A case
+    ending inside Insert `ctrl+o`, or in Visual entered from it, leaves
+    `restart_edit` set; `:normal! <Esc>` cannot clear it, since `:normal`
+    saves and restores it, and the next case's first command restarted
+    Insert and typed the rest of its keys. The keys now end with
+    `<Cmd>call Capture()<CR><C-\><C-n>` inside the same `feedkeys()`:
+    `CTRL-\ CTRL-N` ends any mode and clears the restart.
 
 The golden header records `vim_version`, `v:versionlong`, the patch list,
 `SETTINGS_LINE`, `winheight`, and the corpus file's SHA-256. The generator
