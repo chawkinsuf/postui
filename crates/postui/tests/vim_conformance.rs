@@ -268,9 +268,13 @@ fn drive<B: TextBuf>(engine: &mut Engine, buf: &mut B, state: &mut BufState, cas
         // Spec §6.5: the one-line run's first rule (a one-line result) is
         // meant to skip `o` and `O`, whose one-line behaviour (a no-op,
         // §5) S tests pin. `o<BS>` or `oX<Esc>u` bring Vim back to one line
-        // and slip through that rule, so a Normal-mode `o`/`O` skips the run
-        // outright.
-        if !B::MULTILINE && engine.mode() == Mode::Normal && !engine.pending() && matches!(token.as_str(), "o" | "O") {
+        // and slip through that rule, so a Normal-mode `o`/`O`, with or
+        // without a count or a register, skips the run outright.
+        if !B::MULTILINE
+            && engine.mode() == Mode::Normal
+            && matches!(token.as_str(), "o" | "O")
+            && count_echo(&engine.echo()).chars().all(|c| c.is_ascii_digit())
+        {
             return Run::Skipped;
         }
         // The same ruling for `J` (§6.5 names it too; a one-line field's
@@ -290,11 +294,30 @@ fn drive<B: TextBuf>(engine: &mut Engine, buf: &mut B, state: &mut BufState, cas
         // (§5, pinned by an S test). A later `dd` or `u` brings Vim back to
         // one line and slips through the first rule (fuzz seed 30:
         // `yyf,<C-r>pcwY<Esc>dd<Esc>`), so the put skips the run outright.
+        // The register is the one the pending prefix names (`"0p`).
+        let echo = engine.echo();
+        let named = if echo.starts_with("\"0") { engine.registers().zero() } else { engine.registers().unnamed() };
         if !B::MULTILINE
             && engine.mode() == Mode::Normal
             && matches!(token.as_str(), "p" | "P")
-            && count_echo(&engine.echo()).chars().all(|c| c.is_ascii_digit())
-            && engine.registers().unnamed().kind == RegKind::Line
+            && count_echo(&echo).chars().all(|c| c.is_ascii_digit())
+            && named.kind == RegKind::Line
+        {
+            return Run::Skipped;
+        }
+        // And for Insert `<C-r>` of a register holding a line break, a tab
+        // or another control char: Vim types them (Enter, a tab expanded to
+        // spaces, BS …), a field puts the text flattened as a paste (key
+        // list §5, pinned by S tests; plan 3b).
+        if !B::MULTILINE
+            && engine.mode() == Mode::Insert
+            && engine.echo().starts_with("^R")
+            && let Some(reg) = match token.as_str() {
+                "\"" => Some(engine.registers().unnamed()),
+                "0" => Some(engine.registers().zero()),
+                _ => None,
+            }
+            && reg.text.chars().any(|c| c < ' ')
         {
             return Run::Skipped;
         }
@@ -603,7 +626,7 @@ fn a_divergence_is_stale_when_the_engine_matches_vim() {
 /// `yy""p` is a linewise put and `""3J` a counted join, as without it.
 #[test]
 fn one_line_skip_rules_see_through_a_register_prefix() {
-    for keys in ["yyp", "yy\\\"\\\"p", "3J", "\\\"\\\"3J"] {
+    for keys in ["yyp", "yy\\\"\\\"p", "3J", "\\\"\\\"3J", "3oX"] {
         let text = format!(
             concat!(
                 r#"{{"header":{{"vim":"9","settings":"","winheight":23,"texts":{{"t":["abc"]}},"groups":{{"g":{{"status":"ship"}}}}}}}}"#,

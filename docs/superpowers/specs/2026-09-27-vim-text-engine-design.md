@@ -10,8 +10,10 @@ vim-mode rounds but not shown to be yours, so treat it as mine).
 
 Implementation: plan 3a (buffers, the conformance harness, every tier-1
 key, the session edges and the API) is `docs/superpowers/plans/2026-09-29-vim-engine-3a.md`,
-on branch `vim-engine-3a`. Plans 3b (tier-2 first wave) and 3c (second
-wave) follow. The plan lists its deviations from this text.
+on branch `vim-engine-3a`.
+Plan 3b (the tier-2 first wave) is `docs/superpowers/plans/2026-09-30-vim-engine-3b.md`,
+on branch `vim-engine-3b`; plan 3c (the second wave) follows. Each plan
+lists its deviations from this text.
 
 Companion documents: the key list
 `docs/superpowers/specs/2026-09-27-vim-target-keys.md` (§1–§5 are this
@@ -58,7 +60,8 @@ Success criteria:
   on the body buffer. It also passes on the one-line buffer wherever Vim's
   result is one line (§6.5). Divergences are allowed only through
   `divergences.toml`, each one labelled and explained. Target at the first
-  release: zero divergences.
+  release: zero divergences, apart from the case-operator ones the user
+  accepted (§6.6).
 - `cargo test` needs no Vim installed. The golden file is committed.
 - The tier-2 rows marked "first wave" in §5 pass before piece 4 ships. The
   rest are generated into the golden file but reported as "not yet" without
@@ -280,7 +283,11 @@ forward on the line when the caret is not on a bracket, and crosses lines.
   `autoindent`. This is the command that matters most for JSON, so the
   corpus runs every bracket object on both `json_flat` and `json_pretty` at
   every nesting depth.
-- **`ip` `ap`** (tier 2): paragraphs separated by blank lines.
+- **`ip` `ap`** (tier 2): paragraphs separated by blank lines, as Vim
+  defines them (`you`, 2026-09-30, accepting my recommendation). `ip` and
+  `ap` treat a blank-only line as blank. `{` and `}` stop only at an empty
+  line, a form feed, or an nroff macro line (`.PP`, `.SH`: Vim's default
+  `paragraphs` and `sections`, pinned in `SETTINGS_LINE`).
 
 ### 3.8 Insert and Replace sessions
 
@@ -668,6 +675,11 @@ Beyond the key list, the Normal motions `+`, `-` and `Enter` in the body
 (tier 2, `mine`) are cheap and complete the line motions. `Space` and `BS`
 follow `whichwrap=b,s`.
 
+The key list marks `>> << > <`, `{ }` and `ip ap` "body". They act as
+Vim in one-line fields too (`you`, 2026-09-30, accepting my
+recommendation): `>>` indents the field, `}` goes to its end, and `dip`
+empties it, as 3a's Visual `>` and `<` already did.
+
 ## 6. Conformance harness
 
 ### 6.1 Files
@@ -762,7 +774,7 @@ case, `oracle.vim` does the following:
   optional register preset with `setreg('"', text, type)`.
 - `cursor(row, 1)`, then `setcursorcharpos(row, col)`.
 - `feedkeys(keys . "\<Cmd>call Capture()\<CR>", 'ntx')`.
-- `bwipeout!`.
+- `setline(1, 'wiped')`, then `bwipeout!` (trap 11).
 
 `Capture()` records everything from inside the final mode: `mode(1)`,
 `getline(1, '$')`, the cursor (`line('.')`, `charcol('.')`),
@@ -809,6 +821,14 @@ Traps (from the spike, plus the ones this design adds):
     generator still treats a missing capture as a harness error, never
     as a result. The search cases also pin `nohlsearch noincsearch` so
     that no redraw state leaks between cases.
+11. **An empty buffer is reused, not wiped** (found 2026-09-30 by the 3b
+    fuzz on Vim 9.1.0697). `bwipeout!` of the only buffer opens an empty
+    one in its place, and Vim reuses the current buffer for that when it
+    is empty, so a case that ends with the text empty left the next case
+    its Visual area and marks: `gv` there reselected the previous case's
+    area. The runner fills the buffer before wiping it. With the
+    fix, all 53,109 corpus cases regenerated unchanged; only two fuzz
+    cases (seed 31) had read a stale area.
 
 The golden header records `vim_version`, `v:versionlong`, the patch list,
 `SETTINGS_LINE`, `winheight`, and the corpus file's SHA-256. The generator
@@ -839,7 +859,10 @@ up to two buffers:
   `Down` among them. Vim gives those keys an effect (spaces, an indent,
   an undo break), while the one-line field hands them to the app, so
   "declined = no effect" would be false. The first rule skips `o`,
-  `yyp`, `J` and Insert `Enter`; both rules' one-line behaviour is
+  `yyp`, `J` and Insert `Enter`; plan 3b (its Deviation 10) adds a
+  counted `o`/`O` (`3oX`), a put from a linewise `"0` (`yy"0p`), and
+  Insert `ctrl+r` of a register holding a control char (Vim types the
+  char's key, a field flattens it). Every rule's one-line behaviour is
   covered by S tests. The buffer is `LineInput::new(line)`.
 
 For each run the test does the following:
@@ -877,6 +900,22 @@ fails if an entry matches no case, or if the engine now matches Vim on a
 listed case, so stale entries can't pile up. Divergences should be rare.
 The one-line rules in §5 need none, because those cases are skipped by the
 one-line-result rule and pinned by S tests instead.
+
+Case operators (`you`, decided 2026-09-30): `g~ gu gU`, `~` and Visual
+`~ u U` re-case only their range, char by char, and their undo is exact.
+Vim's `op_tilde()` walks the range by a byte count, so it overruns the range
+when re-casing changes a char's UTF-8 length (`İ ı ſ K`), re-cases a whole
+line for `gu0` over an empty range in column 0, and its undo leaves the
+overrun text changed. Three `divergences.toml` entries record this. Where
+the caret lands after a linewise case op (Normal or Visual) is the range
+start moved by the chars the re-case added before it, so after `gUj` it
+stays on the same letter when a `ß` before it became "SS", as in Vim. Vim
+gets there by keeping the caret's byte offset, and the engine by counting
+chars (`you`, decided 2026-10-01: the more correct rule), so they part only
+when a char before the caret shrinks in UTF-8 (`ı İ ſ`, 2 bytes to 1): Vim
+drifts right, the engine stays. Two more `divergences.toml` entries record
+that. These five are the only exceptions to the zero-divergence target
+(§2).
 
 ### 6.7 Regenerating
 

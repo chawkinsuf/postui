@@ -6,8 +6,9 @@
 
 /// The exact `:set` arguments the oracle runs Vim with (spec §3.4, plus
 /// deviation 8: `cpoptions`, `formatoptions`, `virtualedit` and the
-/// search options, all Vim defaults, pinned).
-pub const SETTINGS_LINE: &str = "expandtab shiftwidth=2 autoindent selection=inclusive tabstop=2 softtabstop=0 backspace=indent,eol,start whichwrap=b,s startofline nojoinspaces nrformats=bin,hex noshiftround nosmartindent nocindent textwidth=0 noignorecase notildeop matchpairs=(:),{:},[:] iskeyword=@,48-57,_,192-255 cpoptions=aABceFs formatoptions=tcq virtualedit= wrapscan magic nosmartcase";
+/// search options, all Vim defaults, pinned; plan 3b adds `casemap`, which
+/// Vim's case mapping depends on).
+pub const SETTINGS_LINE: &str = "expandtab shiftwidth=2 autoindent selection=inclusive tabstop=2 softtabstop=0 backspace=indent,eol,start whichwrap=b,s startofline nojoinspaces nrformats=bin,hex noshiftround nosmartindent nocindent textwidth=0 noignorecase notildeop matchpairs=(:),{:},[:] iskeyword=@,48-57,_,192-255 cpoptions=aABceFs formatoptions=tcq virtualedit= wrapscan magic nosmartcase casemap=internal,keepascii paragraphs=IPLPPPQPP\\ TPHPLIPpLpItpplpipbp sections=SHNHH\\ HUnhsh";
 
 /// `shiftwidth`: one `>` step and the autoindent unit.
 pub const SHIFTWIDTH: usize = 2;
@@ -18,6 +19,12 @@ pub const TABSTOP: usize = 2;
 pub const UNDOLEVELS: usize = 1000;
 /// The largest count a key sequence can build (vim-mode's `seq.rs`).
 pub const MAX_COUNT: usize = 9_999;
+/// `paragraphs`: the nroff macros that start a paragraph for `{ }` and
+/// `ip ap`, two chars per name (Vim's default, pinned: plan 3b Deviation 2).
+pub const PARAGRAPHS: &str = "IPLPPPQPP TPHPLIPpLpItpplpipbp";
+/// `sections`: the nroff macros that start a section, which also ends a
+/// paragraph (Vim's default, pinned).
+pub const SECTIONS: &str = "SHNHH HUnhsh";
 
 #[cfg(test)]
 mod tests {
@@ -29,5 +36,9 @@ mod tests {
         assert!(words.contains(&format!("shiftwidth={SHIFTWIDTH}").as_str()));
         assert!(words.contains(&format!("tabstop={TABSTOP}").as_str()));
         assert!(!SETTINGS_LINE.contains('\n') && !SETTINGS_LINE.contains('"'));
+        for (name, value) in [("paragraphs", PARAGRAPHS), ("sections", SECTIONS)] {
+            let pinned = format!("{name}={}", value.replace(' ', "\\ "));
+            assert!(SETTINGS_LINE.contains(&pinned), "{pinned}");
+        }
     }
 }

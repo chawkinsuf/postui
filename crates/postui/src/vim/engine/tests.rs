@@ -129,7 +129,7 @@ fn a_one_line_field_declines_row_keys_and_the_body_keeps_them() {
     }
     let mut b = Body::new("a\nb", 0, 0);
     assert!(!declined(&b.key(k('j'))));
-    assert!(!declined(&b.key(code(KeyCode::Enter))), "body Enter is consumed until plan 3b's motion");
+    assert!(!declined(&b.key(code(KeyCode::Enter))), "body Enter is the + motion (plan 3b)");
 }
 
 #[test]
@@ -1199,4 +1199,439 @@ fn no_engine_file_names_an_app_type() {
         checked += 1;
     }
     assert!(checked >= 12, "only {checked} engine files were checked");
+}
+
+/// Plan 3b Task 1: the register prefix takes `0` as well as `"`, and the
+/// echo shows it; other registers still show a note and arm nothing.
+#[test]
+fn the_yank_register_prefix_arms_and_echoes() {
+    let mut f = Field::new("abc", 0);
+    f.keys("\"0");
+    assert_eq!(f.engine.echo(), "\"0");
+    f.keys("2d");
+    assert_eq!(f.engine.echo(), "\"02d");
+    f.key(esc());
+    assert!(!f.engine.pending());
+    let note = |out: Outcome| match out {
+        Outcome::Consumed { note: Some(Note::Unsupported(n)), .. } => n,
+        other => panic!("no note: {other:?}"),
+    };
+    assert_eq!(note(f.keys("\"1")), "register \"1 not supported");
+    assert!(!f.engine.pending());
+    assert_eq!(f.engine.registers().zero(), &Register::default(), "a fresh engine's \"0 is empty");
+}
+
+/// Key list §5 in a field: a linewise `"0` goes in charwise, as the unnamed
+/// register does (the conformance test skips these one-line runs).
+#[test]
+fn a_linewise_zero_register_puts_charwise_in_a_field() {
+    let mut f = Field::new("ab", 0);
+    f.keys("yy");
+    assert_eq!(f.engine.registers().zero(), &Register { text: "ab\n".into(), kind: RegKind::Line });
+    f.keys("x");
+    assert_eq!(f.engine.registers().unnamed().text, "a", "a delete writes only the unnamed register");
+    f.keys("\"0p");
+    assert_eq!((f.text(), f.col()), ("bab", 2));
+}
+
+/// Plan 3b Task 2: the case operators echo and cancel as Vim's do.
+#[test]
+fn case_operators_echo_and_cancel() {
+    let mut f = Field::new("abc", 0);
+    for (keys, echo) in [("gU", "gU"), ("g~g", "g~g"), ("2gu3", "2gu3"), ("\"0g~", "\"0g~")] {
+        f.keys(keys);
+        assert_eq!(f.engine.echo(), echo, "{keys:?}");
+        f.key(esc());
+        assert!(!f.engine.pending());
+    }
+    for keys in ["gUu", "g~u", "gu~", "gUd", "dgU"] {
+        assert_eq!(f.keys(keys), Outcome::Consumed { changed: false, note: None, request: None }, "{keys:?} cancels");
+        assert!(!f.engine.pending(), "{keys:?}");
+        assert_eq!(f.text(), "abc");
+    }
+}
+
+/// Plan 3b Task 3: the shift operators echo; in a one-line field `>>`
+/// indents the field as Vim indents a one-line buffer (Deviation 3).
+#[test]
+fn shift_operators_echo_and_indent_a_field() {
+    let mut f = Field::new("ab", 1);
+    f.keys("2>");
+    assert_eq!(f.engine.echo(), "2>");
+    f.key(esc());
+    f.keys(">>");
+    assert_eq!((f.text(), f.col()), ("  ab", 2));
+    f.keys("<<");
+    assert_eq!((f.text(), f.col()), ("ab", 0));
+}
+
+/// Deviation 8: a counted insert repeats on Esc only; `leave` ends it
+/// once, as Vim's `:stopinsert` drops the count.
+#[test]
+fn a_counted_insert_repeats_on_esc_only() {
+    let mut f = Field::new("ab", 0);
+    f.keys("3iX");
+    f.key(esc());
+    assert_eq!(f.text(), "XXXab");
+    let mut f = Field::new("ab", 0);
+    f.keys("3iX");
+    f.engine.leave(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
+    assert_eq!(f.text(), "Xab");
+}
+
+/// Review focus 1: the largest count repeats an insert quickly, as one undo
+/// step. The limit is loose on purpose (a debug build under parallel
+/// tests); it catches an accidental quadratic.
+#[test]
+fn a_huge_counted_insert_finishes() {
+    let started = std::time::Instant::now();
+    let mut b = Body::new("{\n  \"a\": 1\n}", 1, 2);
+    b.keys("9999iX");
+    b.key(esc());
+    assert_eq!(b.text().matches('X').count(), 9999);
+    b.keys("u");
+    assert_eq!(b.text(), "{\n  \"a\": 1\n}", "one undo step");
+    let mut f = Field::new("ab", 0);
+    f.keys("999aYZ");
+    f.key(esc());
+    assert_eq!(f.text().chars().count(), 2 + 999 * 2);
+    let ms = started.elapsed().as_millis();
+    assert!(ms < 5000, "took {ms} ms");
+}
+
+/// Deviation 7: `leave` sets `'^`, so `gi` after coming back resumes where
+/// Insert ended (Vim's `:stopinsert` sets it too).
+#[test]
+fn gi_resumes_where_leave_ended_insert() {
+    let mut f = Field::new("abcd", 0);
+    f.keys("lliX");
+    f.engine.leave(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
+    f.engine.enter(Start::Normal, Seat::ColZero, Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
+    f.keys("giY");
+    f.key(esc());
+    assert_eq!(f.text(), "abXYcd");
+}
+
+/// Deviation 7: `carry` sets `'^` in the buffer it leaves.
+#[test]
+fn gi_resumes_where_carry_left_a_buffer() {
+    let mut engine = Engine::new();
+    let (mut s1, mut s2) = (BufState::new(), BufState::new());
+    let (mut a, mut b) = (LineInput::new("ab"), LineInput::new("cd"));
+    engine.enter(Start::Insert, Seat::End, Target { buf: &mut OneLineBuf::new(&mut a), state: &mut s1 });
+    engine.handle(k('X'), Target { buf: &mut OneLineBuf::new(&mut a), state: &mut s1 }, &ViewCtx::default());
+    b.set_cursor(0);
+    engine.carry(Target { buf: &mut OneLineBuf::new(&mut a), state: &mut s1 }, Target { buf: &mut OneLineBuf::new(&mut b), state: &mut s2 });
+    engine.leave(Target { buf: &mut OneLineBuf::new(&mut b), state: &mut s2 });
+    engine.enter(Start::Normal, Seat::ColZero, Target { buf: &mut OneLineBuf::new(&mut a), state: &mut s1 });
+    for ev in [k('g'), k('i'), k('Y'), esc()] {
+        engine.handle(ev, Target { buf: &mut OneLineBuf::new(&mut a), state: &mut s1 }, &ViewCtx::default());
+    }
+    assert_eq!(a.text(), "abXY");
+}
+
+/// Review focus 3: a change outside the engine. With no `enter`, a `'^`
+/// past the text clamps into it; after an `enter` that sees the change it
+/// is gone with the history, and `gi` is a plain `i`.
+#[test]
+fn gi_after_an_outside_change_clamps_or_forgets() {
+    let mut b = Body::new("abc\ndef\nghi", 2, 1);
+    b.keys("aX");
+    b.key(esc());
+    b.ed.lines = Lines::from("a");
+    b.ed.cursor = edtui::Index2::new(0, 0);
+    b.keys("giY");
+    b.key(esc());
+    assert_eq!(b.text(), "aY", "clamped to the end of the only line");
+    b.engine.leave(Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state });
+    b.ed.lines = Lines::from("reloaded");
+    b.engine.enter(Start::Normal, Seat::ColZero, Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state });
+    b.keys("giZ");
+    b.key(esc());
+    assert_eq!(b.text(), "Zreloaded");
+}
+
+/// Deviation 7: `leave` in Visual remembers the area, so `gv` after
+/// coming back reselects it.
+#[test]
+fn gv_reselects_what_leave_ended() {
+    let mut f = Field::new("abcdef", 1);
+    f.keys("vl");
+    f.engine.leave(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
+    assert_eq!(f.engine.mode(), Mode::Normal);
+    f.engine.enter(Start::Normal, Seat::ColZero, Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
+    f.keys("gv");
+    assert_eq!((f.engine.mode(), f.engine.visual_anchor(), f.col()), (Mode::Visual(Shape::Char), Some(Pos::new(0, 1)), 2));
+}
+
+/// Deviation 7: a click that ends Visual remembers the area as it was
+/// before the click moved the caret.
+#[test]
+fn a_click_ending_visual_remembers_the_area_before_the_click() {
+    let mut f = Field::new("abcdef", 1);
+    f.keys("vl");
+    f.input.set_cursor(5);
+    f.engine.settle(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, Settled::Click);
+    assert_eq!(f.engine.mode(), Mode::Normal);
+    f.keys("gv");
+    assert_eq!((f.engine.visual_anchor(), f.col()), (Some(Pos::new(0, 1)), 2));
+}
+
+/// Review focus 3: `gv` after an outside change. With no `enter`, an area
+/// past the text clamps into it; after an `enter` that sees the change,
+/// there is nothing to reselect.
+#[test]
+fn gv_after_an_outside_change_clamps_or_does_nothing() {
+    let mut b = Body::new("abc\ndef\nghi", 1, 0);
+    b.keys("vjl");
+    b.key(esc());
+    b.ed.lines = Lines::from("xy\nz");
+    b.ed.cursor = edtui::Index2::new(0, 0);
+    b.keys("gv");
+    assert_eq!(b.engine.mode(), Mode::Visual(Shape::Char));
+    assert_eq!((b.engine.visual_anchor(), b.caret()), (Some(Pos::new(1, 0)), Pos::new(1, 1)));
+    b.key(esc());
+    b.engine.leave(Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state });
+    b.ed.lines = Lines::from("reloaded");
+    b.engine.enter(Start::Normal, Seat::ColZero, Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state });
+    b.keys("gv");
+    assert_eq!(b.engine.mode(), Mode::Normal, "the area went with the history");
+}
+
+/// Plan 3b Task 10: Insert `ctrl+r` waits for a register name. The echo
+/// and `pending()` show it; anything but `"` or `0` is a note or is
+/// swallowed, and a foreign chord reaches the app.
+#[test]
+fn insert_ctrl_r_takes_the_next_key_as_the_register() {
+    let note = |out: Outcome| match out {
+        Outcome::Consumed { note: Some(Note::Unsupported(n)), .. } => n,
+        other => panic!("no note: {other:?}"),
+    };
+    let mut f = Field::new("ab", 0);
+    f.keys("yiwA");
+    f.key(ctrl('r'));
+    assert!(f.engine.pending());
+    assert_eq!(f.engine.echo(), "^R");
+    assert_eq!(f.keys("\""), Outcome::Consumed { changed: true, note: None, request: None });
+    assert_eq!(f.text(), "abab");
+    assert!(!f.engine.pending());
+    f.key(ctrl('r'));
+    assert_eq!(note(f.keys("a")), "register \"a not supported");
+    f.key(ctrl('r'));
+    f.key(ctrl('r'));
+    assert_eq!(f.engine.echo(), "^R^R");
+    f.keys("0");
+    assert_eq!(f.text(), "ababab");
+    f.key(ctrl('r'));
+    f.key(ctrl('o'));
+    assert_eq!(f.engine.echo(), "^R^O");
+    assert_eq!(note(f.keys("\"")), "ctrl+r ctrl+o not supported");
+    f.key(ctrl('r'));
+    assert_eq!(f.key(esc()), Outcome::Consumed { changed: false, note: None, request: None }, "Esc names no register");
+    assert_eq!(f.engine.mode(), Mode::Insert);
+    f.key(ctrl('r'));
+    assert_eq!(f.key(ctrl('c')), Outcome::Declined { count: None, keys: vec![ctrl('c')] });
+    assert!(!f.engine.pending());
+    f.keys("Z");
+    assert_eq!(f.text(), "abababZ");
+}
+
+/// Review focus 2: a register with line breaks, tabs or control chars goes
+/// into a one-line field or a query box flattened, as `p` puts it; nothing
+/// is declined, so no Enter reaches the app.
+#[test]
+fn insert_ctrl_r_flattens_into_a_field_and_a_query_box() {
+    for start in [Start::Insert, Start::InsertOnly] {
+        let mut f = Field::start("", 0, start);
+        f.engine.registers_mut().set_unnamed(Register { text: "a\nb\tc\n".into(), kind: RegKind::Line });
+        f.key(ctrl('r'));
+        assert!(!declined(&f.key(k('"'))), "{start:?}");
+        assert_eq!(f.text(), "a b c", "{start:?}");
+    }
+    let mut f = Field::start("", 0, Start::Insert);
+    f.engine.registers_mut().set_unnamed(Register { text: "x\u{8}y".into(), kind: RegKind::Char });
+    f.key(ctrl('r'));
+    f.keys("\"");
+    assert_eq!(f.text(), "x\u{8}y", "a field takes a control char as a char, as a paste does");
+}
+
+/// Final review M3: Insert `ctrl+r` types the flattened register into a
+/// one-line field as one run, not a key per char (each of which rebuilt
+/// the field: quadratic). The limit is loose on purpose (a debug build
+/// under parallel tests); char by char took seconds. `.` and a counted
+/// insert still put the same text in.
+#[test]
+fn insert_ctrl_r_into_a_field_is_one_run() {
+    let big = "abcd".repeat(10_000);
+    let mut f = Field::start("", 0, Start::Insert);
+    f.engine.registers_mut().set_unnamed(Register { text: big.clone(), kind: RegKind::Char });
+    let started = std::time::Instant::now();
+    f.key(ctrl('r'));
+    f.keys("\"");
+    let ms = started.elapsed().as_millis();
+    assert_eq!(f.text(), big);
+    assert!(ms < 1000, "a 40,000-char register took {ms} ms");
+    let mut f = Field::new("ab", 0);
+    f.engine.registers_mut().set_unnamed(Register { text: "x\ny".into(), kind: RegKind::Char });
+    f.keys("2a");
+    f.key(ctrl('r'));
+    f.keys("\"");
+    f.key(esc());
+    assert_eq!((f.text(), f.col()), ("ax yx yb", 6));
+    f.keys(".");
+    assert_eq!((f.text(), f.col()), ("ax yx yx yx yb", 12));
+    f.keys("u");
+    assert_eq!(f.text(), "ax yx yb", "the repeat is one undo step");
+}
+
+/// Review (2026-10-01): the body too takes a register's plain chars as one
+/// run per line, not a key per char (each a splice of the line). The limit
+/// is loose on purpose (a debug build under parallel tests). Line breaks
+/// still go in as Enter (`autoindent`), and `.` repeats the whole insert.
+#[test]
+fn insert_ctrl_r_into_the_body_is_one_run_per_line() {
+    let big = "abcd".repeat(10_000);
+    let mut b = Body::new("{\n  x\n}", 1, 3);
+    b.engine.registers_mut().set_unnamed(Register { text: big.clone(), kind: RegKind::Char });
+    b.keys("a");
+    let started = std::time::Instant::now();
+    b.key(ctrl('r'));
+    b.keys("\"");
+    let ms = started.elapsed().as_millis();
+    assert_eq!(b.text(), format!("{{\n  x{big}\n}}"));
+    assert!(ms < 1000, "a 40,000-char register took {ms} ms");
+    let mut b = Body::new("{\n  x\n}", 1, 3);
+    b.engine.registers_mut().set_unnamed(Register { text: "ab\ncd\n".into(), kind: RegKind::Line });
+    b.keys("a");
+    b.key(ctrl('r'));
+    b.keys("\"");
+    b.key(esc());
+    assert_eq!(b.text(), "{\n  xab\n  cd\n\n}", "Esc drops an indent-only line's autoindent");
+    assert_eq!(b.caret(), Pos::new(3, 0));
+    b.keys("j.");
+    assert_eq!(b.text(), "{\n  xab\n  cd\n\n}ab\ncd\n");
+    b.keys("u");
+    assert_eq!(b.text(), "{\n  xab\n  cd\n\n}", "the repeat is one undo step");
+}
+
+/// Review (2026-10-01): a third `ctrl+r` is an invalid register name (Vim
+/// beeps), not a chord for the app; `ctrl+r ctrl+o` takes any next key,
+/// chord or not, and shows its note.
+#[test]
+fn insert_ctrl_r_swallows_a_third_ctrl_r_and_ctrl_o_takes_any_key() {
+    let mut f = Field::new("ab", 0);
+    f.keys("A");
+    f.key(ctrl('r'));
+    f.key(ctrl('r'));
+    assert_eq!(f.key(ctrl('r')), Outcome::Consumed { changed: false, note: None, request: None });
+    assert!(!f.engine.pending());
+    assert_eq!(f.engine.mode(), Mode::Insert);
+    f.key(ctrl('r'));
+    f.key(ctrl('o'));
+    match f.key(ctrl('w')) {
+        Outcome::Consumed { note: Some(Note::Unsupported(n)), .. } => assert_eq!(n, "ctrl+r ctrl+o not supported"),
+        other => panic!("no note: {other:?}"),
+    }
+    assert!(!f.engine.pending());
+    f.key(ctrl('r'));
+    f.key(ctrl('p'));
+    match f.key(ctrl('c')) {
+        Outcome::Consumed { note: Some(Note::Unsupported(n)), .. } => assert_eq!(n, "ctrl+r ctrl+p not supported"),
+        other => panic!("no note: {other:?}"),
+    }
+    f.keys("Z");
+    assert_eq!(f.text(), "abZ");
+}
+
+/// Review (2026-10-01): a linewise Visual case op lands on the same letter
+/// when a `ß` before the caret became "SS", as Normal `gUj` does (Vim keeps
+/// the caret's byte offset; `recased_caret`).
+#[test]
+fn visual_linewise_case_keeps_the_caret_on_its_letter_past_a_grown_sz() {
+    let mut b = Body::new("ß ǅxy\n  straße", 1, 4);
+    b.keys("VkU");
+    assert_eq!(b.text(), "SS ǄXY\n  STRASSE");
+    assert_eq!(b.caret(), Pos::new(0, 5), "on the Y");
+    let mut b = Body::new("ß ǅxy\n  straße", 1, 4);
+    b.keys("Vk~");
+    assert_eq!(b.text(), "ß ǄXY\n  STRAßE", "`~` leaves ß alone");
+    assert_eq!(b.caret(), Pos::new(0, 4), "nothing grew: the column is kept");
+}
+
+/// Review focus 4: a half-typed `ctrl+r` never outlives a click, a paste
+/// or the buffer.
+#[test]
+fn a_half_typed_ctrl_r_is_dropped_at_every_edge() {
+    let mut f = Field::start("ab", 2, Start::Insert);
+    f.key(ctrl('r'));
+    f.engine.settle(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, Settled::Click);
+    assert!(!f.engine.pending());
+    f.keys("\"");
+    assert_eq!(f.text(), "ab\"", "the quote is typed, not read as a register");
+    f.key(ctrl('r'));
+    f.engine.paste("X", Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
+    assert!(!f.engine.pending());
+    f.key(ctrl('r'));
+    let (mut other, mut os) = (LineInput::new("q"), BufState::new());
+    other.set_cursor(0);
+    f.engine.carry(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, Target { buf: &mut OneLineBuf::new(&mut other), state: &mut os });
+    assert!(!f.engine.pending());
+    f.engine.handle(k('0'), Target { buf: &mut OneLineBuf::new(&mut other), state: &mut os }, &ViewCtx::default());
+    assert_eq!(other.text(), "0q", "typed in the new field, not read as \"0");
+    f.engine.handle(ctrl('r'), Target { buf: &mut OneLineBuf::new(&mut other), state: &mut os }, &ViewCtx::default());
+    f.engine.leave(Target { buf: &mut OneLineBuf::new(&mut other), state: &mut os });
+    assert!(!f.engine.pending());
+}
+
+/// A key spelled as one char, for the sweeps below: `\u{1}` is ctrl+a,
+/// `\u{18}` ctrl+x, `\u{12}` ctrl+r, `\u{1b}` Esc, `\r` Enter.
+fn key_of(c: char) -> KeyEvent {
+    match c {
+        '\u{1}' => ctrl('a'),
+        '\u{18}' => ctrl('x'),
+        '\u{12}' => ctrl('r'),
+        '\u{1b}' => esc(),
+        '\r' => code(KeyCode::Enter),
+        c => k(c),
+    }
+}
+
+/// Review focus 5: edtui holds an empty body as zero rows; every
+/// first-wave key must work on it and edtui must still render it.
+#[test]
+fn every_first_wave_key_works_on_an_empty_body() {
+    use edtui::EditorView;
+    use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
+    for keys in ["~", "3~", "g~~", "gUw", "guiw", ">>", "<<", ">j", "}", "{", "d}", "ge", "dge", "+", "-", "\r",
+                 "dip", "dap", "vip", "yap", "vipd", "\u{1}", "\u{18}", "3iX\u{1b}", "3o\u{1b}", "3OY\u{1b}",
+                 "gv", "vl\u{1b}gv", "giX\u{1b}", "aX\u{1b}giY\u{1b}", "A\u{12}\"\u{1b}", "yyA\u{12}0\u{1b}",
+                 "\"0p", "yy\"0P", "vp", "\"0yiw", "x.", "3iX\u{1b}u"] {
+        let mut b = Body::new("", 0, 0);
+        for c in keys.chars() {
+            b.key(key_of(c));
+        }
+        let lines = BodyBuf::new(&mut b.ed, &mut b.visual).line_count();
+        assert!(b.caret().row < lines, "{keys:?} left the caret off the text");
+        let area = Rect::new(0, 0, 20, 5);
+        EditorView::new(&mut b.ed).render(area, &mut Buffer::empty(area));
+    }
+}
+
+/// Review focus 1: the largest count on every first-wave command finishes
+/// quickly and never panics. The limit is loose on purpose (a debug build
+/// under parallel tests); it catches an accidental quadratic.
+#[test]
+fn first_wave_commands_survive_the_largest_count() {
+    let rows: Vec<String> = (0..200).map(|i| format!("  \"k{i}\": [{i}, 0x1f],")).collect();
+    let text = format!("{{\n{}\n}}", rows.join("\n"));
+    for keys in ["9999~", "9999g~~", "9999>>", "9999<<", "9999}", "9999{", "9999ge", "9999+", "9999-",
+                 "9999\u{1}", "9999\u{18}", "d9999ip", "v9999ap", "9999gv", "9999giX\u{1b}", "x9999."] {
+        let mut b = Body::new(&text, 100, 4);
+        let started = std::time::Instant::now();
+        for c in keys.chars() {
+            b.key(key_of(c));
+        }
+        let ms = started.elapsed().as_millis();
+        assert!(ms < 2000, "{keys:?} took {ms} ms");
+    }
 }

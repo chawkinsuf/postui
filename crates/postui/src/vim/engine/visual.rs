@@ -3,11 +3,11 @@
 //! buffer only paints it.
 
 use super::buf::{Pos, TextBuf};
-use super::history::Ed;
+use super::history::{Ed, LastVisual, MarkMove};
 use super::keys::{Cmd, Object, VisualOp};
 use super::motion::{Want, WantUpdate, char_width, updated_want, vcol_of};
 use super::object;
-use super::op::{RKind, Range, delete, join_rows, put, put_lines, recase_range, shift_rows, yank_of};
+use super::op::{RKind, Range, delete, join_rows, put, put_lines, recase_range, recased_caret, shift_rows, yank_of};
 use super::register::RegKind;
 use super::{BufState, Engine, Mode, Outcome, Shape, VisualSize, first_non_blank};
 
@@ -21,7 +21,7 @@ impl Engine {
                     // the caret off a line's end but keeps `w_curswant`; one
                     // still unset was taken before this command, in Visual.
                     let want = self.want_at(buf, st, caret);
-                    self.leave_to_normal(buf);
+                    self.leave_to_normal(buf, st);
                     st.set_want(want, buf.cursor());
                 }
                 Mode::Visual(_) => self.mode = Mode::Visual(shape),
@@ -48,7 +48,7 @@ impl Engine {
                 // the caret stays put (taken where it last moved, in
                 // Visual), else recomputed in Normal.
                 let here = updated_want(buf, caret, WantUpdate::Here, Want::default(), self.tab_rule(st, caret));
-                self.leave_to_normal(buf);
+                self.leave_to_normal(buf, st);
                 if buf.cursor() == caret {
                     st.set_want(here, caret);
                 } else {
@@ -62,29 +62,71 @@ impl Engine {
         Outcome::consumed()
     }
 
-    fn leave_visual(&mut self) {
+    /// Vim's `end_visual_mode()`: the area is remembered for `gv` with the
+    /// caret at `caret` (not while `.` replays a Visual command, which never
+    /// saves it: Vim's `redo_VIsual_busy`), and the mode becomes Normal.
+    pub(super) fn end_visual<B: TextBuf>(&mut self, caret: Pos, buf: &B, st: &mut BufState) {
+        if !self.replaying_visual
+            && let Some(area) = self.area_at(caret, buf, st)
+        {
+            st.history.marks.visual = Some(area);
+        }
         self.mode = Mode::Normal;
         self.visual = None;
     }
 
+    /// The current Visual area with the caret at `caret`, as `gv` remembers
+    /// it (Vim's `b_visual`); `None` outside Visual.
+    fn area_at<B: TextBuf>(&self, caret: Pos, buf: &B, st: &BufState) -> Option<LastVisual> {
+        match (self.mode, self.visual) {
+            (Mode::Visual(shape), Some(anchor)) => Some(LastVisual { anchor, caret, shape, want: self.want_at(buf, st, caret) }),
+            _ => None,
+        }
+    }
+
     /// Leaves Visual with no operator: the caret steps off a line's end.
-    fn leave_to_normal<B: TextBuf>(&mut self, buf: &mut B) {
-        self.leave_visual();
+    fn leave_to_normal<B: TextBuf>(&mut self, buf: &mut B, st: &mut BufState) {
+        self.end_visual(buf.cursor(), &*buf, st);
         let at = self.clamped(buf, buf.cursor());
         buf.set_cursor(at);
     }
 
+    /// `gv` (Vim's `nv_gv_cmd()`): reselects the buffer's last Visual area
+    /// with its shape and wanted column, each end clamped into the text
+    /// (Visual allows the line's end). In Visual the current area and the
+    /// remembered one swap. With nothing remembered, or the area's start past
+    /// the last line, nothing happens (Vim beeps).
+    pub(super) fn exec_gv<B: TextBuf>(&mut self, buf: &mut B, st: &mut BufState) {
+        let Some(last) = st.history.marks.visual else { return };
+        if last.anchor.row >= buf.line_count() {
+            return;
+        }
+        if let Some(area) = self.area_at(buf.cursor(), buf, st) {
+            st.history.marks.visual = Some(area);
+        }
+        self.mode = Mode::Visual(last.shape);
+        let anchor = self.clamped(buf, last.anchor);
+        let caret = self.clamped(buf, last.caret);
+        self.visual = Some(anchor);
+        buf.set_cursor(caret);
+        st.set_want(last.want, caret);
+    }
+
     /// Vim's `nv_object()` in Visual: the object's start becomes the anchor
-    /// and its end the caret, and a linewise selection turns charwise. When
-    /// there is no such object the shape stays, but the caret goes where
-    /// the object's walk stopped (and the anchor where Vim had moved it).
+    /// and its end the caret. A word, quote or block makes the selection
+    /// charwise; a paragraph makes it linewise, or keeps its shape when it
+    /// grows a selection over more than one line. When there is no such
+    /// object, the shape stays, but the caret goes where the object's walk
+    /// stopped (and the anchor where Vim had moved it).
     fn visual_object<B: TextBuf>(&mut self, obj: Object, inner: bool, count: usize, buf: &mut B, st: &mut BufState) {
         let caret = buf.cursor();
         let anchor = self.visual.unwrap_or(caret);
-        match object::pick(buf, caret, Some(anchor), obj, inner, count) {
+        match object::pick(buf, caret, Some(anchor), self.mode == Mode::Visual(Shape::Line), obj, inner, count) {
             Ok(p) => {
                 self.visual = Some(p.start);
-                self.mode = Mode::Visual(Shape::Char);
+                if let Some(shape) = p.shape {
+                    self.mode = Mode::Visual(shape);
+                }
                 self.land_caret(p.end, buf, st);
             }
             Err(missed) => {
@@ -160,7 +202,7 @@ impl Engine {
         self.last_visual_size = Some(self.visual_size(lines, buf, st));
         let r = self.visual_range(buf, lines);
         let (first, last) = self.visual_rows(buf);
-        self.leave_visual();
+        self.end_visual(buf.cursor(), &*buf, st);
         // Vim's `oap->empty`: the charwise selection is only the end of the
         // last line (an empty last line).
         let empty = r.kind == RKind::Char && r.start == r.end;
@@ -182,7 +224,7 @@ impl Engine {
                 buf.cursor()
             }
             VisualOp::Yank | VisualOp::YankLines => {
-                self.regs.write(reg, yank_of(buf, r));
+                self.regs.yank(reg, yank_of(buf, r));
                 r.start
             }
             VisualOp::Replace(ch) => {
@@ -209,10 +251,12 @@ impl Engine {
                 // Vim's `op_tilde()` saves the lines first, so a case change
                 // that changes nothing is still an undo step.
                 ed.save_rows(r.start, r.start.row, r.end.row);
-                recase_range(&mut ed, how, r);
                 // `op_tilde()` leaves the caret on `oap->start`, which keeps
-                // its column when linewise (`Vk~`, a `.` replay).
-                r.start
+                // its column when linewise (`Vk~`, a `.` replay): on the same
+                // letter when a `ß` before it became "SS" (`recased_caret`).
+                let at = recased_caret(&ed.buf.line(r.start.row), how, r);
+                recase_range(&mut ed, how, r);
+                at
             }
             VisualOp::Shift { right } => {
                 let mut ed = Ed { buf: &mut *buf, hist: &mut st.history };
@@ -241,37 +285,39 @@ impl Engine {
         } else {
             // Vim's `u_save` runs with the caret on the range start.
             ed.hist.begin(r.start);
-            self.regs.write(reg, yank_of(ed.buf, r));
+            self.regs.delete(reg, yank_of(ed.buf, r));
             delete(&mut ed, r)
         };
         buf.set_cursor(at);
         true
     }
 
-    /// Visual `p`/`P` (Vim's `nv_put()` in Visual): delete the selection,
-    /// then put the register there. `p` leaves the replaced text in the
-    /// unnamed register (Vim 9.1); `P` keeps the register.
+    /// Visual `p`/`P` (Vim's `nv_put()` in Visual): the selection is deleted,
+    /// then the register is put there. `p` deletes into the unnamed
+    /// register, so it holds the replaced text afterwards; `P` deletes into
+    /// the black hole and changes no register (Vim 9.1). `"0` is never
+    /// written, so `yiw` then `viwp` … `viw"0p` keeps putting the yank.
     fn visual_put<B: TextBuf>(&mut self, r: Range, before: bool, count: usize, reg: Option<char>, buf: &mut B, st: &mut BufState) -> Outcome {
+        // What to put, read before the delete writes the unnamed register
+        // (Vim's `reg1`).
         let text = self.regs.read(reg).clone();
+        let del = if before { Some('_') } else { None };
         // In a buffer with no lines (Vim's `ML_EMPTY`) there is nothing to
         // delete, but the put still runs.
-        if !self.visual_delete(r, reg, buf, st) {
+        if !self.visual_delete(r, del, buf, st) {
             buf.set_cursor(r.start);
         }
-        // Vim's delete writes the unnamed register for `p` and `"_` for `P`
-        // (plan 3b's `"0` cares); here it wrote the register (unless it
-        // deleted nothing), so `P` restores it after the put.
-        let replaced = self.regs.read(reg).clone();
-        self.regs.write(reg, text.clone());
         // Vim's `empty`: every line is gone, so the put leaves a stray empty
         // last line that `nv_put()` deletes.
         let empty = st.history.emptied(&*buf);
         let n = count.max(1);
         let mut ed = Ed { buf: &mut *buf, hist: &mut st.history };
-        let mut caret = if text.text.is_empty() && r.kind == RKind::Char {
+        // Each way of putting gives the caret and what was put, Vim's `'[`
+        // and `']` marks (`do_put()`), which `gv` selects afterwards.
+        let (mut caret, put_area) = if text.text.is_empty() && r.kind == RKind::Char {
             // An empty register (Vim's `setreg('"', '')`: one empty
             // charwise line) puts nothing between chars; the delete stays.
-            ed.buf.cursor()
+            (ed.buf.cursor(), None)
         } else if r.kind == RKind::Line && !B::MULTILINE {
             // A one-line field: the field's put rules give the text (a
             // linewise register loses its line break), and the caret goes to
@@ -279,43 +325,63 @@ impl Engine {
             ed.buf.set_cursor(Pos::new(0, 0));
             put(&mut ed, &text, true, n);
             ed.put_a_line();
-            Pos::new(0, first_non_blank(&ed.buf.line(0)))
+            (Pos::new(0, first_non_blank(&ed.buf.line(0))), Some(lines_put(ed.buf, 0, 1)))
         } else if r.kind == RKind::Line {
             // Replacing lines: the register goes in as lines of its own.
             let body = match text.kind {
                 RegKind::Line => text.text.repeat(n),
                 RegKind::Char => format!("{}\n", text.text).repeat(n),
             };
-            put_lines(&mut ed, r.start.row, &body)
+            let caret = put_lines(&mut ed, r.start.row, &body);
+            (caret, Some(lines_put(ed.buf, caret.row, body.matches('\n').count())))
         } else {
             let at = r.start;
             let len = ed.buf.line_len(at.row);
             if text.kind == RegKind::Line && B::MULTILINE {
                 // Linewise text replacing chars splits the line around it.
-                ed.splice(at, at, &format!("\n{}", text.text.repeat(n)));
-                Pos::new(at.row + 1, first_non_blank(&ed.buf.line(at.row + 1)))
+                let body = text.text.repeat(n);
+                ed.splice(at, at, &format!("\n{body}"));
+                let caret = Pos::new(at.row + 1, first_non_blank(&ed.buf.line(at.row + 1)));
+                (caret, Some(lines_put(ed.buf, caret.row, body.matches('\n').count())))
             } else {
                 // The delete reached the line's end: put after its last char.
                 let forward = len > 0 && at.col >= len;
                 ed.buf.set_cursor(Pos::new(at.row, if forward { len - 1 } else { at.col.min(len) }));
-                put(&mut ed, &text, !forward, n)
+                let caret = put(&mut ed, &text, !forward, n);
+                // `do_put()` moves `'[` past the caret's char only when the
+                // register's first line is not empty (`yanklen`): text that
+                // starts with a line break leaves it on that char.
+                let stays = forward && text.text.starts_with('\n');
+                let area = ed.hist.last_put().map(|(start, end)| if stays { (Pos::new(start.row, start.col - 1), end) } else { (start, end) });
+                (caret, area)
             }
         };
         let last = ed.buf.line_count() - 1;
         if empty && last > 0 && ed.buf.line_len(last) == 0 {
             let len = ed.buf.line_len(last - 1);
-            ed.splice(Pos::new(last - 1, len), Pos::new(last, 0), "");
+            // `nv_put()` deletes it with `deleted_lines()`: no mark moves.
+            ed.splice_moving(Pos::new(last - 1, len), Pos::new(last, 0), "", MarkMove::Keep);
             if caret.row == last {
                 // The caret was on that line: the end of the new last line.
                 caret = Pos::new(last - 1, len);
             }
         }
-        if !before {
-            self.regs.write(reg, replaced);
-        }
         self.land_caret(caret, buf, st);
+        if let Some(v) = &mut st.history.marks.visual {
+            let (start, end) = put_area.unwrap_or((caret, caret));
+            v.anchor = start;
+            v.caret = end;
+        }
         Outcome::consumed()
     }
+}
+
+/// Vim's `'[` and `']` after `rows` whole lines were put from row `first`
+/// (`do_put()` with `MLINE`): column 0 of the first, the last char of the
+/// last (column 0 when it is empty).
+fn lines_put<B: TextBuf>(buf: &B, first: usize, rows: usize) -> (Pos, Pos) {
+    let last = first + rows.max(1) - 1;
+    (Pos::new(first, 0), Pos::new(last, buf.line_len(last).saturating_sub(1)))
 }
 
 /// Visual `r{c}` (Vim's `op_replace()`): every char of the range except

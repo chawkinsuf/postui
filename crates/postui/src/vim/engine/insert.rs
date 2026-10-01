@@ -11,12 +11,13 @@
 
 use super::buf::{Pos, TextBuf};
 use super::class::{class, is_space, is_word, white};
-use super::history::{Ed, end_of};
+use super::history::{Ed, MarkMove, end_of};
 use super::keys::{Cmd, InsertHow, Key};
 use super::motion::{Want, col_for, vcol_of};
 use super::op::{RKind, Range, yank_of};
+use super::register::RegKind;
 use super::settings::TABSTOP;
-use super::{BufState, Engine, Mode, Outcome, Target, first_non_blank};
+use super::{BufState, Engine, Mode, Note, Outcome, Target, first_non_blank};
 use crate::components::line_input::flatten_paste;
 use ratatui::crossterm::event::KeyEvent;
 
@@ -51,6 +52,29 @@ impl InsertKey {
             InsertKey::Paste(text) if B::MULTILINE => Some(InsertKey::Paste(text.replace("\r\n", "\n").replace('\r', "\n"))),
             InsertKey::Paste(text) => Some(InsertKey::Paste(flatten_paste(&text))),
             key => Some(key),
+        }
+    }
+}
+
+/// Insert `ctrl+r` waiting for its register name (Vim's `ins_reg()`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RegPending {
+    /// `ctrl+r`: the text goes in as typed.
+    Typed,
+    /// `ctrl+r ctrl+r`: control chars go in literally.
+    Literal,
+    /// `ctrl+r ctrl+o` or `ctrl+r ctrl+p`: Vim puts the register instead.
+    /// Not supported; the register name is taken with a note.
+    Unsupported(char),
+}
+
+impl RegPending {
+    /// The footer echo, as Vim's showcmd shows it.
+    pub(crate) fn echo(self) -> String {
+        match self {
+            RegPending::Typed => "^R".to_string(),
+            RegPending::Literal => "^R^R".to_string(),
+            RegPending::Unsupported(c) => format!("^R^{}", c.to_ascii_uppercase()),
         }
     }
 }
@@ -198,10 +222,12 @@ impl Engine {
                 // The step's caret is where `o` was typed (`n_opencmd`'s `u_save`).
                 let mut ed = Ed { buf: &mut *buf, hist: &mut st.history };
                 let at = if how == InsertHow::OpenBelow {
-                    ed.splice(Pos::new(caret.row, len), Pos::new(caret.row, len), &format!("\n{indent}"));
+                    let opened = MarkMove::InsertLines { at: caret.row + 1, count: 1 };
+                    ed.splice_moving(Pos::new(caret.row, len), Pos::new(caret.row, len), &format!("\n{indent}"), opened);
                     Pos::new(caret.row + 1, indent.len())
                 } else {
-                    ed.splice(Pos::new(caret.row, 0), Pos::new(caret.row, 0), &format!("{indent}\n"));
+                    let opened = MarkMove::InsertLines { at: caret.row, count: 1 };
+                    ed.splice_moving(Pos::new(caret.row, 0), Pos::new(caret.row, 0), &format!("{indent}\n"), opened);
                     Pos::new(caret.row, indent.len())
                 };
                 ai_row = Some(at.row);
@@ -213,14 +239,32 @@ impl Engine {
         self.open_session(at, Cmd::Insert { how, count }, ai_row);
     }
 
+    /// `gi` (Vim's `nv_gi_cmd()`): Insert where Insert last ended in this
+    /// buffer (`'^`), clamped into the text; with no such place, at the
+    /// caret. `.` repeats it as the `i` it becomes.
+    pub(super) fn exec_gi<B: TextBuf>(&mut self, count: usize, buf: &mut B, st: &mut BufState) {
+        if let Some(at) = st.history.marks.insert {
+            let row = at.row.min(buf.line_count() - 1);
+            buf.set_cursor(Pos::new(row, at.col.min(buf.line_len(row))));
+        }
+        self.exec_insert(InsertHow::Before, count, buf, st);
+    }
+
     /// One key in Insert (the Insert key table, spec §4.3). A key the
     /// engine does not take is declined as typed.
     pub(super) fn insert_key<B: TextBuf>(&mut self, ev: KeyEvent, buf: &mut B, st: &mut BufState) -> Outcome {
+        if let Some(how) = self.reg_pending.take() {
+            return self.insert_register(how, ev, buf, st);
+        }
         let decline = Outcome::Declined { count: None, keys: vec![ev] };
         let input = match Key::of(&ev) {
             Key::Esc if self.insert_only => return decline,
             Key::Esc => {
                 self.end_insert(buf, st, true);
+                return Outcome::consumed();
+            }
+            Key::Ctrl('r') => {
+                self.reg_pending = Some(RegPending::Typed);
                 return Outcome::consumed();
             }
             Key::Char(c) => InsertKey::Char(c),
@@ -243,6 +287,91 @@ impl Engine {
         let Some(input) = input.for_buffer::<B>() else { return decline };
         self.insert_input(input, buf, st);
         Outcome::consumed()
+    }
+
+    /// The key after Insert `ctrl+r` (Vim's `ins_reg()`). `"` and `0` put
+    /// their text in; any other register name shows a note. `ctrl+r` again
+    /// makes it literal; `ctrl+o` and `ctrl+p` are not supported and take
+    /// one more key, whatever it is. The engine's own Insert chords are
+    /// swallowed (a third `ctrl+r` too: Vim beeps at it as a register
+    /// name), a foreign chord goes to the app (the half-typed `ctrl+r` is
+    /// dropped), and any other key is swallowed, as Vim swallows it (plan
+    /// 3b Deviation 5).
+    fn insert_register<B: TextBuf>(&mut self, how: RegPending, ev: KeyEvent, buf: &mut B, st: &mut BufState) -> Outcome {
+        let note = |text: String| Outcome::Consumed { changed: false, note: Some(Note::Unsupported(text)), request: None };
+        match (how, Key::of(&ev)) {
+            (RegPending::Unsupported(c), _) => note(format!("ctrl+r ctrl+{c} not supported")),
+            (RegPending::Typed, Key::Ctrl('r')) => {
+                self.reg_pending = Some(RegPending::Literal);
+                Outcome::consumed()
+            }
+            (RegPending::Typed, Key::Ctrl(c @ ('o' | 'p'))) => {
+                self.reg_pending = Some(RegPending::Unsupported(c));
+                Outcome::consumed()
+            }
+            (_, Key::Ctrl('w' | 'u' | 'h' | 'r')) => Outcome::consumed(),
+            (_, Key::Ctrl(_) | Key::Other) => Outcome::Declined { count: None, keys: vec![ev] },
+            (how, Key::Char(name @ ('"' | '0'))) => {
+                self.insert_register_text(name, how == RegPending::Literal, buf, st);
+                Outcome::consumed()
+            }
+            (_, Key::Char(c)) => note(format!("register \"{c} not supported")),
+            _ => Outcome::consumed(),
+        }
+    }
+
+    /// Types register `name`'s text into the session (Vim's `insert_reg()`
+    /// and `stuffescaped()`). In the body each line break is an Enter
+    /// (`autoindent` applies), a linewise register ends with one, and Tab,
+    /// BS, `ctrl+w` and `ctrl+u` act as those keys, the last three going
+    /// in literally when `literal`. Any other char goes in as it is, a run
+    /// of them between those keys as one typed run (recorded as one, so `.`
+    /// and a count put it in the same way), not a key per char, each of
+    /// which would rebuild the line. A one-line field takes the text
+    /// flattened, as `p` puts it (key list §5): with no line break or Tab
+    /// left, it is one run.
+    fn insert_register_text<B: TextBuf>(&mut self, name: char, literal: bool, buf: &mut B, st: &mut BufState) {
+        let reg = self.regs.read(Some(name)).clone();
+        if !B::MULTILINE {
+            let text = match reg.kind {
+                RegKind::Line => reg.text.strip_suffix('\n').unwrap_or(&reg.text),
+                RegKind::Char => &reg.text,
+            };
+            let flat = flatten_paste(text);
+            if !flat.is_empty() {
+                self.insert_input(InsertKey::Paste(flat), buf, st);
+            }
+            return;
+        }
+        let mut run = String::new();
+        for c in reg.text.chars() {
+            let key = match c {
+                '\n' | '\r' => InsertKey::Enter,
+                '\t' => InsertKey::Tab,
+                '\u{8}' if !literal => InsertKey::Backspace,
+                '\u{17}' if !literal => InsertKey::CtrlW,
+                '\u{15}' if !literal => InsertKey::CtrlU,
+                c => {
+                    run.push(c);
+                    continue;
+                }
+            };
+            self.flush_run(&mut run, buf, st);
+            self.insert_input(key, buf, st);
+        }
+        self.flush_run(&mut run, buf, st);
+    }
+
+    /// Types `run` (a register's chars between its key-like ones) as one
+    /// typed run and empties it; one char goes in as that char, as typed.
+    fn flush_run<B: TextBuf>(&mut self, run: &mut String, buf: &mut B, st: &mut BufState) {
+        let key = match run.chars().count() {
+            0 => return,
+            1 => InsertKey::Char(run.chars().next().unwrap()),
+            _ => InsertKey::Paste(std::mem::take(run)),
+        };
+        run.clear();
+        self.insert_input(key, buf, st);
     }
 
     /// Replays an Insert session's recorded keys for `.`, as if typed in
@@ -361,7 +490,9 @@ impl Engine {
             // `backspace=eol`: join with the line above (no space).
             let prev = buf.line_len(caret.row - 1);
             let to = Pos::new(caret.row - 1, prev);
-            Ed { buf: &mut *buf, hist: &mut st.history }.splice(to, caret, "");
+            // `ins_bs()` and `do_join()` save both lines (`u_save`), so
+            // `u` finds the saved caret in a block of two, not one.
+            Ed { buf: &mut *buf, hist: &mut st.history }.splice_lines_joined(to, caret);
             if caret.row == start.row {
                 self.session().start = to;
             }
@@ -514,13 +645,39 @@ impl Engine {
     /// autoindent is stripped and the session dropped. The caller closes
     /// the undo step and leaves Insert.
     pub(super) fn drop_session<B: TextBuf>(&mut self, buf: &mut B, st: &mut BufState) {
-        let caret = buf.cursor();
-        if let Some(at) = self.strip_autoindent(caret, buf, st)
-            && at != caret
+        let mut at = buf.cursor();
+        if let Some(stripped) = self.strip_autoindent(at, buf, st)
+            && stripped != at
         {
-            buf.set_cursor(at);
+            buf.set_cursor(stripped);
+            at = stripped;
         }
+        // `gi` in the buffer left behind resumes here, as after `leave`.
+        st.history.marks.insert = Some(at);
         self.insert = None;
+    }
+
+    /// Vim's `ins_esc()` for a counted insert (`3iX<Esc>`, `3o…`): what was
+    /// typed goes in `count - 1` more times, and each `o`/`O` repeat starts
+    /// on a new line (`start_redo_ins()` stuffs a line break first). A
+    /// session a cursor key split no longer has its count: its record
+    /// restarted as `1i` (Vim's `arrow_used`). `.` keeps the keys typed
+    /// once, with the count (Vim's `block_redo`).
+    fn repeat_insert<B: TextBuf>(&mut self, buf: &mut B, st: &mut BufState) {
+        let Some(s) = &self.insert else { return };
+        let Cmd::Insert { how, count } = s.origin else { return };
+        if count < 2 {
+            return;
+        }
+        let typed = s.typed.clone();
+        let open = B::MULTILINE && matches!(how, InsertHow::OpenBelow | InsertHow::OpenAbove);
+        for _ in 1..count {
+            if open {
+                self.insert_input(InsertKey::Enter, buf, st);
+            }
+            self.replay_insert(typed.clone(), buf, st);
+        }
+        self.session().typed = typed;
     }
 
     /// Leaves Insert: `Esc` (`step_back`), or `leave`. An indent
@@ -532,18 +689,28 @@ impl Engine {
     /// each key), and `w_set_curswant` is set again only when
     /// `stop_insert()` left the caret's column where it was. When removing
     /// the autoindent moved it, the wanted column stays after the indent
-    /// (`o<Esc>k` aims for the indent's width).
+    /// (`o<Esc>k` aims for the indent's width). Esc repeats a counted insert
+    /// first (`repeat_insert`).
     pub(super) fn end_insert<B: TextBuf>(&mut self, buf: &mut B, st: &mut BufState, step_back: bool) {
+        // Esc first repeats a counted insert (Vim's `ins_esc()`); `leave`
+        // never does (Vim's `:stopinsert` drops the count).
+        if step_back {
+            self.repeat_insert(buf, st);
+        }
         let mut caret = buf.cursor();
         let temp = caret.col;
         let insert_want = Want::Col(vcol_of(&buf.line(caret.row), caret.col));
         if let Some(at) = self.strip_autoindent(caret, buf, st) {
             caret = at;
         }
+        // Vim's `'^` mark, for `gi`: where the caret was when Insert ended,
+        // before it steps back.
+        st.history.marks.insert = Some(caret);
         let keep_want = caret.col != temp;
         st.history.commit();
         self.finish_record();
         self.insert = None;
+        self.reg_pending = None;
         self.mode = Mode::Normal;
         if step_back && caret.col > 0 {
             caret.col -= 1;
@@ -585,7 +752,7 @@ impl Engine {
     /// The change operator (spec §3.6, Vim's `op_change()`): the text goes
     /// to the register and a session opens at the range start.
     pub(super) fn change<B: TextBuf>(&mut self, r: Range, reg: Option<char>, origin: Cmd, buf: &mut B, st: &mut BufState) {
-        self.regs.write(reg, yank_of(buf, r));
+        self.regs.delete(reg, yank_of(buf, r));
         self.change_text(r, origin, buf, st);
     }
 
@@ -617,6 +784,10 @@ impl Engine {
         };
         if ed.buf.slice(from, to).is_empty() {
             ed.save_line(from.row);
+        } else if r.kind == RKind::Line && r.end.row > r.start.row {
+            // Vim's `op_change()` deletes the lines after the first
+            // (`del_lines()`), then empties the first after its indent.
+            ed.splice_moving(from, to, "", MarkMove::DeleteLines { first: r.start.row + 1, last: r.end.row });
         } else {
             ed.splice(from, to, "");
         }
@@ -636,6 +807,7 @@ impl Engine {
         if self.mode != Mode::Insert {
             return Outcome::Declined { count: None, keys: Vec::new() };
         }
+        self.reg_pending = None;
         self.clamp(buf);
         let before = buf.cursor();
         if let Some(key) = InsertKey::Paste(text.to_string()).for_buffer::<B>() {

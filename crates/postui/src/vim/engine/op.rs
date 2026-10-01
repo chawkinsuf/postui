@@ -3,8 +3,9 @@
 //! `~ u U > <` reuse the ranges. Also undo/redo, put, replace and join.
 
 use super::buf::{Pos, TextBuf};
+use super::case;
 use super::class::white;
-use super::history::Ed;
+use super::history::{Ed, MarkMove};
 use super::keys::{CaseOp, Cmd, Op, Reach};
 use super::motion::{self, MKind, MotionCx};
 use super::register::{RegKind, Register};
@@ -102,10 +103,10 @@ pub(crate) fn delete_lines<B: TextBuf>(ed: &mut Ed<'_, B>, first: usize, last: u
     let lines = ed.buf.line_count();
     let last_len = ed.buf.line_len(last);
     if last + 1 < lines {
-        ed.splice(Pos::new(first, 0), Pos::new(last + 1, 0), "");
+        ed.splice_moving(Pos::new(first, 0), Pos::new(last + 1, 0), "", MarkMove::DeleteLines { first, last });
     } else if first > 0 {
         let prev = ed.buf.line_len(first - 1);
-        ed.splice(Pos::new(first - 1, prev), Pos::new(last, last_len), "");
+        ed.splice_moving(Pos::new(first - 1, prev), Pos::new(last, last_len), "", MarkMove::DeleteLines { first, last });
     } else {
         ed.empty_buffer();
     }
@@ -126,35 +127,53 @@ pub(crate) fn delete<B: TextBuf>(ed: &mut Ed<'_, B>, r: Range) -> Pos {
     }
 }
 
-/// One char when the case mapping gives one, else the char unchanged
-/// (Vim keeps `ß` under `gU`).
-fn one(mut mapped: impl Iterator<Item = char>, c: char) -> char {
-    match (mapped.next(), mapped.next()) {
-        (Some(x), None) => x,
-        _ => c,
-    }
-}
-
-fn recase(how: CaseOp, c: char) -> char {
-    match how {
-        CaseOp::Upper => one(c.to_uppercase(), c),
-        CaseOp::Lower => one(c.to_lowercase(), c),
-        CaseOp::Toggle if c.is_lowercase() => one(c.to_uppercase(), c),
-        CaseOp::Toggle if c.is_uppercase() => one(c.to_lowercase(), c),
-        CaseOp::Toggle => c,
-    }
-}
-
-/// Visual `~ u U` (and plan 3b's `g~` `gu` `gU`) over `r` (whole rows when
-/// linewise).
+/// `g~` `gu` `gU`, `~` and Visual `~ u U` over `r` (whole rows when
+/// linewise), re-casing only the chars inside it, one by one, with Vim's case
+/// rules (`case::swap`; `ß` may become "SS", so the text can grow). Vim's own
+/// `op_tilde()` counts bytes and so can overrun the range when a char's UTF-8
+/// length changes; the engine does not (divergences.toml).
 pub(crate) fn recase_range<B: TextBuf>(ed: &mut Ed<'_, B>, how: CaseOp, r: Range) {
     let (start, end) = match r.kind {
         RKind::Char => (r.start, r.end),
         RKind::Line => (Pos::new(r.start.row, 0), Pos::new(r.end.row, ed.buf.line_len(r.end.row))),
     };
     let text = ed.buf.slice(start, end);
-    let new: String = text.chars().map(|c| if c == '\n' { c } else { recase(how, c) }).collect();
+    let mut new = String::with_capacity(text.len());
+    for c in text.chars() {
+        if c == '\n' {
+            new.push(c);
+        } else {
+            case::swap(how, c, &mut new);
+        }
+    }
     ed.splice(start, end, &new);
+}
+
+/// Where a case operator over `r` (Normal or Visual) leaves the caret, given
+/// the range start's row `line` before the re-case: the range start, moved
+/// right by the chars the re-case adds before it on that row. A linewise
+/// range re-cases its first row from column 0, so `gUj` with the caret after
+/// a `ß` lands past the "SS" it became: Vim keeps the caret's byte offset,
+/// and `ß` and "SS" are both two bytes, so it stays on the same letter. The
+/// engine counts chars, not bytes, so when a char before the caret shrinks
+/// in UTF-8 (`ı` → `I`, 2 bytes → 1) Vim's caret drifts one char right and
+/// the engine's stays on its letter (divergences.toml). A charwise range
+/// starts at the caret, so nothing before it changes.
+pub(crate) fn recased_caret(line: &[char], how: CaseOp, r: Range) -> Pos {
+    let from = match r.kind {
+        RKind::Char => r.start.col,
+        RKind::Line => 0,
+    };
+    let mut out = String::new();
+    let added: usize = line[from..r.start.col.min(line.len())]
+        .iter()
+        .map(|&c| {
+            out.clear();
+            case::swap(how, c, &mut out);
+            out.chars().count() - 1
+        })
+        .sum();
+    Pos::new(r.start.row, r.start.col + added)
 }
 
 /// Visual `>` `<` over rows `first..=last`, `amount` shiftwidths each;
@@ -206,14 +225,15 @@ pub(crate) fn put<B: TextBuf>(ed: &mut Ed<'_, B>, reg: &Register, before: bool, 
 /// takes a break before it and none after.
 pub(crate) fn put_lines<B: TextBuf>(ed: &mut Ed<'_, B>, row: usize, body: &str) -> Pos {
     let lines = ed.buf.line_count();
+    let count = body.matches('\n').count();
     let row = if row < lines {
-        ed.splice(Pos::new(row, 0), Pos::new(row, 0), body);
+        ed.splice_moving(Pos::new(row, 0), Pos::new(row, 0), body, MarkMove::InsertLines { at: row, count });
         row
     } else {
         let last = lines - 1;
         let len = ed.buf.line_len(last);
         let text = body.strip_suffix('\n').unwrap_or(body);
-        ed.splice(Pos::new(last, len), Pos::new(last, len), &format!("\n{text}"));
+        ed.splice_moving(Pos::new(last, len), Pos::new(last, len), &format!("\n{text}"), MarkMove::InsertLines { at: last + 1, count });
         last + 1
     };
     Pos::new(row, first_non_blank(&ed.buf.line(row)))
@@ -254,11 +274,16 @@ pub(crate) fn join_rows<B: TextBuf>(ed: &mut Ed<'_, B>, row: usize, n: usize) ->
     let mut sum = first.len();
     let mut end = first.last().copied();
     let mut col = 0;
+    let mut moves: Vec<(isize, isize)> = Vec::with_capacity(n - 1);
     for t in 1..n {
         let line = ed.buf.line(row + t);
         let lead = first_non_blank(&line);
         let rest = &line[lead..];
         let space = !rest.is_empty() && rest[0] != ')' && sum != 0 && !matches!(end, Some(' ' | '\t'));
+        // Vim's `do_join()` moves this line's marks by where its text now
+        // starts, less the blanks it lost (`mark_col_adjust()`).
+        let spaces_removed = lead as isize - isize::from(space);
+        moves.push((sum as isize - spaces_removed, spaces_removed));
         if space {
             joined.push(' ');
         }
@@ -269,7 +294,7 @@ pub(crate) fn join_rows<B: TextBuf>(ed: &mut Ed<'_, B>, row: usize, n: usize) ->
     }
     let last = row + n - 1;
     let text: String = joined.iter().collect();
-    ed.splice(Pos::new(row, first.len()), Pos::new(last, ed.buf.line_len(last)), &text);
+    ed.splice_moving(Pos::new(row, first.len()), Pos::new(last, ed.buf.line_len(last)), &text, MarkMove::Join { row, lines: &moves });
     Pos::new(row, col)
 }
 
@@ -302,8 +327,32 @@ impl Engine {
             }
             return true;
         }
+        if let Op::Case(how) = op {
+            let mut ed = Ed { buf: &mut *buf, hist: &mut st.history };
+            // Vim's `op_tilde()` saves the lines first, so a case change that
+            // changes nothing is still an undo step; the caret goes to the
+            // range start (spec §3.6 rule 5), on the same letter when the
+            // re-case grew the row before it (`recased_caret`).
+            ed.save_rows(r.start, r.start.row, r.end.row);
+            let at = recased_caret(&ed.buf.line(r.start.row), how, r);
+            recase_range(&mut ed, how, r);
+            self.land_caret(at, buf, st);
+            return true;
+        }
+        if let Op::Shift { right } = op {
+            let (first, last) = (r.start.row, r.end.row);
+            let mut ed = Ed { buf: &mut *buf, hist: &mut st.history };
+            // Vim's `op_shift()`: the lines are saved first (so `<<` with no
+            // indent is still an undo step), each non-empty line moves one
+            // shiftwidth (an operator's count counts lines, not shifts), and
+            // the caret goes to the first line's first non-blank.
+            ed.save_rows(r.start, first, last);
+            let caret = shift_rows(&mut ed, first, last, right, 1);
+            self.land_caret(caret, buf, st);
+            return true;
+        }
         let caret = if op == Op::Yank {
-            self.regs.write(reg, yank_of(buf, r));
+            self.regs.yank(reg, yank_of(buf, r));
             r.start
         } else if st.history.emptied(&*buf) {
             // Vim's `op_delete`: nothing to do in a buffer with no lines.
@@ -323,7 +372,7 @@ impl Engine {
                 }
                 r.start
             } else {
-                self.regs.write(reg, yank_of(ed.buf, r));
+                self.regs.delete(reg, yank_of(ed.buf, r));
                 delete(&mut ed, r)
             }
         };
@@ -378,7 +427,30 @@ impl Engine {
             ed.splice(at, Pos::new(at.row, end), &" ".repeat(width));
             at.col += width;
         }
+        // The `R` session ends in `ins_esc()`, which sets `'^` before the
+        // step back.
+        st.history.marks.insert = Some(at);
         self.land_caret(Pos::new(at.row, at.col - 1), buf, st);
+    }
+
+    /// `~` with a count (`notildeop`, Vim's `n_swapchar()`): toggles the case
+    /// of `count` chars from the caret on its line; the caret lands after
+    /// the last one, clamped to the last char. On an empty line it fails
+    /// (`false`: no undo step, no `.`, the wanted column kept); otherwise the
+    /// line is saved first, so `~` on `-` is still an undo step.
+    pub(super) fn exec_tilde<B: TextBuf>(&mut self, count: usize, buf: &mut B, st: &mut BufState) -> bool {
+        let caret = buf.cursor();
+        let len = buf.line_len(caret.row);
+        if len == 0 {
+            return false;
+        }
+        let n = count.max(1).min(len - caret.col);
+        let mut ed = Ed { buf: &mut *buf, hist: &mut st.history };
+        ed.save_cursor_line(caret);
+        let end = Pos::new(caret.row, caret.col + n);
+        recase_range(&mut ed, CaseOp::Toggle, Range { start: caret, end, kind: RKind::Char });
+        self.land_caret(Pos::new(caret.row, (caret.col + n).min(len - 1)), buf, st);
+        true
     }
 
     /// `J` with a count (Vim's `nv_join()`); a no-op in a one-line field.
@@ -455,7 +527,7 @@ impl Engine {
                 span.no_adjust = moved.no_adjust;
                 Some(span)
             }
-            Reach::Object { obj, inner } => match super::object::pick(buf, from, None, obj, inner, count) {
+            Reach::Object { obj, inner } => match super::object::pick(buf, from, None, false, obj, inner, count) {
                 Ok(picked) => Some(picked.span()),
                 Err(missed) => {
                     // Vim's `nv_object`: the operator is cancelled, the caret

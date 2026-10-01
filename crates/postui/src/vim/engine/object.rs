@@ -5,25 +5,44 @@
 use super::buf::{Pos, TextBuf};
 use super::class::white;
 use super::keys::Object;
-use super::motion::{MKind, MatchFrom, Walk, bck_word, bckend_word, end_word, find_match, fwd_word};
+use super::motion::{MKind, MatchFrom, Walk, bck_word, bckend_word, end_word, find_match, fwd_word, starts_paragraph};
 use super::op::Span;
+use super::Shape;
 
-/// What an object selected. For an operator, `start..end` with
-/// `inclusive` saying whether `end` is taken. In Visual, `start` is the
-/// new anchor and `end` the new caret.
+/// What an object selected. For an operator, `start..end` with `inclusive`
+/// saying whether `end` is taken, or whole rows when `linewise`. In Visual,
+/// `start` is the new anchor and `end` the new caret.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Picked {
     pub start: Pos,
     pub end: Pos,
     pub inclusive: bool,
+    /// `ip` `ap`: the operator takes the rows `start.row..=end.row`.
+    pub linewise: bool,
+    /// In Visual, the shape the selection takes; `None` keeps it (`ip` `ap`
+    /// growing a selection that spans more than one line).
+    pub shape: Option<Shape>,
 }
 
 impl Picked {
+    /// A charwise object (word, quote, block): in Visual it makes the
+    /// selection charwise, as Vim's `nv_object()` does.
+    fn chars(start: Pos, end: Pos, inclusive: bool) -> Self {
+        Self { start, end, inclusive, linewise: false, shape: Some(Shape::Char) }
+    }
+
     /// The operator's reach. `end` can come before `start` (`diw` on an
     /// empty last line walks back onto the line above); Vim's
     /// `do_pending_operator` swaps them, as [`Span::between`] does.
     pub(crate) fn span(self) -> Span {
-        Span::between(self.start, self.end, if self.inclusive { MKind::Inclusive } else { MKind::Exclusive })
+        let kind = if self.linewise {
+            MKind::Linewise
+        } else if self.inclusive {
+            MKind::Inclusive
+        } else {
+            MKind::Exclusive
+        };
+        Span::between(self.start, self.end, kind)
     }
 }
 
@@ -44,11 +63,13 @@ impl Missed {
     }
 }
 
-/// `inner` is `i`, otherwise `a`. `count` 0 means none typed.
+/// `inner` is `i`, otherwise `a`. `count` 0 means none typed. `line_mode`:
+/// the Visual selection is linewise (only `ip` `ap` care).
 pub(crate) fn pick<B: TextBuf>(
     buf: &B,
     caret: Pos,
     vis: Option<Pos>,
+    line_mode: bool,
     obj: Object,
     inner: bool,
     count: usize,
@@ -58,6 +79,7 @@ pub(crate) fn pick<B: TextBuf>(
         Object::Word { big } => word(buf, caret, vis, count, !inner, big),
         Object::Quote(q) => quote(buf, caret, vis, count, !inner, q).ok_or(Missed::at(caret)),
         Object::Block(open) => block(buf, caret, vis, count, !inner, open).ok_or(Missed::at(caret)),
+        Object::Paragraph => paragraph(buf, caret, vis, line_mode, count, !inner),
     }
 }
 
@@ -166,7 +188,7 @@ fn word<B: TextBuf>(buf: &B, caret: Pos, vis: Option<Pos>, count: usize, include
         }
         w.pos = end;
     }
-    Ok(Picked { start, end: w.pos, inclusive })
+    Ok(Picked::chars(start, w.pos, inclusive))
 }
 
 /// Vim's `find_next_quote()`: the next `q` at or after `col`; `escape`
@@ -312,11 +334,11 @@ fn quote<B: TextBuf>(buf: &B, caret: Pos, vis: Option<Pos>, count: usize, includ
         }
     }
     let Some(v) = vis else {
-        return Some(Picked { start: Pos::new(row, col_start), end: Pos::new(row, end), inclusive });
+        return Some(Picked::chars(Pos::new(row, col_start), Pos::new(row, end), inclusive));
     };
     if vis_empty || vis_bef_curs {
         // `selection=inclusive`: the caret sits on the last char.
-        Some(Picked { start: anchor, end: Pos::new(row, end.saturating_sub(1)), inclusive: true })
+        Some(Picked::chars(anchor, Pos::new(row, end.saturating_sub(1)), true))
     } else {
         // The caret is at the Visual area's start: mostly restore the
         // selection an empty Visual area would have made.
@@ -326,7 +348,7 @@ fn quote<B: TextBuf>(buf: &B, caret: Pos, vis: Option<Pos>, count: usize, includ
         {
             head_anchor = Pos::new(row, end.saturating_sub(1));
         }
-        Some(Picked { start: head_anchor, end: Pos::new(row, col_start), inclusive: true })
+        Some(Picked::chars(head_anchor, Pos::new(row, col_start), true))
     }
 }
 
@@ -415,17 +437,143 @@ fn block<B: TextBuf>(buf: &B, caret: Pos, vis: Option<Pos>, count: usize, includ
             w.inc();
             head = w.pos;
         }
-        return Some(Picked { start, end: head, inclusive: true });
+        return Some(Picked::chars(start, head, true));
     }
     if sol {
         let mut w = Walk::new(buf, end);
         w.incl();
-        return Some(Picked { start, end: w.pos, inclusive: false });
+        return Some(Picked::chars(start, w.pos, false));
     }
     if start <= end {
-        Some(Picked { start, end, inclusive: true })
+        Some(Picked::chars(start, end, true))
     } else {
         // `()`: nothing between the brackets; operate on nothing.
-        Some(Picked { start, end: start, inclusive: false })
+        Some(Picked::chars(start, start, false))
+    }
+}
+
+/// Vim's `linewhite()`: nothing but blanks on the line (an empty line too).
+fn line_white<B: TextBuf>(buf: &B, row: usize) -> bool {
+    buf.line(row).iter().all(|&c| white(c))
+}
+
+/// Vim's `current_par()` for `ip` (`include` false) and `ap`. For an
+/// operator: rows `start..=end`, linewise. In Visual (`vis` the anchor,
+/// `line_mode` a linewise selection), a selection over more than one line
+/// grows by whole paragraphs and keeps its shape; otherwise the paragraph
+/// becomes a linewise selection. Blank-only lines are blank here, while
+/// `{ }` stop only at empty ones (plan 3b Deviation 2).
+fn paragraph<B: TextBuf>(buf: &B, caret: Pos, vis: Option<Pos>, line_mode: bool, count: usize, include: bool) -> Result<Picked, Missed> {
+    let last = buf.line_count() - 1;
+    let white = |row: usize| line_white(buf, row);
+    let starts = |row: usize| starts_paragraph(&buf.line(row));
+    // Vim's `extend:` label: grow a Visual selection by `count` paragraphs
+    // from `start`, away from the anchor. The caret goes to the new edge
+    // even when the count runs out (the object then fails).
+    let extend = |mut start: usize, anchor: Pos| -> Result<Picked, Missed> {
+        let back = start < anchor.row;
+        let edge = if back { 0 } else { last };
+        let step = |row: usize| if back { row - 1 } else { row + 1 };
+        let mut failed = false;
+        for _ in 0..count {
+            if start == edge {
+                failed = true;
+                break;
+            }
+            let mut prev_white = None;
+            for _ in 0..2 {
+                start = step(start);
+                let is_white = white(start);
+                if prev_white == Some(is_white) {
+                    start = if back { start + 1 } else { start - 1 };
+                    break;
+                }
+                while start != edge {
+                    let next = step(start);
+                    if is_white != white(next) || (!is_white && starts(if back { start } else { next })) {
+                        break;
+                    }
+                    start = next;
+                }
+                if !include || start == edge {
+                    break;
+                }
+                prev_white = Some(is_white);
+            }
+        }
+        let caret = Pos::new(start, 0);
+        if failed {
+            Err(Missed { at: caret, anchor: None })
+        } else {
+            Ok(Picked { start: anchor, end: caret, inclusive: false, linewise: true, shape: None })
+        }
+    };
+    if let Some(anchor) = vis
+        && caret.row != anchor.row
+    {
+        return extend(caret.row, anchor);
+    }
+    // Back to the start of the paragraph, or of the blank lines.
+    let white_in_front = white(caret.row);
+    let mut start = caret.row;
+    while start > 0 {
+        if white_in_front {
+            if !white(start - 1) {
+                break;
+            }
+        } else if white(start - 1) || starts(start) {
+            break;
+        }
+        start -= 1;
+    }
+    // Past the blank lines, then a paragraph (and its blank lines) per
+    // count. `end` is Vim's `end_lnum`: one row above the next row taken,
+    // so it starts above `start` when `start` is not blank.
+    let last_i = last as isize;
+    let mut end = start as isize;
+    while end <= last_i && white(end as usize) {
+        end += 1;
+    }
+    end -= 1;
+    let mut i = count;
+    if !include && white_in_front {
+        i -= 1;
+    }
+    while i > 0 {
+        i -= 1;
+        if end == last_i {
+            return Err(Missed::at(caret));
+        }
+        let do_white = !include && white((end + 1) as usize);
+        if include || !do_white {
+            end += 1;
+            while end < last_i && !white((end + 1) as usize) && !starts((end + 1) as usize) {
+                end += 1;
+            }
+        }
+        if i == 0 && white_in_front && include {
+            break;
+        }
+        if include || do_white {
+            while end < last_i && white((end + 1) as usize) {
+                end += 1;
+            }
+        }
+    }
+    let end = end as usize;
+    // No blank lines after the paragraph: `ap` takes the ones before it.
+    if !white_in_front && !white(end) && include {
+        while start > 0 && white(start - 1) {
+            start -= 1;
+        }
+    }
+    match vis {
+        // "Vipipip" in a single blank line would get stuck: grow instead.
+        Some(anchor) if line_mode && start == caret.row => extend(start, anchor),
+        Some(anchor) => {
+            let anchor = if anchor.row == start { anchor } else { Pos::new(start, 0) };
+            Ok(Picked { start: anchor, end: Pos::new(end, 0), inclusive: false, linewise: true, shape: Some(Shape::Line) })
+        }
+        None => Ok(Picked { start: Pos::new(start, 0), end: Pos::new(end, 0), inclusive: false, linewise: true, shape: None }),
     }
 }

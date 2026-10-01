@@ -12,12 +12,15 @@
 //! case of the generated golden file against this engine.
 
 pub mod buf;
+mod case;
+mod case_table;
 mod class;
 mod class_table;
 mod history;
 mod insert;
 mod keys;
 mod motion;
+mod number;
 mod object;
 mod op;
 mod register;
@@ -29,7 +32,7 @@ mod visual;
 pub use buf::{BodyBuf, BodyVisual, GuiSel, OneLineBuf, Paint, Pos, TextBuf};
 pub use register::{RegKind, Register, Registers};
 
-use insert::InsertKey;
+use insert::{InsertKey, RegPending};
 use keys::{Cmd, Op, ParseCx, Pending, Step, VisualOp};
 use ratatui::crossterm::event::KeyEvent;
 
@@ -275,6 +278,8 @@ pub struct Engine {
     /// that a click or a key piece 4 handled moved the caret in Insert,
     /// which splits the session as Vim's `ins_mouse()` does.
     rested: Option<Pos>,
+    /// Insert `ctrl+r` waiting for its register name.
+    reg_pending: Option<RegPending>,
 }
 
 impl Engine {
@@ -286,14 +291,25 @@ impl Engine {
         self.mode
     }
 
-    /// The half-typed command for the footer (`"02d3`); `""` when none.
+    /// The half-typed command for the footer (`"02d3`, or `^R` while
+    /// Insert `ctrl+r` waits for a register); `""` when none.
     pub fn echo(&self) -> String {
-        self.pending.echo()
+        match self.reg_pending {
+            Some(reg) => reg.echo(),
+            None => self.pending.echo(),
+        }
     }
 
-    /// Whether a count, register, operator or prefix is in flight.
+    /// Whether a count, register, operator or prefix is in flight, or an
+    /// Insert `ctrl+r`.
     pub fn pending(&self) -> bool {
-        !self.pending.is_empty()
+        !self.pending.is_empty() || self.reg_pending.is_some()
+    }
+
+    /// Drops a half-typed command: Normal's, or an Insert `ctrl+r`.
+    fn clear_pending(&mut self) {
+        self.pending.clear();
+        self.reg_pending = None;
     }
 
     pub fn registers(&self) -> &Registers {
@@ -319,7 +335,7 @@ impl Engine {
     pub fn enter<B: TextBuf>(&mut self, start: Start, seat: Seat, t: Target<'_, B>) {
         let Target { buf, state } = t;
         state.begin_session(buf.text());
-        self.pending.clear();
+        self.clear_pending();
         self.visual = None;
         self.insert = None;
         self.insert_only = start == Start::InsertOnly;
@@ -389,7 +405,7 @@ impl Engine {
     pub fn settle<B: TextBuf>(&mut self, t: Target<'_, B>, how: Settled) {
         let Target { buf, state } = t;
         if matches!(how, Settled::Click | Settled::Release) {
-            self.pending.clear();
+            self.clear_pending();
         }
         let caret = self.clamped(buf, buf.cursor());
         if self.mode == Mode::Insert
@@ -419,8 +435,9 @@ impl Engine {
                 // GUI one goes, so a later settle does not adopt it stale.
                 Some(_) => buf.clear_gui_selection(),
                 None if how == Settled::Click && matches!(self.mode, Mode::Visual(_)) => {
-                    self.visual = None;
-                    self.mode = Mode::Normal;
+                    // The area as it was before the click moved the caret.
+                    let at = self.rested.unwrap_or(caret);
+                    self.end_visual(at, &*buf, state);
                 }
                 None => {}
             }
@@ -436,23 +453,26 @@ impl Engine {
         if self.mode == Mode::Insert {
             self.end_insert(buf, state, false);
         }
-        self.pending.clear();
+        self.clear_pending();
         self.visual = Some(anchor);
         self.mode = Mode::Visual(Shape::Char);
     }
 
     /// The buffer loses the caret (spec §4.2). An open Insert session ends
     /// as one undo step, recorded for `.`, without the caret stepping back.
-    /// Visual and pending keys are dropped and the mode becomes Normal. The
-    /// text is remembered for the next [`Engine::enter`]'s history check.
+    /// Visual ends (its area remembered for `gv`), pending keys are dropped,
+    /// and the mode becomes Normal. The text is remembered for the next
+    /// [`Engine::enter`]'s history check.
     pub fn leave<B: TextBuf>(&mut self, t: Target<'_, B>) {
         let Target { buf, state } = t;
         if self.mode == Mode::Insert {
             self.end_insert(buf, state, false);
         }
         state.history.commit();
-        self.pending.clear();
-        self.visual = None;
+        self.clear_pending();
+        if matches!(self.mode, Mode::Visual(_)) {
+            self.end_visual(buf.cursor(), &*buf, state);
+        }
         self.insert_only = false;
         self.mode = Mode::Normal;
         self.rest(buf, state);
@@ -470,10 +490,9 @@ impl Engine {
     /// Returns whether the text changed.
     pub fn external_edit<B: TextBuf>(&mut self, t: Target<'_, B>, f: impl FnOnce(&mut Splicer<'_, B>)) -> bool {
         let Target { buf, state } = t;
-        self.pending.clear();
+        self.clear_pending();
         if matches!(self.mode, Mode::Visual(_)) {
-            self.visual = None;
-            self.mode = Mode::Normal;
+            self.end_visual(buf.cursor(), &*buf, state);
         }
         self.clamp(buf);
         if self.mode == Mode::Insert {
@@ -591,8 +610,29 @@ impl Engine {
                 record = self.exec_join(count, buf, st).map(|count| Cmd::Join { count });
                 Outcome::consumed()
             }
+            Cmd::Tilde { count } => {
+                if self.exec_tilde(count, buf, st) {
+                    record = Some(cmd);
+                }
+                Outcome::consumed()
+            }
+            Cmd::AddSub { add, count } => {
+                // Vim's `nv_addsub()` prepares `.` before it looks for a
+                // number, so a `ctrl+a` that finds none still repeats.
+                self.exec_addsub(add, count, buf, st);
+                record = Some(cmd);
+                Outcome::consumed()
+            }
             Cmd::Insert { how, count } => {
                 self.exec_insert(how, count, buf, st);
+                Outcome::consumed()
+            }
+            Cmd::Gi { count } => {
+                self.exec_gi(count, buf, st);
+                Outcome::consumed()
+            }
+            Cmd::Gv => {
+                self.exec_gv(buf, st);
                 Outcome::consumed()
             }
             Cmd::Repeat(count) => self.exec_repeat(count, buf, st, ctx),
@@ -636,15 +676,11 @@ impl Engine {
                 self.reselect(size, buf, st);
                 match op {
                     // Visual `p`/`P` repeat as the delete they begin with
-                    // (`nv_put()`); `P`'s goes to the black-hole register.
+                    // (`nv_put()`): `p`'s into the unnamed register, `P`'s
+                    // into the black hole.
                     VisualOp::Put { before } => {
-                        // 3b: once numbered registers exist this needs a real `"_`.
-                        let kept = before.then(|| self.regs.unnamed().clone());
-                        let out = self.run(Cmd::VisualOp { op: VisualOp::Delete, count: own, reg: None }, buf, st, ctx);
-                        if let Some(reg) = kept {
-                            self.regs.set_unnamed(reg);
-                        }
-                        out
+                        let reg = if before { Some('_') } else { None };
+                        self.run(Cmd::VisualOp { op: VisualOp::Delete, count: own, reg }, buf, st, ctx)
                     }
                     _ => self.run(dot.cmd, buf, st, ctx),
                 }
@@ -747,6 +783,8 @@ pub struct Splicer<'x, B: TextBuf> {
 
 impl<B: TextBuf> Splicer<'_, B> {
     /// Replaces `[start, end)` with `text` (see [`TextBuf::splice`]).
+    /// The marks move by the charwise rule (`MarkMove::Chars`),
+    /// which has no Vim counterpart here; harmless, since `gi` clamps.
     pub fn splice(&mut self, start: Pos, end: Pos, text: &str) {
         self.ed.splice(start, end, text);
     }
@@ -769,6 +807,8 @@ fn with_count(cmd: Cmd, count: usize) -> Cmd {
         Cmd::Put { before, reg, .. } => Cmd::Put { before, count, reg },
         Cmd::Replace { ch, .. } => Cmd::Replace { ch, count },
         Cmd::Join { .. } => Cmd::Join { count },
+        Cmd::Tilde { .. } => Cmd::Tilde { count },
+        Cmd::AddSub { add, .. } => Cmd::AddSub { add, count },
         Cmd::Insert { how, .. } => Cmd::Insert { how, count },
         other => other,
     }
