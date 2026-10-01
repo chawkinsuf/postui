@@ -384,12 +384,16 @@ impl Engine {
     pub(super) fn exec_put<B: TextBuf>(&mut self, before: bool, count: usize, reg: Option<char>, buf: &mut B, st: &mut BufState) {
         let reg = self.regs.read(reg).clone();
         let mut caret = put(&mut Ed { buf: &mut *buf, hist: &mut st.history }, &reg, before, count.max(1));
-        // Vim's `do_put()`: "For CTRL-O p in Insert mode, put cursor after
-        // last char" of a one-line charwise put.
-        if matches!(self.mode, Mode::InsertNormal { .. }) && reg.kind == RegKind::Char && !reg.text.is_empty() && !reg.text.contains('\n') {
+        if self.put_ends_after(&reg) {
             caret.col += 1;
         }
         self.land_caret(caret, buf, st);
+    }
+
+    /// Vim's `do_put()`: "For CTRL-O p in Insert mode, put cursor after
+    /// last char" of a one-line charwise put (`p`, `P`, Visual `p`).
+    pub(super) fn put_ends_after(&self, reg: &Register) -> bool {
+        matches!(self.mode, Mode::InsertNormal { .. }) && reg.kind == RegKind::Char && !reg.text.is_empty() && !reg.text.contains('\n')
     }
 
     /// `r{c}` with a count (Vim's `nv_replace()`): fails whole, keeping the

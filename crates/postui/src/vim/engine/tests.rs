@@ -1901,3 +1901,20 @@ fn ctrl_o_at_the_session_edges() {
     f.engine.paste("P", Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
     assert_eq!((f.engine.mode(), f.text()), (Mode::Insert, "XPabc"), "a paste resumes and types");
 }
+
+/// Task 4 review: a click that ends Visual opened inside `ctrl+o` is the
+/// command, so Insert resumes where the click put the caret (Vim restarts
+/// Insert once Visual is off).
+#[test]
+fn a_click_ending_visual_inside_ctrl_o_resumes_insert() {
+    let mut f = Field::new("abc", 0);
+    f.keys("iX");
+    f.key(ctrl('o'));
+    f.keys("v");
+    assert_eq!(f.engine.mode(), Mode::Visual(Shape::Char));
+    f.input.set_cursor(3);
+    f.engine.settle(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, Settled::Click);
+    assert_eq!((f.engine.mode(), f.engine.visual_anchor()), (Mode::Insert, None));
+    f.keys("Z");
+    assert_eq!(f.text(), "XabZc", "typing lands at the clicked caret");
+}

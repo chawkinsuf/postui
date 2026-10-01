@@ -351,7 +351,10 @@ impl Engine {
                 // The delete reached the line's end: put after its last char.
                 let forward = len > 0 && at.col >= len;
                 ed.buf.set_cursor(Pos::new(at.row, if forward { len - 1 } else { at.col.min(len) }));
-                let caret = put(&mut ed, &text, !forward, n);
+                let mut caret = put(&mut ed, &text, !forward, n);
+                if self.put_ends_after(&text) {
+                    caret.col += 1;
+                }
                 // `do_put()` moves `'[` past the caret's char only when the
                 // register's first line is not empty (`yanklen`): text that
                 // starts with a line break leaves it on that char.

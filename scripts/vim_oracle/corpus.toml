@@ -1048,7 +1048,7 @@ keys = ["iXY<C-o>0Z<Esc>", "iXY<C-o>0Z<Esc>u", "iXY<C-o>0Z<Esc>uu", "A<C-o>0Z<Es
         "R<C-o>", "R<C-o>v", "iX<C-o>v", "iX<C-o>gY<Esc>", "A<C-o>", "A<C-o>x", "iX<C-o>ciwY<Esc>W", "iX<C-o>oY<Esc>W",
         "iX<C-o>ddY<Esc>", "iX<C-o>>>Y<Esc>", "iX<C-o>guiwY<Esc>", "iX<C-o>%Y<Esc>", "3iX<C-o>.Y<Esc>", "iX<C-o>nY<Esc>",
         "iX<Esc>A<C-o>.Y<Esc>", "a<C-o>Y<Esc>", "iX<C-o>$<C-o>$Y<Esc>", "iX<C-o><C-a>Y<Esc>", "A<C-o>vd", "A<C-o>vdY<Esc>",
-        "iX<C-o>ggdGY<Esc>"]
+        "iX<C-o>ggdGY<Esc>", "yiwiX<C-o>viwpY<Esc>", "yiwiX<C-o>vlpY<Esc>"]
 on = ["words", "json_pretty", "blank_edges", "tabs", "unicode", "empty", "one_char", "numbers"]
 at = ["bol", "mid", "eol"]
 
