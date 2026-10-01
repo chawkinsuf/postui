@@ -303,7 +303,7 @@ impl Engine {
             return true;
         }
         let caret = if op == Op::Yank {
-            self.regs.write(reg, yank_of(buf, r));
+            self.regs.yank(reg, yank_of(buf, r));
             r.start
         } else if st.history.emptied(&*buf) {
             // Vim's `op_delete`: nothing to do in a buffer with no lines.
@@ -323,7 +323,7 @@ impl Engine {
                 }
                 r.start
             } else {
-                self.regs.write(reg, yank_of(ed.buf, r));
+                self.regs.delete(reg, yank_of(ed.buf, r));
                 delete(&mut ed, r)
             }
         };

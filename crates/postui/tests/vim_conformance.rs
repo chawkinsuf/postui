@@ -290,11 +290,14 @@ fn drive<B: TextBuf>(engine: &mut Engine, buf: &mut B, state: &mut BufState, cas
         // (§5, pinned by an S test). A later `dd` or `u` brings Vim back to
         // one line and slips through the first rule (fuzz seed 30:
         // `yyf,<C-r>pcwY<Esc>dd<Esc>`), so the put skips the run outright.
+        // The register is the one the pending prefix names (`"0p`).
+        let echo = engine.echo();
+        let named = if echo.starts_with("\"0") { engine.registers().zero() } else { engine.registers().unnamed() };
         if !B::MULTILINE
             && engine.mode() == Mode::Normal
             && matches!(token.as_str(), "p" | "P")
-            && count_echo(&engine.echo()).chars().all(|c| c.is_ascii_digit())
-            && engine.registers().unnamed().kind == RegKind::Line
+            && count_echo(&echo).chars().all(|c| c.is_ascii_digit())
+            && named.kind == RegKind::Line
         {
             return Run::Skipped;
         }

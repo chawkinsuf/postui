@@ -182,7 +182,7 @@ impl Engine {
                 buf.cursor()
             }
             VisualOp::Yank | VisualOp::YankLines => {
-                self.regs.write(reg, yank_of(buf, r));
+                self.regs.yank(reg, yank_of(buf, r));
                 r.start
             }
             VisualOp::Replace(ch) => {
@@ -241,28 +241,28 @@ impl Engine {
         } else {
             // Vim's `u_save` runs with the caret on the range start.
             ed.hist.begin(r.start);
-            self.regs.write(reg, yank_of(ed.buf, r));
+            self.regs.delete(reg, yank_of(ed.buf, r));
             delete(&mut ed, r)
         };
         buf.set_cursor(at);
         true
     }
 
-    /// Visual `p`/`P` (Vim's `nv_put()` in Visual): delete the selection,
-    /// then put the register there. `p` leaves the replaced text in the
-    /// unnamed register (Vim 9.1); `P` keeps the register.
+    /// Visual `p`/`P` (Vim's `nv_put()` in Visual): the selection is deleted,
+    /// then the register is put there. `p` deletes into the unnamed
+    /// register, so it holds the replaced text afterwards; `P` deletes into
+    /// the black hole and changes no register (Vim 9.1). `"0` is never
+    /// written, so `yiw` then `viwp` … `viw"0p` keeps putting the yank.
     fn visual_put<B: TextBuf>(&mut self, r: Range, before: bool, count: usize, reg: Option<char>, buf: &mut B, st: &mut BufState) -> Outcome {
+        // What to put, read before the delete writes the unnamed register
+        // (Vim's `reg1`).
         let text = self.regs.read(reg).clone();
+        let del = if before { Some('_') } else { None };
         // In a buffer with no lines (Vim's `ML_EMPTY`) there is nothing to
         // delete, but the put still runs.
-        if !self.visual_delete(r, reg, buf, st) {
+        if !self.visual_delete(r, del, buf, st) {
             buf.set_cursor(r.start);
         }
-        // Vim's delete writes the unnamed register for `p` and `"_` for `P`
-        // (plan 3b's `"0` cares); here it wrote the register (unless it
-        // deleted nothing), so `P` restores it after the put.
-        let replaced = self.regs.read(reg).clone();
-        self.regs.write(reg, text.clone());
         // Vim's `empty`: every line is gone, so the put leaves a stray empty
         // last line that `nv_put()` deletes.
         let empty = st.history.emptied(&*buf);
@@ -309,9 +309,6 @@ impl Engine {
                 // The caret was on that line: the end of the new last line.
                 caret = Pos::new(last - 1, len);
             }
-        }
-        if !before {
-            self.regs.write(reg, replaced);
         }
         self.land_caret(caret, buf, st);
         Outcome::consumed()

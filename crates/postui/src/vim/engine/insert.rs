@@ -585,7 +585,7 @@ impl Engine {
     /// The change operator (spec §3.6, Vim's `op_change()`): the text goes
     /// to the register and a session opens at the range start.
     pub(super) fn change<B: TextBuf>(&mut self, r: Range, reg: Option<char>, origin: Cmd, buf: &mut B, st: &mut BufState) {
-        self.regs.write(reg, yank_of(buf, r));
+        self.regs.delete(reg, yank_of(buf, r));
         self.change_text(r, origin, buf, st);
     }
 

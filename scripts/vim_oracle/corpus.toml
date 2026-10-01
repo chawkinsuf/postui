@@ -13,8 +13,9 @@
 # typed text uses harmless letters like X and Y.
 # status = "later" cases are generated and reported but do not fail the test.
 # Budget: the full 3a corpus is about 40,000 cases and 6.75 MB of golden file
-# (measured 2026-09-30, after Task 14); keep it under about 7 MB. Prefer
-# named seats unless the key's result depends on the char under the caret.
+# (measured 2026-09-30); plan 3b's first wave adds about 13,000 cases. Keep it
+# under about 9 MB. Prefer named seats unless the key's result depends on the
+# char under the caret.
 
 [text.words]
 lines = ["foo bar  baz_qux.quux end"]
@@ -569,6 +570,23 @@ id = "dot/replace-tab"
 tier = 1
 keys = ["3r<Tab>j0.", "3r<Tab>j0.u", "3r<Tab>j0.u<C-r>", "r<Tab>j$.", "2r<Tab>j3.", "3r<Tab>j0.k."]
 on = ["short_last", "blank_edges", "tabs"]
+at = ["bol", "mid", "eol"]
+
+# --- plan 3b: the yank register "0 (Task 1) -----------------------------------
+
+# A yank writes "0 and the unnamed register; a delete or change only the
+# unnamed one, unless it names `"` or `0` (Vim's get_yank_register maps both
+# to register 0). Visual p and P leave "0 alone. The oracle captures only
+# the unnamed register, so "0 is observed through "0p and "0P.
+[[group]]
+id = "registers/zero"
+tier = 2
+keys = ["yiwdw\"0p", "yiwdwP\"0P", "yiw\"\"dw\"0p", "yiw\"0dw\"0p", "yiw\"0dwp", "\"0yiwwdw\"0P",
+        "yiwwviwp\"0p", "yiwwviw\"0p", "yiwwviwP\"0p", "yiwwviw\"0pwviw\"0p", "\"0p", "\"0P",
+        "yiwx\"0p.", "yiwx\"0pu.", "yiwcwX<Esc>\"0p", "\"0yiwP", "yyjdd\"0p", "yyjdd\"0P", "yiwjvd\"0P",
+        "yiwvly\"0p", "yiwVjd\"0p", "yiw\"0dd\"0p", "\"0yy\"0p", "yiwdd\"0p", "yiwx\"02p",
+        "yiwx\"0pu<C-r>", "yiw\"0x\"0p", "yiwv\"0y\"0P", "yiwwvd\"0p"]
+on = ["words", "json_pretty", "blank_edges", "unicode"]
 at = ["bol", "mid", "eol"]
 
 # --- fuzz atoms (generate.py --fuzz); tier-1 keys only -----------------------

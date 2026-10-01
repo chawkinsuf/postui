@@ -1200,3 +1200,36 @@ fn no_engine_file_names_an_app_type() {
     }
     assert!(checked >= 12, "only {checked} engine files were checked");
 }
+
+/// Plan 3b Task 1: the register prefix takes `0` as well as `"`, and the
+/// echo shows it; other registers still show a note and arm nothing.
+#[test]
+fn the_yank_register_prefix_arms_and_echoes() {
+    let mut f = Field::new("abc", 0);
+    f.keys("\"0");
+    assert_eq!(f.engine.echo(), "\"0");
+    f.keys("2d");
+    assert_eq!(f.engine.echo(), "\"02d");
+    f.key(esc());
+    assert!(!f.engine.pending());
+    let note = |out: Outcome| match out {
+        Outcome::Consumed { note: Some(Note::Unsupported(n)), .. } => n,
+        other => panic!("no note: {other:?}"),
+    };
+    assert_eq!(note(f.keys("\"1")), "register \"1 not supported");
+    assert!(!f.engine.pending());
+    assert_eq!(f.engine.registers().zero(), &Register::default(), "a fresh engine's \"0 is empty");
+}
+
+/// Key list §5 in a field: a linewise `"0` goes in charwise, as the unnamed
+/// register does (the conformance test skips these one-line runs).
+#[test]
+fn a_linewise_zero_register_puts_charwise_in_a_field() {
+    let mut f = Field::new("ab", 0);
+    f.keys("yy");
+    assert_eq!(f.engine.registers().zero(), &Register { text: "ab\n".into(), kind: RegKind::Line });
+    f.keys("x");
+    assert_eq!(f.engine.registers().unnamed().text, "a", "a delete writes only the unnamed register");
+    f.keys("\"0p");
+    assert_eq!((f.text(), f.col()), ("bab", 2));
+}

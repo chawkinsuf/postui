@@ -636,15 +636,11 @@ impl Engine {
                 self.reselect(size, buf, st);
                 match op {
                     // Visual `p`/`P` repeat as the delete they begin with
-                    // (`nv_put()`); `P`'s goes to the black-hole register.
+                    // (`nv_put()`): `p`'s into the unnamed register, `P`'s
+                    // into the black hole.
                     VisualOp::Put { before } => {
-                        // 3b: once numbered registers exist this needs a real `"_`.
-                        let kept = before.then(|| self.regs.unnamed().clone());
-                        let out = self.run(Cmd::VisualOp { op: VisualOp::Delete, count: own, reg: None }, buf, st, ctx);
-                        if let Some(reg) = kept {
-                            self.regs.set_unnamed(reg);
-                        }
-                        out
+                        let reg = if before { Some('_') } else { None };
+                        self.run(Cmd::VisualOp { op: VisualOp::Delete, count: own, reg }, buf, st, ctx)
                     }
                     _ => self.run(dot.cmd, buf, st, ctx),
                 }
