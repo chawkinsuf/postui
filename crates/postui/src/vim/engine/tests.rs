@@ -1984,3 +1984,19 @@ fn scroll_chords_in_a_field_and_after_an_operator() {
     b.key(ctrl('d'));
     assert_eq!(b.state.scroll, Some(3));
 }
+
+/// Task 6 review: Vim's `win_comp_scroll()` makes the default `'scroll'`
+/// half the height but at least one line, so in a one-row window an
+/// uncounted `ctrl+d` and `ctrl+u` still move.
+#[test]
+fn a_one_row_window_half_pages_by_one_line() {
+    let mut b = Body::new("a\nb\nc", 0, 0);
+    let ctx = ViewCtx { viewport_rows: Some(1) };
+    let key = |b: &mut Body, ev| {
+        b.engine.handle(ev, Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state }, &ctx);
+    };
+    key(&mut b, ctrl('d'));
+    assert_eq!((b.caret().row, b.ed.viewport_offset().1), (1, 1));
+    key(&mut b, ctrl('u'));
+    assert_eq!((b.caret().row, b.ed.viewport_offset().1), (0, 0));
+}

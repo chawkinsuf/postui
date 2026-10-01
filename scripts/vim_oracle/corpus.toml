@@ -1096,7 +1096,7 @@ keys = ["<C-f>", "<C-b>", "<C-f><C-b>", "<C-f><C-f>", "<C-f><C-f><C-f><C-f>", "<
         "<C-f><C-f><C-f><C-f><C-f><C-f>", "<C-f><C-f><C-f><C-f><C-f><C-b>", "G<C-f>", "G<C-f>x", "<C-b>x", "G<C-b>", "G<C-b><C-f>",
         "G2<C-b>", "G<C-b><C-b>", "G<C-b><C-b><C-b>", "G<C-b><C-b><C-b><C-b>", "G<C-b><C-b><C-b><C-b><C-b>", "2<C-f>", "3<C-f>",
         "9<C-f>", "G9<C-b>", "<C-f>x", "v<C-f>", "v<C-f>d", "y<C-f>", "d<C-f>x", "<C-f>u", "x<C-f>.",
-        "<C-f>k", "<C-f>j", "<C-b>j", "<C-f>$", "<C-f>iX<Esc>"]
+        "<C-f>k", "<C-f>j", "<C-b>j", "<C-f>$", "<C-f>iX<Esc>", "$<C-b>j", "$9<C-f>k", "v$9<C-f>k"]
 on = ["long", "lines25", "json_pretty", "one_char", "empty"]
 at = ["bol", "mid", "eol"]
 

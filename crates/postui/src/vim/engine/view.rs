@@ -277,7 +277,8 @@ impl View {
         if count > 0 {
             *scroll = Some(count.min(self.height));
         }
-        let mut n = scroll.unwrap_or(self.height / 2).min(self.height);
+        // `win_comp_scroll()`: half the height, at least one line.
+        let mut n = scroll.unwrap_or((self.height / 2).max(1)).min(self.height);
         // Clamps `top` too, before the window helpers read it.
         self.update_topline(buf);
         let lines = buf.line_count();
@@ -406,13 +407,13 @@ impl Engine {
     /// and treats them as failed motions in Visual: nothing happens.
     pub(super) fn exec_scroll<B: TextBuf>(&mut self, how: Scroll, count: usize, buf: &mut B, st: &mut BufState, ctx: &ViewCtx) {
         let Some(view) = View::of::<B>(ctx) else { return };
-        let lines = buf.line_count();
-        let cur = buf.cursor().row;
+        let before = buf.cursor();
         let ok = match how {
             Scroll::HalfDown | Scroll::HalfUp => {
                 let down = how == Scroll::HalfDown;
-                // `nv_halfpage()`: at the edge it beeps before `'scroll'` is set.
-                if (down && cur == lines - 1) || (!down && cur == 0) {
+                // `nv_halfpage()`: at the edge it beeps before `'scroll'` is
+                // set, and the wanted column stays.
+                if (down && before.row == buf.line_count() - 1) || (!down && before.row == 0) {
                     return;
                 }
                 view.halfpage(buf, down, count, &mut st.scroll);
@@ -429,6 +430,11 @@ impl Engine {
         // Visual keeps its anchor; the caret may rest on the line's end there.
         let at = self.clamped(buf, buf.cursor());
         buf.set_cursor(at);
-        st.forget_want();
+        // `beginline()` resets `w_curswant`; a page that beeped skips it, so
+        // the wanted column survives, re-keyed to where the caret now is.
+        match st.want(before) {
+            Some(want) if !ok => st.set_want(want, at),
+            _ => st.forget_want(),
+        }
     }
 }
