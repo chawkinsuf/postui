@@ -38,3 +38,23 @@ buffer = "body"
 expect = { lines = ["ß ǅ", "  straße", "", "İı ǈ"], cursor = [4, 1] }
 who = "you"
 why = "Vim's op_tilde on an empty exclusive range in column 0 steps its end back onto the previous line and so re-cases the whole line (here İ becomes i). User decided 2026-09-30: case ops re-case only their range, char by char; an empty range changes nothing."
+
+# Where the caret lands after a linewise case op: Vim keeps its byte offset,
+# the engine keeps its letter (counts chars). They differ only when a char
+# before the caret on the first row shrinks in UTF-8 (ı İ ſ: 2 bytes to 1).
+# The user decided (2026-10-01) that counting chars is the more correct
+# rule; the ß → "SS" case (2 bytes to 2) comes out the same either way.
+
+[[divergence]]
+id = "ops/case-shrink/case_shrink@1:4/gUj"
+buffer = "body"
+expect = { lines = ["IİS ABC", "XY"], cursor = [1, 4] }
+who = "you"
+why = "Vim's op_tilde leaves the caret at its old byte offset: ı and ſ before it shrank from 2 bytes to 1 each, so Vim lands two chars right, on the b. User decided 2026-10-01: the caret stays on its letter (the space), the engine counts chars, not bytes."
+
+[[divergence]]
+id = "ops/case-shrink/case_shrink@1:4/guj"
+buffer = "body"
+expect = { lines = ["ıiſ abc", "xy"], cursor = [1, 4] }
+who = "you"
+why = "Vim's op_tilde leaves the caret at its old byte offset: İ before it shrank from 2 bytes to 1, so Vim lands one char right, on the a. User decided 2026-10-01: the caret stays on its letter (the space), the engine counts chars, not bytes."

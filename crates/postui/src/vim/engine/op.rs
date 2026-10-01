@@ -149,14 +149,17 @@ pub(crate) fn recase_range<B: TextBuf>(ed: &mut Ed<'_, B>, how: CaseOp, r: Range
     ed.splice(start, end, &new);
 }
 
-/// Where a case operator over `r` leaves the caret, given the range start's
-/// row `line` before the re-case: the range start, moved right by the chars
-/// the re-case adds before it on that row. A linewise range re-cases its
-/// first row from column 0, so `gUj` with the caret after a `ß` lands past
-/// the "SS" it became: Vim keeps the caret's byte offset, and `ß` and "SS"
-/// are both two bytes, so it stays on the same letter. A charwise range
+/// Where a case operator over `r` (Normal or Visual) leaves the caret, given
+/// the range start's row `line` before the re-case: the range start, moved
+/// right by the chars the re-case adds before it on that row. A linewise
+/// range re-cases its first row from column 0, so `gUj` with the caret after
+/// a `ß` lands past the "SS" it became: Vim keeps the caret's byte offset,
+/// and `ß` and "SS" are both two bytes, so it stays on the same letter. The
+/// engine counts chars, not bytes, so when a char before the caret shrinks
+/// in UTF-8 (`ı` → `I`, 2 bytes → 1) Vim's caret drifts one char right and
+/// the engine's stays on its letter (divergences.toml). A charwise range
 /// starts at the caret, so nothing before it changes.
-fn recased_caret(line: &[char], how: CaseOp, r: Range) -> Pos {
+pub(crate) fn recased_caret(line: &[char], how: CaseOp, r: Range) -> Pos {
     let from = match r.kind {
         RKind::Char => r.start.col,
         RKind::Line => 0,

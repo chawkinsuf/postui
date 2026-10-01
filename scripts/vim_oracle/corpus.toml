@@ -624,6 +624,19 @@ suffixes = ["u", "u<C-r>"]
 on = ["words", "json_pretty", "case_lines"]
 at = ["bol", "fnb", "eol"]
 
+# Chars that shrink in UTF-8 when re-cased (ı İ ſ: 2 bytes to 1) before the
+# caret on a linewise range: Vim keeps the caret's byte offset and drifts
+# right; the engine keeps the letter (divergences.toml, review 2026-10-01).
+[text.case_shrink]
+lines = ["ıİſ abc", "xy"]
+
+[[group]]
+id = "ops/case-shrink"
+tier = 2
+keys = ["gUj", "guj", "g~~", "VjU", "Vj~"]
+on = ["case_shrink"]
+at = ["mid"]
+
 # Tier-1 Visual ~ u U on Vim's case table, and Visual g~ gu gU.
 [[group]]
 id = "visual/case-edges"

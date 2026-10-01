@@ -906,10 +906,16 @@ Case operators (`you`, decided 2026-09-30): `g~ gu gU`, `~` and Visual
 Vim's `op_tilde()` walks the range by a byte count, so it overruns the range
 when re-casing changes a char's UTF-8 length (`İ ı ſ K`), re-cases a whole
 line for `gu0` over an empty range in column 0, and its undo leaves the
-overrun text changed. Three `divergences.toml` entries record this, the
-only exceptions to the zero-divergence target (§2). Where the caret lands
-still follows Vim: after a linewise `gU` it stays on the same letter when a
-`ß` before it became "SS".
+overrun text changed. Three `divergences.toml` entries record this. Where
+the caret lands after a linewise case op (Normal or Visual) is the range
+start moved by the chars the re-case added before it, so after `gUj` it
+stays on the same letter when a `ß` before it became "SS", as in Vim. Vim
+gets there by keeping the caret's byte offset, and the engine by counting
+chars (`you`, decided 2026-10-01: the more correct rule), so they part only
+when a char before the caret shrinks in UTF-8 (`ı İ ſ`, 2 bytes to 1): Vim
+drifts right, the engine stays. Two more `divergences.toml` entries record
+that. These five are the only exceptions to the zero-divergence target
+(§2).
 
 ### 6.7 Regenerating
 

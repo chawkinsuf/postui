@@ -513,12 +513,16 @@ pub(crate) fn starts_paragraph(line: &[char]) -> bool {
 
 /// Vim's `inmacro()`: the two chars after the `.` match one of `opt`'s
 /// two-char names; a space in a name matches a space or the line's end.
+/// `opt` is ASCII ('paragraphs' and 'sections' are constants), so it is
+/// walked as bytes: this runs on every line a `}` or `ip` crosses.
 fn in_macro(opt: &str, s: &[char]) -> bool {
-    let names: Vec<char> = opt.chars().collect();
+    debug_assert!(opt.is_ascii());
+    let names = opt.as_bytes();
     let (s0, s1) = (s.first().copied(), s.get(1).copied());
     let mut i = 0;
     while let Some(&m0) = names.get(i) {
-        let m1 = names.get(i + 1).copied();
+        let m0 = m0 as char;
+        let m1 = names.get(i + 1).map(|&b| b as char);
         let first = Some(m0) == s0 || (m0 == ' ' && matches!(s0, None | Some(' ')));
         let second = m1 == s1 || (matches!(m1, None | Some(' ')) && (s0.is_none() || matches!(s1, None | Some(' '))));
         if first && second {

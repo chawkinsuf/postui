@@ -292,12 +292,15 @@ impl Engine {
     /// The key after Insert `ctrl+r` (Vim's `ins_reg()`). `"` and `0` put
     /// their text in; any other register name shows a note. `ctrl+r` again
     /// makes it literal; `ctrl+o` and `ctrl+p` are not supported and take
-    /// one more key. The engine's own Insert chords are swallowed, a foreign
-    /// chord goes to the app (the half-typed `ctrl+r` is dropped), and any
-    /// other key is swallowed, as Vim swallows it (plan 3b Deviation 5).
+    /// one more key, whatever it is. The engine's own Insert chords are
+    /// swallowed (a third `ctrl+r` too: Vim beeps at it as a register
+    /// name), a foreign chord goes to the app (the half-typed `ctrl+r` is
+    /// dropped), and any other key is swallowed, as Vim swallows it (plan
+    /// 3b Deviation 5).
     fn insert_register<B: TextBuf>(&mut self, how: RegPending, ev: KeyEvent, buf: &mut B, st: &mut BufState) -> Outcome {
         let note = |text: String| Outcome::Consumed { changed: false, note: Some(Note::Unsupported(text)), request: None };
         match (how, Key::of(&ev)) {
+            (RegPending::Unsupported(c), _) => note(format!("ctrl+r ctrl+{c} not supported")),
             (RegPending::Typed, Key::Ctrl('r')) => {
                 self.reg_pending = Some(RegPending::Literal);
                 Outcome::consumed()
@@ -306,9 +309,8 @@ impl Engine {
                 self.reg_pending = Some(RegPending::Unsupported(c));
                 Outcome::consumed()
             }
-            (_, Key::Ctrl('w' | 'u' | 'h')) => Outcome::consumed(),
+            (_, Key::Ctrl('w' | 'u' | 'h' | 'r')) => Outcome::consumed(),
             (_, Key::Ctrl(_) | Key::Other) => Outcome::Declined { count: None, keys: vec![ev] },
-            (RegPending::Unsupported(c), _) => note(format!("ctrl+r ctrl+{c} not supported")),
             (how, Key::Char(name @ ('"' | '0'))) => {
                 self.insert_register_text(name, how == RegPending::Literal, buf, st);
                 Outcome::consumed()
@@ -322,11 +324,12 @@ impl Engine {
     /// and `stuffescaped()`). In the body each line break is an Enter
     /// (`autoindent` applies), a linewise register ends with one, and Tab,
     /// BS, `ctrl+w` and `ctrl+u` act as those keys, the last three going
-    /// in literally when `literal`. Any other char goes in as it is. A
-    /// one-line field takes the text flattened, as `p` puts it (key list
-    /// §5): with no line break or Tab left, it goes in as one typed run
-    /// (recorded as one, so `.` and a count put it in the same way), not a
-    /// key per char, each of which would rebuild the field.
+    /// in literally when `literal`. Any other char goes in as it is, a run
+    /// of them between those keys as one typed run (recorded as one, so `.`
+    /// and a count put it in the same way), not a key per char, each of
+    /// which would rebuild the line. A one-line field takes the text
+    /// flattened, as `p` puts it (key list §5): with no line break or Tab
+    /// left, it is one run.
     fn insert_register_text<B: TextBuf>(&mut self, name: char, literal: bool, buf: &mut B, st: &mut BufState) {
         let reg = self.regs.read(Some(name)).clone();
         if !B::MULTILINE {
@@ -340,17 +343,35 @@ impl Engine {
             }
             return;
         }
-        let keys = reg.text.chars().map(|c| match c {
-            '\n' | '\r' => InsertKey::Enter,
-            '\t' => InsertKey::Tab,
-            '\u{8}' if !literal => InsertKey::Backspace,
-            '\u{17}' if !literal => InsertKey::CtrlW,
-            '\u{15}' if !literal => InsertKey::CtrlU,
-            c => InsertKey::Char(c),
-        });
-        for key in keys {
+        let mut run = String::new();
+        for c in reg.text.chars() {
+            let key = match c {
+                '\n' | '\r' => InsertKey::Enter,
+                '\t' => InsertKey::Tab,
+                '\u{8}' if !literal => InsertKey::Backspace,
+                '\u{17}' if !literal => InsertKey::CtrlW,
+                '\u{15}' if !literal => InsertKey::CtrlU,
+                c => {
+                    run.push(c);
+                    continue;
+                }
+            };
+            self.flush_run(&mut run, buf, st);
             self.insert_input(key, buf, st);
         }
+        self.flush_run(&mut run, buf, st);
+    }
+
+    /// Types `run` (a register's chars between its key-like ones) as one
+    /// typed run and empties it; one char goes in as that char, as typed.
+    fn flush_run<B: TextBuf>(&mut self, run: &mut String, buf: &mut B, st: &mut BufState) {
+        let key = match run.chars().count() {
+            0 => return,
+            1 => InsertKey::Char(run.chars().next().unwrap()),
+            _ => InsertKey::Paste(std::mem::take(run)),
+        };
+        run.clear();
+        self.insert_input(key, buf, st);
     }
 
     /// Replays an Insert session's recorded keys for `.`, as if typed in

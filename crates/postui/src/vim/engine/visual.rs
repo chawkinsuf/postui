@@ -7,7 +7,7 @@ use super::history::{Ed, LastVisual, MarkMove};
 use super::keys::{Cmd, Object, VisualOp};
 use super::motion::{Want, WantUpdate, char_width, updated_want, vcol_of};
 use super::object;
-use super::op::{RKind, Range, delete, join_rows, put, put_lines, recase_range, shift_rows, yank_of};
+use super::op::{RKind, Range, delete, join_rows, put, put_lines, recase_range, recased_caret, shift_rows, yank_of};
 use super::register::RegKind;
 use super::{BufState, Engine, Mode, Outcome, Shape, VisualSize, first_non_blank};
 
@@ -251,10 +251,12 @@ impl Engine {
                 // Vim's `op_tilde()` saves the lines first, so a case change
                 // that changes nothing is still an undo step.
                 ed.save_rows(r.start, r.start.row, r.end.row);
-                recase_range(&mut ed, how, r);
                 // `op_tilde()` leaves the caret on `oap->start`, which keeps
-                // its column when linewise (`Vk~`, a `.` replay).
-                r.start
+                // its column when linewise (`Vk~`, a `.` replay): on the same
+                // letter when a `ß` before it became "SS" (`recased_caret`).
+                let at = recased_caret(&ed.buf.line(r.start.row), how, r);
+                recase_range(&mut ed, how, r);
+                at
             }
             VisualOp::Shift { right } => {
                 let mut ed = Ed { buf: &mut *buf, hist: &mut st.history };

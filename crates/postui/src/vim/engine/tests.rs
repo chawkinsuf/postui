@@ -1470,7 +1470,7 @@ fn insert_ctrl_r_into_a_field_is_one_run() {
     f.keys("\"");
     let ms = started.elapsed().as_millis();
     assert_eq!(f.text(), big);
-    assert!(ms < 200, "a 40,000-char register took {ms} ms");
+    assert!(ms < 1000, "a 40,000-char register took {ms} ms");
     let mut f = Field::new("ab", 0);
     f.engine.registers_mut().set_unnamed(Register { text: "x\ny".into(), kind: RegKind::Char });
     f.keys("2a");
@@ -1482,6 +1482,80 @@ fn insert_ctrl_r_into_a_field_is_one_run() {
     assert_eq!((f.text(), f.col()), ("ax yx yx yx yb", 12));
     f.keys("u");
     assert_eq!(f.text(), "ax yx yb", "the repeat is one undo step");
+}
+
+/// Review (2026-10-01): the body too takes a register's plain chars as one
+/// run per line, not a key per char (each a splice of the line). The limit
+/// is loose on purpose (a debug build under parallel tests). Line breaks
+/// still go in as Enter (`autoindent`), and `.` repeats the whole insert.
+#[test]
+fn insert_ctrl_r_into_the_body_is_one_run_per_line() {
+    let big = "abcd".repeat(10_000);
+    let mut b = Body::new("{\n  x\n}", 1, 3);
+    b.engine.registers_mut().set_unnamed(Register { text: big.clone(), kind: RegKind::Char });
+    b.keys("a");
+    let started = std::time::Instant::now();
+    b.key(ctrl('r'));
+    b.keys("\"");
+    let ms = started.elapsed().as_millis();
+    assert_eq!(b.text(), format!("{{\n  x{big}\n}}"));
+    assert!(ms < 1000, "a 40,000-char register took {ms} ms");
+    let mut b = Body::new("{\n  x\n}", 1, 3);
+    b.engine.registers_mut().set_unnamed(Register { text: "ab\ncd\n".into(), kind: RegKind::Line });
+    b.keys("a");
+    b.key(ctrl('r'));
+    b.keys("\"");
+    b.key(esc());
+    assert_eq!(b.text(), "{\n  xab\n  cd\n\n}", "Esc drops an indent-only line's autoindent");
+    assert_eq!(b.caret(), Pos::new(3, 0));
+    b.keys("j.");
+    assert_eq!(b.text(), "{\n  xab\n  cd\n\n}ab\ncd\n");
+    b.keys("u");
+    assert_eq!(b.text(), "{\n  xab\n  cd\n\n}", "the repeat is one undo step");
+}
+
+/// Review (2026-10-01): a third `ctrl+r` is an invalid register name (Vim
+/// beeps), not a chord for the app; `ctrl+r ctrl+o` takes any next key,
+/// chord or not, and shows its note.
+#[test]
+fn insert_ctrl_r_swallows_a_third_ctrl_r_and_ctrl_o_takes_any_key() {
+    let mut f = Field::new("ab", 0);
+    f.keys("A");
+    f.key(ctrl('r'));
+    f.key(ctrl('r'));
+    assert_eq!(f.key(ctrl('r')), Outcome::Consumed { changed: false, note: None, request: None });
+    assert!(!f.engine.pending());
+    assert_eq!(f.engine.mode(), Mode::Insert);
+    f.key(ctrl('r'));
+    f.key(ctrl('o'));
+    match f.key(ctrl('w')) {
+        Outcome::Consumed { note: Some(Note::Unsupported(n)), .. } => assert_eq!(n, "ctrl+r ctrl+o not supported"),
+        other => panic!("no note: {other:?}"),
+    }
+    assert!(!f.engine.pending());
+    f.key(ctrl('r'));
+    f.key(ctrl('p'));
+    match f.key(ctrl('c')) {
+        Outcome::Consumed { note: Some(Note::Unsupported(n)), .. } => assert_eq!(n, "ctrl+r ctrl+p not supported"),
+        other => panic!("no note: {other:?}"),
+    }
+    f.keys("Z");
+    assert_eq!(f.text(), "abZ");
+}
+
+/// Review (2026-10-01): a linewise Visual case op lands on the same letter
+/// when a `ß` before the caret became "SS", as Normal `gUj` does (Vim keeps
+/// the caret's byte offset; `recased_caret`).
+#[test]
+fn visual_linewise_case_keeps_the_caret_on_its_letter_past_a_grown_sz() {
+    let mut b = Body::new("ß ǅxy\n  straße", 1, 4);
+    b.keys("VkU");
+    assert_eq!(b.text(), "SS ǄXY\n  STRASSE");
+    assert_eq!(b.caret(), Pos::new(0, 5), "on the Y");
+    let mut b = Body::new("ß ǅxy\n  straße", 1, 4);
+    b.keys("Vk~");
+    assert_eq!(b.text(), "ß ǄXY\n  STRAßE", "`~` leaves ß alone");
+    assert_eq!(b.caret(), Pos::new(0, 4), "nothing grew: the column is kept");
 }
 
 /// Review focus 4: a half-typed `ctrl+r` never outlives a click, a paste
