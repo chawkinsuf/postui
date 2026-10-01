@@ -1708,6 +1708,22 @@ fn replace_bs_over_a_break_restores_mixed_blanks_in_order() {
     }
 }
 
+/// A Replace paste never autoindents (Vim pastes with `paste` set): a line
+/// break in it adds no indent and strips no blanks, and `BS` back over it
+/// joins the lines with nothing restored (Vim 9.1: `R` + paste "12\n  34"
+/// at [1,4] of "  abcdef" / "xy" gives "  a12" / "  34" / "xy").
+#[test]
+fn a_replace_paste_never_autoindents() {
+    let mut b = Body::new("  abcdef\nxy", 0, 3);
+    b.keys("R");
+    b.engine.paste("12\n  34", Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state });
+    assert_eq!((b.text(), b.caret()), ("  a12\n  34\nxy".into(), Pos::new(1, 4)));
+    for _ in 0..5 {
+        b.key(code(KeyCode::Backspace));
+    }
+    assert_eq!((b.text(), b.caret()), ("  a12def\nxy".into(), Pos::new(0, 5)), "the paste's break joins back, nothing restored");
+}
+
 /// A cursor key or a click flushes the replace stack but keeps Replace; a
 /// Replace session carries into the next field as Replace, and `gi` after
 /// it opens Insert.

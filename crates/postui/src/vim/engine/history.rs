@@ -235,6 +235,12 @@ impl History {
         }
     }
 
+    /// A step is open: a change since the last commit already saved its
+    /// caret (Vim's `ins_need_undo` is false).
+    pub(crate) fn is_open(&self) -> bool {
+        self.open.is_some()
+    }
+
     pub(crate) fn can_undo(&self) -> bool {
         !self.undo.is_empty()
     }

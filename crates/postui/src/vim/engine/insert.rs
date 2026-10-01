@@ -468,12 +468,18 @@ impl Engine {
         self.replace_gui_selection(buf, st);
         if self.session().replace.is_some() {
             // Replace: each line of the text overwrites from the caret
-            // (`ins_char_bytes()` per char, one splice per line), and a line
-            // break between them is an Enter.
+            // (`ins_char_bytes()` per char, one splice per line). Only a
+            // paste holds a line break (a register's go through `newline`
+            // as Enter), and Vim pastes with `paste` set: the break adds no
+            // indent and strips no blanks, so it pushes only `ins_eol()`'s
+            // marker and `open_line()`'s end-of-blanks one.
             let mut first = true;
             for seg in text.split('\n') {
                 if !first {
-                    self.newline(buf, st);
+                    let caret = buf.cursor();
+                    self.session().replace.as_mut().expect("a Replace session").extend([None, None]);
+                    Ed { buf: &mut *buf, hist: &mut st.history }.splice(caret, caret, "\n");
+                    buf.set_cursor(Pos::new(caret.row + 1, 0));
                 }
                 first = false;
                 if !seg.is_empty() {
@@ -607,36 +613,38 @@ impl Engine {
             let to = Pos::new(caret.row - 1, prev);
             if let Some(stack) = self.session().replace.as_mut() {
                 // `ins_bs()` in Replace: the top entry says what the break
-                // covered. On the session's start line the caret only moves.
+                // covered. On the session's start line the caret only moves,
+                // but Vim still saves both lines (`u_save`), so `u` comes
+                // back here, and the session's start moves up with it (the
+                // tail below).
                 let top = stack.pop();
                 if caret.row <= start.row {
-                    buf.set_cursor(to);
-                    let s = self.session();
-                    s.typed.push(record);
-                    s.ai_row = None;
-                    return;
-                }
-                Ed { buf: &mut *buf, hist: &mut st.history }.splice_lines_joined(to, caret);
-                // Then the blanks `autoindent` stripped come back after the
-                // caret, and the break's own marker is consumed. Vim puts
-                // each popped blank in at the caret, before the ones already
-                // back, so they return in their old order.
-                let mut back = String::new();
-                let mut top = top;
-                while let Some(Some(c)) = top {
-                    back.insert(0, c);
-                    top = stack.pop();
-                }
-                if !back.is_empty() {
-                    Ed { buf: &mut *buf, hist: &mut st.history }.splice(to, to, &back);
-                }
-                while let Some(Some(c)) = stack.last().copied() {
-                    // Vim's `replace_pop_ins()`: anything left before the next marker.
-                    stack.pop();
-                    Ed { buf: &mut *buf, hist: &mut st.history }.splice(to, to, &c.to_string());
-                }
-                if matches!(stack.last(), Some(None)) {
-                    stack.pop();
+                    if caret.row == start.row {
+                        Ed { buf: &mut *buf, hist: &mut st.history }.save_rows(caret, caret.row - 1, caret.row);
+                    }
+                } else {
+                    Ed { buf: &mut *buf, hist: &mut st.history }.splice_lines_joined(to, caret);
+                    // Then the blanks `autoindent` stripped come back after
+                    // the caret, and the break's own marker is consumed. Vim
+                    // puts each popped blank in at the caret, before the ones
+                    // already back, so they return in their old order.
+                    let mut back = String::new();
+                    let mut top = top;
+                    while let Some(Some(c)) = top {
+                        back.insert(0, c);
+                        top = stack.pop();
+                    }
+                    if !back.is_empty() {
+                        Ed { buf: &mut *buf, hist: &mut st.history }.splice(to, to, &back);
+                    }
+                    while let Some(Some(c)) = stack.last().copied() {
+                        // Vim's `replace_pop_ins()`: anything left before the next marker.
+                        stack.pop();
+                        Ed { buf: &mut *buf, hist: &mut st.history }.splice(to, to, &c.to_string());
+                    }
+                    if matches!(stack.last(), Some(None)) {
+                        stack.pop();
+                    }
                 }
             } else {
                 // `backspace=eol`: join with the line above (no space).
@@ -677,7 +685,13 @@ impl Engine {
             }
             let to = Pos::new(caret.row, col);
             if self.session().replace.is_some() {
-                // Replace: one `replace_do_bs()` per char stepped over.
+                // Replace: one `replace_do_bs()` per char stepped over. A
+                // `BS` that only moves (an empty stack) changes nothing, but
+                // `stop_arrow()` has saved the line at the caret first
+                // (`u_save_cursor()`), so `u` comes back here.
+                if !st.history.is_open() {
+                    Ed { buf: &mut *buf, hist: &mut st.history }.save_cursor_line(caret);
+                }
                 let mut at = caret;
                 while at.col > col {
                     at.col -= 1;

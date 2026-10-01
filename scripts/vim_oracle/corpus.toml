@@ -983,7 +983,8 @@ tier = 2
 keys = ["Rx<CR>y<Esc>", "Rx<CR>y<BS><BS><BS><Esc>", "Rx<CR>y<BS><BS><BS><BS><Esc>", "R<CR>x<Esc>", "R<CR><BS><BS><BS><Esc>",
         "R<CR><Esc>", "Rxy<CR>zw<Esc>", "Rxy<CR>zw<Esc>u", "Rxy<CR>zw<BS><BS><BS><BS><Esc>", "Rxy<CR>zw<BS><BS><BS><BS><BS><Esc>",
         "Rx<Up><Esc>", "Rx<Down>y<Esc>", "Rx<Down>y<BS><BS><Esc>", "3Rx<CR><Esc>", "Rab<CR><Esc>", "Rab<CR><BS><Esc>",
-        "yjRx<C-r>\"<Esc>", "yjRx<C-r>\"<BS><BS><BS><Esc>", "R<CR><CR><BS><BS><Esc>", "Rx<CR><Esc>u", "Rx<CR>y<Esc>."]
+        "yjRx<C-r>\"<Esc>", "yjRx<C-r>\"<BS><BS><BS><Esc>", "R<CR><CR><BS><BS><Esc>", "Rx<CR><Esc>u", "Rx<CR>y<Esc>.",
+        "R<BS><CR><BS><Esc>", "R<BS>zz<C-w><Esc>", "R<BS><CR><CR><BS><BS><Esc>", "R<BS><Esc>u", "R<BS><BS><Esc>u"]
 on = ["json_pretty", "indent", "blank_edges", "words", "short_last", "tabs"]
 at = ["bol", "fnb", "mid", "eol"]
 
