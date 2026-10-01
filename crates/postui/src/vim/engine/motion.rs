@@ -867,7 +867,8 @@ impl Engine {
     pub(super) fn run_motion<B: TextBuf>(&mut self, buf: &B, from: Pos, motion: Motion, count: usize, cx: &MotionCx, ctx: &ViewCtx) -> Moved {
         match motion {
             Motion::ScreenLine(place) => {
-                let row = match View::of::<B>(ctx) {
+                let view = View::of::<B>(ctx);
+                let row = match view {
                     Some(view) => view.screen_line(buf, place, count),
                     // No window: the whole text is one (Deviation 12).
                     None => match place {
@@ -878,7 +879,7 @@ impl Engine {
                 };
                 // Without an operator `cursor_correct()` pulls the row into
                 // the window; `beginline(BL_SOL | BL_FIX)`.
-                let row = match (cx.op, View::of::<B>(ctx)) {
+                let row = match (cx.op, view) {
                     (None, Some(view)) => view.corrected_row(buf, row),
                     _ => row,
                 };

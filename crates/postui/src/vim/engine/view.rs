@@ -253,19 +253,10 @@ impl View {
     /// Vim's `cursor_correct()` with `scrolloff=0`: the caret is pulled
     /// into the window when it sits outside it.
     pub(crate) fn cursor_correct<B: TextBuf>(self, buf: &mut B) {
-        let lines = buf.line_count();
-        let top = buf.top();
-        let bot = self.botline(buf);
         let cur = buf.cursor();
-        if cur.row >= top && cur.row < bot {
-            return;
-        }
-        if cur.row < top && top > 0 {
-            buf.set_cursor(Pos::new(top, cur.col));
-        }
-        let cur = buf.cursor();
-        if cur.row >= bot && bot < lines {
-            buf.set_cursor(Pos::new(bot - 1, cur.col));
+        let row = self.corrected_row(buf, cur.row);
+        if row != cur.row {
+            buf.set_cursor(Pos::new(row, cur.col));
         }
     }
 
@@ -480,8 +471,9 @@ impl Engine {
 
     /// `zt` `zz` `zb` (Vim's `nv_zet()`): a count is the line to go to (the
     /// column clamped), then the window is placed; the caret's column stays.
+    /// Without a window the line still changes and only the placement has
+    /// nothing to do (Deviation 12).
     pub(super) fn exec_scroll_cursor<B: TextBuf>(&mut self, place: Screen, count: usize, buf: &mut B, st: &mut BufState, ctx: &ViewCtx) {
-        let Some(view) = View::of::<B>(ctx) else { return };
         if count > 0 {
             let row = (count - 1).min(buf.line_count() - 1);
             if row != buf.cursor().row {
@@ -490,6 +482,7 @@ impl Engine {
                 st.forget_want();
             }
         }
+        let Some(view) = View::of::<B>(ctx) else { return };
         match place {
             Screen::Top => view.scroll_cursor_top(buf, 0, true),
             Screen::Middle => view.scroll_cursor_halfway(buf, true, false),

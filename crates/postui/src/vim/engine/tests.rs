@@ -2023,3 +2023,46 @@ fn screen_lines_and_z_in_a_field() {
     assert_eq!(f.keys("dH"), Outcome::Consumed { changed: true, note: None, request: None });
     assert_eq!(f.text(), "", "dH takes the line");
 }
+
+/// Task 7 review: a body drawn nowhere yet is one window holding the whole
+/// text (Deviation 12): `H M L` go by the text, and a counted `zz` still
+/// moves to its line (only the placement has nothing to do).
+#[test]
+fn screen_lines_and_a_counted_zz_without_a_window() {
+    let text: Vec<String> = (1..=60).map(|i| format!("  l{i}")).collect();
+    let mut b = Body::new(&text.join("\n"), 10, 3);
+    let keys = |b: &mut Body, s: &str| {
+        for c in s.chars() {
+            b.engine.handle(k(c), Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state }, &ViewCtx::default());
+        }
+    };
+    keys(&mut b, "H");
+    assert_eq!(b.caret(), Pos::new(0, 2));
+    keys(&mut b, "M");
+    assert_eq!(b.caret(), Pos::new(29, 2));
+    keys(&mut b, "L");
+    assert_eq!(b.caret(), Pos::new(59, 2));
+    keys(&mut b, "3L");
+    assert_eq!(b.caret(), Pos::new(57, 2));
+    keys(&mut b, "$9zz");
+    assert_eq!(b.caret(), Pos::new(8, 3), "the line changes, the column is clamped");
+}
+
+/// Task 7 review: `z{count}` reads digits (`<Del>` drops one) and then
+/// swallows the next key, as Vim's `nv_z_get_count()` does; after an
+/// operator the first digit cancels it.
+#[test]
+fn z_takes_a_count_and_swallows_the_next_key() {
+    let mut f = Field::new("abc", 1);
+    f.keys("z12");
+    assert_eq!(f.engine.echo(), "z12");
+    f.key(code(KeyCode::Delete));
+    assert_eq!(f.engine.echo(), "z1");
+    assert_eq!(f.keys("x"), Outcome::consumed());
+    assert!(!f.engine.pending());
+    assert_eq!(f.text(), "abc", "the x was swallowed");
+    f.keys("dz5");
+    assert!(!f.engine.pending(), "the operator is cancelled at the digit");
+    f.keys("x");
+    assert_eq!(f.text(), "ac");
+}

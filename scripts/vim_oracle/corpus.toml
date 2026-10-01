@@ -1132,15 +1132,18 @@ keys = ["H", "M", "L", "3H", "3L", "9H", "99L", "dL", "dH", "dM", "yL", "yH", "c
 on = ["long"]
 at = [[1, 1], [50, 1], [100, 1]]
 
-# The six `50Gzz`/`90Gzt` scroll keys moved here from Task 6's groups (they
-# need `zz`/`zt`).
+# The six `50Gzz`/`90Gzt` scroll keys are deferred from Task 6's brief
+# (`zz`/`zt` did not exist yet). `z{count}` reads digits, then swallows the
+# next key (`nv_z_get_count()`); `z{count}<CR>` is left out: it resizes the
+# oracle's only window, which no case resets.
 [[group]]
 id = "view/z"
 tier = 2
 keys = ["zz", "zt", "zb", "10zt", "50zz", "50zb", "Gzz", "Gzt", "Gzb", "12zz", "13zb", "zbj", "23jzt", "23jzb", "23jzz", "2zt",
         "2zb", "0zz", "200zt", "ztzb", "Gztzz", "GztH", "<C-d>Gzz", "97Gzz", "97Gzt", "90Gzt", "zb<C-d>", "zt<C-u>", "$zz",
         "$50zt", "zzx", "ztdd", "zbu", "dzz", "vzzd", "Vztd", "z<Esc>x", "zox", "zJ", "3zz", "zzzb", "zzzt", "zbzz",
-        "50Gzz<C-d>", "50Gzz<C-u>", "50Gzz<C-f>", "50Gzz<C-b>", "90Gzt<C-f>", "90Gzt<C-f><C-b>"]
+        "50Gzz<C-d>", "50Gzz<C-u>", "50Gzz<C-f>", "50Gzz<C-b>", "90Gzt<C-f>", "90Gzt<C-f><C-b>",
+        "z5x", "z5zzx", "z5ztx", "z0x", "z12<Del>x", "dz5x", "vz5xd"]
 on = ["lines25", "json_pretty", "blank_edges", "words", "one_char", "empty"]
 at = ["bol", "mid", "eol"]
 
@@ -1151,7 +1154,8 @@ tier = 2
 keys = ["zz", "zt", "zb", "10zt", "50zz", "50zb", "Gzz", "Gzt", "Gzb", "12zz", "13zb", "zbj", "23jzt", "23jzb", "23jzz", "2zt",
         "2zb", "0zz", "200zt", "ztzb", "Gztzz", "GztH", "<C-d>Gzz", "97Gzz", "97Gzt", "90Gzt", "zb<C-d>", "zt<C-u>", "$zz",
         "$50zt", "zzx", "ztdd", "zbu", "dzz", "vzzd", "Vztd", "z<Esc>x", "zox", "zJ", "3zz", "zzzb", "zzzt", "zbzz",
-        "50Gzz<C-d>", "50Gzz<C-u>", "50Gzz<C-f>", "50Gzz<C-b>", "90Gzt<C-f>", "90Gzt<C-f><C-b>"]
+        "50Gzz<C-d>", "50Gzz<C-u>", "50Gzz<C-f>", "50Gzz<C-b>", "90Gzt<C-f>", "90Gzt<C-f><C-b>",
+        "z5x", "z5zzx", "z5ztx", "z0x", "z12<Del>x", "dz5x", "vz5xd"]
 on = ["long"]
 at = [[1, 1], [50, 1], [100, 1]]
 

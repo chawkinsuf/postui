@@ -283,6 +283,8 @@ enum Prefix {
     Find(FindKind),
     Replace,
     Z,
+    /// `z{count}`: Vim's `nv_z_get_count()` reading digits.
+    ZCount(usize),
 }
 
 /// The half-typed command (spec §3.5).
@@ -449,6 +451,7 @@ impl Pending {
             Some(Prefix::Find(k)) => s.push(find_char(k)),
             Some(Prefix::Replace) => s.push('r'),
             Some(Prefix::Z) => s.push('z'),
+            Some(Prefix::ZCount(n)) => s += &format!("z{n}"),
         }
         s
     }
@@ -776,9 +779,32 @@ impl Pending {
                     };
                     self.cmd(|count, _| Cmd::ScrollCursor { place, count })
                 }
+                // `z{count}`: Vim's `nv_z_get_count()` reads more digits.
+                Key::Char(c @ '0'..='9') if self.op.is_none() => {
+                    self.keys.push(ev);
+                    self.prefix = Some(Prefix::ZCount(c.to_digit(10).expect("a digit") as usize));
+                    Step::More
+                }
                 // A one-line field has nothing to scroll; `zo` and friends are
                 // list keys, never text keys. After an operator every `z`
-                // command cancels it (`checkclearop()`).
+                // command (a digit too) cancels it (`checkclearop()`).
+                _ => self.inert(None),
+            },
+            Prefix::ZCount(n) => match key {
+                Key::Char(c @ '0'..='9') => {
+                    self.keys.push(ev);
+                    self.prefix = Some(Prefix::ZCount(accumulate_count(n, c.to_digit(10).expect("a digit"))));
+                    Step::More
+                }
+                Key::Delete => {
+                    self.keys.push(ev);
+                    self.prefix = Some(Prefix::ZCount(n / 10));
+                    Step::More
+                }
+                // Any other key ends the count and is swallowed. Vim beeps
+                // on most; `z{count}<CR>` sets the window's height and
+                // `z{count}l` `h` scroll sideways, neither modelled (the
+                // window is the app's).
                 _ => self.inert(None),
             },
         }
