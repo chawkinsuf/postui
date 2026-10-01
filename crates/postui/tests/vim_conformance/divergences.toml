@@ -78,3 +78,200 @@ buffer = "both"
 expect = { lines = ["héllo wörld 日本Y語 😀 x×y a b"], cursor = [1, 15] }
 who = "mine"
 why = "Vim's `Rab<Esc>` over 日本 records `'^` at byte column 16; `u` puts back 日本 (3 bytes each) without moving the mark, so it sits inside 日 and `gi` types Y between 日's bytes, leaving invalid UTF-8. The engine counts chars: `'^` is char column 14, so Y goes in after 本. Follows the user's 2026-10-01 rule that the engine counts chars, not bytes (the ops/case-shrink entries); pending the user's confirmation on reviewing plan 3c."
+
+# A `.` whose repeated search fails (plan 3c Task 11). Vim drops the
+# operator and runs the rest of its redo buffer as Normal commands, so the
+# insert text typed after `c/o<CR>` (`Y`) yanks the line. The engine cancels
+# the whole repeat. Text and caret agree; only the register differs.
+
+[[divergence]]
+id = "search/ops/json_pretty@4:20/c/o<CR>Y<Esc>j."
+buffer = "body"
+expect = { lines = ["{", "  \"a\": {\"b\": 1},", "  \"c\": [1, 2, 3],", "  \"d\": \"hellY\"", "}"], cursor = [5, 1], reg = "o world", regtype = "v" }
+who = "mine"
+why = "Vim's redo of `c/o<CR>Y<Esc>`: when the repeated search finds nothing, the operator is dropped and the rest of the redo buffer runs as Normal commands, so the typed `Y` yanks the line (stray insert text becomes commands: `c/o<CR>dd<Esc>j.` would delete a line). The engine cancels the whole repeat when the `.` search fails, because replaying insert text as commands is a Vim bug a user would not want. Pending the user's review of plan 3c (2026-10-01)."
+
+[[divergence]]
+id = "search/ops/json_pretty@5:1/c/o<CR>Y<Esc>j."
+buffer = "body"
+expect = { lines = ["{", "  \"a\": {\"b\": 1},", "  \"c\": [1, 2, 3],", "  \"d\": \"hellY", "}"], cursor = [5, 1], reg = "o world\"", regtype = "v" }
+who = "mine"
+why = "Vim's redo of `c/o<CR>Y<Esc>`: when the repeated search finds nothing, the operator is dropped and the rest of the redo buffer runs as Normal commands, so the typed `Y` yanks the line (stray insert text becomes commands: `c/o<CR>dd<Esc>j.` would delete a line). The engine cancels the whole repeat when the `.` search fails, because replaying insert text as commands is a Vim bug a user would not want. Pending the user's review of plan 3c (2026-10-01)."
+
+[[divergence]]
+id = "search/ops/search@3:14/c/o<CR>Y<Esc>j."
+buffer = "body"
+expect = { lines = ["fYb", "x×y 日本語x 日本", "... --- a_b", "", "zzz"], cursor = [2, 2], reg = "oo bar foo\nbaz foo\nfoobar a.b a*", regtype = "v" }
+who = "mine"
+why = "Vim's redo of `c/o<CR>Y<Esc>`: when the repeated search finds nothing, the operator is dropped and the rest of the redo buffer runs as Normal commands, so the typed `Y` yanks the line (stray insert text becomes commands: `c/o<CR>dd<Esc>j.` would delete a line). The engine cancels the whole repeat when the `.` search fails, because replaying insert text as commands is a Vim bug a user would not want. Pending the user's review of plan 3c (2026-10-01)."
+
+[[divergence]]
+id = "search/ops/search@3:8/c/o<CR>Y<Esc>j."
+buffer = "body"
+expect = { lines = ["fYa.b a*b", "x×y 日本語x 日本", "... --- a_b", "", "zzz"], cursor = [2, 2], reg = "oo bar foo\nbaz foo\nfoobar ", regtype = "v" }
+who = "mine"
+why = "Vim's redo of `c/o<CR>Y<Esc>`: when the repeated search finds nothing, the operator is dropped and the rest of the redo buffer runs as Normal commands, so the typed `Y` yanks the line (stray insert text becomes commands: `c/o<CR>dd<Esc>j.` would delete a line). The engine cancels the whole repeat when the `.` search fails, because replaying insert text as commands is a Vim bug a user would not want. Pending the user's review of plan 3c (2026-10-01)."
+
+[[divergence]]
+id = "search/ops/search@4:1/c/o<CR>Y<Esc>j."
+buffer = "body"
+expect = { lines = ["fY", "x×y 日本語x 日本", "... --- a_b", "", "zzz"], cursor = [2, 2], reg = "oo bar foo\nbaz foo\nfoobar a.b a*b", regtype = "v" }
+who = "mine"
+why = "Vim's redo of `c/o<CR>Y<Esc>`: when the repeated search finds nothing, the operator is dropped and the rest of the redo buffer runs as Normal commands, so the typed `Y` yanks the line (stray insert text becomes commands: `c/o<CR>dd<Esc>j.` would delete a line). The engine cancels the whole repeat when the `.` search fails, because replaying insert text as commands is a Vim bug a user would not want. Pending the user's review of plan 3c (2026-10-01)."
+
+[[divergence]]
+id = "search/ops/search@4:11/c/o<CR>Y<Esc>j."
+buffer = "body"
+expect = { lines = ["fY本", "... --- a_b", "", "zzz"], cursor = [2, 2], reg = "oo bar foo\nbaz foo\nfoobar a.b a*b\nx×y 日本語x 日", regtype = "v" }
+who = "mine"
+why = "Vim's redo of `c/o<CR>Y<Esc>`: when the repeated search finds nothing, the operator is dropped and the rest of the redo buffer runs as Normal commands, so the typed `Y` yanks the line (stray insert text becomes commands: `c/o<CR>dd<Esc>j.` would delete a line). The engine cancels the whole repeat when the `.` search fails, because replaying insert text as commands is a Vim bug a user would not want. Pending the user's review of plan 3c (2026-10-01)."
+
+[[divergence]]
+id = "search/ops/search@4:6/c/o<CR>Y<Esc>j."
+buffer = "body"
+expect = { lines = ["fY本語x 日本", "... --- a_b", "", "zzz"], cursor = [2, 2], reg = "oo bar foo\nbaz foo\nfoobar a.b a*b\nx×y 日", regtype = "v" }
+who = "mine"
+why = "Vim's redo of `c/o<CR>Y<Esc>`: when the repeated search finds nothing, the operator is dropped and the rest of the redo buffer runs as Normal commands, so the typed `Y` yanks the line (stray insert text becomes commands: `c/o<CR>dd<Esc>j.` would delete a line). The engine cancels the whole repeat when the `.` search fails, because replaying insert text as commands is a Vim bug a user would not want. Pending the user's review of plan 3c (2026-10-01)."
+
+[[divergence]]
+id = "search/ops/search@5:1/c/o<CR>Y<Esc>j."
+buffer = "body"
+expect = { lines = ["fY", "... --- a_b", "", "zzz"], cursor = [2, 2], reg = "oo bar foo\nbaz foo\nfoobar a.b a*b\nx×y 日本語x 日本", regtype = "v" }
+who = "mine"
+why = "Vim's redo of `c/o<CR>Y<Esc>`: when the repeated search finds nothing, the operator is dropped and the rest of the redo buffer runs as Normal commands, so the typed `Y` yanks the line (stray insert text becomes commands: `c/o<CR>dd<Esc>j.` would delete a line). The engine cancels the whole repeat when the `.` search fails, because replaying insert text as commands is a Vim bug a user would not want. Pending the user's review of plan 3c (2026-10-01)."
+
+[[divergence]]
+id = "search/ops/search@5:11/c/o<CR>Y<Esc>j."
+buffer = "body"
+expect = { lines = ["fYb", "", "zzz"], cursor = [2, 1], reg = "oo bar foo\nbaz foo\nfoobar a.b a*b\nx×y 日本語x 日本\n... --- a_", regtype = "v" }
+who = "mine"
+why = "Vim's redo of `c/o<CR>Y<Esc>`: when the repeated search finds nothing, the operator is dropped and the rest of the redo buffer runs as Normal commands, so the typed `Y` yanks the line (stray insert text becomes commands: `c/o<CR>dd<Esc>j.` would delete a line). The engine cancels the whole repeat when the `.` search fails, because replaying insert text as commands is a Vim bug a user would not want. Pending the user's review of plan 3c (2026-10-01)."
+
+[[divergence]]
+id = "search/ops/search@5:6/c/o<CR>Y<Esc>j."
+buffer = "body"
+expect = { lines = ["fY-- a_b", "", "zzz"], cursor = [2, 1], reg = "oo bar foo\nbaz foo\nfoobar a.b a*b\nx×y 日本語x 日本\n... -", regtype = "v" }
+who = "mine"
+why = "Vim's redo of `c/o<CR>Y<Esc>`: when the repeated search finds nothing, the operator is dropped and the rest of the redo buffer runs as Normal commands, so the typed `Y` yanks the line (stray insert text becomes commands: `c/o<CR>dd<Esc>j.` would delete a line). The engine cancels the whole repeat when the `.` search fails, because replaying insert text as commands is a Vim bug a user would not want. Pending the user's review of plan 3c (2026-10-01)."
+
+[[divergence]]
+id = "search/ops/search@6:1/c/o<CR>Y<Esc>j."
+buffer = "body"
+expect = { lines = ["fY", "", "zzz"], cursor = [2, 1], reg = "oo bar foo\nbaz foo\nfoobar a.b a*b\nx×y 日本語x 日本\n... --- a_b", regtype = "v" }
+who = "mine"
+why = "Vim's redo of `c/o<CR>Y<Esc>`: when the repeated search finds nothing, the operator is dropped and the rest of the redo buffer runs as Normal commands, so the typed `Y` yanks the line (stray insert text becomes commands: `c/o<CR>dd<Esc>j.` would delete a line). The engine cancels the whole repeat when the `.` search fails, because replaying insert text as commands is a Vim bug a user would not want. Pending the user's review of plan 3c (2026-10-01)."
+
+[[divergence]]
+id = "search/ops/search@7:1/c/o<CR>Y<Esc>j."
+buffer = "body"
+expect = { lines = ["fY", "zzz"], cursor = [2, 2], reg = "oo bar foo\nbaz foo\nfoobar a.b a*b\nx×y 日本語x 日本\n... --- a_b\n", regtype = "v" }
+who = "mine"
+why = "Vim's redo of `c/o<CR>Y<Esc>`: when the repeated search finds nothing, the operator is dropped and the rest of the redo buffer runs as Normal commands, so the typed `Y` yanks the line (stray insert text becomes commands: `c/o<CR>dd<Esc>j.` would delete a line). The engine cancels the whole repeat when the `.` search fails, because replaying insert text as commands is a Vim bug a user would not want. Pending the user's review of plan 3c (2026-10-01)."
+
+[[divergence]]
+id = "search/ops/search@7:2/c/o<CR>Y<Esc>j."
+buffer = "body"
+expect = { lines = ["fYzz"], cursor = [1, 2], reg = "oo bar foo\nbaz foo\nfoobar a.b a*b\nx×y 日本語x 日本\n... --- a_b\n\nz", regtype = "v" }
+who = "mine"
+why = "Vim's redo of `c/o<CR>Y<Esc>`: when the repeated search finds nothing, the operator is dropped and the rest of the redo buffer runs as Normal commands, so the typed `Y` yanks the line (stray insert text becomes commands: `c/o<CR>dd<Esc>j.` would delete a line). The engine cancels the whole repeat when the `.` search fails, because replaying insert text as commands is a Vim bug a user would not want. Pending the user's review of plan 3c (2026-10-01)."
+
+[[divergence]]
+id = "search/ops/search@7:3/c/o<CR>Y<Esc>j."
+buffer = "body"
+expect = { lines = ["fYz"], cursor = [1, 2], reg = "oo bar foo\nbaz foo\nfoobar a.b a*b\nx×y 日本語x 日本\n... --- a_b\n\nzz", regtype = "v" }
+who = "mine"
+why = "Vim's redo of `c/o<CR>Y<Esc>`: when the repeated search finds nothing, the operator is dropped and the rest of the redo buffer runs as Normal commands, so the typed `Y` yanks the line (stray insert text becomes commands: `c/o<CR>dd<Esc>j.` would delete a line). The engine cancels the whole repeat when the `.` search fails, because replaying insert text as commands is a Vim bug a user would not want. Pending the user's review of plan 3c (2026-10-01)."
+
+[[divergence]]
+id = "search/ops/unicode@1:13/c/o<CR>Y<Esc>j."
+buffer = "both"
+expect = { lines = ["héllY日本語 😀 x×y a b"], cursor = [1, 5], reg = "o wörld ", regtype = "v" }
+who = "mine"
+why = "Vim's redo of `c/o<CR>Y<Esc>`: when the repeated search finds nothing, the operator is dropped and the rest of the redo buffer runs as Normal commands, so the typed `Y` yanks the line (stray insert text becomes commands: `c/o<CR>dd<Esc>j.` would delete a line). The engine cancels the whole repeat when the `.` search fails, because replaying insert text as commands is a Vim bug a user would not want. Pending the user's review of plan 3c (2026-10-01)."
+
+[[divergence]]
+id = "search/ops/unicode@1:25/c/o<CR>Y<Esc>j."
+buffer = "both"
+expect = { lines = ["héllYb"], cursor = [1, 5], reg = "o wörld 日本語 😀 x×y a ", regtype = "v" }
+who = "mine"
+why = "Vim's redo of `c/o<CR>Y<Esc>`: when the repeated search finds nothing, the operator is dropped and the rest of the redo buffer runs as Normal commands, so the typed `Y` yanks the line (stray insert text becomes commands: `c/o<CR>dd<Esc>j.` would delete a line). The engine cancels the whole repeat when the `.` search fails, because replaying insert text as commands is a Vim bug a user would not want. Pending the user's review of plan 3c (2026-10-01)."
+
+[[divergence]]
+id = "search/ops/words@1:13/c/o<CR>Y<Esc>j."
+buffer = "both"
+expect = { lines = ["fY_qux.quux end"], cursor = [1, 2], reg = "oo bar  baz", regtype = "v" }
+who = "mine"
+why = "Vim's redo of `c/o<CR>Y<Esc>`: when the repeated search finds nothing, the operator is dropped and the rest of the redo buffer runs as Normal commands, so the typed `Y` yanks the line (stray insert text becomes commands: `c/o<CR>dd<Esc>j.` would delete a line). The engine cancels the whole repeat when the `.` search fails, because replaying insert text as commands is a Vim bug a user would not want. Pending the user's review of plan 3c (2026-10-01)."
+
+[[divergence]]
+id = "search/ops/words@1:25/c/o<CR>Y<Esc>j."
+buffer = "both"
+expect = { lines = ["fYd"], cursor = [1, 2], reg = "oo bar  baz_qux.quux en", regtype = "v" }
+who = "mine"
+why = "Vim's redo of `c/o<CR>Y<Esc>`: when the repeated search finds nothing, the operator is dropped and the rest of the redo buffer runs as Normal commands, so the typed `Y` yanks the line (stray insert text becomes commands: `c/o<CR>dd<Esc>j.` would delete a line). The engine cancels the whole repeat when the `.` search fails, because replaying insert text as commands is a Vim bug a user would not want. Pending the user's review of plan 3c (2026-10-01)."
+
+# Search offsets (plan 3c Deviation 3): `/a/b` is the pattern `a` with the
+# offset `b`, which Vim honours and the engine refuses, so the caret stays.
+
+[[divergence]]
+id = "search/patterns-cases/search_cases@13:1//a/b<CR>"
+buffer = "body"
+expect = { lines = ["a-b a]b aXb ayb a[b", "a b\tc a_b a-b", "ab aab aaab", "ab-cd ef -a b", "ba\\r foo a~b b-r b]r bxr b^r b.r b\tr", "foo bar? foo", "a/b x", "日本語x 日本", "x×y x", "a  b a", "ab ab", "foo bxxr foo", "baz 42"], cursor = [13, 1] }
+who = "mine"
+why = "Vim reads what follows the unescaped `/` as a search offset (`b` = begin offset) and searches `a`. Search offsets are out of scope: plan 3c Deviation 3 refuses them with \"search offsets not supported\" rather than misread the pattern, so the caret stays. Pending the user's review of plan 3c (2026-10-01)."
+
+[[divergence]]
+id = "search/patterns-cases/search_cases@13:4//a/b<CR>"
+buffer = "body"
+expect = { lines = ["a-b a]b aXb ayb a[b", "a b\tc a_b a-b", "ab aab aaab", "ab-cd ef -a b", "ba\\r foo a~b b-r b]r bxr b^r b.r b\tr", "foo bar? foo", "a/b x", "日本語x 日本", "x×y x", "a  b a", "ab ab", "foo bxxr foo", "baz 42"], cursor = [13, 4] }
+who = "mine"
+why = "Vim reads what follows the unescaped `/` as a search offset (`b` = begin offset) and searches `a`. Search offsets are out of scope: plan 3c Deviation 3 refuses them with \"search offsets not supported\" rather than misread the pattern, so the caret stays. Pending the user's review of plan 3c (2026-10-01)."
+
+[[divergence]]
+id = "search/patterns-cases/search_cases@13:6//a/b<CR>"
+buffer = "body"
+expect = { lines = ["a-b a]b aXb ayb a[b", "a b\tc a_b a-b", "ab aab aaab", "ab-cd ef -a b", "ba\\r foo a~b b-r b]r bxr b^r b.r b\tr", "foo bar? foo", "a/b x", "日本語x 日本", "x×y x", "a  b a", "ab ab", "foo bxxr foo", "baz 42"], cursor = [13, 6] }
+who = "mine"
+why = "Vim reads what follows the unescaped `/` as a search offset (`b` = begin offset) and searches `a`. Search offsets are out of scope: plan 3c Deviation 3 refuses them with \"search offsets not supported\" rather than misread the pattern, so the caret stays. Pending the user's review of plan 3c (2026-10-01)."
+
+[[divergence]]
+id = "search/patterns-cases/search_cases@1:1//a/b<CR>"
+buffer = "body"
+expect = { lines = ["a-b a]b aXb ayb a[b", "a b\tc a_b a-b", "ab aab aaab", "ab-cd ef -a b", "ba\\r foo a~b b-r b]r bxr b^r b.r b\tr", "foo bar? foo", "a/b x", "日本語x 日本", "x×y x", "a  b a", "ab ab", "foo bxxr foo", "baz 42"], cursor = [1, 1] }
+who = "mine"
+why = "Vim reads what follows the unescaped `/` as a search offset (`b` = begin offset) and searches `a`. Search offsets are out of scope: plan 3c Deviation 3 refuses them with \"search offsets not supported\" rather than misread the pattern, so the caret stays. Pending the user's review of plan 3c (2026-10-01)."
+
+[[divergence]]
+id = "search/patterns-cases/search_cases@1:10//a/b<CR>"
+buffer = "body"
+expect = { lines = ["a-b a]b aXb ayb a[b", "a b\tc a_b a-b", "ab aab aaab", "ab-cd ef -a b", "ba\\r foo a~b b-r b]r bxr b^r b.r b\tr", "foo bar? foo", "a/b x", "日本語x 日本", "x×y x", "a  b a", "ab ab", "foo bxxr foo", "baz 42"], cursor = [1, 10] }
+who = "mine"
+why = "Vim reads what follows the unescaped `/` as a search offset (`b` = begin offset) and searches `a`. Search offsets are out of scope: plan 3c Deviation 3 refuses them with \"search offsets not supported\" rather than misread the pattern, so the caret stays. Pending the user's review of plan 3c (2026-10-01)."
+
+[[divergence]]
+id = "search/patterns-cases/search_cases@1:19//a/b<CR>"
+buffer = "body"
+expect = { lines = ["a-b a]b aXb ayb a[b", "a b\tc a_b a-b", "ab aab aaab", "ab-cd ef -a b", "ba\\r foo a~b b-r b]r bxr b^r b.r b\tr", "foo bar? foo", "a/b x", "日本語x 日本", "x×y x", "a  b a", "ab ab", "foo bxxr foo", "baz 42"], cursor = [1, 19] }
+who = "mine"
+why = "Vim reads what follows the unescaped `/` as a search offset (`b` = begin offset) and searches `a`. Search offsets are out of scope: plan 3c Deviation 3 refuses them with \"search offsets not supported\" rather than misread the pattern, so the caret stays. Pending the user's review of plan 3c (2026-10-01)."
+
+[[divergence]]
+id = "search/patterns-cases/search_cases@7:1//a/b<CR>"
+buffer = "body"
+expect = { lines = ["a-b a]b aXb ayb a[b", "a b\tc a_b a-b", "ab aab aaab", "ab-cd ef -a b", "ba\\r foo a~b b-r b]r bxr b^r b.r b\tr", "foo bar? foo", "a/b x", "日本語x 日本", "x×y x", "a  b a", "ab ab", "foo bxxr foo", "baz 42"], cursor = [7, 1] }
+who = "mine"
+why = "Vim reads what follows the unescaped `/` as a search offset (`b` = begin offset) and searches `a`. Search offsets are out of scope: plan 3c Deviation 3 refuses them with \"search offsets not supported\" rather than misread the pattern, so the caret stays. Pending the user's review of plan 3c (2026-10-01)."
+
+[[divergence]]
+id = "search/patterns-cases/search_cases@7:3//a/b<CR>"
+buffer = "body"
+expect = { lines = ["a-b a]b aXb ayb a[b", "a b\tc a_b a-b", "ab aab aaab", "ab-cd ef -a b", "ba\\r foo a~b b-r b]r bxr b^r b.r b\tr", "foo bar? foo", "a/b x", "日本語x 日本", "x×y x", "a  b a", "ab ab", "foo bxxr foo", "baz 42"], cursor = [7, 3] }
+who = "mine"
+why = "Vim reads what follows the unescaped `/` as a search offset (`b` = begin offset) and searches `a`. Search offsets are out of scope: plan 3c Deviation 3 refuses them with \"search offsets not supported\" rather than misread the pattern, so the caret stays. Pending the user's review of plan 3c (2026-10-01)."
+
+[[divergence]]
+id = "search/patterns-cases/search_cases@7:5//a/b<CR>"
+buffer = "body"
+expect = { lines = ["a-b a]b aXb ayb a[b", "a b\tc a_b a-b", "ab aab aaab", "ab-cd ef -a b", "ba\\r foo a~b b-r b]r bxr b^r b.r b\tr", "foo bar? foo", "a/b x", "日本語x 日本", "x×y x", "a  b a", "ab ab", "foo bxxr foo", "baz 42"], cursor = [7, 5] }
+who = "mine"
+why = "Vim reads what follows the unescaped `/` as a search offset (`b` = begin offset) and searches `a`. Search offsets are out of scope: plan 3c Deviation 3 refuses them with \"search offsets not supported\" rather than misread the pattern, so the caret stays. Pending the user's review of plan 3c (2026-10-01)."

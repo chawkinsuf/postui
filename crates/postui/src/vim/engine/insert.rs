@@ -1107,9 +1107,17 @@ impl Engine {
     /// body takes CRLF and CR as line breaks and keeps tabs (Vim pastes
     /// with `paste` set: no autoindent, no expandtab). In Normal or Visual
     /// it is declined; piece 4 routes it through `external_edit`
-    /// (deviation 13). It takes no view: `top` is brought up to date by
-    /// the next key.
+    /// (deviation 13). While the search prompt is open it types into the
+    /// prompt. It takes no view: `top` is brought up to date by the next
+    /// key.
     pub fn paste<B: TextBuf>(&mut self, text: &str, t: Target<'_, B>) -> Outcome {
+        // The search prompt types it, flattened (Deviation 16).
+        if let Some(p) = &mut self.search {
+            for c in flatten_paste(text).chars() {
+                p.insert(c);
+            }
+            return Outcome::consumed();
+        }
         let Target { buf, state } = t;
         if matches!(self.mode, Mode::InsertNormal { .. }) && !self.pending() {
             self.resume_after_ctrl_o(buf, state);

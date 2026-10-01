@@ -4,7 +4,7 @@
 //! chain under `cpoptions` `c`. The golden file is the judge.
 
 use super::buf::{Pos, TextBuf};
-use super::class::class;
+use super::class::{class, is_space};
 use regex::Regex;
 
 /// `/` or `?` (spec §3.14).
@@ -12,6 +12,16 @@ use regex::Regex;
 pub enum Dir {
     Forward,
     Backward,
+}
+
+impl Dir {
+    /// The prompt's char, which also ends the pattern (an offset follows).
+    pub(crate) fn delim(self) -> char {
+        match self {
+            Dir::Forward => '/',
+            Dir::Backward => '?',
+        }
+    }
 }
 
 /// Word start (`\<`), word end (`\>`), both. Private-use chars that stand
@@ -23,6 +33,13 @@ const BOTH: char = '\u{E002}';
 const TEXT_SENTINEL: char = '\u{E003}';
 const SKIP: &str = "[\\x{E000}-\\x{E002}]*";
 const NOT_SENTINEL: &str = "\\x{E000}-\\x{E002}";
+/// Vim's `META_flags[]` (regexp.c): the chars a backslash makes magic in
+/// `magic` mode (or, for `* . [ ~`, literal). A backslash before any other
+/// char, or at the pattern's end, is that char (`peekchr()`).
+const META: &str = "%&()*+.123456789<=>?@ACDFHIKLMOPSUVWXZ[_acdfhiklmnopsuvwxz{|~";
+/// Vim's `REGEXP_ABBR` letters that are not META: `\r \t \e \b` are control
+/// chars, out of the subset.
+const ABBR: &str = "rteb";
 
 /// A compiled pattern.
 pub(crate) struct Pattern {
@@ -46,7 +63,9 @@ enum Prev {
 
 /// Translates Vim `magic` syntax (the subset in the plan's table) to the
 /// `regex` crate's. `Err` carries the atom outside the subset, as typed.
-pub(crate) fn compile(source: &str, dir: Dir) -> Result<Pattern, String> {
+/// `source` is the pattern as stored ([`as_stored`]), so it reads the same
+/// in either direction: `\?` is always the multi, `?` always literal.
+pub(crate) fn compile(source: &str) -> Result<Pattern, String> {
     let src: Vec<char> = source.chars().collect();
     let mut out = String::new();
     let mut prev = Prev::Start;
@@ -86,13 +105,16 @@ pub(crate) fn compile(source: &str, dir: Dir) -> Result<Pattern, String> {
         }
         match c {
             '\\' => {
-                let Some(&n) = src.get(i + 1) else { return Err("\\".into()) };
+                let Some(&n) = src.get(i + 1) else {
+                    // A trailing backslash is a literal one (`peekchr()`).
+                    i += 1;
+                    atom(&mut out, "\\\\", &mut prev);
+                    continue;
+                };
                 i += 2;
                 match n {
                     '<' => zero_width(true, false, &mut run, &mut boundaries, &mut prev),
                     '>' => zero_width(false, true, &mut run, &mut boundaries, &mut prev),
-                    // In a `?` search `\?` is the delimiter typed literally.
-                    '?' if dir == Dir::Backward => atom(&mut out, "\\?", &mut prev),
                     '+' | '=' | '?' | '{' if prev != Prev::Atom => return Err(format!("\\{n}")),
                     '+' => {
                         out.push('+');
@@ -152,6 +174,11 @@ pub(crate) fn compile(source: &str, dir: Dir) -> Result<Pattern, String> {
                     '/' | '.' | '*' | '[' | ']' | '^' | '$' | '~' | '\\' => atom(&mut out, &regex::escape(&n.to_string()), &mut prev),
                     // `\zs`, `\ze`, `\z(`: the atom is the two letters.
                     'z' => return Err(src[i - 2..(i + 1).min(src.len())].iter().collect()),
+                    // Vim's `peekchr()`: a char with no `META_flags` entry
+                    // and no abbreviation is itself (`\q` is `q`).
+                    other if !META.contains(other) && !ABBR.contains(other) => {
+                        atom(&mut out, &regex::escape(&text_char(other).to_string()), &mut prev)
+                    }
                     other => return Err(format!("\\{other}")),
                 }
             }
@@ -231,7 +258,16 @@ fn collection(src: &[char]) -> Result<(String, usize), String> {
                 'b' => '\u{8}',
                 // A line break: multi-line patterns are out of the subset.
                 'n' => return Err("\\n".into()),
-                other => return Err(format!("\\{other}")),
+                // A char code (`\d123`, `\o40`, `\x20`, `€`) is out.
+                'd' | 'o' | 'x' | 'u' | 'U' if src.get(i).is_some_and(|c| c.is_ascii_hexdigit()) => {
+                    return Err(format!("\\{n}"));
+                }
+                // Before any other char the backslash is itself a member
+                // and the char is read next (Vim's `[\.]` is `\` or `.`).
+                _ => {
+                    i -= 1;
+                    '\\'
+                }
             }
         } else if c == '[' && src.get(i + 1) == Some(&':') {
             // A char index, never a byte offset: the class name may be any text.
@@ -510,6 +546,97 @@ pub(crate) fn as_stored(pat: &str, dir: Dir) -> String {
     out
 }
 
+/// The `/` or `?` line while it is typed (spec §3.14, Deviation 16; Vim's
+/// `getcmdline()`). `cursor` is a char index into `text`.
+#[derive(Debug, Clone)]
+pub(crate) struct Prompt {
+    pub dir: Dir,
+    pub text: Vec<char>,
+    pub cursor: usize,
+}
+
+impl Prompt {
+    pub(crate) fn new(dir: Dir) -> Self {
+        Self { dir, text: Vec::new(), cursor: 0 }
+    }
+
+    pub(crate) fn insert(&mut self, c: char) {
+        self.text.insert(self.cursor, c);
+        self.cursor += 1;
+    }
+
+    /// `BS`: `false` when the line was empty (Vim then leaves the line).
+    /// With the caret at the start of a non-empty line it does nothing.
+    pub(crate) fn backspace(&mut self) -> bool {
+        if self.text.is_empty() {
+            return false;
+        }
+        if self.cursor > 0 {
+            self.cursor -= 1;
+            self.text.remove(self.cursor);
+        }
+        true
+    }
+
+    /// `Del`: the char under the caret, or the one before it at the end;
+    /// `false` when the line was empty.
+    pub(crate) fn delete(&mut self) -> bool {
+        if self.text.is_empty() {
+            return false;
+        }
+        if self.cursor < self.text.len() {
+            self.cursor += 1;
+        }
+        self.backspace()
+    }
+
+    /// `ctrl+w` (Vim's `cmdline_erase_chars()`): blanks, then one char
+    /// class. Never leaves the line.
+    pub(crate) fn word_back(&mut self) {
+        let mut p = self.cursor;
+        while p > 0 && is_space(self.text[p - 1]) {
+            p -= 1;
+        }
+        if p > 0 {
+            let k = class(self.text[p - 1]);
+            while p > 0 && !is_space(self.text[p - 1]) && class(self.text[p - 1]) == k {
+                p -= 1;
+            }
+        }
+        self.text.drain(p..self.cursor);
+        self.cursor = p;
+    }
+
+    /// `ctrl+u`: everything before the caret.
+    pub(crate) fn delete_to_start(&mut self) {
+        self.text.drain(..self.cursor);
+        self.cursor = 0;
+    }
+
+    /// The pattern and the offset: the text up to the first unescaped
+    /// delimiter (`/` or `?` for this direction), and what follows it.
+    pub(crate) fn split(&self) -> (String, String) {
+        let delim = self.dir.delim();
+        let mut pat = String::new();
+        let mut i = 0;
+        while i < self.text.len() {
+            let c = self.text[i];
+            if c == '\\' && i + 1 < self.text.len() {
+                pat.push(c);
+                pat.push(self.text[i + 1]);
+                i += 2;
+                continue;
+            }
+            if c == delim {
+                return (pat, self.text[i + 1..].iter().collect());
+            }
+            pat.push(c);
+            i += 1;
+        }
+        (pat, String::new())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -518,8 +645,8 @@ mod tests {
         s.chars().collect()
     }
 
-    fn chain(pat: &str, dir: Dir, line: &str) -> Vec<(usize, usize)> {
-        compile(pat, dir).expect(pat).chain(&chars(line))
+    fn chain(pat: &str, line: &str) -> Vec<(usize, usize)> {
+        compile(pat).expect(pat).chain(&chars(line))
     }
 
     /// Vim 9.1's answers (plan 3c, batches p4 and p7). Three rows were
@@ -527,84 +654,91 @@ mod tests {
     /// p7) and `?x` (in no batch). The refused atoms are the subset's edge.
     #[test]
     fn the_subset_translates_and_the_rest_is_refused() {
-        for (pat, dir, line, want) in [
-            ("foo", Dir::Forward, "foo bar foo", vec![(0, 3), (8, 11)]),
-            ("fo*", Dir::Forward, "foo bar foo", vec![(0, 3), (8, 11)]),
-            ("f.o", Dir::Forward, "foo bar foo", vec![(0, 3), (8, 11)]),
-            ("^baz", Dir::Forward, "baz foo", vec![(0, 3)]),
-            ("foo$", Dir::Forward, "foo bar foo", vec![(8, 11)]),
-            ("[fb]a", Dir::Forward, "foo bar foo", vec![(4, 6)]),
-            ("\\(foo\\|baz\\)", Dir::Forward, "baz foo", vec![(0, 3), (4, 7)]),
-            ("\\d\\+", Dir::Forward, "baz 42", vec![(4, 6)]),
-            ("\\s", Dir::Forward, "a b\tc", vec![(1, 2), (3, 4)]),
-            ("o\\+", Dir::Forward, "foo bar foo", vec![(1, 3), (9, 11)]),
-            ("x\\=", Dir::Forward, "abc", vec![(0, 0), (1, 1), (2, 2)]),
-            ("x\\?", Dir::Backward, "bar? x", vec![]),
-            ("o\\{2}", Dir::Forward, "foo bar foo", vec![(1, 3), (9, 11)]),
-            ("a\\{,2}b", Dir::Forward, "ab aab aaab", vec![(0, 2), (3, 6), (8, 11)]),
-            ("a\\{}b", Dir::Forward, "ab aab", vec![(0, 2), (3, 6)]),
-            ("\\.", Dir::Forward, "a.b", vec![(1, 2)]),
-            ("a\\/b", Dir::Forward, "a/b", vec![(0, 3)]),
-            ("*b", Dir::Forward, "a*b", vec![(1, 3)]),
-            ("^*b", Dir::Forward, "*b", vec![(0, 2)]),
-            ("c^d", Dir::Forward, "ab c^d", vec![(3, 6)]),
-            ("b$c", Dir::Forward, "ab$c d", vec![(1, 4)]),
-            ("a[]-]b", Dir::Forward, "a-b a]b", vec![(0, 3), (4, 7)]),
-            ("a[\\]]b", Dir::Forward, "a-b a]b", vec![(4, 7)]),
-            ("a[^X]b", Dir::Forward, "aXb ayb", vec![(4, 7)]),
-            ("a[[]b", Dir::Forward, "a[b", vec![(0, 3)]),
-            ("[", Dir::Forward, "foo [x", vec![(4, 5)]),
-            ("[a-", Dir::Forward, "foo [a- foo", vec![(4, 7)]),
-            ("[]", Dir::Forward, "a[]", vec![(1, 3)]),
-            ("[^]", Dir::Forward, "a[^]", vec![(1, 4)]),
-            ("b[\\t]r", Dir::Forward, "b\tr btr", vec![(0, 3)]),
-            ("b[a^]r", Dir::Forward, "b^r", vec![(0, 3)]),
-            ("a\\Wb", Dir::Forward, "a_b a-b", vec![(4, 7)]),
-            ("\\<foo\\>", Dir::Forward, "foobar foo", vec![(7, 10)]),
-            ("a.*b\\>", Dir::Forward, "ab-cd ef", vec![(0, 2)]),
-            ("\\<.*b", Dir::Forward, "-a b", vec![(1, 4)]),
-            ("\\<x", Dir::Forward, "日本語x 日本", vec![(3, 4)]),
-            ("b\\>", Dir::Forward, "ab日本語", vec![(1, 2)]),
-            ("\\<y", Dir::Forward, "x×y x", vec![]),
-            ("\\<\\>", Dir::Forward, "ab 日本語x", vec![(6, 6)]),
-            ("\\>", Dir::Forward, "a  b", vec![(1, 1), (4, 4)]),
-            ("\\<", Dir::Forward, "a  b", vec![(0, 0), (3, 3)]),
-            ("$", Dir::Forward, "abc", vec![(3, 3)]),
-            ("aa", Dir::Forward, "aaaa", vec![(0, 2), (2, 4)]),
-            ("x*", Dir::Forward, "abc", vec![(0, 0), (1, 1), (2, 2)]),
-            ("b\\|", Dir::Forward, "ab", vec![(0, 0), (1, 2)]),
-            ("\\(x\\|r\\)*", Dir::Forward, "xxr", vec![(0, 3)]),
-            ("\\(^f\\)", Dir::Forward, "ff", vec![(0, 1)]),
-            ("\\(o$\\|x\\)", Dir::Forward, "foo", vec![(2, 3)]),
-            ("foo?", Dir::Forward, "foo? x", vec![(0, 4)]),
-            ("?x", Dir::Backward, "a?x", vec![(1, 3)]),
-            ("foo/", Dir::Backward, "foo/ x", vec![(0, 4)]),
+        for (pat, line, want) in [
+            ("foo", "foo bar foo", vec![(0, 3), (8, 11)]),
+            ("fo*", "foo bar foo", vec![(0, 3), (8, 11)]),
+            ("f.o", "foo bar foo", vec![(0, 3), (8, 11)]),
+            ("^baz", "baz foo", vec![(0, 3)]),
+            ("foo$", "foo bar foo", vec![(8, 11)]),
+            ("[fb]a", "foo bar foo", vec![(4, 6)]),
+            ("\\(foo\\|baz\\)", "baz foo", vec![(0, 3), (4, 7)]),
+            ("\\d\\+", "baz 42", vec![(4, 6)]),
+            ("\\s", "a b\tc", vec![(1, 2), (3, 4)]),
+            ("o\\+", "foo bar foo", vec![(1, 3), (9, 11)]),
+            ("x\\=", "abc", vec![(0, 0), (1, 1), (2, 2)]),
+            ("o\\{2}", "foo bar foo", vec![(1, 3), (9, 11)]),
+            ("a\\{,2}b", "ab aab aaab", vec![(0, 2), (3, 6), (8, 11)]),
+            ("a\\{}b", "ab aab", vec![(0, 2), (3, 6)]),
+            ("\\.", "a.b", vec![(1, 2)]),
+            ("a\\/b", "a/b", vec![(0, 3)]),
+            ("*b", "a*b", vec![(1, 3)]),
+            ("^*b", "*b", vec![(0, 2)]),
+            ("c^d", "ab c^d", vec![(3, 6)]),
+            ("b$c", "ab$c d", vec![(1, 4)]),
+            ("a[]-]b", "a-b a]b", vec![(0, 3), (4, 7)]),
+            ("a[\\]]b", "a-b a]b", vec![(4, 7)]),
+            ("a[^X]b", "aXb ayb", vec![(4, 7)]),
+            ("a[[]b", "a[b", vec![(0, 3)]),
+            ("[", "foo [x", vec![(4, 5)]),
+            ("[a-", "foo [a- foo", vec![(4, 7)]),
+            ("[]", "a[]", vec![(1, 3)]),
+            ("[^]", "a[^]", vec![(1, 4)]),
+            ("b[\\t]r", "b\tr btr", vec![(0, 3)]),
+            ("b[a^]r", "b^r", vec![(0, 3)]),
+            // Golden `search/patterns-cases` `/b[\.]r`: the backslash is a member.
+            ("b[\\.]r", "b.r b\\r bxr", vec![(0, 3), (4, 7)]),
+            ("[\\d]", "a\\d", vec![(1, 2), (2, 3)]),
+            // Golden `search/patterns` `/\q` and `/\`: an escape with no META
+            // flag, and a trailing backslash, are literal (`peekchr()`).
+            ("\\q", "aq", vec![(1, 2)]),
+            ("\\", "a\\b", vec![(1, 2)]),
+            ("foo\\", "foo\\ foo", vec![(0, 4)]),
+            ("\\j\\0\\}\\N", "j0}N", vec![(0, 4)]),
+            ("a\\Wb", "a_b a-b", vec![(4, 7)]),
+            ("\\<foo\\>", "foobar foo", vec![(7, 10)]),
+            ("a.*b\\>", "ab-cd ef", vec![(0, 2)]),
+            ("\\<.*b", "-a b", vec![(1, 4)]),
+            ("\\<x", "日本語x 日本", vec![(3, 4)]),
+            ("b\\>", "ab日本語", vec![(1, 2)]),
+            ("\\<y", "x×y x", vec![]),
+            ("\\<\\>", "ab 日本語x", vec![(6, 6)]),
+            ("\\>", "a  b", vec![(1, 1), (4, 4)]),
+            ("\\<", "a  b", vec![(0, 0), (3, 3)]),
+            ("$", "abc", vec![(3, 3)]),
+            ("aa", "aaaa", vec![(0, 2), (2, 4)]),
+            ("x*", "abc", vec![(0, 0), (1, 1), (2, 2)]),
+            ("b\\|", "ab", vec![(0, 0), (1, 2)]),
+            ("\\(x\\|r\\)*", "xxr", vec![(0, 3)]),
+            ("\\(^f\\)", "ff", vec![(0, 1)]),
+            ("\\(o$\\|x\\)", "foo", vec![(2, 3)]),
+            ("foo?", "foo? x", vec![(0, 4)]),
+            ("?x", "a?x", vec![(1, 3)]),
+            ("foo/", "foo/ x", vec![(0, 4)]),
         ] {
-            assert_eq!(chain(pat, dir, line), want, "{pat:?} on {line:?}");
+            assert_eq!(chain(pat, line), want, "{pat:?} on {line:?}");
         }
         for (pat, atom) in [
-            ("\\v foo", "\\v"), ("\\zsfoo", "\\zs"), ("\\", "\\"), ("foo\\", "\\"), ("\\bfoo", "\\b"), ("\\e", "\\e"),
+            ("\\v foo", "\\v"), ("\\zsfoo", "\\zs"), ("\\bfoo", "\\b"), ("\\e", "\\e"), ("\\t", "\\t"),
             ("a\\nb", "\\n"), ("~", "~"), ("\\_s", "\\_"), ("\\a", "\\a"), ("\\%d", "\\%"), ("\\V.", "\\V"), ("\\c", "\\c"),
-            ("\\q", "\\q"), ("b[[:upper:]]r", "[:upper:]"), ("b\\)", "\\)"), ("\\(b", "\\("), ("\\{2}b", "\\{"), ("\\+b", "\\+"),
+            ("\\u", "\\u"), ("b[[:upper:]]r", "[:upper:]"), ("b\\)", "\\)"), ("\\(b", "\\("), ("\\{2}b", "\\{"), ("\\+b", "\\+"),
             ("^\\+b", "\\+"), ("b**r", "*"), ("o\\{", "\\{"), ("a\\{-1,}b", "\\{-"), ("\\<*", "*"), ("\\1", "\\1"),
-            ("[[:日本:]", "[:日本:]"), ("x[[:é:]]", "[:é:]"), ("b[\\n]r", "\\n"),
+            ("[[:日本:]", "[:日本:]"), ("x[[:é:]]", "[:é:]"), ("b[\\n]r", "\\n"), ("[\\d65]", "\\d"), ("[\\x41]", "\\x"),
         ] {
-            assert_eq!(compile(pat, Dir::Forward).err().as_deref(), Some(atom), "{pat:?}");
+            assert_eq!(compile(pat).err().as_deref(), Some(atom), "{pat:?}");
         }
-        assert!(compile("\\?", Dir::Forward).is_err(), "a multi with nothing before it");
-        assert_eq!(chain("\\?", Dir::Backward, "a?"), vec![(1, 2)], "literal in a ? search");
+        assert!(compile("\\?").is_err(), "a multi with nothing before it");
     }
 
     /// The sentinel haystack maps every position back, and a text char
     /// that is a sentinel is read as U+E003.
     #[test]
     fn sentinels_never_leak_into_positions() {
-        assert_eq!(chain("\\<ab\\>", Dir::Forward, "ab ab\u{E000}ab"), vec![(0, 2)]);
-        assert_eq!(chain(".", Dir::Forward, "a\u{E001}b")[1], (1, 2));
-        assert_eq!(chain("\\<[^a]", Dir::Forward, "a b"), vec![(2, 3)]);
+        assert_eq!(chain("\\<ab\\>", "ab ab\u{E000}ab"), vec![(0, 2)]);
+        assert_eq!(chain(".", "a\u{E001}b")[1], (1, 2));
+        assert_eq!(chain("\\<[^a]", "a b"), vec![(2, 3)]);
         // A collection never takes a sentinel, even when its range spans them.
-        assert_eq!(chain("\\<a[a-\u{F000}]", Dir::Forward, "a b"), vec![]);
-        assert_eq!(chain("\\<a[a-\u{F000}]", Dir::Forward, "ab"), vec![(0, 2)]);
+        assert_eq!(chain("\\<a[a-\u{F000}]", "a b"), vec![]);
+        assert_eq!(chain("\\<a[a-\u{F000}]", "ab"), vec![(0, 2)]);
     }
 
     /// U+E000–U+E003 in the pattern read as the haystack reads them in the
@@ -614,11 +748,11 @@ mod tests {
     fn private_use_chars_in_the_pattern_match_themselves() {
         let line = chars("ab\u{E000} x ab\u{E000}");
         let pat = ident_pattern(&line, 0, 3, false);
-        assert_eq!(compile(&pat, Dir::Forward).expect(&pat).chain(&line), vec![(0, 3), (6, 9)]);
-        assert_eq!(chain("\u{E002}", Dir::Forward, "a\u{E002}b"), vec![(1, 2)]);
-        assert_eq!(chain("[\u{E001}]", Dir::Forward, "a\u{E000}b"), vec![(1, 2)]);
-        assert_eq!(chain("[\u{E000}-\u{E001}]", Dir::Forward, "a\u{E003}b"), vec![(1, 2)]);
-        assert_eq!(chain("[b-\u{E001}]", Dir::Forward, "a\u{E002}"), vec![(1, 2)]);
+        assert_eq!(compile(&pat).expect(&pat).chain(&line), vec![(0, 3), (6, 9)]);
+        assert_eq!(chain("\u{E002}", "a\u{E002}b"), vec![(1, 2)]);
+        assert_eq!(chain("[\u{E001}]", "a\u{E000}b"), vec![(1, 2)]);
+        assert_eq!(chain("[\u{E000}-\u{E001}]", "a\u{E003}b"), vec![(1, 2)]);
+        assert_eq!(chain("[b-\u{E001}]", "a\u{E002}"), vec![(1, 2)]);
     }
 
     /// `find_ident_at_pos(FIND_IDENT | FIND_STRING)` as the C reads.
@@ -644,5 +778,50 @@ mod tests {
         assert_eq!(as_stored(&ident_pattern(&line, 0, 2, true), Dir::Backward), "??");
         assert_eq!(as_stored(&ident_pattern(&line, 3, 5, true), Dir::Backward), "\\\\?");
         assert_eq!(as_stored("\\?x\\.", Dir::Forward), "\\?x\\.");
+    }
+
+    /// A typed `?` pattern is stored before it compiles, so `\?` is the
+    /// literal `?` there and the multi in a `/` pattern (probed 2026-10-01:
+    /// `?x\?` on `bar? x` from its end finds nothing; `?\?` on `a?` finds
+    /// the `?`; `/b\?x` then `N` keeps the multi).
+    #[test]
+    fn a_stored_pattern_reads_the_same_in_either_direction() {
+        let stored = |pat: &str, dir: Dir| chain(&as_stored(pat, dir), "bar? x a? bx");
+        assert_eq!(as_stored("x\\?", Dir::Backward), "x?");
+        assert_eq!(chain(&as_stored("x\\?", Dir::Backward), "bar? x"), vec![]);
+        assert_eq!(chain(&as_stored("\\?", Dir::Backward), "a?"), vec![(1, 2)]);
+        assert_eq!(stored("b\\?x", Dir::Forward), vec![(5, 6), (10, 12)]);
+        assert_eq!(stored("b\\?x", Dir::Backward), vec![]);
+    }
+
+    /// The prompt's edits (Deviation 16) and its split at the delimiter.
+    #[test]
+    fn the_prompt_edits_and_splits() {
+        let mut p = Prompt::new(Dir::Forward);
+        for c in "ba r.x".chars() {
+            p.insert(c);
+        }
+        p.word_back();
+        assert_eq!(p.text.iter().collect::<String>(), "ba r.");
+        p.word_back();
+        assert_eq!(p.text.iter().collect::<String>(), "ba r");
+        p.cursor = 1;
+        assert!(p.delete());
+        assert_eq!((p.text.iter().collect::<String>(), p.cursor), ("b r".to_string(), 1));
+        p.delete_to_start();
+        assert_eq!((p.text.iter().collect::<String>(), p.cursor), (" r".to_string(), 0));
+        assert!(p.backspace(), "BS at the start of a non-empty line does nothing");
+        p.cursor = 2;
+        assert!(p.backspace() && p.backspace());
+        assert!(!p.backspace() && !p.delete(), "an empty line is left");
+        for c in "a\\/b/e".chars() {
+            p.insert(c);
+        }
+        assert_eq!(p.split(), ("a\\/b".to_string(), "e".to_string()));
+        let mut q = Prompt::new(Dir::Backward);
+        for c in "a/b?".chars() {
+            q.insert(c);
+        }
+        assert_eq!(q.split(), ("a/b".to_string(), String::new()));
     }
 }

@@ -1193,6 +1193,101 @@ keys = ["#", "#N", "#n", "*N", "#Nn"]
 on = ["search_question"]
 at = ["bol", "eol"]
 
+# --- plan 3c: the / and ? prompt (Task 11) ----------------------------------------
+
+# A `<` in a pattern is written <lt>. No case may end in the prompt.
+[[group]]
+id = "search/prompt"
+tier = 2
+keys = ["/foo<CR>", "/foo<CR>n", "/foo<CR>nn", "/zzz<CR>", "/zzz<CR>n", "/zzz<CR>x", "?foo<CR>", "?foo<CR>n", "?foo<CR>N",
+        "2/foo<CR>", "9/foo<CR>", "/foo<CR>9N", "/foo<CR>3n", "/<CR>", "/foo<CR>/<CR>", "/foo<CR>//<CR>", "/foo<CR>?<CR>",
+        "/foo<CR>?<CR>n", "/foo<CR>u", "x/foo<CR>.", "xx/foo<CR>.", "/foo/<CR>", "/fo<CR>", "/o<CR>", "/o<CR>n", "/o<CR>N",
+        "/ <CR>", "/a<CR>", "?a<CR>", "/.<CR>", "/x<CR>", "?x<CR>", "/foo<CR>x", "/foo<CR>dd", "/foo<CR>v", "/bar<CR>vn",
+        "/foo<CR>jn", "/foo<CR>kN", "G/foo<CR>", "G?foo<CR>", "$/foo<CR>", "$?foo<CR>", "/foo<CR>$n", "/FOO<CR>"]
+on = ["search", "words", "json_pretty", "unicode", "quotes", "blank_edges", "empty", "one_char", "long"]
+at = ["bol", "mid", "eol"]
+
+[[group]]
+id = "search/ops"
+tier = 2
+keys = ["d/foo<CR>", "c/bar<CR>X<Esc>", "y/foo<CR>P", "v/foo<CR>d", "d?foo<CR>", "d/foo<CR>.", "d/foo<CR>/bar<CR>.", "d/foo<CR>/bar<CR>.n",
+        "d/zzz<CR>", "d/zzz<CR>x", "d2/foo<CR>", "2d/foo<CR>", "d/foo<CR>u", "d/foo<CR>u<C-r>", "d/foo<CR>ddu", "V/foo<CR>d",
+        "v/foo<CR>", "v?foo<CR>d", "vd?foo<CR>", "d/foo<Esc>x", "d/a<CR>", "c/a<CR>X<Esc>", "y/o<CR>P", "d?a<CR>", "d/<CR>", "d/x*<CR>",
+        "d/$<CR>", "d/^<CR>", "d?^<CR>", "d?$<CR>", "d/\\<lt>foo\\><CR>", "gU/o<CR>", ">/foo<CR>", "d/foo<CR>d/foo<CR>", "v/o<CR>o/o<CR>d",
+        "d/foo<CR>2.", "d/o<CR>j.", "c/o<CR>Y<Esc>j.", "/bar<CR>d/<CR>/foo<CR>."]
+on = ["search", "words", "json_pretty", "unicode", "blank_edges", "empty", "one_char"]
+at = ["bol", "mid", "eol"]
+
+[[group]]
+id = "search/patterns"
+tier = 2
+keys = ["/\\<lt>foo\\><CR>", "/fo*<CR>", "/f.o<CR>", "/^baz<CR>", "/foo$<CR>", "/[fb]a<CR>", "/\\(foo\\|baz\\)<CR>", "/\\d<CR>",
+        "/\\s<CR>", "/o\\+<CR>", "/x\\=<CR>", "/x\\?<CR>", "?x\\?<CR>", "/o\\{2}<CR>", "/\\.<CR>", "/a\\/b<CR>", "/*b<CR>", "/^*b<CR>",
+        "/[]-]<CR>", "/a[^X]b<CR>", "/[<CR>", "/\\<lt><CR>", "/\\><CR>", "/\\<lt>\\><CR>", "/a \\<lt>b<CR>", "/\\<lt>x<CR>", "/b\\><CR>",
+        "/\\<lt>y<CR>", "/\\<lt>.*b<CR>", "/a.*b\\><CR>", "/\\(x\\|r\\)*<CR>", "/\\D<CR>", "/\\S<CR>", "/\\W<CR>", "/\\w<CR>", "/$<CR>",
+        "/^<CR>", "/^$<CR>", "/x*<CR>", "/aa<CR>", "?ab<CR>", "/\\(<CR>", "/\\(<CR>n", "/\\(<CR>x", "/o\\{<CR>", "/\\<CR>", "/foo\\<CR>",
+        "/\\bfoo<CR>", "/[a-<CR>", "/[]<CR>", "/[^]<CR>", "/b[-]r<CR>", "/b[\\-]r<CR>", "/b[\\\\]r<CR>", "/b[\\^]r<CR>", "/b[\\t]r<CR>",
+        "/b[.]r<CR>", "/b[]]r<CR>", "/b[^]]r<CR>", "/b\\|<CR>", "/\\|b<CR>", "/\\(\\)b<CR>", "/b\\)<CR>", "/\\{2}b<CR>", "/\\+b<CR>",
+        "/\\(b\\|^f\\)<CR>", "/\\(o$\\|x\\)<CR>", "/\\(^f\\)<CR>", "/o$\\|z<CR>", "/\\(^\\)b<CR>", "/b\\(\\)$<CR>", "/\\(x\\)\\{2}<CR>",
+        "/\\d\\+<CR>", "/\\q<CR>", "/\\/<CR>", "?\\?<CR>", "?\\/<CR>", "/\\?<CR>", "/?<CR>", "/r?<CR>", "/foo?<CR>", "?foo/<CR>",
+        "/a\\\\r<CR>", "/\\\\<CR>", "/\\~<CR>", "/\\{2,3}<CR>", "/a\\{2,3}b<CR>", "/a\\{2,}b<CR>", "/a\\{,2}b<CR>", "/a\\{}b<CR>",
+        "/\\<lt>ab\\>\\<lt><CR>", "/a\\<lt>b<CR>", "/a\\>\\<lt>b<CR>", "/b\\>ar<CR>", "/\\(\\<lt>ba\\)<CR>", "/a[]-]b<CR>", "/a[\\]]b<CR>",
+        "/a[[]b<CR>", "/b\\sc<CR>", "/a\\Wb<CR>", "/a\\wb<CR>", "/b[a^]r<CR>", "/b[\\n]r<CR>", "/b[\\.]r<CR>"]
+on = ["search", "words", "punct", "quotes", "unicode", "tabs"]
+at = ["bol", "eol"]
+
+[text.search_cases]
+lines = ["a-b a]b aXb ayb a[b", "a b\tc a_b a-b", "ab aab aaab", "ab-cd ef -a b", "ba\\r foo a~b b-r b]r bxr b^r b.r b\tr",
+         "foo bar? foo", "a/b x", "日本語x 日本", "x×y x", "a  b a", "ab ab", "foo bxxr foo", "baz 42"]
+
+[[group]]
+id = "search/patterns-cases"
+tier = 2
+keys = ["/\\<lt>foo\\><CR>", "/a[]-]b<CR>", "/a[\\]]b<CR>", "/a[^X]b<CR>", "/a[[]b<CR>", "/b\\sc<CR>", "/a\\Wb<CR>", "/a\\wb<CR>",
+        "/a\\{2,3}b<CR>", "/a\\{2,}b<CR>", "/a\\{,2}b<CR>", "/a\\{}b<CR>", "/a.*b\\><CR>", "/a.*\\><CR>", "/\\<lt>.*b<CR>", "/\\<lt>x<CR>",
+        "/\\<lt>y<CR>", "/b\\><CR>", "/\\<lt>\\><CR>", "/\\><CR>", "/\\<lt><CR>", "/\\<lt>a<CR>", "/\\<lt>ab\\>\\<lt><CR>", "/a\\\\r<CR>",
+        "/\\\\<CR>", "/\\~<CR>", "/b[-]r<CR>", "/b[a-]r<CR>", "/b[\\-]r<CR>", "/b[\\\\]r<CR>", "/b[\\^]r<CR>", "/b[a^]r<CR>", "/b[\\t]r<CR>",
+        "/b[.]r<CR>", "/b[\\.]r<CR>", "/b[]]r<CR>", "/b[^]]r<CR>", "/\\(x\\)\\{2}<CR>", "/\\(x\\|r\\)*<CR>", "/\\d\\+<CR>", "/\\D<CR>",
+        "/\\S<CR>", "/\\W<CR>", "/a\\/b<CR>", "/a/b<CR>", "?x\\?<CR>", "?r\\?<CR>", "/r?<CR>", "/?<CR>", "?\\?<CR>", "?\\/<CR>", "/\\/<CR>",
+        "/a \\<lt>b<CR>", "/a\\<lt>b<CR>", "/a\\>\\<lt>b<CR>", "/aa<CR>", "/ab<CR>", "?ab<CR>", "?ab<CR>N"]
+on = ["search_cases"]
+at = ["bol", "mid", "eol"]
+
+[[group]]
+id = "search/edit"
+tier = 2
+keys = ["/fox<BS>o<CR>", "/fo<C-w>bar<CR>", "/foo<C-u>bar<CR>", "/f<Left>o<CR>", "/<BS>x", "/foo<Esc>x", "/foo<C-[>x", "/<Del>x",
+        "/foo<C-w><BS>x", "/foo<C-u><BS>x", "/ba<Right>r<CR>", "/ar<Home>b<CR>", "/b<End>ar<CR>", "/ba<Left><Del>r<CR>", "/foo<Tab><CR>",
+        "/o<Tab><CR>", "/fo<Space>b<CR>", "/fo<C-h>o<CR>", "/b<C-u>bar<CR>", "/ba r<C-w><C-w>ar<CR>", "/b.r<C-w>x<CR>", "/b.r <C-w>x<CR>",
+        "/b.r<C-w><C-w>x<CR>", "/x日本語<C-w>x<CR>", "/x 日本語<C-w>x<CR>", "/foo<Del><CR>", "/foo<Home><Del>oo<CR>", "/<Left>bar<CR>",
+        "?fo<BS><BS><BS>x", "/<C-w>foo<CR>", "/<C-u>foo<CR>", "/<Up>foo<CR>", "/<Down>foo<CR>", "/ab<Esc>n", "/o<CR>/<BS>n"]
+on = ["search", "words", "json_pretty", "tabs", "unicode"]
+at = ["bol", "mid", "eol"]
+
+[[group]]
+id = "search/visual"
+tier = 2
+keys = ["v/foo<CR>", "V/foo<CR>d", "v/foo<CR>d", "v/foo<CR>o", "v?foo<CR>", "v?foo<CR>d", "v2/foo<CR>", "v/foo<CR>n", "v/foo<CR>N",
+        "v/zzz<CR>d", "v/foo<Esc>d", "V/foo<Esc>", "vj/foo<CR>", "v/foo<CR>y", "v/foo<CR>c<Esc>", "v/foo<CR>vn", "v/o<CR>on"]
+on = ["search", "words", "json_pretty", "blank_edges", "empty", "one_char"]
+at = ["bol", "mid", "eol"]
+
+[[group]]
+id = "search/ctrl-o"
+tier = 2
+keys = ["iX<C-o>/foo<CR>Y<Esc>", "iX<C-o>nY<Esc>", "iX<C-o>*Y<Esc>", "iX<C-o>/zzz<CR>Y<Esc>", "A<C-o>?foo<CR>Y<Esc>", "iX<C-o>d/foo<CR>Y<Esc>",
+        "iX<C-o>/foo<Esc>Y<Esc>", "/foo<CR>iX<C-o>nY<Esc>"]
+on = ["search", "words"]
+at = ["bol", "mid"]
+
+[[group]]
+id = "search/long"
+tier = 2
+keys = ["/line 50<CR>", "/line 5<CR>", "/line 5<CR>n", "/line 5<CR>nn", "/line 5<CR>N", "G?line 1<CR>", "/line 90<CR>", "/line 90<CR>n",
+        "d/line 50<CR>", "50G/line 9<CR>", "50G?line 2<CR>", "/line 100<CR>", "/line 100<CR>n"]
+on = ["long"]
+at = ["bol", "mid", "eol"]
+
 # --- fuzz atoms (generate.py --fuzz); tier 1 and the tier-2 first wave ------
 
 [fuzz]

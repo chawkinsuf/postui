@@ -49,8 +49,11 @@ impl View {
     /// Vim's `update_topline()`: scroll so the caret's line is shown. Above
     /// the window: `scroll_cursor_top` when close, halfway when far; below
     /// it: `scroll_cursor_bot` when within a screen, halfway when further.
+    /// A `top` past the text (a delete or an outside change shrank it) is
+    /// not clamped first: Vim keeps the stale `w_topline`, so the caret is
+    /// above the window and the distance picks the rule (the golden file's
+    /// `search/long` `d/line 50<CR>` from line 100: line 28 on top, halfway).
     pub(crate) fn update_topline<B: TextBuf>(self, buf: &mut B) {
-        self.clamp_top(buf);
         let lines = buf.line_count();
         let cur = buf.cursor().row.min(lines - 1);
         if lines == 1 && buf.line_len(0) == 0 {

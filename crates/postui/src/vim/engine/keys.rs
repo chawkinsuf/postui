@@ -4,7 +4,7 @@
 //! `.` exact: it stores the `Cmd`.
 
 use super::settings::MAX_COUNT;
-use super::{Note, Shape};
+use super::{Dir, Note, Shape};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 /// A key as the grammar sees it. SHIFT is part of the char (`$`, `A`), so
@@ -154,6 +154,8 @@ pub(crate) enum Motion {
     SearchNext { reverse: bool },
     /// `*` (`backward` false) and `#`
     Ident { backward: bool },
+    /// The prompt's Enter (and its `.`): the last pattern in `dir`.
+    Search { dir: Dir },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -277,6 +279,8 @@ pub(crate) enum Step {
     Decline { count: Option<usize>, keys: Vec<KeyEvent> },
     /// Consumed with no effect, maybe with a footer note.
     Inert(Option<Note>),
+    /// `/` or `?`: the prompt opens; the pending command waits for it.
+    Search(Dir),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -423,8 +427,6 @@ fn object_of(key: Key) -> Option<Object> {
     })
 }
 
-const SEARCH_KEYS: [char; 2] = ['/', '?'];
-
 impl Pending {
     pub(crate) fn is_empty(&self) -> bool {
         self.reg.is_none() && self.count1 == 0 && self.op.is_none() && self.count2 == 0 && self.prefix.is_none()
@@ -432,6 +434,22 @@ impl Pending {
 
     pub(crate) fn clear(&mut self) {
         *self = Self::default();
+    }
+
+    /// The count typed before the operator (0: none).
+    pub(crate) fn count1(&self) -> usize {
+        self.count1
+    }
+
+    /// The count typed after the operator (0: none).
+    pub(crate) fn count2(&self) -> usize {
+        self.count2
+    }
+
+    /// The prompt's Enter: the search is the motion the pending command
+    /// waited for (an operator's, or a bare move).
+    pub(crate) fn search_done(&mut self, dir: Dir) -> Step {
+        self.motion_done(Motion::Search { dir })
     }
 
     /// The footer echo: register, count, operator, count, prefix
@@ -659,7 +677,8 @@ impl Pending {
             '.' => self.cmd(|count, _| Cmd::Repeat(count)),
             ':' | 'Z' | 'q' | '@' | 'm' | '\'' | '`' => self.decline(ev),
             'U' | 'K' | 'Q' | '&' => self.inert(Some(format!("{ch} not supported"))),
-            c if SEARCH_KEYS.contains(&c) => self.inert(Some(format!("{c} not supported yet"))),
+            '/' => Step::Search(Dir::Forward),
+            '?' => Step::Search(Dir::Backward),
             _ => self.inert(None),
         }
     }
@@ -679,7 +698,8 @@ impl Pending {
             // cancels the operator: `dzz` ends with nothing pending.
             'z' => self.arm(ev, Prefix::Z),
             ':' => self.inert(Some(format!("{}: not supported", op_name(op)))),
-            c if SEARCH_KEYS.contains(&c) => self.inert(Some(format!("{}{c} not supported yet", op_name(op)))),
+            '/' => Step::Search(Dir::Forward),
+            '?' => Step::Search(Dir::Backward),
             _ => self.inert(None),
         }
     }
@@ -713,7 +733,8 @@ impl Pending {
             'o' => self.cmd(|_, _| Cmd::VisualSwap),
             'v' => self.cmd(|_, _| Cmd::VisualStart(Shape::Char)),
             'V' => self.cmd(|_, _| Cmd::VisualStart(Shape::Line)),
-            c if SEARCH_KEYS.contains(&c) => self.inert(Some(format!("{c} not supported yet"))),
+            '/' => Step::Search(Dir::Forward),
+            '?' => Step::Search(Dir::Backward),
             _ => self.inert(None),
         }
     }
@@ -1001,8 +1022,6 @@ mod tests {
         assert_eq!(note(feed(&mut Pending::default(), "U", NORMAL)), "U not supported");
         assert_eq!(note(feed(&mut Pending::default(), "gJ", NORMAL)), "gJ not supported");
         assert_eq!(note(feed(&mut Pending::default(), "d:", NORMAL)), "d: not supported");
-        assert_eq!(note(feed(&mut Pending::default(), "d/", NORMAL)), "d/ not supported yet");
-        assert_eq!(note(feed(&mut Pending::default(), "?", NORMAL)), "? not supported yet");
         assert_eq!(note(feed(&mut Pending::default(), "g*", NORMAL)), "g* not supported");
         let mut p = Pending::default();
         assert_eq!(note(feed(&mut p, "\"a", NORMAL)), "register \"a not supported");
@@ -1012,6 +1031,22 @@ mod tests {
         feed(&mut p, "g", NORMAL);
         assert_eq!(p.feed(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), NORMAL), Step::Inert(None), "g<Esc> cancels");
         assert!(p.is_empty());
+    }
+
+    /// `/` and `?` open the prompt and keep what is pending; its Enter
+    /// completes the command with the search as the motion.
+    #[test]
+    fn the_search_keys_wait_for_the_prompt() {
+        let mut p = Pending::default();
+        assert_eq!(feed(&mut p, "2d3/", NORMAL), Step::Search(Dir::Forward));
+        assert_eq!((p.echo().as_str(), p.count1(), p.count2()), ("2d3", 2, 3));
+        assert_eq!(
+            p.search_done(Dir::Forward),
+            Step::Cmd(Cmd::Operate { op: Op::Delete, reach: Reach::Motion(Motion::Search { dir: Dir::Forward }), count: 6, reg: None })
+        );
+        assert!(p.is_empty());
+        assert_eq!(feed(&mut p, "?", VISUAL), Step::Search(Dir::Backward));
+        assert_eq!(p.search_done(Dir::Backward), Step::Cmd(Cmd::Move { motion: Motion::Search { dir: Dir::Backward }, count: 0 }));
     }
 
     #[test]

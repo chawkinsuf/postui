@@ -83,19 +83,51 @@ def glob_match(pattern, s):
     return pos <= end
 
 
+def in_prompt(out):
+    """For each token, whether it is typed into a `/` or `?` prompt, where
+    `.` and the UNSAFE keys are text (plan 3c Task 11). Conservative: a
+    prompt opens on `/` or `?` unless the key before takes a char (`f t F T
+    r`), and it ends on `<CR>`, `<Esc>`, `<C-[>`, any other chord, or a BS or
+    Del that might find it empty (`<C-w>` and `<C-u>` count as emptying it).
+    A `/` typed as Insert text opens one too, which is harmless: what follows
+    is text either way, and if the change failed Vim opens a real prompt."""
+    mask, inside, typed = [], False, 0
+    for i, t in enumerate(out):
+        if inside:
+            mask.append(True)
+            if t in ("<BS>", "<C-h>", "<Del>"):
+                inside, typed = typed > 0, typed - 1
+            elif t in ("<C-w>", "<C-u>"):
+                typed = 0
+            elif len(t) == 1 or t in ("<lt>", "<Space>", "<Tab>"):
+                typed += 1
+            elif t not in ("<Left>", "<Right>", "<Home>", "<End>", "<Up>", "<Down>"):
+                inside = False
+        else:
+            mask.append(False)
+            if t in ("/", "?") and (i == 0 or out[i - 1] not in ("f", "t", "F", "T", "r")):
+                inside, typed = True, 0
+    return mask
+
+
 def tokens(keys, names, where):
     out = TOKEN.findall(keys)
     for t in out:
         if len(t) > 1 and t[1:-1] not in names:
             die(f"{where}: unknown key name {t} (add it to keys.toml and the Rust key map)")
+    prompt = in_prompt(out)
     for i, t in enumerate(out):
+        if prompt[i]:
+            continue
         if t in UNSAFE or (t == "Z" and out[i + 1:i + 2] in (["Z"], ["Q"])):
             die(f"{where}: {t!r} is unsafe in a case (see UNSAFE; §6.2 forbids ':')")
     def starts_change(j):
+        if prompt[j]:
+            return False
         return out[j] in CHANGE_START or (out[j] == "g" and out[j + 1:j + 2] in (["~"], ["u"], ["U"]))
 
     for i, t in enumerate(out):
-        if t == "." and not any(starts_change(j) for j in range(i)):
+        if t == "." and not prompt[i] and not any(starts_change(j) for j in range(i)):
             die(f"{where}: '.' must follow a change in the same case (§6.2, trap 8)")
     return out
 

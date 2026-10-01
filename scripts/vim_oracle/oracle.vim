@@ -46,6 +46,10 @@ for s:c in s:cases
   setlocal scroll=0
   let @/ = ''
   let v:searchforward = 1
+  " Trap 14: the search history outlives a case, so `/<Up>` would recall the
+  " last case's pattern (proven 2026-10-01: `/xyz<CR>` then `/<Up>foo<CR>`
+  " searched `xyzfoo`).
+  call histdel('/')
   if type(s:c.reg) == v:t_dict
     call setreg('"', s:c.reg.text, s:c.reg.type)
   endif

@@ -226,6 +226,8 @@ fn mode_name(m: Mode) -> &'static str {
         Mode::InsertNormal { replace: true } => "niR",
         Mode::Visual(Shape::Char) => "v",
         Mode::Visual(Shape::Line) => "V",
+        // Unreachable: the generator refuses a case that ends in the prompt.
+        Mode::Search(_) => "c",
     }
 }
 

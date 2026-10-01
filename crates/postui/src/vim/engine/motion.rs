@@ -469,7 +469,7 @@ pub(crate) fn run<B: TextBuf>(
             Some(to) => Moved::to(to, MKind::Inclusive, WantUpdate::Here),
             None => Moved::refused(from),
         },
-        Motion::ScreenLine(_) | Motion::SearchNext { .. } | Motion::Ident { .. } => {
+        Motion::ScreenLine(_) | Motion::SearchNext { .. } | Motion::Ident { .. } | Motion::Search { .. } => {
             unreachable!("Engine::run_motion takes the window and search motions")
         }
     }
@@ -920,6 +920,15 @@ impl Engine {
                 self.last_search = Some(LastSearch { text: text.clone(), dir });
                 self.search_motion(buf, Pos::new(from.row, start), &text, dir, count)
             }
+            // The prompt's Enter: `run_search` stored the typed pattern, or
+            // the prompt was empty and the last one stands.
+            Motion::Search { dir } => {
+                let Some(last) = self.last_search.clone() else {
+                    self.note = Some(Note::Message("No previous regular expression".into()));
+                    return Moved::search_failed(from);
+                };
+                self.search_motion(buf, from, &last.text, dir, count)
+            }
             _ => run(buf, from, motion, count, cx, &mut self.last_find),
         }
     }
@@ -929,7 +938,7 @@ impl Engine {
     /// message, and the highlight goes on.
     pub(super) fn search_motion<B: TextBuf>(&mut self, buf: &B, from: Pos, text: &str, dir: Dir, count: usize) -> Moved {
         self.hl = true;
-        let pat = match search::compile(text, dir) {
+        let pat = match search::compile(text) {
             Ok(p) => p,
             Err(atom) => {
                 self.note = Some(Note::Message(format!("pattern not supported: {atom}")));
@@ -947,6 +956,16 @@ impl Engine {
                         .into(),
                     ));
                 }
+                // `normal_search()` ends with `check_cursor()`: a match on
+                // the line's end (`/$`) lands on the last char, except in
+                // Visual (`selection=inclusive`) and inside Insert `ctrl+o`
+                // (`restart_edit`). The motion stays exclusive.
+                let len = buf.line_len(to.row);
+                let to = if to.col >= len && !matches!(self.mode, Mode::Visual(_)) && self.restart.is_none() {
+                    Pos::new(to.row, len.saturating_sub(1))
+                } else {
+                    to
+                };
                 Moved::to(to, MKind::Exclusive, WantUpdate::Here)
             }
             None => {

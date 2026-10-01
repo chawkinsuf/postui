@@ -159,7 +159,6 @@ fn inert_keys_show_their_note_and_arm_nothing() {
     assert_eq!(note(f.key(k('&'))), "& not supported");
     assert_eq!(note(f.keys("gJ")), "gJ not supported");
     assert_eq!(note(f.keys("d:")), "d: not supported");
-    assert_eq!(note(f.key(k('/'))), "/ not supported yet");
     assert_eq!(note(f.keys("\"a")), "register \"a not supported");
     assert!(!f.engine.pending());
     assert_eq!(f.text(), "abc");
@@ -2128,4 +2127,114 @@ fn search_motions_messages_and_the_shared_pattern() {
     let mut q = Field::new("ab", 0);
     q.keys("g*");
     assert!(matches!(q.engine.mode(), Mode::Normal));
+}
+
+/// Plan 3c Task 11: the prompt's state, echo and mode; the keys it owns in
+/// a one-line field (Enter runs the search, Tab types a tab, BS on an empty
+/// pattern cancels); `n` in a field reusing the body's pattern; the wrap
+/// within a single line; the highlight API.
+#[test]
+fn the_search_prompt_in_a_field() {
+    // Probed 2026-10-01: `d2/fo` from 1:1 wraps back to 1:1 and deletes
+    // nothing; `d3/fo` lands on 1:9 after wrapping and leaves `foo`.
+    let mut f = Field::new("foo bar foo", 0);
+    f.keys("d3/");
+    assert_eq!(f.engine.mode(), Mode::Search(Dir::Forward));
+    assert_eq!(f.engine.echo(), "d3/");
+    assert!(f.engine.pending());
+    f.keys("fo");
+    let line = f.engine.search_line().expect("open");
+    assert_eq!((line.dir, line.text.as_str(), line.cursor), (Dir::Forward, "fo", 2));
+    assert_eq!(f.engine.search_preview(&OneLineBuf::new(&mut f.input)), Some((Pos::new(0, 8), Pos::new(0, 10))));
+    assert_eq!(f.engine.search_matches(&OneLineBuf::new(&mut f.input), 0..1).len(), 2, "incsearch paints every match of the typed text");
+    assert!(!declined(&f.key(code(KeyCode::Enter))));
+    assert_eq!(f.text(), "foo", "d3/fo deleted to the third hit, which wrapped");
+    assert_eq!(f.engine.mode(), Mode::Normal);
+    assert!(f.engine.hlsearch());
+    assert_eq!(f.engine.search_matches(&OneLineBuf::new(&mut f.input), 0..1), vec![(Pos::new(0, 0), Pos::new(0, 2))]);
+    f.engine.no_hlsearch();
+    assert!(!f.engine.hlsearch());
+    assert!(f.engine.search_matches(&OneLineBuf::new(&mut f.input), 0..1).is_empty());
+    f.keys("/");
+    assert!(!declined(&f.key(code(KeyCode::Tab))));
+    assert_eq!(f.engine.search_line().unwrap().text, "\t");
+    f.key(code(KeyCode::Backspace));
+    assert_eq!(f.engine.mode(), Mode::Search(Dir::Forward));
+    assert_eq!(f.key(code(KeyCode::Backspace)), Outcome::consumed(), "BS on an empty pattern cancels");
+    assert_eq!(f.engine.mode(), Mode::Normal);
+    assert!(!f.engine.pending());
+    let mut g = Field::new("x fo", 0);
+    g.engine = f.engine;
+    let message = |out: Outcome| match out {
+        Outcome::Consumed { note: Some(Note::Message(m)), .. } => m,
+        other => panic!("no message: {other:?}"),
+    };
+    assert_eq!(g.keys("n"), Outcome::consumed());
+    assert_eq!(g.col(), 2);
+    assert_eq!(message(g.keys("n")), "search hit BOTTOM, continuing at TOP");
+    assert_eq!(g.col(), 2);
+}
+
+/// The prompt's refusals and cancels: an offset, an unsupported atom (still
+/// the last pattern), a foreign chord (cancels and goes to the app), and
+/// what paste types.
+#[test]
+fn the_search_prompt_refuses_and_cancels() {
+    let message = |out: Outcome| match out {
+        Outcome::Consumed { note: Some(Note::Message(m)), .. } => m,
+        other => panic!("no message: {other:?}"),
+    };
+    let mut f = Field::new("foo bar foo", 0);
+    f.keys("/foo/e");
+    assert_eq!(message(f.key(code(KeyCode::Enter))), "search offsets not supported");
+    assert_eq!((f.col(), f.engine.last_search()), (0, Some("foo")));
+    f.keys("d/\\v foo");
+    assert_eq!(message(f.key(code(KeyCode::Enter))), "pattern not supported: \\v");
+    assert_eq!((f.text(), f.engine.last_search()), ("foo bar foo", Some("\\v foo")));
+    assert!(!f.engine.pending());
+    assert_eq!(message(f.keys("n")), "pattern not supported: \\v");
+    f.keys("d/fo");
+    assert_eq!(f.key(ctrl('c')), Outcome::Declined { count: None, keys: vec![ctrl('c')] });
+    assert_eq!((f.engine.mode(), f.engine.pending()), (Mode::Normal, false));
+    f.keys("/");
+    f.engine.paste("ba\nr", Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
+    assert_eq!(f.engine.search_line().unwrap().text, "ba r");
+    f.key(esc());
+    f.keys("/");
+    match f.key(ctrl('r')) {
+        Outcome::Consumed { note: Some(Note::Unsupported(n)), .. } => assert_eq!(n, "ctrl+r not supported in a search"),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(f.engine.mode(), Mode::Search(Dir::Forward));
+    f.key(code(KeyCode::Up));
+    assert_eq!(f.engine.mode(), Mode::Search(Dir::Forward));
+    f.key(esc());
+    let mut q = Field::start("", 0, Start::InsertOnly);
+    q.keys("/");
+    assert_eq!(q.text(), "/", "a query box types the slash");
+}
+
+/// Review focus 1: a pattern that blows up compiles or is refused, and
+/// searches a 5,000-line body in milliseconds.
+#[test]
+fn search_survives_hostile_patterns_and_big_bodies() {
+    let deep = "\\(a\\|b".repeat(400) + &"\\)".repeat(400);
+    let mut f = Field::new("ab", 0);
+    f.keys("/");
+    for c in deep.chars() {
+        f.key(k(c));
+    }
+    let started = std::time::Instant::now();
+    f.key(code(KeyCode::Enter));
+    assert!(started.elapsed().as_millis() < 500);
+    f.keys("/\\(x*\\)*y");
+    f.key(code(KeyCode::Enter));
+    let text: Vec<String> = (0..5000).map(|i| format!("  \"k{i}\": [{i}, \"v\"],")).collect();
+    let mut b = Body::new(&text.join("\n"), 0, 0);
+    b.keys("/v\",$");
+    let started = std::time::Instant::now();
+    b.key(code(KeyCode::Enter));
+    b.keys("nnnN*#");
+    assert!(started.elapsed().as_millis() < 500, "six searches took {} ms", started.elapsed().as_millis());
+    assert!(b.engine.search_matches(&BodyBuf::new(&mut b.ed, &mut b.visual), 0..30).len() <= 30);
 }

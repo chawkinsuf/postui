@@ -58,6 +58,17 @@ pub enum Mode {
     /// (Vim's `niI`; `replace` is `niR`).
     InsertNormal { replace: bool },
     Visual(Shape),
+    /// The `/` or `?` prompt is open (plan 3c); the mode underneath waits.
+    Search(Dir),
+}
+
+/// The prompt for piece 4 to draw on the body pane's bottom row: `/` or
+/// `?`, the text, and the caret's char index in it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchLine {
+    pub dir: Dir,
+    pub text: String,
+    pub cursor: usize,
 }
 
 /// How a buffer that just got the caret starts (spec §4.2).
@@ -249,6 +260,10 @@ struct Dot {
     insert: Option<Vec<InsertKey>>,
     /// A Visual command's selection size, replayed from the caret.
     visual: Option<VisualSize>,
+    /// The pattern a search motion typed; `.` makes it the last pattern
+    /// again (Vim re-types it). `None` for an empty prompt (`d/<CR>`),
+    /// whose `.` uses the last pattern of its moment, as Vim's does.
+    search: Option<LastSearch>,
 }
 
 /// The last search (Vim's `spats[0]`): global, so `n` in a field repeats a
@@ -327,6 +342,11 @@ pub struct Engine {
     last_search: Option<LastSearch>,
     /// Vim's `hlsearch` state: on after any search command until `no_hlsearch`.
     hl: bool,
+    /// The `/` or `?` prompt while it is open; `mode` is the mode under it.
+    search: Option<search::Prompt>,
+    /// The pattern the running search motion typed (`None` for an empty
+    /// prompt), for the `.` record (`Dot::search`).
+    typed_search: Option<LastSearch>,
 }
 
 impl Engine {
@@ -334,8 +354,12 @@ impl Engine {
         Self::default()
     }
 
+    /// The mode, or `Mode::Search` while the prompt is open over it.
     pub fn mode(&self) -> Mode {
-        self.mode
+        match &self.search {
+            Some(p) => Mode::Search(p.dir),
+            None => self.mode,
+        }
     }
 
     /// A session is open: Insert or Replace share every Insert key.
@@ -343,25 +367,31 @@ impl Engine {
         matches!(self.mode, Mode::Insert | Mode::Replace)
     }
 
-    /// The half-typed command for the footer (`"02d3`, or `^R` while
-    /// Insert `ctrl+r` waits for a register); `""` when none.
+    /// The half-typed command for the footer (`"02d3`, `^R` while Insert
+    /// `ctrl+r` waits for a register, `d2/` while the prompt is open);
+    /// `""` when none.
     pub fn echo(&self) -> String {
+        if let Some(p) = &self.search {
+            return format!("{}{}", self.pending.echo(), p.dir.delim());
+        }
         match self.reg_pending {
             Some(reg) => reg.echo(),
             None => self.pending.echo(),
         }
     }
 
-    /// Whether a count, register, operator or prefix is in flight, or an
-    /// Insert `ctrl+r`.
+    /// Whether a count, register, operator or prefix is in flight, an
+    /// Insert `ctrl+r`, or the search prompt.
     pub fn pending(&self) -> bool {
-        !self.pending.is_empty() || self.reg_pending.is_some()
+        !self.pending.is_empty() || self.reg_pending.is_some() || self.search.is_some()
     }
 
-    /// Drops a half-typed command: Normal's, or an Insert `ctrl+r`.
+    /// Drops a half-typed command: Normal's, an Insert `ctrl+r`, or the
+    /// search prompt.
     fn clear_pending(&mut self) {
         self.pending.clear();
         self.reg_pending = None;
+        self.search = None;
     }
 
     /// The last pattern as typed, or made by `*`/`#`.
@@ -377,6 +407,129 @@ impl Engine {
     /// `:noh` (piece 4): the highlight goes until the next search.
     pub fn no_hlsearch(&mut self) {
         self.hl = false;
+    }
+
+    /// One key while the prompt is open (Deviation 16).
+    fn search_key<B: TextBuf>(&mut self, ev: KeyEvent, buf: &mut B, st: &mut BufState, ctx: &ViewCtx) -> Outcome {
+        use keys::Key;
+        let p = self.search.as_mut().expect("the prompt is open");
+        match Key::of(&ev) {
+            Key::Char(c) => p.insert(c),
+            Key::Tab => p.insert('\t'),
+            Key::Backspace | Key::Ctrl('h') => {
+                if !p.backspace() {
+                    self.cancel_search();
+                }
+            }
+            Key::Delete => {
+                if !p.delete() {
+                    self.cancel_search();
+                }
+            }
+            Key::Ctrl('w') => p.word_back(),
+            Key::Ctrl('u') => p.delete_to_start(),
+            Key::Left => p.cursor = p.cursor.saturating_sub(1),
+            Key::Right => p.cursor = (p.cursor + 1).min(p.text.len()),
+            Key::Home => p.cursor = 0,
+            Key::End => p.cursor = p.text.len(),
+            // No history (spec §3.14's Out list).
+            Key::Up | Key::Down => {}
+            Key::Ctrl('r') => {
+                return Outcome::Consumed {
+                    changed: false,
+                    note: Some(Note::Unsupported("ctrl+r not supported in a search".into())),
+                    request: None,
+                };
+            }
+            Key::Esc => self.cancel_search(),
+            Key::Enter => return self.run_search(buf, st, ctx),
+            // field.rs's chord rule: the prompt and what waited for it go,
+            // and the key goes to the app.
+            Key::BackTab | Key::Ctrl(_) | Key::Other => {
+                self.cancel_search();
+                return Outcome::Declined { count: None, keys: vec![ev] };
+            }
+        }
+        Outcome::consumed()
+    }
+
+    /// Esc, BS on an empty line, or a foreign chord: the prompt goes, and
+    /// with it the operator and count waiting for it. The caret never moved.
+    fn cancel_search(&mut self) {
+        self.search = None;
+        self.pending.clear();
+    }
+
+    /// Enter: the typed pattern becomes the last one (as Vim stores it,
+    /// Deviation 5: even one that will not compile), an offset is refused
+    /// (Deviation 3), then the search runs as the motion the pending
+    /// command waited for. An empty pattern repeats the last one in the
+    /// typed direction, which becomes `n`'s.
+    fn run_search<B: TextBuf>(&mut self, buf: &mut B, st: &mut BufState, ctx: &ViewCtx) -> Outcome {
+        let p = self.search.take().expect("the prompt is open");
+        let (pat, offset) = p.split();
+        if pat.is_empty() {
+            if let Some(last) = &mut self.last_search {
+                last.dir = p.dir;
+            }
+            self.typed_search = None;
+        } else {
+            let last = LastSearch { text: search::as_stored(&pat, p.dir), dir: p.dir };
+            self.last_search = Some(last.clone());
+            self.typed_search = Some(last);
+        }
+        if !offset.is_empty() {
+            self.pending.clear();
+            return Outcome::Consumed { changed: false, note: Some(Note::Message("search offsets not supported".into())), request: None };
+        }
+        match self.pending.search_done(p.dir) {
+            Step::Cmd(cmd) => self.run(cmd, buf, st, ctx),
+            _ => unreachable!("search_done always completes the command"),
+        }
+    }
+
+    /// The prompt for the footer or the body's bottom row (spec §3.14).
+    pub fn search_line(&self) -> Option<SearchLine> {
+        self.search.as_ref().map(|p| SearchLine { dir: p.dir, text: p.text.iter().collect(), cursor: p.cursor })
+    }
+
+    /// The pattern the renderer paints: the prompt's text while it is open
+    /// (Vim's `incsearch`), else the last pattern while the highlight is on.
+    fn live_pattern(&self) -> Option<String> {
+        if let Some(p) = &self.search {
+            let (pat, _) = p.split();
+            return (!pat.is_empty()).then(|| search::as_stored(&pat, p.dir));
+        }
+        if !self.hl {
+            return None;
+        }
+        self.last_search.as_ref().map(|l| l.text.clone())
+    }
+
+    /// Every match of the live pattern on `rows`, `(start, end)` exclusive,
+    /// one row each, for the search highlight (Deviation 18).
+    pub fn search_matches<B: TextBuf>(&self, buf: &B, rows: std::ops::Range<usize>) -> Vec<(Pos, Pos)> {
+        let Some(text) = self.live_pattern() else { return Vec::new() };
+        let Ok(pat) = search::compile(&text) else { return Vec::new() };
+        let mut out = Vec::new();
+        for row in rows.start..rows.end.min(buf.line_count()) {
+            for (s, e) in pat.chain(&buf.line(row)) {
+                out.push((Pos::new(row, s), Pos::new(row, e)));
+            }
+        }
+        out
+    }
+
+    /// The match Enter would land on now (`incsearch`'s current match),
+    /// with the count the pending command carries.
+    pub fn search_preview<B: TextBuf>(&self, buf: &B) -> Option<(Pos, Pos)> {
+        let p = self.search.as_ref()?;
+        let text = self.live_pattern()?;
+        let pat = search::compile(&text).ok()?;
+        let count = keys::combine_counts(self.pending.count1(), self.pending.count2());
+        let (at, _) = search::search(buf, buf.cursor(), p.dir, count, &pat)?;
+        let end = pat.chain(&buf.line(at.row)).into_iter().find(|&(s, _)| s == at.col).map_or(at.col, |(_, e)| e);
+        Some((at, Pos::new(at.row, end)))
     }
 
     pub fn registers(&self) -> &Registers {
@@ -638,9 +791,11 @@ impl Engine {
         let Target { buf, state } = t;
         self.clamp(buf);
         // Vim's main loop validates `w_topline` before every command.
-        if let Some(view) = view::View::of::<B>(ctx) {
+        let view = view::View::of::<B>(ctx);
+        if let Some(view) = view {
             view.update_topline(buf);
         }
+        let top = buf.top();
         let before = buf.cursor();
         let was_insert = self.in_insert();
         if state.cached_tab_rule(before).is_none() {
@@ -648,6 +803,8 @@ impl Engine {
             state.virtcol = Some((before, self.tab_end(before)));
         }
         let out = match self.mode {
+            // The prompt takes every key while it is open (Deviation 16).
+            _ if self.search.is_some() => self.search_key(ev, buf, state, ctx),
             Mode::Insert | Mode::Replace => self.insert_key(ev, buf, state),
             Mode::Normal | Mode::Visual(_) | Mode::InsertNormal { .. } => {
                 let cx = ParseCx {
@@ -661,8 +818,15 @@ impl Engine {
                     Step::Decline { count, keys } => Outcome::Declined { count, keys },
                     Step::Undo { redo, count, declined } => self.exec_undo(count, redo, declined, buf, state),
                     Step::Cmd(cmd) => self.run(cmd, buf, state, ctx),
+                    // The pending command waits for the prompt's Enter.
+                    Step::Search(dir) => {
+                        self.search = Some(search::Prompt::new(dir));
+                        Outcome::consumed()
+                    }
                 }
             }
+            // `mode` is the mode under the prompt, never the prompt itself.
+            Mode::Search(_) => unreachable!("Mode::Search is only reported by Engine::mode"),
         };
         // A Normal or Visual command is one undo step; an Insert session
         // keeps its step open until it ends (spec §3.11).
@@ -679,6 +843,12 @@ impl Engine {
             && (!self.pending() || matches!(out, Outcome::Declined { .. }))
         {
             self.resume_after_ctrl_o(buf, state);
+        }
+        // A delete under the window (`d/line 50<CR>` from the text's end)
+        // leaves Vim's `w_topline` where it was, past the text; the splice
+        // kept edtui's inside it. The window rules see Vim's again.
+        if view.is_some() && top >= buf.line_count() {
+            buf.set_top(top);
         }
         let changed = self.finish_key(before, was_insert, buf, state, ctx);
         let (left_note, left_request) = (self.note.take(), self.request.take());
@@ -826,8 +996,12 @@ impl Engine {
             return;
         }
         let visual = if matches!(cmd, Cmd::VisualOp { .. }) { self.last_visual_size } else { None };
+        let search = match cmd {
+            Cmd::Operate { reach: Reach::Motion(Motion::Search { .. }), .. } => self.typed_search.clone(),
+            _ => None,
+        };
         self.dot_prev = self.dot.take();
-        self.dot = Some(Dot { cmd, insert, visual });
+        self.dot = Some(Dot { cmd, insert, visual, search });
     }
 
     /// `.` with an optional new count (spec §3.12, Vim's `start_redo()`):
@@ -838,6 +1012,13 @@ impl Engine {
         // split the insert and nothing was typed since (then the newest).
         let old = matches!(self.mode, Mode::InsertNormal { .. }) && self.restart.is_some_and(|r| r.old_redo);
         let Some(dot) = (if old { self.dot_prev.clone() } else { self.dot.clone() }) else { return Outcome::consumed() };
+        // Vim's redo buffer holds the typed pattern (`cpoptions` has no
+        // `r`): `d/foo<CR>.` searches `foo` again and makes it the last
+        // pattern. An empty prompt's `.` uses the last pattern of its moment.
+        self.typed_search = dot.search.clone();
+        if let Some(s) = &dot.search {
+            self.last_search = Some(s.clone());
+        }
         // A replayed insert replaces the restart while it runs (`invoke_edit`
         // with something stuffed keeps it); put it back after.
         let restart = self.restart.take();
@@ -954,6 +1135,8 @@ impl Engine {
                 anchor: self.visual.unwrap_or_else(|| buf.cursor()),
                 line: shape == Shape::Line,
             },
+            // The prompt paints the mode under it (Deviation 17).
+            Mode::Search(_) => unreachable!("Mode::Search is only reported by Engine::mode"),
         });
     }
 }
