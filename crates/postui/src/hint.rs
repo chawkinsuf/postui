@@ -623,6 +623,26 @@ mod tests {
         );
     }
 
+    /// The copy-URL button's hint spells its key for the profile at hand
+    /// (spec §4.6): through the vim keymap and the vim table in vim, as
+    /// the arrows keymap in arrows. M1's vim keymap keeps the alt chords,
+    /// so both read `alt+y`.
+    #[test]
+    fn the_copy_url_hint_spells_its_key_for_the_profile() {
+        use crate::config::KeyProfile;
+        use crate::keyroute::{SpellCtx, Surface};
+        let alt = crate::keys::alt_label();
+        let want = format!("Copy the resolved URL \u{b7} {alt}+y");
+        for profile in [KeyProfile::Arrows, KeyProfile::Vim] {
+            let keymap = Keymap::default_bindings_for(profile);
+            let ctx = HintCtx {
+                spell: SpellCtx { profile, surface: Surface::UrlLine, field_live: false },
+                ..ctx()
+            };
+            assert_eq!(hint_for(&Hit::CopyUrl, &keymap, &ctx).as_deref(), Some(want.as_str()), "{profile:?}");
+        }
+    }
+
     /// A control that paints the key on itself doesn't repeat it: the
     /// Theme chip's own `alt+t` pill sits a hand's width from the footer.
     #[test]

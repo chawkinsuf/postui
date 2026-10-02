@@ -6,7 +6,9 @@
 
 use super::*;
 use crate::components::manage::ManageTab;
+use crate::components::manage_list::{DetailRow, ListFocus};
 use crate::components::sidebar::Row;
+use crate::components::varmanager::{FormStop, VmField, VmFocus, VmRow};
 use crate::config::KeyProfile;
 use crate::keyroute::keylist::{self, Status};
 
@@ -18,12 +20,27 @@ enum Fixture {
     TableThreeHeaders,
     /// `TableThreeHeaders`, then row 0 deleted as one undo step.
     TableAfterDelete,
+    /// `TableThreeHeaders` with the method badge selected.
+    Method,
+    /// `TableThreeHeaders` with the URL line selected, not open.
+    UrlLine,
     /// A 200-element JSON array response, focused, the cursor on line 0.
     ResponseLines,
     /// The Environments list with three environments, cursor on row 0.
     ManageEnvs,
+    /// `ManageEnvs` with the keyboard in the detail pane, on its first
+    /// button (Rename).
+    ManageEnvDetail,
     /// The Settings tab, cursor on row 0.
     Settings,
+    /// The Variables list (variables alpha and beta, the selector `user`
+    /// with options alice and bob in qa, the active environment), the
+    /// cursor on alpha.
+    VarList,
+    /// `VarList` with `user` selected and its grid focused on (0, 0).
+    VarGrid,
+    /// `VarList` with alpha's form focused on Description.
+    VarForm,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -37,7 +54,21 @@ enum Expect {
     ResponseLine(usize),
     ResponseLast,
     ManageCursor(usize),
+    /// Which half of the Manage screen has the keyboard.
+    ManageFocus(ListFocus),
+    /// The detail pane has the keyboard, aimed at this row and column.
+    DetailAim(DetailRow, usize),
     SettingsRow(usize),
+    /// The editor pane's selected stop.
+    Sub(SubFocus),
+    /// The Variables list cursor's declared name.
+    VarSel(&'static str),
+    VmFocusIs(VmFocus),
+    /// The options grid's cursor (row, column).
+    GridCell(usize, usize),
+    /// The variable form's field cursor.
+    FormAt(FormStop),
+    PromptOpen,
     /// Whether a field has the caret.
     FieldLive(bool),
     EditorSlug(&'static str),
@@ -79,14 +110,40 @@ const CASES: &[Case] = &[
     vim("L.move", TableThreeHeaders, "j", &[TableRow(2)]),
     vim("L.move", TableThreeHeaders, "k", &[TableRow(0)]),
     vim("L.move", ManageEnvs, "j", &[ManageCursor(1)]),
+    vim("L.move", ManageEnvDetail, "j", &[DetailAim(DetailRow::Tls, 0)]),
     vim("L.move", Settings, "j", &[SettingsRow(1)]),
+    vim("L.move", VarList, "j", &[VarSel("beta")]),
+    vim("L.move", VarList, "jk", &[VarSel("alpha")]),
+    vim("L.move", VarGrid, "j", &[GridCell(1, 0)]),
+    vim("L.move", VarForm, "j", &[FormAt(FormStop::Field(VmField::Default))]),
+    // The badge and the URL line step down into the table.
+    vim("L.move", Method, "j", &[Sub(SubFocus::Content)]),
+    vim("L.move", UrlLine, "j", &[Sub(SubFocus::Content), FieldLive(false)]),
     arrows("L.move", SidebarThree, "<Down>", &[SidebarSel("main/gamma")]),
     arrows("L.move", SidebarThree, "j", &[SidebarSel("main/beta")]),
+    arrows("L.move", VarGrid, "<Down>", &[GridCell(1, 0)]),
+    arrows("L.move", VarGrid, "j", &[GridCell(0, 0)]),
     vim("L.hl", TableThreeHeaders, "l", &[TableCol(1)]),
     vim("L.hl", TableThreeHeaders, "lh", &[TableCol(0)]),
+    vim("L.hl", ManageEnvDetail, "l", &[DetailAim(DetailRow::Buttons, 1)]),
+    vim("L.hl", ManageEnvDetail, "h", &[ManageFocus(ListFocus::List)]),
+    vim("L.hl", VarList, "l", &[VmFocusIs(VmFocus::Form)]),
+    vim("L.hl", VarGrid, "l", &[GridCell(0, 1)]),
+    vim("L.hl", VarGrid, "lh", &[GridCell(0, 0), VmFocusIs(VmFocus::Grid)]),
+    vim("L.hl", VarGrid, "h", &[VmFocusIs(VmFocus::List)]),
+    vim("L.hl", VarForm, "h", &[VmFocusIs(VmFocus::List)]),
+    vim("L.hl", Method, "l", &[Sub(SubFocus::Url), FieldLive(false)]),
     arrows("L.hl", TableThreeHeaders, "<Right>", &[TableCol(1)]),
     vim("L.open", SidebarThree, "o", &[EditorSlug("main/beta")]),
     vim("L.open", TableThreeHeaders, "i", &[FieldLive(true)]),
+    // `i` opens a field where `Surfaces::OPENS_FIELD` says, and only there.
+    vim("L.open", VarGrid, "i", &[FieldLive(true), VmFocusIs(VmFocus::Grid)]),
+    vim("L.open", VarForm, "i", &[FieldLive(true), VmFocusIs(VmFocus::Form)]),
+    vim("L.open", VarList, "i", &[FieldLive(false), VmFocusIs(VmFocus::List), NoModal]),
+    // Plan M1 Deviation 24: the aimed button's own Enter (Rename).
+    vim("L.open", ManageEnvDetail, "i", &[PromptOpen, FieldLive(true)]),
+    vim("L.open", UrlLine, "i", &[FieldLive(true), Sub(SubFocus::Url)]),
+    arrows("L.open", UrlLine, "i", &[FieldLive(false)]),
     arrows("L.open", SidebarThree, "<CR>", &[EditorSlug("main/beta")]),
     arrows("L.open", TableThreeHeaders, "i", &[FieldLive(false)]),
     vim("L.undo", TableAfterDelete, "u", &[TableLen(3)]),
@@ -120,8 +177,48 @@ fn req(url: &str) -> postui_core::model::HttpRequest {
     postui_core::model::HttpRequest::from_toml_str(&format!(r#"url = "{url}""#)).unwrap()
 }
 
+/// An app on a project with variables alpha and beta, the selector `user`
+/// (field `user`) with options alice and bob in qa, and qa active; the
+/// Variables tab open with its rows built.
+fn var_app() -> App {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    postui_core::fixtures::init_project(root, Some("matrix")).unwrap();
+    std::fs::write(
+        root.join("variables.toml"),
+        "[alpha]\ndefault = \"1\"\n\n[beta]\ndefault = \"2\"\n\n[selectors.user]\nfields = [\"user\"]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("environments/qa.toml"),
+        "[options.user.alice]\nuser = \"1001\"\n\n[options.user.bob]\nuser = \"2002\"\n",
+    )
+    .unwrap();
+    postui_core::fixtures::save_local_state(
+        root,
+        &postui_core::project::LocalState { environment: Some("qa".into()), ..Default::default() },
+    )
+    .unwrap();
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, root.to_path_buf());
+    app._test_rx = Some(rx);
+    app._test_dir = Some(dir);
+    app.update(Action::OpenManage { tab: Some(ManageTab::Variables) });
+    app.sync_varmanager();
+    app
+}
+
+/// Puts the Variables list cursor (and detail pane) on `row`.
+fn select_var_row(app: &mut App, row: VmRow) {
+    let i = app.varmanager.left_rows.iter().position(|r| *r == row).expect("the row is listed");
+    app.varmanager.select_row(i);
+}
+
 fn build(f: Fixture) -> App {
-    let mut app = App::new_for_test();
+    let mut app = match f {
+        VarList | VarGrid | VarForm => var_app(),
+        _ => App::new_for_test(),
+    };
     match f {
         SidebarThree => {
             for slug in ["main/alpha", "main/beta", "main/gamma"] {
@@ -137,7 +234,7 @@ fn build(f: Fixture) -> App {
                 .expect("beta is listed");
             app.sidebar.selected = Some(beta);
         }
-        TableThreeHeaders | TableAfterDelete => {
+        TableThreeHeaders | TableAfterDelete | Method | UrlLine => {
             app.update(Action::CreateRequest("matrix".into()));
             for (k, v) in [("a", "1"), ("b", "2"), ("c", "3")] {
                 app.editor
@@ -153,6 +250,11 @@ fn build(f: Fixture) -> App {
             if matches!(f, TableAfterDelete) {
                 app.update(Action::DeleteTableRow(0));
                 app.capture_undo();
+            }
+            match f {
+                Method => app.editor.sub_focus = SubFocus::Method,
+                UrlLine => app.editor.sub_focus = SubFocus::Url,
+                _ => {}
             }
         }
         ResponseLines => {
@@ -173,16 +275,37 @@ fn build(f: Fixture) -> App {
             );
             app.focus = PaneId::Response;
         }
-        ManageEnvs => {
+        ManageEnvs | ManageEnvDetail => {
             for name in ["prod", "qa", "dev"] {
                 app.update(Action::CreateEnv(name.into()));
             }
             app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
             app.manage.list.cursor = 0;
+            if matches!(f, ManageEnvDetail) {
+                // In by the arrows profile's own key, after a draw has
+                // painted the buttons the aim lands on.
+                draw(&mut app);
+                app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+                assert_eq!(
+                    (app.manage.list.focus, app.manage.list.detail_row, app.manage.list.detail_col),
+                    (ListFocus::Detail, DetailRow::Buttons, 0)
+                );
+            }
         }
         Settings => {
             app.update(Action::OpenManage { tab: Some(ManageTab::Settings) });
             app.settings.set_cursor(0);
+        }
+        VarList => select_var_row(&mut app, VmRow::Var("alpha".into())),
+        VarGrid => {
+            select_var_row(&mut app, VmRow::Group("user".into()));
+            app.varmanager.focus = VmFocus::Grid;
+            app.varmanager.grid.cursor = (0, 0);
+        }
+        VarForm => {
+            select_var_row(&mut app, VmRow::Var("alpha".into()));
+            app.varmanager.focus = VmFocus::Form;
+            app.varmanager.form_cursor = FormStop::Field(VmField::Description);
         }
     }
     app.toasts = Default::default();
@@ -206,7 +329,21 @@ fn check(app: &App, e: Expect) -> Result<(), String> {
         ResponseLine(n) => app.session.response.view().is_some_and(|v| v.cursor == n),
         ResponseLast => app.session.response.view().is_some_and(|v| v.cursor + 1 == v.visible_len()),
         ManageCursor(n) => app.manage.list.cursor == n,
+        ManageFocus(f) => app.manage.list.focus == f,
+        DetailAim(row, col) => {
+            app.manage.list.focus == ListFocus::Detail
+                && app.manage.list.detail_row == row
+                && app.manage.list.detail_col == col
+        }
         SettingsRow(n) => app.settings.cursor == n,
+        Sub(s) => app.focus == PaneId::Editor && app.editor.sub_focus == s,
+        VarSel(name) => {
+            app.varmanager.left_rows.get(app.varmanager.left_cursor).and_then(VmRow::name) == Some(name)
+        }
+        VmFocusIs(f) => app.varmanager.focus == f,
+        GridCell(row, col) => app.varmanager.grid.cursor == (row, col),
+        FormAt(stop) => app.varmanager.form_cursor == stop,
+        PromptOpen => matches!(app.modals.top(), Some(Modal::Prompt { .. })),
         FieldLive(live) => app.field_caret().is_live() == live,
         EditorSlug(slug) => app.editor.slug.as_deref() == Some(slug),
         Mode(m) => app.mode_indicator() == Some(m),
@@ -219,9 +356,17 @@ fn check(app: &App, e: Expect) -> Result<(), String> {
     };
     ok.then_some(()).ok_or_else(|| {
         format!(
-            "{e:?} does not hold (selected {:?}, table {:?}, echo {:?}, mode {:?}, toasts {:?})",
+            "{e:?} does not hold (surface {:?}, selected {:?}, table {:?}, sub-focus {:?}, \
+             vm {:?} {:?} {:?}, detail {:?} {:?}, echo {:?}, mode {:?}, toasts {:?})",
+            app.surface(),
             app.sidebar.selected_slug(),
             app.editor.table.selected,
+            app.editor.sub_focus,
+            app.varmanager.focus,
+            app.varmanager.grid.cursor,
+            app.varmanager.form_cursor,
+            app.manage.list.detail_row,
+            app.manage.list.detail_col,
             app.key_echo(),
             app.mode_indicator(),
             app.toasts.messages()
