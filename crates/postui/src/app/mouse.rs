@@ -21,6 +21,11 @@ impl App {
     ///   pane under the pointer. While a modal is open, wheel is a no-op
     ///   here — modal-list scrolling is a later task.
     pub fn handle_mouse(&mut self, m: ratatui::crossterm::event::MouseEvent) -> bool {
+        // A press drops a half-typed key (plan M1 Deviation 15): a `g`
+        // never survives a click.
+        if matches!(m.kind, ratatui::crossterm::event::MouseEventKind::Down(_)) {
+            self.router.clear();
+        }
         let changed = self.handle_mouse_inner(m);
         // The op safety net at the event boundary, as in `handle_key`: a
         // drag release commits without an action and can bail between

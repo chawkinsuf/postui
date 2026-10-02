@@ -222,6 +222,8 @@ pub struct App {
     /// and read by `handle_key` itself, so a live reload's new bindings
     /// are in force from the next key with no copy to keep in step.
     pub keymap: crate::keys::Keymap,
+    /// The key router's pending keys (piece 4 spec §3.4).
+    pub router: crate::keyroute::Router,
     /// Palette command frecency stats (recency + count per command id),
     /// loaded from `ui.toml` at startup and saved back on quit.
     pub usage: crate::usage::UsageStore,
@@ -849,6 +851,7 @@ impl App {
     pub(crate) fn use_profile(&mut self, profile: crate::config::KeyProfile) {
         self.ui_settings.keymap = Some(profile);
         self.keymap = crate::keys::Keymap::default_bindings_for(profile);
+        self.router.clear();
     }
 
     /// Reads `name` (`config.toml` or `keys.toml`) through the app's
@@ -1666,6 +1669,7 @@ impl App {
             anims: Anims::new(crate::config::UiSettings::default().animations),
             animating_last_tick: false,
             keymap: crate::keys::Keymap::default_bindings(),
+            router: crate::keyroute::Router::default(),
             usage: crate::usage::UsageStore::default(),
             clients: crate::http::Clients::new(),
             tx,
@@ -2651,6 +2655,7 @@ impl App {
                 if matches!(self.modals.top(), Some(Modal::KeymapChoice { .. })) {
                     self.modals.pop();
                 }
+                self.router.clear();
                 true
             }
             // Config changes are outside the undo system, so this confirm
@@ -4995,8 +5000,9 @@ impl App {
                 // The config half. Every `None` field means "that file
                 // exists but could not be read or parsed": keep what we
                 // have, and let the warning say which file to fix.
+                let running = self.profile();
                 let (reloaded, warnings) =
-                    self.config.reload(cfg!(target_os = "macos"), &self.keymap);
+                    self.config.reload(cfg!(target_os = "macos"), &self.keymap, running);
                 if let Some(themes) = reloaded.themes {
                     self.themes = themes;
                 }
@@ -5074,16 +5080,12 @@ impl App {
                 // effect from the *next* key.
                 //
                 // A `config.toml` that did not parse leaves the running
-                // profile alone, so its keymap is rebuilt on that profile:
-                // `read_all` could not know it and built arrows' (plan M1
-                // Deviation 23). A `keys.toml` that did not parse
-                // (`reloaded.keymap` is `None`) still keeps the live keys.
+                // profile alone, and `reload` built the keymap (and its
+                // warnings) on that profile (plan M1 Deviation 23). A
+                // `keys.toml` that did not parse (`reloaded.keymap` is
+                // `None`) keeps the live keys.
                 if let Some(keymap) = reloaded.keymap {
-                    self.keymap = if from_config {
-                        keymap
-                    } else {
-                        self.keymap_for_profile()
-                    };
+                    self.keymap = keymap;
                 }
 
                 for w in warnings.into_iter().chain(theme_warning) {
@@ -9784,6 +9786,10 @@ impl App {
     /// Central key router. Order (each step tested):
     /// 1. A CTRL/ALT combo the keymap maps to Quit pre-empts everything,
     ///    including open modals — ctrl+c must always quit.
+    ///
+    ///    1a. The key router (`crate::keyroute`): in the vim profile a
+    ///    table row runs here (a motion replays its named key through
+    ///    steps 1b–6); what it declines goes on unchanged.
     /// 2. An open modal stack captures all remaining input (swallowed keys
     ///    still count as "handled" — they return true).
     /// 3. With no modal open and a non-`Main` screen showing (e.g. the
@@ -9838,11 +9844,12 @@ impl App {
             return true;
         }
         let combo = KeyCombo::from_event(&ev);
-        // The one keymap read of the whole router, and it happens before
-        // any action is dispatched: an action that swaps `self.keymap`
-        // (the Reload command) therefore cannot change the meaning of the
-        // key currently being handled. That is the "never mid-key"
-        // guarantee — no copy, no handshake, just ordering.
+        // Each keymap read (here, in `key_ctx`, and in `handle_key_routed`
+        // once per key it routes) comes before the action it picks is
+        // dispatched: an action that swaps `self.keymap` (the Reload
+        // command) therefore cannot change the meaning of the key being
+        // handled. That is the "never mid-key" guarantee — no copy, no
+        // handshake, just ordering.
         let global = self.keymap.lookup(&combo);
         let modified = ev
             .modifiers
@@ -9878,6 +9885,31 @@ impl App {
         if self.sidebar.drag.is_some() || self.manage.list.drag.is_some() {
             return false;
         }
+
+        // The key router (piece 4 spec §3.1): one snapshot of where the
+        // key lands, one lookup. What it declines takes today's routing.
+        let ctx = self.key_ctx(&ev);
+        match self.router.resolve(ev, &ctx) {
+            crate::keyroute::Resolved::Declined => self.handle_key_routed(ev),
+            // The pending keys grew (the footer echoes them), or vim
+            // swallowed the key.
+            crate::keyroute::Resolved::Consumed => true,
+            crate::keyroute::Resolved::Run(steps) => self.run_steps(steps),
+        }
+    }
+
+    /// Steps 1b–6 of [`Self::handle_key`]: the routing every key the
+    /// router declines takes, and every named key a table row replays
+    /// (`j` is Down). It never re-enters the router.
+    fn handle_key_routed(&mut self, ev: KeyEvent) -> bool {
+        let combo = KeyCombo::from_event(&ev);
+        // A replayed key reads the keymap again: the keymap is only ever
+        // swapped by an action, never mid-lookup, so this is the same
+        // "one read per key" the first lookup is.
+        let global = self.keymap.lookup(&combo);
+        let modified = ev
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
 
         // 1b. A bound paste combo digs past the layers below: modals and
         // non-Main screens capture all remaining input, but ctrl+v means
@@ -9929,19 +9961,6 @@ impl App {
             let changed = self.apply_modal_result(res);
             self.sync_theme_preview();
             return changed;
-        }
-
-        // 1e. A plain key bound to Undo or OpenPalette reaches the top
-        // form modal's selected field/button row the same way `u`/`:`
-        // reach a Manage screen's unclaimed keys (`unclaimed_screen_key`):
-        // the modal's own handler swallows every key it does not name,
-        // so without this carve-out `u` inside a modal is only ever typed.
-        if !modified
-            && matches!(global, Some(Action::Undo | Action::Redo | Action::OpenPalette))
-            && self.modals.top().is_some_and(crate::components::modal::Modal::is_form)
-            && !self.modals.field_open()
-        {
-            return self.update(global.expect("matched above"));
         }
 
         // 2. Modals capture all remaining input.
@@ -10136,12 +10155,11 @@ impl App {
 
     /// A plain key a non-`Main` screen's own handler left unclaimed. The
     /// screen swallows it — with one exception: the small whitelist of
-    /// global actions that work on top of any screen (`:` for the
-    /// palette, `u` for undo — the same list the modified combos get
-    /// first refusal from) runs from the keymap here, so a rebind or
-    /// unbind in `keys.toml` reaches the Manage screens too, and the
-    /// aliases work on a tab with no project open. Modified combos never
-    /// get here: they took the whitelist before the screen saw them.
+    /// global actions that work on top of any screen (the same list the
+    /// modified combos get first refusal from) runs from the keymap here,
+    /// so a plain key `keys.toml` binds to one reaches the Manage screens
+    /// too, even on a tab with no project open. Modified combos never get
+    /// here: they took the whitelist before the screen saw them.
     fn unclaimed_screen_key(&mut self, global: Option<Action>) -> bool {
         match global {
             Some(a) if screen_escape_whitelist(&a) => self.update(a),
@@ -11115,6 +11133,7 @@ impl App {
                         self.reapply_ui_settings(ui);
                         if *key == "keymap" {
                             self.keymap = self.keymap_for_profile();
+                            self.router.clear();
                         }
                         let verb = if redo { "Redid" } else { "Undid" };
                         let label = crate::components::settings::SettingsField::from_key(key)

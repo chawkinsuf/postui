@@ -289,12 +289,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // pre-empts the drag.
     let drag_live = app.sidebar.drag.is_some() || app.manage.list.drag.is_some();
     let globals_live = modal_chips.is_none() && !drag_live;
-    // A plain `q` reaches the quit binding only where nothing consumes it
+    // A plain `q` reaches the quit binding only in the arrows profile (vim
+    // gave `q` up, plan M1 Deviation 4) and only where nothing consumes it
     // first: no modal (they capture all input), the Main screen (other
     // screens swallow unbound plain keys), and a focus stop that doesn't
     // route typing into a text input — in the editor pane that is only
     // the URL line, the body, and a live cell edit.
-    let plain_q_quits = app.modals.is_empty()
+    let plain_q_quits = app.profile() == crate::config::KeyProfile::Arrows
+        && app.modals.is_empty()
         && !drag_live
         && (app.screen == Screen::Main
             && (matches!(focus, PaneId::Sidebar | PaneId::Response)

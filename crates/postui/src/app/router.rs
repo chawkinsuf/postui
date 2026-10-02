@@ -3,9 +3,93 @@
 //! `impl App`.
 
 use super::*;
-use crate::keyroute::{FieldCaret, FieldId, Surface};
+use crate::keyroute::table::Surfaces;
+use crate::keyroute::{FieldCaret, FieldId, KeyCtx, Step, Surface};
 
 impl App {
+    /// One snapshot of where `ev` lands (spec §3.2).
+    pub fn key_ctx(&self, ev: &KeyEvent) -> KeyCtx {
+        let profile = self.profile();
+        let surface = self.surface();
+        KeyCtx {
+            profile,
+            surface,
+            field: self.field_caret(),
+            user_bare: self.user_bare(ev, profile, surface),
+            cap: self.repeat_cap(surface),
+        }
+    }
+
+    /// In vim, what `keys.toml` binds `ev` to when it is a bare char (spec
+    /// §4.4), where today's keymap step would reach it (plan M1 Deviation
+    /// 21): no modal open, a navigation surface, and either the Main
+    /// screen or a Manage screen whose whitelist admits the action. A
+    /// dialog's letters and a screen's captured keys stay theirs.
+    fn user_bare(
+        &self,
+        ev: &KeyEvent,
+        profile: crate::config::KeyProfile,
+        surface: Surface,
+    ) -> Option<Action> {
+        let bare = matches!(ev.code, KeyCode::Char(_))
+            && ev.modifiers.difference(KeyModifiers::SHIFT).is_empty();
+        if profile != crate::config::KeyProfile::Vim
+            || !bare
+            || !self.modals.is_empty()
+            || !Surfaces::NAV.has(surface)
+        {
+            return None;
+        }
+        let action = self.keymap.lookup(&KeyCombo::from_event(ev))?;
+        match self.screen {
+            Screen::Main => Some(action),
+            Screen::Manage => screen_escape_whitelist(&action).then_some(action),
+            Screen::Testbed => None,
+        }
+    }
+
+    /// The most a repeated key can usefully run on `surface` (plan M1
+    /// Deviation 11): one pass over what the surface holds is all a count
+    /// can use, so a 9 999 count costs no more than that. It counts the
+    /// sideways steps too (`{N}l`), never 0 (a plain `j` is one step):
+    /// - the sidebar: two per row (an `h` collapses a folder, the next
+    ///   steps to its parent);
+    /// - a table: its rows and the add row, and at least its two columns;
+    /// - the response: its lines, or its widest line as last drawn (the
+    ///   whole count while that is unmeasured);
+    /// - Settings: its rows.
+    fn repeat_cap(&self, surface: Surface) -> usize {
+        use crate::vim::engine::settings::MAX_COUNT;
+        let most = match surface {
+            Surface::Sidebar => self.sidebar.rows.len().saturating_mul(2),
+            Surface::Table(_) => (self.editor.table_len() + 1).max(2),
+            Surface::Response(_) => self.session.response.view().map_or(0, |v| {
+                v.visible_len().max(v.measured_width().unwrap_or(MAX_COUNT))
+            }),
+            Surface::Settings => crate::components::settings::SettingsTab::rows().len(),
+            _ => MAX_COUNT,
+        };
+        most.max(1)
+    }
+
+    /// Runs a resolved key's steps in order (spec §3.1): a named key
+    /// through `handle_key_routed`, an action through `update`. A run of
+    /// replayed keys stops once the surface changes under it (plan M1
+    /// Deviation 13): `3j` from the URL line enters the table and stops.
+    /// Actions always all run: `3u` undoes three.
+    pub(super) fn run_steps(&mut self, steps: Vec<Step>) -> bool {
+        let surface = self.surface();
+        let mut changed = false;
+        for step in steps {
+            changed |= match step {
+                Step::Key(_) if self.surface() != surface => break,
+                Step::Key(ev) => self.handle_key_routed(ev),
+                Step::Action(a) => self.update(a),
+            };
+        }
+        changed
+    }
+
     /// The thing the keys go to right now (spec §3.3).
     pub fn surface(&self) -> Surface {
         use crate::components::manage::ManageTab;

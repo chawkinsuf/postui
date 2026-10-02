@@ -360,10 +360,6 @@ impl Keymap {
             ("tab", Action::FocusNext),
             ("shift+tab", Action::FocusPrev),
             ("ctrl+p", Action::OpenPalette),
-            // Vim spellings, as plain keys: a text field sees the character
-            // first (router step 5), and every list surface that leaves
-            // them unclaimed falls through to these (step 6).
-            (":", Action::OpenPalette),
             ("esc", Action::Close),
             // Spaces own the ctrl-digits (i3 style: the number swaps the
             // whole working set). ctrl, not alt: Ghostty on Linux takes
@@ -434,8 +430,6 @@ impl Keymap {
             ("ctrl+shift+e", Action::ExtractToVariable),
             ("ctrl+shift+d", Action::DuplicateRequest),
             ("ctrl+z", Action::Undo),
-            // Vim spelling, as a plain key: see the comment above ":".
-            ("u", Action::Undo),
             ("ctrl+shift+z", Action::Redo),
             ("alt+q", Action::OpenJqBar),
             ("alt+shift+q", Action::ToggleJqBar),
@@ -535,6 +529,32 @@ impl Keymap {
         }
     }
 
+    /// The `keys.toml` bindings of a bare char that some vim row starts
+    /// with (piece 4 spec §4.4, plan M1 Deviation 19). The binding wins
+    /// while nothing is pending, so the user hears once, at load, which
+    /// vim key it hides. A digit `1`–`9` is the other way round: vim reads
+    /// it as a count first on every surface a `keys.toml` letter reaches,
+    /// so that binding never runs. The vim defaults bind no bare char, so
+    /// every one found came from `keys.toml`.
+    pub fn vim_shadow_warnings(&self) -> Vec<String> {
+        let firsts = crate::keyroute::table::vim_first_chars();
+        let mut out: Vec<String> = self
+            .bindings
+            .keys()
+            .filter_map(|c| match c.code {
+                KeyCode::Char(ch) if c.modifiers.is_empty() && firsts.contains(&ch) => {
+                    Some(format!("keys.toml binds `{ch}`, which shadows vim's `{ch}`"))
+                }
+                KeyCode::Char(ch @ '1'..='9') if c.modifiers.is_empty() => Some(format!(
+                    "keys.toml binds `{ch}`, which vim reads as a count, so the binding never runs"
+                )),
+                _ => None,
+            })
+            .collect();
+        out.sort();
+        out
+    }
+
     /// The macOS caret-conflict report for [`Self::caret_warnings`]: one
     /// line per caret-motion combo something is bound to, naming the
     /// gesture the binding shadows.
@@ -575,8 +595,8 @@ impl Keymap {
             .filter(|(_, action)| **action == target)
             .map(|(combo, _)| combo)
             .collect();
-        // A vim alias is a bare key (":", "u") with no modifiers, and its
-        // formatted form (":", "U") can sort below the chord it's a
+        // A bare-key alias a `keys.toml` adds (":", "u") has no modifiers,
+        // and its formatted form (":", "U") can sort below the chord it's a
         // synonym for ("^P", "^Z") -- e.g. ":" < "^P" -- which would flip
         // the hint to the alias. Prefer a modified combo (a chord) over a
         // bare key first, and only then take the minimum, so the footer
@@ -919,7 +939,11 @@ mod tests {
         assert_eq!(get("tab"), Some(Action::FocusNext));
         assert_eq!(get("shift+tab"), Some(Action::FocusPrev));
         assert_eq!(get("ctrl+p"), Some(Action::OpenPalette));
-        assert_eq!(get(":"), Some(Action::OpenPalette), "vim alias");
+        assert_eq!(
+            get(":"),
+            None,
+            "the alias left the arrows profile (spec §4.5); vim has a router row"
+        );
         assert_eq!(get("esc"), Some(Action::Close));
         // ctrl-digits, not alt-digits: Ghostty on Linux owns alt+1..9
         // for its own tabs. The header selectors take the bottom row in
@@ -997,7 +1021,11 @@ mod tests {
         );
         assert_eq!(get("alt+r"), Some(Action::OpenManage { tab: None }));
         assert_eq!(get("ctrl+z"), Some(Action::Undo));
-        assert_eq!(get("u"), Some(Action::Undo), "vim alias");
+        assert_eq!(
+            get("u"),
+            None,
+            "the alias left the arrows profile (spec §4.5); vim has a router row"
+        );
         assert_eq!(get("ctrl+shift+z"), Some(Action::Redo));
         assert_eq!(get("ctrl+y"), None, "ctrl+y is deliberately unbound");
         assert_eq!(get("alt+q"), Some(Action::OpenJqBar));
@@ -1414,5 +1442,29 @@ mod tests {
         let vim = Keymap::try_from_overrides_for(crate::config::KeyProfile::Vim, "save = \"f2\"\n").unwrap();
         assert_eq!(vim.lookup(&KeyCombo::parse("f2").unwrap()), Some(Action::SaveRequest));
         assert_eq!(vim.lookup(&KeyCombo::parse("q").unwrap()), None);
+    }
+
+    #[test]
+    fn vim_shadow_warnings_name_the_bare_chars_a_vim_row_starts_with() {
+        let mut map = Keymap::default_bindings_for(crate::config::KeyProfile::Vim);
+        assert!(map.vim_shadow_warnings().is_empty(), "the vim defaults bind no bare char");
+        map.apply_overrides("save = [\"ctrl+s\", \"G\"]\nquit = [\"ctrl+c\", \"x\"]\n").unwrap();
+        assert_eq!(map.vim_shadow_warnings(), vec!["keys.toml binds `G`, which shadows vim's `G`".to_string()]);
+    }
+
+    /// A digit `1`–`9` is a count wherever a `keys.toml` letter can fire in
+    /// vim, so a binding on one never runs: the load says so. `0` is a key
+    /// while no count is typed, so it is an ordinary shadow.
+    #[test]
+    fn vim_shadow_warnings_name_a_bound_count_digit() {
+        let mut map = Keymap::default_bindings_for(crate::config::KeyProfile::Vim);
+        map.apply_overrides("space_3 = [\"ctrl+3\", \"3\"]\nspace_1 = [\"ctrl+1\", \"0\"]\n").unwrap();
+        assert_eq!(
+            map.vim_shadow_warnings(),
+            vec![
+                "keys.toml binds `0`, which shadows vim's `0`".to_string(),
+                "keys.toml binds `3`, which vim reads as a count, so the binding never runs".to_string(),
+            ]
+        );
     }
 }

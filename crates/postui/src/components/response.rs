@@ -893,6 +893,15 @@ impl ReadyView {
         self.width
     }
 
+    /// The widest visible line as the last draw measured it, or `None`
+    /// when the view changed since (or never drew): a read that never pays
+    /// for a measure, for the key router's repeat cap.
+    pub fn measured_width(&self) -> Option<usize> {
+        let key = (self.mode, self.visible_len(), self.tree_epoch);
+        self.content_width
+            .and_then(|(mode, len, run, w)| ((mode, len, run) == key).then_some(w))
+    }
+
     /// The cached widest-visible-line measure without recomputing — 0 until
     /// a draw has run, which is fine for the drag math that reads it: the
     /// horizontal bar it serves only exists on drawn frames.
