@@ -27,6 +27,12 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 /// stack.
 const MIGRATION_TITLE: &str = "Migrate variables";
 
+/// Whether the first-launch keyboard question is asked (plan M1
+/// Deviation 2, the user's decision 2026-10-01: built in M1, raised from
+/// M3, once the vim profile is usable). Until then an unset `keymap` runs
+/// arrows and the Settings row switches profiles.
+const ASK_KEYMAP_ON_LAUNCH: bool = false;
+
 /// What a write refuses with when no project is open. Every such arm is
 /// already gated by `refuse_without_project`, so this is the belt to that
 /// braces — it exists so no write can be attempted against an empty root.
@@ -606,6 +612,9 @@ impl App {
                 ToastKind::Error,
             );
             app.apply_startup_config_gate();
+            if ASK_KEYMAP_ON_LAUNCH {
+                app.raise_keymap_choice();
+            }
             if testbed {
                 app.screen = Screen::Testbed;
             }
@@ -639,6 +648,9 @@ impl App {
             // The project refused to open: the app runs empty until the
             // user opens another one, so none of the dispositions apply.
             app.apply_startup_config_gate();
+            if ASK_KEYMAP_ON_LAUNCH {
+                app.raise_keymap_choice();
+            }
             if testbed {
                 app.screen = Screen::Testbed;
             }
@@ -681,6 +693,9 @@ impl App {
         }
 
         app.apply_startup_config_gate();
+        if ASK_KEYMAP_ON_LAUNCH {
+            app.raise_keymap_choice();
+        }
 
         if testbed {
             app.screen = Screen::Testbed;
@@ -700,6 +715,18 @@ impl App {
         };
         self.startup_config_gate = true;
         self.modals.push(Modal::ConfigStartup { error });
+    }
+
+    /// Raises the keyboard question when `config.toml` has never carried a
+    /// `keymap` (piece 4 spec §4.2). It stacks under the startup config
+    /// gate: with any modal up it waits for the next event boundary,
+    /// where the callers ask again.
+    pub(crate) fn raise_keymap_choice(&mut self) -> bool {
+        if self.ui_settings.keymap.is_some() || self.modals.top().is_some() {
+            return false;
+        }
+        self.push_modal(Modal::KeymapChoice { aimed: None });
+        true
     }
 
     /// The startup gate is sticky. `Action::ConfigStartupChoice` pops it
@@ -1822,7 +1849,8 @@ impl App {
         // including a nested dispatch that pushed the gate's own
         // continuation, or one that finally fixed `config.toml`.
         let regated = self.reraise_startup_config_gate();
-        changed || regated
+        let asked = ASK_KEYMAP_ON_LAUNCH && self.raise_keymap_choice();
+        changed || regated || asked
     }
 
     /// Keeps the response pane's jq bar and the editor's `jq` field in
@@ -2589,9 +2617,6 @@ impl App {
                 self.modals.pop();
                 true
             }
-            // Config changes are outside the undo system, so this confirm
-            // is the only guard against a reset -- there is no undo path
-            // to fall back on.
             Action::SetKeyProfile(profile) => {
                 use crate::components::settings::{SettingsField, keymap_spelling};
                 use crate::undo::UiValue;
@@ -2623,8 +2648,14 @@ impl App {
                         UiValue::Text(keymap_spelling(profile).to_string()),
                     );
                 }
+                if matches!(self.modals.top(), Some(Modal::KeymapChoice { .. })) {
+                    self.modals.pop();
+                }
                 true
             }
+            // Config changes are outside the undo system, so this confirm
+            // is the only guard against a reset -- there is no undo path
+            // to fall back on.
             Action::ResetConfigFile(file) => {
                 use crate::action::ConfigFile;
                 let (title, body) = match file {
@@ -9789,7 +9820,8 @@ impl App {
         // Not every key reaches `update` -- Esc on a modal just pops it
         // -- so the gate is re-checked at the event boundary too.
         let regated = self.reraise_startup_config_gate();
-        changed || regated
+        let asked = ASK_KEYMAP_ON_LAUNCH && self.raise_keymap_choice();
+        changed || regated || asked
     }
 
     fn handle_key_inner(&mut self, ev: KeyEvent) -> bool {

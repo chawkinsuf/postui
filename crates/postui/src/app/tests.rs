@@ -28921,3 +28921,77 @@ fn a_settings_reset_keeps_the_keyboard_profile() {
     assert!(written.contains("keymap = \"vim\""), "{written}");
     assert!(!written.contains("animations"), "{written}");
 }
+
+fn app_with_unset_keymap() -> App {
+    let mut app = App::new_for_test();
+    app.ui_settings.keymap = None;
+    assert!(app.raise_keymap_choice());
+    app
+}
+
+/// Spec §4.2: two equal answers, neither aimed; Esc and Enter do nothing
+/// until one is chosen, and the question is asked once.
+#[test]
+fn the_keyboard_question_offers_two_equal_answers_and_no_way_out() {
+    use crate::config::KeyProfile;
+    let mut app = app_with_unset_keymap();
+    for ev in [
+        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+    ] {
+        app.handle_key(ev);
+        assert!(
+            matches!(app.modals.top(), Some(Modal::KeymapChoice { .. })),
+            "{ev:?} answers nothing"
+        );
+    }
+    assert!(!app.modals.top_is_dismissable());
+    app.handle_key(plain('v'));
+    assert!(app.modals.is_empty());
+    assert_eq!(app.ui_settings.keymap, Some(KeyProfile::Vim));
+    assert!(!app.raise_keymap_choice(), "asked once");
+}
+
+#[test]
+fn arrows_aim_and_enter_confirms_the_keyboard_question() {
+    let mut app = app_with_unset_keymap();
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(app.ui_settings.keymap, Some(crate::config::KeyProfile::Arrows));
+    assert!(app.modals.is_empty());
+}
+
+#[test]
+fn clicking_a_keyboard_answer_chooses_it() {
+    let mut app = app_with_unset_keymap();
+    app.anims.finish_all();
+    click_hit(&mut app, Hit::KeymapChoice(crate::config::KeyProfile::Vim));
+    assert_eq!(app.profile(), crate::config::KeyProfile::Vim);
+    assert!(app.modals.is_empty());
+}
+
+/// It stacks under the startup gate: with any modal up it waits.
+#[test]
+fn the_keyboard_question_waits_for_other_modals() {
+    let mut app = App::new_for_test();
+    app.ui_settings.keymap = None;
+    app.push_modal(Modal::Message {
+        title: "t".into(),
+        body: "b".into(),
+    });
+    assert!(!app.raise_keymap_choice(), "another modal is up: ask later");
+    app.modals.pop();
+    assert!(app.raise_keymap_choice());
+}
+
+/// Plan M1 Deviation 2: the question is not raised before M3.
+#[test]
+fn the_keyboard_question_is_not_raised_before_m3() {
+    let mut app = App::new_for_test();
+    app.ui_settings.keymap = None;
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.update(Action::Render);
+    assert!(app.modals.is_empty(), "ASK_KEYMAP_ON_LAUNCH is off until M3");
+    assert_eq!(app.profile(), crate::config::KeyProfile::Arrows);
+}

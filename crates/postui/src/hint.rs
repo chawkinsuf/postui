@@ -468,6 +468,8 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         }),
         Hit::NewProjectBrowse => text("Browse for the project folder"),
         Hit::ConfirmChoice(_) => text("Answer with this choice"),
+        Hit::KeymapChoice(crate::config::KeyProfile::Arrows) => text("Use arrows and Enter"),
+        Hit::KeymapChoice(crate::config::KeyProfile::Vim) => text("Use vim keys"),
         Hit::ConfigStartupChoice(choice) => {
             use crate::action::ConfigStartupChoice as C;
             text(match choice {
@@ -932,6 +934,8 @@ mod tests {
             Hit::SettingsJqTab(crate::config::JqTab::Cycle),
             Hit::SettingsKeymap(crate::config::KeyProfile::Arrows),
             Hit::SettingsKeymap(crate::config::KeyProfile::Vim),
+            Hit::KeymapChoice(crate::config::KeyProfile::Arrows),
+            Hit::KeymapChoice(crate::config::KeyProfile::Vim),
             Hit::SettingsFile {
                 file: crate::action::ConfigFile::Config,
                 reset: false,

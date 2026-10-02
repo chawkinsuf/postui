@@ -31,7 +31,8 @@ impl App {
         // never reaches `update`, and an unanswered startup gate must
         // not be left down.
         let regated = self.reraise_startup_config_gate();
-        changed || regated
+        let asked = super::ASK_KEYMAP_ON_LAUNCH && self.raise_keymap_choice();
+        changed || regated || asked
     }
 
     fn handle_mouse_inner(&mut self, m: ratatui::crossterm::event::MouseEvent) -> bool {
@@ -1895,6 +1896,7 @@ impl App {
                 }
             }
             Hit::ConfigStartupChoice(choice) => self.update(Action::ConfigStartupChoice(choice)),
+            Hit::KeymapChoice(profile) => self.update(Action::SetKeyProfile(profile)),
             Hit::ConfigEditKeepEditing => {
                 let Some(Modal::ConfigEditInvalid { file, path, .. }) = self.modals.top() else {
                     return false;

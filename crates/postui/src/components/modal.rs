@@ -492,6 +492,13 @@ pub enum Modal {
         path: std::path::PathBuf,
         error: String,
     },
+    /// The first-launch keyboard question (piece 4 spec §4.2). It blocks
+    /// like `ConfigStartup`: no Esc and no click-away, because there is no
+    /// default profile to fall back to. `aimed` is the answer ←/→ point
+    /// at; Enter confirms it, and does nothing while nothing is aimed.
+    KeymapChoice {
+        aimed: Option<crate::config::KeyProfile>,
+    },
     /// A choice prompt: each option in `choices` is `(key, label, actions)` —
     /// pressing `key` (case-insensitive) dispatches `actions` and closes the
     /// modal; `Esc` closes with no actions.
@@ -655,6 +662,15 @@ fn config_startup_choices() -> [(char, &'static str, ConfigStartupChoice); 4] {
         ('r', "Reset", ConfigStartupChoice::Reset),
         ('i', "Ignore", ConfigStartupChoice::ContinueUnsaved),
         ('q', "Quit", ConfigStartupChoice::Quit),
+    ]
+}
+
+/// `Modal::KeymapChoice`'s two answers: the key, the painted label, the
+/// profile. Both paint as Secondary: neither is the default.
+fn keymap_choices() -> [(char, &'static str, crate::config::KeyProfile); 2] {
+    [
+        ('a', "Arrows and Enter", crate::config::KeyProfile::Arrows),
+        ('v', "Vim keys", crate::config::KeyProfile::Vim),
     ]
 }
 
@@ -1441,15 +1457,20 @@ impl ModalStack {
     /// own answers -- consulted by both `Esc` (`handle_key`'s `_ => None`
     /// arms swallow it already for these) and a click outside the modal
     /// (`Hit::ModalOutside` in `app/mouse.rs`), so the two paths can't
-    /// drift apart. Only `Modal::ConfigStartup` and `Modal::ConfigEditInvalid`
-    /// say no: the first blocks startup until one of its four choices is
-    /// made, the second holds a temp file with unsaved work until Keep
-    /// editing or Discard answers it (see each's doc comment) -- every
-    /// other modal stays dismissable.
+    /// drift apart. Only `Modal::ConfigStartup`, `Modal::ConfigEditInvalid`
+    /// and `Modal::KeymapChoice` say no: the first blocks startup until one
+    /// of its four choices is made, the second holds a temp file with unsaved
+    /// work until Keep editing or Discard answers it, the third has no
+    /// default to fall back to (see each's doc comment) -- every other modal
+    /// stays dismissable.
     pub fn top_is_dismissable(&self) -> bool {
         !matches!(
             self.top(),
-            Some(Modal::ConfigStartup { .. } | Modal::ConfigEditInvalid { .. })
+            Some(
+                Modal::ConfigStartup { .. }
+                    | Modal::ConfigEditInvalid { .. }
+                    | Modal::KeymapChoice { .. }
+            )
         )
     }
 
@@ -1611,6 +1632,13 @@ impl ModalStack {
             // No "esc/cancel" chip either: see the variant's doc comment.
             Modal::ConfigEditInvalid { .. } => {
                 vec![("k", "keep editing", None), ("d", "discard", None)]
+            }
+            Modal::KeymapChoice { aimed } => {
+                let mut chips = vec![("a", "arrows", None), ("v", "vim", None), ("\u{2190}\u{2192}", "aim", None)];
+                if aimed.is_some() {
+                    chips.push(("enter", "choose", None));
+                }
+                chips
             }
             // Handled above — its chips are the runtime answer keys.
             Modal::Confirm { .. } => unreachable!("Confirm returned early"),
@@ -1775,6 +1803,32 @@ impl ModalStack {
                 }),
                 _ => None, // swallowed: modals capture all input
             },
+            // No `Esc` arm, as for `ConfigStartup`. The answering action's
+            // own arm (`App`'s `SetKeyProfile`) pops the modal, so the
+            // results here never close it themselves.
+            Modal::KeymapChoice { aimed } => {
+                let choose = |profile| ModalResult {
+                    actions: vec![Action::SetKeyProfile(profile)],
+                    close: false,
+                    ..Default::default()
+                };
+                match key.code {
+                    KeyCode::Left => {
+                        *aimed = Some(crate::config::KeyProfile::Arrows);
+                        None
+                    }
+                    KeyCode::Right => {
+                        *aimed = Some(crate::config::KeyProfile::Vim);
+                        None
+                    }
+                    KeyCode::Enter => aimed.map(choose),
+                    KeyCode::Char(c) => keymap_choices()
+                        .into_iter()
+                        .find(|(k, _, _)| k.eq_ignore_ascii_case(&c))
+                        .map(|(_, _, profile)| choose(profile)),
+                    _ => None, // swallowed: modals capture all input
+                }
+            }
             Modal::Message { .. } => match key.code {
                 KeyCode::Esc | KeyCode::Enter => Some(ModalResult {
                     actions: vec![],
@@ -2603,143 +2657,70 @@ impl ModalStack {
         // Esc — live for every variant, not just Dropdown.
         hits.register(backdrop, crate::hit::Hit::ModalOutside);
         match top {
+            // Each choice of the three blocking dialogs is its own clickable
+            // painted button; there is deliberately no Cancel -- see the
+            // variants' doc comments.
             Modal::ConfigStartup { error } => {
-                let area = centered_rect(screen, 76.min(screen.width), 16.min(screen.height));
-                hits.register(area, crate::hit::Hit::ModalBody);
-                paint::floating_panel_settling(frame.buffer_mut(), area, screen, theme, t);
-                if t < 1.0 {
-                    return;
-                }
-
-                let title_y = area.y + 1;
-                paint::text(
-                    frame.buffer_mut(),
-                    area.x + 2,
-                    title_y,
+                let buttons: Vec<(&str, crate::hit::Hit, bool)> = config_startup_choices()
+                    .iter()
+                    .map(|(_, label, choice)| (*label, crate::hit::Hit::ConfigStartupChoice(*choice), false))
+                    .collect();
+                draw_blocking_dialog(
+                    frame,
+                    screen,
+                    theme,
+                    hits,
+                    hovered,
+                    t,
+                    (76, 16),
                     // Not "will not parse": `config_error` is also set
                     // for a file that could not be *read*. The error
                     // itself, in the body below, says which.
-                    &format!(
-                        "{} could not be loaded",
-                        crate::action::ConfigFile::Config.name()
-                    ),
-                    theme.text,
-                    theme.panel,
-                    true,
+                    &format!("{} could not be loaded", crate::action::ConfigFile::Config.name()),
+                    error,
+                    &buttons,
                 );
-
-                let choices = config_startup_choices();
-                let labels: Vec<&str> = choices.iter().map(|(_, l, _)| *l).collect();
-                let btn_row_w = button_row_width(&labels);
-                let buttons_y = area.y + area.height.saturating_sub(1 + BUTTON_HEIGHT);
-                let body_area = Rect {
-                    x: area.x + 2,
-                    y: title_y + 2,
-                    width: area.width.saturating_sub(4),
-                    height: buttons_y.saturating_sub(title_y + 2).saturating_sub(1),
-                };
-                frame.render_widget(
-                    Paragraph::new(error.as_str())
-                        .style(Style::default().fg(theme.text).bg(theme.panel))
-                        .wrap(Wrap { trim: false }),
-                    body_area,
-                );
-
-                // Each choice is its own clickable painted button
-                // (`Hit::ConfigStartupChoice`); there is deliberately no
-                // Cancel -- see the `Modal::ConfigStartup` doc comment.
-                let mut x = area.x + area.width.saturating_sub(2 + btn_row_w);
-                for (_, label, choice) in choices.iter() {
-                    let w = paint::button_min_width(label);
-                    let btn_area = Rect {
-                        x,
-                        y: buttons_y,
-                        width: w,
-                        height: BUTTON_HEIGHT,
-                    };
-                    let hit = crate::hit::Hit::ConfigStartupChoice(*choice);
-                    let choice_state = if hovered == Some(&hit) {
-                        ControlState::Hover
-                    } else {
-                        ControlState::Normal
-                    };
-                    Button {
-                        label,
-                        kind: ButtonKind::Secondary,
-                        state: choice_state,
-                    }
-                    .paint(frame.buffer_mut(), btn_area, theme);
-                    hits.register(btn_area, hit);
-                    x += w + 2;
-                }
             }
             Modal::ConfigEditInvalid { file, error, .. } => {
-                let area = centered_rect(screen, 76.min(screen.width), 16.min(screen.height));
-                hits.register(area, crate::hit::Hit::ModalBody);
-                paint::floating_panel_settling(frame.buffer_mut(), area, screen, theme, t);
-                if t < 1.0 {
-                    return;
-                }
-
-                let title_y = area.y + 1;
-                paint::text(
-                    frame.buffer_mut(),
-                    area.x + 2,
-                    title_y,
+                let buttons = [
+                    ("Keep editing", crate::hit::Hit::ConfigEditKeepEditing, false),
+                    ("Discard", crate::hit::Hit::ConfigEditDiscard, false),
+                ];
+                draw_blocking_dialog(
+                    frame,
+                    screen,
+                    theme,
+                    hits,
+                    hovered,
+                    t,
+                    (76, 16),
                     // Covers both ways this modal gets raised: the text
                     // didn't parse, or it parsed but the write to disk
                     // failed -- `error` (below) says which.
                     &format!("{} could not be applied", file.name()),
-                    theme.text,
-                    theme.panel,
-                    true,
+                    error,
+                    &buttons,
                 );
-
-                let choices: [(&str, crate::hit::Hit); 2] = [
-                    ("Keep editing", crate::hit::Hit::ConfigEditKeepEditing),
-                    ("Discard", crate::hit::Hit::ConfigEditDiscard),
-                ];
-                let labels: Vec<&str> = choices.iter().map(|(l, _)| *l).collect();
-                let btn_row_w = button_row_width(&labels);
-                let buttons_y = area.y + area.height.saturating_sub(1 + BUTTON_HEIGHT);
-                let body_area = Rect {
-                    x: area.x + 2,
-                    y: title_y + 2,
-                    width: area.width.saturating_sub(4),
-                    height: buttons_y.saturating_sub(title_y + 2).saturating_sub(1),
-                };
-                frame.render_widget(
-                    Paragraph::new(error.as_str())
-                        .style(Style::default().fg(theme.text).bg(theme.panel))
-                        .wrap(Wrap { trim: false }),
-                    body_area,
+            }
+            // Both answers are Secondary: neither is the default. The aimed
+            // one takes the keyboard's focus ring.
+            Modal::KeymapChoice { aimed } => {
+                let buttons: Vec<(&str, crate::hit::Hit, bool)> = keymap_choices()
+                    .iter()
+                    .map(|(_, label, profile)| (*label, crate::hit::Hit::KeymapChoice(*profile), *aimed == Some(*profile)))
+                    .collect();
+                draw_blocking_dialog(
+                    frame,
+                    screen,
+                    theme,
+                    hits,
+                    hovered,
+                    t,
+                    (64, 11),
+                    "Keyboard",
+                    "Use vim keys, or arrows and Enter? You can change this later on the Settings tab.",
+                    &buttons,
                 );
-
-                // Each choice is its own clickable painted button; there is
-                // deliberately no Cancel -- see the variant's doc comment.
-                let mut x = area.x + area.width.saturating_sub(2 + btn_row_w);
-                for (label, hit) in choices.iter() {
-                    let w = paint::button_min_width(label);
-                    let btn_area = Rect {
-                        x,
-                        y: buttons_y,
-                        width: w,
-                        height: BUTTON_HEIGHT,
-                    };
-                    let choice_state = if hovered == Some(hit) {
-                        ControlState::Hover
-                    } else {
-                        ControlState::Normal
-                    };
-                    Button {
-                        label,
-                        kind: ButtonKind::Secondary,
-                        state: choice_state,
-                    }
-                    .paint(frame.buffer_mut(), btn_area, theme);
-                    hits.register(btn_area, hit.clone());
-                    x += w + 2;
-                }
             }
             Modal::Message { title, body } => {
                 let area = centered_rect(screen, 60.min(screen.width), 13.min(screen.height));
@@ -3754,6 +3735,78 @@ pub fn slugify(s: &str) -> String {
         .map(|c| if c == ' ' { '-' } else { c })
         .filter(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '_' || *c == '-')
         .collect()
+}
+
+/// The layout the three blocking dialogs share (`ConfigStartup`,
+/// `ConfigEditInvalid`, `KeymapChoice`): a centered panel at `size`, a bold
+/// title, a wrapped body, and a right-aligned row of Secondary buttons, each
+/// `(label, hit, aimed)`. A button paints Focused when `aimed`, else Hover
+/// under the pointer, else Normal. Paints only the empty panel while the
+/// modal-open animation `t` is below 1.
+#[allow(clippy::too_many_arguments)]
+fn draw_blocking_dialog(
+    frame: &mut Frame,
+    screen: Rect,
+    theme: &Theme,
+    hits: &mut crate::hit::HitMap,
+    hovered: Option<&crate::hit::Hit>,
+    t: f32,
+    size: (u16, u16),
+    title: &str,
+    body: &str,
+    buttons: &[(&str, crate::hit::Hit, bool)],
+) {
+    let area = centered_rect(screen, size.0.min(screen.width), size.1.min(screen.height));
+    hits.register(area, crate::hit::Hit::ModalBody);
+    paint::floating_panel_settling(frame.buffer_mut(), area, screen, theme, t);
+    if t < 1.0 {
+        return;
+    }
+
+    let title_y = area.y + 1;
+    paint::text(frame.buffer_mut(), area.x + 2, title_y, title, theme.text, theme.panel, true);
+
+    let labels: Vec<&str> = buttons.iter().map(|(l, _, _)| *l).collect();
+    let btn_row_w = button_row_width(&labels);
+    let buttons_y = area.y + area.height.saturating_sub(1 + BUTTON_HEIGHT);
+    let body_area = Rect {
+        x: area.x + 2,
+        y: title_y + 2,
+        width: area.width.saturating_sub(4),
+        height: buttons_y.saturating_sub(title_y + 2).saturating_sub(1),
+    };
+    frame.render_widget(
+        Paragraph::new(body)
+            .style(Style::default().fg(theme.text).bg(theme.panel))
+            .wrap(Wrap { trim: false }),
+        body_area,
+    );
+
+    let mut x = area.x + area.width.saturating_sub(2 + btn_row_w);
+    for (label, hit, aimed) in buttons {
+        let w = paint::button_min_width(label);
+        let btn_area = Rect {
+            x,
+            y: buttons_y,
+            width: w,
+            height: BUTTON_HEIGHT,
+        };
+        let state = if *aimed {
+            ControlState::Focused
+        } else if hovered == Some(hit) {
+            ControlState::Hover
+        } else {
+            ControlState::Normal
+        };
+        Button {
+            label,
+            kind: ButtonKind::Secondary,
+            state,
+        }
+        .paint(frame.buffer_mut(), btn_area, theme);
+        hits.register(btn_area, hit.clone());
+        x += w + 2;
+    }
 }
 
 pub fn centered_rect(screen: Rect, width: u16, height: u16) -> Rect {
