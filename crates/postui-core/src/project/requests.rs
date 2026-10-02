@@ -321,6 +321,33 @@ impl Project {
         })
     }
 
+    /// `order_insert_after`'s twin for a put *above* the anchor: the new
+    /// entry takes the anchor's own index and pushes it down.
+    pub(super) fn order_insert_before(&mut self, space: &str, anchor: &str, rel: &str) -> Result<Vec<OrderEdit>, Error> {
+        self.order_edit(space, |order| {
+            if order.iter().any(|e| e == rel) {
+                return Vec::new();
+            }
+            let Some(i) = order.iter().position(|e| e == anchor) else { return Vec::new() };
+            order.insert(i, rel.to_string());
+            vec![OrderEdit::Inserted { space: space.to_string(), rel: rel.to_string(), at: i }]
+        })
+    }
+
+    /// One level of `space`'s requests as relative slugs, in the order the
+    /// sidebar draws them right now: the listed ones first, then the rest
+    /// alphabetically ([`order::order_level`]'s display rule). It seeds an
+    /// order array that does not exist yet, so a put and a first drag agree
+    /// on what "the order" was before the edit.
+    pub(super) fn level_shown(&self, space: &str, level: &str) -> Vec<String> {
+        order::displayed_slugs(&self.listing, order::space_order(&self.meta, space), space)
+            .iter()
+            .filter_map(|slug| order::relative(slug, space))
+            .filter(|rel| order::level_of(rel) == level)
+            .map(str::to_string)
+            .collect()
+    }
+
     /// One read-modify-write per space, however many requests moved.
     pub(super) fn order_move_all(&mut self, from: &str, to: &str, moves: &[(String, String)]) -> Result<(), Error> {
         self.order_edit(from, |order| {
@@ -528,6 +555,34 @@ impl Project {
         Ok((pairs, left_behind))
     }
 
+    /// Deletes every request in `slugs` as one undo entry (piece 4 spec
+    /// §5.2: a counted `dd` is one step). Duplicates are dropped. Every
+    /// slug is pre-flighted (valid and present) before the first file
+    /// moves, the way [`Self::move_all_requests`] does, so a refusal
+    /// deletes nothing. The per-slug deletes nest inside one transaction,
+    /// which they join, so the journal gets one entry.
+    pub fn delete_requests(&mut self, slugs: &[String]) -> Result<(), Error> {
+        let mut batch: Vec<String> = Vec::new();
+        for s in slugs {
+            if !batch.contains(s) {
+                batch.push(s.clone());
+            }
+        }
+        for s in &batch {
+            let path = request_rel(s)?;
+            if !self.disk.is_file(&path) {
+                return Err(Error::NotFound(s.clone()));
+            }
+        }
+        let meta = self.meta_for_moves(Vec::new());
+        self.transaction("delete requests", meta, |p| {
+            for s in &batch {
+                p.delete_request(s)?;
+            }
+            Ok(())
+        })
+    }
+
     pub fn delete_request(&mut self, slug: &str) -> Result<(), Error> {
         let path = request_rel(slug)?;
         if !self.disk.is_file(&path) {
@@ -549,12 +604,32 @@ impl Project {
     /// `<name> copy`, `<name> copy 2`, … next to its source; a broken
     /// file is byte-copied to `<slug>-copy`.
     pub fn duplicate_request(&mut self, slug: &str) -> Result<String, Error> {
+        self.duplicate_request_at(slug, slug, false)
+    }
+
+    /// `duplicate_request` with the copy's place chosen by the caller
+    /// (piece 4 spec §5.2: `p`/`P`). `anchor` is a full slug. When it is
+    /// not the source itself and lies in the source's space, the copy is
+    /// made in the anchor's folder (same `<name> copy` collision rule,
+    /// applied there) and its order entry lands directly below the anchor,
+    /// or above it when `above`. Otherwise the copy is made beside its
+    /// source, as a plain duplicate always has. An anchor outside the
+    /// copy's space leaves the copy unlisted. Only a put (anchor other than
+    /// the source) seeds a missing order array; a plain duplicate writes
+    /// none.
+    pub fn duplicate_request_at(&mut self, slug: &str, anchor: &str, above: bool) -> Result<String, Error> {
         let source = request_rel(slug)?;
         let bytes = self
             .disk
             .read_bytes(&source)?
             .ok_or_else(|| Error::NotFound(slug.to_string()))?;
-        let (folder, leaf) = slug.rsplit_once('/').unwrap_or(("", slug));
+        let (src_folder, leaf) = slug.rsplit_once('/').unwrap_or(("", slug));
+        let folder = match (Self::split_space(slug), Self::split_space(anchor)) {
+            (Some((src_space, _)), Some((a_space, _))) if anchor != slug && src_space == a_space => {
+                anchor.rsplit_once('/').map_or("", |(f, _)| f)
+            }
+            _ => src_folder,
+        };
         let parsed = std::str::from_utf8(&bytes)
             .ok()
             .and_then(|s| HttpRequest::from_toml_str(s).ok());
@@ -572,27 +647,57 @@ impl Project {
                 (new_slug, req.to_toml_string().into_bytes())
             }
             None => {
-                let mut new_slug = format!("{slug}-copy");
+                let stem = if folder.is_empty() { leaf.to_string() } else { format!("{folder}/{leaf}") };
+                let mut new_slug = format!("{stem}-copy");
                 let mut n = 2;
                 while self.request_exists(&new_slug) {
-                    new_slug = format!("{slug}-copy-{n}");
+                    new_slug = format!("{stem}-copy-{n}");
                     n += 1;
                 }
                 (new_slug, bytes)
             }
         };
+        // A put into a space that was never reordered has no order array,
+        // so the anchor names no position and the insert below would do
+        // nothing, leaving the copy to the alphabetical fallback rather
+        // than beside the cursor. Seed the anchor's level from the order
+        // the sidebar draws now, through the merge a first drag uses.
+        // Computed before the copy exists (the pre-put order) and written
+        // inside the transaction, so the undo takes it away. A plain
+        // duplicate (anchor == slug) never seeds.
+        let seed = Some(anchor)
+            .filter(|a| *a != slug)
+            .and_then(Self::split_space)
+            .filter(|(a_space, a_rel)| !order::space_order(&self.meta, a_space).iter().any(|e| e == a_rel))
+            .map(|(a_space, a_rel)| {
+                let level = order::level_of(a_rel);
+                let shown = self.level_shown(a_space, level);
+                let before = order::space_order(&self.meta, a_space).to_vec();
+                (a_space.to_string(), order::merge_level(&before, level, &shown))
+            });
         let meta = self.meta_for_moves(Vec::new());
-        let slug = slug.to_string();
+        let anchor = anchor.to_string();
         self.transaction("duplicate request", meta, |p| {
+            if let Some((space, after)) = seed {
+                p.order_edit(&space, |order| {
+                    *order = after;
+                    Vec::new()
+                })?;
+            }
             let path = request_rel(&new_slug)?;
             p.disk.write_new(&path, "")?;
             p.record(Op::Created { path: path.clone() });
             p.disk.write_bytes(&path, &text)?;
             p.relist();
-            if let (Some((space, anchor)), Some((_, rel))) =
-                (Self::split_space(&slug), Self::split_space(&new_slug))
+            if let (Some((a_space, a_rel)), Some((space, rel))) =
+                (Self::split_space(&anchor), Self::split_space(&new_slug))
+                && a_space == space
             {
-                p.order_insert_after(space, anchor, rel)?;
+                if above {
+                    p.order_insert_before(space, a_rel, rel)?;
+                } else {
+                    p.order_insert_after(space, a_rel, rel)?;
+                }
             }
             Ok(())
         })?;
@@ -823,6 +928,247 @@ mod tests {
         let e = p.journal.pop_undo().unwrap();
         assert_eq!(e.ops.len(), 1);
         assert!(matches!(&e.ops[0], Op::Created { path } if path.as_str() == format!("requests/{copy}.toml")));
+    }
+
+    /// Spec §5.2: a batch delete is one journal entry, refused whole on a
+    /// bad slug, and its undo restores every file byte for byte plus the
+    /// order list.
+    #[test]
+    fn delete_requests_is_one_entry_and_undoes_byte_identical() {
+        let (dir, _p) = fixture();
+        std::fs::write(
+            dir.path().join("project.toml"),
+            "spaces = [\"main\", \"auth\"]\n[space.main]\norder = [\"r1\", \"r2\", \"ping\"]\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("requests/main/r1.toml"), "method = \"GET\"\nurl = \"u1\"\n").unwrap();
+        std::fs::write(dir.path().join("requests/main/r2.toml"), "# kept\nmethod = \"GET\"\nurl = \"u2\"\n").unwrap();
+        let (mut p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
+        let before = (read(&dir, "requests/main/r1.toml"), read(&dir, "requests/main/r2.toml"));
+        p.delete_requests(&["main/r1".into(), "main/r2".into()]).unwrap();
+        assert_eq!(p.journal_len(), 1, "one entry");
+        assert!(!dir.path().join("requests/main/r1.toml").exists());
+        assert!(!dir.path().join("requests/main/r2.toml").exists());
+        assert_eq!(crate::order::space_order(p.meta(), "main"), ["ping"]);
+        p.undo().unwrap();
+        assert_eq!(
+            (read(&dir, "requests/main/r1.toml"), read(&dir, "requests/main/r2.toml")),
+            before
+        );
+        assert_eq!(crate::order::space_order(p.meta(), "main"), ["r1", "r2", "ping"]);
+        p.redo().unwrap();
+        assert!(!dir.path().join("requests/main/r1.toml").exists());
+        assert!(!dir.path().join("requests/main/r2.toml").exists());
+    }
+
+    #[test]
+    fn delete_requests_refuses_whole_when_one_is_missing() {
+        let (dir, mut p) = fixture();
+        std::fs::write(dir.path().join("requests/main/r1.toml"), "method = \"GET\"\nurl = \"u\"\n").unwrap();
+        p.relist();
+        let r = p.delete_requests(&["main/r1".into(), "main/nope".into()]);
+        assert!(matches!(r, Err(Error::NotFound(_))), "{r:?}");
+        assert!(dir.path().join("requests/main/r1.toml").is_file());
+        assert_eq!(p.journal_len(), 0);
+    }
+
+    /// A listed file whose name is not a valid slug refuses the whole
+    /// batch before anything moves.
+    #[test]
+    fn delete_requests_refuses_whole_on_an_invalid_slug() {
+        let (dir, mut p) = fixture();
+        std::fs::write(dir.path().join("requests/main/r1.toml"), "method = \"GET\"\nurl = \"u\"\n").unwrap();
+        p.relist();
+        let r = p.delete_requests(&["main/r1".into(), "main/Get User".into()]);
+        assert!(matches!(r, Err(Error::BadName(_))), "{r:?}");
+        assert!(dir.path().join("requests/main/r1.toml").is_file());
+        assert_eq!(p.journal_len(), 0);
+    }
+
+    #[test]
+    fn delete_requests_dedupes() {
+        let (dir, mut p) = fixture();
+        std::fs::write(dir.path().join("requests/main/r1.toml"), "method = \"GET\"\nurl = \"u\"\n").unwrap();
+        p.relist();
+        p.delete_requests(&["main/r1".into(), "main/r1".into()]).unwrap();
+        assert_eq!(p.journal_len(), 1);
+    }
+
+    /// Nested transactions join the outer one (nothing pinned it before).
+    #[test]
+    fn a_nested_transaction_joins_the_outer_entry() {
+        let (dir, mut p) = fixture();
+        std::fs::write(dir.path().join("requests/main/r1.toml"), "method = \"GET\"\nurl = \"u\"\n").unwrap();
+        p.relist();
+        p.transaction("outer", EntryMeta::default(), |p| {
+            p.delete_request("main/r1")?;
+            p.delete_request("main/ping")
+        })
+        .unwrap();
+        assert_eq!(p.journal_len(), 1);
+        p.undo().unwrap();
+        assert!(dir.path().join("requests/main/r1.toml").is_file());
+        assert!(dir.path().join("requests/main/ping.toml").is_file());
+    }
+
+    /// Three listed requests in one space, so a put's anchor is a real
+    /// position in the order list rather than the alphabetical fallback.
+    fn ordered_fixture() -> (tempfile::TempDir, Project) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("requests/main")).unwrap();
+        std::fs::write(
+            dir.path().join("project.toml"),
+            "spaces = [\"main\"]\n\n[space.main]\norder = [\"a\", \"b\", \"c\"]\n",
+        )
+        .unwrap();
+        for slug in ["main/a", "main/b", "main/c"] {
+            std::fs::write(
+                dir.path().join(format!("requests/{slug}.toml")),
+                "method = \"GET\"\nurl = \"u\"\n",
+            )
+            .unwrap();
+        }
+        let (p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
+        (dir, p)
+    }
+
+    /// `ordered_fixture`'s twin with no order array at all: a fresh
+    /// project, where the sidebar falls back to alphabetical.
+    fn unordered_fixture() -> (tempfile::TempDir, Project) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("requests/main")).unwrap();
+        std::fs::write(dir.path().join("project.toml"), "spaces = [\"main\"]\n").unwrap();
+        for slug in ["main/a", "main/b", "main/c"] {
+            std::fs::write(
+                dir.path().join(format!("requests/{slug}.toml")),
+                "method = \"GET\"\nurl = \"u\"\n",
+            )
+            .unwrap();
+        }
+        let (p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
+        (dir, p)
+    }
+
+    /// `unordered_fixture` plus a folder `f` holding `x`, for a put whose
+    /// anchor sits in another folder than its source.
+    fn folder_fixture() -> (tempfile::TempDir, Project) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("requests/main/f")).unwrap();
+        std::fs::write(dir.path().join("project.toml"), "spaces = [\"main\"]\n").unwrap();
+        for slug in ["main/a", "main/f/x"] {
+            std::fs::write(
+                dir.path().join(format!("requests/{slug}.toml")),
+                "method = \"GET\"\nurl = \"u\"\n",
+            )
+            .unwrap();
+        }
+        let (p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
+        (dir, p)
+    }
+
+    /// `P`: the copy takes the anchor's own slot, pushing it down.
+    #[test]
+    fn duplicate_at_inserts_the_copy_above_its_anchor() {
+        let (_dir, mut p) = ordered_fixture();
+        let copy = p.duplicate_request_at("main/a", "main/c", true).unwrap();
+        assert_eq!(copy, "main/a-copy");
+        assert_eq!(order::space_order(p.meta(), "main"), ["a", "b", "a-copy", "c"]);
+    }
+
+    /// `p`: the copy lands directly below the anchor.
+    #[test]
+    fn duplicate_at_inserts_the_copy_below_its_anchor() {
+        let (_dir, mut p) = ordered_fixture();
+        let copy = p.duplicate_request_at("main/a", "main/c", false).unwrap();
+        assert_eq!(copy, "main/a-copy");
+        assert_eq!(order::space_order(p.meta(), "main"), ["a", "b", "c", "a-copy"]);
+    }
+
+    /// A put in a project with no order array still lands where the
+    /// cursor is: the level is seeded from the display order first.
+    #[test]
+    fn a_put_with_no_order_array_seeds_one_from_the_display_order() {
+        let (_dir, mut p) = unordered_fixture();
+        assert!(order::space_order(p.meta(), "main").is_empty());
+        let copy = p.duplicate_request_at("main/a", "main/c", false).unwrap();
+        assert_eq!(copy, "main/a-copy");
+        assert_eq!(order::space_order(p.meta(), "main"), ["a", "b", "c", "a-copy"]);
+    }
+
+    #[test]
+    fn a_put_above_with_no_order_array_seeds_one_too() {
+        let (_dir, mut p) = unordered_fixture();
+        p.duplicate_request_at("main/a", "main/c", true).unwrap();
+        assert_eq!(order::space_order(p.meta(), "main"), ["a", "b", "a-copy", "c"]);
+    }
+
+    /// The seed is part of the put's own transaction: the undo takes the
+    /// array away again with the copy (undo restores exactly).
+    #[test]
+    fn undoing_that_put_removes_the_order_array_it_created() {
+        let (dir, mut p) = unordered_fixture();
+        let before = read(&dir, "project.toml").unwrap();
+        p.duplicate_request_at("main/a", "main/c", false).unwrap();
+        p.undo().unwrap();
+        assert!(order::space_order(p.meta(), "main").is_empty());
+        assert_eq!(read(&dir, "project.toml").as_deref(), Some(before.as_str()));
+        assert!(!p.request_exists("main/a-copy"));
+    }
+
+    /// The old entry point is the new one anchored on its own source.
+    #[test]
+    fn duplicate_request_anchors_on_its_own_source() {
+        let (_dir, mut p) = ordered_fixture();
+        p.duplicate_request("main/a").unwrap();
+        assert_eq!(order::space_order(p.meta(), "main"), ["a", "a-copy", "b", "c"]);
+    }
+
+    /// A plain Duplicate behaves as it always did: it never writes an
+    /// order array into a space that was never reordered.
+    #[test]
+    fn a_plain_duplicate_never_seeds_an_order_array() {
+        let (_dir, mut p) = unordered_fixture();
+        p.duplicate_request("main/a").unwrap();
+        assert!(order::space_order(p.meta(), "main").is_empty());
+    }
+
+    /// A put's copy is made in the anchor's folder, directly after the
+    /// anchor in that level, and the undo restores `project.toml` exactly.
+    #[test]
+    fn a_put_into_another_folder_creates_the_copy_there() {
+        let (dir, mut p) = folder_fixture();
+        let before = read(&dir, "project.toml").unwrap();
+        let copy = p.duplicate_request_at("main/a", "main/f/x", false).unwrap();
+        assert_eq!(copy, "main/f/a-copy");
+        assert!(dir.path().join("requests/main/f/a-copy.toml").is_file());
+        assert!(!dir.path().join("requests/main/a-copy.toml").exists());
+        assert_eq!(order::space_order(p.meta(), "main"), ["f/x", "f/a-copy"]);
+        p.undo().unwrap();
+        assert!(!dir.path().join("requests/main/f/a-copy.toml").exists());
+        assert_eq!(read(&dir, "project.toml").as_deref(), Some(before.as_str()));
+    }
+
+    #[test]
+    fn a_put_above_in_another_folder_takes_the_anchors_slot() {
+        let (_dir, mut p) = folder_fixture();
+        let copy = p.duplicate_request_at("main/a", "main/f/x", true).unwrap();
+        assert_eq!(copy, "main/f/a-copy");
+        assert_eq!(order::space_order(p.meta(), "main"), ["f/a-copy", "f/x"]);
+    }
+
+    /// The `<name> copy` collision rule runs in the anchor's folder.
+    #[test]
+    fn a_put_into_another_folder_numbers_a_name_clash_there() {
+        let (dir, _p) = folder_fixture();
+        std::fs::write(
+            dir.path().join("requests/main/f/a-copy.toml"),
+            "name = \"a copy\"\nmethod = \"GET\"\nurl = \"u\"\n",
+        )
+        .unwrap();
+        let (mut p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
+        let copy = p.duplicate_request_at("main/a", "main/f/x", false).unwrap();
+        assert_eq!(copy, "main/f/a-copy-2");
+        assert!(read(&dir, "requests/main/f/a-copy-2.toml").unwrap().contains("a copy 2"));
     }
 
     #[test]
