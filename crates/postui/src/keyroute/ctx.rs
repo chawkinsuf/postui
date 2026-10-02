@@ -25,6 +25,17 @@ pub struct KeyCtx {
     pub cap: usize,
 }
 
+/// What a keycap's spelling depends on (spec §4.6): the profile, the
+/// surface, and whether a field has the caret (a live field takes every
+/// key the table would otherwise bind there). The `Copy` part of the
+/// context, for the footer and the hover hints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SpellCtx {
+    pub profile: KeyProfile,
+    pub surface: Surface,
+    pub field_live: bool,
+}
+
 /// The thing the keys go to. It never names a stale pane: `App::surface`
 /// reads the modal stack, the screen, the focus and the editor's
 /// sub-focus every time.

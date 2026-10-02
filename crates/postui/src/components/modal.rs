@@ -1,6 +1,7 @@
 use super::line_input::LineInput;
 use crate::action::{Action, ConfigStartupChoice, ExtractDestination};
 use crate::components::varmanager::VarStructOp;
+use crate::keyroute::spell::Key;
 use crate::paint::{
     self, BUTTON_HEIGHT, Button, ButtonKind, ControlState, FIELD_HEIGHT, TextField,
 };
@@ -1531,7 +1532,7 @@ impl ModalStack {
                     ("\u{2191}", "back"),
                 ]
                 .into_iter()
-                .map(|(k, l)| (k.to_string(), l.to_string(), None))
+                .map(|(k, l)| (Key::Named(k), l.to_string(), None))
                 .collect(),
             );
         }
@@ -1539,10 +1540,11 @@ impl ModalStack {
         // between an edit and the button row): the field rule's other
         // half offers "enter edit" to reopen it, the shift+Enter/ctrl+Enter
         // confirm chord (Task 10, spec 2026-09-16) that submits from right
-        // here, and the Esc that reaches the button row. `u undo` joins
-        // them only while the modal's own field-close stack (Task 11) has
-        // something to undo — reaching for it with nothing recorded would
-        // just type nowhere.
+        // here, and the Esc that reaches the button row. The undo chip
+        // joins them only while the modal's own field-close stack (Task
+        // 11) has something to undo — reaching for it with nothing
+        // recorded would do nothing. Its key is spelled from what runs
+        // `Action::Undo` here: `^Z` in arrows, vim's `u` row.
         if self.button_focus.is_none()
             && self.top().is_some_and(Modal::is_form)
             && !self.field_open()
@@ -1553,9 +1555,9 @@ impl ModalStack {
             // advertising them ahead of the generic field chips.
             if let Some(Modal::FieldsEditor(state)) = self.top() {
                 let removed = state.rows.get(state.focus).is_some_and(|r| r.removed);
-                chips.push(("alt+a".to_string(), "add field".to_string(), None));
+                chips.push((Key::Named("alt+a"), "add field".to_string(), None));
                 chips.push((
-                    "alt+d".to_string(),
+                    Key::Named("alt+d"),
                     if removed {
                         "restore field"
                     } else {
@@ -1566,12 +1568,12 @@ impl ModalStack {
                 ));
             }
             chips.extend([
-                ("enter".to_string(), "edit".to_string(), None),
-                ("⇧enter".to_string(), "confirm".to_string(), None),
-                ("esc".to_string(), "buttons".to_string(), None),
+                (Key::Named("enter"), "edit".to_string(), None),
+                (Key::Named("⇧enter"), "confirm".to_string(), None),
+                (Key::Named("esc"), "buttons".to_string(), None),
             ]);
             if !self.steps.is_empty() {
-                chips.push(("u".to_string(), "undo".to_string(), None));
+                chips.push((Key::Of(Action::Undo), "undo".to_string(), None));
             }
             return Some(chips);
         }
@@ -1580,18 +1582,29 @@ impl ModalStack {
         if let Modal::Confirm { choices, .. } = self.top()? {
             let mut chips: Vec<crate::components::footer::FooterChip> = choices
                 .iter()
-                .map(|(key, label, _)| (key.to_string(), label.to_lowercase(), None))
+                .map(|(key, label, _)| (Key::Answer(*key), label.to_lowercase(), None))
                 .collect();
-            chips.push(("esc".into(), "cancel".into(), None));
+            chips.push((Key::Named("esc"), "cancel".into(), None));
             return Some(chips);
         }
-        let chips: Vec<(&'static str, &'static str, Option<Action>)> = match self.top()? {
+        // The startup gate's chips are its buttons' own keys, read from
+        // the same table its key arm reads (plan M1 Deviation 17). No
+        // "esc/cancel" chip: this modal blocks until answered.
+        if let Modal::ConfigStartup { .. } = self.top()? {
+            return Some(
+                config_startup_choices()
+                    .into_iter()
+                    .map(|(c, label, _)| (Key::Answer(c), label.to_lowercase(), None))
+                    .collect(),
+            );
+        }
+        let chips: Vec<(Key, &'static str, Option<Action>)> = match self.top()? {
             Modal::FieldsEditor(state) => {
                 let removed = state.rows.get(state.focus).is_some_and(|r| r.removed);
                 vec![
-                    ("alt+a", "add field", None),
+                    (Key::Named("alt+a"), "add field", None),
                     (
-                        "alt+d",
+                        Key::Named("alt+d"),
                         if removed {
                             "restore field"
                         } else {
@@ -1599,18 +1612,18 @@ impl ModalStack {
                         },
                         None,
                     ),
-                    ("enter", "apply", None),
-                    ("esc", "done", Some(Action::CloseField)),
+                    (Key::Named("enter"), "apply", None),
+                    (Key::Named("esc"), "done", Some(Action::CloseField)),
                 ]
             }
             Modal::MultiPrompt { fields, kind, .. } => {
-                let mut chips: Vec<(&'static str, &'static str, Option<Action>)> = Vec::new();
+                let mut chips: Vec<(Key, &'static str, Option<Action>)> = Vec::new();
                 if let PromptKind::EditVarValue { scope_values, .. } = kind {
                     let (chosen, stored) = chosen_scope(fields, scope_values);
-                    chips.push(("←→", "write to", None));
+                    chips.push((Key::Named("←→"), "write to", None));
                     if stored {
                         chips.push((
-                            "alt+d",
+                            Key::Named("alt+d"),
                             match destination_from_label(&chosen) {
                                 ExtractDestination::ActiveEnv => "remove env value",
                                 ExtractDestination::Request => "remove request value",
@@ -1620,30 +1633,27 @@ impl ModalStack {
                         ));
                     }
                 } else if fields.len() > 1 {
-                    chips.push(("tab", "next field", None));
+                    chips.push((Key::Named("tab"), "next field", None));
                 }
-                chips.push(("enter", "save", None));
-                chips.push(("esc", "done", Some(Action::CloseField)));
+                chips.push((Key::Named("enter"), "save", None));
+                chips.push((Key::Named("esc"), "done", Some(Action::CloseField)));
                 chips
             }
-            Modal::Message { .. } => vec![("enter", "close", None)],
-            // No "esc/cancel" chip: this modal blocks until answered.
-            Modal::ConfigStartup { .. } => {
-                vec![
-                    ("e", "edit…", None),
-                    ("r", "reset", None),
-                    ("c", "continue unsaved", None),
-                    ("q", "quit", None),
-                ]
-            }
+            Modal::Message { .. } => vec![(Key::Named("enter"), "close", None)],
+            // Handled above — its chips are its buttons' keys.
+            Modal::ConfigStartup { .. } => unreachable!("ConfigStartup returned early"),
             // No "esc/cancel" chip either: see the variant's doc comment.
             Modal::ConfigEditInvalid { .. } => {
-                vec![("k", "keep editing", None), ("d", "discard", None)]
+                vec![(Key::Answer('k'), "keep editing", None), (Key::Answer('d'), "discard", None)]
             }
             Modal::KeymapChoice { aimed } => {
-                let mut chips = vec![("a", "arrows", None), ("v", "vim", None), ("\u{2190}\u{2192}", "aim", None)];
+                let mut chips = vec![
+                    (Key::Answer('a'), "arrows", None),
+                    (Key::Answer('v'), "vim", None),
+                    (Key::Named("\u{2190}\u{2192}"), "aim", None),
+                ];
                 if aimed.is_some() {
-                    chips.push(("enter", "choose", None));
+                    chips.push((Key::Named("enter"), "choose", None));
                 }
                 chips
             }
@@ -1655,52 +1665,58 @@ impl ModalStack {
                 kind: PromptKind::NewSelector { on_toggle, .. },
                 ..
             } => {
-                let mut chips = vec![("\u{2191}\u{2193}", "move focus", None)];
+                let mut chips = vec![(Key::Named("\u{2191}\u{2193}"), "move focus", None)];
                 if *on_toggle {
-                    chips.push(("space", "toggle", None));
+                    chips.push((Key::Named("space"), "toggle", None));
                 }
-                chips.push(("enter", "save", None));
-                chips.push(("esc", "done", Some(Action::CloseField)));
+                chips.push((Key::Named("enter"), "save", None));
+                chips.push((Key::Named("esc"), "done", Some(Action::CloseField)));
                 chips
             }
             // The secret prompt's reveal chord: the eye button beside the
             // field is its mouse twin, so the key is advertised here and
-            // nowhere inside the modal.
+            // nowhere inside the modal. Only reached with the field open
+            // (a selected field returned above): with no caret, vim's
+            // `ctrl+r` is the router's redo row, so the chip must not
+            // show there (plan M1 Deviation 27).
             Modal::Prompt { revealed, kind, .. } if kind.is_secret() => vec![
-                ("ctrl+r", if *revealed { "hide" } else { "reveal" }, None),
-                ("enter", "save", None),
-                ("esc", "done", Some(Action::CloseField)),
+                (Key::Named("ctrl+r"), if *revealed { "hide" } else { "reveal" }, None),
+                (Key::Named("enter"), "save", None),
+                (Key::Named("esc"), "done", Some(Action::CloseField)),
             ],
-            Modal::Prompt { .. } => vec![("enter", "save", None), ("esc", "done", Some(Action::CloseField))],
+            Modal::Prompt { .. } => vec![
+                (Key::Named("enter"), "save", None),
+                (Key::Named("esc"), "done", Some(Action::CloseField)),
+            ],
             Modal::NewProject { .. } => vec![
-                ("alt+b", "browse folder", None),
-                ("enter", "save", None),
-                ("esc", "done", Some(Action::CloseField)),
+                (Key::Named("alt+b"), "browse folder", None),
+                (Key::Named("enter"), "save", None),
+                (Key::Named("esc"), "done", Some(Action::CloseField)),
             ],
             Modal::FilePicker(state) => {
                 use crate::components::file_picker::PickerMode;
-                let mut chips = vec![("↑↓", "navigate", None)];
+                let mut chips = vec![(Key::Named("↑↓"), "navigate", None)];
                 match state.mode() {
-                    PickerMode::SaveFile => chips.push(("enter", "save", None)),
+                    PickerMode::SaveFile => chips.push((Key::Named("enter"), "save", None)),
                     PickerMode::ChooseDir => {
-                        chips.push(("enter", "open", None));
-                        chips.push(("alt+enter", "open this folder", None));
+                        chips.push((Key::Named("enter"), "open", None));
+                        chips.push((Key::Named("alt+enter"), "open this folder", None));
                     }
                 }
-                chips.push(("alt+h", "hidden files", None));
+                chips.push((Key::Named("alt+h"), "hidden files", None));
                 // A filter picker, like the other pickers: Esc closes it.
-                chips.push(("esc", "close", None));
+                chips.push((Key::Named("esc"), "close", None));
                 chips
             }
             Modal::Chooser(state) => {
-                let mut chips = vec![("↑↓", "navigate", None)];
+                let mut chips = vec![(Key::Named("↑↓"), "navigate", None)];
                 // The theme picker's dark/light switch: Tab flips it (the
                 // label on the title row is its mouse twin).
                 if state.has_toggle() {
-                    chips.push(("tab", "toggle", None));
+                    chips.push((Key::Named("tab"), "toggle", None));
                 }
-                chips.push(("enter", "select", None));
-                chips.push(("esc", "close", None));
+                chips.push((Key::Named("enter"), "select", None));
+                chips.push((Key::Named("esc"), "close", None));
                 chips
             }
             // Only the Insert-mode picker has a typed filter to advertise;
@@ -1709,21 +1725,21 @@ impl ModalStack {
                 if state.mode == crate::components::var_picker::PickerMode::Insert =>
             {
                 vec![
-                    ("↑↓", "navigate", None),
-                    ("a–z", "filter", None),
-                    ("enter", "select", None),
-                    ("esc", "close", None),
+                    (Key::Named("↑↓"), "navigate", None),
+                    (Key::Named("a–z"), "filter", None),
+                    (Key::Named("enter"), "select", None),
+                    (Key::Named("esc"), "close", None),
                 ]
             }
             Modal::VarPicker(_) => vec![
-                ("↑↓", "navigate", None),
-                ("enter", "select", None),
-                ("esc", "close", None),
+                (Key::Named("↑↓"), "navigate", None),
+                (Key::Named("enter"), "select", None),
+                (Key::Named("esc"), "close", None),
             ],
             Modal::Palette(_) => vec![
-                ("↑↓", "navigate", None),
-                ("enter", "run", None),
-                ("esc", "close", None),
+                (Key::Named("↑↓"), "navigate", None),
+                (Key::Named("enter"), "run", None),
+                (Key::Named("esc"), "close", None),
             ],
             // An anchored popup, not a screen-owning modal: the screen's
             // own chips stay put (and nothing dims).
@@ -1731,14 +1747,14 @@ impl ModalStack {
         };
         let mut chips: Vec<crate::components::footer::FooterChip> = chips
             .into_iter()
-            .map(|(k, l, a)| (k.to_string(), l.to_string(), a))
+            .map(|(k, l, a)| (k, l.to_string(), a))
             .collect();
         // Reaching here with the top modal a form means the field is open
         // (the button-row and selected-field cases both returned above):
         // the confirm chord (Task 10) works from a field too, so its chip
         // joins the field's own "esc done".
         if self.top().is_some_and(Modal::is_form) {
-            chips.push(("⇧enter".to_string(), "confirm".to_string(), None));
+            chips.push((Key::Named("⇧enter"), "confirm".to_string(), None));
         }
         Some(chips)
     }
@@ -3830,6 +3846,7 @@ pub fn centered_rect(screen: Rect, width: u16, height: u16) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::keyroute::spell::spelled;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::crossterm::event::KeyModifiers;
@@ -4269,7 +4286,7 @@ mod tests {
                 ('k', "Keep".into(), vec![]),
             ],
         });
-        let chips = m.footer_chips().expect("a confirm supplies chips");
+        let chips = spelled(m.footer_chips().expect("a confirm supplies chips"));
         assert!(
             chips
                 .iter()
@@ -4297,7 +4314,7 @@ mod tests {
             "user".into(),
             "qa".into(),
         )));
-        let chips = m.footer_chips().expect("the picker supplies chips");
+        let chips = spelled(m.footer_chips().expect("the picker supplies chips"));
         assert!(
             !chips.iter().any(|(_, l, _)| l == "filter"),
             "no filter chip in select mode: {chips:?}"
@@ -4306,7 +4323,7 @@ mod tests {
 
         let mut m = ModalStack::default();
         m.push(Modal::VarPicker(VarPickerState::new(vec![], false)));
-        let chips = m.footer_chips().expect("the picker supplies chips");
+        let chips = spelled(m.footer_chips().expect("the picker supplies chips"));
         assert!(
             chips.iter().any(|(k, l, _)| k == "a–z" && l == "filter"),
             "insert mode keeps its filter chip: {chips:?}"
@@ -4333,7 +4350,7 @@ mod tests {
         assert!(content.contains(crate::glyph::EYE), "{content}");
         assert!(content.contains("reveal"), "{content}");
         assert!(hits.rect_of(&crate::hit::Hit::ModalRevealToggle).is_some());
-        let chips = m.footer_chips().unwrap();
+        let chips = spelled(m.footer_chips().unwrap());
         assert!(
             chips.iter().any(|(k, l, _)| k == "ctrl+r" && l == "reveal"),
             "{chips:?}"
@@ -4345,7 +4362,7 @@ mod tests {
         let (content, _) = draw_modal_with_hits(&mut m);
         assert!(content.contains(crate::glyph::EYE_OFF), "{content}");
         assert!(content.contains("hide"), "{content}");
-        let chips = m.footer_chips().unwrap();
+        let chips = spelled(m.footer_chips().unwrap());
         assert!(
             chips.iter().any(|(k, l, _)| k == "ctrl+r" && l == "hide"),
             "{chips:?}"
@@ -4364,7 +4381,7 @@ mod tests {
         });
         let (_, hits) = draw_modal_with_hits(&mut m);
         assert!(hits.rect_of(&crate::hit::Hit::ModalRevealToggle).is_none());
-        assert!(!m.footer_chips().unwrap().iter().any(|(k, _, _)| k == "ctrl+r"));
+        assert!(!spelled(m.footer_chips().unwrap()).iter().any(|(k, _, _)| k == "ctrl+r"));
     }
 
     fn draw_modal_buf(m: &mut ModalStack) -> ratatui::buffer::Buffer {
@@ -5934,12 +5951,12 @@ mod tests {
     #[test]
     fn form_footer_says_done_in_a_field_and_cancel_on_the_buttons() {
         let mut m = prompt_stack();
-        let chips = m.footer_chips().unwrap();
+        let chips = spelled(m.footer_chips().unwrap());
         assert!(chips.iter().any(|(k, l, _)| k == "esc" && l == "done"));
         assert!(!chips.iter().any(|(k, l, _)| k == "esc" && l == "cancel"));
         m.handle_key(key(KeyCode::Esc)); // closes the field to selected
         m.handle_key(key(KeyCode::Esc)); // reaches the button row
-        let chips = m.footer_chips().unwrap();
+        let chips = spelled(m.footer_chips().unwrap());
         assert!(chips.iter().any(|(k, l, _)| k == "esc" && l == "cancel"));
         assert!(chips.iter().any(|(k, l, _)| k == "\u{2191}" && l == "back"));
         assert!(chips.iter().any(|(k, l, _)| k == "enter" && l == "save"));
@@ -5953,7 +5970,7 @@ mod tests {
     fn a_selected_modal_field_advertises_edit_and_confirm_and_buttons() {
         let mut m = prompt_stack();
         m.handle_key(key(KeyCode::Esc)); // closes the field to selected
-        let chips = m.footer_chips().expect("form modal always has chips");
+        let chips = spelled(m.footer_chips().expect("form modal always has chips"));
         assert!(chips.iter().any(|(k, l, _)| k == "enter" && l == "edit"));
         assert!(
             chips
@@ -5963,25 +5980,27 @@ mod tests {
         assert!(chips.iter().any(|(k, l, _)| k == "esc" && l == "buttons"));
     }
 
-    /// The `u undo` chip on a selected field only shows up once the
-    /// modal's own step stack (Task 11) actually has a close to undo —
-    /// an empty stack would just make `u` type nowhere.
+    /// The undo chip on a selected field only shows up once the modal's
+    /// own step stack (Task 11) actually has a close to undo — an empty
+    /// stack would make the key do nothing. Its key is the one that runs
+    /// `Action::Undo`: `^Z` in arrows, where bare `u` no longer undoes
+    /// (plan M1 Deviation 26).
     #[test]
     fn the_selected_fields_undo_chip_tracks_the_step_stack() {
         let mut m = prompt_stack();
         m.handle_key(key(KeyCode::Esc)); // closes the (unedited) field
-        let chips = m.footer_chips().unwrap();
+        let chips = spelled(m.footer_chips().unwrap());
         assert!(
-            !chips.iter().any(|(k, l, _)| k == "u" && l == "undo"),
+            !chips.iter().any(|(_, l, _)| l == "undo"),
             "nothing recorded yet: {chips:?}"
         );
 
         let mut m = prompt_stack();
         m.handle_key(key(KeyCode::Char('a')));
         m.handle_key(key(KeyCode::Esc)); // closes the edited field, records a step
-        let chips = m.footer_chips().unwrap();
+        let chips = spelled(m.footer_chips().unwrap());
         assert!(
-            chips.iter().any(|(k, l, _)| k == "u" && l == "undo"),
+            chips.iter().any(|(k, l, _)| k == "^Z" && l == "undo"),
             "a step was recorded: {chips:?}"
         );
     }
@@ -5996,8 +6015,7 @@ mod tests {
             vec![],
         )));
         assert!(
-            m.footer_chips()
-                .unwrap()
+            spelled(m.footer_chips().unwrap())
                 .iter()
                 .any(|(k, l, _)| k == "esc" && l == "close")
         );
@@ -6012,8 +6030,7 @@ mod tests {
             ),
         ));
         assert!(
-            m.footer_chips()
-                .unwrap()
+            spelled(m.footer_chips().unwrap())
                 .iter()
                 .any(|(k, l, _)| k == "esc" && l == "close")
         );
@@ -6024,8 +6041,7 @@ mod tests {
             choices: vec![],
         });
         assert!(
-            m.footer_chips()
-                .unwrap()
+            spelled(m.footer_chips().unwrap())
                 .iter()
                 .any(|(k, l, _)| k == "esc" && l == "cancel")
         );
@@ -6302,8 +6318,7 @@ mod tests {
         m.push(sample_fields_editor());
         m.handle_key(key(KeyCode::Esc)); // row 0 selected
         let labels = |m: &ModalStack| -> Vec<String> {
-            m.footer_chips()
-                .unwrap()
+            spelled(m.footer_chips().unwrap())
                 .into_iter()
                 .map(|(k, l, _)| format!("{k} {l}"))
                 .collect()

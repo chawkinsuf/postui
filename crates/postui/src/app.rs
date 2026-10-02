@@ -1227,6 +1227,7 @@ impl App {
                 Hit::TipEdit(name) => self.tip_edit_verb(name),
                 _ => crate::hint::TipEditVerb::default(),
             },
+            spell: self.spell_ctx(),
         }
     }
 

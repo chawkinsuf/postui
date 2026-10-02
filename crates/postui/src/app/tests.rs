@@ -2112,7 +2112,7 @@ fn the_footer_field_flag_is_pane_local() {
     );
     assert!(app.pane_field_open(PaneId::Editor));
 
-    let chips = crate::components::footer::footer_chips(
+    let chips = crate::keyroute::spell::spelled(crate::components::footer::footer_chips(
         PaneId::Response,
         false,
         false,
@@ -2122,7 +2122,7 @@ fn the_footer_field_flag_is_pane_local() {
         None,
         crate::components::footer::JqBarState::Open,
         app.pane_field_open(PaneId::Response),
-    );
+    ));
     assert!(
         !chips.iter().any(|(k, l, _)| *k == "enter" && *l == "search"),
         "no search box is open: {chips:?}"
@@ -8365,11 +8365,13 @@ fn manage_environments_pane_has_a_tls_control_that_writes_the_force() {
     );
     // Advertised in the footer.
     assert!(
-        app.manage
-            .list
-            .footer_chips(ManageTab::Environments, app.proj())
-            .iter()
-            .any(|(k, l, _)| *k == "t" && *l == "tls"),
+        crate::keyroute::spell::spelled(
+            app.manage
+                .list
+                .footer_chips(ManageTab::Environments, app.proj())
+        )
+        .iter()
+        .any(|(k, l, _)| *k == "t" && *l == "tls"),
     );
 }
 
@@ -16765,7 +16767,7 @@ fn vm_footer_advertises_the_option_verbs_while_the_grid_has_focus() {
         selector: "user".into(),
         name: "alice".into(),
     };
-    let chips = app.varmanager.footer_chips(app.proj(), None);
+    let chips = crate::keyroute::spell::spelled(app.varmanager.footer_chips(app.proj(), None));
     assert!(
         chips
             .iter()
@@ -16848,7 +16850,7 @@ fn form_focus_advertises_and_handles_the_field_verbs() {
     let secret = Action::ToggleSecretVar {
         name: "base_url".into(),
     };
-    let chips = app.varmanager.footer_chips(app.proj(), None);
+    let chips = crate::keyroute::spell::spelled(app.varmanager.footer_chips(app.proj(), None));
     assert!(
         chips
             .iter()
@@ -16874,7 +16876,7 @@ fn form_focus_advertises_and_handles_the_field_verbs() {
         crate::components::varmanager::FormStop::Field(crate::components::varmanager::VmField::EnvValue),
         "three downs land on the env-value field"
     );
-    let chips = app.varmanager.footer_chips(app.proj(), None);
+    let chips = crate::keyroute::spell::spelled(app.varmanager.footer_chips(app.proj(), None));
     assert!(
         chips
             .iter()
@@ -16884,7 +16886,7 @@ fn form_focus_advertises_and_handles_the_field_verbs() {
     app.handle_key(plain('x'));
     let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     assert!(!on_disk.contains("base_url"), "{on_disk}");
-    let chips = app.varmanager.footer_chips(app.proj(), None);
+    let chips = crate::keyroute::spell::spelled(app.varmanager.footer_chips(app.proj(), None));
     assert!(
         !chips.iter().any(|(_, l, _)| *l == "clear env value"),
         "nothing stored, nothing to clear: {chips:?}"
@@ -16896,7 +16898,8 @@ fn form_focus_advertises_and_handles_the_field_verbs() {
         name: "base_url".into(),
     };
     let open_request = app.editor.current_request();
-    let chips = app.varmanager.footer_chips(app.proj(), Some(&open_request));
+    let chips =
+        crate::keyroute::spell::spelled(app.varmanager.footer_chips(app.proj(), Some(&open_request)));
     assert!(
         chips
             .iter()
@@ -16931,14 +16934,14 @@ fn form_focus_r_toggles_reveal_on_a_secret_variable() {
     });
     app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
 
-    let chips = app.varmanager.footer_chips(app.proj(), None);
+    let chips = crate::keyroute::spell::spelled(app.varmanager.footer_chips(app.proj(), None));
     assert!(
         chips.iter().any(|(k, l, _)| *k == "r" && *l == "reveal"),
         "{chips:?}"
     );
     app.handle_key(plain('r'));
     assert!(app.varmanager.form.revealed, "r reveals the secret");
-    let chips = app.varmanager.footer_chips(app.proj(), None);
+    let chips = crate::keyroute::spell::spelled(app.varmanager.footer_chips(app.proj(), None));
     assert!(
         chips.iter().any(|(k, l, _)| *k == "r" && *l == "hide"),
         "{chips:?}"
@@ -16961,7 +16964,7 @@ fn vm_footer_advertises_edit_fields_on_a_selector() {
     let edit_fields = Action::PromptGroupFields {
         selector: "user".into(),
     };
-    let chips = app.varmanager.footer_chips(app.proj(), None);
+    let chips = crate::keyroute::spell::spelled(app.varmanager.footer_chips(app.proj(), None));
     assert!(
         chips
             .iter()
@@ -16973,7 +16976,7 @@ fn vm_footer_advertises_edit_fields_on_a_selector() {
     goto_row(&mut app, |r| {
         r == &crate::components::varmanager::VmRow::Var("base_url".into())
     });
-    let chips = app.varmanager.footer_chips(app.proj(), None);
+    let chips = crate::keyroute::spell::spelled(app.varmanager.footer_chips(app.proj(), None));
     assert!(
         !chips.iter().any(|(_, l, _)| *l == "edit fields"),
         "{chips:?}"
@@ -16993,7 +16996,7 @@ fn vm_footer_rename_delete_act_on_the_open_form_from_a_header_row() {
         r == &crate::components::varmanager::VmRow::Var("base_url".into())
     });
     app.varmanager.left_cursor = 0; // the "VARIABLES" section header
-    let chips = app.varmanager.footer_chips(app.proj(), None);
+    let chips = crate::keyroute::spell::spelled(app.varmanager.footer_chips(app.proj(), None));
     assert!(
         chips.iter().any(|(k, _, a)| *k == "e"
             && *a
@@ -17024,11 +17027,10 @@ fn vm_footer_drops_chips_with_no_target() {
 
     // Fresh open: nothing selected, no detail — no rename/delete chips.
     app.update(Action::OpenManage { tab: None });
-    let keys: Vec<&str> = app
-        .varmanager
-        .footer_chips(app.proj(), None)
-        .iter()
-        .map(|(k, _, _)| *k)
+    use crate::keyroute::spell::spelled;
+    let keys: Vec<String> = spelled(app.varmanager.footer_chips(app.proj(), None))
+        .into_iter()
+        .map(|(k, _, _)| k)
         .collect();
     assert_eq!(keys, vec!["n", "a"]);
 
@@ -17036,11 +17038,9 @@ fn vm_footer_drops_chips_with_no_target() {
     goto_group(&mut app, "user");
     app.varmanager.focus = VmFocus::Grid;
     app.varmanager.grid.cursor = (2, 0); // alice, bob, then the ghost
-    let keys: Vec<&str> = app
-        .varmanager
-        .footer_chips(app.proj(), None)
-        .iter()
-        .map(|(k, _, _)| *k)
+    let keys: Vec<String> = spelled(app.varmanager.footer_chips(app.proj(), None))
+        .into_iter()
+        .map(|(k, _, _)| k)
         .collect();
     assert_eq!(keys, vec!["o"]);
 }
@@ -17630,9 +17630,8 @@ fn every_named_action_is_mouse_reachable() {
 
     // Group A: footer/toolbar chips — the same function `draw_footer`
     // paints from. The always-present quit hint and palette chip are
-    // registered separately in `draw_footer` itself (`QUIT_LABEL` /
-    // `PALETTE_CHIP`, not part of `footer_chips`), so they're added by
-    // hand here.
+    // registered separately in `draw_footer` itself (not part of
+    // `footer_chips`), so they're added by hand here.
     let mut mouse_reachable: Vec<Action> = vec![Action::Quit, Action::OpenPalette];
     for pane in [PaneId::Sidebar, PaneId::Editor, PaneId::Response] {
         mouse_reachable.extend(
@@ -22426,7 +22425,7 @@ fn multiple_outputs_run_together_without_a_blank_line() {
 
 #[test]
 fn the_focused_bar_advertises_enter_apply_and_esc_done() {
-    let chips = crate::components::footer::footer_chips(
+    let chips = crate::keyroute::spell::spelled(crate::components::footer::footer_chips(
         PaneId::Response,
         false,
         false,
@@ -22436,8 +22435,8 @@ fn the_focused_bar_advertises_enter_apply_and_esc_done() {
         None,
         crate::components::footer::JqBarState::Focused,
         false,
-    );
-    let keys: Vec<(&str, &str)> = chips.iter().map(|(k, l, _)| (*k, *l)).collect();
+    ));
+    let keys: Vec<(&str, &str)> = chips.iter().map(|(k, l, _)| (k.as_str(), *l)).collect();
     assert_eq!(
         keys,
         vec![
@@ -22798,7 +22797,7 @@ fn the_footer_and_palette_reach_the_jq_bar() {
     let mut app = App::new_for_test();
     ready_response(&mut app, JQ_BODY);
     app.focus = PaneId::Response;
-    let chips = crate::components::footer::footer_chips(
+    let chips = crate::keyroute::spell::spelled(crate::components::footer::footer_chips(
         PaneId::Response,
         false,
         false,
@@ -22808,7 +22807,7 @@ fn the_footer_and_palette_reach_the_jq_bar() {
         None,
         crate::components::footer::JqBarState::Closed,
         false,
-    );
+    ));
     assert!(
         chips
             .iter()
@@ -23088,7 +23087,7 @@ fn right_click_on_the_jq_bar_offers_copy_and_paste_only() {
 fn the_response_footer_always_offers_alt_q_filter_and_close_only_while_open() {
     use crate::components::footer::JqBarState;
     let chips = |state: JqBarState| {
-        crate::components::footer::footer_chips(
+        crate::keyroute::spell::spelled(crate::components::footer::footer_chips(
             PaneId::Response,
             false,
             false,
@@ -23098,7 +23097,7 @@ fn the_response_footer_always_offers_alt_q_filter_and_close_only_while_open() {
             None,
             state,
             false,
-        )
+        ))
     };
     let find = |state: JqBarState, key: &str| {
         chips(state)
@@ -29471,4 +29470,82 @@ fn the_footer_shows_vims_mode_and_pending_keys() {
     assert_eq!(app.mode_indicator(), Some("INSERT"), "the body types until M3");
     app.update(Action::OpenPalette);
     assert_eq!(app.mode_indicator(), Some("INSERT"), "a picker types");
+}
+
+/// The text of the footer chip that dispatches `action`, spaces collapsed
+/// (`^P commands`), or `None` when no such chip is painted.
+fn footer_chip_text(app: &mut App, action: Action) -> Option<String> {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    app.anims.finish_all();
+    let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
+    let rect = app.hits.rect_of(&Hit::FooterChip(action))?;
+    let buf = terminal.backend().buffer();
+    let y = rect.y + rect.height / 2;
+    let text: String = (rect.x..rect.x + rect.width).map(|x| buf[(x, y)].symbol()).collect();
+    Some(text.split_whitespace().collect::<Vec<_>>().join(" "))
+}
+
+/// Spec §4.6: the footer names the keys the profile really binds.
+#[test]
+fn footer_keycaps_follow_the_profile() {
+    use crate::config::KeyProfile;
+    let (mut app, _dir) = sidebar_test_app_three_flat_rows();
+    app.focus = PaneId::Sidebar;
+    assert_eq!(footer_chip_text(&mut app, Action::OpenPalette).as_deref(), Some("^P commands"));
+    assert_eq!(footer_chip_text(&mut app, Action::PromptNewRequest).as_deref(), Some("n new"));
+    assert_eq!(footer_chip_text(&mut app, Action::Quit).as_deref(), Some("q quit"));
+    app.use_profile(KeyProfile::Vim);
+    assert_eq!(footer_chip_text(&mut app, Action::OpenPalette).as_deref(), Some(": commands"));
+    assert_eq!(
+        footer_chip_text(&mut app, Action::PromptNewRequest),
+        None,
+        "a verb chip waits for M2's vim key"
+    );
+    assert_eq!(footer_chip_text(&mut app, Action::Quit).as_deref(), Some("^C quit"), "vim gave up q");
+}
+
+/// Plan M1 Deviation 17: the startup gate's chip names the key that works.
+#[test]
+fn the_startup_gate_chip_names_its_real_key() {
+    let mut app = App::new_for_test();
+    app.config_error = Some("bad".into());
+    app.apply_startup_config_gate();
+    let footer = footer_text(&mut app);
+    assert!(footer.contains("ignore"), "{footer}");
+    assert!(!footer.contains("continue unsaved"), "{footer}");
+}
+
+/// Plan M1 Deviations 26 and 27: a form modal's field-close undo chip
+/// names the key that undoes it in each profile (arrows lost bare `u`),
+/// and a secret prompt's `ctrl+r reveal` chip shows only while the field
+/// has the caret: without it, vim's `ctrl+r` is the router's redo.
+#[test]
+fn a_form_modals_undo_and_reveal_chips_name_live_keys() {
+    use crate::components::line_input::LineInput;
+    use crate::components::modal::{Modal, PromptKind};
+    use crate::config::KeyProfile;
+    for (profile, undo) in [(KeyProfile::Arrows, "^Z undo"), (KeyProfile::Vim, "u undo")] {
+        let mut app = App::new_for_test();
+        app.use_profile(profile);
+        app.modals.push(Modal::Prompt {
+            title: "Secret".into(),
+            input: LineInput::new(""),
+            kind: PromptKind::SecretValue {
+                name: "token".into(),
+                env: "dev".into(),
+                then_send: false,
+            },
+            revealed: false,
+        });
+        let footer = footer_text(&mut app);
+        assert!(footer.contains("ctrl+r reveal"), "{profile:?}, caret: {footer}");
+        app.handle_key(plain('a'));
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(!app.field_caret().is_live(), "{profile:?}: the field is only selected");
+        let footer = footer_text(&mut app);
+        assert!(!footer.contains("reveal"), "{profile:?}, no caret: {footer}");
+        assert!(footer.contains(undo), "{profile:?}: {footer}");
+    }
 }

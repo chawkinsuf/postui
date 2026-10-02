@@ -21,6 +21,7 @@ use crate::action::{Action, ConfigFile};
 use crate::components::line_input::LineInput;
 use crate::config::{JqTab, KeyProfile, UiSettings};
 use crate::hit::{Hit, HitMap};
+use crate::keyroute::spell::{Key, Nav};
 use crate::paint::{
     ButtonKind, ControlSlot, ControlState, PROPERTY_MAX_W, Pill, PropertyRow, Toggle, WELL_PAD,
     Well, fill, label_column, pill_min_width, text,
@@ -384,21 +385,21 @@ impl SettingsTab {
     /// The focused row's keys, for the footer. A live edit owns the
     /// keyboard, so its own pair is advertised instead -- every letter
     /// types into the field and the row chips would all be dead.
-    pub fn footer_chips(&self) -> Vec<(&'static str, &'static str, Option<Action>)> {
+    pub fn footer_chips(&self) -> Vec<(Key, &'static str, Option<Action>)> {
         if self.editing.is_some() {
             // Esc commits the edit and closes the field (the field rule,
             // spec 2026-09-15) — the chip names that, and dispatches it.
             return vec![
-                ("enter", "save", None),
-                ("esc", "done", Some(Action::CloseField)),
+                (Key::Named("enter"), "save", None),
+                (Key::Named("esc"), "done", Some(Action::CloseField)),
             ];
         }
-        let mut chips = vec![("↑↓", "move", None), ("enter", "change", None)];
+        let mut chips = vec![(Key::Nav(Nav::UpDown), "move", None), (Key::Named("enter"), "change", None)];
         if matches!(self.row(), SettingsRow::File(_)) {
             // Names what the key dispatches, not the two buttons it
             // aims between: ←→ moves the selection, enter is what
             // actually edits or resets.
-            chips.push(("←→", "select button", None));
+            chips.push((Key::Nav(Nav::LeftRight), "select button", None));
         }
         chips
     }
@@ -886,13 +887,13 @@ mod tests {
     /// advertise keys that do nothing here.
     #[test]
     fn the_tab_publishes_its_own_footer_chips() {
-        let chips = SettingsTab::default().footer_chips();
+        let chips = crate::keyroute::spell::spelled(SettingsTab::default().footer_chips());
         assert!(!chips.is_empty(), "a focused area advertises its keys");
         assert!(chips.iter().any(|(k, _, _)| *k == "enter"));
         // The focused row is a settings row, so exactly the two row keys
         // are advertised: not the Files pair, and not a list tab's
         // new/rename/delete set carried over.
-        let keys: Vec<_> = chips.iter().map(|(k, l, _)| (*k, *l)).collect();
+        let keys: Vec<_> = chips.iter().map(|(k, l, _)| (k.as_str(), *l)).collect();
         assert_eq!(keys, vec![("↑↓", "move"), ("enter", "change")]);
     }
 
@@ -905,7 +906,7 @@ mod tests {
             editing: Some(SettingsField::AiCmd),
             ..Default::default()
         };
-        let chips = tab.footer_chips();
+        let chips = crate::keyroute::spell::spelled(tab.footer_chips());
         assert!(chips.iter().any(|(k, l, _)| *k == "enter" && *l == "save"));
         assert!(
             chips
@@ -919,9 +920,10 @@ mod tests {
     #[test]
     fn only_a_file_row_advertises_the_left_right_pair() {
         let mut tab = SettingsTab::default();
-        assert!(!tab.footer_chips().iter().any(|(k, _, _)| *k == "←→"));
+        use crate::keyroute::spell::spelled;
+        assert!(!spelled(tab.footer_chips()).iter().any(|(k, _, _)| *k == "←→"));
         tab.cursor = SettingsTab::rows().len() - 1;
-        assert!(tab.footer_chips().iter().any(|(k, _, _)| *k == "←→"));
+        assert!(spelled(tab.footer_chips()).iter().any(|(k, _, _)| *k == "←→"));
     }
 
     /// Reset is destructive, so aiming it on one file must not arm it on

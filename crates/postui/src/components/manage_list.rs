@@ -8,6 +8,7 @@
 use crate::action::Action;
 use crate::components::manage::ManageTab;
 use crate::hit::{Hit, HitMap};
+use crate::keyroute::spell::{Key, Nav};
 use crate::paint::{
     Button, ButtonKind, ControlState, ListRow, PROPERTY_MAX_W, Pill, PropertyRow, RowHighlight,
     TALL_PILL_H, button_min_width, fill, label_column, pill_min_width, text,
@@ -628,7 +629,7 @@ impl ManageList {
         &self,
         tab: ManageTab,
         ctx: &Project,
-    ) -> Vec<(&'static str, &'static str, Option<Action>)> {
+    ) -> Vec<(Key, &'static str, Option<Action>)> {
         let selected = self.selected(tab, ctx);
         if self.focus == ListFocus::Detail && selected.is_some() {
             // The pane's stop: the arrows aim, Enter fires the aim (named
@@ -636,27 +637,27 @@ impl ManageList {
             // is back to the list rather than out of the screen.
             let mut chips = Vec::new();
             if Self::detail_rows(tab).len() > 1 {
-                chips.push(("↑↓", "move", None));
+                chips.push((Key::Nav(Nav::UpDown), "move", None));
             }
-            chips.push(("←→", "select", None));
+            chips.push((Key::Nav(Nav::LeftRight), "select", None));
             if let Some((verb, _)) = self.aimed(tab) {
-                chips.push(("enter", verb, self.aimed_action(tab, ctx)));
+                chips.push((Key::Named("enter"), verb, self.aimed_action(tab, ctx)));
             }
-            chips.push(("esc", "back", None));
+            chips.push((Key::Named("esc"), "back", None));
             return chips;
         }
         let mut chips = vec![
-            ("n", "new", Some(Self::new_action(tab))),
-            ("r", "rename", selected.map(|n| Self::rename_action(tab, n))),
-            ("d", "delete", selected.map(|n| Self::delete_action(tab, n))),
+            (Key::Verb("n"), "new", Some(Self::new_action(tab))),
+            (Key::Verb("r"), "rename", selected.map(|n| Self::rename_action(tab, n))),
+            (Key::Verb("d"), "delete", selected.map(|n| Self::delete_action(tab, n))),
         ];
         if tab == ManageTab::Spaces {
-            chips.push(("m", "move all", selected.map(Self::move_all_action)));
+            chips.push((Key::Verb("m"), "move all", selected.map(Self::move_all_action)));
         } else {
-            chips.push(("t", "tls", selected.map(|n| Self::cycle_tls_action(ctx, n))));
+            chips.push((Key::Verb("t"), "tls", selected.map(|n| Self::cycle_tls_action(ctx, n))));
         }
         // Both lists reorder with the same keys.
-        chips.push(("alt+↑↓", "reorder", None));
+        chips.push((Key::Named("alt+↑↓"), "reorder", None));
         chips
     }
 
@@ -1414,7 +1415,7 @@ mod tests {
         let mut l = ManageList::default();
         draw_at(&mut l, ManageTab::Environments, &ctx, 100);
         l.handle_key(key(KeyCode::Right), ManageTab::Environments, &ctx);
-        let chips = l.footer_chips(ManageTab::Environments, &ctx);
+        let chips = crate::keyroute::spell::spelled(l.footer_chips(ManageTab::Environments, &ctx));
         assert!(chips.iter().any(|(k, l, _)| *k == "↑↓" && *l == "move"), "{chips:?}");
         assert!(chips.iter().any(|(k, l, _)| *k == "←→" && *l == "select"), "{chips:?}");
         assert!(
@@ -1427,7 +1428,7 @@ mod tests {
         let mut s = ManageList::default();
         draw_at(&mut s, ManageTab::Spaces, &ctx, 100);
         s.handle_key(key(KeyCode::Right), ManageTab::Spaces, &ctx);
-        let chips = s.footer_chips(ManageTab::Spaces, &ctx);
+        let chips = crate::keyroute::spell::spelled(s.footer_chips(ManageTab::Spaces, &ctx));
         assert!(!chips.iter().any(|(k, _, _)| *k == "↑↓"), "one row: {chips:?}");
     }
 

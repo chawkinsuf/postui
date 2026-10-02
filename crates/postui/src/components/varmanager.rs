@@ -15,6 +15,7 @@
 use crate::action::Action;
 use crate::components::line_input::LineInput;
 use crate::hit::{Hit, HitMap, ScrollbarSpec};
+use crate::keyroute::spell::Key;
 use crate::layout::PaneId;
 use crate::paint::{
     Button, ButtonKind, ControlSlot, ControlState, ListRow, PROPERTY_MAX_W, Pill, PropertyRow,
@@ -892,7 +893,7 @@ impl VarManager {
         &self,
         ctx: &Project,
         open_request: Option<&HttpRequest>,
-    ) -> Vec<(&'static str, &'static str, Option<Action>)> {
+    ) -> Vec<(Key, &'static str, Option<Action>)> {
         // A live cell/field edit owns the keyboard: every letter types
         // into the input, so the single-key chips below would all be dead.
         // Advertise the edit's own keys instead — plain hints, since
@@ -903,18 +904,18 @@ impl VarManager {
             // rule, spec 2026-09-15), so the chip says so — and dispatches
             // it, since the pointer has no Esc key.
             return vec![
-                ("enter", "save", None),
-                ("esc", "done", Some(Action::CloseField)),
+                (Key::Named("enter"), "save", None),
+                (Key::Named("esc"), "done", Some(Action::CloseField)),
             ];
         }
         // Form focus advertises the form's own quick actions — the
         // keyboard twins of its inline controls (secret toggle, the
         // env row's "✕ remove", the Promote button).
         if let (VmDetail::Var(name), VmFocus::Form) = (&self.detail, self.focus) {
-            let mut chips: Vec<(&'static str, &'static str, Option<Action>)> = Vec::new();
+            let mut chips: Vec<(Key, &'static str, Option<Action>)> = Vec::new();
             if ctx.variables().vars.contains_key(name) {
                 chips.push((
-                    "s",
+                    Key::Verb("s"),
                     "secret",
                     Some(Action::ToggleSecretVar { name: name.clone() }),
                 ));
@@ -924,7 +925,7 @@ impl VarManager {
             // the main screen's "enter open".
             if ctx.variables().vars.get(name).is_some_and(|d| d.secret) {
                 chips.push((
-                    "r",
+                    Key::Verb("r"),
                     if self.form.revealed { "hide" } else { "reveal" },
                     None,
                 ));
@@ -934,14 +935,14 @@ impl VarManager {
             // pane's own affordance already says.
             if self.form_cursor == FormStop::Secret && ctx.variables().vars.contains_key(name) {
                 chips.push((
-                    "enter",
+                    Key::Named("enter"),
                     "toggle secret",
                     Some(Action::ToggleSecretVar { name: name.clone() }),
                 ));
             }
             if self.form_cursor == FormStop::Field(VmField::EnvValue) && env_stores(ctx, name) {
                 chips.push((
-                    "x",
+                    Key::Verb("x"),
                     "clear env value",
                     Some(Action::RemoveVarValue {
                         name: name.clone(),
@@ -950,11 +951,11 @@ impl VarManager {
                 ));
             }
             if let Some((_, action)) = promote_action(ctx, open_request, name) {
-                chips.push(("p", "promote", Some(action)));
+                chips.push((Key::Verb("p"), "promote", Some(action)));
             }
             return chips;
         }
-        let mut chips: Vec<(&'static str, &'static str, Option<Action>)> =
+        let mut chips: Vec<(Key, &'static str, Option<Action>)> =
             if let (VmDetail::Group(selector), VmFocus::Grid) = (&self.detail, self.focus) {
                 let target = op_env(ctx, selector).zip(self.entry_at(ctx, self.grid.cursor.0));
                 // Terse labels on purpose: seven chips share the footer
@@ -971,7 +972,7 @@ impl VarManager {
                 // being first to drop on a narrow footer costs nothing.
                 vec![
                     (
-                        "d",
+                        Key::Verb("d"),
                         "delete",
                         target.clone().map(|(env, name)| Action::DeleteEntry {
                             env,
@@ -980,14 +981,14 @@ impl VarManager {
                         }),
                     ),
                     (
-                        "r",
+                        Key::Verb("r"),
                         "rename",
                         target.clone().map(|_| Action::StartOptionNameEdit {
                             row: self.grid.cursor.0,
                         }),
                     ),
                     (
-                        "e",
+                        Key::Verb("e"),
                         "edit",
                         target.clone().and_then(|(_, option)| {
                             postui_core::varmodel::options_of(ctx.variables(), ctx.env_data(), selector)
@@ -1001,14 +1002,14 @@ impl VarManager {
                         }),
                     ),
                     (
-                        "c",
+                        Key::Verb("c"),
                         "copy",
                         target
                             .clone()
                             .map(|_| Action::CopyOption { row: self.grid.cursor.0 }),
                     ),
                     (
-                        "space",
+                        Key::Named("space"),
                         "select",
                         target.map(|(env, option)| {
                             Action::VarEdit(VarEditOp::SelectOption {
@@ -1018,9 +1019,9 @@ impl VarManager {
                             })
                         }),
                     ),
-                    ("o", "new option", Some(Action::StartNewOptionEdit)),
+                    (Key::Verb("o"), "new option", Some(Action::StartNewOptionEdit)),
                     (
-                        "v",
+                        Key::Verb("v"),
                         "paste",
                         // Armed by what was copied, not by the cursor: a
                         // paste lands a row in this environment whatever
@@ -1050,9 +1051,9 @@ impl VarManager {
                 // sequence the grid's strip runs in, so the footer reads
                 // the same wherever the keyboard is.
                 let mut chips = vec![
-                    ("d", "delete", name.clone().map(|name| Action::DeleteVar { name })),
+                    (Key::Verb("d"), "delete", name.clone().map(|name| Action::DeleteVar { name })),
                     (
-                        "e",
+                        Key::Verb("e"),
                         "rename",
                         name.map(|from| Action::PromptRenameVar { from }),
                     ),
@@ -1063,15 +1064,15 @@ impl VarManager {
                 // where `[Edit fields]` sits among the buttons.
                 if let VmDetail::Group(selector) = &self.detail {
                     chips.push((
-                        "m",
+                        Key::Verb("m"),
                         "edit fields",
                         Some(Action::PromptGroupFields {
                             selector: selector.clone(),
                         }),
                     ));
                 }
-                chips.push(("n", "new variable", Some(Action::PromptNewVar)));
-                chips.push(("a", "new selector", Some(Action::PromptNewSelector)));
+                chips.push((Key::Verb("n"), "new variable", Some(Action::PromptNewVar)));
+                chips.push((Key::Verb("a"), "new selector", Some(Action::PromptNewSelector)));
                 chips
             };
         chips.retain(|(_, _, a)| a.is_some());
@@ -3219,7 +3220,7 @@ fields = ["user_id", "customer_id"]
         assert_eq!(vm.form_cursor, FormStop::Field(VmField::EnvValue));
         vm.handle_key(key(KeyCode::Up), &ctx, None);
         assert_eq!(vm.form_cursor, FormStop::Secret);
-        let chips = vm.footer_chips(&ctx, None);
+        let chips = crate::keyroute::spell::spelled(vm.footer_chips(&ctx, None));
         assert!(
             chips.iter().any(|(k, l, a)| *k == "enter"
                 && *l == "toggle secret"
@@ -4024,7 +4025,7 @@ fields = ["user_id", "customer_id"]
         );
         // The footer's grid chips stay armed too — their actions carry the
         // same empty env the ops above do.
-        let chips = vm.footer_chips(&ctx, None);
+        let chips = crate::keyroute::spell::spelled(vm.footer_chips(&ctx, None));
         let copy = chips
             .iter()
             .find(|(k, _, _)| *k == "c")
@@ -4145,10 +4146,10 @@ fields = ["user_id", "customer_id"]
 
         // The left list's strip: the selector-pane verbs in the order its
         // buttons stand in, then the two `+` buttons in theirs.
-        let keys: Vec<&str> = vm
-            .footer_chips(&ctx, None)
-            .iter()
-            .map(|(k, _, _)| *k)
+        use crate::keyroute::spell::spelled;
+        let keys: Vec<String> = spelled(vm.footer_chips(&ctx, None))
+            .into_iter()
+            .map(|(k, _, _)| k)
             .collect();
         assert_eq!(keys, vec!["d", "e", "m", "n", "a"]);
 
@@ -4156,18 +4157,16 @@ fields = ["user_id", "customer_id"]
         // right — it comes and goes with what is copied, and from there it
         // can appear without shifting a single chip beside it.
         vm.focus = VmFocus::Grid;
-        let keys: Vec<&str> = vm
-            .footer_chips(&ctx, None)
-            .iter()
-            .map(|(k, _, _)| *k)
+        let keys: Vec<String> = spelled(vm.footer_chips(&ctx, None))
+            .into_iter()
+            .map(|(k, _, _)| k)
             .collect();
         assert_eq!(keys, vec!["d", "r", "e", "c", "space", "o"]);
 
         vm.stash = Some(vm.option_row(&ctx, 0).expect("row 0 is an option"));
-        let keys: Vec<&str> = vm
-            .footer_chips(&ctx, None)
-            .iter()
-            .map(|(k, _, _)| *k)
+        let keys: Vec<String> = spelled(vm.footer_chips(&ctx, None))
+            .into_iter()
+            .map(|(k, _, _)| k)
             .collect();
         assert_eq!(keys, vec!["d", "r", "e", "c", "space", "o", "v"]);
     }
@@ -4364,7 +4363,7 @@ fields = ["user_id", "customer_id"]
         let mut vm = VarManager::default();
         select_group(&mut vm, &ctx, "creds");
         vm.start_cell_edit(&ctx, 0, 1);
-        let chips = vm.footer_chips(&ctx, None);
+        let chips = crate::keyroute::spell::spelled(vm.footer_chips(&ctx, None));
         assert_eq!(chips.len(), 2, "{chips:?}");
         assert!(
             chips
@@ -4395,7 +4394,7 @@ fields = ["user_id", "customer_id"]
         vm.select_row(i);
         vm.focus = VmFocus::Form;
         vm.start_field_edit(&ctx, VmField::Description);
-        let chips = vm.footer_chips(&ctx, None);
+        let chips = crate::keyroute::spell::spelled(vm.footer_chips(&ctx, None));
         assert_eq!(chips.len(), 2, "{chips:?}");
         assert!(chips.iter().any(|(k, _, _)| *k == "enter"), "{chips:?}");
         assert!(chips.iter().any(|(k, _, _)| *k == "esc"), "{chips:?}");
@@ -4459,7 +4458,7 @@ fields = ["user_id", "customer_id"]
         let mut vm = VarManager::default();
         select_group(&mut vm, &ctx, "creds");
         vm.focus = VmFocus::Grid;
-        let chips = vm.footer_chips(&ctx, None);
+        let chips = crate::keyroute::spell::spelled(vm.footer_chips(&ctx, None));
         let edit = chips
             .iter()
             .find(|(k, _, _)| *k == "e")
@@ -4486,7 +4485,7 @@ fields = ["user_id", "customer_id"]
             description: None,
             values: IndexMap::new(),
         });
-        let chips = vm.footer_chips(&ctx, None);
+        let chips = crate::keyroute::spell::spelled(vm.footer_chips(&ctx, None));
         let paste = chips
             .iter()
             .find(|(k, _, _)| *k == "v")
@@ -4502,7 +4501,7 @@ fields = ["user_id", "customer_id"]
         // drop (a dead chip advertises a key that would do nothing). Paste
         // stays: it lands a row wherever the cursor is.
         vm.grid.cursor.0 = 2;
-        let chips = vm.footer_chips(&ctx, None);
+        let chips = crate::keyroute::spell::spelled(vm.footer_chips(&ctx, None));
         assert!(!chips.iter().any(|(k, _, _)| *k == "e"), "{chips:?}");
         assert!(!chips.iter().any(|(k, _, _)| *k == "c"), "{chips:?}");
         assert!(chips.iter().any(|(k, _, _)| *k == "v"), "{chips:?}");
@@ -4576,7 +4575,7 @@ fields = ["user_id", "customer_id"]
         let mut vm = VarManager::default();
         select_group(&mut vm, &ctx, "creds");
         vm.focus = VmFocus::Grid;
-        let chips = vm.footer_chips(&ctx, None);
+        let chips = crate::keyroute::spell::spelled(vm.footer_chips(&ctx, None));
         let rename = chips
             .iter()
             .find(|(k, _, _)| *k == "r")
@@ -4595,7 +4594,7 @@ fields = ["user_id", "customer_id"]
         // The ghost row has no name to rename: no chip, and `r` is inert.
         vm.grid.editing = None;
         vm.grid.cursor.0 = 2;
-        let chips = vm.footer_chips(&ctx, None);
+        let chips = crate::keyroute::spell::spelled(vm.footer_chips(&ctx, None));
         assert!(!chips.iter().any(|(k, _, _)| *k == "r"), "{chips:?}");
         assert!(vm.handle_key(key(KeyCode::Char('r')), &ctx, None).is_none());
         assert!(vm.grid.editing.is_none(), "no ghost edit from r");

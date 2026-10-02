@@ -323,7 +323,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             // so it is the one chip every Manage tab shares -- last, so
             // nothing shifts as the tab's own chips come and go.
             chips.push((
-                "alt+←→".to_string(),
+                crate::components::footer::tabs_key(),
                 "tabs".to_string(),
                 Some(crate::action::Action::CycleTabs(1)),
             ));
@@ -331,9 +331,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         })
     });
     let vm_chips = if drag_live {
+        use crate::keyroute::spell::Key;
         Some(vec![
-            ("esc".to_string(), "cancel drag".to_string(), None),
-            ("right-click".to_string(), "cancel drag".to_string(), None),
+            (Key::Named("esc"), "cancel drag".to_string(), None),
+            (Key::Named("right-click"), "cancel drag".to_string(), None),
         ])
     } else {
         vm_chips
@@ -403,6 +404,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         globals_live,
         plain_q_quits,
         vim_status.as_deref(),
+        app.spell_ctx(),
+        &app.keymap,
         // The hovered button's hint — the footer stands in for a tooltip.
         // Switched off wholesale by `hover_hints = false` in config.toml,
         // which leaves the chip row untouched under the pointer.
@@ -776,7 +779,7 @@ fn manage_tab_chips(app: &App) -> Vec<FooterChip> {
             .settings
             .footer_chips()
             .into_iter()
-            .map(|(k, l, a)| (k.to_string(), l.to_string(), a))
+            .map(|(k, l, a)| (k, l.to_string(), a))
             .collect();
     }
     if app.manage.tab != crate::components::manage::ManageTab::Variables {
@@ -785,7 +788,7 @@ fn manage_tab_chips(app: &App) -> Vec<FooterChip> {
             .map(|p| app.manage.list.footer_chips(app.manage.tab, p))
             .unwrap_or_default()
             .into_iter()
-            .map(|(k, l, a)| (k.to_string(), l.to_string(), a))
+            .map(|(k, l, a)| (k, l.to_string(), a))
             .collect();
     }
     let open_request = app
@@ -797,7 +800,7 @@ fn manage_tab_chips(app: &App) -> Vec<FooterChip> {
         .map(|p| app.varmanager.footer_chips(p, open_request.as_ref()))
         .unwrap_or_default()
         .into_iter()
-        .map(|(k, l, a)| (k.to_string(), l.to_string(), a))
+        .map(|(k, l, a)| (k, l.to_string(), a))
         .collect()
 }
 

@@ -100,6 +100,15 @@ impl App {
         changed
     }
 
+    /// The spelling context of where the keyboard is now (spec §4.6).
+    pub fn spell_ctx(&self) -> crate::keyroute::SpellCtx {
+        crate::keyroute::SpellCtx {
+            profile: self.profile(),
+            surface: self.surface(),
+            field_live: self.field_caret().is_live(),
+        }
+    }
+
     /// The router's half-typed keys for the footer (spec §3.8).
     pub fn key_echo(&self) -> String {
         self.router.echo()

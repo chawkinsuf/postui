@@ -7,9 +7,10 @@ pub mod ctx;
 pub mod keylist;
 pub mod notation;
 pub mod pending;
+pub mod spell;
 pub mod table;
 
-pub use ctx::{FieldCaret, FieldId, KeyCtx, Surface};
+pub use ctx::{FieldCaret, FieldId, KeyCtx, SpellCtx, Surface};
 
 use crate::action::Action;
 use crate::config::KeyProfile;
