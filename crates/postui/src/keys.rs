@@ -30,16 +30,15 @@ pub fn alt_label() -> &'static str {
 }
 
 /// The keys that open a *selected* field into an editable one, on every
-/// surface that has the two-state field model (spec 2026-09-16): Enter,
-/// Space, or the vim `i` (plain only — `plain_letter` keeps ctrl+i and
-/// alt+i free for their own bindings, and `I`/shift+i is deferred).
+/// surface with the two-state field model (spec 2026-09-16): Enter and
+/// Space. Vim's `i` is a router row in the vim profile (piece 4 spec §4.5).
 pub(crate) fn opens_field(ev: &KeyEvent) -> bool {
     matches!(ev.code, KeyCode::Enter | KeyCode::Char(' '))
-        || (ev.code == KeyCode::Char('i') && plain_letter(ev))
 }
 
 /// Guard for a key arm that pairs a named key with its vim letter
-/// (`Left | Char('h')`, spec 2026-09-15): the letter counts only
+/// (`Left | Char('h')`, spec 2026-09-15; only `modal.rs` still has such
+/// arms, plan M1 Deviation 7): the letter counts only
 /// unmodified — ctrl+h is the legacy ctrl+backspace byte, ctrl+j/k and
 /// the alt+letters are chords of their own — while the named key matches
 /// as it always did. `G` arms stay unguarded (it arrives with SHIFT).
@@ -233,9 +232,19 @@ pub fn fold_text_nav_bytes(ev: KeyEvent, macos: bool) -> KeyEvent {
 /// `PartialEq` compares the bindings: a live reload uses it to tell a
 /// keys.toml that changed from one that was merely re-read, and only
 /// re-issues its advisories for the former.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct Keymap {
     bindings: HashMap<KeyCombo, Action>,
+    /// The `keys.toml` rebindings applied on top of the profile's
+    /// defaults, in order, so [`Self::rebased`] can lay them on another
+    /// profile when the file itself will not parse any more.
+    overrides: Vec<(Action, Vec<KeyCombo>)>,
+}
+
+impl PartialEq for Keymap {
+    fn eq(&self, other: &Self) -> bool {
+        self.bindings == other.bindings
+    }
 }
 
 /// Every action a key combo can be bound to by name (`apply_overrides`'
@@ -339,6 +348,20 @@ fn parse_overrides(toml_str: &str) -> anyhow::Result<Vec<(String, Vec<String>)>>
 }
 
 impl Keymap {
+    /// The bindings `profile` ships with (piece 4 spec §4.4, plan M1
+    /// Deviation 4). Vim gives up `q` (its macro prefix; `:q` quits) and
+    /// `ctrl+r` (redo, a router row). A user's `keys.toml` layers on top.
+    pub fn default_bindings_for(profile: crate::config::KeyProfile) -> Self {
+        let mut map = Self::default_bindings();
+        if profile == crate::config::KeyProfile::Vim {
+            for combo in ["q", "ctrl+r"] {
+                map.bindings
+                    .remove(&KeyCombo::parse(combo).expect("a valid default combo"));
+            }
+        }
+        map
+    }
+
     pub fn default_bindings() -> Self {
         let defaults = [
             ("q", Action::Quit),
@@ -346,10 +369,6 @@ impl Keymap {
             ("tab", Action::FocusNext),
             ("shift+tab", Action::FocusPrev),
             ("ctrl+p", Action::OpenPalette),
-            // Vim spellings, as plain keys: a text field sees the character
-            // first (router step 5), and every list surface that leaves
-            // them unclaimed falls through to these (step 6).
-            (":", Action::OpenPalette),
             ("esc", Action::Close),
             // Spaces own the ctrl-digits (i3 style: the number swaps the
             // whole working set). ctrl, not alt: Ghostty on Linux takes
@@ -420,14 +439,13 @@ impl Keymap {
             ("ctrl+shift+e", Action::ExtractToVariable),
             ("ctrl+shift+d", Action::DuplicateRequest),
             ("ctrl+z", Action::Undo),
-            // Vim spelling, as a plain key: see the comment above ":".
-            ("u", Action::Undo),
             ("ctrl+shift+z", Action::Redo),
             ("alt+q", Action::OpenJqBar),
             ("alt+shift+q", Action::ToggleJqBar),
         ];
         let mut map = Self {
             bindings: HashMap::new(),
+            overrides: Vec::new(),
         };
         for (s, a) in defaults {
             // Combos in this table are compile-time constants; parse cannot fail.
@@ -467,15 +485,33 @@ impl Keymap {
             resolved.push((action, combos));
         }
         // Phase 2: everything validated, now apply.
-        for (action, combos) in resolved {
-            self.bindings.retain(|_, a| *a != action); // rebind removes old combo(s)
+        self.rebind(&resolved);
+        self.overrides.extend(resolved);
+        Ok(())
+    }
+
+    /// Lays validated rebindings on the current bindings.
+    fn rebind(&mut self, overrides: &[(Action, Vec<KeyCombo>)]) {
+        for (action, combos) in overrides {
+            self.bindings.retain(|_, a| a != action); // rebind removes old combo(s)
             for combo in combos {
-                self.bind(combo, action.clone());
+                self.bind(combo.clone(), action.clone());
             }
         }
         // ctrl+c is always reserved for quit, regardless of overrides.
-        self.bind(ctrl_c, Action::Quit);
-        Ok(())
+        self.bind(KeyCombo::parse("ctrl+c").unwrap(), Action::Quit);
+    }
+
+    /// `profile`'s defaults with this keymap's `keys.toml` rebindings on
+    /// top: the keys the user is typing with, on another profile. A
+    /// profile switch uses it when `keys.toml` will not parse, so the
+    /// switch keeps the live bindings, as a reload does, rather than
+    /// dropping them or keeping the old profile's defaults.
+    pub fn rebased(&self, profile: crate::config::KeyProfile) -> Self {
+        let mut map = Self::default_bindings_for(profile);
+        map.rebind(&self.overrides);
+        map.overrides = self.overrides.clone();
+        map
     }
 
     /// The defaults with `contents` (a `keys.toml`) applied, or the error
@@ -489,11 +525,18 @@ impl Keymap {
     /// the user is already typing with. So the error comes back bare and
     /// each caller words the consequence itself.
     pub fn try_from_overrides(contents: &str) -> Result<Self, String> {
-        let mut map = Self::default_bindings();
-        match map.apply_overrides(contents) {
-            Ok(()) => Ok(map),
-            Err(e) => Err(e.to_string()),
-        }
+        Self::try_from_overrides_for(crate::config::KeyProfile::Arrows, contents)
+    }
+
+    /// [`Self::try_from_overrides`] on `profile`'s own defaults: the user's
+    /// `keys.toml` layers on whichever profile is active, and wins.
+    pub fn try_from_overrides_for(
+        profile: crate::config::KeyProfile,
+        contents: &str,
+    ) -> Result<Self, String> {
+        let mut map = Self::default_bindings_for(profile);
+        map.apply_overrides(contents).map_err(|e| e.to_string())?;
+        Ok(map)
     }
 
     /// The caret-conflict warnings for the startup toasts: on a macOS
@@ -512,6 +555,32 @@ impl Keymap {
         } else {
             Vec::new()
         }
+    }
+
+    /// The `keys.toml` bindings of a bare char that some vim row starts
+    /// with (piece 4 spec §4.4, plan M1 Deviation 19). The binding wins
+    /// while nothing is pending, so the user hears once, at load, which
+    /// vim key it hides. A digit `1`–`9` is the other way round: vim reads
+    /// it as a count first on every surface a `keys.toml` letter reaches,
+    /// so that binding never runs. The vim defaults bind no bare char, so
+    /// every one found came from `keys.toml`.
+    pub fn vim_shadow_warnings(&self) -> Vec<String> {
+        let firsts = crate::keyroute::table::vim_first_chars();
+        let mut out: Vec<String> = self
+            .bindings
+            .keys()
+            .filter_map(|c| match c.code {
+                KeyCode::Char(ch) if c.modifiers.is_empty() && firsts.contains(&ch) => {
+                    Some(format!("keys.toml binds `{ch}`, which shadows vim's `{ch}`"))
+                }
+                KeyCode::Char(ch @ '1'..='9') if c.modifiers.is_empty() => Some(format!(
+                    "keys.toml binds `{ch}`, which vim reads as a count, so the binding never runs"
+                )),
+                _ => None,
+            })
+            .collect();
+        out.sort();
+        out
     }
 
     /// The macOS caret-conflict report for [`Self::caret_warnings`]: one
@@ -548,14 +617,20 @@ impl Keymap {
             .into_iter()
             .find(|(name, _)| *name == action_id)
             .map(|(_, action)| action)?;
+        self.combo_for_action(&target)
+    }
+
+    /// [`Self::combo_for`] by the action itself: what a keycap spells
+    /// from, every frame, without the name round trip.
+    pub fn combo_for_action(&self, target: &Action) -> Option<String> {
         let combos: Vec<&KeyCombo> = self
             .bindings
             .iter()
-            .filter(|(_, action)| **action == target)
+            .filter(|(_, action)| *action == target)
             .map(|(combo, _)| combo)
             .collect();
-        // A vim alias is a bare key (":", "u") with no modifiers, and its
-        // formatted form (":", "U") can sort below the chord it's a
+        // A bare-key alias a `keys.toml` adds (":", "u") has no modifiers,
+        // and its formatted form (":", "U") can sort below the chord it's a
         // synonym for ("^P", "^Z") -- e.g. ":" < "^P" -- which would flip
         // the hint to the alias. Prefer a modified combo (a chord) over a
         // bare key first, and only then take the minimum, so the footer
@@ -579,7 +654,8 @@ impl Keymap {
     /// The plural matters: `apply_overrides` removes *all* of an action's
     /// existing combos before binding the ones it is given, so a seed
     /// listing only one would silently unbind the rest the moment a user
-    /// uncommented it -- taking the vim-key aliases with it.
+    /// uncommented it -- taking the other defaults with it (`quit`'s `q`
+    /// beside its `ctrl+c`).
     pub fn combos_for(&self, action_id: &str) -> Vec<String> {
         let Some((_, action)) = named_actions().into_iter().find(|(n, _)| n == &action_id) else {
             return Vec::new();
@@ -898,7 +974,11 @@ mod tests {
         assert_eq!(get("tab"), Some(Action::FocusNext));
         assert_eq!(get("shift+tab"), Some(Action::FocusPrev));
         assert_eq!(get("ctrl+p"), Some(Action::OpenPalette));
-        assert_eq!(get(":"), Some(Action::OpenPalette), "vim alias");
+        assert_eq!(
+            get(":"),
+            None,
+            "the alias left the arrows profile (spec §4.5); vim has a router row"
+        );
         assert_eq!(get("esc"), Some(Action::Close));
         // ctrl-digits, not alt-digits: Ghostty on Linux owns alt+1..9
         // for its own tabs. The header selectors take the bottom row in
@@ -976,7 +1056,11 @@ mod tests {
         );
         assert_eq!(get("alt+r"), Some(Action::OpenManage { tab: None }));
         assert_eq!(get("ctrl+z"), Some(Action::Undo));
-        assert_eq!(get("u"), Some(Action::Undo), "vim alias");
+        assert_eq!(
+            get("u"),
+            None,
+            "the alias left the arrows profile (spec §4.5); vim has a router row"
+        );
         assert_eq!(get("ctrl+shift+z"), Some(Action::Redo));
         assert_eq!(get("ctrl+y"), None, "ctrl+y is deliberately unbound");
         assert_eq!(get("alt+q"), Some(Action::OpenJqBar));
@@ -1353,11 +1437,11 @@ mod tests {
     }
 
     #[test]
-    fn opens_field_matches_enter_space_and_plain_i() {
+    fn opens_field_matches_enter_and_space_only() {
         let key = |code: KeyCode, mods: KeyModifiers| KeyEvent::new(code, mods);
         assert!(opens_field(&key(KeyCode::Enter, KeyModifiers::NONE)));
         assert!(opens_field(&key(KeyCode::Char(' '), KeyModifiers::NONE)));
-        assert!(opens_field(&key(KeyCode::Char('i'), KeyModifiers::NONE)));
+        assert!(!opens_field(&key(KeyCode::Char('i'), KeyModifiers::NONE)));
         assert!(!opens_field(&key(KeyCode::Char('I'), KeyModifiers::SHIFT)));
         assert!(!opens_field(&key(
             KeyCode::Char('i'),
@@ -1365,5 +1449,57 @@ mod tests {
         )));
         assert!(!opens_field(&key(KeyCode::Char('j'), KeyModifiers::NONE)));
         assert!(!opens_field(&key(KeyCode::Esc, KeyModifiers::NONE)));
+    }
+
+    /// Plan M1 Deviation 4: vim gives up only `q` (its macro prefix; `:q`
+    /// quits) and `ctrl+r` (redo, a router row) in M1. Every other chord
+    /// stays shared until the milestone that gives vim its own key for it.
+    #[test]
+    fn the_vim_profile_drops_q_and_gives_ctrl_r_to_the_router() {
+        use crate::config::KeyProfile::{Arrows, Vim};
+        let get = |p, s: &str| Keymap::default_bindings_for(p).lookup(&KeyCombo::parse(s).unwrap());
+        assert_eq!(get(Arrows, "q"), Some(Action::Quit));
+        assert_eq!(get(Arrows, "ctrl+r"), Some(Action::Send));
+        assert_eq!(get(Vim, "q"), None);
+        assert_eq!(get(Vim, "ctrl+r"), None, "a router row (redo), not a keymap binding");
+        assert_eq!(get(Vim, "ctrl+enter"), Some(Action::Send));
+        for combo in [
+            "ctrl+c", "ctrl+v", "ctrl+o", "ctrl+p", "ctrl+z", "ctrl+s", "alt+w", "alt+right", "alt+a",
+            "alt+t", "ctrl+1",
+        ] {
+            assert_eq!(get(Vim, combo), get(Arrows, combo), "{combo} is shared until its vim key lands");
+        }
+        assert_eq!(Keymap::default_bindings_for(Arrows), Keymap::default_bindings());
+    }
+
+    #[test]
+    fn overrides_layer_on_the_profile_they_are_given() {
+        let vim = Keymap::try_from_overrides_for(crate::config::KeyProfile::Vim, "save = \"f2\"\n").unwrap();
+        assert_eq!(vim.lookup(&KeyCombo::parse("f2").unwrap()), Some(Action::SaveRequest));
+        assert_eq!(vim.lookup(&KeyCombo::parse("q").unwrap()), None);
+    }
+
+    #[test]
+    fn vim_shadow_warnings_name_the_bare_chars_a_vim_row_starts_with() {
+        let mut map = Keymap::default_bindings_for(crate::config::KeyProfile::Vim);
+        assert!(map.vim_shadow_warnings().is_empty(), "the vim defaults bind no bare char");
+        map.apply_overrides("save = [\"ctrl+s\", \"G\"]\nquit = [\"ctrl+c\", \"x\"]\n").unwrap();
+        assert_eq!(map.vim_shadow_warnings(), vec!["keys.toml binds `G`, which shadows vim's `G`".to_string()]);
+    }
+
+    /// A digit `1`–`9` is a count wherever a `keys.toml` letter can fire in
+    /// vim, so a binding on one never runs: the load says so. `0` is a key
+    /// while no count is typed, so it is an ordinary shadow.
+    #[test]
+    fn vim_shadow_warnings_name_a_bound_count_digit() {
+        let mut map = Keymap::default_bindings_for(crate::config::KeyProfile::Vim);
+        map.apply_overrides("space_3 = [\"ctrl+3\", \"3\"]\nspace_1 = [\"ctrl+1\", \"0\"]\n").unwrap();
+        assert_eq!(
+            map.vim_shadow_warnings(),
+            vec![
+                "keys.toml binds `0`, which shadows vim's `0`".to_string(),
+                "keys.toml binds `3`, which vim reads as a count, so the binding never runs".to_string(),
+            ]
+        );
     }
 }

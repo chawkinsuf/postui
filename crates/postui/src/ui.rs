@@ -289,12 +289,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // pre-empts the drag.
     let drag_live = app.sidebar.drag.is_some() || app.manage.list.drag.is_some();
     let globals_live = modal_chips.is_none() && !drag_live;
-    // A plain `q` reaches the quit binding only where nothing consumes it
+    // A plain `q` reaches the quit binding only in the arrows profile (vim
+    // gave `q` up, plan M1 Deviation 4) and only where nothing consumes it
     // first: no modal (they capture all input), the Main screen (other
     // screens swallow unbound plain keys), and a focus stop that doesn't
     // route typing into a text input — in the editor pane that is only
     // the URL line, the body, and a live cell edit.
-    let plain_q_quits = app.modals.is_empty()
+    let plain_q_quits = app.profile() == crate::config::KeyProfile::Arrows
+        && app.modals.is_empty()
         && !drag_live
         && (app.screen == Screen::Main
             && (matches!(focus, PaneId::Sidebar | PaneId::Response)
@@ -321,7 +323,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             // so it is the one chip every Manage tab shares -- last, so
             // nothing shifts as the tab's own chips come and go.
             chips.push((
-                "alt+←→".to_string(),
+                crate::components::footer::tabs_key(),
                 "tabs".to_string(),
                 Some(crate::action::Action::CycleTabs(1)),
             ));
@@ -329,9 +331,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         })
     });
     let vm_chips = if drag_live {
+        use crate::keyroute::spell::Key;
         Some(vec![
-            ("esc".to_string(), "cancel drag".to_string(), None),
-            ("right-click".to_string(), "cancel drag".to_string(), None),
+            (Key::Named("esc"), "cancel drag".to_string(), None),
+            (Key::Named("right-click"), "cancel drag".to_string(), None),
         ])
     } else {
         vm_chips
@@ -349,6 +352,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             .map(|i| (i, app.editor.table_row_enabled(i)))
     })
     .flatten();
+    let vim_status = app.vim_status();
     crate::components::footer::draw_footer(
         frame,
         layout.footer,
@@ -399,6 +403,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         vm_chips,
         globals_live,
         plain_q_quits,
+        vim_status.as_deref(),
+        app.spell_ctx(),
+        &app.keymap,
         // The hovered button's hint — the footer stands in for a tooltip.
         // Switched off wholesale by `hover_hints = false` in config.toml,
         // which leaves the chip row untouched under the pointer.
@@ -772,7 +779,7 @@ fn manage_tab_chips(app: &App) -> Vec<FooterChip> {
             .settings
             .footer_chips()
             .into_iter()
-            .map(|(k, l, a)| (k.to_string(), l.to_string(), a))
+            .map(|(k, l, a)| (k, l.to_string(), a))
             .collect();
     }
     if app.manage.tab != crate::components::manage::ManageTab::Variables {
@@ -781,7 +788,7 @@ fn manage_tab_chips(app: &App) -> Vec<FooterChip> {
             .map(|p| app.manage.list.footer_chips(app.manage.tab, p))
             .unwrap_or_default()
             .into_iter()
-            .map(|(k, l, a)| (k.to_string(), l.to_string(), a))
+            .map(|(k, l, a)| (k, l.to_string(), a))
             .collect();
     }
     let open_request = app
@@ -793,7 +800,7 @@ fn manage_tab_chips(app: &App) -> Vec<FooterChip> {
         .map(|p| app.varmanager.footer_chips(p, open_request.as_ref()))
         .unwrap_or_default()
         .into_iter()
-        .map(|(k, l, a)| (k.to_string(), l.to_string(), a))
+        .map(|(k, l, a)| (k, l.to_string(), a))
         .collect()
 }
 

@@ -13,7 +13,7 @@
 //! button with a hint or a surface without one.
 
 use crate::action::{Action, CopyTarget, ExtractDestination};
-use crate::components::palette::{all_commands, keymap_action_name};
+use crate::components::palette::all_commands;
 use crate::hit::Hit;
 use crate::keys::Keymap;
 use crate::split::SplitStop;
@@ -47,6 +47,9 @@ pub struct HintCtx {
     pub vm_noun: VmNoun,
     /// What the variable tooltip's `󰏫` pill opens for the token under it.
     pub tip_edit: TipEditVerb,
+    /// Where the keyboard is: the key a hint names is spelled for it
+    /// (piece 4 spec §4.6).
+    pub spell: crate::keyroute::SpellCtx,
 }
 
 /// What `Action::OpenVarTokenPopup` will open for a token, so the tip's
@@ -106,7 +109,12 @@ fn manage_noun(tab: Option<crate::components::manage::ManageTab>) -> &'static st
 pub fn hint_for(hit: &Hit, keymap: &Keymap, ctx: &HintCtx) -> Option<String> {
     match hint_source(hit, ctx)? {
         Source::Text(s) => Some(s),
-        Source::Of(action) => Some(describe_action(&action, keymap, !shows_its_own_keycap(hit))),
+        Source::Of(action) => Some(describe_action(
+            &action,
+            keymap,
+            !shows_its_own_keycap(hit),
+            ctx.spell,
+        )),
     }
 }
 
@@ -145,10 +153,16 @@ fn of(action: Action) -> Option<Source> {
     Some(Source::Of(action))
 }
 
-/// One line for `action`: the palette command's description plus its key,
-/// else [`fallback_description`]'s wording, else the action's debug name
-/// (a last resort that keeps every chip hintable).
-fn describe_action(action: &Action, keymap: &Keymap, with_key: bool) -> String {
+/// One line for `action`: the palette command's description plus its key
+/// as the profile spells it at `at`, else [`fallback_description`]'s
+/// wording, else the action's debug name (a last resort that keeps every
+/// chip hintable).
+fn describe_action(
+    action: &Action,
+    keymap: &Keymap,
+    with_key: bool,
+    at: crate::keyroute::SpellCtx,
+) -> String {
     if let Some(cmd) = all_commands().into_iter().find(|c| c.action == *action) {
         // The palette has a whole row for its caveats ("(live preview;
         // Esc reverts)"); the footer line keeps just the verb phrase.
@@ -158,7 +172,7 @@ fn describe_action(action: &Action, keymap: &Keymap, with_key: bool) -> String {
         };
         let description = short_description(action).unwrap_or(full);
         let combo = with_key
-            .then(|| keymap_action_name(cmd.id).and_then(|n| keymap.combo_for(n)))
+            .then(|| crate::keyroute::spell::spell(at, action, keymap))
             .flatten();
         return match combo {
             Some(combo) => format!("{description} \u{b7} {combo}"),
@@ -356,6 +370,10 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         Hit::SettingsJqTab(crate::config::JqTab::Cycle) => {
             text("Ghost the best jq completion in place")
         }
+        // Same as the jq Tab row: only the segments register hits.
+        Hit::SettingsControl(SettingsField::Keymap) => text("Choose the app's keyboard profile"),
+        Hit::SettingsKeymap(crate::config::KeyProfile::Arrows) => text("Use arrows and Enter"),
+        Hit::SettingsKeymap(crate::config::KeyProfile::Vim) => text("Use vim keys"),
         Hit::SettingsFile { file, reset: false } => {
             Some(Source::Text(format!("Open {} in your editor", file.name())))
         }
@@ -464,6 +482,8 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         }),
         Hit::NewProjectBrowse => text("Browse for the project folder"),
         Hit::ConfirmChoice(_) => text("Answer with this choice"),
+        Hit::KeymapChoice(crate::config::KeyProfile::Arrows) => text("Use arrows and Enter"),
+        Hit::KeymapChoice(crate::config::KeyProfile::Vim) => text("Use vim keys"),
         Hit::ConfigStartupChoice(choice) => {
             use crate::action::ConfigStartupChoice as C;
             text(match choice {
@@ -601,6 +621,26 @@ mod tests {
             h.starts_with("Pick an HTTP method \u{b7} "),
             "the method cap shows no key of its own: {h:?}"
         );
+    }
+
+    /// The copy-URL button's hint spells its key for the profile at hand
+    /// (spec §4.6): through the vim keymap and the vim table in vim, as
+    /// the arrows keymap in arrows. M1's vim keymap keeps the alt chords,
+    /// so both read `alt+y`.
+    #[test]
+    fn the_copy_url_hint_spells_its_key_for_the_profile() {
+        use crate::config::KeyProfile;
+        use crate::keyroute::{SpellCtx, Surface};
+        let alt = crate::keys::alt_label();
+        let want = format!("Copy the resolved URL \u{b7} {alt}+y");
+        for profile in [KeyProfile::Arrows, KeyProfile::Vim] {
+            let keymap = Keymap::default_bindings_for(profile);
+            let ctx = HintCtx {
+                spell: SpellCtx { profile, surface: Surface::UrlLine, field_live: false },
+                ..ctx()
+            };
+            assert_eq!(hint_for(&Hit::CopyUrl, &keymap, &ctx).as_deref(), Some(want.as_str()), "{profile:?}");
+        }
     }
 
     /// A control that paints the key on itself doesn't repeat it: the
@@ -926,6 +966,10 @@ mod tests {
             Hit::SettingsControl(crate::components::settings::SettingsField::Osc52Limit),
             Hit::SettingsJqTab(crate::config::JqTab::Menu),
             Hit::SettingsJqTab(crate::config::JqTab::Cycle),
+            Hit::SettingsKeymap(crate::config::KeyProfile::Arrows),
+            Hit::SettingsKeymap(crate::config::KeyProfile::Vim),
+            Hit::KeymapChoice(crate::config::KeyProfile::Arrows),
+            Hit::KeymapChoice(crate::config::KeyProfile::Vim),
             Hit::SettingsFile {
                 file: crate::action::ConfigFile::Config,
                 reset: false,

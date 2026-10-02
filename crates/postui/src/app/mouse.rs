@@ -21,6 +21,11 @@ impl App {
     ///   pane under the pointer. While a modal is open, wheel is a no-op
     ///   here — modal-list scrolling is a later task.
     pub fn handle_mouse(&mut self, m: ratatui::crossterm::event::MouseEvent) -> bool {
+        // A press drops a half-typed key (plan M1 Deviation 15): a `g`
+        // never survives a click.
+        if matches!(m.kind, ratatui::crossterm::event::MouseEventKind::Down(_)) {
+            self.router.clear();
+        }
         let changed = self.handle_mouse_inner(m);
         // The op safety net at the event boundary, as in `handle_key`: a
         // drag release commits without an action and can bail between
@@ -31,7 +36,8 @@ impl App {
         // never reaches `update`, and an unanswered startup gate must
         // not be left down.
         let regated = self.reraise_startup_config_gate();
-        changed || regated
+        let asked = super::ASK_KEYMAP_ON_LAUNCH && self.raise_keymap_choice();
+        changed || regated || asked
     }
 
     fn handle_mouse_inner(&mut self, m: ratatui::crossterm::event::MouseEvent) -> bool {
@@ -1179,6 +1185,7 @@ impl App {
                 Hit::SettingsRow(_)
                     | Hit::SettingsControl(_)
                     | Hit::SettingsJqTab(_)
+                    | Hit::SettingsKeymap(_)
                     | Hit::SettingsFile { .. }
             );
         if !keeps_settings_focus {
@@ -1328,6 +1335,14 @@ impl App {
                     key: SettingsField::JqTab.key(),
                     value: jq_tab_spelling(mode).to_string(),
                 })
+            }
+            Hit::SettingsKeymap(profile) => {
+                use crate::components::settings::SettingsField;
+                if !self.commit_settings_edit_for_click() {
+                    return true;
+                }
+                self.settings.focus_field(SettingsField::Keymap);
+                self.update(Action::SetKeyProfile(profile))
             }
             Hit::SettingsFile { file, reset } => {
                 use crate::components::settings::{SettingsRow, SettingsTab};
@@ -1886,6 +1901,7 @@ impl App {
                 }
             }
             Hit::ConfigStartupChoice(choice) => self.update(Action::ConfigStartupChoice(choice)),
+            Hit::KeymapChoice(profile) => self.update(Action::SetKeyProfile(profile)),
             Hit::ConfigEditKeepEditing => {
                 let Some(Modal::ConfigEditInvalid { file, path, .. }) = self.modals.top() else {
                     return false;

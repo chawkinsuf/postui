@@ -479,6 +479,7 @@ fn plain_q_quits_when_no_modal_and_component_ignores_it() {
 #[test]
 fn colon_opens_the_palette_from_a_list_and_types_in_a_field() {
     let mut app = App::new_for_test();
+    app.use_profile(crate::config::KeyProfile::Vim);
     app.focus = PaneId::Sidebar;
     app.handle_key(plain(':'));
     assert!(matches!(app.modals.top(), Some(Modal::Palette(_))));
@@ -490,54 +491,38 @@ fn colon_opens_the_palette_from_a_list_and_types_in_a_field() {
     assert!(app.editor.url.text().ends_with(':'));
 }
 
-#[test]
-fn u_undoes_from_every_list_surface() {
+/// An app in `profile` with one undo step to take (a URL edit, closed),
+/// the sidebar focused, and its undo depth.
+fn app_with_an_undo_step(profile: crate::config::KeyProfile) -> (App, usize) {
     let mut app = App::new_for_test();
+    app.use_profile(profile);
     app.update(Action::CreateRequest("r".into()));
     dirty_the_editor(&mut app);
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.capture_undo();
     let steps = app.history.undo_len();
     app.focus = PaneId::Sidebar;
+    (app, steps)
+}
+
+#[test]
+fn u_undoes_from_every_list_surface() {
+    let (mut app, steps) = app_with_an_undo_step(crate::config::KeyProfile::Vim);
     app.handle_key(plain('u'));
     assert_eq!(app.history.undo_len(), steps - 1, "sidebar: u is undo");
-    // The Manage screens swallow plain keys, so each maps u itself.
+    // The Manage screens swallow plain keys; vim's `u` row reaches them.
     app.update(Action::OpenManage { tab: Some(crate::components::manage::ManageTab::Spaces) });
     app.update(Action::Redo);
     app.handle_key(plain('u'));
     assert_eq!(app.history.undo_len(), steps - 1, "manage list: u is undo");
 }
 
-/// The Manage aliases come from the keymap, not from letters in the
-/// screen handlers: unbind `u` in `keys.toml` and it is dead on the
-/// Manage list exactly as on Main.
-#[test]
-fn the_manage_aliases_follow_keys_toml() {
-    let mut app = App::new_for_test();
-    for n in ["auth", "billing"] {
-        app.update(Action::CreateSpace(n.into()));
-    }
-    app.update(Action::OpenManage {
-        tab: Some(crate::components::manage::ManageTab::Spaces),
-    });
-    app.capture_undo();
-    let steps = app.history.undo_len();
-    assert!(steps > 0);
-    app.handle_key(plain('u'));
-    assert_eq!(app.history.undo_len(), steps - 1, "bound: u undoes here");
-    app.update(Action::Redo);
-    app.keymap.apply_overrides("undo = [\"ctrl+z\"]").unwrap();
-    app.handle_key(plain('u'));
-    assert_eq!(app.history.undo_len(), steps, "unbound in keys.toml: u is dead here too");
-    app.handle_key(ctrl('z'));
-    assert_eq!(app.history.undo_len(), steps - 1, "the remaining combo still works");
-}
-
-/// A Manage tab with no project open still swallows plain keys — but the
-/// whitelisted aliases work there as their chords do.
+/// A Manage tab with no project open still swallows plain keys — but
+/// vim's `:` row works there as its chord does.
 #[test]
 fn colon_opens_the_palette_on_a_manage_tab_with_no_project() {
     let mut app = App::new_for_test();
+    app.use_profile(crate::config::KeyProfile::Vim);
     app.project = None;
     app.update(Action::OpenManage {
         tab: Some(crate::components::manage::ManageTab::Environments),
@@ -551,11 +536,10 @@ fn colon_opens_the_palette_on_a_manage_tab_with_no_project() {
     );
 }
 
-/// `:` is a global alias of ctrl+p, and the Manage screens swallow every
-/// plain key they do not claim — the alias reaches them through the
-/// router's keymap whitelist, so it stays strict on each of their four
-/// surfaces. Pressed as a terminal sends it: shift+semicolon carries
-/// `SHIFT`.
+/// Vim's `:` is a router row on every Manage surface, and the Manage
+/// screens swallow every plain key they do not claim — the row runs
+/// before the screen sees the key, on each of their four surfaces.
+/// Pressed as a terminal sends it: shift+semicolon carries `SHIFT`.
 #[test]
 fn colon_opens_the_palette_from_every_manage_surface() {
     use crate::components::manage::ManageTab;
@@ -565,6 +549,7 @@ fn colon_opens_the_palette_from_every_manage_surface() {
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.use_profile(crate::config::KeyProfile::Vim);
 
     let opens = |app: &mut App, what: &str| {
         app.handle_key(colon);
@@ -665,7 +650,7 @@ fn ctrl_d_pages_the_sidebar_through_the_router() {
         app.update(Action::CreateRequest(n.into()));
     }
     app.focus = PaneId::Sidebar;
-    app.handle_key(plain('g')); // Home: a known start, row 0
+    app.handle_key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE)); // a known start, row 0
     assert_eq!(app.sidebar.selected, Some(0));
     app.handle_key(ctrl('d'));
     assert_ne!(app.sidebar.selected, Some(0), "ctrl+d must move the selection");
@@ -2127,7 +2112,7 @@ fn the_footer_field_flag_is_pane_local() {
     );
     assert!(app.pane_field_open(PaneId::Editor));
 
-    let chips = crate::components::footer::footer_chips(
+    let chips = crate::keyroute::spell::spelled(crate::components::footer::footer_chips(
         PaneId::Response,
         false,
         false,
@@ -2137,7 +2122,7 @@ fn the_footer_field_flag_is_pane_local() {
         None,
         crate::components::footer::JqBarState::Open,
         app.pane_field_open(PaneId::Response),
-    );
+    ));
     assert!(
         !chips.iter().any(|(k, l, _)| *k == "enter" && *l == "search"),
         "no search box is open: {chips:?}"
@@ -3897,14 +3882,15 @@ fn sidebar_lists_requests_grouped_and_enter_opens() {
         "the space itself is never a row; its own top level is depth 0"
     );
 
-    // Nothing selected at startup: the first j lands on "ping" (index
+    // Nothing selected at startup: the first Down lands on "ping" (index
     // 0), the second reaches the "auth" folder (index 1); Enter expands
     // it, then "main/auth/login" (index 2) becomes visible and Enter
     // opens it.
-    app.handle_key(plain('j'));
-    app.handle_key(plain('j'));
+    let down = || KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
+    app.handle_key(down());
+    app.handle_key(down());
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    app.handle_key(plain('j'));
+    app.handle_key(down());
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert_eq!(app.editor.slug.as_deref(), Some("main/auth/login"));
 }
@@ -7620,11 +7606,11 @@ fn plain_keys_reach_the_focused_response_pane() {
         0,
     );
     app.focus = PaneId::Response;
-    app.handle_key(plain('j'));
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     assert_eq!(
         app.session.response.view().unwrap().cursor,
         1,
-        "j moved the response cursor"
+        "Down moved the response cursor"
     );
     // 'q' quits globally, but the pane's search input takes it first.
     app.handle_key(plain('/'));
@@ -8379,11 +8365,13 @@ fn manage_environments_pane_has_a_tls_control_that_writes_the_force() {
     );
     // Advertised in the footer.
     assert!(
-        app.manage
-            .list
-            .footer_chips(ManageTab::Environments, app.proj())
-            .iter()
-            .any(|(k, l, _)| *k == "t" && *l == "tls"),
+        crate::keyroute::spell::spelled(
+            app.manage
+                .list
+                .footer_chips(ManageTab::Environments, app.proj())
+        )
+        .iter()
+        .any(|(k, l, _)| *k == "t" && *l == "tls"),
     );
 }
 
@@ -16779,7 +16767,7 @@ fn vm_footer_advertises_the_option_verbs_while_the_grid_has_focus() {
         selector: "user".into(),
         name: "alice".into(),
     };
-    let chips = app.varmanager.footer_chips(app.proj(), None);
+    let chips = crate::keyroute::spell::spelled(app.varmanager.footer_chips(app.proj(), None));
     assert!(
         chips
             .iter()
@@ -16862,7 +16850,7 @@ fn form_focus_advertises_and_handles_the_field_verbs() {
     let secret = Action::ToggleSecretVar {
         name: "base_url".into(),
     };
-    let chips = app.varmanager.footer_chips(app.proj(), None);
+    let chips = crate::keyroute::spell::spelled(app.varmanager.footer_chips(app.proj(), None));
     assert!(
         chips
             .iter()
@@ -16888,7 +16876,7 @@ fn form_focus_advertises_and_handles_the_field_verbs() {
         crate::components::varmanager::FormStop::Field(crate::components::varmanager::VmField::EnvValue),
         "three downs land on the env-value field"
     );
-    let chips = app.varmanager.footer_chips(app.proj(), None);
+    let chips = crate::keyroute::spell::spelled(app.varmanager.footer_chips(app.proj(), None));
     assert!(
         chips
             .iter()
@@ -16898,7 +16886,7 @@ fn form_focus_advertises_and_handles_the_field_verbs() {
     app.handle_key(plain('x'));
     let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     assert!(!on_disk.contains("base_url"), "{on_disk}");
-    let chips = app.varmanager.footer_chips(app.proj(), None);
+    let chips = crate::keyroute::spell::spelled(app.varmanager.footer_chips(app.proj(), None));
     assert!(
         !chips.iter().any(|(_, l, _)| *l == "clear env value"),
         "nothing stored, nothing to clear: {chips:?}"
@@ -16910,7 +16898,8 @@ fn form_focus_advertises_and_handles_the_field_verbs() {
         name: "base_url".into(),
     };
     let open_request = app.editor.current_request();
-    let chips = app.varmanager.footer_chips(app.proj(), Some(&open_request));
+    let chips =
+        crate::keyroute::spell::spelled(app.varmanager.footer_chips(app.proj(), Some(&open_request)));
     assert!(
         chips
             .iter()
@@ -16945,14 +16934,14 @@ fn form_focus_r_toggles_reveal_on_a_secret_variable() {
     });
     app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
 
-    let chips = app.varmanager.footer_chips(app.proj(), None);
+    let chips = crate::keyroute::spell::spelled(app.varmanager.footer_chips(app.proj(), None));
     assert!(
         chips.iter().any(|(k, l, _)| *k == "r" && *l == "reveal"),
         "{chips:?}"
     );
     app.handle_key(plain('r'));
     assert!(app.varmanager.form.revealed, "r reveals the secret");
-    let chips = app.varmanager.footer_chips(app.proj(), None);
+    let chips = crate::keyroute::spell::spelled(app.varmanager.footer_chips(app.proj(), None));
     assert!(
         chips.iter().any(|(k, l, _)| *k == "r" && *l == "hide"),
         "{chips:?}"
@@ -16975,7 +16964,7 @@ fn vm_footer_advertises_edit_fields_on_a_selector() {
     let edit_fields = Action::PromptGroupFields {
         selector: "user".into(),
     };
-    let chips = app.varmanager.footer_chips(app.proj(), None);
+    let chips = crate::keyroute::spell::spelled(app.varmanager.footer_chips(app.proj(), None));
     assert!(
         chips
             .iter()
@@ -16987,7 +16976,7 @@ fn vm_footer_advertises_edit_fields_on_a_selector() {
     goto_row(&mut app, |r| {
         r == &crate::components::varmanager::VmRow::Var("base_url".into())
     });
-    let chips = app.varmanager.footer_chips(app.proj(), None);
+    let chips = crate::keyroute::spell::spelled(app.varmanager.footer_chips(app.proj(), None));
     assert!(
         !chips.iter().any(|(_, l, _)| *l == "edit fields"),
         "{chips:?}"
@@ -17007,7 +16996,7 @@ fn vm_footer_rename_delete_act_on_the_open_form_from_a_header_row() {
         r == &crate::components::varmanager::VmRow::Var("base_url".into())
     });
     app.varmanager.left_cursor = 0; // the "VARIABLES" section header
-    let chips = app.varmanager.footer_chips(app.proj(), None);
+    let chips = crate::keyroute::spell::spelled(app.varmanager.footer_chips(app.proj(), None));
     assert!(
         chips.iter().any(|(k, _, a)| *k == "e"
             && *a
@@ -17038,11 +17027,10 @@ fn vm_footer_drops_chips_with_no_target() {
 
     // Fresh open: nothing selected, no detail — no rename/delete chips.
     app.update(Action::OpenManage { tab: None });
-    let keys: Vec<&str> = app
-        .varmanager
-        .footer_chips(app.proj(), None)
-        .iter()
-        .map(|(k, _, _)| *k)
+    use crate::keyroute::spell::spelled;
+    let keys: Vec<String> = spelled(app.varmanager.footer_chips(app.proj(), None))
+        .into_iter()
+        .map(|(k, _, _)| k)
         .collect();
     assert_eq!(keys, vec!["n", "a"]);
 
@@ -17050,11 +17038,9 @@ fn vm_footer_drops_chips_with_no_target() {
     goto_group(&mut app, "user");
     app.varmanager.focus = VmFocus::Grid;
     app.varmanager.grid.cursor = (2, 0); // alice, bob, then the ghost
-    let keys: Vec<&str> = app
-        .varmanager
-        .footer_chips(app.proj(), None)
-        .iter()
-        .map(|(k, _, _)| *k)
+    let keys: Vec<String> = spelled(app.varmanager.footer_chips(app.proj(), None))
+        .into_iter()
+        .map(|(k, _, _)| k)
         .collect();
     assert_eq!(keys, vec!["o"]);
 }
@@ -17644,9 +17630,8 @@ fn every_named_action_is_mouse_reachable() {
 
     // Group A: footer/toolbar chips — the same function `draw_footer`
     // paints from. The always-present quit hint and palette chip are
-    // registered separately in `draw_footer` itself (`QUIT_LABEL` /
-    // `PALETTE_CHIP`, not part of `footer_chips`), so they're added by
-    // hand here.
+    // registered separately in `draw_footer` itself (not part of
+    // `footer_chips`), so they're added by hand here.
     let mut mouse_reachable: Vec<Action> = vec![Action::Quit, Action::OpenPalette];
     for pane in [PaneId::Sidebar, PaneId::Editor, PaneId::Response] {
         mouse_reachable.extend(
@@ -19161,10 +19146,11 @@ mod undo_tests {
     }
 
     #[test]
-    fn plain_u_undoes_a_modals_field_step_from_a_selected_field() {
+    fn vim_u_undoes_a_modals_field_step_from_a_selected_field() {
         use crate::components::line_input::LineInput;
         use crate::components::modal::{Modal, PromptKind};
         let mut app = App::new_for_test();
+        app.use_profile(crate::config::KeyProfile::Vim);
         app.push_modal(Modal::Prompt {
             title: "Rename".into(),
             input: LineInput::new("old"),
@@ -22439,7 +22425,7 @@ fn multiple_outputs_run_together_without_a_blank_line() {
 
 #[test]
 fn the_focused_bar_advertises_enter_apply_and_esc_done() {
-    let chips = crate::components::footer::footer_chips(
+    let chips = crate::keyroute::spell::spelled(crate::components::footer::footer_chips(
         PaneId::Response,
         false,
         false,
@@ -22449,8 +22435,8 @@ fn the_focused_bar_advertises_enter_apply_and_esc_done() {
         None,
         crate::components::footer::JqBarState::Focused,
         false,
-    );
-    let keys: Vec<(&str, &str)> = chips.iter().map(|(k, l, _)| (*k, *l)).collect();
+    ));
+    let keys: Vec<(&str, &str)> = chips.iter().map(|(k, l, _)| (k.as_str(), *l)).collect();
     assert_eq!(
         keys,
         vec![
@@ -22811,7 +22797,7 @@ fn the_footer_and_palette_reach_the_jq_bar() {
     let mut app = App::new_for_test();
     ready_response(&mut app, JQ_BODY);
     app.focus = PaneId::Response;
-    let chips = crate::components::footer::footer_chips(
+    let chips = crate::keyroute::spell::spelled(crate::components::footer::footer_chips(
         PaneId::Response,
         false,
         false,
@@ -22821,7 +22807,7 @@ fn the_footer_and_palette_reach_the_jq_bar() {
         None,
         crate::components::footer::JqBarState::Closed,
         false,
-    );
+    ));
     assert!(
         chips
             .iter()
@@ -23101,7 +23087,7 @@ fn right_click_on_the_jq_bar_offers_copy_and_paste_only() {
 fn the_response_footer_always_offers_alt_q_filter_and_close_only_while_open() {
     use crate::components::footer::JqBarState;
     let chips = |state: JqBarState| {
-        crate::components::footer::footer_chips(
+        crate::keyroute::spell::spelled(crate::components::footer::footer_chips(
             PaneId::Response,
             false,
             false,
@@ -23111,7 +23097,7 @@ fn the_response_footer_always_offers_alt_q_filter_and_close_only_while_open() {
             None,
             state,
             false,
-        )
+        ))
     };
     let find = |state: JqBarState, key: &str| {
         chips(state)
@@ -27379,61 +27365,79 @@ fn esc_in_a_settings_field_keeps_the_text() {
 }
 
 #[test]
-fn settings_vim_aliases_are_strict_synonyms() {
-    fn fresh() -> App {
+fn settings_vim_letters_are_the_routers_not_the_arrows_profiles() {
+    use crate::config::KeyProfile;
+    fn fresh(profile: KeyProfile) -> App {
         let mut app = App::new_for_test();
+        app.use_profile(profile);
         app.update(Action::OpenManage {
             tab: Some(crate::components::manage::ManageTab::Settings),
         });
         app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         app
     }
+    let named = |code| KeyEvent::new(code, KeyModifiers::NONE);
+    // Vim's `g` is a prefix: `gg` is Home.
     let pairs = [
-        (plain('j'), KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
-        (plain('k'), KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)),
-        (plain('g'), KeyEvent::new(KeyCode::Home, KeyModifiers::NONE)),
+        (plain('j'), named(KeyCode::Down)),
+        (plain('k'), named(KeyCode::Up)),
+        (plain('g'), named(KeyCode::Home)),
         // Shaped as a terminal sends it: crossterm sets SHIFT on every
         // uppercase char.
         (
             KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT),
-            KeyEvent::new(KeyCode::End, KeyModifiers::NONE),
+            named(KeyCode::End),
         ),
-        // `i` opens a selected settings row exactly as Enter does (spec
-        // 2026-09-16).
-        (plain('i'), KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
     ];
-    for (alias, canonical) in pairs {
-        let (mut a, mut b) = (fresh(), fresh());
-        a.handle_key(alias);
-        b.handle_key(canonical);
-        assert_eq!(a.settings.cursor, b.settings.cursor, "{alias:?}");
+    for (letter, key) in pairs {
+        let mut arrows = fresh(KeyProfile::Arrows);
+        let start = arrows.settings.cursor;
+        arrows.handle_key(letter);
+        assert_eq!(arrows.settings.cursor, start, "{letter:?}: nothing in arrows");
+        let (mut vim, mut named_key) = (fresh(KeyProfile::Vim), fresh(KeyProfile::Vim));
+        vim.handle_key(letter);
+        if letter.code == KeyCode::Char('g') {
+            vim.handle_key(letter);
+        }
+        named_key.handle_key(key);
+        assert_eq!(vim.settings.cursor, named_key.settings.cursor, "{letter:?}: vim");
+        assert_ne!(vim.settings.cursor, start, "{letter:?}: vim moved");
     }
-    let (mut a, mut b) = (fresh(), fresh());
-    for app in [&mut a, &mut b] {
-        app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE)); // a Files row
-    }
-    a.handle_key(plain('l'));
-    b.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
-    assert_eq!(a.settings.file_button, b.settings.file_button);
-    assert_eq!(a.settings.file_button, 1);
+    let end_row = |profile| {
+        let mut app = fresh(profile);
+        app.handle_key(named(KeyCode::End)); // a Files row
+        app
+    };
+    let mut arrows = end_row(KeyProfile::Arrows);
+    arrows.handle_key(plain('l'));
+    assert_eq!(arrows.settings.file_button, 0, "l does nothing in arrows");
+    let mut vim = end_row(KeyProfile::Vim);
+    vim.handle_key(plain('l'));
+    assert_eq!(vim.settings.file_button, 1, "vim's l is Right");
 }
 
-/// `i` opens a Settings text row exactly as Enter/Space do (spec
-/// 2026-09-16): it is not just another vim alias for motion here, it is
-/// the shared field-open key.
+/// Enter opens a Settings text row; `i` is vim's key for it, through the
+/// router (spec 2026-09-16, piece 4 §4.5).
 #[test]
-fn i_opens_a_settings_text_row_like_enter() {
+fn enter_opens_a_settings_text_row_and_i_is_vims() {
     use crate::components::settings::{SettingsField, SettingsRow, SettingsTab};
-    let mut app = App::new_for_test();
-    app.update(Action::OpenManage {
-        tab: Some(crate::components::manage::ManageTab::Settings),
-    });
-    app.settings.cursor = SettingsTab::rows()
-        .iter()
-        .position(|r| matches!(r, SettingsRow::Setting(SettingsField::AiCmd)))
-        .expect("ai_cmd row exists");
-    app.handle_key(plain('i'));
-    assert!(app.settings.editing.is_some(), "i opens the text row");
+    use crate::config::KeyProfile;
+    let open = |profile, key: KeyEvent| {
+        let mut app = App::new_for_test();
+        app.use_profile(profile);
+        app.update(Action::OpenManage {
+            tab: Some(crate::components::manage::ManageTab::Settings),
+        });
+        app.settings.cursor = SettingsTab::rows()
+            .iter()
+            .position(|r| matches!(r, SettingsRow::Setting(SettingsField::AiCmd)))
+            .expect("ai_cmd row exists");
+        app.handle_key(key);
+        app.settings.editing.is_some()
+    };
+    assert!(open(KeyProfile::Arrows, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
+    assert!(!open(KeyProfile::Arrows, plain('i')), "arrows: i is nothing");
+    assert!(open(KeyProfile::Vim, plain('i')), "vim: i opens the text row");
 }
 
 /// A refused `osc52_limit` keeps its edit open, so a click landing on
@@ -28815,4 +28819,1104 @@ fn extract_to_request_from_a_field_mid_edit_is_one_undo_step() {
         "https://x/ping/abc-123",
         "one undo peels the typing and the replacement together"
     );
+}
+
+/// Plan M1 Deviation 2: an unset `keymap` runs arrows until the
+/// first-launch question is raised (M3).
+#[test]
+fn an_unset_keymap_runs_the_arrows_profile() {
+    use crate::config::KeyProfile;
+    let mut app = App::new_for_test();
+    app.ui_settings.keymap = None;
+    assert_eq!(app.profile(), KeyProfile::Arrows);
+    app.use_profile(KeyProfile::Vim);
+    assert_eq!(app.profile(), KeyProfile::Vim);
+    assert_eq!(app.keymap.lookup(&KeyCombo::parse("q").unwrap()), None);
+}
+
+#[test]
+fn the_keyboard_profile_row_switches_profiles_and_undo_switches_back() {
+    use crate::config::KeyProfile;
+    let mut app = App::new_for_test();
+    let dir = config_at_tempdir(&mut app);
+    app.update(Action::OpenManage { tab: Some(ManageTab::Settings) });
+    click_hit(&mut app, Hit::SettingsKeymap(KeyProfile::Vim));
+    assert_eq!(app.profile(), KeyProfile::Vim);
+    assert_eq!(app.keymap.lookup(&KeyCombo::parse("q").unwrap()), None, "the live keymap swapped");
+    let written = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+    assert!(written.contains("keymap = \"vim\""), "{written}");
+    app.update(Action::Undo);
+    assert_eq!(app.profile(), KeyProfile::Arrows, "one config undo step");
+    assert_eq!(app.keymap.lookup(&KeyCombo::parse("q").unwrap()), Some(Action::Quit));
+}
+
+#[test]
+fn enter_on_the_keyboard_row_flips_the_profile() {
+    use crate::components::settings::{SettingsField, SettingsRow, SettingsTab};
+    let mut app = App::new_for_test();
+    let _dir = config_at_tempdir(&mut app);
+    app.update(Action::OpenManage { tab: Some(ManageTab::Settings) });
+    let row = SettingsTab::rows()
+        .iter()
+        .position(|r| *r == SettingsRow::Setting(SettingsField::Keymap))
+        .unwrap();
+    app.settings.set_cursor(row);
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(app.profile(), crate::config::KeyProfile::Vim);
+}
+
+/// Spec §4.2: a write that fails still applies for this session and says
+/// so; nothing landed, so the file is untouched.
+#[test]
+fn a_profile_that_cannot_be_saved_applies_for_the_session() {
+    let mut app = App::new_for_test();
+    let dir = config_at_tempdir(&mut app);
+    std::fs::write(dir.path().join("config.toml"), "not = [toml").unwrap();
+    app.update(Action::SetKeyProfile(crate::config::KeyProfile::Vim));
+    assert_eq!(app.profile(), crate::config::KeyProfile::Vim);
+    assert!(
+        app.toasts.messages().iter().any(|m| m.contains("for this session")),
+        "{:?}",
+        app.toasts.messages()
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("config.toml")).unwrap(),
+        "not = [toml"
+    );
+}
+
+/// Plan M1 Deviation 23 (keymap half): a reload that cannot parse
+/// `config.toml` keeps the running profile's keymap, not arrows'.
+#[test]
+fn a_reload_with_a_broken_config_keeps_the_running_profiles_keymap() {
+    use crate::config::KeyProfile;
+    let mut app = App::new_for_test();
+    let dir = config_at_tempdir(&mut app);
+    std::fs::write(dir.path().join("config.toml"), "keymap = \"vim\"\n").unwrap();
+    app.update(Action::ReloadFromDisk);
+    assert_eq!(app.profile(), KeyProfile::Vim);
+
+    std::fs::write(dir.path().join("config.toml"), "keymap = \"vim\n").unwrap();
+    app.update(Action::ReloadFromDisk);
+
+    assert_eq!(app.profile(), KeyProfile::Vim, "the setting survives");
+    assert_eq!(app.keymap.lookup(&KeyCombo::parse("q").unwrap()), None, "q stays unbound");
+    assert_ne!(
+        app.keymap.lookup(&KeyCombo::parse("ctrl+r").unwrap()),
+        Some(Action::Send),
+        "ctrl+r stays the router's"
+    );
+}
+
+/// Plan M1 Deviation 25: a Settings reset leaves the keyboard profile.
+#[test]
+fn a_settings_reset_keeps_the_keyboard_profile() {
+    use crate::config::KeyProfile;
+    let mut app = App::new_for_test();
+    let dir = config_at_tempdir(&mut app);
+    std::fs::write(dir.path().join("config.toml"), "keymap = \"vim\"\nanimations = false\n").unwrap();
+    app.update(Action::ReloadFromDisk);
+    assert_eq!(app.profile(), KeyProfile::Vim);
+
+    app.update(Action::ForceResetConfigFile(crate::action::ConfigFile::Config));
+
+    assert_eq!(app.profile(), KeyProfile::Vim);
+    let written = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+    assert!(written.contains("keymap = \"vim\""), "{written}");
+    assert!(!written.contains("animations"), "{written}");
+}
+
+fn app_with_unset_keymap() -> App {
+    let mut app = App::new_for_test();
+    app.ui_settings.keymap = None;
+    assert!(app.raise_keymap_choice());
+    app
+}
+
+/// Spec §4.2: two equal answers, neither aimed; Esc and Enter do nothing
+/// until one is chosen, and the question is asked once.
+#[test]
+fn the_keyboard_question_offers_two_equal_answers_and_no_way_out() {
+    use crate::config::KeyProfile;
+    let mut app = app_with_unset_keymap();
+    for ev in [
+        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+    ] {
+        app.handle_key(ev);
+        assert!(
+            matches!(app.modals.top(), Some(Modal::KeymapChoice { .. })),
+            "{ev:?} answers nothing"
+        );
+    }
+    assert!(!app.modals.top_is_dismissable());
+    app.handle_key(plain('v'));
+    assert!(app.modals.is_empty());
+    assert_eq!(app.ui_settings.keymap, Some(KeyProfile::Vim));
+    assert!(!app.raise_keymap_choice(), "asked once");
+}
+
+#[test]
+fn arrows_aim_and_enter_confirms_the_keyboard_question() {
+    let mut app = app_with_unset_keymap();
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(app.ui_settings.keymap, Some(crate::config::KeyProfile::Arrows));
+    assert!(app.modals.is_empty());
+}
+
+#[test]
+fn clicking_a_keyboard_answer_chooses_it() {
+    let mut app = app_with_unset_keymap();
+    app.anims.finish_all();
+    click_hit(&mut app, Hit::KeymapChoice(crate::config::KeyProfile::Vim));
+    assert_eq!(app.profile(), crate::config::KeyProfile::Vim);
+    assert!(app.modals.is_empty());
+}
+
+/// It stacks under the startup gate: with any modal up it waits.
+#[test]
+fn the_keyboard_question_waits_for_other_modals() {
+    let mut app = App::new_for_test();
+    app.ui_settings.keymap = None;
+    app.push_modal(Modal::Message {
+        title: "t".into(),
+        body: "b".into(),
+    });
+    assert!(!app.raise_keymap_choice(), "another modal is up: ask later");
+    app.modals.pop();
+    assert!(app.raise_keymap_choice());
+}
+
+/// Plan M1 Deviation 2: the question is not raised before M3.
+#[test]
+fn the_keyboard_question_is_not_raised_before_m3() {
+    let mut app = App::new_for_test();
+    app.ui_settings.keymap = None;
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.update(Action::Render);
+    assert!(app.modals.is_empty(), "ASK_KEYMAP_ON_LAUNCH is off until M3");
+    assert_eq!(app.profile(), crate::config::KeyProfile::Arrows);
+}
+
+#[test]
+fn every_surface_is_named_from_app_state() {
+    use crate::components::response::ViewMode;
+    use crate::keyroute::Surface;
+    let mut app = App::new_for_test();
+    app.focus = PaneId::Sidebar;
+    assert_eq!(app.surface(), Surface::Sidebar);
+    app.focus = PaneId::Editor;
+    app.editor.sub_focus = SubFocus::Method;
+    assert_eq!(app.surface(), Surface::Method);
+    app.editor.sub_focus = SubFocus::Url;
+    assert_eq!(app.surface(), Surface::UrlLine);
+    app.editor.sub_focus = SubFocus::None;
+    assert_eq!(app.surface(), Surface::UrlLine, "plan M1 Deviation 14");
+    app.editor.sub_focus = SubFocus::Content;
+    app.editor.active_tab = EditorTab::Headers;
+    assert_eq!(app.surface(), Surface::Table(EditorTab::Headers));
+    app.editor.active_tab = EditorTab::Body;
+    assert_eq!(app.surface(), Surface::Body);
+    app.focus = PaneId::Response;
+    assert_eq!(app.surface(), Surface::Response(ViewMode::Pretty));
+    app.push_modal(Modal::Message { title: "t".into(), body: "b".into() });
+    assert_eq!(app.surface(), Surface::Dialog);
+    app.modals.pop();
+    app.push_modal(Modal::KeymapChoice { aimed: Some(crate::config::KeyProfile::Arrows) });
+    assert_eq!(app.surface(), Surface::Dialog, "the keyboard question is a dialog");
+    app.modals.pop();
+    app.update(Action::OpenPalette);
+    assert_eq!(app.surface(), Surface::Picker);
+    app.modals.pop();
+    app.push_modal(Modal::Prompt {
+        title: "t".into(),
+        input: crate::components::line_input::LineInput::new(""),
+        kind: crate::components::modal::PromptKind::NewRequest,
+        revealed: false,
+    });
+    assert_eq!(app.surface(), Surface::Prompt);
+    app.modals.pop();
+    app.update(Action::OpenManage { tab: Some(ManageTab::Settings) });
+    assert_eq!(app.surface(), Surface::Settings);
+    app.update(Action::OpenManage { tab: Some(ManageTab::Variables) });
+    assert_eq!(app.surface(), Surface::VarList);
+    app.varmanager.focus = crate::components::varmanager::VmFocus::Grid;
+    assert_eq!(app.surface(), Surface::VarGrid);
+    app.varmanager.focus = crate::components::varmanager::VmFocus::Form;
+    assert_eq!(app.surface(), Surface::VarForm);
+    app.varmanager.focus = crate::components::varmanager::VmFocus::List;
+    app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
+    assert_eq!(app.surface(), Surface::ManageList(ManageTab::Environments));
+    app.manage.list.focus = crate::components::manage_list::ListFocus::Detail;
+    assert_eq!(app.surface(), Surface::ManageDetail(ManageTab::Environments));
+    app.manage.list.focus = crate::components::manage_list::ListFocus::List;
+    let mut testbed = App::new_for_test_with_testbed(true);
+    assert_eq!(testbed.surface(), Surface::Other);
+    testbed.focus = PaneId::Sidebar;
+    assert_eq!(testbed.surface(), Surface::Other, "the screen wins over the pane");
+}
+
+/// Plan M1 Deviation 6: `field_caret` names the field that takes typed
+/// keys. The older `field_open` names the paste/undo/close target. They
+/// agree wherever both speak of the same field and differ only where the
+/// plan says: a selected form field, the body, a picker's query.
+#[test]
+fn the_field_with_the_caret_is_named_once() {
+    use crate::components::line_input::LineInput;
+    use crate::components::table_editor::{CellEdit, Col};
+    use crate::keyroute::{FieldCaret, FieldId};
+
+    let mut app = App::new_for_test();
+    assert_eq!((app.field_caret(), app.field_open()), (FieldCaret::None, false));
+
+    let mut url = App::new_for_test();
+    url.focus = PaneId::Editor;
+    url.editor.open_url_from_app();
+    assert_eq!((url.field_caret(), url.field_open()), (FieldCaret::Live(FieldId::Url), true));
+    url.push_modal(Modal::Dropdown(crate::components::modal::DropdownState {
+        anchor: ratatui::layout::Rect::new(0, 0, 8, 1),
+        items: vec![crate::components::modal::MenuItem::new("GET", Action::Render)],
+        selected: 0,
+        current: Some(0),
+    }));
+    assert_eq!(url.field_caret(), FieldCaret::Parked(FieldId::Url), "a modal with no field parks it");
+
+    let mut cell = App::new_for_test();
+    cell.focus = PaneId::Editor;
+    cell.editor.sub_focus = SubFocus::Content;
+    cell.editor.table.editing = Some(CellEdit { row: 1, col: Col::Value, input: LineInput::new("x") });
+    assert_eq!(
+        (cell.field_caret(), cell.field_open()),
+        (FieldCaret::Live(FieldId::TableCell { row: 1, col: 1 }), true)
+    );
+
+    let mut body = App::new_for_test();
+    body.focus = PaneId::Editor;
+    body.editor.sub_focus = SubFocus::Content;
+    body.editor.active_tab = EditorTab::Body;
+    assert_eq!((body.field_caret(), body.field_open()), (FieldCaret::Live(FieldId::Body), false));
+
+    app.push_modal(Modal::Prompt {
+        title: "t".into(),
+        input: LineInput::new("x"),
+        kind: crate::components::modal::PromptKind::NewRequest,
+        revealed: false,
+    });
+    assert_eq!((app.field_caret(), app.field_open()), (FieldCaret::Live(FieldId::ModalInput(0)), true));
+    app.modals.close_top_field();
+    assert_eq!((app.field_caret(), app.field_open()), (FieldCaret::None, true), "selected, no caret");
+    app.modals.pop();
+
+    app.update(Action::OpenPalette);
+    assert_eq!((app.field_caret(), app.field_open()), (FieldCaret::Live(FieldId::Palette), false));
+    app.modals.pop();
+
+    app.update(Action::OpenManage { tab: Some(ManageTab::Settings) });
+    app.settings.begin_edit(crate::components::settings::SettingsField::AiCmd, "x");
+    assert_eq!(
+        (app.field_caret(), app.field_open()),
+        (FieldCaret::Live(FieldId::Settings(crate::components::settings::SettingsField::AiCmd)), true)
+    );
+}
+
+/// Spec §4.5 and §5.11: `u` and `:` are vim rows, and gone from arrows.
+#[test]
+fn u_and_colon_are_vim_rows_and_gone_from_arrows() {
+    use crate::config::KeyProfile;
+    for profile in [KeyProfile::Arrows, KeyProfile::Vim] {
+        let (mut app, steps) = app_with_an_undo_step(profile);
+        app.handle_key(plain('u'));
+        let undid = app.history.undo_len() == steps - 1;
+        assert_eq!(undid, profile == KeyProfile::Vim, "{profile:?}: u");
+        app.handle_key(plain(':'));
+        let palette = matches!(app.modals.top(), Some(Modal::Palette(_)));
+        assert_eq!(palette, profile == KeyProfile::Vim, "{profile:?}: :");
+    }
+}
+
+/// Review Focus 1.
+#[test]
+fn a_count_dies_with_a_surface_change_a_click_or_a_profile_switch() {
+    use crate::config::KeyProfile;
+    let (mut app, _dir) = sidebar_test_app_three_flat_rows();
+    app.use_profile(KeyProfile::Vim);
+    render_once(&mut app);
+    app.sidebar.selected = Some(0);
+    app.handle_key(plain('3'));
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+    assert_eq!(app.key_ctx(&plain('j')).surface, crate::keyroute::Surface::Sidebar);
+    app.handle_key(plain('j'));
+    assert_eq!(app.sidebar.selected, Some(1), "Tab away dropped the 3");
+    app.handle_key(plain('3'));
+    click_hit(&mut app, Hit::SidebarRow(0));
+    app.handle_key(plain('j'));
+    assert_eq!(app.sidebar.selected, Some(1), "a click dropped the 3");
+    app.handle_key(plain('3'));
+    app.update(Action::SetKeyProfile(KeyProfile::Vim));
+    app.handle_key(plain('j'));
+    assert_eq!(app.sidebar.selected, Some(2), "a profile switch dropped the 3");
+}
+
+/// Review Focus 2, plan M1 Deviation 13.
+#[test]
+fn a_repeat_stops_when_the_surface_changes() {
+    use crate::config::KeyProfile;
+    let mut twin = app_with_three_params();
+    twin.editor.sub_focus = SubFocus::Url;
+    twin.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    let mut app = app_with_three_params();
+    app.use_profile(KeyProfile::Vim);
+    app.editor.sub_focus = SubFocus::Url;
+    app.handle_key(plain('3'));
+    app.handle_key(plain('j'));
+    assert_eq!(app.editor.sub_focus, SubFocus::Content);
+    assert_eq!(
+        app.editor.table.selected, twin.editor.table.selected,
+        "the replays stopped where the first Down entered the table"
+    );
+}
+
+/// Review Focus 3, spec §4.4, plan M1 Deviation 19.
+#[test]
+fn a_keys_toml_bare_letter_wins_in_vim_and_warns() {
+    use crate::config::KeyProfile;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("config.toml"), "keymap = \"vim\"\n").unwrap();
+    std::fs::write(
+        dir.path().join("keys.toml"),
+        "quit = [\"ctrl+c\", \"x\"]\nsave = [\"ctrl+s\", \"j\"]\n",
+    )
+    .unwrap();
+    let (_cfg, loaded, warnings) =
+        crate::config::Config::load_from(crate::config::Config::at(dir.path().to_path_buf()), false);
+    assert!(
+        warnings.iter().any(|w| w == "keys.toml binds `j`, which shadows vim's `j`"),
+        "{warnings:?}"
+    );
+    assert!(!warnings.iter().any(|w| w.contains("`x`")), "no vim row starts with x");
+    let mut app = App::new_for_test();
+    app.ui_settings.keymap = Some(KeyProfile::Vim);
+    app.keymap = loaded.keymap;
+    app.focus = PaneId::Sidebar;
+    app.handle_key(plain('g'));
+    app.handle_key(plain('x'));
+    assert!(!app.should_quit, "not while a prefix waits");
+    app.handle_key(plain('x'));
+    assert!(app.should_quit, "the keys.toml binding won");
+}
+
+/// Plan M1 Deviation 21: a `keys.toml` letter never fires under a modal.
+/// The unsaved-changes confirm's own `s` (save, then open) answers it, not
+/// the bare save bound to `s`.
+#[test]
+fn a_keys_toml_letter_does_not_fire_under_a_modal() {
+    use crate::config::KeyProfile;
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let dir = tempfile::tempdir().unwrap();
+    postui_core::fixtures::ensure_project(dir.path()).unwrap();
+    for slug in ["main/a", "main/b"] {
+        postui_core::fixtures::save_request(dir.path(), slug, &req("https://x/1")).unwrap();
+    }
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.use_profile(KeyProfile::Vim);
+    app.keymap.apply_overrides("save = [\"ctrl+s\", \"s\"]\n").unwrap();
+    app.update(Action::ForceOpenRequest("main/a".into()));
+    dirty_the_editor(&mut app);
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(app.key_ctx(&plain('s')).user_bare, Some(Action::SaveRequest), "bound on Main");
+    app.update(Action::OpenRequest("main/b".into()));
+    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
+    assert_eq!(app.key_ctx(&plain('s')).user_bare, None, "not under a modal");
+    app.handle_key(plain('s'));
+    assert!(app.modals.is_empty(), "the confirm's own `s` answered it");
+    assert_eq!(app.editor.slug.as_deref(), Some("main/b"), "saved, then opened");
+}
+
+/// Plan M1 Deviation 21: on a Manage screen a `keys.toml` letter fires
+/// only for an action the screen's whitelist admits, as its chord would.
+#[test]
+fn a_keys_toml_letter_on_a_manage_screen_needs_the_whitelist() {
+    use crate::components::manage::ManageTab;
+    use crate::config::KeyProfile;
+    let mut app = App::new_for_test();
+    app.use_profile(KeyProfile::Vim);
+    app.keymap
+        .apply_overrides("send = [\"ctrl+enter\", \"x\"]\nopen_palette = [\"ctrl+p\", \"y\"]\n")
+        .unwrap();
+    app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
+    assert_eq!(app.surface(), crate::keyroute::Surface::ManageList(ManageTab::Environments));
+    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
+    app.handle_key(plain('x'));
+    assert!(
+        app.toasts.is_empty(),
+        "x must not reach Action::Send (an empty-URL send would toast): {:?}",
+        app.toasts.messages()
+    );
+    assert!(app.session.in_flight.is_empty());
+    assert_eq!(app.screen, Screen::Manage);
+    app.handle_key(plain('y'));
+    assert!(matches!(app.modals.top(), Some(Modal::Palette(_))), "a whitelisted action fires");
+}
+
+/// Review Focus 4.
+#[test]
+fn a_huge_count_is_capped_by_the_surface() {
+    use crate::config::KeyProfile;
+    let (mut app, _dir) = sidebar_test_app_three_flat_rows();
+    app.use_profile(KeyProfile::Vim);
+    render_once(&mut app);
+    app.sidebar.selected = Some(0);
+    let started = std::time::Instant::now();
+    for c in "99999999999999999999999999999j".chars() {
+        app.handle_key(plain(c));
+    }
+    assert!(started.elapsed().as_millis() < 500, "{:?}", started.elapsed());
+    assert_eq!(app.sidebar.selected, Some(2));
+}
+
+/// The repeat cap is never 0: a surface with nothing on it still takes a
+/// plain `j` as one Down, not as no step at all.
+#[test]
+fn the_repeat_cap_is_never_zero() {
+    let mut app = App::new_for_test();
+    app.use_profile(crate::config::KeyProfile::Vim);
+    app.focus = PaneId::Response;
+    assert!(app.session.response.view().is_none());
+    assert_eq!(app.key_ctx(&plain('j')).cap, 1, "no response");
+    app.focus = PaneId::Sidebar;
+    assert!(app.sidebar.rows.is_empty());
+    assert_eq!(app.key_ctx(&plain('j')).cap, 1, "an empty sidebar");
+}
+
+/// The repeat cap covers the response's columns as well as its rows: on a
+/// one-line, wide response `20l` scrolls as far as twenty Rights do.
+#[test]
+fn a_count_on_l_is_not_cut_short_by_a_short_wide_response() {
+    let mut twin = app_with_wide_response();
+    twin.focus = PaneId::Response;
+    for _ in 0..20 {
+        twin.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    }
+    let wanted = twin.session.response.view().unwrap().h_scroll;
+    assert_eq!(wanted, 20 * usize::from(crate::components::response::H_SCROLL_STEP.unsigned_abs()));
+    let mut app = app_with_wide_response();
+    app.use_profile(crate::config::KeyProfile::Vim);
+    app.focus = PaneId::Response;
+    assert_eq!(app.session.response.view().unwrap().visible_len(), 1, "one row");
+    for c in "20l".chars() {
+        app.handle_key(plain(c));
+    }
+    assert_eq!(app.session.response.view().unwrap().h_scroll, wanted);
+}
+
+/// The sidebar's repeat cap counts sideways steps too: from a request two
+/// folders deep (three rows), `4h` steps out and collapses both folders,
+/// as four Lefts do.
+#[test]
+fn a_count_on_h_walks_out_of_nested_folders() {
+    use crate::config::KeyProfile;
+    let build = |profile| {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let dir = tempfile::tempdir().unwrap();
+        postui_core::fixtures::ensure_project(dir.path()).unwrap();
+        postui_core::fixtures::save_request(dir.path(), "main/a/b/r", &req("https://x/1")).unwrap();
+        let mut app = App::with_root(tx, dir.path().to_path_buf());
+        app.use_profile(profile);
+        render_once(&mut app);
+        app.focus = PaneId::Sidebar;
+        for code in [KeyCode::Right, KeyCode::Down, KeyCode::Right, KeyCode::Down] {
+            app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+        }
+        assert_eq!((app.sidebar.rows.len(), app.sidebar.selected), (3, Some(2)), "on r, both open");
+        (app, dir)
+    };
+    let (mut twin, _twin_dir) = build(KeyProfile::Arrows);
+    for _ in 0..4 {
+        twin.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+    }
+    assert_eq!(twin.sidebar.rows.len(), 1, "four Lefts collapse both folders");
+    let (mut app, _dir) = build(KeyProfile::Vim);
+    app.handle_key(plain('4'));
+    app.handle_key(plain('h'));
+    assert_eq!(app.sidebar.rows.len(), twin.sidebar.rows.len());
+    assert_eq!(app.sidebar.selected, twin.sidebar.selected);
+}
+
+/// Review Focus 5: ctrl+c is step 1, before the router sees anything.
+#[test]
+fn ctrl_c_quits_with_a_prefix_pending() {
+    let mut app = App::new_for_test();
+    app.use_profile(crate::config::KeyProfile::Vim);
+    app.handle_key(plain('g'));
+    app.handle_key(ctrl('c'));
+    assert!(app.should_quit);
+}
+
+/// Plan M1 Deviation 23 (warnings half): a reload gives the `keys.toml`
+/// shadow warnings as load does, once per change, and against the keymap
+/// it installs — the running vim one when `config.toml` will not parse.
+#[test]
+fn a_reload_warns_of_keys_toml_letters_that_shadow_vim_keys() {
+    let count = |app: &App, key: char| {
+        let line = format!("keys.toml binds `{key}`, which shadows vim's `{key}`");
+        app.toasts.messages().iter().filter(|m| **m == line).count()
+    };
+    let mut app = App::new_for_test();
+    let dir = config_at_tempdir(&mut app);
+    std::fs::write(dir.path().join("config.toml"), "keymap = \"vim\"\n").unwrap();
+    std::fs::write(dir.path().join("keys.toml"), "save = [\"ctrl+s\", \"j\"]\n").unwrap();
+    app.update(Action::ReloadFromDisk);
+    assert_eq!(count(&app, 'j'), 1, "{:?}", app.toasts.messages());
+
+    std::fs::write(dir.path().join("config.toml"), "keymap = \"vim\n").unwrap();
+    app.update(Action::ReloadFromDisk);
+    assert_eq!(count(&app, 'j'), 1, "the installed keys did not change: {:?}", app.toasts.messages());
+
+    std::fs::write(dir.path().join("keys.toml"), "save = [\"ctrl+s\", \"k\"]\n").unwrap();
+    app.update(Action::ReloadFromDisk);
+    assert_eq!(count(&app, 'k'), 1, "warned against the vim keymap: {:?}", app.toasts.messages());
+}
+
+/// Carried from Task 7's review: switching to vim (the Settings row, the
+/// first-launch question) warns of the `keys.toml` letters that now shadow
+/// vim's, as load and reload do. Switching to arrows says nothing.
+#[test]
+fn switching_to_vim_warns_of_keys_toml_letters_that_shadow_vim_keys() {
+    use crate::config::KeyProfile;
+    let mut app = App::new_for_test();
+    let dir = config_at_tempdir(&mut app);
+    std::fs::write(dir.path().join("keys.toml"), "save = [\"ctrl+s\", \"j\"]\n").unwrap();
+    let shadow = "keys.toml binds `j`, which shadows vim's `j`".to_string();
+    app.update(Action::SetKeyProfile(KeyProfile::Arrows));
+    assert!(!warning_toasts(&app).contains(&shadow), "{:?}", warning_toasts(&app));
+    app.update(Action::SetKeyProfile(KeyProfile::Vim));
+    assert_eq!(
+        warning_toasts(&app).iter().filter(|m| **m == shadow).count(),
+        1,
+        "{:?}",
+        warning_toasts(&app)
+    );
+}
+
+/// Spec §4.5: the vim aliases leave the arrows profile; vim reaches the
+/// same arms through the router's rows.
+#[test]
+fn the_vim_aliases_left_the_arrows_profile() {
+    use crate::config::KeyProfile;
+    let (mut app, _dir) = sidebar_test_app_three_flat_rows();
+    render_once(&mut app);
+    app.sidebar.selected = Some(0);
+    for c in ['j', 'l', 'G', 'k'] {
+        app.handle_key(plain(c));
+    }
+    assert_eq!(app.sidebar.selected, Some(0), "letters do nothing in arrows");
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert_eq!(app.sidebar.selected, Some(1));
+    app.use_profile(KeyProfile::Vim);
+    app.handle_key(plain('j'));
+    assert_eq!(app.sidebar.selected, Some(2), "vim's j is the router's");
+
+    let mut table = app_with_three_params();
+    table.editor.sub_focus = SubFocus::Content;
+    table.editor.table.selected = Some(0);
+    table.handle_key(plain('i'));
+    assert!(table.editor.table.editing.is_none(), "arrows: i no longer opens a cell");
+    table.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(table.editor.table.editing.is_some());
+}
+
+/// Carried from Task 7's review: a huge count on a Manage or Variables
+/// surface is capped by the surface's rows (Review Focus 4). Each formula
+/// runs on a surface that holds something, so the numbers are exact.
+#[test]
+fn repeat_cap_on_manage_and_variables_surfaces_is_row_based() {
+    use crate::components::manage::ManageTab;
+    use crate::components::varmanager::VmFocus;
+    use crate::keyroute::Surface;
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::OpenManage { tab: Some(ManageTab::Spaces) });
+    render_once(&mut app);
+    let items = app.manage_items(ManageTab::Spaces).len();
+    assert!(items >= 1);
+    assert_eq!(app.repeat_cap(Surface::ManageList(ManageTab::Spaces)), items);
+    assert_eq!(
+        app.repeat_cap(Surface::ManageDetail(ManageTab::Spaces)),
+        3,
+        "the Spaces detail pane's three buttons: Move all, Rename, Delete"
+    );
+
+    app.update(Action::OpenManage { tab: Some(ManageTab::Variables) });
+    render_once(&mut app);
+    let rows = app.varmanager.left_rows.len();
+    assert_eq!(app.repeat_cap(Surface::VarList), rows);
+
+    // `user` in qa: the options alice and bob plus the ghost row, and the
+    // name column, the one field `user` and the description column, plus
+    // one: (2 + 1) + (1 + 2).
+    goto_group(&mut app, "user");
+    app.varmanager.focus = VmFocus::Grid;
+    assert_eq!(app.surface(), Surface::VarGrid);
+    assert_eq!(app.repeat_cap(Surface::VarGrid), 6);
+
+    // `base_url` (not secret, qa active): Description, Default, the
+    // Secret toggle and the env value.
+    goto_row(&mut app, |r| {
+        r == &crate::components::varmanager::VmRow::Var("base_url".into())
+    });
+    app.varmanager.focus = VmFocus::Form;
+    assert_eq!(app.surface(), Surface::VarForm);
+    assert_eq!(app.repeat_cap(Surface::VarForm), 4);
+    // `api_key` is a secret: no Default row.
+    goto_row(&mut app, |r| {
+        r == &crate::components::varmanager::VmRow::Var("api_key".into())
+    });
+    app.varmanager.focus = VmFocus::Form;
+    assert_eq!(app.repeat_cap(Surface::VarForm), 3);
+}
+
+/// Spec §3.8: the mode names what takes the keys; the echo follows it.
+#[test]
+fn the_footer_shows_vims_mode_and_pending_keys() {
+    use crate::config::KeyProfile;
+    let mut app = App::new_for_test();
+    app.focus = PaneId::Sidebar;
+    assert_eq!(app.vim_status(), None, "arrows has no mode");
+    assert!(!footer_text(&mut app).contains("NORMAL"));
+    app.use_profile(KeyProfile::Vim);
+    assert_eq!(app.vim_status().as_deref(), Some("NORMAL"));
+    app.handle_key(plain('3'));
+    assert_eq!(app.vim_status().as_deref(), Some("NORMAL  3"));
+    assert!(footer_text(&mut app).contains("NORMAL  3"));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.focus = PaneId::Editor;
+    app.editor.open_url_from_app();
+    assert_eq!(app.mode_indicator(), Some("INSERT"), "a field with the caret types");
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(!app.editor.url_open(), "the URL is closed before the body check");
+    app.editor.sub_focus = SubFocus::Content;
+    app.editor.active_tab = EditorTab::Body;
+    assert_eq!(app.mode_indicator(), Some("INSERT"), "the body types until M3");
+    app.update(Action::OpenPalette);
+    assert_eq!(app.mode_indicator(), Some("INSERT"), "a picker types");
+}
+
+/// The text of the footer chip that dispatches `action`, spaces collapsed
+/// (`^P commands`), or `None` when no such chip is painted.
+fn footer_chip_text(app: &mut App, action: Action) -> Option<String> {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    app.anims.finish_all();
+    let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
+    let rect = app.hits.rect_of(&Hit::FooterChip(action))?;
+    let buf = terminal.backend().buffer();
+    let y = rect.y + rect.height / 2;
+    let text: String = (rect.x..rect.x + rect.width).map(|x| buf[(x, y)].symbol()).collect();
+    Some(text.split_whitespace().collect::<Vec<_>>().join(" "))
+}
+
+/// Spec §4.6: the footer names the keys the profile really binds.
+#[test]
+fn footer_keycaps_follow_the_profile() {
+    use crate::config::KeyProfile;
+    let (mut app, _dir) = sidebar_test_app_three_flat_rows();
+    app.focus = PaneId::Sidebar;
+    assert_eq!(footer_chip_text(&mut app, Action::OpenPalette).as_deref(), Some("^P commands"));
+    assert_eq!(footer_chip_text(&mut app, Action::PromptNewRequest).as_deref(), Some("n new"));
+    assert_eq!(footer_chip_text(&mut app, Action::Quit).as_deref(), Some("q quit"));
+    app.use_profile(KeyProfile::Vim);
+    assert_eq!(footer_chip_text(&mut app, Action::OpenPalette).as_deref(), Some(": commands"));
+    assert_eq!(
+        footer_chip_text(&mut app, Action::PromptNewRequest),
+        None,
+        "a verb chip waits for M2's vim key"
+    );
+    assert_eq!(footer_chip_text(&mut app, Action::Quit).as_deref(), Some("^C quit"), "vim gave up q");
+}
+
+/// Plan M1 Deviation 17: the startup gate's chip names the key that works.
+#[test]
+fn the_startup_gate_chip_names_its_real_key() {
+    let mut app = App::new_for_test();
+    app.config_error = Some("bad".into());
+    app.apply_startup_config_gate();
+    let footer = footer_text(&mut app).split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(footer.contains("i ignore"), "the chip's keycap is the key that answers: {footer}");
+    assert!(!footer.contains("c continue"), "{footer}");
+    assert!(!footer.contains("continue unsaved"), "{footer}");
+}
+
+/// Plan M1 Deviations 26 and 27: a form modal's field-close undo chip
+/// names the key that undoes it in each profile (arrows lost bare `u`),
+/// and a secret prompt's `ctrl+r reveal` chip shows only while the field
+/// has the caret: without it, vim's `ctrl+r` is the router's redo.
+#[test]
+fn a_form_modals_undo_and_reveal_chips_name_live_keys() {
+    use crate::components::line_input::LineInput;
+    use crate::components::modal::{Modal, PromptKind};
+    use crate::config::KeyProfile;
+    for (profile, undo) in [(KeyProfile::Arrows, "^Z undo"), (KeyProfile::Vim, "u undo")] {
+        let mut app = App::new_for_test();
+        app.use_profile(profile);
+        app.modals.push(Modal::Prompt {
+            title: "Secret".into(),
+            input: LineInput::new(""),
+            kind: PromptKind::SecretValue {
+                name: "token".into(),
+                env: "dev".into(),
+                then_send: false,
+            },
+            revealed: false,
+        });
+        let footer = footer_text(&mut app);
+        assert!(footer.contains("ctrl+r reveal"), "{profile:?}, caret: {footer}");
+        app.handle_key(plain('a'));
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(!app.field_caret().is_live(), "{profile:?}: the field is only selected");
+        let footer = footer_text(&mut app);
+        assert!(!footer.contains("reveal"), "{profile:?}, no caret: {footer}");
+        assert!(footer.contains(undo), "{profile:?}: {footer}");
+    }
+}
+
+/// Feeds `keys` (vim notation) through `handle_key`.
+fn type_keys(app: &mut App, keys: &str) {
+    for ev in crate::keyroute::notation::events(keys) {
+        app.handle_key(ev);
+    }
+}
+
+fn toast_count(app: &App, text: &str) -> usize {
+    app.toasts.messages().iter().filter(|m| m.contains(text)).count()
+}
+
+/// The final review's I1 (a controller ruling): a counted `u` or ctrl+r
+/// stops at the first repeat that steps nothing. Each real step keeps its
+/// own toast, and the end of history says so once, however large the
+/// count.
+#[test]
+fn a_counted_undo_or_redo_stops_at_the_end_of_history() {
+    use crate::config::KeyProfile;
+    let mut app = App::new_for_test();
+    let _dir = config_at_tempdir(&mut app);
+    app.use_profile(KeyProfile::Vim);
+    app.focus = PaneId::Sidebar;
+    let animations = app.ui_settings.animations;
+    let hover_hints = app.ui_settings.hover_hints;
+    app.update(Action::SetUiFlag { key: "animations", value: !animations });
+    app.update(Action::SetUiFlag { key: "hover_hints", value: !hover_hints });
+    assert_eq!((app.history.undo_len(), app.history.redo_len()), (2, 0));
+    app.toasts = Default::default();
+
+    type_keys(&mut app, "5u");
+    assert_eq!((app.history.undo_len(), app.history.redo_len()), (0, 2), "exactly two undos");
+    assert_eq!(toast_count(&app, "Undid change to"), 2, "each undo names its step: {:?}", app.toasts.messages());
+    assert_eq!(toast_count(&app, "Nothing to undo"), 1, "{:?}", app.toasts.messages());
+    assert_eq!((app.ui_settings.animations, app.ui_settings.hover_hints), (animations, hover_hints));
+
+    type_keys(&mut app, "9999u");
+    assert_eq!(toast_count(&app, "Nothing to undo"), 2, "one more, not 9 999");
+    assert_eq!(app.key_echo(), "");
+
+    app.toasts = Default::default();
+    type_keys(&mut app, "5<C-r>");
+    assert_eq!((app.history.undo_len(), app.history.redo_len()), (2, 0), "exactly two redos");
+    assert_eq!(toast_count(&app, "Redid change to"), 2, "{:?}", app.toasts.messages());
+    assert_eq!(toast_count(&app, "Nothing to redo"), 1, "{:?}", app.toasts.messages());
+    type_keys(&mut app, "9999<C-r>");
+    assert_eq!(toast_count(&app, "Nothing to redo"), 2, "one more, not 9 999");
+}
+
+/// The final review's I2: M1's real first-launch path. An unset `keymap`
+/// switched to vim from the Settings row and undone is unset again: the
+/// line leaves config.toml, the arrows keymap is back, and nothing the
+/// vim router held survives.
+#[test]
+fn an_unset_keymap_switched_to_vim_and_undone_is_unset_again() {
+    use crate::config::KeyProfile;
+    let mut app = App::new_for_test();
+    let dir = config_at_tempdir(&mut app);
+    std::fs::write(dir.path().join("config.toml"), "animations = false\n").unwrap();
+    app.ui_settings.keymap = None;
+    app.keymap = crate::keys::Keymap::default_bindings();
+    app.update(Action::OpenManage { tab: Some(ManageTab::Settings) });
+    click_hit(&mut app, Hit::SettingsKeymap(KeyProfile::Vim));
+    assert_eq!(app.ui_settings.keymap, Some(KeyProfile::Vim));
+    let written = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+    assert!(written.contains("keymap = \"vim\""), "{written}");
+    app.handle_key(plain('3'));
+    assert_eq!(app.key_echo(), "3", "the vim router holds a count");
+
+    app.update(Action::Undo);
+
+    let written = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+    assert!(!written.contains("keymap"), "the line is gone, not written empty: {written}");
+    assert!(written.contains("animations = false"), "{written}");
+    assert_eq!(app.ui_settings.keymap, None, "unset, as before the switch");
+    assert_eq!(app.profile(), KeyProfile::Arrows);
+    assert_eq!(app.keymap.lookup(&KeyCombo::parse("q").unwrap()), Some(Action::Quit), "the arrows keymap");
+    assert_eq!(app.key_echo(), "", "the router is idle");
+    assert_eq!(app.vim_status(), None);
+}
+
+/// The final review's M2: a keys.toml reset in vim seeds the vim keymap's
+/// bindings, not arrows': no bare `q` quit, no `ctrl+r` send.
+#[test]
+fn a_keys_toml_reset_documents_the_running_profiles_keymap() {
+    use crate::config::KeyProfile;
+    let line = |text: &str, action: &str| {
+        text.lines()
+            .find(|l| l.starts_with(&format!("# {action} = ")))
+            .unwrap_or_else(|| panic!("no {action} line in {text}"))
+            .to_string()
+    };
+    for profile in [KeyProfile::Arrows, KeyProfile::Vim] {
+        let mut app = App::new_for_test();
+        let dir = config_at_tempdir(&mut app);
+        let spelling = profile.spelling();
+        std::fs::write(dir.path().join("config.toml"), format!("keymap = \"{spelling}\"\n")).unwrap();
+        app.update(Action::ReloadFromDisk);
+        assert_eq!(app.profile(), profile);
+        app.update(Action::ForceResetConfigFile(crate::action::ConfigFile::Keys));
+        let seed = std::fs::read_to_string(dir.path().join("keys.toml")).unwrap();
+        let quit = line(&seed, "quit");
+        let send = line(&seed, "send");
+        let vim = profile == KeyProfile::Vim;
+        assert_eq!(quit.contains("\"q\""), !vim, "{profile:?}: {quit}");
+        assert_eq!(send.contains("\"ctrl+r\""), !vim, "{profile:?}: {send}");
+        assert_eq!(app.profile(), profile, "the reset reloads into the same profile");
+    }
+}
+
+/// The final review's M3: the echo names keys the next key will finish. A
+/// surface change with no key (an async modal, focus moved by a send)
+/// leaves them dead, so the footer stops showing them.
+#[test]
+fn the_echo_hides_keys_typed_on_a_surface_the_keyboard_has_left() {
+    use crate::config::KeyProfile;
+    let mut app = App::new_for_test();
+    app.use_profile(KeyProfile::Vim);
+    app.focus = PaneId::Sidebar;
+    app.handle_key(plain('3'));
+    assert_eq!(app.vim_status().as_deref(), Some("NORMAL  3"));
+
+    app.push_modal(Modal::Message { title: "t".into(), body: "b".into() });
+    assert_eq!(app.key_echo(), "", "a modal raised with no key");
+    assert_eq!(app.vim_status().as_deref(), Some("NORMAL"));
+    assert!(!footer_text(&mut app).contains("NORMAL  3"));
+    app.modals.pop();
+    assert_eq!(app.key_echo(), "3", "back where it was typed, the count still applies");
+
+    app.focus = PaneId::Response;
+    assert_eq!(app.key_echo(), "", "focus moved with no key");
+}
+
+/// The final review's M4: undo or redo back into vim warns of the
+/// keys.toml letters that shadow vim's, as the switch itself does.
+#[test]
+fn undo_or_redo_back_into_vim_warns_of_shadowing_letters() {
+    use crate::config::KeyProfile;
+    let mut app = App::new_for_test();
+    let dir = config_at_tempdir(&mut app);
+    std::fs::write(dir.path().join("keys.toml"), "save = [\"ctrl+s\", \"j\"]\n").unwrap();
+    let shadow = "keys.toml binds `j`, which shadows vim's `j`".to_string();
+    let warned = |app: &App| warning_toasts(app).iter().filter(|m| **m == shadow).count();
+    app.update(Action::SetKeyProfile(KeyProfile::Vim));
+    assert_eq!(warned(&app), 1);
+    app.update(Action::Undo);
+    assert_eq!(app.profile(), KeyProfile::Arrows);
+    assert_eq!(warned(&app), 1, "back to arrows says nothing");
+    app.update(Action::Redo);
+    assert_eq!(app.profile(), KeyProfile::Vim);
+    assert_eq!(warned(&app), 2, "redo into vim warns");
+
+    app.update(Action::SetKeyProfile(KeyProfile::Arrows));
+    app.update(Action::Undo);
+    assert_eq!(app.profile(), KeyProfile::Vim);
+    assert_eq!(warned(&app), 3, "undo into vim warns");
+}
+
+/// A reload whose config.toml switches the profile while keys.toml will
+/// not parse installs the new profile with the live keys.toml bindings
+/// on top, never the old profile's keymap: arrows' `q` and `ctrl+r` must
+/// not survive into vim.
+#[test]
+fn a_reload_that_switches_profile_with_a_broken_keys_toml_rebases_the_live_keys() {
+    use crate::config::KeyProfile;
+    let mut app = App::new_for_test();
+    let dir = config_at_tempdir(&mut app);
+    std::fs::write(dir.path().join("keys.toml"), "save = [\"ctrl+s\", \"f2\"]\n").unwrap();
+    app.update(Action::ReloadFromDisk);
+    assert_eq!(app.profile(), KeyProfile::Arrows);
+    assert_eq!(app.keymap.lookup(&KeyCombo::parse("f2").unwrap()), Some(Action::SaveRequest));
+
+    std::fs::write(dir.path().join("keys.toml"), "save = [\"ctrl+s\"\n").unwrap();
+    std::fs::write(dir.path().join("config.toml"), "keymap = \"vim\"\n").unwrap();
+    app.update(Action::ReloadFromDisk);
+
+    assert_eq!(app.profile(), KeyProfile::Vim);
+    assert_eq!(app.keymap.lookup(&KeyCombo::parse("q").unwrap()), None, "arrows' q is gone");
+    assert_ne!(
+        app.keymap.lookup(&KeyCombo::parse("ctrl+r").unwrap()),
+        Some(Action::Send),
+        "arrows' ctrl+r is gone"
+    );
+    assert_eq!(
+        app.keymap.lookup(&KeyCombo::parse("f2").unwrap()),
+        Some(Action::SaveRequest),
+        "the live keys.toml binding is kept"
+    );
+
+    // …and back again: arrows gets its own `q` back.
+    std::fs::write(dir.path().join("config.toml"), "keymap = \"arrows\"\n").unwrap();
+    app.update(Action::ReloadFromDisk);
+    assert_eq!(app.profile(), KeyProfile::Arrows);
+    assert_eq!(app.keymap.lookup(&KeyCombo::parse("q").unwrap()), Some(Action::Quit));
+    assert_eq!(app.keymap.lookup(&KeyCombo::parse("f2").unwrap()), Some(Action::SaveRequest));
+}
+
+/// A reload that switches the profile drops what was half-typed, as the
+/// Settings switch does: a vim prefix means nothing in arrows.
+#[test]
+fn a_reload_that_switches_profile_clears_the_pending_keys() {
+    use crate::config::KeyProfile;
+    let mut app = App::new_for_test();
+    let dir = config_at_tempdir(&mut app);
+    std::fs::write(dir.path().join("config.toml"), "keymap = \"vim\"\n").unwrap();
+    app.update(Action::ReloadFromDisk);
+    assert_eq!(app.profile(), KeyProfile::Vim);
+    app.handle_key(plain('g'));
+    assert_eq!(app.key_echo(), "g");
+
+    std::fs::write(dir.path().join("config.toml"), "keymap = \"arrows\"\n").unwrap();
+    app.update(Action::ReloadFromDisk);
+
+    assert_eq!(app.profile(), KeyProfile::Arrows);
+    assert_eq!(app.key_echo(), "", "the vim prefix is dropped");
+}
+
+/// Switching profile while keys.toml will not parse keeps the user's
+/// live bindings (on the new profile's defaults) and says so, as a
+/// reload does, rather than silently dropping them.
+#[test]
+fn switching_profile_with_a_broken_keys_toml_keeps_the_live_keys_and_says_so() {
+    use crate::config::KeyProfile;
+    let mut app = App::new_for_test();
+    let dir = config_at_tempdir(&mut app);
+    std::fs::write(dir.path().join("keys.toml"), "save = [\"ctrl+s\", \"f2\"]\n").unwrap();
+    app.update(Action::ReloadFromDisk);
+    std::fs::write(dir.path().join("keys.toml"), "save = [\"ctrl+s\"\n").unwrap();
+
+    app.update(Action::SetKeyProfile(KeyProfile::Vim));
+
+    assert_eq!(app.profile(), KeyProfile::Vim);
+    assert_eq!(app.keymap.lookup(&KeyCombo::parse("q").unwrap()), None, "vim's defaults");
+    assert_eq!(
+        app.keymap.lookup(&KeyCombo::parse("f2").unwrap()),
+        Some(Action::SaveRequest),
+        "the live keys.toml binding is kept"
+    );
+    assert!(
+        warning_toasts(&app)
+            .iter()
+            .any(|m| m.starts_with("keys.toml ignored, keeping the current keys")),
+        "{:?}",
+        warning_toasts(&app)
+    );
+
+    // An undo back to arrows keeps them the same way.
+    app.update(Action::Undo);
+    assert_eq!(app.profile(), KeyProfile::Arrows);
+    assert_eq!(app.keymap.lookup(&KeyCombo::parse("q").unwrap()), Some(Action::Quit));
+    assert_eq!(app.keymap.lookup(&KeyCombo::parse("f2").unwrap()), Some(Action::SaveRequest));
+}
+
+/// Choosing the profile already chosen (a click on the lit segment)
+/// changes nothing: no rewrite, no re-read of keys.toml, no repeated
+/// shadow warnings.
+#[test]
+fn choosing_the_running_profile_again_changes_nothing() {
+    use crate::config::KeyProfile;
+    let mut app = App::new_for_test();
+    let dir = config_at_tempdir(&mut app);
+    std::fs::write(dir.path().join("keys.toml"), "save = [\"ctrl+s\", \"j\"]\n").unwrap();
+    let shadow = "keys.toml binds `j`, which shadows vim's `j`".to_string();
+    let warned = |app: &App| warning_toasts(app).iter().filter(|m| **m == shadow).count();
+    app.update(Action::SetKeyProfile(KeyProfile::Vim));
+    assert_eq!(warned(&app), 1);
+    std::fs::write(dir.path().join("keys.toml"), "save = [\"ctrl+s\", \"f3\"]\n").unwrap();
+
+    app.update(Action::SetKeyProfile(KeyProfile::Vim));
+
+    assert_eq!(warned(&app), 1, "no second warning: {:?}", warning_toasts(&app));
+    assert_eq!(
+        app.keymap.lookup(&KeyCombo::parse("f3").unwrap()),
+        None,
+        "an unreloaded keys.toml edit is not picked up"
+    );
+    assert_eq!(
+        app.keymap.lookup(&KeyCombo::parse("j").unwrap()),
+        Some(Action::SaveRequest),
+        "the live keys stay"
+    );
+}
+
+/// An unset keymap runs arrows, but answering "arrows" still records the
+/// choice: the early return is for a choice already made, not a profile
+/// already running.
+#[test]
+fn answering_arrows_to_an_unset_keymap_still_writes_it() {
+    use crate::config::KeyProfile;
+    let mut app = app_with_unset_keymap();
+    let dir = config_at_tempdir(&mut app);
+    app.update(Action::SetKeyProfile(KeyProfile::Arrows));
+    assert!(app.modals.is_empty(), "the question is answered");
+    assert_eq!(app.ui_settings.keymap, Some(KeyProfile::Arrows));
+    let written = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+    assert!(written.contains("keymap = \"arrows\""), "{written}");
+}
+
+/// A Variables form or grid edit left live behind a tab switch (a
+/// click-away commit that failed keeps its edit, and the tab click still
+/// lands) is not the field with the caret on another Manage tab: key
+/// routing only sends it keys on the Variables tab, so the router must
+/// not decline the other tab's vim keys on its behalf.
+#[test]
+fn a_variables_edit_left_on_another_tab_does_not_take_the_caret() {
+    use crate::components::manage::ManageTab;
+    use crate::components::varmanager::VmField;
+    use crate::config::KeyProfile;
+    use crate::keyroute::FieldCaret;
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.use_profile(KeyProfile::Vim);
+    app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
+    assert!(app.manage_items(ManageTab::Environments).len() >= 2);
+    app.manage.list.cursor = 0;
+
+    for form in [true, false] {
+        if form {
+            app.varmanager.form.editing = Some(form_edit(VmField::Description, ""));
+        } else {
+            app.varmanager.form.editing = None;
+            app.varmanager.grid.editing = Some(crate::components::varmanager::GridEdit {
+                row: 0,
+                col: 0,
+                input: crate::components::line_input::LineInput::new(""),
+                original: String::new(),
+            });
+        }
+        assert_eq!(app.field_caret(), FieldCaret::None, "form edit: {form}");
+        app.manage.list.cursor = 0;
+        app.handle_key(plain('j'));
+        assert_eq!(app.manage.list.cursor, 1, "vim j moves the list (form edit: {form})");
+    }
 }

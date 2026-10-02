@@ -56,6 +56,8 @@ pub enum Hit {
     SettingsControl(crate::components::settings::SettingsField),
     /// One segment of the Settings tab's `jq Tab behavior` control.
     SettingsJqTab(crate::config::JqTab),
+    /// One segment of the Settings tab's `Keyboard profile` control.
+    SettingsKeymap(crate::config::KeyProfile),
     /// A Files row's button: `reset` false is Edit…, true is Reset.
     SettingsFile {
         file: crate::action::ConfigFile,
@@ -264,6 +266,8 @@ pub enum Hit {
     /// One of `Modal::ConfigStartup`'s four buttons
     /// (Edit…/Reset/Ignore/Quit).
     ConfigStartupChoice(crate::action::ConfigStartupChoice),
+    /// One of `Modal::KeymapChoice`'s two answers.
+    KeymapChoice(crate::config::KeyProfile),
     /// `Modal::ConfigEditInvalid`'s "Keep editing" button: resumes the
     /// editor on the same temp file, with the user's work intact.
     ConfigEditKeepEditing,

@@ -391,7 +391,7 @@ impl TableEditorState {
 
     fn handle_nav_key(&mut self, ev: KeyEvent, map: &mut IndexMap<String, Entry>) -> TableOutcome {
         match ev.code {
-            KeyCode::Char('j') | KeyCode::Down if crate::keys::plain_letter(&ev) => {
+            KeyCode::Down => {
                 // The cursor's range is the data rows plus one: index
                 // `map.len()` is the ghost row, so the keyboard can reach it
                 // the same way the mouse can (and an empty table still has
@@ -402,7 +402,7 @@ impl TableEditorState {
                 });
                 TableOutcome::consumed()
             }
-            KeyCode::Char('k') | KeyCode::Up if crate::keys::plain_letter(&ev) => {
+            KeyCode::Up => {
                 // Row 0 and no selection leave Up unconsumed so the caller
                 // (Editor) can fall back to climbing out to the tab strip
                 // instead of leaving the user stuck with no way back.
@@ -418,14 +418,14 @@ impl TableEditorState {
             // clamp and stay consumed so nothing leaks to the pane. With
             // no row selected there is no cell to move between, so they
             // stay unconsumed like Up does.
-            KeyCode::Char('h') | KeyCode::Left if crate::keys::plain_letter(&ev) => {
+            KeyCode::Left => {
                 if self.selected.is_none() {
                     return TableOutcome::not_consumed();
                 }
                 self.col = Col::Key;
                 TableOutcome::consumed()
             }
-            KeyCode::Char('l') | KeyCode::Right if crate::keys::plain_letter(&ev) => {
+            KeyCode::Right => {
                 if self.selected.is_none() {
                     return TableOutcome::not_consumed();
                 }
@@ -448,7 +448,7 @@ impl TableEditorState {
                 self.begin_add(map);
                 TableOutcome::consumed()
             }
-            KeyCode::Enter | KeyCode::Char('i') if crate::keys::opens_field(&ev) => {
+            KeyCode::Enter => {
                 if self.selected.is_none() {
                     return TableOutcome::not_consumed();
                 }
@@ -465,15 +465,9 @@ impl TableEditorState {
                 e.enabled = !e.enabled;
                 TableOutcome::consumed()
             }
-            // The table never scrolls, so its "page" is its row count: g/Home
-            // → row 0, G/End → the ghost row, ctrl+f/PageDown → the ghost
+            // The table never scrolls, so its "page" is its row count: Home
+            // → row 0, End → the ghost row, ctrl+f/PageDown → the ghost
             // row, ctrl+b/PageUp → row 0, ctrl+d/u ± half the rows.
-            KeyCode::Char('g') if ev.modifiers.is_empty() => {
-                self.handle_nav_key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE), map)
-            }
-            KeyCode::Char('G') => {
-                self.handle_nav_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE), map)
-            }
             KeyCode::Char('f') if ev.modifiers == KeyModifiers::CONTROL => {
                 self.handle_nav_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE), map)
             }
@@ -1149,19 +1143,30 @@ mod tests {
     }
 
     #[test]
-    fn vim_aliases_are_strict_synonyms_in_the_table() {
+    fn page_chords_are_strict_synonyms_and_the_vim_letters_are_gone_in_the_table() {
         let ctrl = |c: char| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+        for letter in [
+            key(KeyCode::Char('g')),
+            KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT),
+            key(KeyCode::Char('i')),
+            key(KeyCode::Char('j')),
+            key(KeyCode::Char('k')),
+            key(KeyCode::Char('h')),
+            key(KeyCode::Char('l')),
+        ] {
+            let mut map = map_of(&[("a", "1"), ("b", "2"), ("c", "3")]);
+            let mut t = TableEditorState {
+                selected: Some(1),
+                ..TableEditorState::default()
+            };
+            let outcome = t.handle_key(letter, &mut map);
+            assert!(!outcome.consumed, "{letter:?}");
+            assert_eq!(t.selected, Some(1), "{letter:?} moved the cursor");
+            assert!(t.editing.is_none(), "{letter:?} opened a cell");
+        }
         let pairs = [
-            (key(KeyCode::Char('g')), key(KeyCode::Home)),
-            (
-                KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT),
-                key(KeyCode::End),
-            ),
             (ctrl('f'), key(KeyCode::PageDown)),
             (ctrl('b'), key(KeyCode::PageUp)),
-            // `i` opens the selected row's cell exactly as Enter does
-            // (spec 2026-09-16).
-            (key(KeyCode::Char('i')), key(KeyCode::Enter)),
         ];
         for (alias, canonical) in pairs {
             let mut ma = map_of(&[("a", "1"), ("b", "2"), ("c", "3")]);
@@ -1207,25 +1212,23 @@ mod tests {
         assert_eq!(t.selected, Some(0), "the row never moves");
     }
 
-    /// h/l are strict synonyms for ←/→ in the table's nav mode.
+    /// ←/→ move the cell cursor in the table's nav mode (h/l are the
+    /// router's, see `page_chords_are_strict_synonyms_and_the_vim_letters…`).
     #[test]
-    fn h_and_l_alias_left_and_right_for_the_cell_cursor() {
-        for (alias, canonical, from, to) in [
-            ('l', KeyCode::Right, Col::Key, Col::Value),
-            ('h', KeyCode::Left, Col::Value, Col::Key),
+    fn left_and_right_move_the_cell_cursor() {
+        for (code, from, to) in [
+            (KeyCode::Right, Col::Key, Col::Value),
+            (KeyCode::Left, Col::Value, Col::Key),
         ] {
-            let mut ma = map_of(&[("a", "1")]);
-            let mut mb = ma.clone();
-            let (mut a, mut b) = (TableEditorState::default(), TableEditorState::default());
-            a.selected = Some(0);
-            b.selected = Some(0);
-            a.col = from;
-            b.col = from;
-            let oa = a.handle_key(key(KeyCode::Char(alias)), &mut ma);
-            let ob = b.handle_key(key(canonical), &mut mb);
-            assert_eq!(oa.consumed, ob.consumed, "{alias}");
-            assert_eq!(a.col, to, "{alias}");
-            assert_eq!(a.col, b.col, "{alias}");
+            let mut map = map_of(&[("a", "1")]);
+            let mut t = TableEditorState {
+                selected: Some(0),
+                col: from,
+                ..TableEditorState::default()
+            };
+            let out = t.handle_key(key(code), &mut map);
+            assert!(out.consumed, "{code:?}");
+            assert_eq!(t.col, to, "{code:?}");
         }
     }
 
@@ -1249,25 +1252,23 @@ mod tests {
         let mut map = map_of(&[("a", "1")]);
         let mut t = TableEditorState::default();
         assert!(!t.handle_key(key(KeyCode::Right), &mut map).consumed);
-        assert!(!t.handle_key(key(KeyCode::Char('l')), &mut map).consumed);
+        assert!(!t.handle_key(key(KeyCode::Left), &mut map).consumed);
         assert_eq!(t.col, Col::Key);
     }
 
-    /// Enter (and `i`) open the cell under the cursor, not always the name.
+    /// Enter opens the cell under the cursor, not always the name.
     #[test]
     fn enter_opens_the_cell_under_the_cursor() {
-        for open in [KeyCode::Enter, KeyCode::Char('i')] {
-            let mut map = map_of(&[("a", "1")]);
-            let mut t = TableEditorState {
-                selected: Some(0),
-                col: Col::Value,
-                ..TableEditorState::default()
-            };
-            t.handle_key(key(open), &mut map);
-            let edit = t.editing.as_ref().expect("a cell is open");
-            assert_eq!((edit.row, edit.col), (0, Col::Value), "{open:?}");
-            assert_eq!(edit.input.text(), "1", "{open:?}");
-        }
+        let mut map = map_of(&[("a", "1")]);
+        let mut t = TableEditorState {
+            selected: Some(0),
+            col: Col::Value,
+            ..TableEditorState::default()
+        };
+        t.handle_key(key(KeyCode::Enter), &mut map);
+        let edit = t.editing.as_ref().expect("a cell is open");
+        assert_eq!((edit.row, edit.col), (0, Col::Value));
+        assert_eq!(edit.input.text(), "1");
     }
 
     /// The ghost row's value cell opens from the cursor too; its text is
@@ -1668,8 +1669,8 @@ mod tests {
         let mut t = TableEditorState::default();
         assert!(t.handle_key(key(KeyCode::Down), &mut map).consumed);
         assert_eq!(t.selected, Some(0), "Down from nowhere selects row 0");
-        t.handle_key(key(KeyCode::Char('j')), &mut map);
-        t.handle_key(key(KeyCode::Char('j')), &mut map);
+        t.handle_key(key(KeyCode::Down), &mut map);
+        t.handle_key(key(KeyCode::Down), &mut map);
         assert_eq!(t.selected, Some(2), "the ghost row is reachable");
         assert!(t.editing.is_none(), "selection only — Enter starts the add");
         assert!(
@@ -1677,7 +1678,7 @@ mod tests {
             "clamped at the ghost row, still consumed"
         );
         assert_eq!(t.selected, Some(2));
-        t.handle_key(key(KeyCode::Char('k')), &mut map);
+        t.handle_key(key(KeyCode::Up), &mut map);
         assert_eq!(t.selected, Some(1));
         t.handle_key(key(KeyCode::Up), &mut map);
         assert_eq!(t.selected, Some(0));
@@ -1739,18 +1740,6 @@ mod tests {
         assert!(outcome.warning.is_none());
         assert_eq!(t.selected, Some(0), "Enter keeps the row selected, like Esc");
         assert!(t.editing.is_none());
-    }
-
-    #[test]
-    fn i_opens_the_selected_row_like_enter() {
-        let mut map = map_of(&[("a", "1")]);
-        let mut t = TableEditorState {
-            selected: Some(0),
-            ..TableEditorState::default()
-        };
-        let outcome = t.handle_key(key(KeyCode::Char('i')), &mut map);
-        assert!(outcome.consumed);
-        assert!(t.editing.is_some());
     }
 
     #[test]

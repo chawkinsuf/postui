@@ -229,7 +229,7 @@ async fn stage3_acceptance_flow() {
         app.sidebar.rows.as_slice(),
         [Row::Folder { expanded: true, .. }, Row::Request { .. }]
     ));
-    app.handle_key(plain('k')); // move selection up to the folder row
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)); // move selection up to the folder row
     app.handle_key(enter()); // collapse
     assert!(matches!(
         app.sidebar.rows.as_slice(),

@@ -1,5 +1,6 @@
 use crate::action::Action;
 use crate::hit::{Hit, HitMap};
+use crate::keyroute::spell::Key;
 use crate::layout::PaneId;
 use crate::paint::{fill, text};
 use crate::theme::Theme;
@@ -38,12 +39,13 @@ pub enum JqBarState {
 }
 
 /// The context-sensitive chips for the focused pane. Each entry is `(key,
-/// label, action)`; `None` actions render as plain (unregistered, muted)
+/// label, action)`, the key a [`Key`] kind that `draw_footer` spells for
+/// the active profile; `None` actions render as plain (unregistered, muted)
 /// text on the panel background rather than a filled chip — they describe
 /// a binding with no single dispatchable `Action` (e.g. multi-key hints).
 /// The always-present palette chip is NOT part of this list: like the quit
 /// hint, it never varies with focus, so it lives right-aligned beside quit
-/// (see `PALETTE_CHIP` / `draw_footer`). `pub(crate)` so `app::tests`'s
+/// (see `draw_footer`). `pub(crate)` so `app::tests`'s
 /// mouse-parity sweep (spec §5) can enumerate the same actions
 /// `draw_footer` paints as chips, rather than a copy of this list.
 #[allow(clippy::too_many_arguments)]
@@ -78,21 +80,21 @@ pub(crate) fn footer_chips(
     // cancel`. On the response pane it also picks out the search box's own
     // pair, the field the jq bar isn't.
     field_open: bool,
-) -> Vec<(&'static str, &'static str, Option<Action>)> {
-    let chips: Vec<(&'static str, &'static str, Option<Action>)> = match focus {
+) -> Vec<(Key, &'static str, Option<Action>)> {
+    let chips: Vec<(Key, &'static str, Option<Action>)> = match focus {
         PaneId::Sidebar => vec![
-            ("enter", "open", None),
-            ("n", "new", Some(Action::PromptNewRequest)),
-            ("r", "rename", Some(Action::PromptRenameRequest)),
-            ("d", "delete", Some(Action::DeleteSelectedRequest)),
+            (Key::Named("enter"), "open", None),
+            (Key::Verb("n"), "new", Some(Action::PromptNewRequest)),
+            (Key::Verb("r"), "rename", Some(Action::PromptRenameRequest)),
+            (Key::Verb("d"), "delete", Some(Action::DeleteSelectedRequest)),
             // Space *switching* is the header's job (its space pill and
             // cycle pill); the sidebar's own space action is moving the
             // selected request into another one.
-            ("m", "move", Some(Action::PromptMoveSelectedRequestToSpace)),
-            ("alt+\u{2191}\u{2193}", "reorder", None),
+            (Key::Verb("m"), "move", Some(Action::PromptMoveSelectedRequestToSpace)),
+            (Key::Named("alt+\u{2191}\u{2193}"), "reorder", None),
         ],
         PaneId::Editor => {
-            let mut chips: Vec<(&'static str, &'static str, Option<Action>)> = Vec::new();
+            let mut chips: Vec<(Key, &'static str, Option<Action>)> = Vec::new();
             // Shift+Enter is only reportable under the kitty keyboard
             // protocol; where the terminal can't deliver it, ^R is the
             // advertised send key (both bindings stay active regardless).
@@ -104,16 +106,16 @@ pub(crate) fn footer_chips(
             // flight), so the slot goes empty and `esc done` leads the row.
             match (sending, field_open) {
                 (true, true) => {}
-                (true, false) => chips.push(("esc", "cancel", Some(Action::CancelSend))),
+                (true, false) => chips.push((Key::Named("esc"), "cancel", Some(Action::CancelSend))),
                 _ => chips.push((
-                    if shift_enter_send { "⇧enter" } else { "^R" },
+                    Key::Send { shift_enter: shift_enter_send },
                     "send",
                     Some(Action::Send),
                 )),
             }
             chips.extend([
                 (
-                    "alt+v",
+                    Key::Of(Action::OpenVarPicker { completing: false }),
                     "vars",
                     Some(Action::OpenVarPicker { completing: false }),
                 ),
@@ -127,7 +129,7 @@ pub(crate) fn footer_chips(
                 // The tab chord chip every strip shares (response pane,
                 // Manage tabs): same keycap, same wording. Last, so the
                 // dynamic inserts below never shift it.
-                ("alt+←→", "tabs", Some(Action::CycleTabs(1))),
+                (tabs_key(), "tabs", Some(Action::CycleTabs(1))),
             ]);
             // Every insert below lands before the trailing vars + tabs
             // pair, so it keeps its place whether or not the leading
@@ -140,31 +142,34 @@ pub(crate) fn footer_chips(
                 chips.insert(
                     at,
                     (
-                        "alt+y",
+                        Key::Of(Action::CopyToClipboard(crate::action::CopyTarget::Url)),
                         "copy url",
                         Some(Action::CopyToClipboard(crate::action::CopyTarget::Url)),
                     ),
                 );
-                chips.insert(at + 1, ("alt+i", "tls", Some(Action::ToggleInsecure)));
+                chips.insert(
+                    at + 1,
+                    (Key::Of(Action::ToggleInsecure), "tls", Some(Action::ToggleInsecure)),
+                );
             } else if let Some(label) = add_row_label {
                 // Named for what it adds on the active tab ("add header" on
                 // Headers, …); hidden on the Body tab, where the action is
                 // inert.
                 let at = chips.len() - 2;
-                chips.insert(at, ("alt+a", label, Some(Action::TableAddRow)));
+                chips.insert(at, (Key::Of(Action::TableAddRow), label, Some(Action::TableAddRow)));
             }
             if let Some((i, enabled)) = table_row_selected {
                 // Keyboard twins of the expanded row's ● toggle and 󰆴
                 // delete buttons; the ␣ keycap keeps the row narrow.
                 let toggle_label = if enabled { "disable" } else { "enable" };
                 let pos = chips.len() - 2; // before vars + tabs
-                chips.insert(pos, ("␣", toggle_label, Some(Action::ToggleTableRow(i))));
-                chips.insert(pos + 1, ("d", "delete", Some(Action::DeleteTableRow(i))));
+                chips.insert(pos, (Key::Named("␣"), toggle_label, Some(Action::ToggleTableRow(i))));
+                chips.insert(pos + 1, (Key::Verb("d"), "delete", Some(Action::DeleteTableRow(i))));
             }
             if field_open {
                 // Inserted last so the row/address-bar chips above land
                 // where they mean to; it leads the row all the same.
-                chips.insert(0, ("esc", "done", Some(Action::CloseField)));
+                chips.insert(0, (Key::Named("esc"), "done", Some(Action::CloseField)));
             } else if url_selected {
                 // Selected, not open: the field rule's other half — Enter
                 // opens it, matching every other surface (spec
@@ -174,7 +179,7 @@ pub(crate) fn footer_chips(
                 // pane. Gated on `url_selected`, not `url_focused`: the
                 // method badge's Enter opens the method dropdown, not
                 // this action.
-                chips.insert(0, ("enter", "edit", Some(Action::FocusUrl)));
+                chips.insert(0, (Key::Named("enter"), "edit", Some(Action::FocusUrl)));
             }
             chips
         }
@@ -183,7 +188,7 @@ pub(crate) fn footer_chips(
                 // The bar keeps the caret while the AI request runs, but
                 // its Esc is the request's cancel — the chip names that
                 // action, not the field close it would otherwise be.
-                vec![("esc", "cancel describe", Some(Action::CancelJqDescribe))]
+                vec![(Key::Named("esc"), "cancel describe", Some(Action::CancelJqDescribe))]
             } else if let JqBarState::Focused
             | JqBarState::Completing { .. }
             | JqBarState::Menu
@@ -200,19 +205,19 @@ pub(crate) fn footer_chips(
                 let mut chips = Vec::new();
                 match jq_bar {
                     JqBarState::Completing { cycle: true } => {
-                        chips.push(("tab", "next", None));
-                        chips.push(("→", "accept", None));
+                        chips.push((Key::Named("tab"), "next", None));
+                        chips.push((Key::Named("→"), "accept", None));
                     }
                     JqBarState::Completing { cycle: false } => {
-                        chips.push(("tab", "complete", None))
+                        chips.push((Key::Named("tab"), "complete", None))
                     }
                     JqBarState::Menu => {
-                        chips.push(("tab", "next", None));
-                        chips.push(("shift+tab", "prev", None));
+                        chips.push((Key::Named("tab"), "next", None));
+                        chips.push((Key::Named("shift+tab"), "prev", None));
                     }
                     JqBarState::Closer => {
-                        chips.push(("tab", "accept", None));
-                        chips.push(("→", "accept", None));
+                        chips.push((Key::Named("tab"), "accept", None));
+                        chips.push((Key::Named("→"), "accept", None));
                     }
                     _ => {}
                 }
@@ -220,7 +225,7 @@ pub(crate) fn footer_chips(
                 // bar); otherwise it applies — leaves with the edit kept.
                 chips.extend([
                     (
-                        "enter",
+                        Key::Named("enter"),
                         if jq_bar == JqBarState::Menu {
                             "select"
                         } else {
@@ -228,10 +233,10 @@ pub(crate) fn footer_chips(
                         },
                         None,
                     ),
-                    ("esc", "done", Some(Action::CloseField)),
-                    ("alt+shift+q", "unfilter", Some(Action::ToggleJqBar)),
+                    (Key::Named("esc"), "done", Some(Action::CloseField)),
+                    (Key::Of(Action::ToggleJqBar), "unfilter", Some(Action::ToggleJqBar)),
                     (
-                        crate::glyph::CREATION,
+                        Key::Named(crate::glyph::CREATION),
                         "describe…",
                         Some(Action::OpenJqDescribe),
                     ),
@@ -243,17 +248,18 @@ pub(crate) fn footer_chips(
                 // term kept. Its pair takes the pane — the view chips
                 // below are all single letters that would just type.
                 vec![
-                    ("enter", "search", None),
-                    ("esc", "done", Some(Action::CloseField)),
+                    (Key::Named("enter"), "search", None),
+                    (Key::Named("esc"), "done", Some(Action::CloseField)),
                 ]
             } else {
                 let mut chips = vec![
-                    ("alt+←→", "tabs", Some(Action::CycleTabs(1))),
-                    ("/", "search", Some(Action::OpenResponseSearch)),
-                    ("alt+q", "filter", Some(Action::OpenJqBar)),
+                    (tabs_key(), "tabs", Some(Action::CycleTabs(1))),
+                    // The pane's own key in arrows, a `Pass` row in vim.
+                    (Key::Named("/"), "search", Some(Action::OpenResponseSearch)),
+                    (Key::Of(Action::OpenJqBar), "filter", Some(Action::OpenJqBar)),
                 ];
                 if jq_bar == JqBarState::Open {
-                    chips.push(("alt+shift+q", "unfilter", Some(Action::ToggleJqBar)));
+                    chips.push((Key::Of(Action::ToggleJqBar), "unfilter", Some(Action::ToggleJqBar)));
                 }
                 chips
             }
@@ -262,20 +268,17 @@ pub(crate) fn footer_chips(
     chips
 }
 
-/// An owned footer chip — keycap, label, action — for chip sets built at
-/// runtime (a confirm modal's own answer keys, the Variable Manager's
-/// name-carrying actions) rather than the static per-pane lists.
-pub type FooterChip = (String, String, Option<Action>);
+/// The tab chord chip every strip shares (editor, response, Manage):
+/// both directions spelled, the shared `alt+` merged (`alt+←→`).
+pub(crate) fn tabs_key() -> Key {
+    Key::Pair(Action::CycleTabs(-1), Action::CycleTabs(1))
+}
 
-/// The command-palette chip: always present regardless of focus, so it
-/// sits right-aligned next to the quit hint rather than trailing the
-/// per-pane chips.
-const PALETTE_CHIP: (&str, &str, Option<Action>) = ("^P", "commands", Some(Action::OpenPalette));
-
-/// The always-present, right-aligned quit chip. Kept separate from
-/// `footer_chips` since it never varies with focus; painted through
-/// `paint_chip_row` so it reads exactly like its neighbours.
-const QUIT_CHIP: (&str, &str, Option<Action>) = ("q", "quit", Some(Action::Quit));
+/// An owned footer chip — keycap kind, label, action — for chip sets
+/// built at runtime (a confirm modal's own answer keys, the Variable
+/// Manager's name-carrying actions) rather than the static per-pane
+/// lists. `draw_footer` spells the keycap (piece 4 spec §4.6).
+pub type FooterChip = (Key, String, Option<Action>);
 
 /// A `paint_chip_row` entry's total footprint: ` key ` pill + ` label `
 /// (see its own layout comment — 4 columns beyond key+label either way).
@@ -319,6 +322,14 @@ pub fn draw_footer(
     // areas — the quit chip's keycap shows the pre-empting `^C` combo
     // instead of advertising a key that would just type.
     plain_q_quits: bool,
+    // Vim's mode and pending keys (`App::vim_status`): `None` in arrows.
+    // Paints at the right end before the commands chip, whole or not at
+    // all (piece 4 spec §3.8).
+    vim_status: Option<&str>,
+    // Where the keyboard is and the live keymap: every chip's keycap is
+    // spelled from them (piece 4 spec §4.6).
+    spell: crate::keyroute::SpellCtx,
+    keymap: &crate::keys::Keymap,
     // The hovered button's one-line hint (`hint::hint_for`) — the footer
     // is the tooltip. Centred in the gap between the per-pane chips and
     // the commands/quit pair while enough of it fits there (ellipsized);
@@ -338,11 +349,10 @@ pub fn draw_footer(
     }
     let mid_y = area.y + area.height / 2;
 
-    let quit_chip = if plain_q_quits {
-        QUIT_CHIP
-    } else {
-        ("^C", "quit", Some(Action::Quit))
-    };
+    use crate::keyroute::spell::{keycap, resolve};
+    let quit_key = keycap(&Key::Quit { plain_q: plain_q_quits }, spell, keymap)
+        .unwrap_or_else(|| "^C".into());
+    let quit_chip = (quit_key.as_str(), "quit", Some(Action::Quit));
     let quit_w = chip_width(&quit_chip);
     let quit_x = (area.x + area.width).saturating_sub(quit_w + 1);
     paint_chip_row(
@@ -360,7 +370,10 @@ pub fn draw_footer(
 
     let right_limit = if globals_live {
         // The palette chip sits right-aligned, one gap column left of quit.
-        let palette_w = chip_width(&PALETTE_CHIP);
+        let palette_key = keycap(&Key::Of(Action::OpenPalette), spell, keymap)
+            .unwrap_or_else(|| "^P".into());
+        let palette_chip = (palette_key.as_str(), "commands", Some(Action::OpenPalette));
+        let palette_w = chip_width(&palette_chip);
         let palette_x = quit_x.saturating_sub(palette_w + 1);
         paint_chip_row(
             buf,
@@ -368,7 +381,7 @@ pub fn draw_footer(
             mid_y,
             palette_x,
             quit_x,
-            &[PALETTE_CHIP],
+            &[palette_chip],
             theme,
             hits,
             hovered,
@@ -382,17 +395,11 @@ pub fn draw_footer(
     } else {
         quit_x.saturating_sub(1)
     };
-    // `paint_chip_row` works on borrowed strs; an override's owned chips
-    // borrow from `owned`, the static per-pane list is used as-is.
-    let owned: Vec<FooterChip>;
-    let chips: Vec<(&str, &str, Option<Action>)> = match chips_override {
-        Some(c) => {
-            owned = c;
-            owned
-                .iter()
-                .map(|(k, l, a)| (k.as_str(), l.as_str(), a.clone()))
-                .collect()
-        }
+    // Every chip's keycap is spelled for where the keyboard is; a chip
+    // with no key in this profile is dropped. `paint_chip_row` works on
+    // borrowed strs, which borrow from `owned`.
+    let raw: Vec<FooterChip> = match chips_override {
+        Some(c) => c,
         None => footer_chips(
             focus,
             shift_enter_send,
@@ -403,8 +410,16 @@ pub fn draw_footer(
             table_row_selected,
             jq_bar,
             field_open,
-        ),
+        )
+        .into_iter()
+        .map(|(k, l, a)| (k, l.to_string(), a))
+        .collect(),
     };
+    let owned = resolve(raw, spell, keymap);
+    let chips: Vec<(&str, &str, Option<Action>)> = owned
+        .iter()
+        .map(|(k, l, a)| (k.as_str(), l.as_str(), a.clone()))
+        .collect();
     let start_x = area.x + 1;
     paint_chip_row(
         buf,
@@ -418,21 +433,29 @@ pub fn draw_footer(
         hovered,
         hover_t,
     );
-    // The hint sits in the gap between the per-pane chips and the
-    // commands/quit pair, and the chips never yield it more room. They
-    // can't: a hovered chip must stay under the pointer, since hover is
-    // re-resolved against every frame's hit map and swapping the chips out
-    // would un-hover it, bring them back, and oscillate. Letting the other
-    // buttons displace them anyway would mean the same hover behaved two
-    // different ways depending on what was under it, so a gap too small
-    // for a useful line simply leaves the hint out.
+    let chips_end = chip_row_end(start_x, right_limit, &chips);
+    // One column shy of `right_limit`: the commands chip's leading pad is
+    // painted in the pill's own fill, so anything ending right against it
+    // would read as part of the chip.
+    let mut hint_end = right_limit.saturating_sub(1);
+    // Vim's mode and echo sit at the right end, the way vim echoes to the
+    // bottom right. Never truncated: it paints only when it fits whole
+    // past the chips, and the hint takes what is left to its left.
+    if let Some(status) = vim_status {
+        let w = unicode_width::UnicodeWidthStr::width(status) as u16;
+        if hint_end >= chips_end && hint_end - chips_end >= w {
+            let x = hint_end - w;
+            text(buf, x, mid_y, status, theme.text_muted, theme.panel, false);
+            hint_end = x.saturating_sub(1);
+        }
+    }
+    // The hint sits in the gap between the chips and the status (or the
+    // commands/quit pair), and the chips never yield it more room: a
+    // hovered chip must stay under the pointer, since hover is re-resolved
+    // against every frame's hit map, so a gap too small for a useful line
+    // leaves the hint out.
     if let Some(hint) = hint {
-        let hint_start = chip_row_end(start_x, right_limit, &chips) + 1;
-        // One column shy of `right_limit`: the commands chip's leading pad
-        // is painted in the pill's own fill rather than the panel's, so it
-        // reads as part of the chip. Without this an ellipsized hint would
-        // run right up against it.
-        let hint_end = right_limit.saturating_sub(1);
+        let hint_start = chips_end + 1;
         if hint_end.saturating_sub(hint_start) >= HINT_MIN_SHOWN {
             paint_hint(buf, mid_y, hint_start, hint_end, hint, theme);
         }
@@ -577,6 +600,33 @@ mod tests {
         r.y + r.height / 2
     }
 
+    /// `super::footer_chips` as the arrows profile paints it: these tests
+    /// read the keycaps as text (`spell::spelled`).
+    #[allow(clippy::too_many_arguments)]
+    fn footer_chips(
+        focus: PaneId,
+        shift_enter_send: bool,
+        sending: bool,
+        add_row_label: Option<&'static str>,
+        url_focused: bool,
+        url_selected: bool,
+        table_row_selected: Option<(usize, bool)>,
+        jq_bar: JqBarState,
+        field_open: bool,
+    ) -> Vec<(String, &'static str, Option<Action>)> {
+        crate::keyroute::spell::spelled(super::footer_chips(
+            focus,
+            shift_enter_send,
+            sending,
+            add_row_label,
+            url_focused,
+            url_selected,
+            table_row_selected,
+            jq_bar,
+            field_open,
+        ))
+    }
+
     /// A footer chip is the same composite button Theme and Manage are — a
     /// keycap and a name under one hit — so it hovers the same way: the
     /// name's ground lifts with the keycap, on one clock. Lifting only the
@@ -657,6 +707,9 @@ mod tests {
                     None,
                     true,
                     true,
+                    None,
+                    crate::keyroute::SpellCtx::default(),
+                    &crate::keys::Keymap::default_bindings(),
                     None,
                     &mut hits,
                     None,
@@ -834,7 +887,7 @@ mod tests {
         );
         assert_eq!(
             chips,
-            vec![("esc", "cancel describe", Some(Action::CancelJqDescribe))]
+            vec![("esc".to_string(), "cancel describe", Some(Action::CancelJqDescribe))]
         );
     }
 
@@ -866,6 +919,9 @@ mod tests {
                     None,
                     true,
                     true,
+                    None,
+                    crate::keyroute::SpellCtx::default(),
+                    &crate::keys::Keymap::default_bindings(),
                     None,
                     &mut hits,
                     None,
@@ -1292,6 +1348,9 @@ mod tests {
                     true,
                     true,
                     None,
+                    crate::keyroute::SpellCtx::default(),
+                    &crate::keys::Keymap::default_bindings(),
+                    None,
                     &mut hits,
                     None,
                     1.0,
@@ -1332,6 +1391,9 @@ mod tests {
                     None,
                     true,
                     true,
+                    None,
+                    crate::keyroute::SpellCtx::default(),
+                    &crate::keys::Keymap::default_bindings(),
                     None,
                     &mut hits,
                     None,
@@ -1384,6 +1446,9 @@ mod tests {
                     true,
                     true,
                     None,
+                    crate::keyroute::SpellCtx::default(),
+                    &crate::keys::Keymap::default_bindings(),
+                    None,
                     &mut hits,
                     None,
                     1.0,
@@ -1423,6 +1488,9 @@ mod tests {
                     None,
                     true,
                     true,
+                    None,
+                    crate::keyroute::SpellCtx::default(),
+                    &crate::keys::Keymap::default_bindings(),
                     None,
                     &mut hits,
                     None,
@@ -1498,6 +1566,9 @@ mod tests {
                     true,
                     true,
                     None,
+                    crate::keyroute::SpellCtx::default(),
+                    &crate::keys::Keymap::default_bindings(),
+                    None,
                     &mut hits,
                     None,
                     1.0,
@@ -1557,6 +1628,9 @@ mod tests {
                     None,
                     true,
                     true,
+                    None,
+                    crate::keyroute::SpellCtx::default(),
+                    &crate::keys::Keymap::default_bindings(),
                     None,
                     &mut hits,
                     None,
@@ -1660,6 +1734,9 @@ mod tests {
                     true,
                     true,
                     None,
+                    crate::keyroute::SpellCtx::default(),
+                    &crate::keys::Keymap::default_bindings(),
+                    None,
                     &mut hits,
                     None,
                     1.0,
@@ -1684,5 +1761,31 @@ mod tests {
             bottom.bg, app.theme.panel,
             "the terminal's bottom-most row (the footer's 3rd row) must be panel-filled: {bottom:?}"
         );
+    }
+
+    /// The status paints whole, just left of the commands chip, or not at
+    /// all: never truncated (spec §3.8).
+    #[test]
+    fn the_vim_status_paints_whole_or_not_at_all() {
+        let render = |width: u16, status: Option<&str>| -> String {
+            let theme = Theme::for_terminal();
+            let mut terminal = Terminal::new(TestBackend::new(width, FOOTER_HEIGHT)).unwrap();
+            let mut hits = crate::hit::HitMap::default();
+            terminal
+                .draw(|f| {
+                    draw_footer(
+                        f, f.area(), &theme, PaneId::Sidebar, false, false, None, false, false, None,
+                        JqBarState::Closed, false, None, true, true, status,
+                        crate::keyroute::SpellCtx::default(), &crate::keys::Keymap::default_bindings(),
+                        None, &mut hits, None, 1.0,
+                    )
+                })
+                .unwrap();
+            let buf = terminal.backend().buffer().clone();
+            (0..buf.area.width).map(|x| buf[(x, 1)].symbol().to_string()).collect()
+        };
+        assert!(render(160, Some("NORMAL  3")).contains("NORMAL  3"));
+        assert!(!render(160, None).contains("NORMAL"));
+        assert!(!render(40, Some("NORMAL  3")).contains("NORMAL"), "no room, no status");
     }
 }

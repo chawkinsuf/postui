@@ -27,6 +27,12 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 /// stack.
 const MIGRATION_TITLE: &str = "Migrate variables";
 
+/// Whether the first-launch keyboard question is asked (plan M1
+/// Deviation 2, the user's decision 2026-10-01: built in M1, raised from
+/// M3, once the vim profile is usable). Until then an unset `keymap` runs
+/// arrows and the Settings row switches profiles.
+const ASK_KEYMAP_ON_LAUNCH: bool = false;
+
 /// What a write refuses with when no project is open. Every such arm is
 /// already gated by `refuse_without_project`, so this is the belt to that
 /// braces — it exists so no write can be attempted against an empty root.
@@ -216,6 +222,12 @@ pub struct App {
     /// and read by `handle_key` itself, so a live reload's new bindings
     /// are in force from the next key with no copy to keep in step.
     pub keymap: crate::keys::Keymap,
+    /// The key router's pending keys (piece 4 spec §3.4).
+    pub router: crate::keyroute::Router,
+    /// Whether the last `Action::Undo` or `Action::Redo` stepped anything:
+    /// a counted `u` or ctrl+r stops at the first repeat that did not
+    /// (`App::run_steps`).
+    history_stepped: bool,
     /// Palette command frecency stats (recency + count per command id),
     /// loaded from `ui.toml` at startup and saved back on quit.
     pub usage: crate::usage::UsageStore,
@@ -606,6 +618,9 @@ impl App {
                 ToastKind::Error,
             );
             app.apply_startup_config_gate();
+            if ASK_KEYMAP_ON_LAUNCH {
+                app.raise_keymap_choice();
+            }
             if testbed {
                 app.screen = Screen::Testbed;
             }
@@ -639,6 +654,9 @@ impl App {
             // The project refused to open: the app runs empty until the
             // user opens another one, so none of the dispositions apply.
             app.apply_startup_config_gate();
+            if ASK_KEYMAP_ON_LAUNCH {
+                app.raise_keymap_choice();
+            }
             if testbed {
                 app.screen = Screen::Testbed;
             }
@@ -681,6 +699,9 @@ impl App {
         }
 
         app.apply_startup_config_gate();
+        if ASK_KEYMAP_ON_LAUNCH {
+            app.raise_keymap_choice();
+        }
 
         if testbed {
             app.screen = Screen::Testbed;
@@ -700,6 +721,18 @@ impl App {
         };
         self.startup_config_gate = true;
         self.modals.push(Modal::ConfigStartup { error });
+    }
+
+    /// Raises the keyboard question when `config.toml` has never carried a
+    /// `keymap` (piece 4 spec §4.2). It stacks under the startup config
+    /// gate: with any modal up it waits for the next event boundary,
+    /// where the callers ask again.
+    pub(crate) fn raise_keymap_choice(&mut self) -> bool {
+        if self.ui_settings.keymap.is_some() || self.modals.top().is_some() {
+            return false;
+        }
+        self.push_modal(Modal::KeymapChoice { aimed: None });
+        true
     }
 
     /// The startup gate is sticky. `Action::ConfigStartupChoice` pops it
@@ -793,6 +826,61 @@ impl App {
                 .to_string(),
         });
         false
+    }
+
+    /// The key profile the app runs on. An unset `keymap` runs arrows
+    /// until the first-launch question is raised (plan M1 Deviation 2; M3
+    /// raises it).
+    pub fn profile(&self) -> crate::config::KeyProfile {
+        self.ui_settings.profile()
+    }
+
+    /// The keymap for the running profile: `keys.toml` over that profile's
+    /// defaults, or the defaults alone when the file is absent. A file
+    /// that will not read or parse keeps the live bindings, laid on the
+    /// new profile's defaults, and says so: reload's rule, so a profile
+    /// switch never silently drops what the user is typing with.
+    fn keymap_for_profile(&mut self) -> crate::keys::Keymap {
+        let profile = self.profile();
+        let read = self
+            .read_config_file(crate::config::KEYS_TOML)
+            .and_then(|text| match text {
+                Some(text) => crate::keys::Keymap::try_from_overrides_for(profile, &text).map(Some),
+                None => Ok(None),
+            });
+        match read {
+            Ok(Some(keymap)) => keymap,
+            Ok(None) => crate::keys::Keymap::default_bindings_for(profile),
+            Err(e) => {
+                self.toasts.push(
+                    format!("keys.toml ignored, keeping the current keys: {e}"),
+                    ToastKind::Warning,
+                );
+                self.keymap.rebased(profile)
+            }
+        }
+    }
+
+    /// In vim, says which letters the installed keys.toml binds that vim
+    /// reads itself. Load and reload say so, and so does every switch into
+    /// vim: the Settings row, the first-launch question, and an undo or
+    /// redo of either (spec §4.4).
+    fn warn_of_vim_shadows(&mut self) {
+        if self.profile() != crate::config::KeyProfile::Vim {
+            return;
+        }
+        for w in self.keymap.vim_shadow_warnings() {
+            self.toasts.push(w, ToastKind::Warning);
+        }
+    }
+
+    /// Switches a test app's profile: the setting and the keymap together,
+    /// as `Action::SetKeyProfile` does, without touching disk.
+    #[cfg(test)]
+    pub(crate) fn use_profile(&mut self, profile: crate::config::KeyProfile) {
+        self.ui_settings.keymap = Some(profile);
+        self.keymap = crate::keys::Keymap::default_bindings_for(profile);
+        self.router.clear();
     }
 
     /// Reads `name` (`config.toml` or `keys.toml`) through the app's
@@ -1168,6 +1256,7 @@ impl App {
                 Hit::TipEdit(name) => self.tip_edit_verb(name),
                 _ => crate::hint::TipEditVerb::default(),
             },
+            spell: self.spell_ctx(),
         }
     }
 
@@ -1605,6 +1694,8 @@ impl App {
             anims: Anims::new(crate::config::UiSettings::default().animations),
             animating_last_tick: false,
             keymap: crate::keys::Keymap::default_bindings(),
+            router: crate::keyroute::Router::default(),
+            history_stepped: false,
             usage: crate::usage::UsageStore::default(),
             clients: crate::http::Clients::new(),
             tx,
@@ -1671,6 +1762,9 @@ impl App {
         let mut app = Self::with_root(tx, dir.path().to_path_buf());
         app._test_rx = Some(rx);
         app._test_dir = Some(dir);
+        // A test app has answered the keyboard question (spec §4.2): vim
+        // cases call `use_profile(Vim)` explicitly.
+        app.ui_settings.keymap = Some(crate::config::KeyProfile::Arrows);
         app
     }
 
@@ -1788,7 +1882,8 @@ impl App {
         // including a nested dispatch that pushed the gate's own
         // continuation, or one that finally fixed `config.toml`.
         let regated = self.reraise_startup_config_gate();
-        changed || regated
+        let asked = ASK_KEYMAP_ON_LAUNCH && self.raise_keymap_choice();
+        changed || regated || asked
     }
 
     /// Keeps the response pane's jq bar and the editor's `jq` field in
@@ -2477,6 +2572,64 @@ impl App {
         }
     }
 
+    /// One undo (or `redo`): the open field's own step if it has one,
+    /// else the app history's. `true` when something was stepped; `false`
+    /// when there was nothing to step, or the step could not be applied.
+    fn step_history(&mut self, redo: bool) -> bool {
+        if self.undo_in_open_field(redo) {
+            return true;
+        }
+        // A field that has run out of steps still owns the key:
+        // `edited()` — the router carve-out's gate — stays true while the
+        // redo stack holds anything, so a step that found nothing must
+        // stop here rather than quietly spending an app-history step
+        // behind the user's back.
+        if self.open_text_field_edited() {
+            return false;
+        }
+        if !self.modals.is_empty() {
+            return false;
+        }
+        if redo {
+            self.commit_table_edit();
+            // A pending uncaptured edit means the user changed something
+            // after the last undo; capturing it clears the redo stack,
+            // which is exactly the linear-history contract.
+            self.capture_undo();
+        } else {
+            // A live cell edit is part of what's being undone: commit it
+            // so it becomes a step, then capture any pending delta. A live
+            // Settings field edit closes the same way (spec 2026-09-16):
+            // the close becomes the step the undo pops.
+            self.commit_settings_edit();
+            self.commit_table_edit();
+            self.capture_undo();
+        }
+        loop {
+            let popped = if redo {
+                self.history.pop_redo()
+            } else {
+                self.history.pop_undo()
+            };
+            let Some(step) = popped else {
+                let nothing = if redo { "Nothing to redo" } else { "Nothing to undo" };
+                self.toasts.push(nothing, ToastKind::Info);
+                return false;
+            };
+            // A marker whose journal entry is gone (merged away, netted to
+            // nothing) is not a step the user made: skip it and step the
+            // one beneath.
+            if self.is_stale_marker(&step, redo) {
+                continue;
+            }
+            let applied = self.apply_undo_step(step, redo);
+            if applied {
+                self.history.break_coalescing();
+            }
+            return applied;
+        }
+    }
+
     fn apply(&mut self, action: Action) -> bool {
         match action {
             // An unsaved request gates quitting behind the same confirm as
@@ -2555,6 +2708,51 @@ impl App {
                 self.modals.pop();
                 true
             }
+            Action::SetKeyProfile(profile) => {
+                use crate::components::settings::SettingsField;
+                use crate::undo::UiValue;
+                // The choice already made (a click on the lit segment):
+                // nothing to write, re-read or warn about again. An unset
+                // keymap that runs arrows is not a choice, so answering
+                // "arrows" to the question still writes it.
+                if self.ui_settings.keymap == Some(profile) {
+                    return true;
+                }
+                let before = self.ui_string("keymap");
+                let saved = self.config.save_ui_string("keymap", profile.spelling());
+                let landed = saved.is_ok();
+                // Applied whether or not it landed (spec §4.2): left unset,
+                // the question would come straight back, and a question
+                // that cannot be answered is worse than one asked again
+                // at the next launch.
+                if let Err(e) = &saved {
+                    self.toasts.push(
+                        format!(
+                            "could not save {}: {e}; using {} keys for this session",
+                            crate::config::CONFIG_TOML,
+                            profile.spelling()
+                        ),
+                        ToastKind::Error,
+                    );
+                }
+                let mut ui = self.ui_settings.clone();
+                ui.keymap = Some(profile);
+                self.reapply_ui_settings(ui);
+                self.keymap = self.keymap_for_profile();
+                self.warn_of_vim_shadows();
+                if landed {
+                    self.record_config_step(
+                        SettingsField::Keymap.key(),
+                        UiValue::Text(before),
+                        UiValue::Text(profile.spelling().to_string()),
+                    );
+                }
+                if matches!(self.modals.top(), Some(Modal::KeymapChoice { .. })) {
+                    self.modals.pop();
+                }
+                self.router.clear();
+                true
+            }
             // Config changes are outside the undo system, so this confirm
             // is the only guard against a reset -- there is no undo path
             // to fall back on.
@@ -2620,10 +2818,13 @@ impl App {
                     }
                     // With no keys.toml on disk this writes the seed, so
                     // the outcome is the same file either way rather than
-                    // a no-op.
+                    // a no-op. The seed documents the running profile's
+                    // defaults: vim's has no bare `q` quit or ctrl+r send.
                     ConfigFile::Keys => self.config.write_validated(
                         crate::config::KEYS_TOML,
-                        &crate::keys::keys_seed(&crate::keys::Keymap::default_bindings()),
+                        &crate::keys::keys_seed(&crate::keys::Keymap::default_bindings_for(
+                            self.profile(),
+                        )),
                     ),
                 };
                 match result {
@@ -4507,86 +4708,11 @@ impl App {
                 true
             }
             Action::Undo => {
-                if self.undo_in_open_field(false) {
-                    return true;
-                }
-                // A field that has run out of steps still owns the key:
-                // `edited()` — the router carve-out's gate — stays true
-                // while the redo stack holds anything, so a step that
-                // found nothing must stop here rather than quietly
-                // spending an app-history step behind the user's back.
-                if self.open_text_field_edited() {
-                    return true;
-                }
-                if !self.modals.is_empty() {
-                    return true;
-                }
-                // A live cell edit is part of what's being undone: commit it
-                // so it becomes a step, then capture any pending delta. A
-                // live Settings field edit closes the same way (spec
-                // 2026-09-16): the close becomes the step the undo pops.
-                self.commit_settings_edit();
-                self.commit_table_edit();
-                self.capture_undo();
-                loop {
-                    match self.history.pop_undo() {
-                        None => {
-                            self.toasts.push("Nothing to undo", ToastKind::Info);
-                            break;
-                        }
-                        Some(step) => {
-                            // A marker whose journal entry is gone (merged
-                            // away, netted to nothing) is not a step the
-                            // user made: skip it and undo the one beneath.
-                            if self.is_stale_marker(&step, false) {
-                                continue;
-                            }
-                            if self.apply_undo_step(step, false) {
-                                self.history.break_coalescing();
-                            }
-                            break;
-                        }
-                    }
-                }
+                self.history_stepped = self.step_history(false);
                 true
             }
             Action::Redo => {
-                if self.undo_in_open_field(true) {
-                    return true;
-                }
-                // A field that has run out of steps still owns the key:
-                // `edited()` — the router carve-out's gate — stays true
-                // while the redo stack holds anything, so a step that
-                // found nothing must stop here rather than quietly
-                // spending an app-history step behind the user's back.
-                if self.open_text_field_edited() {
-                    return true;
-                }
-                if !self.modals.is_empty() {
-                    return true;
-                }
-                self.commit_table_edit();
-                // A pending uncaptured edit means the user changed something
-                // after the last undo; capturing it clears the redo stack,
-                // which is exactly the linear-history contract.
-                self.capture_undo();
-                loop {
-                    match self.history.pop_redo() {
-                        None => {
-                            self.toasts.push("Nothing to redo", ToastKind::Info);
-                            break;
-                        }
-                        Some(step) => {
-                            if self.is_stale_marker(&step, true) {
-                                continue;
-                            }
-                            if self.apply_undo_step(step, true) {
-                                self.history.break_coalescing();
-                            }
-                            break;
-                        }
-                    }
-                }
+                self.history_stepped = self.step_history(true);
                 true
             }
             Action::ToggleJqBar => {
@@ -4897,8 +5023,9 @@ impl App {
                 // The config half. Every `None` field means "that file
                 // exists but could not be read or parsed": keep what we
                 // have, and let the warning say which file to fix.
+                let running = self.profile();
                 let (reloaded, warnings) =
-                    self.config.reload(cfg!(target_os = "macos"), &self.keymap);
+                    self.config.reload(cfg!(target_os = "macos"), &self.keymap, running);
                 if let Some(themes) = reloaded.themes {
                     self.themes = themes;
                 }
@@ -4974,8 +5101,24 @@ impl App {
                 // now: `handle_key` looks the combo up once, before it
                 // dispatches anything, so the new bindings can only take
                 // effect from the *next* key.
-                if let Some(keymap) = reloaded.keymap {
-                    self.keymap = keymap;
+                //
+                // A `config.toml` that did not parse leaves the running
+                // profile alone, and `reload` built the keymap (and its
+                // warnings) on that profile (plan M1 Deviation 23). A
+                // `keys.toml` that did not parse (`reloaded.keymap` is
+                // `None`) keeps the live keys -- laid on the new profile's
+                // defaults when config.toml switched it, so the old
+                // profile's keys (arrows' `q`, its `ctrl+r` send) never
+                // run under the new one. A switch also drops what was
+                // half-typed, as the Settings switch does.
+                let profile = self.profile();
+                match reloaded.keymap {
+                    Some(keymap) => self.keymap = keymap,
+                    None if profile != running => self.keymap = self.keymap.rebased(profile),
+                    None => {}
+                }
+                if profile != running {
+                    self.router.clear();
                 }
 
                 for w in warnings.into_iter().chain(theme_warning) {
@@ -9676,6 +9819,10 @@ impl App {
     /// Central key router. Order (each step tested):
     /// 1. A CTRL/ALT combo the keymap maps to Quit pre-empts everything,
     ///    including open modals — ctrl+c must always quit.
+    ///
+    ///    1a. The key router (`crate::keyroute`): in the vim profile a
+    ///    table row runs here (a motion replays its named key through
+    ///    steps 1b–6); what it declines goes on unchanged.
     /// 2. An open modal stack captures all remaining input (swallowed keys
     ///    still count as "handled" — they return true).
     /// 3. With no modal open and a non-`Main` screen showing (e.g. the
@@ -9712,7 +9859,8 @@ impl App {
         // Not every key reaches `update` -- Esc on a modal just pops it
         // -- so the gate is re-checked at the event boundary too.
         let regated = self.reraise_startup_config_gate();
-        changed || regated
+        let asked = ASK_KEYMAP_ON_LAUNCH && self.raise_keymap_choice();
+        changed || regated || asked
     }
 
     fn handle_key_inner(&mut self, ev: KeyEvent) -> bool {
@@ -9729,11 +9877,12 @@ impl App {
             return true;
         }
         let combo = KeyCombo::from_event(&ev);
-        // The one keymap read of the whole router, and it happens before
-        // any action is dispatched: an action that swaps `self.keymap`
-        // (the Reload command) therefore cannot change the meaning of the
-        // key currently being handled. That is the "never mid-key"
-        // guarantee — no copy, no handshake, just ordering.
+        // Each keymap read (here, in `key_ctx`, and in `handle_key_routed`
+        // once per key it routes) comes before the action it picks is
+        // dispatched: an action that swaps `self.keymap` (the Reload
+        // command) therefore cannot change the meaning of the key being
+        // handled. That is the "never mid-key" guarantee — no copy, no
+        // handshake, just ordering.
         let global = self.keymap.lookup(&combo);
         let modified = ev
             .modifiers
@@ -9769,6 +9918,31 @@ impl App {
         if self.sidebar.drag.is_some() || self.manage.list.drag.is_some() {
             return false;
         }
+
+        // The key router (piece 4 spec §3.1): one snapshot of where the
+        // key lands, one lookup. What it declines takes today's routing.
+        let ctx = self.key_ctx(&ev);
+        match self.router.resolve(ev, &ctx) {
+            crate::keyroute::Resolved::Declined => self.handle_key_routed(ev),
+            // The pending keys grew (the footer echoes them), or vim
+            // swallowed the key.
+            crate::keyroute::Resolved::Consumed => true,
+            crate::keyroute::Resolved::Run(steps) => self.run_steps(steps),
+        }
+    }
+
+    /// Steps 1b–6 of [`Self::handle_key`]: the routing every key the
+    /// router declines takes, and every named key a table row replays
+    /// (`j` is Down). It never re-enters the router.
+    fn handle_key_routed(&mut self, ev: KeyEvent) -> bool {
+        let combo = KeyCombo::from_event(&ev);
+        // A replayed key reads the keymap again: the keymap is only ever
+        // swapped by an action, never mid-lookup, so this is the same
+        // "one read per key" the first lookup is.
+        let global = self.keymap.lookup(&combo);
+        let modified = ev
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
 
         // 1b. A bound paste combo digs past the layers below: modals and
         // non-Main screens capture all remaining input, but ctrl+v means
@@ -9820,19 +9994,6 @@ impl App {
             let changed = self.apply_modal_result(res);
             self.sync_theme_preview();
             return changed;
-        }
-
-        // 1e. A plain key bound to Undo or OpenPalette reaches the top
-        // form modal's selected field/button row the same way `u`/`:`
-        // reach a Manage screen's unclaimed keys (`unclaimed_screen_key`):
-        // the modal's own handler swallows every key it does not name,
-        // so without this carve-out `u` inside a modal is only ever typed.
-        if !modified
-            && matches!(global, Some(Action::Undo | Action::Redo | Action::OpenPalette))
-            && self.modals.top().is_some_and(crate::components::modal::Modal::is_form)
-            && !self.modals.field_open()
-        {
-            return self.update(global.expect("matched above"));
         }
 
         // 2. Modals capture all remaining input.
@@ -10027,12 +10188,11 @@ impl App {
 
     /// A plain key a non-`Main` screen's own handler left unclaimed. The
     /// screen swallows it — with one exception: the small whitelist of
-    /// global actions that work on top of any screen (`:` for the
-    /// palette, `u` for undo — the same list the modified combos get
-    /// first refusal from) runs from the keymap here, so a rebind or
-    /// unbind in `keys.toml` reaches the Manage screens too, and the
-    /// aliases work on a tab with no project open. Modified combos never
-    /// get here: they took the whitelist before the screen saw them.
+    /// global actions that work on top of any screen (the same list the
+    /// modified combos get first refusal from) runs from the keymap here,
+    /// so a plain key `keys.toml` binds to one reaches the Manage screens
+    /// too, even on a tab with no project open. Modified combos never get
+    /// here: they took the whitelist before the screen saw them.
     fn unclaimed_screen_key(&mut self, global: Option<Action>) -> bool {
         match global {
             Some(a) if screen_escape_whitelist(&a) => self.update(a),
@@ -10070,17 +10230,7 @@ impl App {
                     .move_cursor(-1, self.ui_settings_are_editable());
                 true
             }
-            KeyCode::Char('k') if ev.modifiers.is_empty() => {
-                self.settings
-                    .move_cursor(-1, self.ui_settings_are_editable());
-                true
-            }
             KeyCode::Down => {
-                self.settings
-                    .move_cursor(1, self.ui_settings_are_editable());
-                true
-            }
-            KeyCode::Char('j') if ev.modifiers.is_empty() => {
                 self.settings
                     .move_cursor(1, self.ui_settings_are_editable());
                 true
@@ -10090,20 +10240,7 @@ impl App {
                     .move_cursor(i32::MIN / 2, self.ui_settings_are_editable());
                 true
             }
-            KeyCode::Char('g') if ev.modifiers.is_empty() => {
-                self.settings
-                    .move_cursor(i32::MIN / 2, self.ui_settings_are_editable());
-                true
-            }
             KeyCode::End => {
-                self.settings
-                    .move_cursor(i32::MAX / 2, self.ui_settings_are_editable());
-                true
-            }
-            // Unguarded, like every other surface's `G`: crossterm reports
-            // an uppercase char with `SHIFT` set, so an `is_empty()` guard
-            // would never match in a real terminal.
-            KeyCode::Char('G') => {
                 self.settings
                     .move_cursor(i32::MAX / 2, self.ui_settings_are_editable());
                 true
@@ -10116,17 +10253,7 @@ impl App {
                 self.settings.file_button = usize::from(ev.code == KeyCode::Right);
                 true
             }
-            KeyCode::Char('h') | KeyCode::Char('l')
-                if ev.modifiers.is_empty() && matches!(self.settings.row(), SettingsRow::File(_)) =>
-            {
-                self.settings.file_button = usize::from(matches!(ev.code, KeyCode::Char('l')));
-                true
-            }
-            KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Char('i')
-                if crate::keys::opens_field(&ev) =>
-            {
-                self.activate_settings_row()
-            }
+            KeyCode::Enter | KeyCode::Char(' ') => self.activate_settings_row(),
             // `u` / `:` (undo, palette) are not named here: they reach the
             // router's whitelist from the keymap, like on every screen.
             _ => return None,
@@ -10162,6 +10289,13 @@ impl App {
                 self.update(action)
             }
             _ if !self.ui_settings_are_editable() => true,
+            SettingsRow::Setting(SettingsField::Keymap) => {
+                let next = match self.profile() {
+                    crate::config::KeyProfile::Arrows => crate::config::KeyProfile::Vim,
+                    crate::config::KeyProfile::Vim => crate::config::KeyProfile::Arrows,
+                };
+                self.update(Action::SetKeyProfile(next))
+            }
             SettingsRow::Setting(SettingsField::JqTab) => {
                 let next = match self.ui_settings.jq_tab {
                     crate::config::JqTab::Menu => crate::config::JqTab::Cycle,
@@ -10291,6 +10425,10 @@ impl App {
             "clipboard_cmd" => self.ui_settings.clipboard_cmd.clone().unwrap_or_default(),
             "jq_tab" => crate::components::settings::jq_tab_spelling(self.ui_settings.jq_tab)
                 .to_string(),
+            "keymap" => self
+                .ui_settings
+                .keymap
+                .map_or(String::new(), |p| p.spelling().to_string()),
             other => {
                 debug_assert!(false, "no string setting named {other:?}");
                 String::new()
@@ -10978,6 +11116,11 @@ impl App {
                                         crate::config::JqTab::Cycle
                                     }
                                 }
+                                "keymap" => {
+                                    // "" is the unset keymap the first
+                                    // answer replaced.
+                                    ui.keymap = crate::config::KeyProfile::from_spelling(v)
+                                }
                                 _ => {}
                             },
                             UiValue::Int(v) => {
@@ -10987,6 +11130,11 @@ impl App {
                             }
                         }
                         self.reapply_ui_settings(ui);
+                        if *key == "keymap" {
+                            self.keymap = self.keymap_for_profile();
+                            self.warn_of_vim_shadows();
+                            self.router.clear();
+                        }
                         let verb = if redo { "Redid" } else { "Undid" };
                         let label = crate::components::settings::SettingsField::from_key(key)
                             .map(crate::components::settings::SettingsField::label)
@@ -11090,5 +11238,8 @@ fn screen_escape_whitelist(action: &Action) -> bool {
 
 mod landing;
 mod mouse;
+mod router;
+#[cfg(test)]
+mod key_matrix_tests;
 #[cfg(test)]
 mod tests;

@@ -217,6 +217,38 @@ pub enum JqTab {
     Menu,
 }
 
+/// Which keys the app runs on (`keymap` in `config.toml`, piece 4 spec
+/// §4.1). The two are equals: an unset `keymap` is `None` in
+/// [`UiSettings`], never one of these. `Default` exists only so zeroed
+/// context structs (`HintCtx::default()`) can be built; the running app
+/// asks `App::profile`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum KeyProfile {
+    /// Arrows and Enter: modeless, every verb on a named key, a chord or a
+    /// shared letter.
+    #[default]
+    Arrows,
+    /// Vim keys on lists, panes and fields.
+    Vim,
+}
+
+impl KeyProfile {
+    /// The `keymap` value written for this profile.
+    pub fn spelling(self) -> &'static str {
+        match self {
+            KeyProfile::Arrows => "arrows",
+            KeyProfile::Vim => "vim",
+        }
+    }
+
+    /// The profile a `keymap` value names, or `None` for anything else.
+    pub fn from_spelling(s: &str) -> Option<Self> {
+        [KeyProfile::Arrows, KeyProfile::Vim]
+            .into_iter()
+            .find(|p| p.spelling() == s)
+    }
+}
+
 /// Mouse-first-GUI UI settings stored at the top level of `config.toml`:
 /// the tiered clipboard's optional external command and the OSC 52 size
 /// threshold.
@@ -251,6 +283,9 @@ pub struct UiSettings {
     /// Tab's job in the jq bar while a completion ghost shows; see
     /// [`JqTab`].
     pub jq_tab: JqTab,
+    /// The chosen key profile, or `None` while `config.toml` has never
+    /// carried a `keymap` (the first-launch question's trigger).
+    pub keymap: Option<KeyProfile>,
 }
 
 impl Default for UiSettings {
@@ -265,11 +300,19 @@ impl Default for UiSettings {
             ai_cmd: "claude -p".into(),
             ai_confirmed: false,
             jq_tab: JqTab::Menu,
+            keymap: None,
         }
     }
 }
 
 impl UiSettings {
+    /// The key profile these settings run: the chosen one, or arrows while
+    /// `keymap` is unset, until the first-launch question is raised (plan
+    /// M1 Deviation 2; M3 raises it). The one place that rule lives.
+    pub fn profile(&self) -> KeyProfile {
+        self.keymap.unwrap_or(KeyProfile::Arrows)
+    }
+
     /// Reads the top-level `clipboard_cmd` (string), `osc52_limit`
     /// (integer), `theme` (string), `animations` (bool), `hover_hints`
     /// (bool), `ai_cmd` (string), `ai_confirmed` (bool), and `jq_tab`
@@ -375,6 +418,25 @@ impl UiSettings {
                 None => wrong_type("jq_tab", "a string"),
             },
         }
+        match value.get("keymap") {
+            None => {}
+            Some(v) => match v.as_str() {
+                Some(s) if let Some(profile) = KeyProfile::from_spelling(s) => {
+                    settings.keymap = Some(profile)
+                }
+                Some(other) => warnings.push(format!(
+                    "invalid value {other:?} for keymap in config.toml \
+                     (expected \"arrows\" or \"vim\"); leaving the choice unmade"
+                )),
+                // Not `wrong_type`: that one says "using default", and
+                // `keymap` has no default to fall back to.
+                None => warnings.push(
+                    "invalid value for \"keymap\" in config.toml (expected a string); \
+                     leaving the choice unmade"
+                        .to_string(),
+                ),
+            },
+        }
 
         if let Some(table) = value.get("animation_ms").and_then(|v| v.as_table()) {
             const KNOWN_KEYS: [&str; 8] = [
@@ -457,6 +519,9 @@ pub fn config_seed() -> String {
 #   \"ghost\" - ghost the best one after the caret and step in place
 # jq_tab = \"menu\"
 
+# Which keys the app runs on: \"arrows\" (arrows and Enter) or \"vim\".
+# keymap = \"arrows\"
+
 # The shell command \"Describe a filter…\" pipes its prompt into.
 # ai_cmd = {:?}
 
@@ -499,6 +564,8 @@ struct ReadAll {
     /// succeed and fail together, so they travel together.
     config: Result<(ProjectsRegistry, UiSettings), String>,
     keymap: Result<crate::keys::Keymap, String>,
+    /// The profile `keymap` was built on.
+    profile: KeyProfile,
     /// `Err` only when `themes/` itself could not be listed; an
     /// individual theme file that will not read or parse is skipped with
     /// a warning and the rest of the registry still builds.
@@ -556,7 +623,9 @@ impl Config {
     /// which sentence — can be tested against a tempdir instead of only
     /// against the user's real XDG directory.
     pub(crate) fn load_from(mut cfg: Config, macos: bool) -> (Config, Loaded, Vec<String>) {
-        let (read, mut warnings) = cfg.read_all();
+        // Nothing runs yet: a `config.toml` that will not parse starts on
+        // the default settings, so on the default profile's keys too.
+        let (read, mut warnings) = cfg.read_all(KeyProfile::default());
 
         // Startup's answer to every failure is the same: run on the
         // defaults and say so. (A reload's answer is the opposite — see
@@ -575,10 +644,13 @@ impl Config {
             Ok(keymap) => keymap,
             Err(e) => {
                 warnings.push(format!("keys.toml ignored, using default keys: {e}"));
-                crate::keys::Keymap::default_bindings()
+                crate::keys::Keymap::default_bindings_for(ui.profile())
             }
         };
         warnings.extend(keymap.caret_warnings(macos));
+        if ui.keymap == Some(KeyProfile::Vim) {
+            warnings.extend(keymap.vim_shadow_warnings());
+        }
         let themes = read
             .themes
             .unwrap_or_else(|_| crate::theme::ThemeRegistry::from_files(Vec::new()).0);
@@ -641,7 +713,11 @@ impl Config {
     ///
     /// `ui.toml` is deliberately not here: it is app-owned state, written
     /// by the app itself, and only startup reads it.
-    fn read_all(&mut self) -> (ReadAll, Vec<String>) {
+    ///
+    /// `fallback` is the profile `keys.toml` layers on when `config.toml`
+    /// will not parse: the caller's, since only it knows which profile
+    /// survives that failure.
+    fn read_all(&mut self, fallback: KeyProfile) -> (ReadAll, Vec<String>) {
         let mut warnings = Vec::new();
 
         let config = match self.read(CONFIG_TOML) {
@@ -667,9 +743,16 @@ impl Config {
         warnings.extend(theme_warnings);
         let themes = themes.ok_or_else(|| format!("{THEMES_DIR}/ could not be listed"));
 
+        // The chosen profile is the base `keys.toml` layers on. Unset runs
+        // arrows (plan M1 Deviation 2); a `config.toml` that will not
+        // parse runs the caller's `fallback` (Deviation 23).
+        let profile = match &config {
+            Ok((_, ui)) => ui.profile(),
+            Err(_) => fallback,
+        };
         let keymap = match self.read(KEYS_TOML) {
-            Ok(Some(text)) => crate::keys::Keymap::try_from_overrides(&text),
-            Ok(None) => Ok(crate::keys::Keymap::default_bindings()),
+            Ok(Some(text)) => crate::keys::Keymap::try_from_overrides_for(profile, &text),
+            Ok(None) => Ok(crate::keys::Keymap::default_bindings_for(profile)),
             Err(e) => Err(e),
         };
 
@@ -677,6 +760,7 @@ impl Config {
             ReadAll {
                 config,
                 keymap,
+                profile,
                 themes,
             },
             warnings,
@@ -694,15 +778,19 @@ impl Config {
     /// The caller keeps whatever it already has for a `None` field and
     /// shows the accompanying warning.
     /// `current_keys` is the keymap the app is running on: the
-    /// caret-conflict advisories are re-issued only when the file's
-    /// bindings actually differ from it, so re-reading an unchanged
-    /// keys.toml is silent rather than a nag.
+    /// caret-conflict and vim-shadow advisories are re-issued only when
+    /// the file's bindings actually differ from it, so re-reading an
+    /// unchanged keys.toml is silent rather than a nag. `running` is the
+    /// profile the app runs: a `config.toml` that will not parse keeps
+    /// it, so the keymap is built on it, and the advisories speak of the
+    /// keymap the app will install (plan M1 Deviation 23).
     pub fn reload(
         &mut self,
         macos: bool,
         current_keys: &crate::keys::Keymap,
+        running: KeyProfile,
     ) -> (Reloaded, Vec<String>) {
-        let (read, mut warnings) = self.read_all();
+        let (read, mut warnings) = self.read_all(running);
 
         let mut config_error = None;
         let config = match read.config {
@@ -724,6 +812,9 @@ impl Config {
             && keymap != current_keys
         {
             warnings.extend(keymap.caret_warnings(macos));
+            if read.profile == KeyProfile::Vim {
+                warnings.extend(keymap.vim_shadow_warnings());
+            }
         }
         // A `themes/` that would not list already warned inside
         // `read_all`; here it just means "keep the registry you have".
@@ -849,6 +940,9 @@ impl Config {
     /// `[projects]` is deliberately untouched: wiping `known`/`last`
     /// would silently destroy the user's project list, which has nothing
     /// to do with resetting preferences.
+    ///
+    /// `keymap` is not among the removed keys: a reset keeps the keyboard
+    /// profile (plan M1 Deviation 25).
     pub fn reset_ui_settings(&mut self) -> Result<(), String> {
         self.edit(CONFIG_TOML, |doc| {
             for key in [
@@ -1714,7 +1808,7 @@ osc52_limit = 1024
         .unwrap();
         let mut cfg = Config::at(dir.path().to_path_buf());
 
-        let (reloaded, warnings) = cfg.reload(false, &crate::keys::Keymap::default_bindings());
+        let (reloaded, warnings) = cfg.reload(false, &crate::keys::Keymap::default_bindings(), KeyProfile::Arrows);
 
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(reloaded.config.as_ref().unwrap().1.theme, "x");
@@ -1734,7 +1828,7 @@ osc52_limit = 1024
         .unwrap();
         let mut cfg = Config::at(dir.path().to_path_buf());
 
-        let (reloaded, warnings) = cfg.reload(false, &crate::keys::Keymap::default_bindings());
+        let (reloaded, warnings) = cfg.reload(false, &crate::keys::Keymap::default_bindings(), KeyProfile::Arrows);
 
         assert!(reloaded.config.is_none());
         assert_eq!(warnings.len(), 1, "{warnings:?}");
@@ -1752,7 +1846,7 @@ osc52_limit = 1024
         .unwrap();
         let mut cfg = Config::at(dir.path().to_path_buf());
 
-        let (reloaded, warnings) = cfg.reload(false, &crate::keys::Keymap::default_bindings());
+        let (reloaded, warnings) = cfg.reload(false, &crate::keys::Keymap::default_bindings(), KeyProfile::Arrows);
 
         assert!(reloaded.config.is_some(), "valid TOML still parses");
         assert!(
@@ -1766,7 +1860,7 @@ osc52_limit = 1024
         let dir = tempdir().unwrap();
         let mut cfg = Config::at(dir.path().to_path_buf());
 
-        let (reloaded, warnings) = cfg.reload(false, &crate::keys::Keymap::default_bindings());
+        let (reloaded, warnings) = cfg.reload(false, &crate::keys::Keymap::default_bindings(), KeyProfile::Arrows);
 
         assert_eq!(
             reloaded.config,
@@ -1781,7 +1875,7 @@ osc52_limit = 1024
         std::fs::write(dir.path().join("keys.toml"), "save = \"alt+shift+s\"\n").unwrap();
         let mut cfg = Config::at(dir.path().to_path_buf());
 
-        let (reloaded, _warnings) = cfg.reload(false, &crate::keys::Keymap::default_bindings());
+        let (reloaded, _warnings) = cfg.reload(false, &crate::keys::Keymap::default_bindings(), KeyProfile::Arrows);
 
         let keymap = reloaded.keymap.expect("good keys.toml parses");
         let combo = crate::keys::KeyCombo::parse("alt+shift+s").unwrap();
@@ -1797,7 +1891,7 @@ osc52_limit = 1024
         std::fs::write(dir.path().join("keys.toml"), "save = \"not-a-combo\"\n").unwrap();
         let mut cfg = Config::at(dir.path().to_path_buf());
 
-        let (reloaded, warnings) = cfg.reload(false, &crate::keys::Keymap::default_bindings());
+        let (reloaded, warnings) = cfg.reload(false, &crate::keys::Keymap::default_bindings(), KeyProfile::Arrows);
 
         assert!(reloaded.keymap.is_none());
         assert!(
@@ -1816,7 +1910,7 @@ osc52_limit = 1024
         std::fs::write(themes.join("good.toml"), THEME_TOML).unwrap();
         let mut cfg = Config::at(dir.path().to_path_buf());
 
-        let (reloaded, _warnings) = cfg.reload(false, &crate::keys::Keymap::default_bindings());
+        let (reloaded, _warnings) = cfg.reload(false, &crate::keys::Keymap::default_bindings(), KeyProfile::Arrows);
 
         let themes = reloaded.themes.expect("the directory listed");
         let customs: Vec<&str> = themes
@@ -1931,7 +2025,8 @@ osc52_limit = 1024
         std::fs::write(dir.path().join("keys.toml"), "save = \"ctrl+a\"\n").unwrap();
         let mut cfg = Config::at(dir.path().to_path_buf());
 
-        let (first, warnings) = cfg.reload(true, &crate::keys::Keymap::default_bindings());
+        let (first, warnings) =
+            cfg.reload(true, &crate::keys::Keymap::default_bindings(), KeyProfile::Arrows);
         let keymap = first.keymap.expect("the file parsed");
         assert!(
             warnings.iter().any(|w| w.contains("shadows")),
@@ -1939,7 +2034,7 @@ osc52_limit = 1024
         );
 
         // Same file, and the app is already running on it.
-        let (_, warnings) = cfg.reload(true, &keymap);
+        let (_, warnings) = cfg.reload(true, &keymap, KeyProfile::Arrows);
         assert!(
             !warnings.iter().any(|w| w.contains("shadows")),
             "nothing changed, so there is nothing to warn about: {warnings:?}"
@@ -1960,7 +2055,7 @@ osc52_limit = 1024
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
         let mut cfg = Config::at(dir.path().to_path_buf());
 
-        let (reloaded, warnings) = cfg.reload(false, &crate::keys::Keymap::default_bindings());
+        let (reloaded, warnings) = cfg.reload(false, &crate::keys::Keymap::default_bindings(), KeyProfile::Arrows);
 
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
         if reloaded.config.is_some() {
@@ -1983,7 +2078,7 @@ osc52_limit = 1024
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
         let mut cfg = Config::at(dir.path().to_path_buf());
 
-        let (reloaded, warnings) = cfg.reload(false, &crate::keys::Keymap::default_bindings());
+        let (reloaded, warnings) = cfg.reload(false, &crate::keys::Keymap::default_bindings(), KeyProfile::Arrows);
 
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
         if reloaded.keymap.is_some() {
@@ -2010,7 +2105,7 @@ osc52_limit = 1024
         std::fs::set_permissions(&themes, std::fs::Permissions::from_mode(0o000)).unwrap();
         let mut cfg = Config::at(dir.path().to_path_buf());
 
-        let (reloaded, warnings) = cfg.reload(false, &crate::keys::Keymap::default_bindings());
+        let (reloaded, warnings) = cfg.reload(false, &crate::keys::Keymap::default_bindings(), KeyProfile::Arrows);
 
         std::fs::set_permissions(&themes, std::fs::Permissions::from_mode(0o755)).unwrap();
         if reloaded.themes.is_some() {
@@ -2027,7 +2122,7 @@ osc52_limit = 1024
     fn reload_on_config_none_is_all_defaults_no_warnings() {
         let mut cfg = Config::none();
 
-        let (reloaded, warnings) = cfg.reload(false, &crate::keys::Keymap::default_bindings());
+        let (reloaded, warnings) = cfg.reload(false, &crate::keys::Keymap::default_bindings(), KeyProfile::Arrows);
 
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(
@@ -2035,5 +2130,39 @@ osc52_limit = 1024
             Some((ProjectsRegistry::default(), UiSettings::default()))
         );
         assert!(reloaded.keymap.is_some());
+    }
+
+    #[test]
+    fn keymap_parses_both_profiles_and_defaults_to_unset() {
+        assert_eq!(UiSettings::parse("").0.keymap, None, "never asked");
+        let (ui, w) = UiSettings::parse("keymap = \"vim\"\n");
+        assert_eq!((ui.keymap, w.len()), (Some(KeyProfile::Vim), 0));
+        let (ui, w) = UiSettings::parse("keymap = \"arrows\"\n");
+        assert_eq!((ui.keymap, w.len()), (Some(KeyProfile::Arrows), 0));
+    }
+
+    /// vim-mode spelled the arrows profile "default"; there is no default
+    /// any more, so that spelling is as unknown as any other (spec §4.1).
+    #[test]
+    fn an_unknown_keymap_warns_and_leaves_the_choice_unmade() {
+        for text in ["keymap = \"emacs\"\n", "keymap = \"default\"\n", "keymap = 3\n"] {
+            let (ui, w) = UiSettings::parse(text);
+            assert_eq!(ui.keymap, None, "{text}");
+            assert!(
+                w.iter().any(|w| w.contains("keymap") && w.contains("leaving the choice unmade")),
+                "{text}: {w:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn keys_toml_layers_on_the_chosen_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.toml"), "keymap = \"vim\"\n").unwrap();
+        std::fs::write(dir.path().join("keys.toml"), "save = [\"ctrl+s\", \"f2\"]\n").unwrap();
+        let (_cfg, loaded, _w) = Config::load_from(Config::at(dir.path().to_path_buf()), false);
+        let get = |s: &str| loaded.keymap.lookup(&crate::keys::KeyCombo::parse(s).unwrap());
+        assert_eq!(get("f2"), Some(crate::action::Action::SaveRequest), "keys.toml applied");
+        assert_eq!(get("q"), None, "on the vim profile's defaults");
     }
 }

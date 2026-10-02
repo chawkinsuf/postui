@@ -1455,15 +1455,15 @@ impl Component for Editor {
             // The method badge: a plain control, not a text input, so
             // Enter/Space activate it (opening the chooser) and arrows only
             // navigate. alt+m still cycles the method without focusing it.
-            // `l`/`j` are the vim spellings of Right/Down: a resting stop,
-            // so the letters are free (spec 2026-09-15).
+            // Vim's `l`/`j` reach here as Right/Down: the router replays
+            // them (piece 4 spec §4.5).
             SubFocus::Method => match ev.code {
                 KeyCode::Enter | KeyCode::Char(' ') => Some(Action::OpenMethodDropdown),
-                KeyCode::Right | KeyCode::Char('l') if crate::keys::plain_letter(&ev) => {
+                KeyCode::Right => {
                     self.select_url();
                     Some(Action::Render)
                 }
-                KeyCode::Down | KeyCode::Char('j') if crate::keys::plain_letter(&ev) => {
+                KeyCode::Down => {
                     self.enter_content();
                     Some(Action::Render)
                 }
@@ -1474,18 +1474,18 @@ impl Component for Editor {
                 _ => None,
             },
             // Selected, not open: a resting stop like the method badge —
-            // arrow/hjkl navigate, and Enter/Space/i open the line so the
+            // arrows navigate, and Enter/Space open the line so the
             // next key types into it (spec 2026-09-16).
             SubFocus::Url if !self.url_open => match ev.code {
                 _ if crate::keys::opens_field(&ev) => {
                     self.open_url();
                     Some(Action::Render)
                 }
-                KeyCode::Left | KeyCode::Char('h') if crate::keys::plain_letter(&ev) => {
+                KeyCode::Left => {
                     self.sub_focus = SubFocus::Method;
                     Some(Action::Render)
                 }
-                KeyCode::Down | KeyCode::Char('j') if crate::keys::plain_letter(&ev) => {
+                KeyCode::Down => {
                     self.close_url();
                     self.enter_content();
                     Some(Action::Render)
@@ -1569,11 +1569,8 @@ impl Component for Editor {
                     // back up the chain. Leaving the table also drops its
                     // selection — the mouse click-away path clears it, and
                     // a row that stays lit while keys land in the URL line
-                    // misstates focus. `k` is Up's strict synonym, clamp
-                    // included.
-                    if matches!(ev.code, KeyCode::Up | KeyCode::Char('k'))
-                        && crate::keys::plain_letter(&ev)
-                    {
+                    // misstates focus.
+                    if ev.code == KeyCode::Up {
                         self.table.selected = None;
                         self.select_url();
                         return Some(Action::Render);
@@ -1709,9 +1706,7 @@ impl Component for Editor {
             // line, mirroring the Url -> Down -> Content chain, so keyboard
             // users aren't stranded (alt+u and clicking work too).
             SubFocus::None => {
-                if matches!(ev.code, KeyCode::Down | KeyCode::Char('j'))
-                    && crate::keys::plain_letter(&ev)
-                {
+                if ev.code == KeyCode::Down {
                     self.select_url();
                     return Some(Action::Render);
                 }
@@ -3943,9 +3938,10 @@ mod tests {
         assert_eq!(e.sub_focus, SubFocus::None);
     }
 
-    /// The tab strip is no keyboard stop: plain ←/→ (and h/l) never
-    /// cycle it from any sub-focus — the strip is switched by the shared
-    /// alt+←/→ chord (`Action::CycleTabs`) or a click.
+    /// The tab strip is no keyboard stop: plain ←/→ (and h/l, which are
+    /// nothing here now) never cycle it from any sub-focus — the strip is
+    /// switched by the shared alt+←/→ chord (`Action::CycleTabs`) or a
+    /// click.
     #[test]
     fn plain_arrows_never_cycle_the_tab_strip() {
         for stop in [SubFocus::Method, SubFocus::Url, SubFocus::Content, SubFocus::None] {
@@ -3968,63 +3964,50 @@ mod tests {
         }
     }
 
-    /// The method badge is a resting stop (no text field is live), so the
-    /// vim letters are strict synonyms of the arrows there too (spec
-    /// 2026-09-15).
+    /// The method badge is a resting stop (no text field is live), but the
+    /// vim letters are not its keys: the router replays them as arrows
+    /// (piece 4 spec §4.5).
     #[test]
-    fn vim_aliases_are_strict_synonyms_on_the_method_badge() {
-        let pairs = [
-            (key(KeyCode::Char('h')), key(KeyCode::Left)),
-            (key(KeyCode::Char('l')), key(KeyCode::Right)),
-            (key(KeyCode::Char('j')), key(KeyCode::Down)),
-            (key(KeyCode::Char('k')), key(KeyCode::Up)),
-        ];
-        let stop = SubFocus::Method;
-        for (alias, canonical) in pairs {
-            let mut a = Editor {
-                sub_focus: stop,
+    fn the_vim_letters_do_nothing_on_the_method_badge() {
+        for letter in ['h', 'l', 'j', 'k'] {
+            let mut e = Editor {
+                sub_focus: SubFocus::Method,
                 ..Editor::default()
             };
-            let mut b = Editor {
-                sub_focus: stop,
-                ..Editor::default()
-            };
-            assert_eq!(
-                a.handle_key(alias),
-                b.handle_key(canonical),
-                "{stop:?} {alias:?}"
-            );
-            assert_eq!(a.sub_focus, b.sub_focus, "{stop:?} {alias:?}");
-            assert_eq!(a.table.selected, b.table.selected, "{stop:?} {alias:?}");
+            assert_eq!(e.handle_key(key(KeyCode::Char(letter))), None, "{letter}");
+            assert_eq!(e.sub_focus, SubFocus::Method, "{letter}");
         }
     }
 
     #[test]
-    fn k_from_the_content_selects_the_url_without_opening_it() {
-        // The URL line starts selected by default; `j` walks that into
-        // the content and `k` from the top row walks back.
+    fn up_from_the_content_selects_the_url_without_opening_it() {
+        // The URL line starts selected by default; Down walks that into
+        // the content and Up from the top row walks back.
         let mut ed = Editor::default();
-        ed.handle_key(key(KeyCode::Char('j')));
-        assert_eq!(ed.sub_focus, SubFocus::Content, "j moved focus, was not typed");
-        ed.handle_key(key(KeyCode::Char('k')));
+        ed.handle_key(key(KeyCode::Down));
+        assert_eq!(ed.sub_focus, SubFocus::Content, "Down moved focus");
+        ed.handle_key(key(KeyCode::Up));
         assert_eq!(ed.sub_focus, SubFocus::Url);
         assert!(!ed.plain_keys_type(), "selected, not open");
     }
 
     /// An `Editor` with the URL line selected but closed: the default
-    /// editor walked down into the content and back up with `k`.
+    /// editor walked down into the content and back up.
     fn editor_url_selected() -> Editor {
         let mut e = Editor::default();
         e.handle_key(key(KeyCode::Down));
-        e.handle_key(key(KeyCode::Char('k')));
+        e.handle_key(key(KeyCode::Up));
         assert_eq!(e.sub_focus, SubFocus::Url, "fixture lands on the URL line");
         assert!(!e.plain_keys_type(), "fixture: selected, not open");
         e
     }
 
     #[test]
-    fn enter_space_or_i_opens_the_selected_url_line() {
-        for opener in [KeyCode::Enter, KeyCode::Char(' '), KeyCode::Char('i')] {
+    fn enter_or_space_opens_the_selected_url_line_and_i_does_not() {
+        let mut ed = editor_url_selected();
+        ed.handle_key(key(KeyCode::Char('i')));
+        assert!(!ed.plain_keys_type(), "i is the router's, not the line's");
+        for opener in [KeyCode::Enter, KeyCode::Char(' ')] {
             let mut ed = editor_url_selected();
             ed.handle_key(key(opener));
             assert!(ed.plain_keys_type(), "{opener:?} should have opened the field");
@@ -4052,16 +4035,14 @@ mod tests {
     }
 
     #[test]
-    fn esc_from_a_selected_url_line_blurs_and_j_reselects_it() {
+    fn esc_from_a_selected_url_line_blurs_and_down_reselects_it() {
         let mut ed = editor_url_selected();
         ed.handle_key(key(KeyCode::Esc)); // blur
         assert_eq!(ed.sub_focus, SubFocus::None);
         ed.handle_key(key(KeyCode::Char('j')));
-        assert_eq!(
-            ed.sub_focus,
-            SubFocus::Url,
-            "j is the alias 1a000de missed, beside Down"
-        );
+        assert_eq!(ed.sub_focus, SubFocus::None, "j is the router's, not the pane's");
+        ed.handle_key(key(KeyCode::Down));
+        assert_eq!(ed.sub_focus, SubFocus::Url);
         assert!(!ed.plain_keys_type(), "lands selected, not open");
     }
 
@@ -4097,7 +4078,7 @@ mod tests {
         );
     }
 
-    /// On a table tab the table owns ←/→ (and h/l) while a row is
+    /// On a table tab the table owns ←/→ while a row is
     /// selected: they move the cell cursor and are consumed, never the tab
     /// strip's cycle. Opening the row then edits the cell the cursor is on.
     #[test]
@@ -4114,21 +4095,19 @@ mod tests {
         e.handle_key(key(KeyCode::Down));
         assert_eq!((e.sub_focus, e.table.selected), (SubFocus::Content, Some(0)));
         let tab = e.active_tab;
-        for right in [KeyCode::Right, KeyCode::Char('l')] {
-            e.table.col = super::super::table_editor::Col::Key;
-            assert_eq!(e.handle_key(key(right)), Some(Action::Render), "{right:?}");
-            assert_eq!(e.table.col, super::super::table_editor::Col::Value, "{right:?}");
-            assert_eq!(e.active_tab, tab, "the tab strip did not cycle");
-        }
+        e.table.col = super::super::table_editor::Col::Key;
+        assert_eq!(e.handle_key(key(KeyCode::Right)), Some(Action::Render));
+        assert_eq!(e.table.col, super::super::table_editor::Col::Value);
+        assert_eq!(e.active_tab, tab, "the tab strip did not cycle");
         e.handle_key(key(KeyCode::Enter));
         let edit = e.table.editing.as_ref().expect("the value cell opened");
         assert_eq!(edit.col, super::super::table_editor::Col::Value);
     }
 
-    /// `k` is Up's strict synonym at the table's top clamp too: it climbs
-    /// out to the URL line rather than dying. A modified `k` is neither.
+    /// Up at the table's top clamp climbs out to the URL line rather than
+    /// dying. `k` (the router's) and ctrl+k do nothing here.
     #[test]
-    fn k_at_row_zero_climbs_out_like_up_and_ctrl_k_does_not() {
+    fn up_at_row_zero_climbs_out_and_k_and_ctrl_k_do_not() {
         let mut e = Editor::default();
         e.params.insert(
             "a".into(),
@@ -4144,7 +4123,9 @@ mod tests {
             None
         );
         assert_eq!(e.sub_focus, SubFocus::Content, "ctrl+k is not a motion");
-        assert_eq!(e.handle_key(key(KeyCode::Char('k'))), Some(Action::Render));
+        assert_eq!(e.handle_key(key(KeyCode::Char('k'))), None);
+        assert_eq!(e.sub_focus, SubFocus::Content, "k is not a motion");
+        assert_eq!(e.handle_key(key(KeyCode::Up)), Some(Action::Render));
         assert_eq!(e.sub_focus, SubFocus::Url);
         assert_eq!(e.table.selected, None);
     }
@@ -5790,8 +5771,8 @@ url = "https://api.example.com/users""#,
             "the resting-stop fill lift still applies while merely selected: {well:?}"
         );
 
-        // Opening the line (Enter/Space/i, or `Action::FocusUrl`) puts the
-        // caret live, and the reversed cell shows up.
+        // Opening the line (Enter/Space, vim's `i`, or `Action::FocusUrl`)
+        // puts the caret live, and the reversed cell shows up.
         e.open_url_from_app();
         let (terminal2, _) = draw_for_bar_test(&mut e);
         let buf2 = terminal2.backend().buffer();
