@@ -1179,6 +1179,7 @@ impl App {
                 Hit::SettingsRow(_)
                     | Hit::SettingsControl(_)
                     | Hit::SettingsJqTab(_)
+                    | Hit::SettingsKeymap(_)
                     | Hit::SettingsFile { .. }
             );
         if !keeps_settings_focus {
@@ -1328,6 +1329,14 @@ impl App {
                     key: SettingsField::JqTab.key(),
                     value: jq_tab_spelling(mode).to_string(),
                 })
+            }
+            Hit::SettingsKeymap(profile) => {
+                use crate::components::settings::SettingsField;
+                if !self.commit_settings_edit_for_click() {
+                    return true;
+                }
+                self.settings.focus_field(SettingsField::Keymap);
+                self.update(Action::SetKeyProfile(profile))
             }
             Hit::SettingsFile { file, reset } => {
                 use crate::components::settings::{SettingsRow, SettingsTab};

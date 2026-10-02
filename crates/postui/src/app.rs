@@ -804,6 +804,18 @@ impl App {
             .unwrap_or(crate::config::KeyProfile::Arrows)
     }
 
+    /// The keymap for the running profile: `keys.toml` over that profile's
+    /// defaults, or the defaults alone when the file is absent or will not
+    /// parse (its warning was given when it was read).
+    fn keymap_for_profile(&mut self) -> crate::keys::Keymap {
+        let profile = self.profile();
+        match self.read_config_file(crate::config::KEYS_TOML) {
+            Ok(Some(text)) => crate::keys::Keymap::try_from_overrides_for(profile, &text)
+                .unwrap_or_else(|_| crate::keys::Keymap::default_bindings_for(profile)),
+            _ => crate::keys::Keymap::default_bindings_for(profile),
+        }
+    }
+
     /// Switches a test app's profile: the setting and the keymap together,
     /// as `Action::SetKeyProfile` does, without touching disk.
     #[cfg(test)]
@@ -2580,6 +2592,39 @@ impl App {
             // Config changes are outside the undo system, so this confirm
             // is the only guard against a reset -- there is no undo path
             // to fall back on.
+            Action::SetKeyProfile(profile) => {
+                use crate::components::settings::{SettingsField, keymap_spelling};
+                use crate::undo::UiValue;
+                let before = self.ui_string("keymap");
+                let saved = self.config.save_ui_string("keymap", keymap_spelling(profile));
+                let landed = saved.is_ok();
+                // Applied whether or not it landed (spec §4.2): left unset,
+                // the question would come straight back, and a question
+                // that cannot be answered is worse than one asked again
+                // at the next launch.
+                if let Err(e) = &saved {
+                    self.toasts.push(
+                        format!(
+                            "could not save {}: {e}; using {} keys for this session",
+                            crate::config::CONFIG_TOML,
+                            keymap_spelling(profile)
+                        ),
+                        ToastKind::Error,
+                    );
+                }
+                let mut ui = self.ui_settings.clone();
+                ui.keymap = Some(profile);
+                self.reapply_ui_settings(ui);
+                self.keymap = self.keymap_for_profile();
+                if landed {
+                    self.record_config_step(
+                        SettingsField::Keymap.key(),
+                        UiValue::Text(before),
+                        UiValue::Text(keymap_spelling(profile).to_string()),
+                    );
+                }
+                true
+            }
             Action::ResetConfigFile(file) => {
                 use crate::action::ConfigFile;
                 let (title, body) = match file {
@@ -4996,8 +5041,18 @@ impl App {
                 // now: `handle_key` looks the combo up once, before it
                 // dispatches anything, so the new bindings can only take
                 // effect from the *next* key.
+                //
+                // A `config.toml` that did not parse leaves the running
+                // profile alone, so its keymap is rebuilt on that profile:
+                // `read_all` could not know it and built arrows' (plan M1
+                // Deviation 23). A `keys.toml` that did not parse
+                // (`reloaded.keymap` is `None`) still keeps the live keys.
                 if let Some(keymap) = reloaded.keymap {
-                    self.keymap = keymap;
+                    self.keymap = if from_config {
+                        keymap
+                    } else {
+                        self.keymap_for_profile()
+                    };
                 }
 
                 for w in warnings.into_iter().chain(theme_warning) {
@@ -10184,6 +10239,13 @@ impl App {
                 self.update(action)
             }
             _ if !self.ui_settings_are_editable() => true,
+            SettingsRow::Setting(SettingsField::Keymap) => {
+                let next = match self.profile() {
+                    crate::config::KeyProfile::Arrows => crate::config::KeyProfile::Vim,
+                    crate::config::KeyProfile::Vim => crate::config::KeyProfile::Arrows,
+                };
+                self.update(Action::SetKeyProfile(next))
+            }
             SettingsRow::Setting(SettingsField::JqTab) => {
                 let next = match self.ui_settings.jq_tab {
                     crate::config::JqTab::Menu => crate::config::JqTab::Cycle,
@@ -10313,6 +10375,9 @@ impl App {
             "clipboard_cmd" => self.ui_settings.clipboard_cmd.clone().unwrap_or_default(),
             "jq_tab" => crate::components::settings::jq_tab_spelling(self.ui_settings.jq_tab)
                 .to_string(),
+            "keymap" => self.ui_settings.keymap.map_or(String::new(), |p| {
+                crate::components::settings::keymap_spelling(p).to_string()
+            }),
             other => {
                 debug_assert!(false, "no string setting named {other:?}");
                 String::new()
@@ -11000,6 +11065,13 @@ impl App {
                                         crate::config::JqTab::Cycle
                                     }
                                 }
+                                "keymap" => {
+                                    ui.keymap = match v.as_str() {
+                                        "arrows" => Some(crate::config::KeyProfile::Arrows),
+                                        "vim" => Some(crate::config::KeyProfile::Vim),
+                                        _ => None,
+                                    }
+                                }
                                 _ => {}
                             },
                             UiValue::Int(v) => {
@@ -11009,6 +11081,9 @@ impl App {
                             }
                         }
                         self.reapply_ui_settings(ui);
+                        if *key == "keymap" {
+                            self.keymap = self.keymap_for_profile();
+                        }
                         let verb = if redo { "Redid" } else { "Undid" };
                         let label = crate::components::settings::SettingsField::from_key(key)
                             .map(crate::components::settings::SettingsField::label)

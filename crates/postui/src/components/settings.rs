@@ -19,7 +19,7 @@ use ratatui::text::Line;
 
 use crate::action::{Action, ConfigFile};
 use crate::components::line_input::LineInput;
-use crate::config::{JqTab, UiSettings};
+use crate::config::{JqTab, KeyProfile, UiSettings};
 use crate::hit::{Hit, HitMap};
 use crate::paint::{
     ButtonKind, ControlSlot, ControlState, PROPERTY_MAX_W, Pill, PropertyRow, Toggle, WELL_PAD,
@@ -32,6 +32,7 @@ use crate::theme::Theme;
 pub enum SettingsField {
     Animations,
     HoverHints,
+    Keymap,
     JqTab,
     AiCmd,
     AiConfirmed,
@@ -54,6 +55,7 @@ impl SettingsField {
         match self {
             SettingsField::Animations => "animations",
             SettingsField::HoverHints => "hover_hints",
+            SettingsField::Keymap => "keymap",
             SettingsField::JqTab => "jq_tab",
             SettingsField::AiCmd => "ai_cmd",
             SettingsField::AiConfirmed => "ai_confirmed",
@@ -71,6 +73,7 @@ impl SettingsField {
         match key {
             "animations" => Some(SettingsField::Animations),
             "hover_hints" => Some(SettingsField::HoverHints),
+            "keymap" => Some(SettingsField::Keymap),
             "jq_tab" => Some(SettingsField::JqTab),
             "ai_cmd" => Some(SettingsField::AiCmd),
             "ai_confirmed" => Some(SettingsField::AiConfirmed),
@@ -84,6 +87,7 @@ impl SettingsField {
         match self {
             SettingsField::Animations => "Animations",
             SettingsField::HoverHints => "Hover hints",
+            SettingsField::Keymap => "Keyboard profile",
             SettingsField::JqTab => "jq Tab behavior",
             SettingsField::AiCmd => "AI command",
             SettingsField::AiConfirmed => "Ask before sending to AI",
@@ -168,6 +172,19 @@ pub fn jq_tab_spelling(mode: JqTab) -> &'static str {
     }
 }
 
+/// The two segments of the `keymap` control, in painted order. Neither is
+/// a default; an unset `keymap` paints as the profile the app runs on.
+const KEYMAP_SEGMENTS: [(&str, KeyProfile); 2] =
+    [("Arrows", KeyProfile::Arrows), ("Vim", KeyProfile::Vim)];
+
+/// The `keymap` value written for each profile.
+pub fn keymap_spelling(profile: KeyProfile) -> &'static str {
+    match profile {
+        KeyProfile::Arrows => "arrows",
+        KeyProfile::Vim => "vim",
+    }
+}
+
 impl SettingsTab {
     pub fn rows() -> &'static [SettingsRow] {
         use ConfigFile::*;
@@ -175,6 +192,7 @@ impl SettingsTab {
         &[
             SettingsRow::Setting(Animations),
             SettingsRow::Setting(HoverHints),
+            SettingsRow::Setting(Keymap),
             SettingsRow::Setting(JqTab),
             SettingsRow::Setting(AiCmd),
             SettingsRow::Setting(AiConfirmed),
@@ -490,6 +508,7 @@ pub fn draw_settings(
             Some(Hit::SettingsRow(h)) => *h == i,
             Some(Hit::SettingsControl(f)) => *row == SettingsRow::Setting(*f),
             Some(Hit::SettingsJqTab(_)) => *row == SettingsRow::Setting(SettingsField::JqTab),
+            Some(Hit::SettingsKeymap(_)) => *row == SettingsRow::Setting(SettingsField::Keymap),
             Some(Hit::SettingsFile { file, .. }) => *row == SettingsRow::File(*file),
             _ => false,
         };
@@ -670,49 +689,39 @@ fn draw_setting_control(
     };
 
     if field == SettingsField::JqTab {
-        let mut x = slot.rect.x;
-        for (label, mode) in JQ_SEGMENTS {
-            let seg = Hit::SettingsJqTab(mode);
-            let w = pill_min_width(label);
-            if x + w > slot.rect.x + slot.rect.width {
-                return;
-            }
-            // The active segment is Primary; the cursor still lifts
-            // whichever segment the pointer or keyboard is on.
-            let kind = if ui.jq_tab == mode {
-                ButtonKind::Primary
-            } else {
-                ButtonKind::Secondary
-            };
-            // Focused before Hover, like every other ladder on this
-            // screen: with the band gone the cursor is the only thing
-            // saying where the keyboard is, and it must not vanish
-            // under the pointer that happens to be resting on it.
-            let seg_state = if !editable {
-                ControlState::Disabled
-            } else if tab.focused && tab.cursor == row && ui.jq_tab == mode {
-                ControlState::Focused
-            } else if hovered == Some(&seg) {
-                ControlState::Hover
-            } else {
-                ControlState::Normal
-            };
-            let rect = Rect {
-                x,
-                width: w,
-                ..slot.rect
-            };
-            Pill {
-                label,
-                kind,
-                state: seg_state,
-            }
-            .paint(buf, rect, theme);
-            if editable {
-                hits.register(rect, seg);
-            }
-            x += w + 1;
-        }
+        let focused = tab.focused && tab.cursor == row;
+        paint_segments(
+            buf,
+            hits,
+            hovered,
+            theme,
+            slot,
+            &JQ_SEGMENTS,
+            ui.jq_tab,
+            Hit::SettingsJqTab,
+            focused,
+            editable,
+        );
+        return;
+    }
+    if field == SettingsField::Keymap {
+        // An unset profile paints as the one the app runs on (plan M1
+        // Deviation 2); turning `None` into a written choice is the
+        // first-launch question's job, not this row's.
+        let current = ui.keymap.unwrap_or(KeyProfile::Arrows);
+        let focused = tab.focused && tab.cursor == row;
+        paint_segments(
+            buf,
+            hits,
+            hovered,
+            theme,
+            slot,
+            &KEYMAP_SEGMENTS,
+            current,
+            Hit::SettingsKeymap,
+            focused,
+            editable,
+        );
         return;
     }
 
@@ -764,6 +773,63 @@ fn draw_setting_control(
     .paint(buf, rect, theme);
     if editable {
         hits.register(rect, hit);
+    }
+}
+
+/// A two-or-more-way segmented control (the `jq_tab` and `keymap` rows):
+/// one pill per segment, the current one Primary, the keyboard's focus on
+/// the current segment, hover elsewhere. Disabled while `config.toml`
+/// will not parse, and then registers no hits.
+#[allow(clippy::too_many_arguments)]
+fn paint_segments<T: Copy + PartialEq>(
+    buf: &mut Buffer,
+    hits: &mut HitMap,
+    hovered: Option<&Hit>,
+    theme: &Theme,
+    slot: &ControlSlot,
+    segments: &[(&str, T)],
+    current: T,
+    hit: fn(T) -> Hit,
+    focused: bool,
+    editable: bool,
+) {
+    let mut x = slot.rect.x;
+    for &(label, value) in segments {
+        let seg = hit(value);
+        let w = pill_min_width(label);
+        if x + w > slot.rect.x + slot.rect.width {
+            return;
+        }
+        // The active segment is Primary; the cursor still lifts
+        // whichever segment the pointer or keyboard is on.
+        let kind = if current == value {
+            ButtonKind::Primary
+        } else {
+            ButtonKind::Secondary
+        };
+        // Focused before Hover, like every other ladder on this
+        // screen: with the band gone the cursor is the only thing
+        // saying where the keyboard is, and it must not vanish
+        // under the pointer that happens to be resting on it.
+        let state = if !editable {
+            ControlState::Disabled
+        } else if focused && current == value {
+            ControlState::Focused
+        } else if hovered == Some(&seg) {
+            ControlState::Hover
+        } else {
+            ControlState::Normal
+        };
+        let rect = Rect {
+            x,
+            width: w,
+            ..slot.rect
+        };
+        Pill { label, kind, state }.paint(buf, rect, theme);
+        if editable {
+            hits.register(rect, seg);
+        }
+        x += w + 1;
     }
 }
 
@@ -974,6 +1040,11 @@ mod tests {
                 SettingsRow::Setting(SettingsField::JqTab) => {
                     for (_, mode) in JQ_SEGMENTS {
                         assert!(hits.rect_of(&Hit::SettingsJqTab(mode)).is_some());
+                    }
+                }
+                SettingsRow::Setting(SettingsField::Keymap) => {
+                    for (_, profile) in KEYMAP_SEGMENTS {
+                        assert!(hits.rect_of(&Hit::SettingsKeymap(profile)).is_some());
                     }
                 }
                 SettingsRow::Setting(f) => assert!(
@@ -1280,6 +1351,16 @@ mod tests {
             !blurred.contains(&lifted),
             "and nothing lifts once the tab has lost the cursor"
         );
+    }
+
+    #[test]
+    fn the_keyboard_row_offers_both_profiles() {
+        use crate::config::KeyProfile;
+        assert_eq!(SettingsField::Keymap.key(), "keymap");
+        assert_eq!(SettingsField::from_key("keymap"), Some(SettingsField::Keymap));
+        assert_eq!(keymap_spelling(KeyProfile::Arrows), "arrows");
+        assert_eq!(keymap_spelling(KeyProfile::Vim), "vim");
+        assert!(SettingsTab::rows().contains(&SettingsRow::Setting(SettingsField::Keymap)));
     }
 
     /// A File row registers its own row hit *and* the Reset pill sitting

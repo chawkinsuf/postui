@@ -356,6 +356,10 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         Hit::SettingsJqTab(crate::config::JqTab::Cycle) => {
             text("Ghost the best jq completion in place")
         }
+        // Same as the jq Tab row: only the segments register hits.
+        Hit::SettingsControl(SettingsField::Keymap) => text("Choose the app's keyboard profile"),
+        Hit::SettingsKeymap(crate::config::KeyProfile::Arrows) => text("Use arrows and Enter"),
+        Hit::SettingsKeymap(crate::config::KeyProfile::Vim) => text("Use vim keys"),
         Hit::SettingsFile { file, reset: false } => {
             Some(Source::Text(format!("Open {} in your editor", file.name())))
         }
@@ -926,6 +930,8 @@ mod tests {
             Hit::SettingsControl(crate::components::settings::SettingsField::Osc52Limit),
             Hit::SettingsJqTab(crate::config::JqTab::Menu),
             Hit::SettingsJqTab(crate::config::JqTab::Cycle),
+            Hit::SettingsKeymap(crate::config::KeyProfile::Arrows),
+            Hit::SettingsKeymap(crate::config::KeyProfile::Vim),
             Hit::SettingsFile {
                 file: crate::action::ConfigFile::Config,
                 reset: false,

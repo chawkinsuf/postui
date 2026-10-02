@@ -897,6 +897,9 @@ impl Config {
     /// `[projects]` is deliberately untouched: wiping `known`/`last`
     /// would silently destroy the user's project list, which has nothing
     /// to do with resetting preferences.
+    ///
+    /// `keymap` is not among the removed keys: a reset keeps the keyboard
+    /// profile (plan M1 Deviation 25).
     pub fn reset_ui_settings(&mut self) -> Result<(), String> {
         self.edit(CONFIG_TOML, |doc| {
             for key in [

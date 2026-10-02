@@ -28829,3 +28829,95 @@ fn an_unset_keymap_runs_the_arrows_profile() {
     assert_eq!(app.profile(), KeyProfile::Vim);
     assert_eq!(app.keymap.lookup(&KeyCombo::parse("q").unwrap()), None);
 }
+
+#[test]
+fn the_keyboard_profile_row_switches_profiles_and_undo_switches_back() {
+    use crate::config::KeyProfile;
+    let mut app = App::new_for_test();
+    let dir = config_at_tempdir(&mut app);
+    app.update(Action::OpenManage { tab: Some(ManageTab::Settings) });
+    click_hit(&mut app, Hit::SettingsKeymap(KeyProfile::Vim));
+    assert_eq!(app.profile(), KeyProfile::Vim);
+    assert_eq!(app.keymap.lookup(&KeyCombo::parse("q").unwrap()), None, "the live keymap swapped");
+    let written = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+    assert!(written.contains("keymap = \"vim\""), "{written}");
+    app.update(Action::Undo);
+    assert_eq!(app.profile(), KeyProfile::Arrows, "one config undo step");
+    assert_eq!(app.keymap.lookup(&KeyCombo::parse("q").unwrap()), Some(Action::Quit));
+}
+
+#[test]
+fn enter_on_the_keyboard_row_flips_the_profile() {
+    use crate::components::settings::{SettingsField, SettingsRow, SettingsTab};
+    let mut app = App::new_for_test();
+    let _dir = config_at_tempdir(&mut app);
+    app.update(Action::OpenManage { tab: Some(ManageTab::Settings) });
+    let row = SettingsTab::rows()
+        .iter()
+        .position(|r| *r == SettingsRow::Setting(SettingsField::Keymap))
+        .unwrap();
+    app.settings.set_cursor(row);
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(app.profile(), crate::config::KeyProfile::Vim);
+}
+
+/// Spec §4.2: a write that fails still applies for this session and says
+/// so; nothing landed, so the file is untouched.
+#[test]
+fn a_profile_that_cannot_be_saved_applies_for_the_session() {
+    let mut app = App::new_for_test();
+    let dir = config_at_tempdir(&mut app);
+    std::fs::write(dir.path().join("config.toml"), "not = [toml").unwrap();
+    app.update(Action::SetKeyProfile(crate::config::KeyProfile::Vim));
+    assert_eq!(app.profile(), crate::config::KeyProfile::Vim);
+    assert!(
+        app.toasts.messages().iter().any(|m| m.contains("for this session")),
+        "{:?}",
+        app.toasts.messages()
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("config.toml")).unwrap(),
+        "not = [toml"
+    );
+}
+
+/// Plan M1 Deviation 23 (keymap half): a reload that cannot parse
+/// `config.toml` keeps the running profile's keymap, not arrows'.
+#[test]
+fn a_reload_with_a_broken_config_keeps_the_running_profiles_keymap() {
+    use crate::config::KeyProfile;
+    let mut app = App::new_for_test();
+    let dir = config_at_tempdir(&mut app);
+    std::fs::write(dir.path().join("config.toml"), "keymap = \"vim\"\n").unwrap();
+    app.update(Action::ReloadFromDisk);
+    assert_eq!(app.profile(), KeyProfile::Vim);
+
+    std::fs::write(dir.path().join("config.toml"), "keymap = \"vim\n").unwrap();
+    app.update(Action::ReloadFromDisk);
+
+    assert_eq!(app.profile(), KeyProfile::Vim, "the setting survives");
+    assert_eq!(app.keymap.lookup(&KeyCombo::parse("q").unwrap()), None, "q stays unbound");
+    assert_ne!(
+        app.keymap.lookup(&KeyCombo::parse("ctrl+r").unwrap()),
+        Some(Action::Send),
+        "ctrl+r stays the router's"
+    );
+}
+
+/// Plan M1 Deviation 25: a Settings reset leaves the keyboard profile.
+#[test]
+fn a_settings_reset_keeps_the_keyboard_profile() {
+    use crate::config::KeyProfile;
+    let mut app = App::new_for_test();
+    let dir = config_at_tempdir(&mut app);
+    std::fs::write(dir.path().join("config.toml"), "keymap = \"vim\"\nanimations = false\n").unwrap();
+    app.update(Action::ReloadFromDisk);
+    assert_eq!(app.profile(), KeyProfile::Vim);
+
+    app.update(Action::ForceResetConfigFile(crate::action::ConfigFile::Config));
+
+    assert_eq!(app.profile(), KeyProfile::Vim);
+    let written = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+    assert!(written.contains("keymap = \"vim\""), "{written}");
+    assert!(!written.contains("animations"), "{written}");
+}
