@@ -62,8 +62,9 @@ Success criteria:
   on the body buffer. It also passes on the one-line buffer wherever Vim's
   result is one line (§6.5). Divergences are allowed only through
   `divergences.toml`, each one labelled and explained. Target at the first
-  release: zero divergences, apart from the case-operator ones the user
-  accepted and plan 3c's `mine` entries awaiting the user's review (§6.6).
+  release: zero divergences, apart from the ones the user accepted (the
+  case operators, and plan 3c's R2 and search-offset entries) and the two
+  `mine` `gi` entries still awaiting the user's review (§6.6).
 - `cargo test` needs no Vim installed. The golden file is committed.
 - The tier-2 rows marked "first wave" in §5 pass before piece 4 ships. The
   rest are generated into the golden file but reported as "not yet" without
@@ -310,7 +311,7 @@ so every change is recorded.
 | `Esc`, `ctrl+[` | leave: the caret steps back one unless at column 0. An indent that `autoindent` added and nothing followed is removed. A counted insert (`3ia<Esc>`, tier 2) repeats `typed` |
 | `ctrl+o {cmd}` (tier 2) | one Normal command, then back to Insert (Replace after `R`). Mode `InsertNormal { replace }`. Ends the undo step and the `.` record as Esc does; the caret goes back past the end where it was; `.` inside it repeats the change before the insert; a key the engine declines resumes Insert first (plan 3c Deviation 8) |
 | `ctrl+r {reg}` (tier 2) | insert register text as typed |
-| `ctrl+t` `ctrl+d` (tier 2) | indent and outdent to the next multiple of `shiftwidth`, in one-line fields too (plan 3c Deviation 11, after 3b's `>>` ruling). `0<C-d>` and `^<C-d>` remove the indent |
+| `ctrl+t` `ctrl+d` (tier 2) | indent and outdent to the next multiple of `shiftwidth`, in one-line fields too (plan 3c Deviation 11, after 3b's `>>` ruling; confirmed by the user 2026-10-01). `0<C-d>` and `^<C-d>` remove the indent |
 
 `R` (tier 2) runs the same session in Replace: typing overwrites, and `BS`
 restores the original chars. `c`, `s`, `S`, `C`, `cc`, `o`, `O`, `A`, `I`,
@@ -341,7 +342,7 @@ field and the body (`mine`, key list §5). Tier 1 has only the unnamed
 register. Tier 2 adds these:
 
 - `"0`, the yank register.
-- `"+`: `"+y…`, and `"+d…`/`"+c…` (a cut), return `AppRequest::CopyToClipboard(text)` and write the registers as the plain command does; the app copies it through its existing OSC 52 path. `"+p` and Insert `ctrl+r +` show the note "paste with your terminal (ctrl+v)" and change nothing, because the app cannot read the system clipboard (`mine`; plan 3c Deviation 14).
+- `"+`: `"+y…`, and `"+d…`/`"+c…` (a cut), return `AppRequest::CopyToClipboard(text)` and write the registers as the plain command does; the app copies it through its existing OSC 52 path. `"+p` and Insert `ctrl+r +` show the note "paste with your terminal (ctrl+v)" and change nothing, because the app cannot read the system clipboard (`you`: my recommendation, confirmed 2026-10-01 together with `"+d` copying; plan 3c Deviation 14).
 
 `"a`–`"z` and the other registers are Out. `"x` for any register that is
 not supported consumes both keys, shows the note `register "x not
@@ -991,22 +992,22 @@ drifts right, the engine stays. Two more `divergences.toml` entries record
 that. These five are the `you` exceptions to the zero-divergence target
 (§2).
 
-Plan 3c adds three kinds, all `mine` and pending the user's review of
-plan 3c:
+Plan 3c adds three kinds. The first and last were my recommendations,
+which the user confirmed on 2026-10-01 (`you`); the second is `mine`,
+pending the user's review:
 
 - The `'^`-through-undo entries (R2): Vim moves `'^` per undo entry and
   the engine per step, so after an Insert session whose line count changed
   and changed back (`AX<CR><Del><Esc>u`) Vim's `gi` starts at the caret and
   the engine's on the mark's row. The user ruled on 2026-09-30 that the
-  undo-exact rule covers edited text, not `'^`; plan 3c assumed the drop
-  (its Deviation 21) rather than port Vim's undo-entry merging, pending the
-  user's confirmation.
+  undo-exact rule covers edited text, not `'^`; plan 3c dropped Vim's
+  undo-entry merging (its Deviation 21), confirmed 2026-10-01.
 - `gi` after `Rab<Esc>u` over wide chars (`insert/replace/unicode`): Vim's
   `'^` keeps a byte column and lands inside a char; the engine counts
   chars, by the user's 2026-10-01 rule for the caret after a case op.
 - Search offsets (`search/patterns-cases`, `/a/b<CR>`): Vim honours the
   offset, the engine refuses it with "search offsets not supported" and
-  the caret stays (plan 3c Deviation 3).
+  the caret stays (plan 3c Deviation 3), confirmed 2026-10-01.
 
 ### 6.7 Regenerating
 
