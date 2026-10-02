@@ -768,6 +768,13 @@ impl ModalStack {
             && self.field_open
     }
 
+    /// The top form modal's field that has the caret, by the index
+    /// `FieldId::ModalInput` names: `None` on the button row, with the
+    /// field only selected, and for a modal that is not a form.
+    pub fn caret_field(&self) -> Option<usize> {
+        (self.field_open() && self.focused_input().is_some()).then(|| self.field_index())
+    }
+
     /// Closes the top form modal's open field, keeping its text (the
     /// field rule) — used by the shift+Enter/ctrl+Enter confirm dig-past,
     /// which must close the field before dispatching so the edit becomes

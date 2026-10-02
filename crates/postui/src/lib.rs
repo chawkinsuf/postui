@@ -11,6 +11,7 @@ pub mod hit;
 pub mod hostfs;
 pub mod http;
 pub mod keydump;
+pub mod keyroute;
 pub mod keys;
 pub mod layout;
 pub mod paint;

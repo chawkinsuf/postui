@@ -28995,3 +28995,118 @@ fn the_keyboard_question_is_not_raised_before_m3() {
     assert!(app.modals.is_empty(), "ASK_KEYMAP_ON_LAUNCH is off until M3");
     assert_eq!(app.profile(), crate::config::KeyProfile::Arrows);
 }
+
+#[test]
+fn every_surface_is_named_from_app_state() {
+    use crate::components::response::ViewMode;
+    use crate::keyroute::Surface;
+    let mut app = App::new_for_test();
+    app.focus = PaneId::Sidebar;
+    assert_eq!(app.surface(), Surface::Sidebar);
+    app.focus = PaneId::Editor;
+    app.editor.sub_focus = SubFocus::Method;
+    assert_eq!(app.surface(), Surface::Method);
+    app.editor.sub_focus = SubFocus::Url;
+    assert_eq!(app.surface(), Surface::UrlLine);
+    app.editor.sub_focus = SubFocus::None;
+    assert_eq!(app.surface(), Surface::UrlLine, "plan M1 Deviation 14");
+    app.editor.sub_focus = SubFocus::Content;
+    app.editor.active_tab = EditorTab::Headers;
+    assert_eq!(app.surface(), Surface::Table(EditorTab::Headers));
+    app.editor.active_tab = EditorTab::Body;
+    assert_eq!(app.surface(), Surface::Body);
+    app.focus = PaneId::Response;
+    assert_eq!(app.surface(), Surface::Response(ViewMode::Pretty));
+    app.push_modal(Modal::Message { title: "t".into(), body: "b".into() });
+    assert_eq!(app.surface(), Surface::Dialog);
+    app.modals.pop();
+    app.push_modal(Modal::KeymapChoice { aimed: Some(crate::config::KeyProfile::Arrows) });
+    assert_eq!(app.surface(), Surface::Dialog, "the keyboard question is a dialog");
+    app.modals.pop();
+    app.update(Action::OpenPalette);
+    assert_eq!(app.surface(), Surface::Picker);
+    app.modals.pop();
+    app.push_modal(Modal::Prompt {
+        title: "t".into(),
+        input: crate::components::line_input::LineInput::new(""),
+        kind: crate::components::modal::PromptKind::NewRequest,
+        revealed: false,
+    });
+    assert_eq!(app.surface(), Surface::Prompt);
+    app.modals.pop();
+    app.update(Action::OpenManage { tab: Some(ManageTab::Settings) });
+    assert_eq!(app.surface(), Surface::Settings);
+    app.update(Action::OpenManage { tab: Some(ManageTab::Variables) });
+    assert_eq!(app.surface(), Surface::VarList);
+    app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
+    assert_eq!(app.surface(), Surface::ManageList(ManageTab::Environments));
+    let mut testbed = App::new_for_test_with_testbed(true);
+    assert_eq!(testbed.surface(), Surface::Other);
+    testbed.focus = PaneId::Sidebar;
+    assert_eq!(testbed.surface(), Surface::Other, "the screen wins over the pane");
+}
+
+/// Plan M1 Deviation 6: `field_caret` names the field that takes typed
+/// keys. The older `field_open` names the paste/undo/close target. They
+/// agree wherever both speak of the same field and differ only where the
+/// plan says: a selected form field, the body, a picker's query.
+#[test]
+fn the_field_with_the_caret_is_named_once() {
+    use crate::components::line_input::LineInput;
+    use crate::components::table_editor::{CellEdit, Col};
+    use crate::keyroute::{FieldCaret, FieldId};
+
+    let mut app = App::new_for_test();
+    assert_eq!((app.field_caret(), app.field_open()), (FieldCaret::None, false));
+
+    let mut url = App::new_for_test();
+    url.focus = PaneId::Editor;
+    url.editor.open_url_from_app();
+    assert_eq!((url.field_caret(), url.field_open()), (FieldCaret::Live(FieldId::Url), true));
+    url.push_modal(Modal::Dropdown(crate::components::modal::DropdownState {
+        anchor: ratatui::layout::Rect::new(0, 0, 8, 1),
+        items: vec![crate::components::modal::MenuItem::new("GET", Action::Render)],
+        selected: 0,
+        current: Some(0),
+    }));
+    assert_eq!(url.field_caret(), FieldCaret::Parked(FieldId::Url), "a modal with no field parks it");
+
+    let mut cell = App::new_for_test();
+    cell.focus = PaneId::Editor;
+    cell.editor.sub_focus = SubFocus::Content;
+    cell.editor.table.editing = Some(CellEdit { row: 1, col: Col::Value, input: LineInput::new("x") });
+    assert_eq!(
+        (cell.field_caret(), cell.field_open()),
+        (FieldCaret::Live(FieldId::TableCell { row: 1, col: 1 }), true)
+    );
+
+    let mut body = App::new_for_test();
+    body.focus = PaneId::Editor;
+    body.editor.sub_focus = SubFocus::Content;
+    body.editor.active_tab = EditorTab::Body;
+    assert_eq!((body.field_caret(), body.field_open()), (FieldCaret::Live(FieldId::Body), false));
+
+    app.push_modal(Modal::Prompt {
+        title: "t".into(),
+        input: LineInput::new("x"),
+        kind: crate::components::modal::PromptKind::NewRequest,
+        revealed: false,
+    });
+    assert_eq!((app.field_caret(), app.field_open()), (FieldCaret::Live(FieldId::ModalInput(0)), true));
+    app.modals.close_top_field();
+    assert_eq!((app.field_caret(), app.field_open()), (FieldCaret::None, true), "selected, no caret");
+    app.modals.pop();
+
+    app.update(Action::OpenPalette);
+    assert_eq!((app.field_caret(), app.field_open()), (FieldCaret::Live(FieldId::Palette), false));
+    app.modals.pop();
+
+    app.update(Action::OpenManage { tab: Some(ManageTab::Settings) });
+    app.settings.begin_edit(crate::components::settings::SettingsField::AiCmd, "x");
+    assert_eq!(
+        (app.field_caret(), app.field_open()),
+        (FieldCaret::Live(FieldId::Settings(crate::components::settings::SettingsField::AiCmd)), true)
+    );
+    // The Keymap row is a SettingsField too: it must be nameable.
+    let _ = FieldId::Settings(crate::components::settings::SettingsField::Keymap);
+}

@@ -11219,5 +11219,6 @@ fn screen_escape_whitelist(action: &Action) -> bool {
 
 mod landing;
 mod mouse;
+mod router;
 #[cfg(test)]
 mod tests;
