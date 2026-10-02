@@ -316,15 +316,19 @@ pub fn vim_first_chars() -> Vec<char> {
     out
 }
 
-/// Whether a digit builds a count on `surface` in the vim profile: some
-/// row there repeats or reads one (plan M1 Deviation 22). Derived from
-/// [`TABLE`], so it cannot drift from the rows.
+/// Whether a digit builds a count on `surface` in the vim profile: a
+/// navigation surface (lists and panes) where some row repeats or reads
+/// one (plan M1 Deviation 22). The app-wide `u` and `ctrl+r` rows repeat
+/// on every surface, so the navigation filter keeps prompts, forms, the
+/// body and the testbed out. Which navigation surfaces qualify is
+/// derived from [`TABLE`], so it cannot drift from the rows.
 pub fn takes_count(surface: Surface) -> bool {
-    TABLE.iter().any(|b| {
-        b.profile.has(KeyProfile::Vim)
-            && b.on.has(surface)
-            && matches!(b.count, CountRule::Repeat | CountRule::Pass)
-    })
+    Surfaces::NAV.has(surface)
+        && TABLE.iter().any(|b| {
+            b.profile.has(KeyProfile::Vim)
+                && b.on.has(surface)
+                && matches!(b.count, CountRule::Repeat | CountRule::Pass)
+        })
 }
 
 #[cfg(test)]
@@ -408,5 +412,8 @@ mod tests {
         assert!(takes_count(Surface::Response(crate::components::response::ViewMode::Pretty)));
         assert!(!takes_count(Surface::Dialog), "a dialog's letters answer; digits are not counts");
         assert!(!takes_count(Surface::Picker), "a picker types");
+        for s in [Surface::Prompt, Surface::Form, Surface::Other, Surface::Body] {
+            assert!(!takes_count(s), "{s:?} is not a navigation surface; `u` repeating there is not a count");
+        }
     }
 }

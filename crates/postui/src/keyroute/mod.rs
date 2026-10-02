@@ -53,6 +53,8 @@ impl Router {
         self.pending.echo()
     }
 
+    /// Resolves one key against the pending state and the context: the
+    /// router's whole job (spec §3.4). Declined keys run today's routing.
     pub fn resolve(&mut self, ev: KeyEvent, ctx: &KeyCtx) -> Resolved {
         // A key typed on one surface never completes a sequence on another.
         if self.surface != Some(ctx.surface) {
@@ -183,12 +185,10 @@ fn expand(b: &table::Binding, count: Option<usize>, cap: usize) -> Vec<Step> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::action::Action;
     use crate::components::toast::ToastKind;
-    use crate::config::KeyProfile::{self, Arrows, Vim};
+    use crate::config::KeyProfile::{Arrows, Vim};
     use crate::vim::engine::settings::MAX_COUNT;
-    use notation::Tok;
-    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::crossterm::event::KeyModifiers;
 
     fn cx(profile: KeyProfile, surface: Surface) -> KeyCtx {
         KeyCtx { profile, surface, field: FieldCaret::None, user_bare: None, cap: MAX_COUNT }
@@ -340,6 +340,28 @@ mod tests {
         assert_eq!(feed(&mut r, &cx(Vim, Surface::Dialog), "3"), Resolved::Declined);
         assert_eq!(r.echo(), "", "pending stays idle");
         assert_eq!(feed(&mut r, &cx(Vim, Surface::Sidebar), "3j"), run(vec![key(KeyCode::Down); 3]));
+        for surface in [Surface::Prompt, Surface::Form, Surface::Other] {
+            let mut r = Router::default();
+            assert_eq!(feed(&mut r, &cx(Vim, surface), "3"), Resolved::Declined, "{surface:?}");
+            assert_eq!(r.echo(), "", "{surface:?}: pending stays idle");
+        }
+    }
+
+    #[test]
+    fn a_lone_count_is_cleared_by_esc_and_dropped_by_a_swallowed_key() {
+        let s = cx(Vim, Surface::Sidebar);
+        let mut r = Router::default();
+        assert_eq!(feed(&mut r, &s, "3<Esc>"), Resolved::Consumed);
+        assert_eq!(r.echo(), "");
+        assert_eq!(feed(&mut r, &s, "3x"), Resolved::Consumed);
+        assert_eq!(r.echo(), "", "the count is dropped and x is swallowed");
+    }
+
+    #[test]
+    fn a_leading_zero_is_a_key() {
+        let resp = cx(Vim, Surface::Response(crate::components::response::ViewMode::Pretty));
+        assert_eq!(feed(&mut Router::default(), &resp, "0"), run(vec![key(KeyCode::Home)]));
+        assert_eq!(feed(&mut Router::default(), &cx(Vim, Surface::Sidebar), "0"), Resolved::Consumed);
     }
 
     #[test]
