@@ -499,8 +499,8 @@ impl<B: TextBuf> Ed<'_, B> {
     /// stayed inside the caret's line: that edit's undo block is already
     /// the line, so a second save changes nothing `u` does (Vim's
     /// `u_savecommon()` skips a line "saved just before" too). Insert
-    /// `ctrl+t` uses it, so `9999i<C-t><Esc>` does not keep a copy of the
-    /// growing line per key.
+    /// `ctrl+t` and `ctrl+d` use it (`ins_shift`), so `9999i<C-t><Esc>`
+    /// does not keep a copy of the growing line per key.
     pub(crate) fn save_cursor_line_once(&mut self, caret: Pos) {
         let saved = self.hist.open.as_ref().and_then(|s| s.edits.last()).is_some_and(|e| {
             e.at.row == caret.row && !e.removed.contains('\n') && !e.inserted.contains('\n')

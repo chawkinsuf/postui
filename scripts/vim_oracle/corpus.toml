@@ -1179,7 +1179,7 @@ keys = ["zz", "zt", "zb", "10zt", "50zz", "50zb", "Gzz", "Gzt", "Gzb", "12zz", "
         "2zb", "0zz", "200zt", "ztzb", "Gztzz", "GztH", "<C-d>Gzz", "97Gzz", "97Gzt", "90Gzt", "zb<C-d>", "zt<C-u>", "$zz",
         "$50zt", "zzx", "ztdd", "zbu", "dzz", "vzzd", "Vztd", "z<Esc>x", "zox", "zJ", "3zz", "zzzb", "zzzt", "zbzz",
         "50Gzz<C-d>", "50Gzz<C-u>", "50Gzz<C-f>", "50Gzz<C-b>", "90Gzt<C-f>", "90Gzt<C-f><C-b>",
-        "z5x", "z5zzx", "z5ztx", "z0x", "z12<Del>x", "dz5x", "vz5xd"]
+        "z5x", "z5zzx", "z5ztx", "z0x", "z12<Del>x", "dz5x", "vz5xd", "$3zzj", "3ztj", "5ztk", "$3zbj", "$3zzk"]
 on = ["lines25", "json_pretty", "blank_edges", "words", "one_char", "empty"]
 at = ["bol", "mid", "eol"]
 
@@ -1191,7 +1191,7 @@ keys = ["zz", "zt", "zb", "10zt", "50zz", "50zb", "Gzz", "Gzt", "Gzb", "12zz", "
         "2zb", "0zz", "200zt", "ztzb", "Gztzz", "GztH", "<C-d>Gzz", "97Gzz", "97Gzt", "90Gzt", "zb<C-d>", "zt<C-u>", "$zz",
         "$50zt", "zzx", "ztdd", "zbu", "dzz", "vzzd", "Vztd", "z<Esc>x", "zox", "zJ", "3zz", "zzzb", "zzzt", "zbzz",
         "50Gzz<C-d>", "50Gzz<C-u>", "50Gzz<C-f>", "50Gzz<C-b>", "90Gzt<C-f>", "90Gzt<C-f><C-b>",
-        "z5x", "z5zzx", "z5ztx", "z0x", "z12<Del>x", "dz5x", "vz5xd"]
+        "z5x", "z5zzx", "z5ztx", "z0x", "z12<Del>x", "dz5x", "vz5xd", "$3zzj", "3ztj", "5ztk", "$3zbj", "$3zzk"]
 on = ["long"]
 at = [[1, 1], [50, 1], [100, 1]]
 
@@ -1349,7 +1349,7 @@ at = ["bol", "mid", "eol"]
 id = "search/ctrl-o"
 tier = 2
 keys = ["iX<C-o>/foo<CR>Y<Esc>", "iX<C-o>nY<Esc>", "iX<C-o>*Y<Esc>", "iX<C-o>/zzz<CR>Y<Esc>", "A<C-o>?foo<CR>Y<Esc>", "iX<C-o>d/foo<CR>Y<Esc>",
-        "iX<C-o>/foo<Esc>Y<Esc>", "/foo<CR>iX<C-o>nY<Esc>"]
+        "iX<C-o>/foo<Esc>Y<Esc>", "/foo<CR>iX<C-o>nY<Esc>", "d/$<CR>jiX<C-o>.Y<Esc>"]
 on = ["search", "words"]
 at = ["bol", "mid"]
 

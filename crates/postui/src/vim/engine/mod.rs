@@ -142,7 +142,8 @@ impl Outcome {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ViewCtx {
     /// Rows the body shows (tier 2 scroll keys, plan 3c). `None` for a
-    /// one-line field.
+    /// one-line field, or a body that has not been drawn yet (then the
+    /// whole text is the window, Deviation 12).
     pub viewport_rows: Option<usize>,
 }
 

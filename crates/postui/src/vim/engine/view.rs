@@ -473,16 +473,20 @@ impl Engine {
     }
 
     /// `zt` `zz` `zb` (Vim's `nv_zet()`): a count is the line to go to (the
-    /// column clamped), then the window is placed; the caret's column stays.
+    /// column clamped), then the window is placed; the caret's column stays,
+    /// and so does the wanted column (`nv_zet()` leaves `w_curswant` alone:
+    /// `$3zzj` still reaches the end of the line below).
     /// Without a window the line still changes and only the placement has
     /// nothing to do (Deviation 12).
     pub(super) fn exec_scroll_cursor<B: TextBuf>(&mut self, place: Screen, count: usize, buf: &mut B, st: &mut BufState, ctx: &ViewCtx) {
         if count > 0 {
             let row = (count - 1).min(buf.line_count() - 1);
-            if row != buf.cursor().row {
-                let col = buf.cursor().col;
-                buf.set_cursor(self.clamped(buf, Pos::new(row, col)));
-                st.forget_want();
+            let before = buf.cursor();
+            if row != before.row {
+                let want = self.want_at(buf, st, before);
+                let at = self.clamped(buf, Pos::new(row, before.col));
+                buf.set_cursor(at);
+                st.set_want(want, at);
             }
         }
         let Some(view) = View::of::<B>(ctx) else { return };

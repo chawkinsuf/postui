@@ -555,7 +555,8 @@ pub struct Target<'a, B: TextBuf> { pub buf: &'a mut B, pub state: &'a mut BufSt
 /// Named `ViewCtx`, not `KeyCtx`: piece 4's router has its own `KeyCtx`.
 pub struct ViewCtx {
     /// Rows the body shows, for ctrl+d/u/f/b, H/M/L, zz/zt/zb.
-    /// None for a one-line field.
+    /// None for a one-line field, or a body that has not been drawn yet
+    /// (then the whole text is the window, Deviation 12).
     pub viewport_rows: Option<usize>,
 }
 
@@ -777,9 +778,9 @@ The corpus has one group per key-list row. Every tier-1 row runs on at
 least `words`, `json_flat`, `json_pretty`, `unicode` and `blank_edges`, with
 the caret at the start, the middle and the end, plus each edge seat. Every
 operator runs with `w e b $ 0 ^ f t F T % iw aw i" i{ a{` and with a count.
-Every change gets a `u`, a `u<C-r>` and a `.` variant. The expected size is
-about 4,000 cases. The spike measured about 0.25 ms per case, so
-generation takes a few seconds and the golden file is about 2 MB.
+Every change gets a `u`, a `u<C-r>` and a `.` variant. The corpus has
+85,275 cases and the golden file is about 15 MB; the full conformance run
+takes about 15 s in a debug build (the regex compiles per search case).
 
 Lints the generator enforces:
 

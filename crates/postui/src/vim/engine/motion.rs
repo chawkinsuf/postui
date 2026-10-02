@@ -965,9 +965,11 @@ impl Engine {
                 // `normal_search()` ends with `check_cursor()`: a match on
                 // the line's end (`/$`) lands on the last char, except in
                 // Visual (`selection=inclusive`) and inside Insert `ctrl+o`
-                // (`restart_edit`). The motion stays exclusive.
+                // (`restart_edit`). The motion stays exclusive. The mode, not
+                // `self.restart`, tells `ctrl+o`: a `.` replay takes the
+                // restart while it runs, and the mode stays.
                 let len = buf.line_len(to.row);
-                let to = if to.col >= len && !matches!(self.mode, Mode::Visual(_)) && self.restart.is_none() {
+                let to = if to.col >= len && !matches!(self.mode, Mode::Visual(_) | Mode::InsertNormal { .. }) {
                     Pos::new(to.row, len.saturating_sub(1))
                 } else {
                     to
