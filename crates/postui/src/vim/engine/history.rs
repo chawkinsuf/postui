@@ -495,6 +495,21 @@ impl<B: TextBuf> Ed<'_, B> {
         self.save_rows(caret, caret.row, caret.row);
     }
 
+    /// [`Ed::save_cursor_line`], skipped when the open step's last edit
+    /// stayed inside the caret's line: that edit's undo block is already
+    /// the line, so a second save changes nothing `u` does (Vim's
+    /// `u_savecommon()` skips a line "saved just before" too). Insert
+    /// `ctrl+t` uses it, so `9999i<C-t><Esc>` does not keep a copy of the
+    /// growing line per key.
+    pub(crate) fn save_cursor_line_once(&mut self, caret: Pos) {
+        let saved = self.hist.open.as_ref().and_then(|s| s.edits.last()).is_some_and(|e| {
+            e.at.row == caret.row && !e.removed.contains('\n') && !e.inserted.contains('\n')
+        });
+        if !saved {
+            self.save_cursor_line(caret);
+        }
+    }
+
     /// A line was put in, so the buffer has one again (Vim's `ML_EMPTY`
     /// ends) even when the put spliced nothing: a one-line field puts an
     /// empty linewise register as no text.

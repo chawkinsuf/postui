@@ -165,7 +165,7 @@ pub(crate) fn recased_caret(line: &[char], how: CaseOp, r: Range) -> Pos {
         RKind::Line => 0,
     };
     let mut out = String::new();
-    let added: usize = line[from..r.start.col.min(line.len())]
+    let added: usize = line[from.min(line.len())..r.start.col.min(line.len()).max(from.min(line.len()))]
         .iter()
         .map(|&c| {
             out.clear();

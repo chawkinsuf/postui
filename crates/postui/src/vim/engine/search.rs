@@ -395,11 +395,18 @@ impl Pattern {
 /// line. Backward: the last chain match before the caret (the caret's line
 /// is skipped when the caret is in column 0), then up, then from the
 /// bottom. Returns where and whether a wrap happened.
+///
+/// Each hit depends only on the one before, so once a hit repeats the rest
+/// of the count is taken modulo the cycle: `9999*` on a word that occurs
+/// once costs two scans, not 9,999 (the cycle has wrapped by then).
 pub(crate) fn search<B: TextBuf>(buf: &B, from: Pos, dir: Dir, count: usize, pat: &Pattern) -> Option<(Pos, bool)> {
     let lines = buf.line_count();
+    let total = count.max(1);
     let mut pos = from;
     let mut wrapped = false;
-    for _ in 0..count.max(1) {
+    let mut seen: std::collections::HashMap<(usize, usize), usize> = std::collections::HashMap::new();
+    let mut step = 0;
+    while step < total {
         let start = pos;
         let mut found = None;
         match dir {
@@ -458,6 +465,11 @@ pub(crate) fn search<B: TextBuf>(buf: &B, from: Pos, dir: Dir, count: usize, pat
             }
         }
         pos = found?;
+        step += 1;
+        if let Some(prev) = seen.insert((pos.row, pos.col), step) {
+            step = total - (total - step) % (step - prev);
+            seen.clear();
+        }
     }
     Some((pos, wrapped))
 }

@@ -846,7 +846,7 @@ keys = ["aX<Esc>jgiY<Esc>", "giY<Esc>", "gi<Esc>", "AX<Esc>ggdd0giY<Esc>", "AX<E
         "AX<Esc>kyyP0giY<Esc>", "AX<Esc>kyyp0giY<Esc>", "iX<Esc>k0i<CR><Esc>G0giY<Esc>",
         "AX<Esc>k$a<Del><Esc>jgiY<Esc>", "3aX<Esc>0giY<Esc>", "j0r<Tab>gg0giY<Esc>", "3r<Tab>j0giY<Esc>",
         "r<Tab>j0.gg0giY<Esc>", "AX<CR><BS><Esc>u0giY<Esc>", "jAX<CR><BS><Esc>uggjgiY<Esc>",
-        "AX<CR><BS><Esc>u<C-r>0giY<Esc>"]
+        "AX<CR><BS><Esc>u<C-r>0giY<Esc>", "AX<CR><Del><Esc>ugggiY<Esc>", "A<CR><Del><Esc>uGgiY<Esc>"]
 on = ["json_pretty", "blank_edges", "short_last", "words"]
 at = ["bol", "fnb", "eol"]
 
@@ -1073,8 +1073,20 @@ keys = ["G", "Ggg", "50G", "24j", "30G", "23j", "22j", "G30k", "G50k", "G57k", "
         "50jdd", "50jddu", "50jVjjd", "50j}", "50j{", "30jiX<Esc>", "30jA<CR>Y<Esc>", "k", "23k", "22k", "j", "gg", "$",
         "G$", "Gkkk", "dj", "dk", "v30jd", "v30jy", "77Gjjjjjjjjjjjjjjjjjjjjjjjj", "ggjjjjjjjjjjjjjjjjjjjjjjjjjj", "50Gdjjj",
         "GddGdd", "GdGdG", "ggVGd", "ggVGdu", "GOX<Esc>", "G2OX<Esc>", "60GA<CR><CR><CR><Esc>", "40Gdd.", "40Gddu<C-r>"]
-on = ["long", "lines25"]
+on = ["lines25"]
 at = ["bol", "mid", "eol"]
+
+# `view/topline` on `long`, seated at column 1 only (the golden file's size budget).
+[[group]]
+id = "view/topline-long"
+tier = 2
+keys = ["G", "Ggg", "50G", "24j", "30G", "23j", "22j", "G30k", "G50k", "G57k", "G66k", "Go<Esc>", "dG", "dGu", "yyGp",
+        "GVkkd", "40G", "25G", "26G", "47G", "48G", "49G", "99j", "99k", "50jk", "yy50jp", "yy50jP", "50jo<Esc>", "50jO<Esc>",
+        "50jdd", "50jddu", "50jVjjd", "50j}", "50j{", "30jiX<Esc>", "30jA<CR>Y<Esc>", "k", "23k", "22k", "j", "gg", "$",
+        "G$", "Gkkk", "dj", "dk", "v30jd", "v30jy", "77Gjjjjjjjjjjjjjjjjjjjjjjjj", "ggjjjjjjjjjjjjjjjjjjjjjjjjjj", "50Gdjjj",
+        "GddGdd", "GdGdG", "ggVGd", "ggVGdu", "GOX<Esc>", "G2OX<Esc>", "60GA<CR><CR><CR><Esc>", "40Gdd.", "40Gddu<C-r>"]
+on = ["long"]
+at = [[1, 1], [50, 1], [100, 1]]
 
 # --- plan 3c: ctrl+d ctrl+u ctrl+f ctrl+b (Task 6) ---------------------------------
 
@@ -1086,8 +1098,20 @@ keys = ["<C-d>", "<C-u>", "<C-d><C-d>", "G<C-u>", "<C-d>G<C-u>", "3<C-d>", "3<C-
         "G25<C-u>", "G23<C-u>", "G99<C-u>", "G99<C-u><C-d>", "99<C-d>", "9999<C-d>", "9999<C-d><C-u>", "23<C-d>", "24<C-d>", "23<C-d>k",
         "<C-d><C-d><C-d><C-d><C-d><C-d><C-d><C-d><C-d>", "G<C-u><C-u><C-u><C-u><C-u>", "<C-d><C-u>", "G<C-u><C-d>", "v<C-d>d",
         "V<C-d>d", "v<C-d>", "d<C-d>", "d<C-u>", "y<C-d>x", "<C-d>$", "$<C-d>", "<C-d>iX<Esc>", "<C-d>o<Esc>", "3<C-d>G3<C-u>"]
-on = ["long", "lines25", "json_pretty", "one_char", "empty"]
+on = ["lines25", "json_pretty", "one_char", "empty"]
 at = ["bol", "mid", "eol"]
+
+# `view/halfpage` on `long`, seated at column 1 only (the golden file's size budget).
+[[group]]
+id = "view/halfpage-long"
+tier = 2
+keys = ["<C-d>", "<C-u>", "<C-d><C-d>", "G<C-u>", "<C-d>G<C-u>", "3<C-d>", "3<C-d><C-d>",
+        "3<C-d><C-u>", "G<C-d>", "<C-u>x", "<C-d>k", "<C-d>j", "<C-d>u", "x<C-d>.", "5<C-d>", "<C-d>5<C-u>", "25<C-u>",
+        "G25<C-u>", "G23<C-u>", "G99<C-u>", "G99<C-u><C-d>", "99<C-d>", "9999<C-d>", "9999<C-d><C-u>", "23<C-d>", "24<C-d>", "23<C-d>k",
+        "<C-d><C-d><C-d><C-d><C-d><C-d><C-d><C-d><C-d>", "G<C-u><C-u><C-u><C-u><C-u>", "<C-d><C-u>", "G<C-u><C-d>", "v<C-d>d",
+        "V<C-d>d", "v<C-d>", "d<C-d>", "d<C-u>", "y<C-d>x", "<C-d>$", "$<C-d>", "<C-d>iX<Esc>", "<C-d>o<Esc>", "3<C-d>G3<C-u>"]
+on = ["long"]
+at = [[1, 1], [50, 1], [100, 1]]
 
 [[group]]
 id = "view/page"
@@ -1097,8 +1121,20 @@ keys = ["<C-f>", "<C-b>", "<C-f><C-b>", "<C-f><C-f>", "<C-f><C-f><C-f><C-f>", "<
         "G2<C-b>", "G<C-b><C-b>", "G<C-b><C-b><C-b>", "G<C-b><C-b><C-b><C-b>", "G<C-b><C-b><C-b><C-b><C-b>", "2<C-f>", "3<C-f>",
         "9<C-f>", "G9<C-b>", "<C-f>x", "v<C-f>", "v<C-f>d", "y<C-f>", "d<C-f>x", "<C-f>u", "x<C-f>.",
         "<C-f>k", "<C-f>j", "<C-b>j", "<C-f>$", "<C-f>iX<Esc>", "$<C-b>j", "$9<C-f>k", "v$9<C-f>k"]
-on = ["long", "lines25", "json_pretty", "one_char", "empty"]
+on = ["lines25", "json_pretty", "one_char", "empty"]
 at = ["bol", "mid", "eol"]
+
+# `view/page` on `long`, seated at column 1 only (the golden file's size budget).
+[[group]]
+id = "view/page-long"
+tier = 2
+keys = ["<C-f>", "<C-b>", "<C-f><C-b>", "<C-f><C-f>", "<C-f><C-f><C-f><C-f>", "<C-f><C-f><C-f><C-f><C-f>",
+        "<C-f><C-f><C-f><C-f><C-f><C-f>", "<C-f><C-f><C-f><C-f><C-f><C-b>", "G<C-f>", "G<C-f>x", "<C-b>x", "G<C-b>", "G<C-b><C-f>",
+        "G2<C-b>", "G<C-b><C-b>", "G<C-b><C-b><C-b>", "G<C-b><C-b><C-b><C-b>", "G<C-b><C-b><C-b><C-b><C-b>", "2<C-f>", "3<C-f>",
+        "9<C-f>", "G9<C-b>", "<C-f>x", "v<C-f>", "v<C-f>d", "y<C-f>", "d<C-f>x", "<C-f>u", "x<C-f>.",
+        "<C-f>k", "<C-f>j", "<C-b>j", "<C-f>$", "<C-f>iX<Esc>", "$<C-b>j", "$9<C-f>k", "v$9<C-f>k"]
+on = ["long"]
+at = [[1, 1], [50, 1], [100, 1]]
 
 [[group]]
 id = "view/seats"
@@ -1171,8 +1207,19 @@ keys = ["*", "#", "*n", "*N", "#n", "#N", "2*", "3*", "*nn", "d*", "c*X<Esc>", "
         "V*d", "*u", "x*.", "d*u", "d*.", "*ggn", "*GN", "x*j.", "n", "N", "9n", "*9n", "#9N", "*x", "#x", "*<Esc>", "d*x",
         "yiwjviwp*", "*0", "#$", "*v", "*V", "*vd", "*hn", "*ln", "*dnu", "*cnX<Esc>", "*ynP", "*vnd", "*vNo", "*3n", "*dN",
         "*Nx", "x*n.", "**", "##", "*#", "#*", "3#", "*vd*", "jnj", "jNj", "j*j"]
-on = ["search", "words", "json_pretty", "unicode", "punct", "url", "quotes", "blank_edges", "empty", "one_char", "long"]
+on = ["search", "words", "json_pretty", "unicode", "punct", "url", "quotes", "blank_edges", "empty", "one_char"]
 at = ["bol", "mid", "eol"]
+
+# `search/ident` on `long`, seated at column 1 only (the golden file's size budget).
+[[group]]
+id = "search/ident-long"
+tier = 2
+keys = ["*", "#", "*n", "*N", "#n", "#N", "2*", "3*", "*nn", "d*", "c*X<Esc>", "y*P", "v*d", "*vNd", "*d2n", "*2n", "*vn", "*vN",
+        "V*d", "*u", "x*.", "d*u", "d*.", "*ggn", "*GN", "x*j.", "n", "N", "9n", "*9n", "#9N", "*x", "#x", "*<Esc>", "d*x",
+        "yiwjviwp*", "*0", "#$", "*v", "*V", "*vd", "*hn", "*ln", "*dnu", "*cnX<Esc>", "*ynP", "*vnd", "*vNo", "*3n", "*dN",
+        "*Nx", "x*n.", "**", "##", "*#", "#*", "3#", "*vd*", "jnj", "jNj", "j*j"]
+on = ["long"]
+at = [[1, 1], [50, 1], [100, 1]]
 
 [[group]]
 id = "search/ident-each"
@@ -1204,8 +1251,20 @@ keys = ["/foo<CR>", "/foo<CR>n", "/foo<CR>nn", "/zzz<CR>", "/zzz<CR>n", "/zzz<CR
         "/foo<CR>?<CR>n", "/foo<CR>u", "x/foo<CR>.", "xx/foo<CR>.", "/foo/<CR>", "/fo<CR>", "/o<CR>", "/o<CR>n", "/o<CR>N",
         "/ <CR>", "/a<CR>", "?a<CR>", "/.<CR>", "/x<CR>", "?x<CR>", "/foo<CR>x", "/foo<CR>dd", "/foo<CR>v", "/bar<CR>vn",
         "/foo<CR>jn", "/foo<CR>kN", "G/foo<CR>", "G?foo<CR>", "$/foo<CR>", "$?foo<CR>", "/foo<CR>$n", "/FOO<CR>"]
-on = ["search", "words", "json_pretty", "unicode", "quotes", "blank_edges", "empty", "one_char", "long"]
+on = ["search", "words", "json_pretty", "unicode", "quotes", "blank_edges", "empty", "one_char"]
 at = ["bol", "mid", "eol"]
+
+# `search/prompt` on `long`, seated at column 1 only (the golden file's size budget).
+[[group]]
+id = "search/prompt-long"
+tier = 2
+keys = ["/foo<CR>", "/foo<CR>n", "/foo<CR>nn", "/zzz<CR>", "/zzz<CR>n", "/zzz<CR>x", "?foo<CR>", "?foo<CR>n", "?foo<CR>N",
+        "2/foo<CR>", "9/foo<CR>", "/foo<CR>9N", "/foo<CR>3n", "/<CR>", "/foo<CR>/<CR>", "/foo<CR>//<CR>", "/foo<CR>?<CR>",
+        "/foo<CR>?<CR>n", "/foo<CR>u", "x/foo<CR>.", "xx/foo<CR>.", "/foo/<CR>", "/fo<CR>", "/o<CR>", "/o<CR>n", "/o<CR>N",
+        "/ <CR>", "/a<CR>", "?a<CR>", "/.<CR>", "/x<CR>", "?x<CR>", "/foo<CR>x", "/foo<CR>dd", "/foo<CR>v", "/bar<CR>vn",
+        "/foo<CR>jn", "/foo<CR>kN", "G/foo<CR>", "G?foo<CR>", "$/foo<CR>", "$?foo<CR>", "/foo<CR>$n", "/FOO<CR>"]
+on = ["long"]
+at = [[1, 1], [50, 1], [100, 1]]
 
 [[group]]
 id = "search/ops"
@@ -1300,9 +1359,10 @@ tier = 2
 keys = ["/line 50<CR>", "/line 5<CR>", "/line 5<CR>n", "/line 5<CR>nn", "/line 5<CR>N", "G?line 1<CR>", "/line 90<CR>", "/line 90<CR>n",
         "d/line 50<CR>", "50G/line 9<CR>", "50G?line 2<CR>", "/line 100<CR>", "/line 100<CR>n"]
 on = ["long"]
-at = ["bol", "mid", "eol"]
+# Column 1 only (the golden file's size budget).
+at = [[1, 1], [50, 1], [100, 1]]
 
-# --- fuzz atoms (generate.py --fuzz); tier 1 and the tier-2 first wave ------
+# --- fuzz atoms (generate.py --fuzz); tiers 1 and 2 -----
 
 [fuzz]
 atoms = ["w", "b", "e", "W", "x", "X", "dw", "db", "de", "j", "k", "h", "l", "$", "0", "^",
@@ -1310,4 +1370,6 @@ atoms = ["w", "b", "e", "W", "x", "X", "dw", "db", "de", "j", "k", "h", "l", "$"
          "AY<Esc>", "o<Esc>", "Ox<Esc>", "v$d", "Vjd", "vly", "di{", "da[", "ci\"X<Esc>",
          "%", "f,", ";", ",", "gg", "G", "rX", "x.", "D", "C<Esc>",
          "ge", "gE", "}", "{", "+", "-", "~", "g~iw", "gUw", "guu", ">>", "<<", ">j", "<C-a>", "<C-x>",
-         "3iX<Esc>", "2oY<Esc>", "gv<Esc>", "giZ<Esc>", "\"0p", "dip", "vapd", "yyA<C-r>\"<Esc>", "3~"]
+         "3iX<Esc>", "2oY<Esc>", "gv<Esc>", "giZ<Esc>", "\"0p", "dip", "vapd", "yyA<C-r>\"<Esc>", "3~",
+         "Rab<Esc>", "3Rx<Esc>", "Rx<CR>y<Esc>", "i<C-t>x<Esc>", "A<C-d><Esc>", "iX<C-o>wY<Esc>", "a<C-o>$Z<Esc>", "<C-d>", "<C-u>",
+         "<C-f>", "<C-b>", "H", "M", "L", "zz", "zt", "zb", "/o<CR>", "?a<CR>", "n", "N", "*", "#", "d/o<CR>", "v/a<CR>d", "/\\<lt>a<CR>"]

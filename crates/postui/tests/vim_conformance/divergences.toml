@@ -144,3 +144,226 @@ buffer = "body"
 expect = { lines = ["a-b a]b aXb ayb a[b", "a b\tc a_b a-b", "ab aab aaab", "ab-cd ef -a b", "ba\\r foo a~b b-r b]r bxr b^r b.r b\tr", "foo bar? foo", "a/b x", "日本語x 日本", "x×y x", "a  b a", "ab ab", "foo bxxr foo", "baz 42"], cursor = [7, 5] }
 who = "mine"
 why = "Vim reads what follows the unescaped `/` as a search offset (`b` = begin offset) and searches `a`. Search offsets are out of scope: plan 3c Deviation 3 refuses them with \"search offsets not supported\" rather than misread the pattern, so the caret stays. Pending the user's review of plan 3c (2026-10-01)."
+
+# '^ through undo (R2, plan 3c Deviation 21): an Insert session whose line
+# count changed and changed back (`<CR>` then `<Del>`) is two undo entries in
+# Vim and one step in the engine, so `u` deletes Vim's '^ (gi starts at the
+# caret) and the engine keeps it. Pending the user's confirmation of plan
+# 3c's drop. Runs where Vim keeps '^ on the same row too need no entry.
+
+[[divergence]]
+id = "insert/gi/blank_edges@1:1/A<CR><Del><Esc>uGgiY<Esc>"
+buffer = "body"
+expect = { lines = ["", "Ya", "", "  b  ", ""], cursor = [2, 1] }
+who = "mine"
+why = "Vim moves '^ once per undo entry and this Insert session holds two (the Enter, then the Del that joined back), so its undo deletes the mark and gi starts at the caret; the engine moves marks by the step's net line change and keeps it. Parked at 3b's final review (R2); the user ruled 2026-09-30 that the undo-exact rule covers edited text, not '^. Plan 3c (2026-10-01) assumed the drop rather than port Vim's undo-entry merging, pending the user's confirmation."
+
+[[divergence]]
+id = "insert/gi/blank_edges@1:1/AX<CR><Del><Esc>ugggiY<Esc>"
+buffer = "body"
+expect = { lines = ["", "Ya", "", "  b  ", ""], cursor = [2, 1] }
+who = "mine"
+why = "Vim moves '^ once per undo entry and this Insert session holds two (the Enter, then the Del that joined back), so its undo deletes the mark and gi starts at the caret; the engine moves marks by the step's net line change and keeps it. Parked at 3b's final review (R2); the user ruled 2026-09-30 that the undo-exact rule covers edited text, not '^. Plan 3c (2026-10-01) assumed the drop rather than port Vim's undo-entry merging, pending the user's confirmation."
+
+[[divergence]]
+id = "insert/gi/blank_edges@2:1/A<CR><Del><Esc>uGgiY<Esc>"
+buffer = "body"
+expect = { lines = ["", "a", "Y", "  b  ", ""], cursor = [3, 1] }
+who = "mine"
+why = "Vim moves '^ once per undo entry and this Insert session holds two (the Enter, then the Del that joined back), so its undo deletes the mark and gi starts at the caret; the engine moves marks by the step's net line change and keeps it. Parked at 3b's final review (R2); the user ruled 2026-09-30 that the undo-exact rule covers edited text, not '^. Plan 3c (2026-10-01) assumed the drop rather than port Vim's undo-entry merging, pending the user's confirmation."
+
+[[divergence]]
+id = "insert/gi/blank_edges@2:1/AX<CR><Del><Esc>ugggiY<Esc>"
+buffer = "body"
+expect = { lines = ["", "a", "Y", "  b  ", ""], cursor = [3, 1] }
+who = "mine"
+why = "Vim moves '^ once per undo entry and this Insert session holds two (the Enter, then the Del that joined back), so its undo deletes the mark and gi starts at the caret; the engine moves marks by the step's net line change and keeps it. Parked at 3b's final review (R2); the user ruled 2026-09-30 that the undo-exact rule covers edited text, not '^. Plan 3c (2026-10-01) assumed the drop rather than port Vim's undo-entry merging, pending the user's confirmation."
+
+[[divergence]]
+id = "insert/gi/blank_edges@3:1/A<CR><Del><Esc>uGgiY<Esc>"
+buffer = "body"
+expect = { lines = ["", "a", "", "Y  b  ", ""], cursor = [4, 1] }
+who = "mine"
+why = "Vim moves '^ once per undo entry and this Insert session holds two (the Enter, then the Del that joined back), so its undo deletes the mark and gi starts at the caret; the engine moves marks by the step's net line change and keeps it. Parked at 3b's final review (R2); the user ruled 2026-09-30 that the undo-exact rule covers edited text, not '^. Plan 3c (2026-10-01) assumed the drop rather than port Vim's undo-entry merging, pending the user's confirmation."
+
+[[divergence]]
+id = "insert/gi/blank_edges@3:1/AX<CR><Del><Esc>ugggiY<Esc>"
+buffer = "body"
+expect = { lines = ["", "a", "", "Y  b  ", ""], cursor = [4, 1] }
+who = "mine"
+why = "Vim moves '^ once per undo entry and this Insert session holds two (the Enter, then the Del that joined back), so its undo deletes the mark and gi starts at the caret; the engine moves marks by the step's net line change and keeps it. Parked at 3b's final review (R2); the user ruled 2026-09-30 that the undo-exact rule covers edited text, not '^. Plan 3c (2026-10-01) assumed the drop rather than port Vim's undo-entry merging, pending the user's confirmation."
+
+[[divergence]]
+id = "insert/gi/blank_edges@4:1/AX<CR><Del><Esc>ugggiY<Esc>"
+buffer = "body"
+expect = { lines = ["", "a", "", "  b  ", "Y"], cursor = [5, 1] }
+who = "mine"
+why = "Vim moves '^ once per undo entry and this Insert session holds two (the Enter, then the Del that joined back), so its undo deletes the mark and gi starts at the caret; the engine moves marks by the step's net line change and keeps it. Parked at 3b's final review (R2); the user ruled 2026-09-30 that the undo-exact rule covers edited text, not '^. Plan 3c (2026-10-01) assumed the drop rather than port Vim's undo-entry merging, pending the user's confirmation."
+
+[[divergence]]
+id = "insert/gi/blank_edges@4:3/AX<CR><Del><Esc>ugggiY<Esc>"
+buffer = "body"
+expect = { lines = ["", "a", "", "  b  ", "Y"], cursor = [5, 1] }
+who = "mine"
+why = "Vim moves '^ once per undo entry and this Insert session holds two (the Enter, then the Del that joined back), so its undo deletes the mark and gi starts at the caret; the engine moves marks by the step's net line change and keeps it. Parked at 3b's final review (R2); the user ruled 2026-09-30 that the undo-exact rule covers edited text, not '^. Plan 3c (2026-10-01) assumed the drop rather than port Vim's undo-entry merging, pending the user's confirmation."
+
+[[divergence]]
+id = "insert/gi/blank_edges@4:5/AX<CR><Del><Esc>ugggiY<Esc>"
+buffer = "body"
+expect = { lines = ["", "a", "", "  b  ", "Y"], cursor = [5, 1] }
+who = "mine"
+why = "Vim moves '^ once per undo entry and this Insert session holds two (the Enter, then the Del that joined back), so its undo deletes the mark and gi starts at the caret; the engine moves marks by the step's net line change and keeps it. Parked at 3b's final review (R2); the user ruled 2026-09-30 that the undo-exact rule covers edited text, not '^. Plan 3c (2026-10-01) assumed the drop rather than port Vim's undo-entry merging, pending the user's confirmation."
+
+[[divergence]]
+id = "insert/gi/json_pretty@1:1/A<CR><Del><Esc>uGgiY<Esc>"
+buffer = "body"
+expect = { lines = ["{", "Y  \"a\": {\"b\": 1},", "  \"c\": [1, 2, 3],", "  \"d\": \"hello world\"", "}"], cursor = [2, 1] }
+who = "mine"
+why = "Vim moves '^ once per undo entry and this Insert session holds two (the Enter, then the Del that joined back), so its undo deletes the mark and gi starts at the caret; the engine moves marks by the step's net line change and keeps it. Parked at 3b's final review (R2); the user ruled 2026-09-30 that the undo-exact rule covers edited text, not '^. Plan 3c (2026-10-01) assumed the drop rather than port Vim's undo-entry merging, pending the user's confirmation."
+
+[[divergence]]
+id = "insert/gi/json_pretty@1:1/AX<CR><Del><Esc>ugggiY<Esc>"
+buffer = "body"
+expect = { lines = ["{", "Y  \"a\": {\"b\": 1},", "  \"c\": [1, 2, 3],", "  \"d\": \"hello world\"", "}"], cursor = [2, 1] }
+who = "mine"
+why = "Vim moves '^ once per undo entry and this Insert session holds two (the Enter, then the Del that joined back), so its undo deletes the mark and gi starts at the caret; the engine moves marks by the step's net line change and keeps it. Parked at 3b's final review (R2); the user ruled 2026-09-30 that the undo-exact rule covers edited text, not '^. Plan 3c (2026-10-01) assumed the drop rather than port Vim's undo-entry merging, pending the user's confirmation."
+
+[[divergence]]
+id = "insert/gi/json_pretty@2:1/A<CR><Del><Esc>uGgiY<Esc>"
+buffer = "body"
+expect = { lines = ["{", "  \"a\": {\"b\": 1},", "  Y\"c\": [1, 2, 3],", "  \"d\": \"hello world\"", "}"], cursor = [3, 3] }
+who = "mine"
+why = "Vim moves '^ once per undo entry and this Insert session holds two (the Enter, then the Del that joined back), so its undo deletes the mark and gi starts at the caret; the engine moves marks by the step's net line change and keeps it. Parked at 3b's final review (R2); the user ruled 2026-09-30 that the undo-exact rule covers edited text, not '^. Plan 3c (2026-10-01) assumed the drop rather than port Vim's undo-entry merging, pending the user's confirmation."
+
+[[divergence]]
+id = "insert/gi/json_pretty@2:1/AX<CR><Del><Esc>ugggiY<Esc>"
+buffer = "body"
+expect = { lines = ["{", "  \"a\": {\"b\": 1},", "  Y\"c\": [1, 2, 3],", "  \"d\": \"hello world\"", "}"], cursor = [3, 3] }
+who = "mine"
+why = "Vim moves '^ once per undo entry and this Insert session holds two (the Enter, then the Del that joined back), so its undo deletes the mark and gi starts at the caret; the engine moves marks by the step's net line change and keeps it. Parked at 3b's final review (R2); the user ruled 2026-09-30 that the undo-exact rule covers edited text, not '^. Plan 3c (2026-10-01) assumed the drop rather than port Vim's undo-entry merging, pending the user's confirmation."
+
+[[divergence]]
+id = "insert/gi/json_pretty@2:16/A<CR><Del><Esc>uGgiY<Esc>"
+buffer = "body"
+expect = { lines = ["{", "  \"a\": {\"b\": 1},", "  Y\"c\": [1, 2, 3],", "  \"d\": \"hello world\"", "}"], cursor = [3, 3] }
+who = "mine"
+why = "Vim moves '^ once per undo entry and this Insert session holds two (the Enter, then the Del that joined back), so its undo deletes the mark and gi starts at the caret; the engine moves marks by the step's net line change and keeps it. Parked at 3b's final review (R2); the user ruled 2026-09-30 that the undo-exact rule covers edited text, not '^. Plan 3c (2026-10-01) assumed the drop rather than port Vim's undo-entry merging, pending the user's confirmation."
+
+[[divergence]]
+id = "insert/gi/json_pretty@2:16/AX<CR><Del><Esc>ugggiY<Esc>"
+buffer = "body"
+expect = { lines = ["{", "  \"a\": {\"b\": 1},", "  Y\"c\": [1, 2, 3],", "  \"d\": \"hello world\"", "}"], cursor = [3, 3] }
+who = "mine"
+why = "Vim moves '^ once per undo entry and this Insert session holds two (the Enter, then the Del that joined back), so its undo deletes the mark and gi starts at the caret; the engine moves marks by the step's net line change and keeps it. Parked at 3b's final review (R2); the user ruled 2026-09-30 that the undo-exact rule covers edited text, not '^. Plan 3c (2026-10-01) assumed the drop rather than port Vim's undo-entry merging, pending the user's confirmation."
+
+[[divergence]]
+id = "insert/gi/json_pretty@2:3/A<CR><Del><Esc>uGgiY<Esc>"
+buffer = "body"
+expect = { lines = ["{", "  \"a\": {\"b\": 1},", "  Y\"c\": [1, 2, 3],", "  \"d\": \"hello world\"", "}"], cursor = [3, 3] }
+who = "mine"
+why = "Vim moves '^ once per undo entry and this Insert session holds two (the Enter, then the Del that joined back), so its undo deletes the mark and gi starts at the caret; the engine moves marks by the step's net line change and keeps it. Parked at 3b's final review (R2); the user ruled 2026-09-30 that the undo-exact rule covers edited text, not '^. Plan 3c (2026-10-01) assumed the drop rather than port Vim's undo-entry merging, pending the user's confirmation."
+
+[[divergence]]
+id = "insert/gi/json_pretty@2:3/AX<CR><Del><Esc>ugggiY<Esc>"
+buffer = "body"
+expect = { lines = ["{", "  \"a\": {\"b\": 1},", "  Y\"c\": [1, 2, 3],", "  \"d\": \"hello world\"", "}"], cursor = [3, 3] }
+who = "mine"
+why = "Vim moves '^ once per undo entry and this Insert session holds two (the Enter, then the Del that joined back), so its undo deletes the mark and gi starts at the caret; the engine moves marks by the step's net line change and keeps it. Parked at 3b's final review (R2); the user ruled 2026-09-30 that the undo-exact rule covers edited text, not '^. Plan 3c (2026-10-01) assumed the drop rather than port Vim's undo-entry merging, pending the user's confirmation."
+
+[[divergence]]
+id = "insert/gi/json_pretty@3:1/A<CR><Del><Esc>uGgiY<Esc>"
+buffer = "body"
+expect = { lines = ["{", "  \"a\": {\"b\": 1},", "  \"c\": [1, 2, 3],", "  Y\"d\": \"hello world\"", "}"], cursor = [4, 3] }
+who = "mine"
+why = "Vim moves '^ once per undo entry and this Insert session holds two (the Enter, then the Del that joined back), so its undo deletes the mark and gi starts at the caret; the engine moves marks by the step's net line change and keeps it. Parked at 3b's final review (R2); the user ruled 2026-09-30 that the undo-exact rule covers edited text, not '^. Plan 3c (2026-10-01) assumed the drop rather than port Vim's undo-entry merging, pending the user's confirmation."
+
+[[divergence]]
+id = "insert/gi/json_pretty@3:1/AX<CR><Del><Esc>ugggiY<Esc>"
+buffer = "body"
+expect = { lines = ["{", "  \"a\": {\"b\": 1},", "  \"c\": [1, 2, 3],", "  Y\"d\": \"hello world\"", "}"], cursor = [4, 3] }
+who = "mine"
+why = "Vim moves '^ once per undo entry and this Insert session holds two (the Enter, then the Del that joined back), so its undo deletes the mark and gi starts at the caret; the engine moves marks by the step's net line change and keeps it. Parked at 3b's final review (R2); the user ruled 2026-09-30 that the undo-exact rule covers edited text, not '^. Plan 3c (2026-10-01) assumed the drop rather than port Vim's undo-entry merging, pending the user's confirmation."
+
+[[divergence]]
+id = "insert/gi/json_pretty@3:17/A<CR><Del><Esc>uGgiY<Esc>"
+buffer = "body"
+expect = { lines = ["{", "  \"a\": {\"b\": 1},", "  \"c\": [1, 2, 3],", "  Y\"d\": \"hello world\"", "}"], cursor = [4, 3] }
+who = "mine"
+why = "Vim moves '^ once per undo entry and this Insert session holds two (the Enter, then the Del that joined back), so its undo deletes the mark and gi starts at the caret; the engine moves marks by the step's net line change and keeps it. Parked at 3b's final review (R2); the user ruled 2026-09-30 that the undo-exact rule covers edited text, not '^. Plan 3c (2026-10-01) assumed the drop rather than port Vim's undo-entry merging, pending the user's confirmation."
+
+[[divergence]]
+id = "insert/gi/json_pretty@3:17/AX<CR><Del><Esc>ugggiY<Esc>"
+buffer = "body"
+expect = { lines = ["{", "  \"a\": {\"b\": 1},", "  \"c\": [1, 2, 3],", "  Y\"d\": \"hello world\"", "}"], cursor = [4, 3] }
+who = "mine"
+why = "Vim moves '^ once per undo entry and this Insert session holds two (the Enter, then the Del that joined back), so its undo deletes the mark and gi starts at the caret; the engine moves marks by the step's net line change and keeps it. Parked at 3b's final review (R2); the user ruled 2026-09-30 that the undo-exact rule covers edited text, not '^. Plan 3c (2026-10-01) assumed the drop rather than port Vim's undo-entry merging, pending the user's confirmation."
+
+[[divergence]]
+id = "insert/gi/json_pretty@3:3/A<CR><Del><Esc>uGgiY<Esc>"
+buffer = "body"
+expect = { lines = ["{", "  \"a\": {\"b\": 1},", "  \"c\": [1, 2, 3],", "  Y\"d\": \"hello world\"", "}"], cursor = [4, 3] }
+who = "mine"
+why = "Vim moves '^ once per undo entry and this Insert session holds two (the Enter, then the Del that joined back), so its undo deletes the mark and gi starts at the caret; the engine moves marks by the step's net line change and keeps it. Parked at 3b's final review (R2); the user ruled 2026-09-30 that the undo-exact rule covers edited text, not '^. Plan 3c (2026-10-01) assumed the drop rather than port Vim's undo-entry merging, pending the user's confirmation."
+
+[[divergence]]
+id = "insert/gi/json_pretty@3:3/AX<CR><Del><Esc>ugggiY<Esc>"
+buffer = "body"
+expect = { lines = ["{", "  \"a\": {\"b\": 1},", "  \"c\": [1, 2, 3],", "  Y\"d\": \"hello world\"", "}"], cursor = [4, 3] }
+who = "mine"
+why = "Vim moves '^ once per undo entry and this Insert session holds two (the Enter, then the Del that joined back), so its undo deletes the mark and gi starts at the caret; the engine moves marks by the step's net line change and keeps it. Parked at 3b's final review (R2); the user ruled 2026-09-30 that the undo-exact rule covers edited text, not '^. Plan 3c (2026-10-01) assumed the drop rather than port Vim's undo-entry merging, pending the user's confirmation."
+
+[[divergence]]
+id = "insert/gi/json_pretty@4:1/A<CR><Del><Esc>uGgiY<Esc>"
+buffer = "body"
+expect = { lines = ["{", "  \"a\": {\"b\": 1},", "  \"c\": [1, 2, 3],", "  \"d\": \"hello world\"", "}Y"], cursor = [5, 2] }
+who = "mine"
+why = "Vim moves '^ once per undo entry and this Insert session holds two (the Enter, then the Del that joined back), so its undo deletes the mark and gi starts at the caret; the engine moves marks by the step's net line change and keeps it. Parked at 3b's final review (R2); the user ruled 2026-09-30 that the undo-exact rule covers edited text, not '^. Plan 3c (2026-10-01) assumed the drop rather than port Vim's undo-entry merging, pending the user's confirmation."
+
+[[divergence]]
+id = "insert/gi/json_pretty@4:1/AX<CR><Del><Esc>ugggiY<Esc>"
+buffer = "body"
+expect = { lines = ["{", "  \"a\": {\"b\": 1},", "  \"c\": [1, 2, 3],", "  \"d\": \"hello world\"", "}Y"], cursor = [5, 2] }
+who = "mine"
+why = "Vim moves '^ once per undo entry and this Insert session holds two (the Enter, then the Del that joined back), so its undo deletes the mark and gi starts at the caret; the engine moves marks by the step's net line change and keeps it. Parked at 3b's final review (R2); the user ruled 2026-09-30 that the undo-exact rule covers edited text, not '^. Plan 3c (2026-10-01) assumed the drop rather than port Vim's undo-entry merging, pending the user's confirmation."
+
+[[divergence]]
+id = "insert/gi/json_pretty@4:20/A<CR><Del><Esc>uGgiY<Esc>"
+buffer = "body"
+expect = { lines = ["{", "  \"a\": {\"b\": 1},", "  \"c\": [1, 2, 3],", "  \"d\": \"hello world\"", "}Y"], cursor = [5, 2] }
+who = "mine"
+why = "Vim moves '^ once per undo entry and this Insert session holds two (the Enter, then the Del that joined back), so its undo deletes the mark and gi starts at the caret; the engine moves marks by the step's net line change and keeps it. Parked at 3b's final review (R2); the user ruled 2026-09-30 that the undo-exact rule covers edited text, not '^. Plan 3c (2026-10-01) assumed the drop rather than port Vim's undo-entry merging, pending the user's confirmation."
+
+[[divergence]]
+id = "insert/gi/json_pretty@4:20/AX<CR><Del><Esc>ugggiY<Esc>"
+buffer = "body"
+expect = { lines = ["{", "  \"a\": {\"b\": 1},", "  \"c\": [1, 2, 3],", "  \"d\": \"hello world\"", "}Y"], cursor = [5, 2] }
+who = "mine"
+why = "Vim moves '^ once per undo entry and this Insert session holds two (the Enter, then the Del that joined back), so its undo deletes the mark and gi starts at the caret; the engine moves marks by the step's net line change and keeps it. Parked at 3b's final review (R2); the user ruled 2026-09-30 that the undo-exact rule covers edited text, not '^. Plan 3c (2026-10-01) assumed the drop rather than port Vim's undo-entry merging, pending the user's confirmation."
+
+[[divergence]]
+id = "insert/gi/json_pretty@4:3/A<CR><Del><Esc>uGgiY<Esc>"
+buffer = "body"
+expect = { lines = ["{", "  \"a\": {\"b\": 1},", "  \"c\": [1, 2, 3],", "  \"d\": \"hello world\"", "}Y"], cursor = [5, 2] }
+who = "mine"
+why = "Vim moves '^ once per undo entry and this Insert session holds two (the Enter, then the Del that joined back), so its undo deletes the mark and gi starts at the caret; the engine moves marks by the step's net line change and keeps it. Parked at 3b's final review (R2); the user ruled 2026-09-30 that the undo-exact rule covers edited text, not '^. Plan 3c (2026-10-01) assumed the drop rather than port Vim's undo-entry merging, pending the user's confirmation."
+
+[[divergence]]
+id = "insert/gi/json_pretty@4:3/AX<CR><Del><Esc>ugggiY<Esc>"
+buffer = "body"
+expect = { lines = ["{", "  \"a\": {\"b\": 1},", "  \"c\": [1, 2, 3],", "  \"d\": \"hello world\"", "}Y"], cursor = [5, 2] }
+who = "mine"
+why = "Vim moves '^ once per undo entry and this Insert session holds two (the Enter, then the Del that joined back), so its undo deletes the mark and gi starts at the caret; the engine moves marks by the step's net line change and keeps it. Parked at 3b's final review (R2); the user ruled 2026-09-30 that the undo-exact rule covers edited text, not '^. Plan 3c (2026-10-01) assumed the drop rather than port Vim's undo-entry merging, pending the user's confirmation."
+
+[[divergence]]
+id = "insert/gi/short_last@1:1/AX<CR><Del><Esc>ugggiY<Esc>"
+buffer = "body"
+expect = { lines = ["abcdefgh", "Yabc"], cursor = [2, 1] }
+who = "mine"
+why = "Vim moves '^ once per undo entry and this Insert session holds two (the Enter, then the Del that joined back), so its undo deletes the mark and gi starts at the caret; the engine moves marks by the step's net line change and keeps it. Parked at 3b's final review (R2); the user ruled 2026-09-30 that the undo-exact rule covers edited text, not '^. Plan 3c (2026-10-01) assumed the drop rather than port Vim's undo-entry merging, pending the user's confirmation."
+
+[[divergence]]
+id = "insert/gi/short_last@1:8/AX<CR><Del><Esc>ugggiY<Esc>"
+buffer = "body"
+expect = { lines = ["abcdefgh", "Yabc"], cursor = [2, 1] }
+who = "mine"
+why = "Vim moves '^ once per undo entry and this Insert session holds two (the Enter, then the Del that joined back), so its undo deletes the mark and gi starts at the caret; the engine moves marks by the step's net line change and keeps it. Parked at 3b's final review (R2); the user ruled 2026-09-30 that the undo-exact rule covers edited text, not '^. Plan 3c (2026-10-01) assumed the drop rather than port Vim's undo-entry merging, pending the user's confirmation."

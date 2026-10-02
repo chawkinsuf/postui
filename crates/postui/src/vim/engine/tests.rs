@@ -2238,3 +2238,84 @@ fn search_survives_hostile_patterns_and_big_bodies() {
     assert!(started.elapsed().as_millis() < 500, "six searches took {} ms", started.elapsed().as_millis());
     assert!(b.engine.search_matches(&BodyBuf::new(&mut b.ed, &mut b.visual), 0..30).len() <= 30);
 }
+
+/// Review focus 2 and 5 (3b's sweep, extended): every second-wave key on an
+/// empty body, and edtui still renders.
+#[test]
+fn every_second_wave_key_works_on_an_empty_body() {
+    use edtui::EditorView;
+    use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
+    for keys in ["Rab\u{1b}", "R\u{1b}", "Rx\r\u{1b}", "i\u{14}\u{1b}", "i\u{4}\u{1b}", "i0\u{4}\u{1b}", "iX\u{f}0Y\u{1b}", "i\u{f}\u{1b}",
+                 "\u{4}", "\u{15}", "\u{6}", "\u{2}", "H", "M", "L", "dL", "zz", "zt", "zb", "5zt", "/x\r", "/\r", "n", "N", "*", "#",
+                 "d/x\r", "v/x\rd", "/\u{1b}", "/\u{8}", "\"+yy", "\"+p", "A\u{12}+\u{1b}", "\u{f}", "iX\u{f}/x\rY\u{1b}"] {
+        let mut b = Body::new("", 0, 0);
+        for c in keys.chars() {
+            b.key(match c {
+                '\u{14}' => ctrl('t'),
+                '\u{4}' => ctrl('d'),
+                '\u{f}' => ctrl('o'),
+                '\u{15}' => ctrl('u'),
+                '\u{6}' => ctrl('f'),
+                '\u{2}' => ctrl('b'),
+                '\u{8}' => code(KeyCode::Backspace),
+                c => key_of(c),
+            });
+        }
+        let lines = BodyBuf::new(&mut b.ed, &mut b.visual).line_count();
+        assert!(b.caret().row < lines, "{keys:?} left the caret off the text");
+        let area = Rect::new(0, 0, 20, 5);
+        EditorView::new(&mut b.ed).render(area, &mut Buffer::empty(area));
+    }
+}
+
+/// A counted search skips whole cycles once a hit repeats (so `9999*` is
+/// fast); it must land, and report a wrap, exactly where stepping one hit
+/// at a time does.
+#[test]
+fn a_counted_search_lands_where_single_steps_land() {
+    let mut b = Body::new("foo a foo\nbar\nfoo\n\nx foo foo", 0, 0);
+    let buf = BodyBuf::new(&mut b.ed, &mut b.visual);
+    for pat in ["foo", "o", "\\<foo\\>", "^", "$", "x"] {
+        let p = search::compile(pat).unwrap();
+        for dir in [Dir::Forward, Dir::Backward] {
+            for from in [Pos::new(0, 0), Pos::new(1, 2), Pos::new(4, 3), Pos::new(4, 8)] {
+                let mut step = (from, false);
+                for count in 1..=40 {
+                    let next = search::search(&buf, step.0, dir, 1, &p).unwrap();
+                    step = (next.0, step.1 || next.1);
+                    assert_eq!(search::search(&buf, from, dir, count, &p), Some(step), "{pat} {dir:?} from {from:?} count {count}");
+                }
+            }
+        }
+    }
+}
+
+/// Review focus 1 and 2: the largest count on every second-wave command
+/// finishes quickly on a 200-line body, under a one-row viewport too.
+#[test]
+fn second_wave_commands_survive_the_largest_count() {
+    let rows: Vec<String> = (0..200).map(|i| format!("  \"k{i}\": [{i}, 0x1f],")).collect();
+    let text = format!("{{\n{}\n}}", rows.join("\n"));
+    for keys in ["9999\u{4}", "9999\u{15}", "9999\u{6}", "9999\u{2}", "9999H", "9999L", "9999zz", "9999zt", "9999zb", "9999n", "9999N",
+                 "9999*", "9999#", "d9999/k\r", "9999/k\r", "9999Rx\u{1b}", "9999i\u{14}\u{1b}", "iX\u{f}9999j"] {
+        for rows in [Some(23), Some(1), None] {
+            let mut b = Body::new(&text, 100, 4);
+            let ctx = ViewCtx { viewport_rows: rows };
+            let started = std::time::Instant::now();
+            for c in keys.chars() {
+                let ev = match c {
+                    '\u{14}' => ctrl('t'),
+                    '\u{4}' => ctrl('d'),
+                    '\u{f}' => ctrl('o'),
+                    '\u{15}' => ctrl('u'),
+                    '\u{6}' => ctrl('f'),
+                    '\u{2}' => ctrl('b'),
+                    c => key_of(c),
+                };
+                b.engine.handle(ev, Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state }, &ctx);
+            }
+            let ms = started.elapsed().as_millis();
+            assert!(ms < 2000, "{keys:?} with {rows:?} rows took {ms} ms");
+        }
+    }
+}

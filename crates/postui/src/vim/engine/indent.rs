@@ -7,20 +7,47 @@ use super::class::white;
 use super::history::Ed;
 use super::insert::InsertKey;
 use super::motion::vcol_of;
-use super::settings::SHIFTWIDTH;
-use super::{BufState, Engine, first_non_blank};
+use super::settings::{SHIFTWIDTH, TABSTOP};
+use super::{BufState, Engine};
 
-/// Vim's `get_indent_str()`: the leading blanks in virtual columns (a tab
-/// runs to its stop).
-pub(crate) fn indent_width(line: &[char]) -> usize {
-    vcol_of(line, first_non_blank(line))
+/// A line's leading blanks, measured in one pass (a deep indent is then
+/// cheap to shift again and again: `9999i<C-t><Esc>`).
+struct Lead {
+    /// The first non-blank column (the line's length when it is all blank).
+    fnb: usize,
+    /// Vim's `get_indent_str()`: the blanks in virtual columns (a tab runs
+    /// to its stop).
+    width: usize,
+    /// The spaces the indent starts with, before any tab.
+    spaces: usize,
 }
 
-/// Vim's `set_indent(size)` with `expandtab`: the leading blanks become
-/// `size` spaces. Returns the new first non-blank column.
-fn set_indent<B: TextBuf>(ed: &mut Ed<'_, B>, row: usize, size: usize) -> usize {
-    let lead = first_non_blank(&ed.buf.line(row));
-    ed.splice(Pos::new(row, 0), Pos::new(row, lead), &" ".repeat(size));
+fn lead_of(line: &[char]) -> Lead {
+    let (mut width, mut tab, mut fnb) = (0, None, line.len());
+    for (i, &c) in line.iter().enumerate() {
+        match c {
+            ' ' => width += 1,
+            '\t' => {
+                tab.get_or_insert(i);
+                width += TABSTOP - width % TABSTOP;
+            }
+            _ => {
+                fnb = i;
+                break;
+            }
+        }
+    }
+    Lead { fnb, width, spaces: tab.unwrap_or(fnb) }
+}
+
+/// Vim's `set_indent(size)` with `expandtab`: the leading blanks (`lead`)
+/// become `size` spaces. Returns the new first non-blank column. Only the
+/// part that differs is spliced (the spaces both indents start with stay),
+/// so a deep indent costs its change, not its width; a splice inside one
+/// line moves no mark either way.
+fn set_indent<B: TextBuf>(ed: &mut Ed<'_, B>, row: usize, lead: &Lead, size: usize) -> usize {
+    let same = lead.spaces.min(size);
+    ed.splice(Pos::new(row, same), Pos::new(row, lead.fnb), &" ".repeat(size - same));
     size
 }
 
@@ -35,7 +62,7 @@ impl Engine {
         let row = caret.row;
         let last = self.session().last_key.clone();
         let zero_all = dec && caret.col > 0 && matches!(last, Some(InsertKey::Char('0' | '^')));
-        Ed { buf: &mut *buf, hist: &mut st.history }.save_cursor_line(caret);
+        Ed { buf: &mut *buf, hist: &mut st.history }.save_cursor_line_once(caret);
         if zero_all {
             let at = Pos::new(row, caret.col - 1);
             Ed { buf: &mut *buf, hist: &mut st.history }.splice(at, caret, "");
@@ -46,24 +73,29 @@ impl Engine {
                 self.replace_restore_at(buf, st);
             }
             if matches!(last, Some(InsertKey::Char('^'))) {
-                let width = indent_width(&buf.line(row));
+                let width = lead_of(&buf.line(row)).width;
                 self.session().old_indent = Some(width);
             }
         }
         // change_indent(type, 0, round = TRUE)
-        let line = buf.line(row).into_owned();
-        let vcol = vcol_of(&line, caret.col);
-        let fnb = first_non_blank(&line);
+        let (lead, vcol) = {
+            let line = buf.line(row);
+            let lead = lead_of(&line);
+            // The caret's virtual column matters only inside the indent.
+            let vcol = if caret.col < lead.fnb { vcol_of(&line, caret.col) } else { 0 };
+            (lead, vcol)
+        };
+        let fnb = lead.fnb;
         let rel = caret.col as isize - fnb as isize;
         let mut insstart_less = fnb as isize;
-        let in_indent_vcol = if rel < 0 { indent_width(&line) as isize - vcol as isize } else { 0 };
+        let in_indent_vcol = if rel < 0 { lead.width as isize - vcol as isize } else { 0 };
         // The replace stack can be fixed only when the caret is in the indent.
         let start_col: isize = if rel > 0 { -1 } else { caret.col as isize };
         let new_indent = if zero_all {
             0
         } else {
             // shift_line(left, round = TRUE, amount = 1)
-            let count = indent_width(&line);
+            let count = lead.width;
             let (i, j) = (count / SHIFTWIDTH, count % SHIFTWIDTH);
             let i = if dec {
                 // With spaces left over, removing them is the whole step.
@@ -73,7 +105,7 @@ impl Engine {
             };
             i * SHIFTWIDTH
         };
-        let new_fnb = set_indent(&mut Ed { buf: &mut *buf, hist: &mut st.history }, row, new_indent);
+        let new_fnb = set_indent(&mut Ed { buf: &mut *buf, hist: &mut st.history }, row, &lead, new_indent);
         insstart_less -= new_fnb as isize;
         let new_col: isize = if rel >= 0 {
             if rel == 0 {

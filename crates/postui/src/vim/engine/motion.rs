@@ -91,7 +91,13 @@ pub(crate) struct MotionCx {
 
 /// Display width of `c` at virtual column `vcol` (tabs run to the next stop).
 pub(crate) fn char_width(c: char, vcol: usize) -> usize {
-    if c == '\t' { TABSTOP - vcol % TABSTOP } else { c.width().unwrap_or(0).max(1) }
+    match c {
+        '\t' => TABSTOP - vcol % TABSTOP,
+        // Every other ASCII char takes one cell; skipping the table keeps a
+        // deep indent cheap to measure.
+        c if c.is_ascii() => 1,
+        c => c.width().unwrap_or(0).max(1),
+    }
 }
 
 /// The virtual column where char `col` starts.
