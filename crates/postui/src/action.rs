@@ -304,10 +304,12 @@ pub enum Action {
     /// name and open the copy.
     DuplicateRequest,
     /// Duplicates `slug` and opens the copy; `DuplicateRequest`'s dirty gate
-    /// runs first. Its order entry goes beside `anchor` (below, or above
-    /// with `above`). `DuplicateRequest` anchors on the source itself; a put
-    /// anchors on the cursor row (piece 4 spec §5.2).
-    ForceDuplicateRequest { slug: String, anchor: String, above: bool },
+    /// runs first. `anchor: None` is a plain Duplicate (`DuplicateRequest`):
+    /// the copy sits beside its source and no order array is seeded.
+    /// `Some(a)` is a put (piece 4 spec §5.2): the copy lands beside `a`
+    /// (below, or above with `above`) and a missing order array is seeded,
+    /// even when `a` is the source itself.
+    ForceDuplicateRequest { slug: String, anchor: Option<String>, above: bool },
     /// The scratch gate's save path: opens the Save-as name prompt with the
     /// deferred action to run once the save succeeds.
     PromptSaveScratch(Box<Action>),

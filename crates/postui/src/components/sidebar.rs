@@ -494,21 +494,31 @@ impl Sidebar {
 
     /// The request slug a `p`/`P` anchors its copy on (piece 4 spec
     /// §5.2). A request row is its own anchor. A folder row anchors on
-    /// the folder's last visible request for a put below and its first
-    /// for a put above, which lands the copy inside the folder either
-    /// way. A collapsed or empty folder, and no selection, give `None`.
+    /// the folder's own direct requests: the last visible one for a put
+    /// below and the first for a put above, which lands the copy in that
+    /// folder either way, never in a subfolder. A folder with no visible
+    /// direct request, and no selection, give `None`; use
+    /// `selected_is_folder` to tell the two apart.
     pub fn put_anchor(&self, above: bool) -> Option<String> {
         match self.selected_row()? {
             Row::Request { slug, .. } => Some(slug.clone()),
             Row::Folder { path, .. } => {
-                let prefix = format!("{path}/");
-                let mut inside = self.rows.iter().filter_map(|r| match r {
-                    Row::Request { slug, .. } if slug.starts_with(&prefix) => Some(slug.clone()),
+                let mut direct = self.rows.iter().filter_map(|r| match r {
+                    Row::Request { slug, .. }
+                        if slug.rsplit_once('/').map(|(f, _)| f) == Some(path.as_str()) =>
+                    {
+                        Some(slug.clone())
+                    }
                     _ => None,
                 });
-                if above { inside.next() } else { inside.next_back() }
+                if above { direct.next() } else { direct.next_back() }
             }
         }
+    }
+
+    /// Whether the cursor is on a folder row.
+    pub fn selected_is_folder(&self) -> bool {
+        matches!(self.selected_row(), Some(Row::Folder { .. }))
     }
 
     fn selected_row(&self) -> Option<&Row> {
@@ -1429,6 +1439,16 @@ mod tests {
                 req_row("main/f/d"),
                 Row::Folder { path: "main/g".into(), name: "g".into(), depth: 0, expanded: false },
                 req_row("main/z"),
+                // A folder holding only an expanded subfolder, and one
+                // holding direct requests around a subfolder.
+                Row::Folder { path: "main/h".into(), name: "h".into(), depth: 0, expanded: true },
+                Row::Folder { path: "main/h/i".into(), name: "i".into(), depth: 1, expanded: true },
+                req_row("main/h/i/e"),
+                Row::Folder { path: "main/j".into(), name: "j".into(), depth: 0, expanded: true },
+                req_row("main/j/k"),
+                Row::Folder { path: "main/j/m".into(), name: "m".into(), depth: 1, expanded: true },
+                req_row("main/j/m/n"),
+                req_row("main/j/o"),
             ],
             ..Sidebar::default()
         };
@@ -1442,6 +1462,16 @@ mod tests {
         s.selected = Some(4);
         assert_eq!(s.put_anchor(false), None, "a collapsed folder has nothing visible inside");
         assert_eq!(s.put_anchor(true), None);
+        assert!(s.selected_is_folder());
+        s.selected = Some(6);
+        assert_eq!(s.put_anchor(false), None, "only a subfolder: no direct request");
+        assert_eq!(s.put_anchor(true), None);
+        assert!(s.selected_is_folder());
+        s.selected = Some(9);
+        assert_eq!(s.put_anchor(false).as_deref(), Some("main/j/o"), "never the subfolder's request");
+        assert_eq!(s.put_anchor(true).as_deref(), Some("main/j/k"));
+        s.selected = Some(0);
+        assert!(!s.selected_is_folder());
     }
 
     fn key(code: KeyCode) -> KeyEvent {

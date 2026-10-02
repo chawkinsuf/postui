@@ -3595,7 +3595,7 @@ impl App {
                 };
                 // The copy opens, so unsaved edits are gated first — before
                 // anything is written (spec §4.3: the gate runs before the op).
-                let force = Action::ForceDuplicateRequest { anchor: slug.clone(), slug, above: false };
+                let force = Action::ForceDuplicateRequest { slug, anchor: None, above: false };
                 if self.editor_holds_unsaved() {
                     self.dirty_gate("duplicate", force);
                     true
@@ -3608,7 +3608,11 @@ impl App {
                 let Some(p) = self.project.as_mut() else {
                     return true;
                 };
-                match p.duplicate_request_at(&slug, &anchor, above) {
+                let made = match &anchor {
+                    None => p.duplicate_request(&slug),
+                    Some(a) => p.duplicate_request_at(&slug, a, above),
+                };
+                match made {
                     Ok(new_slug) => {
                         // Copies land beside their anchor and open, so the
                         // edit that motivated the duplicate can start at once.
@@ -3777,7 +3781,17 @@ impl App {
                     self.last_action_failed = true;
                     return true;
                 }
-                let anchor = anchor.unwrap_or_else(|| src.clone());
+                // `None` with the cursor on a folder row means the folder has
+                // no direct request to put beside (`put_anchor`'s refusal);
+                // with no selection at all it falls back to the source's own
+                // slot. Either way this is a put, so it seeds.
+                if anchor.is_none() && self.sidebar.selected_is_folder() {
+                    self.toasts
+                        .push("No request in this folder to put beside", ToastKind::Warning);
+                    self.last_action_failed = true;
+                    return true;
+                }
+                let anchor = Some(anchor.unwrap_or_else(|| src.clone()));
                 let force = Action::ForceDuplicateRequest { slug: src, anchor, above };
                 // The copy opens, so unsaved edits are gated first, as
                 // Duplicate's are.

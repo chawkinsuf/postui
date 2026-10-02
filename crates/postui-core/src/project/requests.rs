@@ -604,20 +604,26 @@ impl Project {
     /// `<name> copy`, `<name> copy 2`, … next to its source; a broken
     /// file is byte-copied to `<slug>-copy`.
     pub fn duplicate_request(&mut self, slug: &str) -> Result<String, Error> {
-        self.duplicate_request_at(slug, slug, false)
+        self.duplicate_with(slug, slug, false, false)
     }
 
-    /// `duplicate_request` with the copy's place chosen by the caller
-    /// (piece 4 spec §5.2: `p`/`P`). `anchor` is a full slug. When it is
-    /// not the source itself and lies in the source's space, the copy is
-    /// made in the anchor's folder (same `<name> copy` collision rule,
-    /// applied there) and its order entry lands directly below the anchor,
-    /// or above it when `above`. Otherwise the copy is made beside its
-    /// source, as a plain duplicate always has. An anchor outside the
-    /// copy's space leaves the copy unlisted. Only a put (anchor other than
-    /// the source) seeds a missing order array; a plain duplicate writes
-    /// none.
+    /// The put entry point (piece 4 spec §5.2: `p`/`P`): a duplicate whose
+    /// copy's place is chosen by the caller. `anchor` is a full slug, and
+    /// may be the source itself (`yyP` on the yanked row). When it is not
+    /// the source and lies in the source's space, the copy is made in the
+    /// anchor's folder (same `<name> copy` collision rule, applied there).
+    /// Its order entry lands directly below the anchor, or above it when
+    /// `above`. Otherwise the copy is made beside its source. An anchor
+    /// outside the copy's space leaves the copy unlisted. A put always
+    /// seeds a missing order array for the anchor's level; only
+    /// `duplicate_request` never does.
     pub fn duplicate_request_at(&mut self, slug: &str, anchor: &str, above: bool) -> Result<String, Error> {
+        self.duplicate_with(slug, anchor, above, true)
+    }
+
+    /// The shared body. `seed` says whether a missing order array is
+    /// written (a put) or left alone (a plain duplicate).
+    fn duplicate_with(&mut self, slug: &str, anchor: &str, above: bool, seed: bool) -> Result<String, Error> {
         let source = request_rel(slug)?;
         let bytes = self
             .disk
@@ -664,9 +670,9 @@ impl Project {
         // the sidebar draws now, through the merge a first drag uses.
         // Computed before the copy exists (the pre-put order) and written
         // inside the transaction, so the undo takes it away. A plain
-        // duplicate (anchor == slug) never seeds.
-        let seed = Some(anchor)
-            .filter(|a| *a != slug)
+        // duplicate (`seed == false`) never seeds.
+        let seed = seed
+            .then_some(anchor)
             .and_then(Self::split_space)
             .filter(|(a_space, a_rel)| !order::space_order(&self.meta, a_space).iter().any(|e| e == a_rel))
             .map(|(a_space, a_rel)| {
@@ -1113,6 +1119,18 @@ mod tests {
         assert!(order::space_order(p.meta(), "main").is_empty());
         assert_eq!(read(&dir, "project.toml").as_deref(), Some(before.as_str()));
         assert!(!p.request_exists("main/a-copy"));
+    }
+
+    /// `yyP` on the yanked row itself: anchor == source is still a put, so
+    /// it seeds and the copy lands above (and below for `p`).
+    #[test]
+    fn a_put_on_its_own_source_seeds_and_lands_above_or_below() {
+        let (_dir, mut p) = unordered_fixture();
+        p.duplicate_request_at("main/a", "main/a", true).unwrap();
+        assert_eq!(order::space_order(p.meta(), "main"), ["a-copy", "a", "b", "c"]);
+        let (_dir, mut p) = unordered_fixture();
+        p.duplicate_request_at("main/a", "main/a", false).unwrap();
+        assert_eq!(order::space_order(p.meta(), "main"), ["a", "a-copy", "b", "c"]);
     }
 
     /// The old entry point is the new one anchored on its own source.

@@ -21137,6 +21137,44 @@ mod undo_tests {
         assert_eq!(main_order(&app), ["alpha", "alpha-copy", "beta"]);
     }
 
+    /// `yyP` / `yyp` on the yanked row itself (anchor == source) is still a
+    /// put: it seeds the order and the copy lands above / below.
+    #[test]
+    fn a_put_on_the_yanked_row_itself_lands_above_or_below_it() {
+        for (above, want) in [(true, ["alpha-copy", "alpha", "beta"]), (false, ["alpha", "alpha-copy", "beta"])] {
+            let (mut app, _dir) = spaced_app();
+            assert!(main_order(&app).is_empty());
+            app.update(Action::YankRequest("main/alpha".into()));
+            app.update(Action::PutRequest { anchor: Some("main/alpha".into()), above });
+            assert_eq!(main_order(&app), want, "above = {above}");
+        }
+    }
+
+    /// Spec §5.2 (user ruling): a folder row with no direct request has
+    /// nothing to put beside. It says so, writes nothing, keeps the register.
+    #[test]
+    fn a_put_on_a_folder_with_no_direct_request_refuses() {
+        let (mut app, dir) = spaced_app();
+        app.update(Action::YankRequest("main/alpha".into()));
+        app.sidebar.rows = vec![Row::Folder {
+            path: "main/empty".into(),
+            name: "empty".into(),
+            depth: 0,
+            expanded: true,
+        }];
+        app.sidebar.selected = Some(0);
+        let files = request_files(dir.path());
+        app.update(Action::PutRequest { anchor: app.sidebar.put_anchor(false), above: false });
+        assert!(
+            app.toasts.messages().contains(&"No request in this folder to put beside"),
+            "{:?}",
+            app.toasts.messages()
+        );
+        assert!(app.last_action_failed);
+        assert_eq!(request_files(dir.path()), files);
+        assert_eq!(app.yank, crate::yank::Register::Request("main/alpha".into()));
+    }
+
     /// Review Focus 4: the copy opens, so unsaved edits are gated first.
     #[test]
     fn a_put_over_unsaved_edits_asks_first() {
