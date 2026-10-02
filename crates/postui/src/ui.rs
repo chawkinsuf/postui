@@ -351,6 +351,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             .map(|i| (i, app.editor.table_row_enabled(i)))
     })
     .flatten();
+    let vim_status = app.vim_status();
     crate::components::footer::draw_footer(
         frame,
         layout.footer,
@@ -401,6 +402,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         vm_chips,
         globals_live,
         plain_q_quits,
+        vim_status.as_deref(),
         // The hovered button's hint — the footer stands in for a tooltip.
         // Switched off wholesale by `hover_hints = false` in config.toml,
         // which leaves the chip row untouched under the pointer.

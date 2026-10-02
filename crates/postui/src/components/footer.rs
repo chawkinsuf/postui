@@ -319,6 +319,10 @@ pub fn draw_footer(
     // areas — the quit chip's keycap shows the pre-empting `^C` combo
     // instead of advertising a key that would just type.
     plain_q_quits: bool,
+    // Vim's mode and pending keys (`App::vim_status`): `None` in arrows.
+    // Paints at the right end before the commands chip, whole or not at
+    // all (piece 4 spec §3.8).
+    vim_status: Option<&str>,
     // The hovered button's one-line hint (`hint::hint_for`) — the footer
     // is the tooltip. Centred in the gap between the per-pane chips and
     // the commands/quit pair while enough of it fits there (ellipsized);
@@ -418,21 +422,29 @@ pub fn draw_footer(
         hovered,
         hover_t,
     );
-    // The hint sits in the gap between the per-pane chips and the
-    // commands/quit pair, and the chips never yield it more room. They
-    // can't: a hovered chip must stay under the pointer, since hover is
-    // re-resolved against every frame's hit map and swapping the chips out
-    // would un-hover it, bring them back, and oscillate. Letting the other
-    // buttons displace them anyway would mean the same hover behaved two
-    // different ways depending on what was under it, so a gap too small
-    // for a useful line simply leaves the hint out.
+    let chips_end = chip_row_end(start_x, right_limit, &chips);
+    // One column shy of `right_limit`: the commands chip's leading pad is
+    // painted in the pill's own fill, so anything ending right against it
+    // would read as part of the chip.
+    let mut hint_end = right_limit.saturating_sub(1);
+    // Vim's mode and echo sit at the right end, the way vim echoes to the
+    // bottom right. Never truncated: it paints only when it fits whole
+    // past the chips, and the hint takes what is left to its left.
+    if let Some(status) = vim_status {
+        let w = unicode_width::UnicodeWidthStr::width(status) as u16;
+        if hint_end >= chips_end && hint_end - chips_end >= w {
+            let x = hint_end - w;
+            text(buf, x, mid_y, status, theme.text_muted, theme.panel, false);
+            hint_end = x.saturating_sub(1);
+        }
+    }
+    // The hint sits in the gap between the chips and the status (or the
+    // commands/quit pair), and the chips never yield it more room: a
+    // hovered chip must stay under the pointer, since hover is re-resolved
+    // against every frame's hit map, so a gap too small for a useful line
+    // leaves the hint out.
     if let Some(hint) = hint {
-        let hint_start = chip_row_end(start_x, right_limit, &chips) + 1;
-        // One column shy of `right_limit`: the commands chip's leading pad
-        // is painted in the pill's own fill rather than the panel's, so it
-        // reads as part of the chip. Without this an ellipsized hint would
-        // run right up against it.
-        let hint_end = right_limit.saturating_sub(1);
+        let hint_start = chips_end + 1;
         if hint_end.saturating_sub(hint_start) >= HINT_MIN_SHOWN {
             paint_hint(buf, mid_y, hint_start, hint_end, hint, theme);
         }
@@ -658,6 +670,7 @@ mod tests {
                     true,
                     true,
                     None,
+                    None,
                     &mut hits,
                     None,
                     1.0,
@@ -866,6 +879,7 @@ mod tests {
                     None,
                     true,
                     true,
+                    None,
                     None,
                     &mut hits,
                     None,
@@ -1292,6 +1306,7 @@ mod tests {
                     true,
                     true,
                     None,
+                    None,
                     &mut hits,
                     None,
                     1.0,
@@ -1332,6 +1347,7 @@ mod tests {
                     None,
                     true,
                     true,
+                    None,
                     None,
                     &mut hits,
                     None,
@@ -1384,6 +1400,7 @@ mod tests {
                     true,
                     true,
                     None,
+                    None,
                     &mut hits,
                     None,
                     1.0,
@@ -1423,6 +1440,7 @@ mod tests {
                     None,
                     true,
                     true,
+                    None,
                     None,
                     &mut hits,
                     None,
@@ -1498,6 +1516,7 @@ mod tests {
                     true,
                     true,
                     None,
+                    None,
                     &mut hits,
                     None,
                     1.0,
@@ -1557,6 +1576,7 @@ mod tests {
                     None,
                     true,
                     true,
+                    None,
                     None,
                     &mut hits,
                     None,
@@ -1660,6 +1680,7 @@ mod tests {
                     true,
                     true,
                     None,
+                    None,
                     &mut hits,
                     None,
                     1.0,
@@ -1684,5 +1705,29 @@ mod tests {
             bottom.bg, app.theme.panel,
             "the terminal's bottom-most row (the footer's 3rd row) must be panel-filled: {bottom:?}"
         );
+    }
+
+    /// The status paints whole, just left of the commands chip, or not at
+    /// all: never truncated (spec §3.8).
+    #[test]
+    fn the_vim_status_paints_whole_or_not_at_all() {
+        let render = |width: u16, status: Option<&str>| -> String {
+            let theme = Theme::for_terminal();
+            let mut terminal = Terminal::new(TestBackend::new(width, FOOTER_HEIGHT)).unwrap();
+            let mut hits = crate::hit::HitMap::default();
+            terminal
+                .draw(|f| {
+                    draw_footer(
+                        f, f.area(), &theme, PaneId::Sidebar, false, false, None, false, false, None,
+                        JqBarState::Closed, false, None, true, true, status, None, &mut hits, None, 1.0,
+                    )
+                })
+                .unwrap();
+            let buf = terminal.backend().buffer().clone();
+            (0..buf.area.width).map(|x| buf[(x, 1)].symbol().to_string()).collect()
+        };
+        assert!(render(160, Some("NORMAL  3")).contains("NORMAL  3"));
+        assert!(!render(160, None).contains("NORMAL"));
+        assert!(!render(40, Some("NORMAL  3")).contains("NORMAL"), "no room, no status");
     }
 }

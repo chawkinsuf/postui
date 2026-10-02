@@ -29446,3 +29446,29 @@ fn repeat_cap_on_manage_and_variables_surfaces_is_row_based() {
         assert!((1..MAX_COUNT).contains(&cap), "{s:?} cap {cap}");
     }
 }
+
+/// Spec §3.8: the mode names what takes the keys; the echo follows it.
+#[test]
+fn the_footer_shows_vims_mode_and_pending_keys() {
+    use crate::config::KeyProfile;
+    let mut app = App::new_for_test();
+    app.focus = PaneId::Sidebar;
+    assert_eq!(app.vim_status(), None, "arrows has no mode");
+    assert!(!footer_text(&mut app).contains("NORMAL"));
+    app.use_profile(KeyProfile::Vim);
+    assert_eq!(app.vim_status().as_deref(), Some("NORMAL"));
+    app.handle_key(plain('3'));
+    assert_eq!(app.vim_status().as_deref(), Some("NORMAL  3"));
+    assert!(footer_text(&mut app).contains("NORMAL  3"));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.focus = PaneId::Editor;
+    app.editor.open_url_from_app();
+    assert_eq!(app.mode_indicator(), Some("INSERT"), "a field with the caret types");
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(!app.editor.url_open(), "the URL is closed before the body check");
+    app.editor.sub_focus = SubFocus::Content;
+    app.editor.active_tab = EditorTab::Body;
+    assert_eq!(app.mode_indicator(), Some("INSERT"), "the body types until M3");
+    app.update(Action::OpenPalette);
+    assert_eq!(app.mode_indicator(), Some("INSERT"), "a picker types");
+}

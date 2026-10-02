@@ -100,6 +100,33 @@ impl App {
         changed
     }
 
+    /// The router's half-typed keys for the footer (spec §3.8).
+    pub fn key_echo(&self) -> String {
+        self.router.echo()
+    }
+
+    /// The vim mode word (spec §3.8): what is taking the keys. A field
+    /// with the caret types, a picker's query included (`INSERT`, until M3
+    /// gives fields their Normal mode); everything else, a dropdown's
+    /// list among them, is `NORMAL`. `None` in the arrows profile.
+    pub fn mode_indicator(&self) -> Option<&'static str> {
+        if self.profile() != crate::config::KeyProfile::Vim {
+            return None;
+        }
+        Some(if self.field_caret().is_live() { "INSERT" } else { "NORMAL" })
+    }
+
+    /// The mode and the echo as the footer paints them: `NORMAL  3`.
+    pub fn vim_status(&self) -> Option<String> {
+        let mode = self.mode_indicator()?;
+        let echo = self.key_echo();
+        Some(if echo.is_empty() {
+            mode.to_string()
+        } else {
+            format!("{mode}  {echo}")
+        })
+    }
+
     /// The thing the keys go to right now (spec §3.3).
     pub fn surface(&self) -> Surface {
         use crate::components::manage::ManageTab;
