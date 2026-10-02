@@ -24,6 +24,10 @@ base64 = "0.22"
 # Char display widths, for mapping body-editor clicks back onto buffer
 # columns exactly the way edtui lays the text out (it uses this same crate).
 unicode-width = "0.2"
+# Body search (vim/engine/search.rs): the Vim `magic` subset is translated
+# to this crate's syntax (piece 3 §3.14). Already in the lock file as a
+# transitive dependency.
+regex = "1"
 # Raw poll(2)/read(2) on stdin for the OSC terminal-color query
 # (theme/osc.rs). Deliberately bypasses crossterm's event machinery: on
 # unix, crossterm's own `poll`/`read` consume bytes from fd 0 into its

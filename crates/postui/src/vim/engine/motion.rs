@@ -6,9 +6,11 @@
 
 use super::buf::{Pos, TextBuf};
 use super::class::class;
-use super::keys::{FindKind, Motion, Op};
+use super::keys::{FindKind, Motion, Op, Screen};
 use super::settings::{PARAGRAPHS, SECTIONS, TABSTOP};
-use super::{BufState, Engine, Mode, first_non_blank, first_non_blank_fix};
+use super::search::{self, Dir};
+use super::view::View;
+use super::{BufState, Engine, LastSearch, Mode, Note, ViewCtx, first_non_blank, first_non_blank_fix};
 use unicode_width::UnicodeWidthChar;
 
 /// How an operator treats a motion (`:help exclusive`, `:help linewise`).
@@ -70,6 +72,12 @@ impl Moved {
     fn refused(from: Pos) -> Self {
         Self { to: from, kind: MKind::Exclusive, want: WantUpdate::Keep, failed: true, no_adjust: false }
     }
+
+    /// A search that failed (Vim's `normal_search()`): the caret stays and
+    /// the wanted column is reset, since `w_set_curswant` is set first.
+    fn search_failed(from: Pos) -> Self {
+        Self { to: from, kind: MKind::Exclusive, want: WantUpdate::Here, failed: true, no_adjust: false }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -83,7 +91,13 @@ pub(crate) struct MotionCx {
 
 /// Display width of `c` at virtual column `vcol` (tabs run to the next stop).
 pub(crate) fn char_width(c: char, vcol: usize) -> usize {
-    if c == '\t' { TABSTOP - vcol % TABSTOP } else { c.width().unwrap_or(0).max(1) }
+    match c {
+        '\t' => TABSTOP - vcol % TABSTOP,
+        // Every other ASCII char takes one cell; skipping the table keeps a
+        // deep indent cheap to measure.
+        c if c.is_ascii() => 1,
+        c => c.width().unwrap_or(0).max(1),
+    }
 }
 
 /// The virtual column where char `col` starts.
@@ -461,6 +475,9 @@ pub(crate) fn run<B: TextBuf>(
             Some(to) => Moved::to(to, MKind::Inclusive, WantUpdate::Here),
             None => Moved::refused(from),
         },
+        Motion::ScreenLine(_) | Motion::SearchNext { .. } | Motion::Ident { .. } | Motion::Search { .. } => {
+            unreachable!("Engine::run_motion takes the window and search motions")
+        }
     }
 }
 
@@ -838,15 +855,130 @@ pub(crate) fn find_match<B: TextBuf>(buf: &B, from: Pos, how: MatchFrom, quotes:
 
 impl Engine {
     /// A bare motion in Normal or Visual.
-    pub(super) fn exec_move<B: TextBuf>(&mut self, motion: Motion, count: usize, buf: &mut B, st: &mut BufState) {
+    pub(super) fn exec_move<B: TextBuf>(&mut self, motion: Motion, count: usize, buf: &mut B, st: &mut BufState, ctx: &ViewCtx) {
         let visual = matches!(self.mode, Mode::Visual(_));
         let from = buf.cursor();
         let want = self.want_at(buf, st, from);
         let cx = MotionCx { op: None, visual, want };
-        let m = run(buf, from, motion, count, &cx, &mut self.last_find);
-        buf.set_cursor(self.clamped(buf, m.to));
+        let search = matches!(motion, Motion::Search { .. } | Motion::SearchNext { .. } | Motion::Ident { .. });
+        let m = self.run_motion(buf, from, motion, count, &cx, ctx);
+        let mut to = self.clamped(buf, m.to);
+        if matches!(self.mode, Mode::InsertNormal { .. }) && !search {
+            // Inside `ctrl+o` a motion still stops on a char (`oneright()`,
+            // `adjust_cursor()`); `j`, `k` and `$` reach the end through
+            // the wanted column when Insert resumes. A search has no
+            // `adjust_cursor()`: `normal_search()` leaves the caret where
+            // `check_cursor()` puts it ([`Engine::clamped`]), so
+            // `<C-o>/$<CR>` resumes Insert at the line's end.
+            to.col = to.col.min(buf.line_len(to.row).saturating_sub(1));
+        }
+        buf.set_cursor(to);
         let to = buf.cursor();
-        st.set_want(updated_want(buf, to, m.want, want, self.tab_rule(st, to)), to);
+        match m.want {
+            // Vim's `w_set_curswant = TRUE`: computed when next needed, with
+            // the tab rule of that moment (Deviation 9).
+            WantUpdate::Here => st.forget_want(),
+            update => st.set_want(updated_want(buf, to, update, want, self.tab_rule(st, to)), to),
+        }
+    }
+
+    /// Every motion: the window-relative ones here, the rest in [`run`].
+    pub(super) fn run_motion<B: TextBuf>(&mut self, buf: &B, from: Pos, motion: Motion, count: usize, cx: &MotionCx, ctx: &ViewCtx) -> Moved {
+        match motion {
+            Motion::ScreenLine(place) => {
+                let view = View::of::<B>(ctx);
+                let row = match view {
+                    Some(view) => view.screen_line(buf, place, count),
+                    // No window: the whole text is one (Deviation 12).
+                    None => match place {
+                        Screen::Top => (count.max(1) - 1).min(buf.line_count() - 1),
+                        Screen::Middle => (buf.line_count() - 1) / 2,
+                        Screen::Bottom => (buf.line_count() - 1).saturating_sub(count.max(1) - 1),
+                    },
+                };
+                // Without an operator `cursor_correct()` pulls the row into
+                // the window; `beginline(BL_SOL | BL_FIX)`.
+                let row = match (cx.op, view) {
+                    (None, Some(view)) => view.corrected_row(buf, row),
+                    _ => row,
+                };
+                Moved::to(Pos::new(row, first_non_blank_fix(&buf.line(row))), MKind::Linewise, WantUpdate::Here)
+            }
+            Motion::SearchNext { reverse } => {
+                let Some(last) = self.last_search.clone() else {
+                    // `normal_search()` resets the wanted column before
+                    // `do_search()` finds no pattern (probed: `jnj`).
+                    self.note = Some(Note::Message("No previous regular expression".into()));
+                    return Moved::search_failed(from);
+                };
+                let dir = match (last.dir, reverse) {
+                    (Dir::Forward, false) | (Dir::Backward, true) => Dir::Forward,
+                    _ => Dir::Backward,
+                };
+                self.search_motion(buf, from, &last.text, dir, count)
+            }
+            Motion::Ident { backward } => {
+                let line = buf.line(from.row);
+                let Some((start, end)) = search::find_ident(&line, from.col) else {
+                    self.note = Some(Note::Message("No string under cursor".into()));
+                    return Moved::refused(from);
+                };
+                let dir = if backward { Dir::Backward } else { Dir::Forward };
+                // Vim's `do_search()` keeps the pattern as its delimiter
+                // leaves it: `#`'s `\?` becomes `?`.
+                let text = search::as_stored(&search::ident_pattern(&line, start, end, backward), dir);
+                self.last_search = Some(LastSearch { text: text.clone(), dir });
+                self.search_motion(buf, Pos::new(from.row, start), &text, dir, count)
+            }
+            // The prompt's Enter: `run_search` stored the typed pattern, or
+            // the prompt was empty and the last one stands.
+            Motion::Search { dir } => {
+                let Some(last) = self.last_search.clone() else {
+                    self.note = Some(Note::Message("No previous regular expression".into()));
+                    return Moved::search_failed(from);
+                };
+                self.search_motion(buf, from, &last.text, dir, count)
+            }
+            _ => run(buf, from, motion, count, cx, &mut self.last_find),
+        }
+    }
+
+    /// A search as a motion (Vim's `normal_search()`): exclusive, charwise,
+    /// the wanted column reset even on failure; a wrap or a miss leaves its
+    /// message, and the highlight goes on.
+    pub(super) fn search_motion<B: TextBuf>(&mut self, buf: &B, from: Pos, text: &str, dir: Dir, count: usize) -> Moved {
+        self.hl = true;
+        let pat = match self.compiled(text) {
+            Ok(p) => p,
+            Err(atom) => {
+                self.note = Some(Note::Message(format!("pattern not supported: {atom}")));
+                return Moved::search_failed(from);
+            }
+        };
+        match search::search(buf, from, dir, count, &pat) {
+            Some((to, wrapped)) => {
+                if wrapped {
+                    self.note = Some(Note::Message(
+                        match dir {
+                            Dir::Forward => "search hit BOTTOM, continuing at TOP",
+                            Dir::Backward => "search hit TOP, continuing at BOTTOM",
+                        }
+                        .into(),
+                    ));
+                }
+                // `normal_search()` ends with `check_cursor()`: a match on
+                // the line's end (`/$`) lands on the last char in Normal,
+                // and stays on the end in Visual and inside Insert `ctrl+o`
+                // (`clamped`). The motion stays exclusive, after an
+                // operator too: `d/$` keeps the last char in Normal and
+                // deletes it inside `ctrl+o`.
+                Moved::to(self.clamped(buf, to), MKind::Exclusive, WantUpdate::Here)
+            }
+            None => {
+                self.note = Some(Note::Message(format!("Pattern not found: {text}")));
+                Moved::search_failed(from)
+            }
+        }
     }
 
     /// The column `j` and `k` aim for from `at`: the remembered one while
@@ -864,11 +996,11 @@ impl Engine {
 
     /// Whether a caret at `at` on a tab sits on its last cell (Vim's
     /// `getvcol`: in Normal always, in Visual past the anchor, in Insert
-    /// never).
+    /// and Replace never).
     pub(super) fn tab_end(&self, at: Pos) -> bool {
         match (self.mode, self.visual) {
             (Mode::Visual(_), Some(anchor)) => at > anchor,
-            (Mode::Insert, _) => false,
+            (Mode::Insert | Mode::Replace, _) => false,
             _ => true,
         }
     }

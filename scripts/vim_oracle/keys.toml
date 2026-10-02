@@ -1,5 +1,5 @@
 # The <Name> keys the corpus may use (Vim notation). generate.py refuses any
 # other name; tests/vim_conformance.rs maps each one to a crossterm KeyEvent
-# and fails if it can't. Plan 3c adds C-o C-t C-d C-f C-b.
+# and fails if it can't. Plan 3c added C-o C-t C-d C-f C-b.
 names = ["Esc", "CR", "BS", "Del", "Tab", "Space", "lt", "C-w", "C-u", "C-h", "C-r", "C-[", "C-a", "C-x",
-         "Left", "Right", "Up", "Down", "Home", "End"]
+         "C-o", "C-t", "C-d", "C-f", "C-b", "Left", "Right", "Up", "Down", "Home", "End"]

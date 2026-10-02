@@ -12,10 +12,10 @@
 # or ZZ/ZQ: if a change fails, its typed text runs as Normal commands, so
 # typed text uses harmless letters like X and Y.
 # status = "later" cases are generated and reported but do not fail the test.
-# Budget: the full 3a corpus is about 40,000 cases and 6.75 MB of golden file
-# (measured 2026-09-30); plan 3b's first wave adds about 13,000 cases. Keep it
-# under about 9 MB. Prefer named seats unless the key's result depends on the
-# char under the caret.
+# Budget: the 3a+3b corpus is about 53,000 cases and 9.06 MB of golden file
+# (measured 2026-10-01); plan 3c's second wave adds about 12,000 cases,
+# most of them small rows on `long`. Keep it under about 12 MB. Prefer named
+# seats unless the key's result depends on the char under the caret.
 
 [text.words]
 lines = ["foo bar  baz_qux.quux end"]
@@ -61,6 +61,28 @@ lines = ["\tone two", "\t\tthree", "four"]
 
 [text.short_last]
 lines = ["abcdefgh", "abc"]
+
+# 100 lines, for the window model (plan 3c): `top` is recorded (over 21
+# lines), and the seats bol/mid/eol fall on rows 1, 50 and 100. Even rows
+# are indented so `ctrl+f`, `H` and friends show their first-non-blank rule.
+[text.long]
+lines = ["line 1", "  line 2", "line 3", "  line 4", "line 5", "  line 6", "line 7", "  line 8", "line 9", "  line 10",
+         "line 11", "  line 12", "line 13", "  line 14", "line 15", "  line 16", "line 17", "  line 18", "line 19", "  line 20",
+         "line 21", "  line 22", "line 23", "  line 24", "line 25", "  line 26", "line 27", "  line 28", "line 29", "  line 30",
+         "line 31", "  line 32", "line 33", "  line 34", "line 35", "  line 36", "line 37", "  line 38", "line 39", "  line 40",
+         "line 41", "  line 42", "line 43", "  line 44", "line 45", "  line 46", "line 47", "  line 48", "line 49", "  line 50",
+         "line 51", "  line 52", "line 53", "  line 54", "line 55", "  line 56", "line 57", "  line 58", "line 59", "  line 60",
+         "line 61", "  line 62", "line 63", "  line 64", "line 65", "  line 66", "line 67", "  line 68", "line 69", "  line 70",
+         "line 71", "  line 72", "line 73", "  line 74", "line 75", "  line 76", "line 77", "  line 78", "line 79", "  line 80",
+         "line 81", "  line 82", "line 83", "  line 84", "line 85", "  line 86", "line 87", "  line 88", "line 89", "  line 90",
+         "line 91", "  line 92", "line 93", "  line 94", "line 95", "  line 96", "line 97", "  line 98", "line 99", "  line 100"]
+
+# 25 lines: just over the window (23 rows), for the end-of-file quirks of
+# `ctrl+f`, `zz` and `M`.
+[text.lines25]
+lines = ["line 1", "  line 2", "line 3", "  line 4", "line 5", "  line 6", "line 7", "  line 8", "line 9", "  line 10",
+         "line 11", "  line 12", "line 13", "  line 14", "line 15", "  line 16", "line 17", "  line 18", "line 19", "  line 20",
+         "line 21", "  line 22", "line 23", "  line 24", "line 25"]
 
 # --- harness ---------------------------------------------------------------
 
@@ -824,7 +846,7 @@ keys = ["aX<Esc>jgiY<Esc>", "giY<Esc>", "gi<Esc>", "AX<Esc>ggdd0giY<Esc>", "AX<E
         "AX<Esc>kyyP0giY<Esc>", "AX<Esc>kyyp0giY<Esc>", "iX<Esc>k0i<CR><Esc>G0giY<Esc>",
         "AX<Esc>k$a<Del><Esc>jgiY<Esc>", "3aX<Esc>0giY<Esc>", "j0r<Tab>gg0giY<Esc>", "3r<Tab>j0giY<Esc>",
         "r<Tab>j0.gg0giY<Esc>", "AX<CR><BS><Esc>u0giY<Esc>", "jAX<CR><BS><Esc>uggjgiY<Esc>",
-        "AX<CR><BS><Esc>u<C-r>0giY<Esc>"]
+        "AX<CR><BS><Esc>u<C-r>0giY<Esc>", "AX<CR><Del><Esc>ugggiY<Esc>", "A<CR><Del><Esc>uGgiY<Esc>"]
 on = ["json_pretty", "blank_edges", "short_last", "words"]
 at = ["bol", "fnb", "eol"]
 
@@ -937,7 +959,411 @@ on = ["words", "json_pretty"]
 at = ["bol", "eol"]
 reg = { text = "a\u0008b\u0017c\u0015d", type = "v" }
 
-# --- fuzz atoms (generate.py --fuzz); tier 1 and the tier-2 first wave ------
+# --- plan 3c: Replace mode (Task 2) -------------------------------------------
+
+# Vim's replace stack: BS puts the replaced char back, deletes an appended
+# one, and only moves before the session's start; Enter replaces nothing and
+# BS over it joins the lines back and restores the blanks autoindent stripped.
+[[group]]
+id = "insert/replace"
+tier = 2
+keys = ["Rxy<Esc>", "Rxy<BS><BS><BS><Esc>", "Rxyz<Esc>", "Rxyz<BS><BS><Esc>", "3Rxy<Esc>", "Rxy<Esc>u", "Rxy<Esc>w.",
+        "Rxy<C-w><Esc>", "Rxy z<C-w><Esc>", "Rxyz<C-u><Esc>", "Rx<Del>y<Esc>", "R<Tab>x<Esc>", "R<Tab><BS><BS>x<Esc>",
+        "Rx<Left>y<Esc>", "Rx<Left><BS>y<Esc>", "yiwR<C-r>\"<Esc>", "Rab<Esc>0giX<Esc>", "Rx<Esc>.", "2Rx<Esc>w.",
+        "Rxy<Esc>u<C-r>", "3Rxy<Esc>u", "Rxyzw<BS><BS><Esc>", "Rxyzw<BS><BS><Esc>u", "lRx<BS><BS><Esc>", "Rxy<C-w>z<Esc>",
+        "R<C-w>z<Esc>", "R<Esc>", "R<Esc>u", "Rxy<Esc>0R<BS><Esc>", "Ra<Esc>", "Ra<Esc>u", "Rabc<Esc>u", "3Rx<Esc>.",
+        "3Rx<Esc>2.", "Rxyz<BS><BS><BS><BS><Esc>", "Rx<BS>y<Esc>", "9Rx<Esc>", "RX<C-u><C-u><Esc>", "RXY<C-w><C-w>Z<Esc>",
+        "R<Space><Esc>", "R<Space><BS><Esc>", "yiwRx<C-r>\"<BS><BS><Esc>", "A<BS>Rx<Esc>", "Rx<Esc>u.", "Rab<Esc>ugiY<Esc>"]
+on = ["words", "json_pretty", "blank_edges", "unicode", "tabs", "empty", "one_char", "numbers"]
+at = ["bol", "mid", "eol"]
+
+[[group]]
+id = "insert/replace-lines"
+tier = 2
+keys = ["Rx<CR>y<Esc>", "Rx<CR>y<BS><BS><BS><Esc>", "Rx<CR>y<BS><BS><BS><BS><Esc>", "R<CR>x<Esc>", "R<CR><BS><BS><BS><Esc>",
+        "R<CR><Esc>", "Rxy<CR>zw<Esc>", "Rxy<CR>zw<Esc>u", "Rxy<CR>zw<BS><BS><BS><BS><Esc>", "Rxy<CR>zw<BS><BS><BS><BS><BS><Esc>",
+        "Rx<Up><Esc>", "Rx<Down>y<Esc>", "Rx<Down>y<BS><BS><Esc>", "3Rx<CR><Esc>", "Rab<CR><Esc>", "Rab<CR><BS><Esc>",
+        "yjRx<C-r>\"<Esc>", "yjRx<C-r>\"<BS><BS><BS><Esc>", "R<CR><CR><BS><BS><Esc>", "Rx<CR><Esc>u", "Rx<CR>y<Esc>.",
+        "R<BS><CR><BS><Esc>", "R<BS>zz<C-w><Esc>", "R<BS><CR><CR><BS><BS><Esc>", "R<BS><Esc>u", "R<BS><BS><Esc>u"]
+on = ["json_pretty", "indent", "blank_edges", "words", "short_last", "tabs"]
+at = ["bol", "fnb", "mid", "eol"]
+
+[[group]]
+id = "insert/replace-reg"
+tier = 2
+keys = ["R<C-r>\"<Esc>", "Rx<C-r>\"<BS><BS><Esc>", "3R<C-r>\"<Esc>", "R<C-r>\"<Esc>u"]
+on = ["words", "json_pretty"]
+at = ["bol", "eol"]
+reg = { text = "ab\n  cd", type = "v" }
+
+# --- plan 3c: Insert ctrl+t ctrl+d (Task 3) ------------------------------------
+
+# Always rounded to a multiple of shiftwidth (change_indent's round), unlike
+# `>>`; 0^D and ^^D remove the indent, and ^^D remembers it for the next
+# Enter; the caret keeps its place relative to the first non-blank.
+[[group]]
+id = "insert/shift"
+tier = 2
+keys = ["i<C-t><Esc>", "a<C-t><Esc>", "A<C-t>x<Esc>", "i<C-d><Esc>", "i<C-d><C-d><Esc>", "i<C-t>x<Esc>", "i0<C-d><Esc>",
+        "i^<C-d><Esc>", "ix0<C-d><Esc>", "i<C-t>0<C-d><Esc>", "o<C-t><Esc>", "o<C-t>x<Esc>", "O<C-d>x<Esc>", "i<C-t><Esc>u",
+        "i<C-t><C-t><Esc>u<C-r>", "ix<C-t>y<Esc>.", "3i<C-t>x<Esc>", "Rx<C-t>y<Esc>", "Rx<C-d>y<BS><BS><BS><Esc>",
+        "i<C-t><Left><C-d><Esc>", "i<C-t><C-w><Esc>", "i<C-t>x<C-u><Esc>", "A<C-d><Esc>", "i^<C-d><CR>x<Esc>",
+        "i<Tab><C-d><Esc>", "i<C-t><Tab>x<Esc>", "i<C-t><Esc>j", "2i<C-t><Esc>", "i<C-t><C-t><C-t><Esc>", "i<C-d><Esc>u",
+        "i<C-t><Down><C-t><Esc>", "i0<C-d><Esc>u", "yiwA<C-r>\"<C-d><Esc>", "i<C-t><CR>x<Esc>", "i<C-d><CR>x<Esc>",
+        "o<C-t><C-t><Esc>", "o<C-d><Esc>", "ix<C-t><Esc>", "ix<C-d><Esc>", "A<C-t><C-d><Esc>", "i<C-t><BS><Esc>",
+        "i<C-t>x<BS><BS><Esc>", "3i<C-t><Esc>", "i<C-t><Esc>.", "ix<C-t><Esc>j.",
+        "i^<C-d><Space><Space><CR><C-d><CR>x<Esc>", "A0<Right><C-d><Esc>", "i0<Up><C-d><Esc>",
+        "i0<C-r>\"<C-d><Esc>", "R0<C-d><Esc>", "R^<C-d><CR>x<Esc>", "Rxy0<C-d><BS><BS><Esc>"]
+on = ["indent", "tabs", "words", "json_pretty", "blank_edges", "empty", "one_char"]
+at = ["bol", "fnb", "mid", "eol"]
+
+[text.deep_indent]
+lines = ["      abc", "   def", "x"]
+
+[[group]]
+id = "insert/shift-deep"
+tier = 2
+keys = ["i<C-d><Esc>", "i<C-t><Esc>", "i<C-d><C-d><C-d><Esc>", "ix<C-d><Esc>", "i<C-d>x<Esc>", "A<C-d><C-d><Esc>", "I<C-d><Esc>"]
+on = ["deep_indent"]
+at = ["each"]
+
+# --- plan 3c: Insert ctrl+o (Task 4) ---------------------------------------------
+
+# One Normal command, then Insert resumes: the caret goes back past the end
+# when it was there, or when the wanted column is right of it; a nested
+# insert replaces the restart; `.` repeats the change before the insert; the
+# undo step and the record end at ctrl+o. A case may end in niI/niR.
+[[group]]
+id = "insert/ctrl-o"
+tier = 2
+keys = ["iXY<C-o>0Z<Esc>", "iXY<C-o>0Z<Esc>u", "iXY<C-o>0Z<Esc>uu", "A<C-o>0Z<Esc>", "A<C-o>hZ<Esc>", "i<C-o>$Z<Esc>",
+        "xiX<C-o>.Y<Esc>", "iX<C-o>aY<Esc>W", "iX<C-o>rWY<Esc>", "iX<C-o>vlldY<Esc>", "iX<C-o><Esc>Y<Esc>", "iX<C-o>3lY<Esc>",
+        "xiX<C-o>uY<Esc>", "yiwiX<C-o>pY<Esc>", "iX<C-o>dwY<Esc>", "iX<C-o>2dwY<Esc>", "iX<C-o>d<Esc>Y<Esc>", "i<C-o>",
+        "3iX<C-o>lY<Esc>", "a<C-o>lX<Esc>", "iX<Left><C-o>.Y<Esc>", "iX<C-o>vl<Esc>Y<Esc>", "iX<C-o>JY<Esc>", "iX<C-o>0Y<Esc>k",
+        "A<C-o>0<Esc>j", "iX<C-o>ggY<Esc>", "iX<C-o>giY<Esc>", "iX<C-o>cwY<Esc>W", "iX<C-o>wY<Esc>u", "iX<C-o>xY<Esc>u",
+        "iX<C-o>xY<Esc>uu", "iX<C-o>xY<Esc>.", "iX<C-o>wY<Esc>.", "iX<C-o>w<C-o>wY<Esc>u", "iX<C-o>0<C-o>$Y<Esc>", "iX<C-o>yiwY<Esc>",
+        "iX<C-o>~Y<Esc>", "iX<C-o>v<Esc>Y<Esc>", "iX<C-o>viwY<Esc>", "iX<C-o>f<Esc>Y<Esc>", "iX<C-o>f Y<Esc>", "iX<C-o>kY<Esc>",
+        "iX<C-o><Left>Y<Esc>", "iX<C-o>iY<Esc>W", "iX<C-o>AY<Esc>W", "a<C-o>0<C-o>$X<Esc>", "i<C-o>$<C-o>0X<Esc>", "i<C-o>$<C-o>hX<Esc>",
+        "iX<C-o>3lY<Esc>u", "iX<C-o><C-r>Y<Esc>", "yiwiX<C-o>\"0pY<Esc>", "iX<C-o>2xY<Esc>", "iX<C-o>2xY<Esc>.", "Rx<C-o>lY<Esc>",
+        "R<C-o>", "R<C-o>v", "iX<C-o>v", "iX<C-o>gY<Esc>", "A<C-o>", "A<C-o>x", "iX<C-o>ciwY<Esc>W", "iX<C-o>oY<Esc>W",
+        "iX<C-o>ddY<Esc>", "iX<C-o>>>Y<Esc>", "iX<C-o>guiwY<Esc>", "iX<C-o>%Y<Esc>", "3iX<C-o>.Y<Esc>", "iX<C-o>nY<Esc>",
+        "iX<Esc>A<C-o>.Y<Esc>", "a<C-o>Y<Esc>", "iX<C-o>$<C-o>$Y<Esc>", "iX<C-o><C-a>Y<Esc>", "A<C-o>vd", "A<C-o>vdY<Esc>",
+        "iX<C-o>ggdGY<Esc>", "yiwiX<C-o>viwpY<Esc>", "yiwiX<C-o>vlpY<Esc>"]
+on = ["words", "json_pretty", "blank_edges", "tabs", "unicode", "empty", "one_char", "numbers"]
+at = ["bol", "mid", "eol"]
+
+[[group]]
+id = "insert/ctrl-o-lines"
+tier = 2
+keys = ["a<C-o>jX<Esc>", "A<C-o>jX<Esc>", "a<C-o>j<C-o>kX<Esc>", "A<C-o>j<C-o>kX<Esc>", "A<C-o>j<C-o>k<C-o>jX<Esc>", "o<C-o>kX<Esc>",
+        "O<C-o>jX<Esc>", "A<C-o>jjX<Esc>", "a<C-o>kX<Esc>", "A<C-o>GX<Esc>", "A<C-o>ggX<Esc>", "I<C-o>jX<Esc>", "A<C-o>jX<Esc>u",
+        "o<C-o>k<Esc>", "A<CR><C-o>kX<Esc>", "A<CR>X<C-o>kY<Esc>", "A<C-o>jX<C-o>kY<Esc>"]
+on = ["json_pretty", "tabs", "short_last", "blank_edges", "indent", "words"]
+at = ["bol", "fnb", "eol"]
+
+# --- plan 3c: the window model (Task 5) -------------------------------------------
+
+# `top` (Vim's line('w0')) after plain motions and edits on a long text:
+# update_topline's halfway/bottom/top rules with scrolloff=0.
+[[group]]
+id = "view/topline"
+tier = 2
+keys = ["G", "Ggg", "50G", "24j", "30G", "23j", "22j", "G30k", "G50k", "G57k", "G66k", "Go<Esc>", "dG", "dGu", "yyGp",
+        "GVkkd", "40G", "25G", "26G", "47G", "48G", "49G", "99j", "99k", "50jk", "yy50jp", "yy50jP", "50jo<Esc>", "50jO<Esc>",
+        "50jdd", "50jddu", "50jVjjd", "50j}", "50j{", "30jiX<Esc>", "30jA<CR>Y<Esc>", "k", "23k", "22k", "j", "gg", "$",
+        "G$", "Gkkk", "dj", "dk", "v30jd", "v30jy", "77Gjjjjjjjjjjjjjjjjjjjjjjjj", "ggjjjjjjjjjjjjjjjjjjjjjjjjjj", "50Gdjjj",
+        "GddGdd", "GdGdG", "ggVGd", "ggVGdu", "GOX<Esc>", "G2OX<Esc>", "60GA<CR><CR><CR><Esc>", "40Gdd.", "40Gddu<C-r>"]
+on = ["lines25"]
+at = ["bol", "mid", "eol"]
+
+# `view/topline` on `long`, seated at column 1 only (the golden file's size budget).
+[[group]]
+id = "view/topline-long"
+tier = 2
+keys = ["G", "Ggg", "50G", "24j", "30G", "23j", "22j", "G30k", "G50k", "G57k", "G66k", "Go<Esc>", "dG", "dGu", "yyGp",
+        "GVkkd", "40G", "25G", "26G", "47G", "48G", "49G", "99j", "99k", "50jk", "yy50jp", "yy50jP", "50jo<Esc>", "50jO<Esc>",
+        "50jdd", "50jddu", "50jVjjd", "50j}", "50j{", "30jiX<Esc>", "30jA<CR>Y<Esc>", "k", "23k", "22k", "j", "gg", "$",
+        "G$", "Gkkk", "dj", "dk", "v30jd", "v30jy", "77Gjjjjjjjjjjjjjjjjjjjjjjjj", "ggjjjjjjjjjjjjjjjjjjjjjjjjjj", "50Gdjjj",
+        "GddGdd", "GdGdG", "ggVGd", "ggVGdu", "GOX<Esc>", "G2OX<Esc>", "60GA<CR><CR><CR><Esc>", "40Gdd.", "40Gddu<C-r>"]
+on = ["long"]
+at = [[1, 1], [50, 1], [100, 1]]
+
+# --- plan 3c: ctrl+d ctrl+u ctrl+f ctrl+b (Task 6) ---------------------------------
+
+[[group]]
+id = "view/halfpage"
+tier = 2
+keys = ["<C-d>", "<C-u>", "<C-d><C-d>", "G<C-u>", "<C-d>G<C-u>", "3<C-d>", "3<C-d><C-d>",
+        "3<C-d><C-u>", "G<C-d>", "<C-u>x", "<C-d>k", "<C-d>j", "<C-d>u", "x<C-d>.", "5<C-d>", "<C-d>5<C-u>", "25<C-u>",
+        "G25<C-u>", "G23<C-u>", "G99<C-u>", "G99<C-u><C-d>", "99<C-d>", "9999<C-d>", "9999<C-d><C-u>", "23<C-d>", "24<C-d>", "23<C-d>k",
+        "<C-d><C-d><C-d><C-d><C-d><C-d><C-d><C-d><C-d>", "G<C-u><C-u><C-u><C-u><C-u>", "<C-d><C-u>", "G<C-u><C-d>", "v<C-d>d",
+        "V<C-d>d", "v<C-d>", "d<C-d>", "d<C-u>", "y<C-d>x", "<C-d>$", "$<C-d>", "<C-d>iX<Esc>", "<C-d>o<Esc>", "3<C-d>G3<C-u>"]
+on = ["lines25", "json_pretty", "one_char", "empty"]
+at = ["bol", "mid", "eol"]
+
+# `view/halfpage` on `long`, seated at column 1 only (the golden file's size budget).
+[[group]]
+id = "view/halfpage-long"
+tier = 2
+keys = ["<C-d>", "<C-u>", "<C-d><C-d>", "G<C-u>", "<C-d>G<C-u>", "3<C-d>", "3<C-d><C-d>",
+        "3<C-d><C-u>", "G<C-d>", "<C-u>x", "<C-d>k", "<C-d>j", "<C-d>u", "x<C-d>.", "5<C-d>", "<C-d>5<C-u>", "25<C-u>",
+        "G25<C-u>", "G23<C-u>", "G99<C-u>", "G99<C-u><C-d>", "99<C-d>", "9999<C-d>", "9999<C-d><C-u>", "23<C-d>", "24<C-d>", "23<C-d>k",
+        "<C-d><C-d><C-d><C-d><C-d><C-d><C-d><C-d><C-d>", "G<C-u><C-u><C-u><C-u><C-u>", "<C-d><C-u>", "G<C-u><C-d>", "v<C-d>d",
+        "V<C-d>d", "v<C-d>", "d<C-d>", "d<C-u>", "y<C-d>x", "<C-d>$", "$<C-d>", "<C-d>iX<Esc>", "<C-d>o<Esc>", "3<C-d>G3<C-u>"]
+on = ["long"]
+at = [[1, 1], [50, 1], [100, 1]]
+
+[[group]]
+id = "view/page"
+tier = 2
+keys = ["<C-f>", "<C-b>", "<C-f><C-b>", "<C-f><C-f>", "<C-f><C-f><C-f><C-f>", "<C-f><C-f><C-f><C-f><C-f>",
+        "<C-f><C-f><C-f><C-f><C-f><C-f>", "<C-f><C-f><C-f><C-f><C-f><C-b>", "G<C-f>", "G<C-f>x", "<C-b>x", "G<C-b>", "G<C-b><C-f>",
+        "G2<C-b>", "G<C-b><C-b>", "G<C-b><C-b><C-b>", "G<C-b><C-b><C-b><C-b>", "G<C-b><C-b><C-b><C-b><C-b>", "2<C-f>", "3<C-f>",
+        "9<C-f>", "G9<C-b>", "<C-f>x", "v<C-f>", "v<C-f>d", "y<C-f>", "d<C-f>x", "<C-f>u", "x<C-f>.",
+        "<C-f>k", "<C-f>j", "<C-b>j", "<C-f>$", "<C-f>iX<Esc>", "$<C-b>j", "$9<C-f>k", "v$9<C-f>k"]
+on = ["lines25", "json_pretty", "one_char", "empty"]
+at = ["bol", "mid", "eol"]
+
+# `view/page` on `long`, seated at column 1 only (the golden file's size budget).
+[[group]]
+id = "view/page-long"
+tier = 2
+keys = ["<C-f>", "<C-b>", "<C-f><C-b>", "<C-f><C-f>", "<C-f><C-f><C-f><C-f>", "<C-f><C-f><C-f><C-f><C-f>",
+        "<C-f><C-f><C-f><C-f><C-f><C-f>", "<C-f><C-f><C-f><C-f><C-f><C-b>", "G<C-f>", "G<C-f>x", "<C-b>x", "G<C-b>", "G<C-b><C-f>",
+        "G2<C-b>", "G<C-b><C-b>", "G<C-b><C-b><C-b>", "G<C-b><C-b><C-b><C-b>", "G<C-b><C-b><C-b><C-b><C-b>", "2<C-f>", "3<C-f>",
+        "9<C-f>", "G9<C-b>", "<C-f>x", "v<C-f>", "v<C-f>d", "y<C-f>", "d<C-f>x", "<C-f>u", "x<C-f>.",
+        "<C-f>k", "<C-f>j", "<C-b>j", "<C-f>$", "<C-f>iX<Esc>", "$<C-b>j", "$9<C-f>k", "v$9<C-f>k"]
+on = ["long"]
+at = [[1, 1], [50, 1], [100, 1]]
+
+[[group]]
+id = "view/seats"
+tier = 2
+keys = ["<C-d>", "<C-u>", "<C-f>", "<C-b>", "k", "j", "<C-d>k", "<C-f>k"]
+on = ["long"]
+at = [[2, 1], [12, 1], [13, 1], [23, 1], [24, 1], [25, 1], [26, 1], [77, 1], [78, 1], [79, 1], [100, 1]]
+
+# --- plan 3c: H M L, zz zt zb (Task 7) ---------------------------------------------
+
+# `xH.` stands in for the plan's `H.` (a `.` needs a change earlier in the
+# case, trap 8) and `zJ` for `zq` (`q` is UNSAFE as a token); `zJ` is no Vim
+# command either, so it still checks that `z` + an unknown key is inert.
+
+[[group]]
+id = "view/hml"
+tier = 2
+keys = ["H", "M", "L", "3H", "3L", "9H", "99L", "dL", "dH", "dM", "yL", "yH", "cLX<Esc>", "GH", "GM", "GL", "G3H", "GdH", "GyH",
+        "GdM", "vLd", "vMd", "vHd", "VLd", "50GzzH", "50GzzL", "50Gzz9H", "50Gzz99L", "50Gzz99H", "GzbL", "GzbH", "GzbM", "ztM",
+        "50zzM", "90GztM", "90GztL", "Hx", "Lx", "Mx", "xH.", "LjH", "Lu", "dLu", "Mdd", "L$", "H$M"]
+on = ["lines25", "json_pretty", "json_gaps", "blank_edges", "words", "one_char", "empty", "indent"]
+at = ["bol", "mid", "eol"]
+
+# `view/hml` on `long`, seated at column 1 only (the golden file's size budget).
+[[group]]
+id = "view/hml-long"
+tier = 2
+keys = ["H", "M", "L", "3H", "3L", "9H", "99L", "dL", "dH", "dM", "yL", "yH", "cLX<Esc>", "GH", "GM", "GL", "G3H", "GdH", "GyH",
+        "GdM", "vLd", "vMd", "vHd", "VLd", "50GzzH", "50GzzL", "50Gzz9H", "50Gzz99L", "50Gzz99H", "GzbL", "GzbH", "GzbM", "ztM",
+        "50zzM", "90GztM", "90GztL", "Hx", "Lx", "Mx", "xH.", "LjH", "Lu", "dLu", "Mdd", "L$", "H$M"]
+on = ["long"]
+at = [[1, 1], [50, 1], [100, 1]]
+
+# The six `50Gzz`/`90Gzt` scroll keys are deferred from Task 6's brief
+# (`zz`/`zt` did not exist yet). `z{count}` reads digits, then swallows the
+# next key (`nv_z_get_count()`); `z{count}<CR>` is left out: it resizes the
+# oracle's only window, which no case resets.
+[[group]]
+id = "view/z"
+tier = 2
+keys = ["zz", "zt", "zb", "10zt", "50zz", "50zb", "Gzz", "Gzt", "Gzb", "12zz", "13zb", "zbj", "23jzt", "23jzb", "23jzz", "2zt",
+        "2zb", "0zz", "200zt", "ztzb", "Gztzz", "GztH", "<C-d>Gzz", "97Gzz", "97Gzt", "90Gzt", "zb<C-d>", "zt<C-u>", "$zz",
+        "$50zt", "zzx", "ztdd", "zbu", "dzz", "vzzd", "Vztd", "z<Esc>x", "zox", "zJ", "3zz", "zzzb", "zzzt", "zbzz",
+        "50Gzz<C-d>", "50Gzz<C-u>", "50Gzz<C-f>", "50Gzz<C-b>", "90Gzt<C-f>", "90Gzt<C-f><C-b>",
+        "z5x", "z5zzx", "z5ztx", "z0x", "z12<Del>x", "dz5x", "vz5xd", "$3zzj", "3ztj", "5ztk", "$3zbj", "$3zzk"]
+on = ["lines25", "json_pretty", "blank_edges", "words", "one_char", "empty"]
+at = ["bol", "mid", "eol"]
+
+# `view/z` on `long`, seated at column 1 only (the golden file's size budget).
+[[group]]
+id = "view/z-long"
+tier = 2
+keys = ["zz", "zt", "zb", "10zt", "50zz", "50zb", "Gzz", "Gzt", "Gzb", "12zz", "13zb", "zbj", "23jzt", "23jzb", "23jzz", "2zt",
+        "2zb", "0zz", "200zt", "ztzb", "Gztzz", "GztH", "<C-d>Gzz", "97Gzz", "97Gzt", "90Gzt", "zb<C-d>", "zt<C-u>", "$zz",
+        "$50zt", "zzx", "ztdd", "zbu", "dzz", "vzzd", "Vztd", "z<Esc>x", "zox", "zJ", "3zz", "zzzb", "zzzt", "zbzz",
+        "50Gzz<C-d>", "50Gzz<C-u>", "50Gzz<C-f>", "50Gzz<C-b>", "90Gzt<C-f>", "90Gzt<C-f><C-b>",
+        "z5x", "z5zzx", "z5ztx", "z0x", "z12<Del>x", "dz5x", "vz5xd", "$3zzj", "3ztj", "5ztk", "$3zbj", "$3zzk"]
+on = ["long"]
+at = [[1, 1], [50, 1], [100, 1]]
+
+# --- plan 3c: search motions n N * # (Task 10) ---------------------------------------
+
+[text.search]
+lines = ["foo bar foo", "baz foo", "foobar a.b a*b", "x×y 日本語x 日本", "... --- a_b", "", "zzz"]
+
+[[group]]
+id = "search/ident"
+tier = 2
+keys = ["*", "#", "*n", "*N", "#n", "#N", "2*", "3*", "*nn", "d*", "c*X<Esc>", "y*P", "v*d", "*vNd", "*d2n", "*2n", "*vn", "*vN",
+        "V*d", "*u", "x*.", "d*u", "d*.", "*ggn", "*GN", "x*j.", "n", "N", "9n", "*9n", "#9N", "*x", "#x", "*<Esc>", "d*x",
+        "yiwjviwp*", "*0", "#$", "*v", "*V", "*vd", "*hn", "*ln", "*dnu", "*cnX<Esc>", "*ynP", "*vnd", "*vNo", "*3n", "*dN",
+        "*Nx", "x*n.", "**", "##", "*#", "#*", "3#", "*vd*", "jnj", "jNj", "j*j"]
+on = ["search", "words", "json_pretty", "unicode", "punct", "url", "quotes", "blank_edges", "empty", "one_char"]
+at = ["bol", "mid", "eol"]
+
+# `search/ident` on `long`, seated at column 1 only (the golden file's size budget).
+[[group]]
+id = "search/ident-long"
+tier = 2
+keys = ["*", "#", "*n", "*N", "#n", "#N", "2*", "3*", "*nn", "d*", "c*X<Esc>", "y*P", "v*d", "*vNd", "*d2n", "*2n", "*vn", "*vN",
+        "V*d", "*u", "x*.", "d*u", "d*.", "*ggn", "*GN", "x*j.", "n", "N", "9n", "*9n", "#9N", "*x", "#x", "*<Esc>", "d*x",
+        "yiwjviwp*", "*0", "#$", "*v", "*V", "*vd", "*hn", "*ln", "*dnu", "*cnX<Esc>", "*ynP", "*vnd", "*vNo", "*3n", "*dN",
+        "*Nx", "x*n.", "**", "##", "*#", "#*", "3#", "*vd*", "jnj", "jNj", "j*j"]
+on = ["long"]
+at = [[1, 1], [50, 1], [100, 1]]
+
+[[group]]
+id = "search/ident-each"
+tier = 2
+keys = ["*", "#", "*n"]
+on = ["search", "punct", "unicode"]
+at = ["each"]
+
+# `#` escapes `?`, and `do_search()` keeps it unescaped: `N` after `#`
+# searches forward for a literal `?`.
+[text.search_question]
+lines = ["?? x ??", "a ??", "\\? b \\?"]
+
+[[group]]
+id = "search/ident-question"
+tier = 2
+keys = ["#", "#N", "#n", "*N", "#Nn"]
+on = ["search_question"]
+at = ["bol", "eol"]
+
+# --- plan 3c: the / and ? prompt (Task 11) ----------------------------------------
+
+# A `<` in a pattern is written <lt>. No case may end in the prompt.
+[[group]]
+id = "search/prompt"
+tier = 2
+keys = ["/foo<CR>", "/foo<CR>n", "/foo<CR>nn", "/zzz<CR>", "/zzz<CR>n", "/zzz<CR>x", "?foo<CR>", "?foo<CR>n", "?foo<CR>N",
+        "2/foo<CR>", "9/foo<CR>", "/foo<CR>9N", "/foo<CR>3n", "/<CR>", "/foo<CR>/<CR>", "/foo<CR>//<CR>", "/foo<CR>?<CR>",
+        "/foo<CR>?<CR>n", "/foo<CR>u", "x/foo<CR>.", "xx/foo<CR>.", "/foo/<CR>", "/fo<CR>", "/o<CR>", "/o<CR>n", "/o<CR>N",
+        "/ <CR>", "/a<CR>", "?a<CR>", "/.<CR>", "/x<CR>", "?x<CR>", "/foo<CR>x", "/foo<CR>dd", "/foo<CR>v", "/bar<CR>vn",
+        "/foo<CR>jn", "/foo<CR>kN", "G/foo<CR>", "G?foo<CR>", "$/foo<CR>", "$?foo<CR>", "/foo<CR>$n", "/FOO<CR>"]
+on = ["search", "words", "json_pretty", "unicode", "quotes", "blank_edges", "empty", "one_char"]
+at = ["bol", "mid", "eol"]
+
+# `search/prompt` on `long`, seated at column 1 only (the golden file's size budget).
+[[group]]
+id = "search/prompt-long"
+tier = 2
+keys = ["/foo<CR>", "/foo<CR>n", "/foo<CR>nn", "/zzz<CR>", "/zzz<CR>n", "/zzz<CR>x", "?foo<CR>", "?foo<CR>n", "?foo<CR>N",
+        "2/foo<CR>", "9/foo<CR>", "/foo<CR>9N", "/foo<CR>3n", "/<CR>", "/foo<CR>/<CR>", "/foo<CR>//<CR>", "/foo<CR>?<CR>",
+        "/foo<CR>?<CR>n", "/foo<CR>u", "x/foo<CR>.", "xx/foo<CR>.", "/foo/<CR>", "/fo<CR>", "/o<CR>", "/o<CR>n", "/o<CR>N",
+        "/ <CR>", "/a<CR>", "?a<CR>", "/.<CR>", "/x<CR>", "?x<CR>", "/foo<CR>x", "/foo<CR>dd", "/foo<CR>v", "/bar<CR>vn",
+        "/foo<CR>jn", "/foo<CR>kN", "G/foo<CR>", "G?foo<CR>", "$/foo<CR>", "$?foo<CR>", "/foo<CR>$n", "/FOO<CR>"]
+on = ["long"]
+at = [[1, 1], [50, 1], [100, 1]]
+
+[[group]]
+id = "search/ops"
+tier = 2
+keys = ["d/foo<CR>", "c/bar<CR>X<Esc>", "y/foo<CR>P", "v/foo<CR>d", "d?foo<CR>", "d/foo<CR>.", "d/foo<CR>/bar<CR>.", "d/foo<CR>/bar<CR>.n",
+        "d/zzz<CR>", "d/zzz<CR>x", "d2/foo<CR>", "2d/foo<CR>", "d/foo<CR>u", "d/foo<CR>u<C-r>", "d/foo<CR>ddu", "V/foo<CR>d",
+        "v/foo<CR>", "v?foo<CR>d", "vd?foo<CR>", "d/foo<Esc>x", "d/a<CR>", "c/a<CR>X<Esc>", "y/o<CR>P", "d?a<CR>", "d/<CR>", "d/x*<CR>",
+        "d/$<CR>", "d/^<CR>", "d?^<CR>", "d?$<CR>", "d/\\<lt>foo\\><CR>", "gU/o<CR>", ">/foo<CR>", "d/foo<CR>d/foo<CR>", "v/o<CR>o/o<CR>d",
+        "d/foo<CR>2.", "d/o<CR>j.", "c/o<CR>Y<Esc>j.", "/bar<CR>d/<CR>/foo<CR>.", "/a<CR>d?<CR>/a<CR>.n"]
+on = ["search", "words", "json_pretty", "unicode", "blank_edges", "empty", "one_char"]
+at = ["bol", "mid", "eol"]
+
+[[group]]
+id = "search/patterns"
+tier = 2
+keys = ["/\\<lt>foo\\><CR>", "/fo*<CR>", "/f.o<CR>", "/^baz<CR>", "/foo$<CR>", "/[fb]a<CR>", "/\\(foo\\|baz\\)<CR>", "/\\d<CR>",
+        "/\\s<CR>", "/o\\+<CR>", "/x\\=<CR>", "/x\\?<CR>", "?x\\?<CR>", "/o\\{2}<CR>", "/\\.<CR>", "/a\\/b<CR>", "/*b<CR>", "/^*b<CR>",
+        "/[]-]<CR>", "/a[^X]b<CR>", "/[<CR>", "/\\<lt><CR>", "/\\><CR>", "/\\<lt>\\><CR>", "/a \\<lt>b<CR>", "/\\<lt>x<CR>", "/b\\><CR>",
+        "/\\<lt>y<CR>", "/\\<lt>.*b<CR>", "/a.*b\\><CR>", "/\\(x\\|r\\)*<CR>", "/\\D<CR>", "/\\S<CR>", "/\\W<CR>", "/\\w<CR>", "/$<CR>",
+        "/^<CR>", "/^$<CR>", "/x*<CR>", "/aa<CR>", "?ab<CR>", "/\\(<CR>", "/\\(<CR>n", "/\\(<CR>x", "/o\\{<CR>", "/\\<CR>", "/foo\\<CR>",
+        "/\\bfoo<CR>", "/[a-<CR>", "/[]<CR>", "/[^]<CR>", "/b[-]r<CR>", "/b[\\-]r<CR>", "/b[\\\\]r<CR>", "/b[\\^]r<CR>", "/b[\\t]r<CR>",
+        "/b[.]r<CR>", "/b[]]r<CR>", "/b[^]]r<CR>", "/b\\|<CR>", "/\\|b<CR>", "/\\(\\)b<CR>", "/b\\)<CR>", "/\\{2}b<CR>", "/\\+b<CR>",
+        "/\\(b\\|^f\\)<CR>", "/\\(o$\\|x\\)<CR>", "/\\(^f\\)<CR>", "/o$\\|z<CR>", "/\\(^\\)b<CR>", "/b\\(\\)$<CR>", "/\\(x\\)\\{2}<CR>",
+        "/\\d\\+<CR>", "/\\q<CR>", "/\\/<CR>", "?\\?<CR>", "?\\/<CR>", "/\\?<CR>", "/?<CR>", "/r?<CR>", "/foo?<CR>", "?foo/<CR>",
+        "/a\\\\r<CR>", "/\\\\<CR>", "/\\~<CR>", "/\\{2,3}<CR>", "/a\\{2,3}b<CR>", "/a\\{2,}b<CR>", "/a\\{,2}b<CR>", "/a\\{}b<CR>",
+        "/\\<lt>ab\\>\\<lt><CR>", "/a\\<lt>b<CR>", "/a\\>\\<lt>b<CR>", "/b\\>ar<CR>", "/\\(\\<lt>ba\\)<CR>", "/a[]-]b<CR>", "/a[\\]]b<CR>",
+        "/a[[]b<CR>", "/b\\sc<CR>", "/a\\Wb<CR>", "/a\\wb<CR>", "/b[a^]r<CR>", "/b[\\n]r<CR>", "/b[\\.]r<CR>",
+        "/a[/]b<CR>", "?x[?]y<CR>", "/[/<CR>", "?[?<CR>"]
+on = ["search", "words", "punct", "quotes", "unicode", "tabs"]
+at = ["bol", "eol"]
+
+[text.search_cases]
+lines = ["a-b a]b aXb ayb a[b", "a b\tc a_b a-b", "ab aab aaab", "ab-cd ef -a b", "ba\\r foo a~b b-r b]r bxr b^r b.r b\tr",
+         "foo bar? foo", "a/b x", "日本語x 日本", "x×y x", "a  b a", "ab ab", "foo bxxr foo", "baz 42"]
+
+[[group]]
+id = "search/patterns-cases"
+tier = 2
+keys = ["/\\<lt>foo\\><CR>", "/a[]-]b<CR>", "/a[\\]]b<CR>", "/a[^X]b<CR>", "/a[[]b<CR>", "/b\\sc<CR>", "/a\\Wb<CR>", "/a\\wb<CR>",
+        "/a\\{2,3}b<CR>", "/a\\{2,}b<CR>", "/a\\{,2}b<CR>", "/a\\{}b<CR>", "/a\\{3,1}b<CR>", "/a\\{3,2}b<CR>", "/a.*b\\><CR>", "/a.*\\><CR>", "/\\<lt>.*b<CR>", "/\\<lt>x<CR>",
+        "/\\<lt>y<CR>", "/b\\><CR>", "/\\<lt>\\><CR>", "/\\><CR>", "/\\<lt><CR>", "/\\<lt>a<CR>", "/\\<lt>ab\\>\\<lt><CR>", "/a\\\\r<CR>",
+        "/\\\\<CR>", "/\\~<CR>", "/b[-]r<CR>", "/b[a-]r<CR>", "/b[\\-]r<CR>", "/b[\\\\]r<CR>", "/b[\\^]r<CR>", "/b[a^]r<CR>", "/b[\\t]r<CR>",
+        "/b[.]r<CR>", "/b[\\.]r<CR>", "/b[]]r<CR>", "/b[^]]r<CR>", "/\\(x\\)\\{2}<CR>", "/\\(x\\|r\\)*<CR>", "/\\d\\+<CR>", "/\\D<CR>",
+        "/\\S<CR>", "/\\W<CR>", "/a\\/b<CR>", "/a/b<CR>", "?x\\?<CR>", "?r\\?<CR>", "/r?<CR>", "/?<CR>", "?\\?<CR>", "?\\/<CR>", "/\\/<CR>",
+        "/a \\<lt>b<CR>", "/a\\<lt>b<CR>", "/a\\>\\<lt>b<CR>", "/aa<CR>", "/ab<CR>", "?ab<CR>", "?ab<CR>N",
+        "/a[/]b<CR>", "?x[?]y<CR>", "/[/<CR>", "?[?<CR>"]
+on = ["search_cases"]
+at = ["bol", "mid", "eol"]
+
+# Vim's skip_regexp() skips a [...] when it looks for the delimiter: `/a[/]b`
+# is one pattern, and an unclosed `[` takes the rest (`/[/` is `[/`).
+[text.search_brackets]
+lines = ["ab x?y a/b", "[/ z [? x"]
+
+[[group]]
+id = "search/patterns-brackets"
+tier = 2
+keys = ["/a[/]b<CR>", "?x[?]y<CR>", "/[/<CR>", "?[?<CR>", "?x[?]y<CR>n", "/[/<CR>N", "?[?<CR>N"]
+on = ["search_brackets"]
+at = ["bol", "eol"]
+
+[[group]]
+id = "search/edit"
+tier = 2
+keys = ["/fox<BS>o<CR>", "/fo<C-w>bar<CR>", "/foo<C-u>bar<CR>", "/f<Left>o<CR>", "/<BS>x", "/foo<Esc>x", "/foo<C-[>x", "/<Del>x",
+        "/foo<C-w><BS>x", "/foo<C-u><BS>x", "/ba<Right>r<CR>", "/ar<Home>b<CR>", "/b<End>ar<CR>", "/ba<Left><Del>r<CR>", "/foo<Tab><CR>",
+        "/o<Tab><CR>", "/fo<Space>b<CR>", "/fo<C-h>o<CR>", "/b<C-u>bar<CR>", "/ba r<C-w><C-w>ar<CR>", "/b.r<C-w>x<CR>", "/b.r <C-w>x<CR>",
+        "/b.r<C-w><C-w>x<CR>", "/x日本語<C-w>x<CR>", "/x 日本語<C-w>x<CR>", "/foo<Del><CR>", "/foo<Home><Del>oo<CR>", "/<Left>bar<CR>",
+        "?fo<BS><BS><BS>x", "/<C-w>foo<CR>", "/<C-u>foo<CR>", "/<Up>foo<CR>", "/<Down>foo<CR>", "/ab<Esc>n", "/o<CR>/<BS>n"]
+on = ["search", "words", "json_pretty", "tabs", "unicode"]
+at = ["bol", "mid", "eol"]
+
+[[group]]
+id = "search/visual"
+tier = 2
+keys = ["v/foo<CR>", "V/foo<CR>d", "v/foo<CR>d", "v/foo<CR>o", "v?foo<CR>", "v?foo<CR>d", "v2/foo<CR>", "v/foo<CR>n", "v/foo<CR>N",
+        "v/zzz<CR>d", "v/foo<Esc>d", "V/foo<Esc>", "vj/foo<CR>", "v/foo<CR>y", "v/foo<CR>c<Esc>", "v/foo<CR>vn", "v/o<CR>on"]
+on = ["search", "words", "json_pretty", "blank_edges", "empty", "one_char"]
+at = ["bol", "mid", "eol"]
+
+[[group]]
+id = "search/ctrl-o"
+tier = 2
+keys = ["iX<C-o>/foo<CR>Y<Esc>", "iX<C-o>nY<Esc>", "iX<C-o>*Y<Esc>", "iX<C-o>/zzz<CR>Y<Esc>", "A<C-o>?foo<CR>Y<Esc>", "iX<C-o>d/foo<CR>Y<Esc>",
+        "iX<C-o>/foo<Esc>Y<Esc>", "/foo<CR>iX<C-o>nY<Esc>", "d/$<CR>jiX<C-o>.Y<Esc>", "iX<C-o>/$<CR>Y<Esc>", "A<C-o>/$<CR>Y<Esc>",
+        "iX<C-o>?$<CR>Y<Esc>", "/$<CR>ggiX<C-o>nY<Esc>", "iX<C-o>d/$<CR>Y<Esc>", "iX<C-o>v/$<CR><Esc>Y<Esc>"]
+on = ["search", "words"]
+at = ["bol", "mid"]
+
+[[group]]
+id = "search/long"
+tier = 2
+keys = ["/line 50<CR>", "/line 5<CR>", "/line 5<CR>n", "/line 5<CR>nn", "/line 5<CR>N", "G?line 1<CR>", "/line 90<CR>", "/line 90<CR>n",
+        "d/line 50<CR>", "50G/line 9<CR>", "50G?line 2<CR>", "/line 100<CR>", "/line 100<CR>n"]
+on = ["long"]
+# Column 1 only (the golden file's size budget).
+at = [[1, 1], [50, 1], [100, 1]]
+
+# --- fuzz atoms (generate.py --fuzz); tiers 1 and 2 -----
 
 [fuzz]
 atoms = ["w", "b", "e", "W", "x", "X", "dw", "db", "de", "j", "k", "h", "l", "$", "0", "^",
@@ -945,4 +1371,6 @@ atoms = ["w", "b", "e", "W", "x", "X", "dw", "db", "de", "j", "k", "h", "l", "$"
          "AY<Esc>", "o<Esc>", "Ox<Esc>", "v$d", "Vjd", "vly", "di{", "da[", "ci\"X<Esc>",
          "%", "f,", ";", ",", "gg", "G", "rX", "x.", "D", "C<Esc>",
          "ge", "gE", "}", "{", "+", "-", "~", "g~iw", "gUw", "guu", ">>", "<<", ">j", "<C-a>", "<C-x>",
-         "3iX<Esc>", "2oY<Esc>", "gv<Esc>", "giZ<Esc>", "\"0p", "dip", "vapd", "yyA<C-r>\"<Esc>", "3~"]
+         "3iX<Esc>", "2oY<Esc>", "gv<Esc>", "giZ<Esc>", "\"0p", "dip", "vapd", "yyA<C-r>\"<Esc>", "3~",
+         "Rab<Esc>", "3Rx<Esc>", "Rx<CR>y<Esc>", "i<C-t>x<Esc>", "A<C-d><Esc>", "iX<C-o>wY<Esc>", "a<C-o>$Z<Esc>", "<C-d>", "<C-u>",
+         "<C-f>", "<C-b>", "H", "M", "L", "zz", "zt", "zb", "/o<CR>", "?a<CR>", "n", "N", "*", "#", "d/o<CR>", "v/a<CR>d", "/\\<lt>a<CR>"]

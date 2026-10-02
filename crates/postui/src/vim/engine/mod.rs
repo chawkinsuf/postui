@@ -17,6 +17,7 @@ mod case_table;
 mod class;
 mod class_table;
 mod history;
+mod indent;
 mod insert;
 mod keys;
 mod motion;
@@ -24,17 +25,21 @@ mod number;
 mod object;
 mod op;
 mod register;
+mod search;
 pub mod settings;
 #[cfg(test)]
 mod tests;
+mod view;
 mod visual;
 
 pub use buf::{BodyBuf, BodyVisual, GuiSel, OneLineBuf, Paint, Pos, TextBuf};
 pub use register::{RegKind, Register, Registers};
+pub use search::Dir;
 
 use insert::{InsertKey, RegPending};
-use keys::{Cmd, Op, ParseCx, Pending, Step, VisualOp};
+use keys::{Cmd, Motion, Op, ParseCx, Pending, Reach, Step, VisualOp};
 use ratatui::crossterm::event::KeyEvent;
+use std::cell::RefCell;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shape {
@@ -43,13 +48,28 @@ pub enum Shape {
 }
 
 /// The engine's mode (spec §4.1). Global: only one buffer has the caret.
-/// Plan 3c adds `InsertNormal`, `Replace` and `Search`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Mode {
     #[default]
     Normal,
     Insert,
+    /// An `R` session: typing overwrites (plan 3c).
+    Replace,
+    /// Insert `ctrl+o`: one Normal command, then the session resumes
+    /// (Vim's `niI`; `replace` is `niR`).
+    InsertNormal { replace: bool },
     Visual(Shape),
+    /// The `/` or `?` prompt is open (plan 3c); the mode underneath waits.
+    Search(Dir),
+}
+
+/// The prompt for piece 4 to draw on the body pane's bottom row: `/` or
+/// `?`, the text, and the caret's char index in it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchLine {
+    pub dir: Dir,
+    pub text: String,
+    pub cursor: usize,
 }
 
 /// How a buffer that just got the caret starts (spec §4.2).
@@ -87,10 +107,13 @@ pub enum Settled {
     Release,
 }
 
-/// Footer text for a key a vim user expects but the engine does not do.
+/// Footer text: a key a vim user expects but the engine does not do
+/// (`Unsupported`), or a status message such as a search's (`Message`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Note {
     Unsupported(String),
+    /// A status message (the search messages): shown like a note, nothing is unsupported.
+    Message(String),
 }
 
 /// Something only the app can do (tier 2: `"+y`, plan 3c).
@@ -120,7 +143,8 @@ impl Outcome {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ViewCtx {
     /// Rows the body shows (tier 2 scroll keys, plan 3c). `None` for a
-    /// one-line field.
+    /// one-line field, or a body that has not been drawn yet (then the
+    /// whole text is the window, Deviation 12).
     pub viewport_rows: Option<usize>,
 }
 
@@ -161,6 +185,8 @@ pub struct BufState {
     /// mode of the moment, when next needed.
     virtcol: Option<(Pos, bool)>,
     pub(crate) history: history::History,
+    /// Vim's window-local 'scroll': the half page a counted ctrl+d/ctrl+u set; None is half the height.
+    pub(crate) scroll: Option<usize>,
 }
 
 impl BufState {
@@ -236,6 +262,31 @@ struct Dot {
     insert: Option<Vec<InsertKey>>,
     /// A Visual command's selection size, replayed from the caret.
     visual: Option<VisualSize>,
+    /// What a search motion typed, re-typed by `.` as Vim's redo buffer
+    /// does: a pattern becomes the last one again; an empty one (`d?<CR>`,
+    /// `text` empty) uses the last pattern of its moment in its direction.
+    search: Option<LastSearch>,
+}
+
+/// The last search (Vim's `spats[0]`): global, so `n` in a field repeats a
+/// search made in the body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LastSearch {
+    pub text: String,
+    pub dir: Dir,
+}
+
+/// A pending Insert restart (Vim's `restart_edit`, `ins_at_eol`, `o_lnum`):
+/// `ctrl+o` left Insert for one Normal command.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Restart {
+    pub(crate) replace: bool,
+    /// The Insert caret was past the line's end, on `row`.
+    pub(crate) at_eol: bool,
+    pub(crate) row: usize,
+    /// `.` repeats the change before the insert (Vim's old redo buffer),
+    /// not the insert itself.
+    pub(crate) old_redo: bool,
 }
 
 /// How big a Visual selection was, for `.` (Vim's `resel_VIsual_*`).
@@ -280,6 +331,27 @@ pub struct Engine {
     rested: Option<Pos>,
     /// Insert `ctrl+r` waiting for its register name.
     reg_pending: Option<RegPending>,
+    /// Insert `ctrl+o` in progress: Insert resumes after one command.
+    restart: Option<Restart>,
+    /// The change before `dot` (Vim's `old_redobuff`), for `.` inside `ctrl+o`.
+    dot_prev: Option<Dot>,
+    /// What the last command asks the app to do; `handle` takes it.
+    request: Option<AppRequest>,
+    /// A message the last command left; `handle` takes it (a note from a
+    /// motion, a search).
+    note: Option<Note>,
+    /// The last pattern and its direction, for `n` and `N`.
+    last_search: Option<LastSearch>,
+    /// Vim's `hlsearch` state: on after any search command until `no_hlsearch`.
+    hl: bool,
+    /// The `/` or `?` prompt while it is open; `mode` is the mode under it.
+    search: Option<search::Prompt>,
+    /// What the running search motion typed (an empty `text` for an empty
+    /// prompt), for the `.` record (`Dot::search`).
+    typed_search: Option<LastSearch>,
+    /// The last pattern compiled and the result, so the highlight calls
+    /// made on every frame do not recompile it ([`Engine::compiled`]).
+    compiled: RefCell<Option<(String, Result<search::Pattern, String>)>>,
 }
 
 impl Engine {
@@ -287,29 +359,203 @@ impl Engine {
         Self::default()
     }
 
+    /// The mode, or `Mode::Search` while the prompt is open over it.
     pub fn mode(&self) -> Mode {
-        self.mode
+        match &self.search {
+            Some(p) => Mode::Search(p.dir),
+            None => self.mode,
+        }
     }
 
-    /// The half-typed command for the footer (`"02d3`, or `^R` while
-    /// Insert `ctrl+r` waits for a register); `""` when none.
+    /// A session is open: Insert or Replace share every Insert key.
+    fn in_insert(&self) -> bool {
+        matches!(self.mode, Mode::Insert | Mode::Replace)
+    }
+
+    /// The half-typed command for the footer (`"02d3`, `^R` while Insert
+    /// `ctrl+r` waits for a register, `d2/` while the prompt is open);
+    /// `""` when none.
     pub fn echo(&self) -> String {
+        if let Some(p) = &self.search {
+            return format!("{}{}", self.pending.echo(), p.dir.delim());
+        }
         match self.reg_pending {
             Some(reg) => reg.echo(),
             None => self.pending.echo(),
         }
     }
 
-    /// Whether a count, register, operator or prefix is in flight, or an
-    /// Insert `ctrl+r`.
+    /// Whether a count, register, operator or prefix is in flight, an
+    /// Insert `ctrl+r`, or the search prompt.
     pub fn pending(&self) -> bool {
-        !self.pending.is_empty() || self.reg_pending.is_some()
+        !self.pending.is_empty() || self.reg_pending.is_some() || self.search.is_some()
     }
 
-    /// Drops a half-typed command: Normal's, or an Insert `ctrl+r`.
+    /// Drops a half-typed command: Normal's, an Insert `ctrl+r`, or the
+    /// search prompt.
     fn clear_pending(&mut self) {
         self.pending.clear();
         self.reg_pending = None;
+        self.search = None;
+    }
+
+    /// The last pattern as typed, or made by `*`/`#`.
+    pub fn last_search(&self) -> Option<&str> {
+        self.last_search.as_ref().map(|s| s.text.as_str())
+    }
+
+    /// Whether the body should paint the last pattern's matches.
+    pub fn hlsearch(&self) -> bool {
+        self.hl && self.last_search.is_some()
+    }
+
+    /// `:noh` (piece 4): the highlight goes until the next search.
+    pub fn no_hlsearch(&mut self) {
+        self.hl = false;
+    }
+
+    /// One key while the prompt is open (Deviation 16).
+    fn search_key<B: TextBuf>(&mut self, ev: KeyEvent, buf: &mut B, st: &mut BufState, ctx: &ViewCtx) -> Outcome {
+        use keys::Key;
+        let p = self.search.as_mut().expect("the prompt is open");
+        match Key::of(&ev) {
+            Key::Char(c) => p.insert(c),
+            Key::Tab => p.insert('\t'),
+            Key::Backspace | Key::Ctrl('h') => {
+                if !p.backspace() {
+                    self.cancel_search();
+                }
+            }
+            Key::Delete => {
+                if !p.delete() {
+                    self.cancel_search();
+                }
+            }
+            Key::Ctrl('w') => p.word_back(),
+            Key::Ctrl('u') => p.delete_to_start(),
+            Key::Left => p.cursor = p.cursor.saturating_sub(1),
+            Key::Right => p.cursor = (p.cursor + 1).min(p.text.len()),
+            Key::Home => p.cursor = 0,
+            Key::End => p.cursor = p.text.len(),
+            // No history (spec §3.14's Out list).
+            Key::Up | Key::Down => {}
+            Key::Ctrl('r') => {
+                return Outcome::Consumed {
+                    changed: false,
+                    note: Some(Note::Unsupported("ctrl+r not supported in a search".into())),
+                    request: None,
+                };
+            }
+            Key::Esc => self.cancel_search(),
+            Key::Enter => return self.run_search(buf, st, ctx),
+            // field.rs's chord rule: the prompt and what waited for it go,
+            // and the key goes to the app.
+            Key::BackTab | Key::Ctrl(_) | Key::Other => {
+                self.cancel_search();
+                return Outcome::Declined { count: None, keys: vec![ev] };
+            }
+        }
+        Outcome::consumed()
+    }
+
+    /// Esc, BS on an empty line, or a foreign chord: the prompt goes, and
+    /// with it the operator and count waiting for it. The caret never moved.
+    fn cancel_search(&mut self) {
+        self.search = None;
+        self.pending.clear();
+    }
+
+    /// Enter: the typed pattern becomes the last one (as Vim stores it,
+    /// Deviation 5: even one that will not compile), an offset is refused
+    /// (Deviation 3), then the search runs as the motion the pending
+    /// command waited for. An empty pattern repeats the last one in the
+    /// typed direction, which becomes `n`'s.
+    fn run_search<B: TextBuf>(&mut self, buf: &mut B, st: &mut BufState, ctx: &ViewCtx) -> Outcome {
+        let p = self.search.take().expect("the prompt is open");
+        let (pat, offset) = p.split();
+        self.type_search(LastSearch { text: search::as_stored(&pat, p.dir), dir: p.dir });
+        if !offset.is_empty() {
+            self.pending.clear();
+            return Outcome::Consumed { changed: false, note: Some(Note::Message("search offsets not supported".into())), request: None };
+        }
+        match self.pending.search_done(p.dir) {
+            Step::Cmd(cmd) => self.run(cmd, buf, st, ctx),
+            _ => unreachable!("search_done always completes the command"),
+        }
+    }
+
+    /// What typing a pattern on the prompt does (Vim's `do_search()`), and
+    /// what `.` re-types: a pattern replaces the last one; an empty one
+    /// keeps it and gives it the typed direction, which `n` then follows.
+    /// Either way it is remembered for the `.` record (`Dot::search`).
+    fn type_search(&mut self, typed: LastSearch) {
+        if typed.text.is_empty() {
+            if let Some(last) = &mut self.last_search {
+                last.dir = typed.dir;
+            }
+        } else {
+            self.last_search = Some(typed.clone());
+        }
+        self.typed_search = Some(typed);
+    }
+
+    /// The prompt for the footer or the body's bottom row (spec §3.14).
+    pub fn search_line(&self) -> Option<SearchLine> {
+        self.search.as_ref().map(|p| SearchLine { dir: p.dir, text: p.text.iter().collect(), cursor: p.cursor })
+    }
+
+    /// The pattern the renderer paints: the prompt's text while it is open
+    /// (Vim's `incsearch`), else the last pattern while the highlight is on.
+    fn live_pattern(&self) -> Option<String> {
+        if let Some(p) = &self.search {
+            let (pat, _) = p.split();
+            return (!pat.is_empty()).then(|| search::as_stored(&pat, p.dir));
+        }
+        if !self.hl {
+            return None;
+        }
+        self.last_search.as_ref().map(|l| l.text.clone())
+    }
+
+    /// Every match of the live pattern on `rows`, `(start, end)` exclusive,
+    /// one row each, for the search highlight (Deviation 18).
+    pub fn search_matches<B: TextBuf>(&self, buf: &B, rows: std::ops::Range<usize>) -> Vec<(Pos, Pos)> {
+        let Some(text) = self.live_pattern() else { return Vec::new() };
+        let Ok(pat) = self.compiled(&text) else { return Vec::new() };
+        let mut out = Vec::new();
+        for row in rows.start..rows.end.min(buf.line_count()) {
+            for (s, e) in pat.chain(&buf.line(row)) {
+                out.push((Pos::new(row, s), Pos::new(row, e)));
+            }
+        }
+        out
+    }
+
+    /// The match Enter would land on now (`incsearch`'s current match),
+    /// with the count the pending command carries.
+    pub fn search_preview<B: TextBuf>(&self, buf: &B) -> Option<(Pos, Pos)> {
+        let p = self.search.as_ref()?;
+        let text = self.live_pattern()?;
+        let pat = self.compiled(&text).ok()?;
+        let count = keys::combine_counts(self.pending.count1(), self.pending.count2());
+        let (at, _) = search::search(buf, buf.cursor(), p.dir, count, &pat)?;
+        let end = pat.chain(&buf.line(at.row)).into_iter().find(|&(s, _)| s == at.col).map_or(at.col, |(_, e)| e);
+        Some((at, Pos::new(at.row, end)))
+    }
+
+    /// [`search::compile`], remembering the last pattern: the highlight
+    /// asks for the same one on every frame, and a long one takes
+    /// milliseconds to compile.
+    pub(super) fn compiled(&self, text: &str) -> Result<search::Pattern, String> {
+        let mut cache = self.compiled.borrow_mut();
+        match &*cache {
+            Some((cached, result)) if cached == text => result.clone(),
+            _ => {
+                let result = search::compile(text);
+                *cache = Some((text.to_string(), result.clone()));
+                result
+            }
+        }
     }
 
     pub fn registers(&self) -> &Registers {
@@ -318,6 +564,23 @@ impl Engine {
 
     pub fn registers_mut(&mut self) -> &mut Registers {
         &mut self.regs
+    }
+
+    /// A yank into `reg` (`Registers::yank`); `"+` also asks the app to
+    /// copy the text out (the engine cannot reach the clipboard).
+    pub(super) fn reg_yank(&mut self, reg: Option<char>, r: Register) {
+        if reg == Some('+') {
+            self.request = Some(AppRequest::CopyToClipboard(r.text.clone()));
+        }
+        self.regs.yank(reg, r);
+    }
+
+    /// A delete or change into `reg`; `"+` copies out too (a cut).
+    pub(super) fn reg_delete(&mut self, reg: Option<char>, r: Register) {
+        if reg == Some('+') {
+            self.request = Some(AppRequest::CopyToClipboard(r.text.clone()));
+        }
+        self.regs.delete(reg, r);
     }
 
     /// The fixed end of the Visual selection; `None` outside Visual.
@@ -336,8 +599,11 @@ impl Engine {
         let Target { buf, state } = t;
         state.begin_session(buf.text());
         self.clear_pending();
+        self.note = None;
+        self.request = None;
         self.visual = None;
         self.insert = None;
+        self.restart = None;
         self.insert_only = start == Start::InsertOnly;
         self.mode = if start == Start::Normal { Mode::Normal } else { Mode::Insert };
         let caret = buf.cursor();
@@ -351,7 +617,7 @@ impl Engine {
         };
         buf.set_cursor(Pos::new(row, col));
         self.clamp(buf);
-        if self.mode == Mode::Insert {
+        if self.in_insert() {
             // Vim's `:startinsert`: a session opened in Insert records as an
             // `i` for `.`, but only once something is typed; Esc alone keeps
             // the old `.` (user ruling 2026-09-30, overriding spec §4.2's
@@ -373,20 +639,26 @@ impl Engine {
     /// typed, and keys typed there are taken as `to`'s kind takes them.
     /// Visual and pending keys are dropped.
     pub fn carry<A: TextBuf, B: TextBuf>(&mut self, from: Target<'_, A>, to: Target<'_, B>) {
-        let inserting = self.mode == Mode::Insert;
+        self.restart = None;
+        self.note = None;
+        self.request = None;
+        let inserting = self.in_insert().then_some(self.mode);
         let insert_only = self.insert_only;
         let Target { buf, state } = from;
-        if inserting {
+        if inserting.is_some() {
             self.drop_session(buf, state);
         }
         self.leave(Target { buf, state });
         self.insert_only = insert_only;
         let Target { buf, state } = to;
         state.begin_session(buf.text());
-        self.mode = if inserting { Mode::Insert } else { Mode::Normal };
+        self.mode = inserting.unwrap_or(Mode::Normal);
         self.clamp(buf);
-        if inserting {
+        if inserting.is_some() {
             self.open_resumed(buf.cursor(), true);
+            if self.mode == Mode::Replace {
+                self.session().replace = Some(Vec::new());
+            }
         }
         self.rest(buf, state);
     }
@@ -404,11 +676,16 @@ impl Engine {
     /// the wanted column.
     pub fn settle<B: TextBuf>(&mut self, t: Target<'_, B>, how: Settled) {
         let Target { buf, state } = t;
+        self.note = None;
+        self.request = None;
         if matches!(how, Settled::Click | Settled::Release) {
             self.clear_pending();
         }
+        if matches!(self.mode, Mode::InsertNormal { .. }) && !self.pending() {
+            self.resume_after_ctrl_o(buf, state);
+        }
         let caret = self.clamped(buf, buf.cursor());
-        if self.mode == Mode::Insert
+        if self.in_insert()
             && let Some(from) = self.rested
             && from != caret
         {
@@ -438,6 +715,10 @@ impl Engine {
                     // The area as it was before the click moved the caret.
                     let at = self.rested.unwrap_or(caret);
                     self.end_visual(at, &*buf, state);
+                    // Visual opened inside `ctrl+o`: the click is the command.
+                    if matches!(self.mode, Mode::InsertNormal { .. }) {
+                        self.resume_after_ctrl_o(buf, state);
+                    }
                 }
                 None => {}
             }
@@ -450,7 +731,7 @@ impl Engine {
     /// already split a session the event moved, so an unused autoindent
     /// went where the caret was, not where the mouse put it.
     fn enter_visual_from<B: TextBuf>(&mut self, anchor: Pos, buf: &mut B, state: &mut BufState) {
-        if self.mode == Mode::Insert {
+        if self.in_insert() {
             self.end_insert(buf, state, false);
         }
         self.clear_pending();
@@ -465,11 +746,14 @@ impl Engine {
     /// [`Engine::enter`]'s history check.
     pub fn leave<B: TextBuf>(&mut self, t: Target<'_, B>) {
         let Target { buf, state } = t;
-        if self.mode == Mode::Insert {
+        if self.in_insert() {
             self.end_insert(buf, state, false);
         }
         state.history.commit();
         self.clear_pending();
+        self.restart = None;
+        self.note = None;
+        self.request = None;
         if matches!(self.mode, Mode::Visual(_)) {
             self.end_visual(buf.cursor(), &*buf, state);
         }
@@ -491,11 +775,17 @@ impl Engine {
     pub fn external_edit<B: TextBuf>(&mut self, t: Target<'_, B>, f: impl FnOnce(&mut Splicer<'_, B>)) -> bool {
         let Target { buf, state } = t;
         self.clear_pending();
+        self.note = None;
+        self.request = None;
         if matches!(self.mode, Mode::Visual(_)) {
             self.end_visual(buf.cursor(), &*buf, state);
         }
+        // After Visual: one opened inside `ctrl+o` ends back in it.
+        if matches!(self.mode, Mode::InsertNormal { .. }) {
+            self.resume_after_ctrl_o(buf, state);
+        }
         self.clamp(buf);
-        if self.mode == Mode::Insert {
+        if self.in_insert() {
             let caret = buf.cursor();
             self.split_insert(caret, caret, buf, state);
         }
@@ -526,33 +816,72 @@ impl Engine {
     pub fn handle<B: TextBuf>(&mut self, ev: KeyEvent, t: Target<'_, B>, ctx: &ViewCtx) -> Outcome {
         let Target { buf, state } = t;
         self.clamp(buf);
+        // Vim's main loop validates `w_topline` before every command.
+        let view = view::View::of::<B>(ctx);
+        if let Some(view) = view {
+            view.update_topline(buf);
+        }
+        let top = buf.top();
         let before = buf.cursor();
-        let was_insert = self.mode == Mode::Insert;
+        let was_insert = self.in_insert();
         if state.cached_tab_rule(before).is_none() {
             // Vim validates `w_virtcol` before a command, in its mode.
             state.virtcol = Some((before, self.tab_end(before)));
         }
         let out = match self.mode {
-            Mode::Insert => self.insert_key(ev, buf, state),
-            Mode::Normal | Mode::Visual(_) => {
-                let cx = ParseCx { visual: self.mode != Mode::Normal, multiline: B::MULTILINE };
+            // The prompt takes every key while it is open (Deviation 16).
+            _ if self.search.is_some() => self.search_key(ev, buf, state, ctx),
+            Mode::Insert | Mode::Replace => self.insert_key(ev, buf, state),
+            Mode::Normal | Mode::Visual(_) | Mode::InsertNormal { .. } => {
+                let cx = ParseCx {
+                    visual: matches!(self.mode, Mode::Visual(_)),
+                    multiline: B::MULTILINE,
+                    restart: matches!(self.mode, Mode::InsertNormal { .. }),
+                };
                 match self.pending.feed(ev, cx) {
                     Step::More => Outcome::consumed(),
                     Step::Inert(note) => Outcome::Consumed { changed: false, note, request: None },
                     Step::Decline { count, keys } => Outcome::Declined { count, keys },
                     Step::Undo { redo, count, declined } => self.exec_undo(count, redo, declined, buf, state),
                     Step::Cmd(cmd) => self.run(cmd, buf, state, ctx),
+                    // The pending command waits for the prompt's Enter.
+                    Step::Search(dir) => {
+                        self.search = Some(search::Prompt::new(dir));
+                        Outcome::consumed()
+                    }
                 }
             }
+            // `mode` is the mode under the prompt, never the prompt itself.
+            Mode::Search(_) => unreachable!("Mode::Search is only reported by Engine::mode"),
         };
         // A Normal or Visual command is one undo step; an Insert session
         // keeps its step open until it ends (spec §3.11).
-        if self.mode != Mode::Insert {
+        if !self.in_insert() {
             state.history.commit();
         }
-        let changed = self.finish_key(before, was_insert, buf, state);
+        // Vim's `normal_cmd()` tail: Insert restarts after one complete
+        // command, and before a key the engine hands back (the app sees it
+        // from Insert). Visual entered inside `ctrl+o` keeps the restart.
+        // Only after a key the Normal parser took: `ctrl+o` itself is an
+        // Insert key.
+        if !was_insert
+            && matches!(self.mode, Mode::InsertNormal { .. })
+            && (!self.pending() || matches!(out, Outcome::Declined { .. }))
+        {
+            self.resume_after_ctrl_o(buf, state);
+        }
+        // A delete under the window (`d/line 50<CR>` from the text's end)
+        // leaves Vim's `w_topline` where it was, past the text; the splice
+        // kept edtui's inside it. The window rules see Vim's again.
+        if view.is_some() && top >= buf.line_count() {
+            buf.set_top(top);
+        }
+        let changed = self.finish_key(before, was_insert, buf, state, ctx);
+        let (left_note, left_request) = (self.note.take(), self.request.take());
         match out {
-            Outcome::Consumed { note, request, .. } => Outcome::Consumed { changed, note, request },
+            Outcome::Consumed { note, request, .. } => {
+                Outcome::Consumed { changed, note: note.or(left_note), request: request.or(left_request) }
+            }
             declined => declined,
         }
     }
@@ -561,13 +890,25 @@ impl Engine {
     /// caret is clamped for the mode, a text change is noted, and the
     /// buffer is painted. `w_virtcol` is recomputed where the caret moved,
     /// the text changed, or Insert started or ended (see
-    /// `BufState::virtcol`). Returns whether the text changed.
-    fn finish_key<B: TextBuf>(&mut self, before: Pos, was_insert: bool, buf: &mut B, state: &mut BufState) -> bool {
+    /// `BufState::virtcol`), and `top` follows the caret. Returns whether
+    /// the text changed.
+    fn finish_key<B: TextBuf>(
+        &mut self,
+        before: Pos,
+        was_insert: bool,
+        buf: &mut B,
+        state: &mut BufState,
+        ctx: &ViewCtx,
+    ) -> bool {
         let changed = state.history.take_changed();
         state.edited |= changed;
         self.clamp(buf);
+        // And before the screen is redrawn: the caret after the key is shown.
+        if let Some(view) = view::View::of::<B>(ctx) {
+            view.update_topline(buf);
+        }
         let after = buf.cursor();
-        if changed || after != before || was_insert != (self.mode == Mode::Insert) {
+        if changed || after != before || was_insert != self.in_insert() {
             state.virtcol = Some((after, self.tab_end(after)));
         }
         self.rested = Some(after);
@@ -584,20 +925,31 @@ impl Engine {
         // sets nothing. A change that opens Insert records when the session
         // ends (`finish_record`).
         let mut record = None;
+        // Vim's `nv_beginline()` and `nv_home()`: "Don't move cursor past
+        // eol (only necessary in a one-character line)" when Insert resumes.
+        if let Cmd::Move { motion: m, .. } | Cmd::Operate { reach: Reach::Motion(m), .. } = cmd
+            && matches!(m, Motion::LineStart | Motion::FirstNonBlank)
+            && let Some(r) = &mut self.restart
+        {
+            r.at_eol = false;
+        }
         let out = match cmd {
             Cmd::Move { motion, count } => {
-                self.exec_move(motion, count, buf, st);
+                self.exec_move(motion, count, buf, st, ctx);
                 Outcome::consumed()
             }
             Cmd::Operate { op, reach, count, reg } => {
-                if self.exec_operate(op, reach, count, reg, buf, st) && op != Op::Yank {
+                if self.exec_operate(op, reach, count, reg, buf, st, ctx) && op != Op::Yank {
                     record = Some(cmd);
                 }
                 Outcome::consumed()
             }
             Cmd::Put { before, count, reg } => {
                 self.exec_put(before, count, reg, buf, st);
-                record = Some(cmd);
+                // A `"+` put is refused with a note: nothing for `.`.
+                if reg != Some('+') {
+                    record = Some(cmd);
+                }
                 Outcome::consumed()
             }
             Cmd::Replace { ch, count } => {
@@ -623,6 +975,14 @@ impl Engine {
                 record = Some(cmd);
                 Outcome::consumed()
             }
+            Cmd::Scroll { how, count } => {
+                self.exec_scroll(how, count, buf, st, ctx);
+                Outcome::consumed()
+            }
+            Cmd::ScrollCursor { place, count } => {
+                self.exec_scroll_cursor(place, count, buf, st, ctx);
+                Outcome::consumed()
+            }
             Cmd::Insert { how, count } => {
                 self.exec_insert(how, count, buf, st);
                 Outcome::consumed()
@@ -637,8 +997,9 @@ impl Engine {
             }
             Cmd::Repeat(count) => self.exec_repeat(count, buf, st, ctx),
             Cmd::VisualStart(_) | Cmd::VisualSwap | Cmd::VisualExit | Cmd::VisualObject { .. } | Cmd::VisualOp { .. } => {
-                if let Cmd::VisualOp { op, .. } = cmd
+                if let Cmd::VisualOp { op, reg, .. } = cmd
                     && !matches!(op, VisualOp::Yank | VisualOp::YankLines)
+                    && !(matches!(op, VisualOp::Put { .. }) && reg == Some('+'))
                 {
                     record = Some(cmd);
                 }
@@ -646,7 +1007,7 @@ impl Engine {
             }
         };
         if let Some(cmd) = record
-            && self.mode != Mode::Insert
+            && !self.in_insert()
         {
             self.remember(cmd, None);
         }
@@ -661,13 +1022,32 @@ impl Engine {
             return;
         }
         let visual = if matches!(cmd, Cmd::VisualOp { .. }) { self.last_visual_size } else { None };
-        self.dot = Some(Dot { cmd, insert, visual });
+        let search = match cmd {
+            Cmd::Operate { reach: Reach::Motion(Motion::Search { .. }), .. } => self.typed_search.clone(),
+            _ => None,
+        };
+        self.dot_prev = self.dot.take();
+        self.dot = Some(Dot { cmd, insert, visual, search });
     }
 
     /// `.` with an optional new count (spec §3.12, Vim's `start_redo()`):
     /// one undo step, since `handle` commits once after it.
     fn exec_repeat<B: TextBuf>(&mut self, count: usize, buf: &mut B, st: &mut BufState, ctx: &ViewCtx) -> Outcome {
-        let Some(dot) = self.dot.clone() else { return Outcome::consumed() };
+        // Inside `ctrl+o` the insert itself is the newest record; Vim's
+        // `start_redo(old_redo)` runs the one before it, unless a cursor key
+        // split the insert and nothing was typed since (then the newest).
+        let old = matches!(self.mode, Mode::InsertNormal { .. }) && self.restart.is_some_and(|r| r.old_redo);
+        let Some(dot) = (if old { self.dot_prev.clone() } else { self.dot.clone() }) else { return Outcome::consumed() };
+        // Vim's redo buffer holds the typed pattern (`cpoptions` has no
+        // `r`): `d/foo<CR>.` searches `foo` again and makes it the last
+        // pattern. An empty prompt's `.` uses the last pattern of its moment.
+        self.typed_search = None;
+        if let Some(s) = dot.search.clone() {
+            self.type_search(s);
+        }
+        // A replayed insert replaces the restart while it runs (`invoke_edit`
+        // with something stuffed keeps it); put it back after.
+        let restart = self.restart.take();
         let out = match (dot.visual, dot.cmd) {
             (Some(size), Cmd::VisualOp { op, count: own, .. }) => {
                 // Vim's `redo_VIsual`: the same size from the caret, and the
@@ -696,7 +1076,7 @@ impl Engine {
             (_, cmd) => self.run(if count > 0 { with_count(cmd, count) } else { cmd }, buf, st, ctx),
         };
         if let Some(keys) = dot.insert
-            && self.mode == Mode::Insert
+            && self.in_insert()
         {
             // As if typed here: `.` is global, so a session recorded in the
             // body can replay in a one-line field (`replay_insert`).
@@ -704,6 +1084,12 @@ impl Engine {
             self.end_insert(buf, st, true);
         }
         self.replaying_visual = false;
+        if let Some(r) = restart
+            && !self.in_insert()
+        {
+            self.restart = Some(r);
+            self.mode = Mode::InsertNormal { replace: r.replace };
+        }
         out
     }
 
@@ -754,9 +1140,15 @@ impl Engine {
         }
     }
 
-    /// Where the caret may rest in the current mode: on a char in Normal,
-    /// also on the line's end in Insert and Visual (`selection=inclusive`).
-    fn clamped<B: TextBuf>(&self, buf: &B, at: Pos) -> Pos {
+    /// Where the caret may rest in the current mode (Vim's `check_cursor()`):
+    /// on a char in Normal, also on the line's end in Insert and Visual
+    /// (`selection=inclusive`), and after a command inside Insert `ctrl+o`
+    /// (`restart_edit` set: `x` on a line's last char or `/$` leaves the
+    /// caret on the end, and Insert resumes there). The mode, not
+    /// `self.restart`, tells `ctrl+o`: a `.` replay takes the restart while
+    /// it runs, and the mode stays. A bare motion other than a search still
+    /// stops on a char there (`adjust_cursor()`, `exec_move`).
+    pub(super) fn clamped<B: TextBuf>(&self, buf: &B, at: Pos) -> Pos {
         let row = at.row.min(buf.line_count() - 1);
         let len = buf.line_len(row);
         let max = if self.mode == Mode::Normal { len.saturating_sub(1) } else { len };
@@ -765,12 +1157,14 @@ impl Engine {
 
     fn paint<B: TextBuf>(&self, buf: &mut B) {
         buf.show(match self.mode {
-            Mode::Normal => Paint::Normal,
-            Mode::Insert => Paint::Insert,
+            Mode::Normal | Mode::InsertNormal { .. } => Paint::Normal,
+            Mode::Insert | Mode::Replace => Paint::Insert,
             Mode::Visual(shape) => Paint::Visual {
                 anchor: self.visual.unwrap_or_else(|| buf.cursor()),
                 line: shape == Shape::Line,
             },
+            // The prompt paints the mode under it (Deviation 17).
+            Mode::Search(_) => unreachable!("Mode::Search is only reported by Engine::mode"),
         });
     }
 }

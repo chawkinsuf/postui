@@ -159,7 +159,6 @@ fn inert_keys_show_their_note_and_arm_nothing() {
     assert_eq!(note(f.key(k('&'))), "& not supported");
     assert_eq!(note(f.keys("gJ")), "gJ not supported");
     assert_eq!(note(f.keys("d:")), "d: not supported");
-    assert_eq!(note(f.key(k('/'))), "/ not supported yet");
     assert_eq!(note(f.keys("\"a")), "register \"a not supported");
     assert!(!f.engine.pending());
     assert_eq!(f.text(), "abc");
@@ -322,7 +321,7 @@ fn a_one_line_field_has_no_second_line() {
 #[test]
 fn one_line_insert_declines_the_keys_the_field_does_not_own() {
     let mut f = Field::start("abc", 3, Start::Insert);
-    for key in [code(KeyCode::Enter), code(KeyCode::Tab), code(KeyCode::BackTab), code(KeyCode::Up), code(KeyCode::Down), ctrl('o')] {
+    for key in [code(KeyCode::Enter), code(KeyCode::Tab), code(KeyCode::BackTab), code(KeyCode::Up), code(KeyCode::Down)] {
         assert!(declined(&f.key(key)), "{key:?}");
         assert_eq!((f.text(), f.engine.mode()), ("abc", Mode::Insert));
     }
@@ -1633,5 +1632,722 @@ fn first_wave_commands_survive_the_largest_count() {
         }
         let ms = started.elapsed().as_millis();
         assert!(ms < 2000, "{keys:?} took {ms} ms");
+    }
+}
+
+/// Plan 3c Task 2: `R` opens a Replace session. Typing overwrites, Esc
+/// steps back and sets `'^`, and the mode is reported as Replace.
+#[test]
+fn replace_mode_overwrites_and_reports_its_mode() {
+    let mut f = Field::new("abcd", 1);
+    f.keys("R");
+    assert_eq!(f.engine.mode(), Mode::Replace);
+    f.keys("xy");
+    assert_eq!((f.text(), f.col()), ("axyd", 3));
+    f.keys("zw");
+    assert_eq!(f.text(), "axyzw", "past the end it appends");
+    f.key(code(KeyCode::Backspace));
+    f.key(code(KeyCode::Backspace));
+    assert_eq!(f.text(), "axyd", "an appended char is deleted, a replaced one comes back");
+    f.key(esc());
+    assert_eq!((f.engine.mode(), f.col()), (Mode::Normal, 2));
+    assert_eq!(f.state.history.marks.insert, Some(Pos::new(0, 3)));
+    f.keys("u");
+    assert_eq!(f.text(), "abcd", "one undo step");
+}
+
+/// Review focus 4: Replace at the edges never panics and matches Vim's
+/// rules: a tab and a multibyte char are one char each, `BS` before the
+/// session's start only moves, a paste with line breaks splits lines in the
+/// body and flattens in a field.
+#[test]
+fn replace_edges() {
+    let mut b = Body::new("", 0, 0);
+    b.keys("Rab");
+    assert_eq!(b.text(), "ab");
+    let mut b = Body::new("a\tb", 0, 0);
+    b.keys("Rxy");
+    assert_eq!(b.text(), "xyb");
+    b.key(code(KeyCode::Backspace));
+    assert_eq!(b.text(), "x\tb", "the tab comes back");
+    let mut b = Body::new("héllo", 0, 1);
+    b.keys("Rxy");
+    b.key(code(KeyCode::Backspace));
+    assert_eq!((b.text(), b.caret()), ("hxllo".into(), Pos::new(0, 2)));
+    let mut b = Body::new("abc", 0, 2);
+    b.keys("Rx");
+    b.key(code(KeyCode::Backspace));
+    b.key(code(KeyCode::Backspace));
+    assert_eq!((b.text(), b.caret()), ("abc".into(), Pos::new(0, 1)), "only moves before the start");
+    let mut b = Body::new("abcdef\nxy", 0, 1);
+    b.keys("R");
+    b.engine.paste("12\n34", Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state });
+    // Vim's `ins_eol()` replaces nothing, so "34" goes over "de" (probed:
+    // Vim 9.1 `R12<CR>34<Esc>` on "abcdef" gives "a12" / "34f").
+    assert_eq!(b.text(), "a12\n34f\nxy", "a paste replaces char by char and a line break splits");
+    let mut f = Field::new("abcdef", 1);
+    f.keys("R");
+    f.engine.paste("12\n34", Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
+    assert_eq!(f.text(), "a12 34", "a field takes it flattened");
+    assert!(!declined(&f.key(code(KeyCode::Enter))) || f.engine.mode() == Mode::Replace, "Enter is the field's");
+}
+
+/// `BS` over a Replace line break puts the blanks `Enter` stripped back in
+/// their old order (probed in Vim 9.1: `R<CR><BS>` on "x \tb" at the space
+/// keeps "x \tb"; the corpus texts have no mixed blanks after a non-blank).
+#[test]
+fn replace_bs_over_a_break_restores_mixed_blanks_in_order() {
+    for text in ["x \tb", "x\t b"] {
+        let mut b = Body::new(text, 0, 1);
+        b.keys("R");
+        b.key(code(KeyCode::Enter));
+        assert_eq!(b.text(), "x\nb");
+        b.key(code(KeyCode::Backspace));
+        assert_eq!((b.text(), b.caret()), (text.to_string(), Pos::new(0, 1)));
+    }
+}
+
+/// A Replace paste never autoindents (Vim pastes with `paste` set): a line
+/// break in it adds no indent and strips no blanks, and `BS` back over it
+/// joins the lines with nothing restored (Vim 9.1: `R` + paste "12\n  34"
+/// at [1,4] of "  abcdef" / "xy" gives "  a12" / "  34" / "xy").
+#[test]
+fn a_replace_paste_never_autoindents() {
+    let mut b = Body::new("  abcdef\nxy", 0, 3);
+    b.keys("R");
+    b.engine.paste("12\n  34", Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state });
+    assert_eq!((b.text(), b.caret()), ("  a12\n  34\nxy".into(), Pos::new(1, 4)));
+    for _ in 0..5 {
+        b.key(code(KeyCode::Backspace));
+    }
+    assert_eq!((b.text(), b.caret()), ("  a12def\nxy".into(), Pos::new(0, 5)), "the paste's break joins back, nothing restored");
+}
+
+/// A cursor key or a click flushes the replace stack but keeps Replace; a
+/// Replace session carries into the next field as Replace, and `gi` after
+/// it opens Insert.
+#[test]
+fn replace_survives_a_split_and_a_carry() {
+    let mut f = Field::new("abcd", 0);
+    f.keys("Rxy");
+    f.key(code(KeyCode::Left));
+    assert_eq!(f.engine.mode(), Mode::Replace);
+    f.key(code(KeyCode::Backspace));
+    assert_eq!((f.text(), f.col()), ("xycd", 0), "the flushed stack has nothing to put back");
+    f.keys("Z");
+    assert_eq!(f.text(), "Zycd");
+    let (mut other, mut os) = (LineInput::new("pq"), BufState::new());
+    other.set_cursor(0);
+    f.engine.carry(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, Target { buf: &mut OneLineBuf::new(&mut other), state: &mut os });
+    assert_eq!(f.engine.mode(), Mode::Replace);
+    f.engine.handle(k('W'), Target { buf: &mut OneLineBuf::new(&mut other), state: &mut os }, &ViewCtx::default());
+    assert_eq!(other.text(), "Wq");
+    f.engine.handle(esc(), Target { buf: &mut OneLineBuf::new(&mut other), state: &mut os }, &ViewCtx::default());
+    f.engine.handle(k('0'), Target { buf: &mut OneLineBuf::new(&mut other), state: &mut os }, &ViewCtx::default());
+    f.engine.handle(k('g'), Target { buf: &mut OneLineBuf::new(&mut other), state: &mut os }, &ViewCtx::default());
+    f.engine.handle(k('i'), Target { buf: &mut OneLineBuf::new(&mut other), state: &mut os }, &ViewCtx::default());
+    assert_eq!(f.engine.mode(), Mode::Insert, "gi is always Insert");
+}
+
+/// Plan 3c Task 3: `ctrl+t` and `ctrl+d` indent a one-line field as they
+/// indent the body (Deviation 11), rounding to shiftwidth, and are not
+/// declined there. `0<C-d>` removes the indent; `.` repeats the keys.
+#[test]
+fn insert_ctrl_t_and_ctrl_d_indent_a_field() {
+    let mut f = Field::new("   abc", 3);
+    f.keys("i");
+    assert!(!declined(&f.key(ctrl('t'))));
+    assert_eq!((f.text(), f.col()), ("    abc", 4));
+    f.key(ctrl('d'));
+    f.key(ctrl('d'));
+    assert_eq!((f.text(), f.col()), ("abc", 0));
+    f.keys("0");
+    f.key(ctrl('d'));
+    assert_eq!(f.text(), "abc", "0 then ctrl+d: the 0 goes with the indent");
+    f.key(ctrl('t'));
+    f.keys("x");
+    f.key(esc());
+    assert_eq!(f.text(), "  xabc");
+    // The record is every key: `<C-t><C-d><C-d>0<C-d><C-t>x`, so the
+    // repeat ends on one shiftwidth (probed: Vim 9.1 gives "  xxabc").
+    f.keys(".");
+    assert_eq!(f.text(), "  xxabc", "the repeat replays the keys and types x");
+    let mut q = Field::start("", 0, Start::InsertOnly);
+    assert!(!declined(&q.key(ctrl('t'))), "a query box takes it too");
+    assert_eq!(q.text(), "  ");
+}
+
+/// Task 3 review: Insert `ctrl+r` runs a register's `ctrl+t` and `ctrl+d`
+/// chars in the body (Vim's `stuffescaped()`), and `ctrl+r ctrl+r` puts
+/// them in literally. Probed in Vim 9.1 on "abc": register "x^Ty" gives
+/// "  xyabc" (caret on y after Esc); literally, "x^Tyabc"; register
+/// "^T^Tx^D" then `j.` (j fails on one line) gives "    xxabc". After
+/// `ctrl+r`, `ctrl+t` and `ctrl+d` are the engine's own chords, swallowed
+/// as Vim swallows them, never handed to the app.
+#[test]
+fn insert_ctrl_r_runs_ctrl_t_and_ctrl_d_from_a_register() {
+    let mut b = Body::new("abc", 0, 0);
+    b.engine.registers_mut().set_unnamed(Register { text: "x\u{14}y".into(), kind: RegKind::Char });
+    b.keys("i");
+    b.key(ctrl('r'));
+    b.keys("\"");
+    b.key(esc());
+    assert_eq!((b.text(), b.caret()), ("  xyabc".into(), Pos::new(0, 3)));
+    let mut b = Body::new("abc", 0, 0);
+    b.engine.registers_mut().set_unnamed(Register { text: "x\u{14}y".into(), kind: RegKind::Char });
+    b.keys("i");
+    b.key(ctrl('r'));
+    b.key(ctrl('r'));
+    b.keys("\"");
+    b.key(esc());
+    assert_eq!((b.text(), b.caret()), ("x\u{14}yabc".into(), Pos::new(0, 2)), "ctrl+r ctrl+r: literal");
+    let mut b = Body::new("abc", 0, 0);
+    b.engine.registers_mut().set_unnamed(Register { text: "\u{14}\u{14}x\u{4}".into(), kind: RegKind::Char });
+    b.keys("i");
+    b.key(ctrl('r'));
+    b.keys("\"");
+    b.key(esc());
+    assert_eq!(b.text(), "  xabc");
+    b.keys("j.");
+    assert_eq!((b.text(), b.caret()), ("    xxabc".into(), Pos::new(0, 4)), "the record holds the register's keys");
+    for chord in ['t', 'd'] {
+        let mut b = Body::new("  abc", 0, 2);
+        b.keys("i");
+        b.key(ctrl('r'));
+        assert!(!declined(&b.key(ctrl(chord))), "ctrl+r ctrl+{chord} is swallowed");
+        assert_eq!(b.text(), "  abc", "ctrl+r ctrl+{chord} does nothing");
+    }
+}
+
+/// Plan 3c Task 4: the mode during `ctrl+o`, its echo, and the keys the
+/// engine does not own there: Esc is inert and Insert resumes, a declined
+/// key resumes Insert first, a query box declines `ctrl+o` itself.
+#[test]
+fn ctrl_o_runs_one_normal_command_then_resumes() {
+    let mut f = Field::new("abc def", 0);
+    f.keys("iX");
+    f.key(ctrl('o'));
+    assert_eq!(f.engine.mode(), Mode::InsertNormal { replace: false });
+    f.keys("2");
+    assert_eq!((f.engine.echo(), f.engine.mode()), ("2".into(), Mode::InsertNormal { replace: false }));
+    f.keys("w");
+    // Vim 9.1: `iX<C-o>2wY<Esc>` on "abc def" gives "Xabc deYf".
+    assert_eq!((f.engine.mode(), f.col()), (Mode::Insert, 7));
+    f.key(ctrl('o'));
+    assert_eq!(f.key(esc()), Outcome::Consumed { changed: false, note: None, request: None }, "Esc is inert");
+    assert_eq!(f.engine.mode(), Mode::Insert);
+    f.key(ctrl('o'));
+    assert_eq!(f.keys("j"), Outcome::Declined { count: None, keys: vec![k('j')] }, "declined after resuming");
+    assert_eq!(f.engine.mode(), Mode::Insert);
+    f.key(ctrl('o'));
+    assert_eq!(f.key(ctrl('c')), Outcome::Declined { count: None, keys: vec![ctrl('c')] });
+    assert_eq!(f.engine.mode(), Mode::Insert);
+    f.key(ctrl('o'));
+    assert_eq!(f.key(ctrl('o')), Outcome::Declined { count: None, keys: vec![ctrl('o')] }, "Normal ctrl+o is the app's");
+    assert_eq!(f.engine.mode(), Mode::Insert);
+    let mut q = Field::start("ab", 1, Start::InsertOnly);
+    assert!(declined(&q.key(ctrl('o'))));
+    let mut r = Field::new("abc", 0);
+    r.keys("Rx");
+    r.key(ctrl('o'));
+    assert_eq!(r.engine.mode(), Mode::InsertNormal { replace: true });
+    r.keys("l");
+    assert_eq!(r.engine.mode(), Mode::Replace);
+    r.keys("Y");
+    assert_eq!(r.text(), "xbY");
+}
+
+/// Review focus 3: a pending restart never outlives a session edge, and a
+/// click resumes Insert as a command would.
+#[test]
+fn ctrl_o_at_the_session_edges() {
+    let mut f = Field::new("abc", 0);
+    f.keys("iX");
+    f.key(ctrl('o'));
+    f.engine.leave(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
+    assert_eq!(f.engine.mode(), Mode::Normal);
+    f.engine.enter(Start::Normal, Seat::Keep, Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
+    f.keys("l");
+    assert_eq!(f.engine.mode(), Mode::Normal, "nothing resumed");
+    f.keys("iY");
+    f.key(ctrl('o'));
+    let (mut other, mut os) = (LineInput::new("pq"), BufState::new());
+    other.set_cursor(0);
+    f.engine.carry(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, Target { buf: &mut OneLineBuf::new(&mut other), state: &mut os });
+    assert_eq!(f.engine.mode(), Mode::Normal, "a restart carries as Normal");
+    let mut f = Field::new("abc", 0);
+    f.keys("iX");
+    f.key(ctrl('o'));
+    f.input.set_cursor(2);
+    f.engine.settle(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, Settled::Click);
+    assert_eq!(f.engine.mode(), Mode::Insert, "a click is the command");
+    f.keys("Z");
+    assert_eq!(f.text(), "XaZbc");
+    let mut f = Field::new("abc", 0);
+    f.keys("iX");
+    f.key(ctrl('o'));
+    f.keys("v");
+    f.engine.external_edit(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, |ed| {
+        ed.splice(Pos::new(0, 0), Pos::new(0, 0), "Q");
+        ed.set_cursor(Pos::new(0, 2));
+    });
+    assert_eq!(f.engine.mode(), Mode::Insert);
+    f.keys("W");
+    assert_eq!(f.text(), "QXWabc", "typing resumes at the caret");
+    let mut f = Field::new("abc", 0);
+    f.keys("iX");
+    f.key(ctrl('o'));
+    f.engine.paste("P", Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
+    assert_eq!((f.engine.mode(), f.text()), (Mode::Insert, "XPabc"), "a paste resumes and types");
+}
+
+/// Task 4 review: a click that ends Visual opened inside `ctrl+o` is the
+/// command, so Insert resumes where the click put the caret (Vim restarts
+/// Insert once Visual is off).
+#[test]
+fn a_click_ending_visual_inside_ctrl_o_resumes_insert() {
+    let mut f = Field::new("abc", 0);
+    f.keys("iX");
+    f.key(ctrl('o'));
+    f.keys("v");
+    assert_eq!(f.engine.mode(), Mode::Visual(Shape::Char));
+    f.input.set_cursor(3);
+    f.engine.settle(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, Settled::Click);
+    assert_eq!((f.engine.mode(), f.engine.visual_anchor()), (Mode::Insert, None));
+    f.keys("Z");
+    assert_eq!(f.text(), "XabZc", "typing lands at the clicked caret");
+}
+
+/// Plan 3c Task 5: the body's `top` follows Vim's `update_topline` for the
+/// viewport the app passes; a one-line field and a body with no viewport
+/// never scroll.
+#[test]
+fn the_body_top_follows_the_caret() {
+    let text: Vec<String> = (1..=100).map(|i| format!("line {i}")).collect();
+    let mut b = Body::new(&text.join("\n"), 0, 0);
+    b.keys("G");
+    assert_eq!(b.ed.viewport_offset().1, 80, "a 20-row view shows 81..100");
+    b.keys("50G");
+    assert_eq!(b.ed.viewport_offset().1, 40, "centred: 50 - 20/2");
+    b.keys("gg");
+    assert_eq!(b.ed.viewport_offset().1, 0);
+    b.keys("21j");
+    assert_eq!(b.ed.viewport_offset().1, 2, "one row below the window scrolls two");
+    let mut f = Field::new("abc", 0);
+    f.keys("$");
+    assert_eq!(f.input.cursor(), 2);
+}
+
+/// Review focus 2: a tiny or missing viewport, and a text that shrank
+/// under `top`, never panic and keep the caret visible.
+#[test]
+fn the_view_survives_odd_viewports_and_outside_changes() {
+    let text: Vec<String> = (1..=50).map(|i| format!("l{i}")).collect();
+    for rows in [Some(0), Some(1), Some(2), None] {
+        let mut b = Body::new(&text.join("\n"), 0, 0);
+        let ctx = ViewCtx { viewport_rows: rows };
+        for key in [k('G'), k('g'), k('g'), k('2'), k('5'), k('G'), k('j'), k('k')] {
+            b.engine.handle(key, Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state }, &ctx);
+        }
+        let top = b.ed.viewport_offset().1;
+        assert!(top <= b.caret().row, "{rows:?}: top {top} past the caret");
+    }
+    let mut b = Body::new(&text.join("\n"), 49, 0);
+    b.keys("G");
+    assert!(b.ed.viewport_offset().1 > 0);
+    b.ed.lines = Lines::from("a\nb");
+    b.ed.cursor = edtui::Index2::new(1, 0);
+    b.keys("k");
+    assert_eq!(b.ed.viewport_offset().1, 0, "clamped into the shrunk text");
+}
+
+/// Plan 3c Task 6: the scroll chords in a one-line field are declined with
+/// their count in Normal (piece 4 pages the surface) and consumed as failed
+/// motions in Visual; in the body with an operator pending they cancel it.
+#[test]
+fn scroll_chords_in_a_field_and_after_an_operator() {
+    let mut f = Field::new("abc", 1);
+    for c in ['d', 'u', 'f', 'b'] {
+        assert_eq!(f.keys("3").clone(), Outcome::consumed());
+        assert_eq!(f.key(ctrl(c)), Outcome::Declined { count: Some(3), keys: vec![ctrl(c)] }, "{c}");
+    }
+    f.keys("v");
+    assert!(!declined(&f.key(ctrl('d'))));
+    assert_eq!((f.engine.mode(), f.col()), (Mode::Visual(Shape::Char), 1));
+    let mut b = Body::new("a\nb\nc", 0, 0);
+    b.keys("d");
+    assert_eq!(b.key(ctrl('d')), Outcome::Consumed { changed: false, note: None, request: None });
+    assert!(!b.engine.pending(), "the operator is cancelled");
+    assert_eq!(b.text(), "a\nb\nc");
+    b.keys("3");
+    b.key(ctrl('d'));
+    assert_eq!(b.state.scroll, Some(3));
+}
+
+/// Task 6 review: Vim's `win_comp_scroll()` makes the default `'scroll'`
+/// half the height but at least one line, so in a one-row window an
+/// uncounted `ctrl+d` and `ctrl+u` still move.
+#[test]
+fn a_one_row_window_half_pages_by_one_line() {
+    let mut b = Body::new("a\nb\nc", 0, 0);
+    let ctx = ViewCtx { viewport_rows: Some(1) };
+    let key = |b: &mut Body, ev| {
+        b.engine.handle(ev, Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state }, &ctx);
+    };
+    key(&mut b, ctrl('d'));
+    assert_eq!((b.caret().row, b.ed.viewport_offset().1), (1, 1));
+    key(&mut b, ctrl('u'));
+    assert_eq!((b.caret().row, b.ed.viewport_offset().1), (0, 0));
+}
+
+/// Plan 3c Task 7: `H M L` in a one-line field go to the first non-blank
+/// (Vim on a one-line buffer), `zz zt zb` are inert there, `z` + another
+/// key is inert everywhere, and the parser echoes `z`.
+#[test]
+fn screen_lines_and_z_in_a_field() {
+    let mut f = Field::new("  abc", 4);
+    f.keys("H");
+    assert_eq!(f.col(), 2);
+    f.keys("$L");
+    assert_eq!(f.col(), 2);
+    f.keys("$M");
+    assert_eq!(f.col(), 2);
+    f.keys("$");
+    f.keys("z");
+    assert_eq!(f.engine.echo(), "z");
+    assert!(!declined(&f.keys("z")));
+    assert_eq!(f.col(), 4);
+    assert_eq!(f.keys("zo"), Outcome::consumed());
+    assert!(!f.engine.pending());
+    assert_eq!(f.keys("dH"), Outcome::Consumed { changed: true, note: None, request: None });
+    assert_eq!(f.text(), "", "dH takes the line");
+}
+
+/// Task 7 review: a body drawn nowhere yet is one window holding the whole
+/// text (Deviation 12): `H M L` go by the text, and a counted `zz` still
+/// moves to its line (only the placement has nothing to do).
+#[test]
+fn screen_lines_and_a_counted_zz_without_a_window() {
+    let text: Vec<String> = (1..=60).map(|i| format!("  l{i}")).collect();
+    let mut b = Body::new(&text.join("\n"), 10, 3);
+    let keys = |b: &mut Body, s: &str| {
+        for c in s.chars() {
+            b.engine.handle(k(c), Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state }, &ViewCtx::default());
+        }
+    };
+    keys(&mut b, "H");
+    assert_eq!(b.caret(), Pos::new(0, 2));
+    keys(&mut b, "M");
+    assert_eq!(b.caret(), Pos::new(29, 2));
+    keys(&mut b, "L");
+    assert_eq!(b.caret(), Pos::new(59, 2));
+    keys(&mut b, "3L");
+    assert_eq!(b.caret(), Pos::new(57, 2));
+    keys(&mut b, "$9zz");
+    assert_eq!(b.caret(), Pos::new(8, 3), "the line changes, the column is clamped");
+}
+
+/// Task 7 review: `z{count}` reads digits (`<Del>` drops one) and then
+/// swallows the next key, as Vim's `nv_z_get_count()` does; after an
+/// operator the first digit cancels it.
+#[test]
+fn z_takes_a_count_and_swallows_the_next_key() {
+    let mut f = Field::new("abc", 1);
+    f.keys("z12");
+    assert_eq!(f.engine.echo(), "z12");
+    f.key(code(KeyCode::Delete));
+    assert_eq!(f.engine.echo(), "z1");
+    assert_eq!(f.keys("x"), Outcome::consumed());
+    assert!(!f.engine.pending());
+    assert_eq!(f.text(), "abc", "the x was swallowed");
+    f.keys("dz5");
+    assert!(!f.engine.pending(), "the operator is cancelled at the digit");
+    f.keys("x");
+    assert_eq!(f.text(), "ac");
+}
+
+/// Plan 3c Task 8: `"+y` yanks as a plain yank and asks the app to copy;
+/// `"+d` deletes as a plain delete and asks too; `"+p` and Insert
+/// `ctrl+r +` show the note and change nothing; the echo shows `"+`.
+#[test]
+fn the_plus_register_copies_out_and_never_pastes_in() {
+    let mut f = Field::new("abc def", 0);
+    f.keys("\"+");
+    assert_eq!(f.engine.echo(), "\"+");
+    assert_eq!(f.keys("yiw"), Outcome::Consumed { changed: false, note: None, request: Some(AppRequest::CopyToClipboard("abc".into())) });
+    assert_eq!(f.engine.registers().unnamed().text, "abc");
+    assert_eq!(f.engine.registers().zero().text, "abc");
+    assert_eq!(f.keys("\"+dw"), Outcome::Consumed { changed: true, note: None, request: Some(AppRequest::CopyToClipboard("abc ".into())) });
+    assert_eq!(f.engine.registers().zero().text, "abc", "a delete leaves \"0 alone");
+    let note = |out: Outcome| match out {
+        Outcome::Consumed { note: Some(Note::Unsupported(n)), changed, .. } => (n, changed),
+        other => panic!("no note: {other:?}"),
+    };
+    assert_eq!(note(f.keys("\"+p")), ("paste with your terminal (ctrl+v)".into(), false));
+    assert!(!f.state.can_undo() || f.text() == "def", "no undo step for a refused put");
+    f.keys("v");
+    assert!(matches!(f.keys("\"+y"), Outcome::Consumed { request: Some(AppRequest::CopyToClipboard(_)), .. }));
+    f.keys("v\"+d");
+    assert_eq!(f.text(), "ef");
+    f.keys("A");
+    f.key(ctrl('r'));
+    assert_eq!(note(f.keys("+")).0, "paste with your terminal (ctrl+v)");
+    assert_eq!(f.text(), "ef");
+}
+
+/// Plan 3c Task 10: `n` with nothing to repeat, `*` with nothing under the
+/// caret, a hit that wraps, and the last pattern shared by every buffer.
+#[test]
+fn search_motions_messages_and_the_shared_pattern() {
+    let message = |out: Outcome| match out {
+        Outcome::Consumed { note: Some(Note::Message(m)), .. } => m,
+        other => panic!("no message: {other:?}"),
+    };
+    let mut f = Field::new("foo bar foo", 0);
+    assert_eq!(message(f.keys("n")), "No previous regular expression");
+    assert!(!f.engine.hlsearch());
+    assert_eq!(f.keys("*"), Outcome::consumed());
+    assert_eq!(f.col(), 8);
+    assert!(f.engine.hlsearch());
+    assert_eq!(f.engine.last_search(), Some("\\<foo\\>"));
+    assert_eq!(message(f.keys("n")), "search hit BOTTOM, continuing at TOP");
+    assert_eq!(f.col(), 0);
+    assert_eq!(message(f.keys("N")), "search hit TOP, continuing at BOTTOM");
+    let mut g = Field::new("x foo", 0);
+    g.engine = f.engine;
+    g.keys("n");
+    assert_eq!(g.col(), 2, "the pattern is the engine's, not the buffer's");
+    let mut e = Field::new("   ", 1);
+    assert_eq!(message(e.keys("*")), "No string under cursor");
+    assert!(!e.engine.pending());
+    let mut b = Body::new("foo\nbar", 0, 0);
+    b.keys("d*");
+    assert_eq!(b.text(), "foo\nbar", "a wrap to itself deletes nothing");
+    b.keys("gv");
+    let mut q = Field::new("ab", 0);
+    q.keys("g*");
+    assert!(matches!(q.engine.mode(), Mode::Normal));
+}
+
+/// Plan 3c Task 11: the prompt's state, echo and mode; the keys it owns in
+/// a one-line field (Enter runs the search, Tab types a tab, BS on an empty
+/// pattern cancels); `n` in a field reusing the body's pattern; the wrap
+/// within a single line; the highlight API.
+#[test]
+fn the_search_prompt_in_a_field() {
+    // Probed 2026-10-01: `d2/fo` from 1:1 wraps back to 1:1 and deletes
+    // nothing; `d3/fo` lands on 1:9 after wrapping and leaves `foo`.
+    let mut f = Field::new("foo bar foo", 0);
+    f.keys("d3/");
+    assert_eq!(f.engine.mode(), Mode::Search(Dir::Forward));
+    assert_eq!(f.engine.echo(), "d3/");
+    assert!(f.engine.pending());
+    f.keys("fo");
+    let line = f.engine.search_line().expect("open");
+    assert_eq!((line.dir, line.text.as_str(), line.cursor), (Dir::Forward, "fo", 2));
+    assert_eq!(f.engine.search_preview(&OneLineBuf::new(&mut f.input)), Some((Pos::new(0, 8), Pos::new(0, 10))));
+    assert_eq!(f.engine.search_matches(&OneLineBuf::new(&mut f.input), 0..1).len(), 2, "incsearch paints every match of the typed text");
+    assert!(!declined(&f.key(code(KeyCode::Enter))));
+    assert_eq!(f.text(), "foo", "d3/fo deleted to the third hit, which wrapped");
+    assert_eq!(f.engine.mode(), Mode::Normal);
+    assert!(f.engine.hlsearch());
+    assert_eq!(f.engine.search_matches(&OneLineBuf::new(&mut f.input), 0..1), vec![(Pos::new(0, 0), Pos::new(0, 2))]);
+    f.engine.no_hlsearch();
+    assert!(!f.engine.hlsearch());
+    assert!(f.engine.search_matches(&OneLineBuf::new(&mut f.input), 0..1).is_empty());
+    f.keys("/");
+    assert!(!declined(&f.key(code(KeyCode::Tab))));
+    assert_eq!(f.engine.search_line().unwrap().text, "\t");
+    f.key(code(KeyCode::Backspace));
+    assert_eq!(f.engine.mode(), Mode::Search(Dir::Forward));
+    assert_eq!(f.key(code(KeyCode::Backspace)), Outcome::consumed(), "BS on an empty pattern cancels");
+    assert_eq!(f.engine.mode(), Mode::Normal);
+    assert!(!f.engine.pending());
+    let mut g = Field::new("x fo", 0);
+    g.engine = f.engine;
+    let message = |out: Outcome| match out {
+        Outcome::Consumed { note: Some(Note::Message(m)), .. } => m,
+        other => panic!("no message: {other:?}"),
+    };
+    assert_eq!(g.keys("n"), Outcome::consumed());
+    assert_eq!(g.col(), 2);
+    assert_eq!(message(g.keys("n")), "search hit BOTTOM, continuing at TOP");
+    assert_eq!(g.col(), 2);
+}
+
+/// The prompt's refusals and cancels: an offset, an unsupported atom (still
+/// the last pattern), a foreign chord (cancels and goes to the app), and
+/// what paste types.
+#[test]
+fn the_search_prompt_refuses_and_cancels() {
+    let message = |out: Outcome| match out {
+        Outcome::Consumed { note: Some(Note::Message(m)), .. } => m,
+        other => panic!("no message: {other:?}"),
+    };
+    let mut f = Field::new("foo bar foo", 0);
+    f.keys("/foo/e");
+    assert_eq!(message(f.key(code(KeyCode::Enter))), "search offsets not supported");
+    assert_eq!((f.col(), f.engine.last_search()), (0, Some("foo")));
+    f.keys("d/\\v foo");
+    assert_eq!(message(f.key(code(KeyCode::Enter))), "pattern not supported: \\v");
+    assert_eq!((f.text(), f.engine.last_search()), ("foo bar foo", Some("\\v foo")));
+    assert!(!f.engine.pending());
+    assert_eq!(message(f.keys("n")), "pattern not supported: \\v");
+    f.keys("d/fo");
+    assert_eq!(f.key(ctrl('c')), Outcome::Declined { count: None, keys: vec![ctrl('c')] });
+    assert_eq!((f.engine.mode(), f.engine.pending()), (Mode::Normal, false));
+    f.keys("/");
+    f.engine.paste("ba\nr", Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
+    assert_eq!(f.engine.search_line().unwrap().text, "ba r");
+    f.key(esc());
+    f.keys("/");
+    match f.key(ctrl('r')) {
+        Outcome::Consumed { note: Some(Note::Unsupported(n)), .. } => assert_eq!(n, "ctrl+r not supported in a search"),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(f.engine.mode(), Mode::Search(Dir::Forward));
+    f.key(code(KeyCode::Up));
+    assert_eq!(f.engine.mode(), Mode::Search(Dir::Forward));
+    f.key(esc());
+    let mut q = Field::start("", 0, Start::InsertOnly);
+    q.keys("/");
+    assert_eq!(q.text(), "/", "a query box types the slash");
+}
+
+/// Review focus 1: a pattern that blows up compiles or is refused, and
+/// searches a 5,000-line body in milliseconds.
+#[test]
+fn search_survives_hostile_patterns_and_big_bodies() {
+    let deep = "\\(a\\|b".repeat(400) + &"\\)".repeat(400);
+    let mut f = Field::new("ab", 0);
+    f.keys("/");
+    for c in deep.chars() {
+        f.key(k(c));
+    }
+    let started = std::time::Instant::now();
+    f.key(code(KeyCode::Enter));
+    assert!(started.elapsed().as_millis() < 500);
+    f.keys("/\\(x*\\)*y");
+    f.key(code(KeyCode::Enter));
+    let text: Vec<String> = (0..5000).map(|i| format!("  \"k{i}\": [{i}, \"v\"],")).collect();
+    let mut b = Body::new(&text.join("\n"), 0, 0);
+    b.keys("/v\",$");
+    let started = std::time::Instant::now();
+    b.key(code(KeyCode::Enter));
+    b.keys("nnnN*#");
+    assert!(started.elapsed().as_millis() < 500, "six searches took {} ms", started.elapsed().as_millis());
+    assert!(b.engine.search_matches(&BodyBuf::new(&mut b.ed, &mut b.visual), 0..30).len() <= 30);
+}
+
+/// The highlight calls run on every frame: a long pattern (milliseconds to
+/// compile in a debug build) compiles once, not once per call.
+#[test]
+fn the_highlight_reuses_the_compiled_pattern() {
+    let mut b = Body::new("ab ab\nba", 0, 0);
+    b.keys("/\\(a\\|b\\)\\{500}\\|ab");
+    let started = std::time::Instant::now();
+    for _ in 0..200 {
+        assert_eq!(b.engine.search_matches(&BodyBuf::new(&mut b.ed, &mut b.visual), 0..2).len(), 2);
+        assert_eq!(b.engine.search_preview(&BodyBuf::new(&mut b.ed, &mut b.visual)), Some((Pos::new(0, 3), Pos::new(0, 5))));
+    }
+    let ms = started.elapsed().as_millis();
+    assert!(ms < 200, "200 frames took {ms} ms");
+}
+
+/// A counted search on one long line (a minified JSON body) reads each
+/// line's matches once, not once per step: no hit repeats, so the cycle
+/// shortcut never helps here.
+#[test]
+fn a_counted_search_on_one_long_line_is_fast() {
+    let mut b = Body::new(&"a,".repeat(50_000), 0, 0);
+    b.keys("/,");
+    b.key(code(KeyCode::Enter));
+    let started = std::time::Instant::now();
+    b.keys("9999n");
+    let ms = started.elapsed().as_millis();
+    assert_eq!(b.caret(), Pos::new(0, 19_999), "the 10,000th comma");
+    b.keys("9999N");
+    assert_eq!(b.caret(), Pos::new(0, 1));
+    assert!(started.elapsed().as_millis() < 1000, "9999n took {ms} ms, 9999N {} ms in all", started.elapsed().as_millis());
+}
+
+/// Review focus 2 and 5 (3b's sweep, extended): every second-wave key on an
+/// empty body, and edtui still renders.
+#[test]
+fn every_second_wave_key_works_on_an_empty_body() {
+    use edtui::EditorView;
+    use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
+    for keys in ["Rab\u{1b}", "R\u{1b}", "Rx\r\u{1b}", "i\u{14}\u{1b}", "i\u{4}\u{1b}", "i0\u{4}\u{1b}", "iX\u{f}0Y\u{1b}", "i\u{f}\u{1b}",
+                 "\u{4}", "\u{15}", "\u{6}", "\u{2}", "H", "M", "L", "dL", "zz", "zt", "zb", "5zt", "/x\r", "/\r", "n", "N", "*", "#",
+                 "d/x\r", "v/x\rd", "/\u{1b}", "/\u{8}", "\"+yy", "\"+p", "A\u{12}+\u{1b}", "\u{f}", "iX\u{f}/x\rY\u{1b}"] {
+        let mut b = Body::new("", 0, 0);
+        for c in keys.chars() {
+            b.key(match c {
+                '\u{14}' => ctrl('t'),
+                '\u{4}' => ctrl('d'),
+                '\u{f}' => ctrl('o'),
+                '\u{15}' => ctrl('u'),
+                '\u{6}' => ctrl('f'),
+                '\u{2}' => ctrl('b'),
+                '\u{8}' => code(KeyCode::Backspace),
+                c => key_of(c),
+            });
+        }
+        let lines = BodyBuf::new(&mut b.ed, &mut b.visual).line_count();
+        assert!(b.caret().row < lines, "{keys:?} left the caret off the text");
+        let area = Rect::new(0, 0, 20, 5);
+        EditorView::new(&mut b.ed).render(area, &mut Buffer::empty(area));
+    }
+}
+
+/// A counted search skips whole cycles once a hit repeats (so `9999*` is
+/// fast); it must land, and report a wrap, exactly where stepping one hit
+/// at a time does.
+#[test]
+fn a_counted_search_lands_where_single_steps_land() {
+    let mut b = Body::new("foo a foo\nbar\nfoo\n\nx foo foo", 0, 0);
+    let buf = BodyBuf::new(&mut b.ed, &mut b.visual);
+    for pat in ["foo", "o", "\\<foo\\>", "^", "$", "x"] {
+        let p = search::compile(pat).unwrap();
+        for dir in [Dir::Forward, Dir::Backward] {
+            for from in [Pos::new(0, 0), Pos::new(1, 2), Pos::new(4, 3), Pos::new(4, 8)] {
+                let mut step = (from, false);
+                for count in 1..=40 {
+                    let next = search::search(&buf, step.0, dir, 1, &p).unwrap();
+                    step = (next.0, step.1 || next.1);
+                    assert_eq!(search::search(&buf, from, dir, count, &p), Some(step), "{pat} {dir:?} from {from:?} count {count}");
+                }
+            }
+        }
+    }
+}
+
+/// Review focus 1 and 2: the largest count on every second-wave command
+/// finishes quickly on a 200-line body, under a one-row viewport too.
+#[test]
+fn second_wave_commands_survive_the_largest_count() {
+    let rows: Vec<String> = (0..200).map(|i| format!("  \"k{i}\": [{i}, 0x1f],")).collect();
+    let text = format!("{{\n{}\n}}", rows.join("\n"));
+    for keys in ["9999\u{4}", "9999\u{15}", "9999\u{6}", "9999\u{2}", "9999H", "9999L", "9999zz", "9999zt", "9999zb", "9999n", "9999N",
+                 "9999*", "9999#", "d9999/k\r", "9999/k\r", "9999Rx\u{1b}", "9999i\u{14}\u{1b}", "iX\u{f}9999j"] {
+        for rows in [Some(23), Some(1), None] {
+            let mut b = Body::new(&text, 100, 4);
+            let ctx = ViewCtx { viewport_rows: rows };
+            let started = std::time::Instant::now();
+            for c in keys.chars() {
+                let ev = match c {
+                    '\u{14}' => ctrl('t'),
+                    '\u{4}' => ctrl('d'),
+                    '\u{f}' => ctrl('o'),
+                    '\u{15}' => ctrl('u'),
+                    '\u{6}' => ctrl('f'),
+                    '\u{2}' => ctrl('b'),
+                    c => key_of(c),
+                };
+                b.engine.handle(ev, Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state }, &ctx);
+            }
+            let ms = started.elapsed().as_millis();
+            assert!(ms < 2000, "{keys:?} with {rows:?} rows took {ms} ms");
+        }
     }
 }

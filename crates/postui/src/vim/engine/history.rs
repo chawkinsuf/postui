@@ -235,6 +235,12 @@ impl History {
         }
     }
 
+    /// A step is open: a change since the last commit already saved its
+    /// caret (Vim's `ins_need_undo` is false).
+    pub(crate) fn is_open(&self) -> bool {
+        self.open.is_some()
+    }
+
     pub(crate) fn can_undo(&self) -> bool {
         !self.undo.is_empty()
     }
@@ -487,6 +493,21 @@ impl<B: TextBuf> Ed<'_, B> {
     /// on an X, `p` of `""`, `J` joining one line).
     pub(crate) fn save_cursor_line(&mut self, caret: Pos) {
         self.save_rows(caret, caret.row, caret.row);
+    }
+
+    /// [`Ed::save_cursor_line`], skipped when the open step's last edit
+    /// stayed inside the caret's line: that edit's undo block is already
+    /// the line, so a second save changes nothing `u` does (Vim's
+    /// `u_savecommon()` skips a line "saved just before" too). Insert
+    /// `ctrl+t` and `ctrl+d` use it (`ins_shift`), so `9999i<C-t><Esc>`
+    /// does not keep a copy of the growing line per key.
+    pub(crate) fn save_cursor_line_once(&mut self, caret: Pos) {
+        let saved = self.hist.open.as_ref().and_then(|s| s.edits.last()).is_some_and(|e| {
+            e.at.row == caret.row && !e.removed.contains('\n') && !e.inserted.contains('\n')
+        });
+        if !saved {
+            self.save_cursor_line(caret);
+        }
     }
 
     /// A line was put in, so the buffer has one again (Vim's `ML_EMPTY`

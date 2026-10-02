@@ -51,6 +51,10 @@ CHANGE_START = set("dcxXsSDCpPrJiaIAoO~><R") | {"<C-a>", "<C-x>", "<Del>"}
 # commands. A failed `ci"` once turned a typed `Q` into Ex mode and lost the
 # capture (2026-09-29). Typed text uses X, Y and the like instead.
 UNSAFE = {":", "Q", "K", "q", "@", "!", "&"}
+# Keys whose next key is a char argument, so a `/` or `?` after them opens
+# no prompt (`f/`, `"/p`, `<C-r>/`, `m/`): `in_prompt` must not mask what
+# follows, or an UNSAFE key there would pass the lint.
+TAKES_CHAR = {"f", "t", "F", "T", "r", '"', "m", "'", "`", "<C-r>", "<C-v>", "<C-q>"}
 
 
 def die(msg):
@@ -83,19 +87,52 @@ def glob_match(pattern, s):
     return pos <= end
 
 
+def in_prompt(out):
+    """For each token, whether it is typed into a `/` or `?` prompt, where
+    `.` and the UNSAFE keys are text (plan 3c Task 11). Conservative: a
+    prompt opens on `/` or `?` unless the key before takes it as a char
+    (TAKES_CHAR: `f t F T r`, a register name, a mark), and it ends on
+    `<CR>`, `<Esc>`, `<C-[>`, any other chord, or a BS or
+    Del that might find it empty (`<C-w>` and `<C-u>` count as emptying it).
+    A `/` typed as Insert text opens one too, which is harmless: what follows
+    is text either way, and if the change failed Vim opens a real prompt."""
+    mask, inside, typed = [], False, 0
+    for i, t in enumerate(out):
+        if inside:
+            mask.append(True)
+            if t in ("<BS>", "<C-h>", "<Del>"):
+                inside, typed = typed > 0, typed - 1
+            elif t in ("<C-w>", "<C-u>"):
+                typed = 0
+            elif len(t) == 1 or t in ("<lt>", "<Space>", "<Tab>"):
+                typed += 1
+            elif t not in ("<Left>", "<Right>", "<Home>", "<End>", "<Up>", "<Down>"):
+                inside = False
+        else:
+            mask.append(False)
+            if t in ("/", "?") and (i == 0 or out[i - 1] not in TAKES_CHAR):
+                inside, typed = True, 0
+    return mask
+
+
 def tokens(keys, names, where):
     out = TOKEN.findall(keys)
     for t in out:
         if len(t) > 1 and t[1:-1] not in names:
             die(f"{where}: unknown key name {t} (add it to keys.toml and the Rust key map)")
+    prompt = in_prompt(out)
     for i, t in enumerate(out):
+        if prompt[i]:
+            continue
         if t in UNSAFE or (t == "Z" and out[i + 1:i + 2] in (["Z"], ["Q"])):
             die(f"{where}: {t!r} is unsafe in a case (see UNSAFE; §6.2 forbids ':')")
     def starts_change(j):
+        if prompt[j]:
+            return False
         return out[j] in CHANGE_START or (out[j] == "g" and out[j + 1:j + 2] in (["~"], ["u"], ["U"]))
 
     for i, t in enumerate(out):
-        if t == "." and not any(starts_change(j) for j in range(i)):
+        if t == "." and not prompt[i] and not any(starts_change(j) for j in range(i)):
             die(f"{where}: '.' must follow a change in the same case (§6.2, trap 8)")
     return out
 
@@ -188,6 +225,8 @@ def golden_rows(cases, results):
             die(f"{c['id']}: no capture. The case ends half-typed (§6.2 lint) or the harness broke")
         if cap["mode"].startswith("no"):
             die(f"{c['id']}: ends with an operator pending (§6.2 lint, trap 9)")
+        if cap["mode"] == "c":
+            die(f"{c['id']}: ends in the search prompt (§6.2 lint, trap 9)")
         expect = {"cursor": cap["cursor"], "mode": cap["mode"], "reg": cap["reg"], "regtype": cap["regtype"]}
         if cap["lines"] != c["lines"]:
             expect["lines"] = cap["lines"]

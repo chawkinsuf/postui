@@ -11,9 +11,11 @@ vim-mode rounds but not shown to be yours, so treat it as mine).
 Implementation: plan 3a (buffers, the conformance harness, every tier-1
 key, the session edges and the API) is `docs/superpowers/plans/2026-09-29-vim-engine-3a.md`,
 on branch `vim-engine-3a`.
-Plan 3b (the tier-2 first wave) is `docs/superpowers/plans/2026-09-30-vim-engine-3b.md`,
-on branch `vim-engine-3b`; plan 3c (the second wave) follows. Each plan
-lists its deviations from this text.
+Plan 3b (the tier-2 first wave) is `docs/superpowers/plans/2026-09-30-vim-engine-3b.md`
+and plan 3c (the second wave) `docs/superpowers/plans/2026-10-01-vim-engine-3c.md`,
+on branches `vim-engine-3b` and `vim-engine-3c`. Each plan lists its
+deviations from this text; the decisions below marked 2026-10-01 come
+from 3c's review.
 
 Companion documents: the key list
 `docs/superpowers/specs/2026-09-27-vim-target-keys.md` (§1–§5 are this
@@ -61,7 +63,7 @@ Success criteria:
   result is one line (§6.5). Divergences are allowed only through
   `divergences.toml`, each one labelled and explained. Target at the first
   release: zero divergences, apart from the case-operator ones the user
-  accepted (§6.6).
+  accepted and plan 3c's `mine` entries awaiting the user's review (§6.6).
 - `cargo test` needs no Vim installed. The golden file is committed.
 - The tier-2 rows marked "first wave" in §5 pass before piece 4 ships. The
   rest are generated into the golden file but reported as "not yet" without
@@ -306,14 +308,16 @@ so every change is recorded.
 | `Tab` | body: spaces up to the next multiple of 2 (`mine`). One-line: declined |
 | `Left` `Right` `Home` `End` (and `Up` `Down` in the body) | move, and close the undo step and the `.` record as Vim does; typing after the move starts a new record |
 | `Esc`, `ctrl+[` | leave: the caret steps back one unless at column 0. An indent that `autoindent` added and nothing followed is removed. A counted insert (`3ia<Esc>`, tier 2) repeats `typed` |
-| `ctrl+o {cmd}` (tier 2) | one Normal command, then back to Insert. Mode `InsertNormal` |
+| `ctrl+o {cmd}` (tier 2) | one Normal command, then back to Insert (Replace after `R`). Mode `InsertNormal { replace }`. Ends the undo step and the `.` record as Esc does; the caret goes back past the end where it was; `.` inside it repeats the change before the insert; a key the engine declines resumes Insert first (plan 3c Deviation 8) |
 | `ctrl+r {reg}` (tier 2) | insert register text as typed |
-| `ctrl+t` `ctrl+d` (tier 2, body) | indent and outdent by `shiftwidth` |
+| `ctrl+t` `ctrl+d` (tier 2) | indent and outdent to the next multiple of `shiftwidth`, in one-line fields too (plan 3c Deviation 11, after 3b's `>>` ruling). `0<C-d>` and `^<C-d>` remove the indent |
 
 `R` (tier 2) runs the same session in Replace: typing overwrites, and `BS`
 restores the original chars. `c`, `s`, `S`, `C`, `cc`, `o`, `O`, `A`, `I`,
 `a` and `i` are `Cmd`s that open a session, and the change they made plus
 the typing is one undo step.
+
+The Replace session keeps Vim's replace stack, so `BS` restores what was typed over, and before the session's start it only moves the caret (plan 3c Deviation 10).
 
 ### 3.9 Visual mode
 
@@ -337,10 +341,7 @@ field and the body (`mine`, key list §5). Tier 1 has only the unnamed
 register. Tier 2 adds these:
 
 - `"0`, the yank register.
-- `"+`: `"+y…` returns `AppRequest::CopyToClipboard(text)`, and the app
-  copies it through its existing OSC 52 path. `"+p` shows the note "paste
-  with your terminal (ctrl+v)", because the app cannot read the system
-  clipboard (`mine`).
+- `"+`: `"+y…`, and `"+d…`/`"+c…` (a cut), return `AppRequest::CopyToClipboard(text)` and write the registers as the plain command does; the app copies it through its existing OSC 52 path. `"+p` and Insert `ctrl+r +` show the note "paste with your terminal (ctrl+v)" and change nothing, because the app cannot read the system clipboard (`mine`; plan 3c Deviation 14).
 
 `"a`–`"z` and the other registers are Out. `"x` for any register that is
 not supported consumes both keys, shows the note `register "x not
@@ -474,7 +475,22 @@ survives while it is typed.
   the waiting operator and count (`d2/`).
 - Printable chars and paste type into the pattern.
 - `BS` deletes back. `BS` on an empty pattern cancels, as in Vim.
-- `ctrl+w` and `ctrl+u` delete back a word, or back to the start.
+- The other prompt keys (plan 3c Deviation 16, each probed in Vim's command
+  line):
+  - `Tab` types a literal tab.
+  - `ctrl+h` is `BS`.
+  - `Del` deletes under the caret; at the end it deletes back; on an empty
+    pattern it cancels.
+  - `ctrl+w` deletes a word back by Vim's command-line rule (blanks, then
+    one char class) and never cancels.
+  - `ctrl+u` deletes back to the start.
+  - `Left`, `Right`, `Home` and `End` move in the pattern.
+  - `Up` and `Down` are inert (no search history).
+  - `ctrl+r` is inert, with the note `ctrl+r not supported in a search`.
+  - `ctrl+[` is `Esc`.
+  - Any other chord cancels the prompt (the waiting operator with it) and
+    is declined to the app, field.rs's chord rule.
+- An offset after an unescaped `/` (or `?`) is refused with "search offsets not supported"; the pattern before it is still saved (plan 3c Deviation 3).
 - `Esc` cancels: the operator is dropped and the caret does not move.
 - `Enter` runs the search. An empty pattern reuses the last one, as in Vim.
 - While the pattern is typed, the caret does not move, and the match it
@@ -489,11 +505,11 @@ survives while it is typed.
 - The last pattern and its direction are `Engine` state, global as in Vim,
   so `n` in a one-line field reuses a search made in the body. On a
   one-line buffer, search runs within its single line.
+- `n` with no previous pattern: "No previous regular expression"; `*` with nothing under or after the caret: "No string under cursor". These are `Note::Message`, a second variant beside `Note::Unsupported` (plan 3c Deviation 6).
 
 **Highlighting.** After a search, every match in the body is painted with a
 search highlight. The highlight stays until `:noh`, a new search, or a
-request switch. The engine exposes `Engine::last_search()` and a
-`matches(&buf, rows)` helper so that the renderer paints exactly what `n`
+request switch. The engine exposes `last_search()`, `hlsearch()`, `no_hlsearch()`, `search_matches(&buf, rows)` (the live pattern: the prompt's text while open, else the last pattern) and `search_preview(&buf)` (the match Enter would land on; plan 3c Deviation 18) so that the renderer paints exactly what `n`
 would visit. Piece 4 moves `:noh`/`:nohlsearch` from its "runs nothing"
 list to a supported verb.
 
@@ -511,10 +527,15 @@ adds a direct dependency but no new crate. The subset is:
 - `\<` `\>`;
 - `\` before any of these to make it literal.
 
-`\<` and `\>` are checked against `class.rs` after `regex` finds a
-candidate, because `regex`'s `\b` defines a word differently from Vim's
-`iskeyword`. Anything outside the subset (`\v`, `\zs`, `\%`, `~`, `\{-}`,
+`\<` and `\>` are matched exactly as Vim's `BOW`/`EOW` (character classes, so CJK and emoji boundaries count): the line is matched with a sentinel char before every word start and word end and the atoms translate to those chars, because `regex`'s `\b` defines a word differently and a check after the fact cannot reproduce Vim's backtracking (plan 3c Deviation 4).
+Anything outside the subset (`\v`, `\zs`, `\%`, `~`, `\{-}`,
 and so on) shows `pattern not supported: {atom}`, and nothing is searched.
+An unsupported pattern is still saved as the last pattern, as in Vim (Deviation 5).
+A backslash before a char that has no entry in Vim's `META_flags` table
+(`\q`, `\j`, and so on), and a trailing backslash, are literal, as Vim's
+`peekchr()` reads them (plan 3c Task 11, pinned by `search/patterns`).
+`\n` inside `[…]` (a collection that would match a line break) is refused
+with `pattern not supported: \n`.
 The engine never searches for something other than what was typed.
 
 `history.rs` is untouched: a search changes no text. `.` does not repeat a
@@ -533,8 +554,9 @@ pub struct Target<'a, B: TextBuf> { pub buf: &'a mut B, pub state: &'a mut BufSt
 
 /// Named `ViewCtx`, not `KeyCtx`: piece 4's router has its own `KeyCtx`.
 pub struct ViewCtx {
-    /// Rows the body shows, for ctrl+d/u/f/b, H/M/L, zz/zt/zb (tier 2).
-    /// None for a one-line field.
+    /// Rows the body shows, for ctrl+d/u/f/b, H/M/L, zz/zt/zb.
+    /// None for a one-line field, or a body that has not been drawn yet
+    /// (then the whole text is the window, Deviation 12).
     pub viewport_rows: Option<usize>,
 }
 
@@ -547,10 +569,12 @@ pub enum Outcome {
     /// typed before them. Engine state is as if those keys were never typed.
     Declined { count: Option<usize>, keys: Vec<KeyEvent> },
 }
-pub enum Note { Unsupported(&'static str) }          // footer text, e.g. `register "a not supported`
+pub enum Note { Unsupported(String), Message(String) }  // footer text, e.g. `register "a not supported`
 pub enum AppRequest { CopyToClipboard(String) }      // "+y (tier 2)
 
-pub enum Mode { Normal, Insert, InsertNormal, Replace, Visual(Shape), Search(Dir) }  // Search: tier 2 (§3.14)
+pub enum Mode { Normal, Insert, Replace, InsertNormal { replace: bool }, Visual(Shape), Search(Dir) }
+/// The open search prompt (§3.14): its direction, its text and the caret in it.
+pub struct SearchLine { pub dir: Dir, pub text: String, pub cursor: usize }
 
 impl Engine {
     pub fn handle<B: TextBuf>(&mut self, key: KeyEvent, t: Target<'_, B>, ctx: &ViewCtx) -> Outcome;
@@ -559,6 +583,7 @@ impl Engine {
     pub fn echo(&self) -> String;         // "" when nothing is half-typed
     pub fn pending(&self) -> bool;        // a count, register, operator or prefix is in flight
     pub fn registers(&self) -> &Registers;
+    pub fn search_line(&self) -> Option<SearchLine>;
 }
 impl BufState {
     pub fn can_undo(&self) -> bool; pub fn can_redo(&self) -> bool;
@@ -616,9 +641,12 @@ happen.
 The engine returns `Declined` for these keys. Anything not listed and not
 the engine's own is consumed with no effect in Normal and Visual (Normal
 never types). Where a vim user expects something, it also shows a
-`Note::Unsupported`: `U`, `K`, `Q`, `&`, `gJ`, and the operator `d:`. Until
-search ships in the second wave (§3.14), `*`, `#`, `/`, `?`, `n`, `N` and
-`d/` show the note too.
+`Note::Unsupported`: `U`, `K`, `Q`, `&`, `gJ`, and the operator `d:`.
+`g*`, `g#`, `gn`, `gN` show "g* not supported" and so on (plan 3c Deviation 15).
+`z` reads a count after it (`z5`, as Vim's `nv_zet()` does) and then
+swallows the next key: `zz`, `zt` and `zb` act, anything else is inert
+(plan 3c Task 7), so `zo` and friends never reach the app from a text
+buffer.
 
 | Key | When | Why |
 |---|---|---|
@@ -629,7 +657,8 @@ search ships in the second wave (§3.14), `*`, `#`, `/`, `?`, `n`, `N` and
 | `u`, `ctrl+r` (with count) | Normal, `BufState` has nothing to undo or redo | the app history (§3.11) |
 | `g` + a key that doesn't complete an engine `g` command (`gt`, `gT`) | Normal | piece 4's tab verbs. `keys = [g, t]` with the count |
 | `Z`, `q`, `@`, `m`, `'`, `` ` `` | Normal | piece 4's `ZZ`/`ZQ` and its notes for macros and marks (key list §9) |
-| any ctrl/alt/super chord that is not the engine's | any mode | app bindings. The engine's own chords: Normal `ctrl+r` `ctrl+a` `ctrl+x` (plus `ctrl+d/u/f/b` in the body, tier 2); Insert `ctrl+w` `ctrl+u` `ctrl+h` `ctrl+[` (plus `ctrl+o` `ctrl+r` `ctrl+t` `ctrl+d`, tier 2) |
+| any ctrl/alt/super chord that is not the engine's | any mode | app bindings. The engine's own chords: Normal `ctrl+r` `ctrl+a` `ctrl+x` (plus `ctrl+d/u/f/b` in the body, in Normal and Visual; with an operator pending they cancel it); Insert `ctrl+w` `ctrl+u` `ctrl+h` `ctrl+[` `ctrl+o` `ctrl+r` `ctrl+t` `ctrl+d`; in the search prompt `ctrl+w` `ctrl+u` `ctrl+h` `ctrl+[`, and `ctrl+r` (inert, with its note; §3.14) (any other chord cancels the prompt and is declined) |
+| `ctrl+o` | `Start::InsertOnly` | a query box has no Normal layer |
 
 Keys that are Out and are not listed above, such as `ctrl+v` or `ctrl+o` in
 Normal, fall under the last row and reach the app with their existing
@@ -667,8 +696,8 @@ passes the conformance test (`mine`).
 | §4 `i a I A o O`, `Esc`, Insert `BS ctrl+w ctrl+u`, `v V o`, Visual operators | 1 | insert.rs, mod.rs | first release |
 | §5 one-line rules (`o O J` no-op, whole-field `dd`, shared register, joined paste) | 1 | buf.rs, register.rs | first release (S tests) |
 | §1 `ge gE`, `{ }`; §2 `~ g~ gu gU`, `>> << > <`, `ctrl+a ctrl+x`; §3 `ip ap`; §4 counted inserts, `gv`, `gi`, Insert `ctrl+r`; §9 `"0` | 2 | same modules | **first wave**, before piece 4 ships: each is a small addition to grammar that already exists |
-| §2 `R`; §4 Insert `ctrl+o`, `ctrl+t ctrl+d`; §1 `ctrl+d ctrl+u ctrl+f ctrl+b`, `H M L`, `zz zt zb`; §9 `"+` | 2 | insert.rs, motion.rs, register.rs | second wave: needs viewport plumbing, a nested mode, or the app's clipboard |
-| §1 search `/ ? n N * #`, as a motion and after operators (§3.14) | 2 | search.rs, keys.rs | second wave: a nested mode, the pattern translator, and the renderer's highlight |
+| §2 `R`; §4 Insert `ctrl+o`, `ctrl+t ctrl+d`; §1 `ctrl+d ctrl+u ctrl+f ctrl+b`, `H M L`, `zz zt zb`; §9 `"+` | 2 | insert.rs, motion.rs, register.rs | **shipped** (plan 3c) |
+| §1 search `/ ? n N * #`, as a motion and after operators (§3.14) | 2 | search.rs, keys.rs | **shipped** (plan 3c) |
 | §2 `gJ`; §3 `it at is as`; §4 `ctrl+v` block; named registers | Out | §4.3 | never |
 
 Beyond the key list, the Normal motions `+`, `-` and `Enter` in the body
@@ -735,15 +764,23 @@ Fixed texts:
 - `empty` (`[""]`)
 - `numbers` (`id: 41, n: -7, hex: 0x1f, pad: 007`)
 - `tabs` (a tab-indented line)
-- `long` (100 numbered lines, for tier-2 scroll cases)
+- `long` (100 lines, numbered, for tier-2 scroll and search cases; records `top`)
+- `lines25` (25 lines, a window and a bit; records `top`)
+- `deep_indent` (6- and 3-space indents, for how Insert `ctrl+t ctrl+d`
+  round to `shiftwidth`)
+- `search` (repeated words, wide chars and punctuation, for `n N * #`)
+- `search_question` (`?` and `\?` runs, for `#` and `N`)
+- `search_cases` (the pattern-language edge cases: brackets, classes,
+  multis, word boundaries)
+- `search_brackets` (a delimiter inside `[…]`, Vim's `skip_regexp()`)
 
 The corpus has one group per key-list row. Every tier-1 row runs on at
 least `words`, `json_flat`, `json_pretty`, `unicode` and `blank_edges`, with
 the caret at the start, the middle and the end, plus each edge seat. Every
 operator runs with `w e b $ 0 ^ f t F T % iw aw i" i{ a{` and with a count.
-Every change gets a `u`, a `u<C-r>` and a `.` variant. The expected size is
-about 4,000 cases. The spike measured about 0.25 ms per case, so
-generation takes a few seconds and the golden file is about 2 MB.
+Every change gets a `u`, a `u<C-r>` and a `.` variant. The corpus has
+85,275 cases and the golden file is about 15 MB; the full conformance run
+takes about 15 s in a debug build (the regex compiles per search case).
 
 Lints the generator enforces:
 
@@ -766,14 +803,20 @@ vim -Nu NONE -i NONE -n --not-a-term -c "set <SETTINGS_LINE> <harness settings>"
 stdin, stdout and stderr go to `/dev/null`, and there is a timeout. For each
 case, `oracle.vim` does the following:
 
-- `enew!` with `buftype=nofile noswapfile`, then `setline(1, lines)`.
-- `let &undolevels = &undolevels` sets an undo break, so `u` cannot undo
-  the setup.
+- `enew!` with `buftype=nofile noswapfile`, then primes `.` with a change
+  no corpus text can repeat (`normal! 0df☃` on the line `a☃`; trap 8).
+- `setline(1, lines)`, with `set undolevels=-1` around it, which clears the
+  history, so `u` cannot undo the setup (an undo break alone does not stop
+  it).
 - Resets the state that outlives a buffer: `setreg('"', '')`,
-  `setreg('0', '')`, `setcharsearch({'char': ''})`, and applies the
-  optional register preset with `setreg('"', text, type)`.
-- `cursor(row, 1)`, then `setcursorcharpos(row, col)`.
-- `feedkeys(keys . "\<Cmd>call Capture()\<CR>", 'ntx')`.
+  `setreg('0', '')`, `setcharsearch({'char': ''})`, `setlocal scroll=0`,
+  `let @/ = ''`, `let v:searchforward = 1` (trap 12) and `histdel('/')`
+  (trap 14), and applies the optional register preset with
+  `setreg('"', text, type)`.
+- `cursor(row, 1)`, then `setcursorcharpos(row, col)`, then
+  `let v:errmsg = ''`.
+- `feedkeys(keys . "\<Cmd>call Capture()\<CR>\<C-\>\<C-n>", 'ntx')`, called
+  plainly: no `try` and no `silent!` around it (traps 13 and 15).
 - `setline(1, 'wiped')`, then `bwipeout!` (trap 11).
 
 `Capture()` records everything from inside the final mode: `mode(1)`,
@@ -829,6 +872,31 @@ Traps (from the spike, plus the ones this design adds):
     area. The runner fills the buffer before wiping it. With the
     fix, all 53,109 corpus cases regenerated unchanged; only two fuzz
     cases (seed 31) had read a stale area.
+12. **`'scroll'`, the last pattern and the search direction outlive a
+    buffer** (found 2026-10-01 by plan 3c's probes). A counted `ctrl+d`
+    sets the window's `'scroll'` for every later case, `n` in the next
+    case found the previous case's pattern, and `?` left the direction
+    backward. The runner resets all three per case (`setlocal scroll=0`,
+    `let @/ = ''`, `let v:searchforward = 1`).
+13. **A pending Insert restart outlives a case** (found 2026-10-01). A case
+    ending inside Insert `ctrl+o`, or in Visual entered from it, leaves
+    `restart_edit` set; `:normal! <Esc>` cannot clear it, since `:normal`
+    saves and restores it, and the next case's first command restarted
+    Insert and typed the rest of its keys. The keys now end with
+    `<Cmd>call Capture()<CR><C-\><C-n>` inside the same `feedkeys()`:
+    `CTRL-\ CTRL-N` ends any mode and clears the restart.
+14. **The search history outlives a buffer** (found 2026-10-01 by plan 3c
+    Task 11). `<Up>` in the prompt recalled the previous case's pattern:
+    `/xyz<CR>` in one case, then `/<Up>foo<CR>` in the next, searched
+    `xyzfoo`. The runner calls `histdel('/')` per case.
+15. **A `try` or `silent!` around `feedkeys()` changes what an error does**
+    (found 2026-10-01 by plan 3c Task 11). Inside a `try` an error (E486)
+    becomes an exception, and under `silent!` it returns early: either way
+    `emsg()` skips `flush_buffers()`, so a `.` whose search fails ran the
+    rest of its stuffed redo text as commands, which real Vim never does
+    (`c/o<CR>Y<Esc>j.` yanked the line in the oracle, not in plain Vim).
+    The runner calls `feedkeys()` plainly, and the `errmsg` field of each
+    raw result records the error (`v:errmsg`, kept for diagnosis).
 
 The golden header records `vim_version`, `v:versionlong`, the patch list,
 `SETTINGS_LINE`, `winheight`, and the corpus file's SHA-256. The generator
@@ -855,15 +923,21 @@ up to two buffers:
 - **Body**: always. `EditorState::new(Lines::from(lines.join("\n")))`.
 - **One-line**: only when both the input and Vim's result are one line,
   and the keys contain no key the one-line buffer declines in the mode
-  it is typed in (§4.3): Insert `Tab`, `ctrl+t`, `ctrl+d`, `Up` and
-  `Down` among them. Vim gives those keys an effect (spaces, an indent,
-  an undo break), while the one-line field hands them to the app, so
-  "declined = no effect" would be false. The first rule skips `o`,
+  it is typed in (§4.3): Insert `Tab`, `Up` and `Down` among them
+  (`ctrl+t`/`ctrl+d` act in a field: plan 3c Deviation 11). Vim gives
+  those keys an effect (spaces, an undo break), while the one-line field
+  hands them to the app, so "declined = no effect" would be false; plan
+  3c extends the declined-Insert-key skip to Replace and `ctrl+o`'s
+  Normal. The first rule skips `o`,
   `yyp`, `J` and Insert `Enter`; plan 3b (its Deviation 10) adds a
   counted `o`/`O` (`3oX`), a put from a linewise `"0` (`yy"0p`), and
   Insert `ctrl+r` of a register holding a control char (Vim types the
   char's key, a field flattens it). Every rule's one-line behaviour is
   covered by S tests. The buffer is `LineInput::new(line)`.
+- **No corpus case** for `"+` (S tests only): the pinned Vim is built
+  without a clipboard, where `"+` is an invalid register. The engine's
+  `"+y` and its cut (`"+d…`, `"+c…`) copy out through
+  `AppRequest::CopyToClipboard` (plan 3c Deviation 14).
 
 For each run the test does the following:
 
@@ -874,7 +948,7 @@ For each run the test does the following:
   declined key that reaches a run (the one-line skip rule above removes
   the rest).
 - Compares lines, cursor (0-based on the Rust side), the mode (`n`, `i`,
-  `R`, `v`, `V`, `niI` map to `Mode`), the Visual anchor, the unnamed
+  `R`, `v`, `V`, `niI`, `niR` map to `Mode`), the Visual anchor, the unnamed
   register text and its type, and `top` when recorded.
 
 The test collects every mismatch rather than stopping at the first. It
@@ -914,8 +988,25 @@ gets there by keeping the caret's byte offset, and the engine by counting
 chars (`you`, decided 2026-10-01: the more correct rule), so they part only
 when a char before the caret shrinks in UTF-8 (`ı İ ſ`, 2 bytes to 1): Vim
 drifts right, the engine stays. Two more `divergences.toml` entries record
-that. These five are the only exceptions to the zero-divergence target
+that. These five are the `you` exceptions to the zero-divergence target
 (§2).
+
+Plan 3c adds three kinds, all `mine` and pending the user's review of
+plan 3c:
+
+- The `'^`-through-undo entries (R2): Vim moves `'^` per undo entry and
+  the engine per step, so after an Insert session whose line count changed
+  and changed back (`AX<CR><Del><Esc>u`) Vim's `gi` starts at the caret and
+  the engine's on the mark's row. The user ruled on 2026-09-30 that the
+  undo-exact rule covers edited text, not `'^`; plan 3c assumed the drop
+  (its Deviation 21) rather than port Vim's undo-entry merging, pending the
+  user's confirmation.
+- `gi` after `Rab<Esc>u` over wide chars (`insert/replace/unicode`): Vim's
+  `'^` keeps a byte column and lands inside a char; the engine counts
+  chars, by the user's 2026-10-01 rule for the caret after a case op.
+- Search offsets (`search/patterns-cases`, `/a/b<CR>`): Vim honours the
+  offset, the engine refuses it with "search offsets not supported" and
+  the caret stays (plan 3c Deviation 3).
 
 ### 6.7 Regenerating
 

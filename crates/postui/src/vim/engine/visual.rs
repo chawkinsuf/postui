@@ -8,8 +8,8 @@ use super::keys::{Cmd, Object, VisualOp};
 use super::motion::{Want, WantUpdate, char_width, updated_want, vcol_of};
 use super::object;
 use super::op::{RKind, Range, delete, join_rows, put, put_lines, recase_range, recased_caret, shift_rows, yank_of};
-use super::register::RegKind;
-use super::{BufState, Engine, Mode, Outcome, Shape, VisualSize, first_non_blank};
+use super::register::{PLUS_PASTE_NOTE, RegKind};
+use super::{BufState, Engine, Mode, Note, Outcome, Shape, VisualSize, first_non_blank};
 
 impl Engine {
     pub(super) fn exec_visual<B: TextBuf>(&mut self, cmd: Cmd, buf: &mut B, st: &mut BufState) -> Outcome {
@@ -64,14 +64,18 @@ impl Engine {
 
     /// Vim's `end_visual_mode()`: the area is remembered for `gv` with the
     /// caret at `caret` (not while `.` replays a Visual command, which never
-    /// saves it: Vim's `redo_VIsual_busy`), and the mode becomes Normal.
+    /// saves it: Vim's `redo_VIsual_busy`), and the mode becomes Normal, or
+    /// Insert `ctrl+o`'s when Visual opened inside it.
     pub(super) fn end_visual<B: TextBuf>(&mut self, caret: Pos, buf: &B, st: &mut BufState) {
         if !self.replaying_visual
             && let Some(area) = self.area_at(caret, buf, st)
         {
             st.history.marks.visual = Some(area);
         }
-        self.mode = Mode::Normal;
+        self.mode = match self.restart {
+            Some(r) => Mode::InsertNormal { replace: r.replace },
+            None => Mode::Normal,
+        };
         self.visual = None;
     }
 
@@ -224,7 +228,7 @@ impl Engine {
                 buf.cursor()
             }
             VisualOp::Yank | VisualOp::YankLines => {
-                self.regs.yank(reg, yank_of(buf, r));
+                self.reg_yank(reg, yank_of(buf, r));
                 r.start
             }
             VisualOp::Replace(ch) => {
@@ -285,7 +289,7 @@ impl Engine {
         } else {
             // Vim's `u_save` runs with the caret on the range start.
             ed.hist.begin(r.start);
-            self.regs.delete(reg, yank_of(ed.buf, r));
+            self.reg_delete(reg, yank_of(ed.buf, r));
             delete(&mut ed, r)
         };
         buf.set_cursor(at);
@@ -297,7 +301,13 @@ impl Engine {
     /// register, so it holds the replaced text afterwards; `P` deletes into
     /// the black hole and changes no register (Vim 9.1). `"0` is never
     /// written, so `yiw` then `viwp` … `viw"0p` keeps putting the yank.
+    /// `"+p` changes nothing (the selection just ends), with a note (see
+    /// `exec_put`).
     fn visual_put<B: TextBuf>(&mut self, r: Range, before: bool, count: usize, reg: Option<char>, buf: &mut B, st: &mut BufState) -> Outcome {
+        if reg == Some('+') {
+            self.note = Some(Note::Unsupported(PLUS_PASTE_NOTE.into()));
+            return Outcome::consumed();
+        }
         // What to put, read before the delete writes the unnamed register
         // (Vim's `reg1`).
         let text = self.regs.read(reg).clone();
@@ -347,7 +357,10 @@ impl Engine {
                 // The delete reached the line's end: put after its last char.
                 let forward = len > 0 && at.col >= len;
                 ed.buf.set_cursor(Pos::new(at.row, if forward { len - 1 } else { at.col.min(len) }));
-                let caret = put(&mut ed, &text, !forward, n);
+                let mut caret = put(&mut ed, &text, !forward, n);
+                if self.put_ends_after(&text) {
+                    caret.col += 1;
+                }
                 // `do_put()` moves `'[` past the caret's char only when the
                 // register's first line is not empty (`yanklen`): text that
                 // starts with a line break leaves it on that char.

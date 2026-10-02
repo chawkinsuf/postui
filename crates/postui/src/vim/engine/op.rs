@@ -8,9 +8,9 @@ use super::class::white;
 use super::history::{Ed, MarkMove};
 use super::keys::{CaseOp, Cmd, Op, Reach};
 use super::motion::{self, MKind, MotionCx};
-use super::register::{RegKind, Register};
+use super::register::{PLUS_PASTE_NOTE, RegKind, Register};
 use super::settings::{SHIFTWIDTH, TABSTOP};
-use super::{BufState, Engine, Outcome, first_non_blank, first_non_blank_fix};
+use super::{BufState, Engine, Mode, Note, Outcome, ViewCtx, first_non_blank, first_non_blank_fix};
 use crate::components::line_input::flatten_paste;
 use ratatui::crossterm::event::KeyEvent;
 
@@ -165,7 +165,7 @@ pub(crate) fn recased_caret(line: &[char], how: CaseOp, r: Range) -> Pos {
         RKind::Line => 0,
     };
     let mut out = String::new();
-    let added: usize = line[from..r.start.col.min(line.len())]
+    let added: usize = line[from.min(line.len())..r.start.col.min(line.len()).max(from.min(line.len()))]
         .iter()
         .map(|&c| {
             out.clear();
@@ -302,6 +302,7 @@ impl Engine {
     /// An operator with its motion, object or doubled letter (spec §3.6).
     /// `false` when its motion or object failed and it did not run (Vim
     /// then sets no `.`).
+    #[allow(clippy::too_many_arguments)] // `ctx` for the window motions (`dL`)
     pub(super) fn exec_operate<B: TextBuf>(
         &mut self,
         op: Op,
@@ -310,8 +311,9 @@ impl Engine {
         reg: Option<char>,
         buf: &mut B,
         st: &mut BufState,
+        ctx: &ViewCtx,
     ) -> bool {
-        let Some(span) = self.op_span(op, reach, count, buf, st) else {
+        let Some(span) = self.op_span(op, reach, count, buf, st, ctx) else {
             return false;
         };
         let r = range(buf, span, op);
@@ -352,7 +354,7 @@ impl Engine {
             return true;
         }
         let caret = if op == Op::Yank {
-            self.regs.yank(reg, yank_of(buf, r));
+            self.reg_yank(reg, yank_of(buf, r));
             r.start
         } else if st.history.emptied(&*buf) {
             // Vim's `op_delete`: nothing to do in a buffer with no lines.
@@ -372,7 +374,7 @@ impl Engine {
                 }
                 r.start
             } else {
-                self.regs.delete(reg, yank_of(ed.buf, r));
+                self.reg_delete(reg, yank_of(ed.buf, r));
                 delete(&mut ed, r)
             }
         };
@@ -380,11 +382,25 @@ impl Engine {
         true
     }
 
-    /// `p` `P` with a count.
+    /// `p` `P` with a count. `"+p` puts nothing: the engine cannot read
+    /// the clipboard, so a note says how to paste (Deviation 14).
     pub(super) fn exec_put<B: TextBuf>(&mut self, before: bool, count: usize, reg: Option<char>, buf: &mut B, st: &mut BufState) {
+        if reg == Some('+') {
+            self.note = Some(Note::Unsupported(PLUS_PASTE_NOTE.into()));
+            return;
+        }
         let reg = self.regs.read(reg).clone();
-        let caret = put(&mut Ed { buf: &mut *buf, hist: &mut st.history }, &reg, before, count.max(1));
+        let mut caret = put(&mut Ed { buf: &mut *buf, hist: &mut st.history }, &reg, before, count.max(1));
+        if self.put_ends_after(&reg) {
+            caret.col += 1;
+        }
         self.land_caret(caret, buf, st);
+    }
+
+    /// Vim's `do_put()`: "For CTRL-O p in Insert mode, put cursor after
+    /// last char" of a one-line charwise put (`p`, `P`, Visual `p`).
+    pub(super) fn put_ends_after(&self, reg: &Register) -> bool {
+        matches!(self.mode, Mode::InsertNormal { .. }) && reg.kind == RegKind::Char && !reg.text.is_empty() && !reg.text.contains('\n')
     }
 
     /// `r{c}` with a count (Vim's `nv_replace()`): fails whole, keeping the
@@ -449,7 +465,10 @@ impl Engine {
         ed.save_cursor_line(caret);
         let end = Pos::new(caret.row, caret.col + n);
         recase_range(&mut ed, CaseOp::Toggle, Range { start: caret, end, kind: RKind::Char });
-        self.land_caret(Pos::new(caret.row, (caret.col + n).min(len - 1)), buf, st);
+        // Inside Insert `ctrl+o` the caret may stay past the last char
+        // (`check_cursor()` with `restart_edit`): Insert resumes there.
+        let to = if matches!(self.mode, Mode::InsertNormal { .. }) { caret.col + n } else { (caret.col + n).min(len - 1) };
+        self.land_caret(Pos::new(caret.row, to), buf, st);
         true
     }
 
@@ -493,6 +512,7 @@ impl Engine {
         count: usize,
         buf: &mut B,
         st: &mut BufState,
+        ctx: &ViewCtx,
     ) -> Option<Span> {
         let from = buf.cursor();
         match reach {
@@ -514,7 +534,7 @@ impl Engine {
             Reach::Motion(m) => {
                 let want = self.want_at(buf, st, from);
                 let cx = MotionCx { op: Some(op), visual: false, want };
-                let moved = motion::run(buf, from, m, count, &cx, &mut self.last_find);
+                let moved = self.run_motion(buf, from, m, count, &cx, ctx);
                 if moved.failed {
                     // The caret still goes where Vim's walk ended.
                     buf.set_cursor(self.clamped(buf, moved.to));

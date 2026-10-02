@@ -4,7 +4,7 @@
 //! `.` exact: it stores the `Cmd`.
 
 use super::settings::MAX_COUNT;
-use super::{Note, Shape};
+use super::{Dir, Note, Shape};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 /// A key as the grammar sees it. SHIFT is part of the char (`$`, `A`), so
@@ -148,6 +148,14 @@ pub(crate) enum Motion {
     DownFirstNonBlank,
     /// `-`: up to the first non-blank
     UpFirstNonBlank,
+    /// `H` `M` `L`: linewise, by the window
+    ScreenLine(Screen),
+    /// `n` (`reverse` false) and `N`
+    SearchNext { reverse: bool },
+    /// `*` (`backward` false) and `#`
+    Ident { backward: bool },
+    /// The prompt's Enter (and its `.`): the last pattern in `dir`.
+    Search { dir: Dir },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -184,6 +192,25 @@ pub(crate) enum InsertHow {
     OpenBelow,
     /// `O`
     OpenAbove,
+    /// `R`: a Replace session
+    Replace,
+}
+
+/// `ctrl+d ctrl+u ctrl+f ctrl+b` (plan 3c).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Scroll {
+    HalfDown,
+    HalfUp,
+    PageDown,
+    PageUp,
+}
+
+/// `H M L` and the `z` commands' places.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Screen {
+    Top,
+    Middle,
+    Bottom,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -220,6 +247,10 @@ pub(crate) enum Cmd {
     /// `gv`: reselect the last Visual area.
     Gv,
     Insert { how: InsertHow, count: usize },
+    /// A scroll chord with its count (a half page's new size, or pages).
+    Scroll { how: Scroll, count: usize },
+    /// `zt` `zz` `zb`; `count` is a line number (0: none)
+    ScrollCursor { place: Screen, count: usize },
     Repeat(usize),
     VisualStart(Shape),
     VisualSwap,
@@ -232,6 +263,7 @@ pub(crate) enum Cmd {
 pub(crate) struct ParseCx {
     pub visual: bool,
     pub multiline: bool,
+    pub restart: bool,
 }
 
 #[derive(Debug, PartialEq)]
@@ -247,6 +279,8 @@ pub(crate) enum Step {
     Decline { count: Option<usize>, keys: Vec<KeyEvent> },
     /// Consumed with no effect, maybe with a footer note.
     Inert(Option<Note>),
+    /// `/` or `?`: the prompt opens; the pending command waits for it.
+    Search(Dir),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -256,6 +290,9 @@ enum Prefix {
     Object { inner: bool },
     Find(FindKind),
     Replace,
+    Z,
+    /// `z{count}`: Vim's `nv_z_get_count()` reading digits.
+    ZCount(usize),
 }
 
 /// The half-typed command (spec §3.5).
@@ -365,6 +402,13 @@ fn motion_of(key: Key) -> Option<Motion> {
         Key::Char('{') => Motion::Paragraph { forward: false },
         Key::Char('+') | Key::Enter => Motion::DownFirstNonBlank,
         Key::Char('-') => Motion::UpFirstNonBlank,
+        Key::Char('H') => Motion::ScreenLine(Screen::Top),
+        Key::Char('M') => Motion::ScreenLine(Screen::Middle),
+        Key::Char('L') => Motion::ScreenLine(Screen::Bottom),
+        Key::Char('n') => Motion::SearchNext { reverse: false },
+        Key::Char('N') => Motion::SearchNext { reverse: true },
+        Key::Char('*') => Motion::Ident { backward: false },
+        Key::Char('#') => Motion::Ident { backward: true },
         _ => return None,
     })
 }
@@ -383,8 +427,6 @@ fn object_of(key: Key) -> Option<Object> {
     })
 }
 
-const SEARCH_KEYS: [char; 6] = ['/', '?', 'n', 'N', '*', '#'];
-
 impl Pending {
     pub(crate) fn is_empty(&self) -> bool {
         self.reg.is_none() && self.count1 == 0 && self.op.is_none() && self.count2 == 0 && self.prefix.is_none()
@@ -392,6 +434,22 @@ impl Pending {
 
     pub(crate) fn clear(&mut self) {
         *self = Self::default();
+    }
+
+    /// The count typed before the operator (0: none).
+    pub(crate) fn count1(&self) -> usize {
+        self.count1
+    }
+
+    /// The count typed after the operator (0: none).
+    pub(crate) fn count2(&self) -> usize {
+        self.count2
+    }
+
+    /// The prompt's Enter: the search is the motion the pending command
+    /// waited for (an operator's, or a bare move).
+    pub(crate) fn search_done(&mut self, dir: Dir) -> Step {
+        self.motion_done(Motion::Search { dir })
     }
 
     /// The footer echo: register, count, operator, count, prefix
@@ -418,6 +476,8 @@ impl Pending {
             Some(Prefix::Object { inner }) => s.push(if inner { 'i' } else { 'a' }),
             Some(Prefix::Find(k)) => s.push(find_char(k)),
             Some(Prefix::Replace) => s.push('r'),
+            Some(Prefix::Z) => s.push('z'),
+            Some(Prefix::ZCount(n)) => s += &format!("z{n}"),
         }
         s
     }
@@ -425,9 +485,23 @@ impl Pending {
     /// One key. The grammar is the key table in spec §4.3.
     pub(crate) fn feed(&mut self, ev: KeyEvent, cx: ParseCx) -> Step {
         let key = Key::of(&ev);
-        // The engine's own Normal chords are `ctrl+r`, `ctrl+a` and `ctrl+x`
-        // (spec §4.3); every other chord goes to the app alone.
-        if matches!(key, Key::Other) || matches!(key, Key::Ctrl(c) if !matches!(c, 'r' | 'a' | 'x')) {
+        // The engine's own Normal chords are `ctrl+r`, `ctrl+a`, `ctrl+x`
+        // and, in the body, the scroll chords (spec §4.3); every other chord
+        // goes to the app alone.
+        let scroll = |c: char| match c {
+            'd' => Some(Scroll::HalfDown),
+            'u' => Some(Scroll::HalfUp),
+            'f' => Some(Scroll::PageDown),
+            'b' => Some(Scroll::PageUp),
+            _ => None,
+        };
+        if matches!(key, Key::Other) {
+            return self.decline_alone(ev);
+        }
+        if let Key::Ctrl(c) = key
+            && !matches!(c, 'r' | 'a' | 'x')
+            && !((cx.multiline || cx.visual) && scroll(c).is_some())
+        {
             return self.decline_alone(ev);
         }
         // A pending `r f t F T` takes `Tab` as its argument, even in a
@@ -456,8 +530,16 @@ impl Pending {
                 self.clear();
                 Step::Cmd(Cmd::VisualExit)
             }
+            // Inside Insert `ctrl+o` an idle Esc beeps and Insert resumes.
+            Key::Esc if self.is_empty() && cx.restart => self.inert(None),
             Key::Esc if self.is_empty() => self.decline(ev),
             Key::Esc => self.inert(None),
+            // A scroll chord with an operator pending cancels it (Vim's
+            // `checkclearop()`); in a one-line field's Visual it is a
+            // failed motion (consumed), in its Normal it was declined above.
+            Key::Ctrl(c) if self.op.is_some() && scroll(c).is_some() => self.inert(None),
+            Key::Ctrl(c) if scroll(c).is_some() && !cx.multiline => self.inert(None),
+            Key::Ctrl(c) if let Some(how) = scroll(c) => self.cmd(|count, _| Cmd::Scroll { how, count }),
             Key::Ctrl(_) if cx.visual || self.op.is_some() => self.decline_alone(ev),
             Key::Ctrl('r') => self.undo(true, ev),
             Key::Ctrl(c) => self.cmd(|count, _| Cmd::AddSub { add: c == 'a', count }),
@@ -563,6 +645,7 @@ impl Pending {
                 Step::More
             }
             'g' => self.arm(ev, Prefix::G),
+            'z' => self.arm(ev, Prefix::Z),
             'f' | 't' | 'F' | 'T' => self.arm(ev, Prefix::Find(find_kind(ch))),
             'r' => self.arm(ev, Prefix::Replace),
             'x' => self.cmd(op(Op::Delete, Reach::Motion(Motion::Right))),
@@ -574,14 +657,15 @@ impl Pending {
             'Y' => self.cmd(op(Op::Yank, Reach::Line)),
             'p' | 'P' => self.cmd(|count, reg| Cmd::Put { before: ch == 'P', count, reg }),
             'J' => self.cmd(|count, _| Cmd::Join { count }),
-            'i' | 'a' | 'I' | 'A' | 'o' | 'O' => {
+            'i' | 'a' | 'I' | 'A' | 'o' | 'O' | 'R' => {
                 let how = match ch {
                     'i' => InsertHow::Before,
                     'a' => InsertHow::After,
                     'I' => InsertHow::LineStart,
                     'A' => InsertHow::LineEnd,
                     'o' => InsertHow::OpenBelow,
-                    _ => InsertHow::OpenAbove,
+                    'O' => InsertHow::OpenAbove,
+                    _ => InsertHow::Replace,
                 };
                 self.cmd(|count, _| Cmd::Insert { how, count })
             }
@@ -592,7 +676,8 @@ impl Pending {
             '.' => self.cmd(|count, _| Cmd::Repeat(count)),
             ':' | 'Z' | 'q' | '@' | 'm' | '\'' | '`' => self.decline(ev),
             'U' | 'K' | 'Q' | '&' => self.inert(Some(format!("{ch} not supported"))),
-            c if SEARCH_KEYS.contains(&c) => self.inert(Some(format!("{c} not supported yet"))),
+            '/' => Step::Search(Dir::Forward),
+            '?' => Step::Search(Dir::Backward),
             _ => self.inert(None),
         }
     }
@@ -608,8 +693,12 @@ impl Pending {
             'i' | 'a' => self.arm(ev, Prefix::Object { inner: ch == 'i' }),
             'f' | 't' | 'F' | 'T' => self.arm(ev, Prefix::Find(find_kind(ch))),
             'g' => self.arm(ev, Prefix::G),
+            // Vim's `nv_zet()` takes the next key before `checkclearop()`
+            // cancels the operator: `dzz` ends with nothing pending.
+            'z' => self.arm(ev, Prefix::Z),
             ':' => self.inert(Some(format!("{}: not supported", op_name(op)))),
-            c if SEARCH_KEYS.contains(&c) => self.inert(Some(format!("{}{c} not supported yet", op_name(op)))),
+            '/' => Step::Search(Dir::Forward),
+            '?' => Step::Search(Dir::Backward),
             _ => self.inert(None),
         }
     }
@@ -624,6 +713,7 @@ impl Pending {
             '"' => self.arm(ev, Prefix::Register),
             'i' | 'a' => self.arm(ev, Prefix::Object { inner: ch == 'i' }),
             'g' => self.arm(ev, Prefix::G),
+            'z' => self.arm(ev, Prefix::Z),
             'f' | 't' | 'F' | 'T' => self.arm(ev, Prefix::Find(find_kind(ch))),
             'r' => self.arm(ev, Prefix::Replace),
             'd' | 'x' => self.cmd(vop(VisualOp::Delete)),
@@ -642,7 +732,8 @@ impl Pending {
             'o' => self.cmd(|_, _| Cmd::VisualSwap),
             'v' => self.cmd(|_, _| Cmd::VisualStart(Shape::Char)),
             'V' => self.cmd(|_, _| Cmd::VisualStart(Shape::Line)),
-            c if SEARCH_KEYS.contains(&c) => self.inert(Some(format!("{c} not supported yet"))),
+            '/' => Step::Search(Dir::Forward),
+            '?' => Step::Search(Dir::Backward),
             _ => self.inert(None),
         }
     }
@@ -650,7 +741,7 @@ impl Pending {
     fn after_prefix(&mut self, prefix: Prefix, key: Key, ev: KeyEvent, cx: ParseCx) -> Step {
         match prefix {
             Prefix::Register => match key {
-                Key::Char(c @ ('"' | '0')) => {
+                Key::Char(c @ ('"' | '0' | '+')) => {
                     self.keys.push(ev);
                     self.reg = Some(c);
                     Step::More
@@ -679,6 +770,7 @@ impl Pending {
                 Key::Char('i') if self.op.is_none() && !cx.visual => self.cmd(|count, _| Cmd::Gi { count }),
                 Key::Char('v') if self.op.is_none() => self.cmd(|_, _| Cmd::Gv),
                 Key::Esc => self.inert(None),
+                Key::Char(c @ ('*' | '#' | 'n' | 'N')) => self.inert(Some(format!("g{c} not supported"))),
                 _ if self.op.is_none() && !cx.visual => self.decline(ev),
                 _ => self.inert(None),
             },
@@ -707,6 +799,43 @@ impl Pending {
                     self.cmd(|count, _| Cmd::Replace { ch, count })
                 }
             }
+            Prefix::Z => match key {
+                Key::Char(c @ ('t' | 'z' | 'b')) if cx.multiline && self.op.is_none() => {
+                    let place = match c {
+                        't' => Screen::Top,
+                        'z' => Screen::Middle,
+                        _ => Screen::Bottom,
+                    };
+                    self.cmd(|count, _| Cmd::ScrollCursor { place, count })
+                }
+                // `z{count}`: Vim's `nv_z_get_count()` reads more digits.
+                Key::Char(c @ '0'..='9') if self.op.is_none() => {
+                    self.keys.push(ev);
+                    self.prefix = Some(Prefix::ZCount(c.to_digit(10).expect("a digit") as usize));
+                    Step::More
+                }
+                // A one-line field has nothing to scroll; `zo` and friends are
+                // list keys, never text keys. After an operator every `z`
+                // command (a digit too) cancels it (`checkclearop()`).
+                _ => self.inert(None),
+            },
+            Prefix::ZCount(n) => match key {
+                Key::Char(c @ '0'..='9') => {
+                    self.keys.push(ev);
+                    self.prefix = Some(Prefix::ZCount(accumulate_count(n, c.to_digit(10).expect("a digit"))));
+                    Step::More
+                }
+                Key::Delete => {
+                    self.keys.push(ev);
+                    self.prefix = Some(Prefix::ZCount(n / 10));
+                    Step::More
+                }
+                // Any other key ends the count and is swallowed. Vim beeps
+                // on most; `z{count}<CR>` sets the window's height and
+                // `z{count}l` `h` scroll sideways, neither modelled (the
+                // window is the app's).
+                _ => self.inert(None),
+            },
         }
     }
 }
@@ -719,9 +848,9 @@ mod tests {
         KeyEvent::new(KeyCode::Char(c), if c.is_uppercase() { KeyModifiers::SHIFT } else { KeyModifiers::NONE })
     }
 
-    const NORMAL: ParseCx = ParseCx { visual: false, multiline: true };
-    const VISUAL: ParseCx = ParseCx { visual: true, multiline: true };
-    const ONE_LINE: ParseCx = ParseCx { visual: false, multiline: false };
+    const NORMAL: ParseCx = ParseCx { visual: false, multiline: true, restart: false };
+    const VISUAL: ParseCx = ParseCx { visual: true, multiline: true, restart: false };
+    const ONE_LINE: ParseCx = ParseCx { visual: false, multiline: false, restart: false };
 
     /// Feeds `keys` (plain chars) and returns the last step.
     fn feed(p: &mut Pending, keys: &str, cx: ParseCx) -> Step {
@@ -838,7 +967,7 @@ mod tests {
         let mut p = Pending::default();
         assert!(matches!(p.feed(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), VISUAL), Step::Cmd(Cmd::VisualExit)));
         assert!(
-            matches!(feed(&mut Pending::default(), "j", ParseCx { visual: true, multiline: false }), Step::Cmd(Cmd::Move { .. })),
+            matches!(feed(&mut Pending::default(), "j", ParseCx { visual: true, multiline: false, restart: false }), Step::Cmd(Cmd::Move { .. })),
             "a one-line buffer consumes Visual j as a failed motion"
         );
     }
@@ -892,8 +1021,7 @@ mod tests {
         assert_eq!(note(feed(&mut Pending::default(), "U", NORMAL)), "U not supported");
         assert_eq!(note(feed(&mut Pending::default(), "gJ", NORMAL)), "gJ not supported");
         assert_eq!(note(feed(&mut Pending::default(), "d:", NORMAL)), "d: not supported");
-        assert_eq!(note(feed(&mut Pending::default(), "d/", NORMAL)), "d/ not supported yet");
-        assert_eq!(note(feed(&mut Pending::default(), "n", NORMAL)), "n not supported yet");
+        assert_eq!(note(feed(&mut Pending::default(), "g*", NORMAL)), "g* not supported");
         let mut p = Pending::default();
         assert_eq!(note(feed(&mut p, "\"a", NORMAL)), "register \"a not supported");
         assert!(p.is_empty(), "nothing is armed after an unsupported register");
@@ -902,6 +1030,22 @@ mod tests {
         feed(&mut p, "g", NORMAL);
         assert_eq!(p.feed(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), NORMAL), Step::Inert(None), "g<Esc> cancels");
         assert!(p.is_empty());
+    }
+
+    /// `/` and `?` open the prompt and keep what is pending; its Enter
+    /// completes the command with the search as the motion.
+    #[test]
+    fn the_search_keys_wait_for_the_prompt() {
+        let mut p = Pending::default();
+        assert_eq!(feed(&mut p, "2d3/", NORMAL), Step::Search(Dir::Forward));
+        assert_eq!((p.echo().as_str(), p.count1(), p.count2()), ("2d3", 2, 3));
+        assert_eq!(
+            p.search_done(Dir::Forward),
+            Step::Cmd(Cmd::Operate { op: Op::Delete, reach: Reach::Motion(Motion::Search { dir: Dir::Forward }), count: 6, reg: None })
+        );
+        assert!(p.is_empty());
+        assert_eq!(feed(&mut p, "?", VISUAL), Step::Search(Dir::Backward));
+        assert_eq!(p.search_done(Dir::Backward), Step::Cmd(Cmd::Move { motion: Motion::Search { dir: Dir::Backward }, count: 0 }));
     }
 
     #[test]
