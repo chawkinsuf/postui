@@ -78,3 +78,27 @@ impl FieldCaret {
         matches!(self, FieldCaret::Live(_))
     }
 }
+
+impl Surface {
+    /// One surface of every kind, for tests that walk the table.
+    #[cfg(test)]
+    pub(crate) const SAMPLES: [Surface; 17] = [
+        Surface::Sidebar,
+        Surface::UrlLine,
+        Surface::Method,
+        Surface::Table(EditorTab::Params),
+        Surface::Body,
+        Surface::Response(ViewMode::Pretty),
+        Surface::VarList,
+        Surface::VarGrid,
+        Surface::VarForm,
+        Surface::ManageList(ManageTab::Environments),
+        Surface::ManageDetail(ManageTab::Environments),
+        Surface::Settings,
+        Surface::Prompt,
+        Surface::Form,
+        Surface::Dialog,
+        Surface::Picker,
+        Surface::Other,
+    ];
+}

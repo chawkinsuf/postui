@@ -20,6 +20,9 @@ mod history;
 mod indent;
 mod insert;
 mod keys;
+/// The count rule the router shares with the engine (piece 4 spec §3.4):
+/// one cap, [`settings::MAX_COUNT`], for every count typed anywhere.
+pub(crate) use keys::accumulate_count;
 mod motion;
 mod number;
 mod object;

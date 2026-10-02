@@ -3,5 +3,8 @@
 //! (`app/router.rs`); everything in this module is pure.
 
 pub mod ctx;
+pub mod notation;
+pub mod pending;
+pub mod table;
 
 pub use ctx::{FieldCaret, FieldId, Surface};

@@ -29107,6 +29107,4 @@ fn the_field_with_the_caret_is_named_once() {
         (app.field_caret(), app.field_open()),
         (FieldCaret::Live(FieldId::Settings(crate::components::settings::SettingsField::AiCmd)), true)
     );
-    // The Keymap row is a SettingsField too: it must be nameable.
-    let _ = FieldId::Settings(crate::components::settings::SettingsField::Keymap);
 }
