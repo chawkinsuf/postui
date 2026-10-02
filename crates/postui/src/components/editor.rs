@@ -2,7 +2,7 @@ use super::line_input::LineInput;
 use super::table_editor::{Col, TableEditorState, TableOutcome, table_height};
 use super::toast::ToastKind;
 use super::{Component, DrawCtx, pane_surface};
-use crate::action::Action;
+use crate::action::{Action, Verb};
 use crate::hit::ScrollbarSpec;
 use crate::layout::PaneId;
 use crate::theme::Theme;
@@ -2377,6 +2377,32 @@ impl Editor {
             EditorTab::Headers => self.headers.len(),
             EditorTab::Vars => self.variables.len(),
             EditorTab::Body => 0,
+        }
+    }
+
+    /// What a list verb means on the active table (piece 4 spec §5.3), on
+    /// the row under the cursor. The add row takes add and put only; the
+    /// Body tab takes nothing.
+    pub fn table_verb_action(&self, verb: Verb) -> Option<Action> {
+        if self.active_tab == EditorTab::Body {
+            return None;
+        }
+        let len = self.table_len();
+        let row = self.table.selected.filter(|&i| i < len);
+        match verb {
+            Verb::Add => Some(Action::TableAddRow),
+            Verb::Delete { count: 0 | 1 } => row.map(Action::DeleteTableRow),
+            Verb::Delete { count } => row.map(|start| Action::DeleteTableRows { start, count }),
+            Verb::Yank => row.map(Action::YankTableRow),
+            Verb::Put { above } => {
+                let at = match self.table.selected {
+                    Some(i) if above => i,
+                    Some(i) => i + 1,
+                    None => len,
+                };
+                Some(Action::PutTableRow { at: at.min(len) })
+            }
+            _ => None,
         }
     }
 

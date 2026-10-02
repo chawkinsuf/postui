@@ -322,6 +322,10 @@ pub enum Action {
     /// Delete the selected sidebar slug. No confirm — the delete records
     /// an undo step, and the toast advertises it.
     DeleteSelectedRequest,
+    /// A list verb on the row under the cursor (piece 4 spec §6.1):
+    /// resolved by `App::selection_action` on the surface the keyboard
+    /// is on.
+    OnSelection(Verb),
     /// Row menu "Move to space…": opens the chooser of the other spaces
     /// for the request at `slug`; picking one dispatches
     /// `MoveRequestToSpace`.
@@ -768,6 +772,9 @@ pub enum Action {
     ToggleSecretVar {
         name: String,
     },
+    /// Shows or hides the open secret's value on the variable form (the
+    /// 👁 control and the form's `r`).
+    ToggleVarReveal,
     /// Open the promote-target choice (spec
     /// §4) — declaration default, or the active environment.
     PromptPromoteVar {
@@ -1005,4 +1012,55 @@ pub enum Action {
     },
     /// Structural menu's "Collect into array": wraps the bar text in `[ … ]`.
     JqCollect,
+}
+
+/// What a list or table key does to the row under the cursor (piece 4
+/// spec §6.1). `App::selection_action` resolves it against the surface
+/// to the parameterized action that surface already has; a verb with no
+/// meaning there resolves to nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verb {
+    /// `a`: a new row of the surface's kind.
+    Add,
+    /// `A`: the other kind (the Variables list: a selector).
+    AddAlt,
+    Rename,
+    /// `m`: move (a request to a space; a space's requests to another).
+    Move,
+    /// `dd` / `d`; `{N}dd` deletes N rows where that is one undo step.
+    Delete { count: usize },
+    /// `yy` / `y`: into the row register (the grid: its option stash).
+    Yank,
+    /// `p` / `P`: a copy of the register below, or `above`, the cursor.
+    Put { above: bool },
+    /// The options grid's Edit… prompt.
+    EditValue,
+    Promote,
+    /// A selector's fields editor.
+    Fields,
+    Secret,
+    /// Clear the active environment's value.
+    ClearValue,
+    /// Show or hide a secret's value.
+    Reveal,
+    /// Step an environment's TLS force.
+    Tls,
+}
+
+impl Verb {
+    /// The same verb whatever its count: `dd` and `3dd` spell alike.
+    pub fn kind(self) -> Self {
+        match self {
+            Verb::Delete { .. } => Verb::Delete { count: 1 },
+            v => v,
+        }
+    }
+
+    /// This verb with the count a row passes (spec §3.5 `Pass`).
+    pub fn with_count(self, n: usize) -> Self {
+        match self {
+            Verb::Delete { .. } => Verb::Delete { count: n },
+            v => v,
+        }
+    }
 }

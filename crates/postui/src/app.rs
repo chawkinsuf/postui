@@ -3831,6 +3831,10 @@ impl App {
                 }
                 true
             }
+            Action::OnSelection(verb) => match self.selection_action(self.surface(), verb) {
+                Some(a) => self.apply(a),
+                None => false,
+            },
             Action::PromptMoveSelectedRequestToSpace => {
                 if let Some(slug) = self.sidebar.selected_slug() {
                     self.apply(Action::PromptMoveRequestToSpace(slug));
@@ -5791,6 +5795,20 @@ impl App {
                 self.open_toggle_secret_confirm(name);
                 true
             }
+            Action::ToggleVarReveal => {
+                let VmDetail::Var(name) = &self.varmanager.detail else {
+                    return false;
+                };
+                let secret = self
+                    .project()
+                    .and_then(|p| p.variables().vars.get(name))
+                    .is_some_and(|d| d.secret);
+                if !secret {
+                    return false;
+                }
+                self.varmanager.form.revealed = !self.varmanager.form.revealed;
+                true
+            }
             Action::PromptPromoteVar { name } => {
                 // Finding 8: a secret already declared at `name` used to
                 // fall through to `upsert_var` writing a `default`
@@ -5935,9 +5953,12 @@ impl App {
                 true
             }
             Action::StartOptionNameEdit { row } => {
-                if !matches!(&self.varmanager.detail, VmDetail::Group(_))
-                    || self.active_env().is_none()
-                {
+                let VmDetail::Group(selector) = self.varmanager.detail.clone() else {
+                    return false;
+                };
+                // As a new option: a shared selector's options need no
+                // environment; anyone else's have nowhere to live without one.
+                if self.active_env().is_none() && !self.selector_is_shared(&selector) {
                     return false;
                 }
                 self.vm_start_cell_edit(row, 0);
@@ -11402,6 +11423,7 @@ fn screen_escape_whitelist(action: &Action) -> bool {
 mod landing;
 mod mouse;
 mod router;
+mod verbs;
 #[cfg(test)]
 mod key_matrix_tests;
 #[cfg(test)]

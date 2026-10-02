@@ -5,7 +5,7 @@
 //! pane's buttons right-aligned on it, then a detail block — the env
 //! file's path, or the space's requests by name.
 
-use crate::action::Action;
+use crate::action::{Action, Verb};
 use crate::components::manage::ManageTab;
 use crate::hit::{Hit, HitMap};
 use crate::keyroute::spell::{Key, Nav};
@@ -304,6 +304,21 @@ impl ManageList {
         match tab {
             ManageTab::Spaces => Action::DeleteSpace(name.to_string()),
             _ => Action::DeleteEnv(name.to_string()),
+        }
+    }
+
+    /// What a list verb means on the Environments or Spaces tab (piece 4
+    /// spec §5.4), on the list's selected item. The detail pane acts on
+    /// the same item.
+    pub fn verb_action(&self, tab: ManageTab, ctx: &Project, verb: Verb) -> Option<Action> {
+        let selected = self.selected(tab, ctx);
+        match verb {
+            Verb::Add => Some(Self::new_action(tab)),
+            Verb::Rename => Some(Self::rename_action(tab, selected?)),
+            Verb::Delete { .. } => Some(Self::delete_action(tab, selected?)),
+            Verb::Move if tab == ManageTab::Spaces => Some(Self::move_all_action(selected?)),
+            Verb::Tls if tab == ManageTab::Environments => Some(Self::cycle_tls_action(ctx, selected?)),
+            _ => None,
         }
     }
 

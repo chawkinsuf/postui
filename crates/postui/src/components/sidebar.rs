@@ -1,5 +1,5 @@
 use super::{Component, DrawCtx};
-use crate::action::Action;
+use crate::action::{Action, Verb};
 use crate::anim::{AnimKey, ListId};
 use crate::hit::{self, Hit, HitMap, ScrollbarSpec};
 use crate::layout::PaneId;
@@ -513,6 +513,30 @@ impl Sidebar {
                 });
                 if above { direct.next() } else { direct.next_back() }
             }
+        }
+    }
+
+    /// What a list verb means on the sidebar (piece 4 spec §5.2): the
+    /// cursor's request, or the cursor's slot for add and put. A folder
+    /// row takes add and put only.
+    pub fn verb_action(&self, verb: Verb) -> Option<Action> {
+        let on_request = matches!(self.selected_row(), Some(Row::Request { .. }));
+        match verb {
+            Verb::Add => Some(Action::PromptNewRequest),
+            Verb::Rename => on_request.then_some(Action::PromptRenameRequest),
+            Verb::Move => on_request.then_some(Action::PromptMoveSelectedRequestToSpace),
+            Verb::Delete { count: 0 | 1 } => on_request.then_some(Action::DeleteSelectedRequest),
+            Verb::Delete { count } => {
+                let mut slugs = self.request_slugs_from(self.selected?, count);
+                match slugs.len() {
+                    0 => None,
+                    1 => slugs.pop().map(Action::DeleteRequest),
+                    _ => Some(Action::DeleteRequests(slugs)),
+                }
+            }
+            Verb::Yank => self.selected_slug().map(Action::YankRequest),
+            Verb::Put { above } => Some(Action::PutRequest { anchor: self.put_anchor(above), above }),
+            _ => None,
         }
     }
 

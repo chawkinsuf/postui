@@ -30177,3 +30177,236 @@ fn delete_table_rows_deletes_a_run_as_one_editor_step() {
         "one undo brings the run back"
     );
 }
+
+/// Spec §5.2 and §6.1: each verb on the sidebar is main's own action on
+/// the cursor's request.
+#[test]
+fn selection_action_on_the_sidebar() {
+    use crate::action::Verb;
+    use crate::keyroute::Surface;
+    let (mut app, _dir) = sidebar_test_app_three_flat_rows();
+    render_once(&mut app);
+    app.sidebar.selected = app.sidebar.row_of("main/beta");
+    let at = |app: &App, v| app.selection_action(Surface::Sidebar, v);
+    assert_eq!(at(&app, Verb::Add), Some(Action::PromptNewRequest));
+    assert_eq!(at(&app, Verb::Rename), Some(Action::PromptRenameRequest));
+    assert_eq!(at(&app, Verb::Move), Some(Action::PromptMoveSelectedRequestToSpace));
+    assert_eq!(at(&app, Verb::Delete { count: 1 }), Some(Action::DeleteSelectedRequest));
+    assert_eq!(
+        at(&app, Verb::Delete { count: 2 }),
+        Some(Action::DeleteRequests(vec!["main/beta".into(), "main/gamma".into()]))
+    );
+    assert_eq!(at(&app, Verb::Yank), Some(Action::YankRequest("main/beta".into())));
+    assert_eq!(
+        at(&app, Verb::Put { above: true }),
+        Some(Action::PutRequest { anchor: Some("main/beta".into()), above: true })
+    );
+    assert_eq!(at(&app, Verb::Tls), None, "no TLS on a request row");
+    app.sidebar.selected = app.sidebar.row_of("main/gamma");
+    assert_eq!(
+        at(&app, Verb::Delete { count: 2 }),
+        Some(Action::DeleteRequest("main/gamma".into())),
+        "a count clamped to one row is a single delete"
+    );
+}
+
+fn three_header_app() -> App {
+    let mut app = App::new_for_test();
+    app.update(Action::CreateRequest("rows".into()));
+    for k in ["a", "b", "c"] {
+        app.editor
+            .headers
+            .insert(k.into(), postui_core::model::Entry { value: "1".into(), enabled: true });
+    }
+    app.editor.active_tab = EditorTab::Headers;
+    app.focus = PaneId::Editor;
+    app.editor.sub_focus = SubFocus::Content;
+    app.editor.table.selected = Some(1);
+    app.capture_undo();
+    app
+}
+
+/// Spec §5.3: each verb on a table is main's own row action.
+#[test]
+fn selection_action_on_a_table() {
+    use crate::action::Verb;
+    use crate::keyroute::Surface;
+    let app = three_header_app();
+    let s = Surface::Table(EditorTab::Headers);
+    assert_eq!(app.selection_action(s, Verb::Add), Some(Action::TableAddRow));
+    assert_eq!(app.selection_action(s, Verb::Delete { count: 1 }), Some(Action::DeleteTableRow(1)));
+    assert_eq!(
+        app.selection_action(s, Verb::Delete { count: 2 }),
+        Some(Action::DeleteTableRows { start: 1, count: 2 })
+    );
+    assert_eq!(app.selection_action(s, Verb::Yank), Some(Action::YankTableRow(1)));
+    assert_eq!(app.selection_action(s, Verb::Put { above: false }), Some(Action::PutTableRow { at: 2 }));
+    assert_eq!(app.selection_action(s, Verb::Put { above: true }), Some(Action::PutTableRow { at: 1 }));
+    assert_eq!(app.selection_action(s, Verb::Rename), None);
+}
+
+/// Review Focus 2: `dd` on a folder row, or on the table's add row, does
+/// nothing at all.
+#[test]
+fn delete_on_a_folder_or_the_add_row_does_nothing() {
+    use crate::action::Verb;
+    use crate::keyroute::Surface;
+    let (mut app, dir) = sidebar_test_app_three_flat_rows();
+    postui_core::fixtures::save_request(dir.path(), "main/f/inner", &req("https://x/1")).unwrap();
+    app.update(Action::RefreshSidebar);
+    render_once(&mut app);
+    let folder = app
+        .sidebar
+        .rows
+        .iter()
+        .position(|r| matches!(r, Row::Folder { .. }))
+        .expect("the folder is listed");
+    app.sidebar.selected = Some(folder);
+    assert_eq!(app.selection_action(Surface::Sidebar, Verb::Delete { count: 1 }), None);
+    assert_eq!(app.selection_action(Surface::Sidebar, Verb::Delete { count: 3 }), None);
+    let mut table = three_header_app();
+    table.editor.table.selected = Some(3);
+    let s = Surface::Table(EditorTab::Headers);
+    assert_eq!(table.selection_action(s, Verb::Delete { count: 1 }), None, "the add row");
+    assert_eq!(table.selection_action(s, Verb::Yank), None);
+    assert_eq!(table.selection_action(s, Verb::Put { above: false }), Some(Action::PutTableRow { at: 3 }));
+}
+
+/// Spec §6.1: `OnSelection` runs what `selection_action` resolves to, on
+/// the surface the keyboard is on.
+#[test]
+fn on_selection_runs_the_resolved_action() {
+    use crate::action::Verb;
+    let (mut app, dir) = sidebar_test_app_three_flat_rows();
+    render_once(&mut app);
+    app.focus = PaneId::Sidebar;
+    app.sidebar.selected = app.sidebar.row_of("main/beta");
+    app.update(Action::OnSelection(Verb::Delete { count: 1 }));
+    assert!(!dir.path().join("requests/main/beta.toml").exists());
+}
+
+/// Spec §5.4: the Environments and Spaces lists.
+#[test]
+fn selection_action_on_the_manage_lists() {
+    use crate::action::Verb;
+    use crate::components::manage::ManageTab;
+    use crate::keyroute::Surface;
+    let mut app = App::new_for_test();
+    for name in ["prod", "qa"] {
+        app.update(Action::CreateEnv(name.into()));
+    }
+    app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
+    app.manage.list.cursor = 0;
+    let first = app.manage_selected(ManageTab::Environments).unwrap();
+    for s in [Surface::ManageList(ManageTab::Environments), Surface::ManageDetail(ManageTab::Environments)] {
+        assert_eq!(app.selection_action(s, Verb::Add), Some(Action::OpenNewEnvPrompt));
+        assert_eq!(app.selection_action(s, Verb::Rename), Some(Action::PromptRenameEnv(first.clone())));
+        assert_eq!(app.selection_action(s, Verb::Delete { count: 1 }), Some(Action::DeleteEnv(first.clone())));
+        assert!(matches!(app.selection_action(s, Verb::Tls), Some(Action::SetEnvTls { .. })));
+        assert_eq!(app.selection_action(s, Verb::Move), None, "move all is the Spaces tab's");
+    }
+    app.update(Action::CreateSpace("auth".into()));
+    app.update(Action::SelectManageTab(ManageTab::Spaces));
+    let space = app.manage_selected(ManageTab::Spaces).unwrap();
+    let s = Surface::ManageList(ManageTab::Spaces);
+    assert_eq!(app.selection_action(s, Verb::Move), Some(Action::PromptMoveAllRequests(space)));
+    assert_eq!(app.selection_action(s, Verb::Tls), None);
+}
+
+/// Spec §5.4: the Variables list, grid and form.
+#[test]
+fn selection_action_on_the_variables_tab() {
+    use crate::action::Verb;
+    use crate::components::varmanager::{FormStop, VmField, VmFocus, VmRow};
+    use crate::keyroute::Surface;
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_row(&mut app, |r| *r == VmRow::Var("base_url".into()));
+    assert_eq!(app.selection_action(Surface::VarList, Verb::Add), Some(Action::PromptNewVar));
+    assert_eq!(app.selection_action(Surface::VarList, Verb::AddAlt), Some(Action::PromptNewSelector));
+    assert_eq!(
+        app.selection_action(Surface::VarList, Verb::Rename),
+        Some(Action::PromptRenameVar { from: "base_url".into() })
+    );
+    assert_eq!(
+        app.selection_action(Surface::VarList, Verb::Delete { count: 1 }),
+        Some(Action::DeleteVar { name: "base_url".into() })
+    );
+    assert_eq!(
+        app.selection_action(Surface::VarList, Verb::Secret),
+        Some(Action::ToggleSecretVar { name: "base_url".into() })
+    );
+    assert_eq!(app.selection_action(Surface::VarList, Verb::Fields), None, "a variable has no fields");
+
+    goto_row(&mut app, |r| *r == VmRow::Group("user".into()));
+    app.varmanager.focus = VmFocus::Grid;
+    app.varmanager.grid.cursor = (0, 0);
+    assert_eq!(app.selection_action(Surface::VarGrid, Verb::Add), Some(Action::StartNewOptionEdit));
+    assert_eq!(app.selection_action(Surface::VarGrid, Verb::Yank), Some(Action::CopyOption { row: 0 }));
+    assert_eq!(app.selection_action(Surface::VarGrid, Verb::Put { above: false }), None, "nothing copied");
+    assert_eq!(
+        app.selection_action(Surface::VarGrid, Verb::Rename),
+        Some(Action::StartOptionNameEdit { row: 0 })
+    );
+    assert!(matches!(
+        app.selection_action(Surface::VarGrid, Verb::Delete { count: 1 }),
+        Some(Action::DeleteEntry { .. })
+    ));
+    assert!(matches!(
+        app.selection_action(Surface::VarGrid, Verb::EditValue),
+        Some(Action::OpenEditOptionPrompt { .. })
+    ));
+
+    goto_row(&mut app, |r| *r == VmRow::Var("api_key".into()));
+    app.varmanager.focus = VmFocus::Form;
+    app.varmanager.form_cursor = FormStop::Field(VmField::Description);
+    assert_eq!(app.selection_action(Surface::VarForm, Verb::Reveal), Some(Action::ToggleVarReveal));
+    assert_eq!(
+        app.selection_action(Surface::VarForm, Verb::Secret),
+        Some(Action::ToggleSecretVar { name: "api_key".into() })
+    );
+    assert_eq!(app.selection_action(Surface::VarForm, Verb::ClearValue), None, "not on the env value");
+}
+
+/// Spec §5.4: the form's reveal is an action now (Deviation 1), and only
+/// a secret has one.
+#[test]
+fn toggle_var_reveal_flips_only_a_secret() {
+    use crate::components::varmanager::VmRow;
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_row(&mut app, |r| *r == VmRow::Var("api_key".into()));
+    app.update(Action::ToggleVarReveal);
+    assert!(app.varmanager.form.revealed);
+    goto_row(&mut app, |r| *r == VmRow::Var("base_url".into()));
+    app.varmanager.form.revealed = false;
+    app.update(Action::ToggleVarReveal);
+    assert!(!app.varmanager.form.revealed, "base_url is not secret");
+}
+
+/// Deviation 8: the options grid's inline rename works on a shared
+/// selector with no environment, as a new option already did.
+#[test]
+fn option_rename_starts_on_a_shared_selector_without_an_environment() {
+    use crate::components::varmanager::{VmFocus, VmRow};
+    let dir = tempfile::tempdir().unwrap();
+    postui_core::fixtures::init_project(dir.path(), Some("demo")).unwrap();
+    std::fs::write(
+        dir.path().join("variables.toml"),
+        "[selectors.locale]\nshared = true\nfields = [\"lang\"]\n\n[options.locale.en]\nlang = \"en\"\n\n[options.locale.fr]\nlang = \"fr\"\n",
+    )
+    .unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.project_mut().unwrap().set_active_env(None);
+    assert!(app.active_env().is_none(), "no environment is active");
+    goto_row(&mut app, |r| *r == VmRow::Group("locale".into()));
+    app.varmanager.focus = VmFocus::Grid;
+    app.varmanager.grid.cursor = (0, 0);
+    app.update(Action::StartOptionNameEdit { row: 0 });
+    assert!(app.varmanager.grid.editing.is_some());
+}

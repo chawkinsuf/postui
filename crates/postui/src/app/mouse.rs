@@ -2280,10 +2280,7 @@ impl App {
                 };
                 self.update(Action::ToggleSecretVar { name })
             }
-            Hit::VmRevealToggle => {
-                self.varmanager.form.revealed = !self.varmanager.form.revealed;
-                self.update(Action::Render)
-            }
+            Hit::VmRevealToggle => self.update(Action::ToggleVarReveal),
             Hit::VmRemoveEnvValue => {
                 let crate::components::varmanager::VmDetail::Var(name) =
                     self.varmanager.detail.clone()

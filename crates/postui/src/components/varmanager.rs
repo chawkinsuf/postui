@@ -12,7 +12,7 @@
 //! preconditions hold. The selector face ([`OptionGridState`]) is still a
 //! placeholder for Task 16.
 
-use crate::action::Action;
+use crate::action::{Action, Verb};
 use crate::components::line_input::LineInput;
 use crate::hit::{Hit, HitMap, ScrollbarSpec};
 use crate::keyroute::spell::Key;
@@ -1617,6 +1617,90 @@ impl VarManager {
         Some(Action::PromptRenameVar {
             from: self.selected_row()?.name()?.to_string(),
         })
+    }
+
+    /// What a list verb means where the Variables tab's keyboard is (piece
+    /// 4 spec §5.4): on the list, the declaration under the cursor, else
+    /// the one the detail pane has open (the chips' rule, plan M2
+    /// Deviation 7); on the grid, the option under its cursor; on the
+    /// form, the open variable. The router's rows and the footer chips
+    /// both read it, so a key and its chip cannot drift.
+    pub fn verb_action(&self, ctx: &Project, open_request: Option<&HttpRequest>, verb: Verb) -> Option<Action> {
+        match (self.focus, &self.detail) {
+            (VmFocus::List, _) => self.list_verb(ctx, verb),
+            (VmFocus::Grid, VmDetail::Group(selector)) => self.grid_verb(ctx, selector, verb),
+            (VmFocus::Form, VmDetail::Var(name)) => self.form_verb(ctx, open_request, name, verb),
+            _ => None,
+        }
+    }
+
+    fn list_verb(&self, ctx: &Project, verb: Verb) -> Option<Action> {
+        let name = self
+            .selected_row()
+            .and_then(VmRow::name)
+            .or_else(|| self.detail.name())
+            .map(str::to_string);
+        match verb {
+            Verb::Add => Some(Action::PromptNewVar),
+            Verb::AddAlt => Some(Action::PromptNewSelector),
+            Verb::Rename => name.map(|from| Action::PromptRenameVar { from }),
+            Verb::Delete { .. } => name.map(|name| Action::DeleteVar { name }),
+            Verb::Secret => name
+                .filter(|n| ctx.variables().vars.contains_key(n))
+                .map(|name| Action::ToggleSecretVar { name }),
+            Verb::Fields => match &self.detail {
+                VmDetail::Group(selector) => Some(Action::PromptGroupFields { selector: selector.clone() }),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    fn grid_verb(&self, ctx: &Project, selector: &str, verb: Verb) -> Option<Action> {
+        let row = self.grid.cursor.0;
+        let target = op_env(ctx, selector).zip(self.entry_at(ctx, row));
+        match verb {
+            Verb::Add => Some(Action::StartNewOptionEdit),
+            Verb::Rename => target.map(|_| Action::StartOptionNameEdit { row }),
+            Verb::Delete { .. } => target.map(|(env, name)| Action::DeleteEntry {
+                env,
+                selector: selector.to_string(),
+                name,
+            }),
+            Verb::EditValue => {
+                let (_, option) = target?;
+                let decl = postui_core::varmodel::options_of(ctx.variables(), ctx.env_data(), selector)?
+                    .get(&option)?
+                    .clone();
+                Some(Action::OpenEditOptionPrompt {
+                    owner: selector.to_string(),
+                    key: option,
+                    description: decl.description,
+                    values: decl.values,
+                })
+            }
+            Verb::Yank => target.map(|_| Action::CopyOption { row }),
+            Verb::Put { .. } => op_env(ctx, selector)
+                .filter(|_| self.can_paste(selector))
+                .map(|env| Action::VarStruct(VarStructOp::PasteOption { env, selector: selector.to_string() })),
+            Verb::Fields => Some(Action::PromptGroupFields { selector: selector.to_string() }),
+            _ => None,
+        }
+    }
+
+    fn form_verb(&self, ctx: &Project, open_request: Option<&HttpRequest>, name: &str, verb: Verb) -> Option<Action> {
+        let declared = ctx.variables().vars.get(name);
+        match verb {
+            Verb::Secret => declared.map(|_| Action::ToggleSecretVar { name: name.to_string() }),
+            Verb::ClearValue => (self.form_cursor == FormStop::Field(VmField::EnvValue) && env_stores(ctx, name))
+                .then(|| Action::RemoveVarValue {
+                    name: name.to_string(),
+                    destination: crate::action::ExtractDestination::ActiveEnv,
+                }),
+            Verb::Promote => promote_action(ctx, open_request, name).map(|(_, a)| a),
+            Verb::Reveal => declared.is_some_and(|d| d.secret).then_some(Action::ToggleVarReveal),
+            _ => None,
+        }
     }
 
     /// The right-click menu for left-list row `i` (spec §3.4: Rename /
