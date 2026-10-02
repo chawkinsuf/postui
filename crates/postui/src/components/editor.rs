@@ -329,6 +329,27 @@ impl Default for Editor {
 }
 
 impl Editor {
+    /// The key/value table behind `tab`; `None` for Body, which has none.
+    pub fn table_map(&self, tab: EditorTab) -> Option<&IndexMap<String, Entry>> {
+        match tab {
+            EditorTab::Params => Some(&self.params),
+            EditorTab::Headers => Some(&self.headers),
+            EditorTab::Vars => Some(&self.variables),
+            EditorTab::Body => None,
+        }
+    }
+
+    /// `table_map`, mutably. It borrows the whole editor, so a caller that
+    /// also needs `self.table` at once keeps its own field-wise match.
+    pub fn table_map_mut(&mut self, tab: EditorTab) -> Option<&mut IndexMap<String, Entry>> {
+        match tab {
+            EditorTab::Params => Some(&mut self.params),
+            EditorTab::Headers => Some(&mut self.headers),
+            EditorTab::Vars => Some(&mut self.variables),
+            EditorTab::Body => None,
+        }
+    }
+
     /// Whether a plain printable key typed right now lands in one of the
     /// pane's text inputs rather than falling through to the global
     /// keymap: the URL line, the body editor, or a live table-cell edit.

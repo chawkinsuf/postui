@@ -223,6 +223,18 @@ pub enum Action {
     /// `-copy-2`, …, same collision rule as `DuplicateRequest`/`DuplicateVar`)
     /// directly below it, with the same value and enabled flag.
     DuplicateTableRow(usize),
+    /// `yy` / `y` on the sidebar: remember this request in `App::yank`.
+    /// Invisible: no file, no undo step, no toast (piece 4 spec §5.1).
+    YankRequest(String),
+    /// `yy` / `y` on a table: remember row `i` of the active tab.
+    YankTableRow(usize),
+    /// `p` / `P` on the sidebar: duplicate the yanked request beside
+    /// `anchor` (the cursor row; `None` falls back to the source's own
+    /// slot), below it or `above` it. Gated on unsaved edits: the copy
+    /// opens.
+    PutRequest { anchor: Option<String>, above: bool },
+    /// `p` / `P` on a table: insert a copy of the yanked row at `at`.
+    PutTableRow { at: usize },
     /// Open the method-selector dropdown, anchored below the method badge.
     OpenMethodDropdown,
     /// Set the editor's method directly (the dropdown's row action).
@@ -291,8 +303,11 @@ pub enum Action {
     /// Copy the selected sidebar request to the next free `<slug>-copy…`
     /// name and open the copy.
     DuplicateRequest,
-    /// Duplicates `slug` and opens the copy; `DuplicateRequest`'s dirty gate runs first.
-    ForceDuplicateRequest(String),
+    /// Duplicates `slug` and opens the copy; `DuplicateRequest`'s dirty gate
+    /// runs first. Its order entry goes beside `anchor` (below, or above
+    /// with `above`). `DuplicateRequest` anchors on the source itself; a put
+    /// anchors on the cursor row (piece 4 spec §5.2).
+    ForceDuplicateRequest { slug: String, anchor: String, above: bool },
     /// The scratch gate's save path: opens the Save-as name prompt with the
     /// deferred action to run once the save succeeds.
     PromptSaveScratch(Box<Action>),

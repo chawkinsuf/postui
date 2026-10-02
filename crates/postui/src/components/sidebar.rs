@@ -492,6 +492,25 @@ impl Sidebar {
             .collect()
     }
 
+    /// The request slug a `p`/`P` anchors its copy on (piece 4 spec
+    /// §5.2). A request row is its own anchor. A folder row anchors on
+    /// the folder's last visible request for a put below and its first
+    /// for a put above, which lands the copy inside the folder either
+    /// way. A collapsed or empty folder, and no selection, give `None`.
+    pub fn put_anchor(&self, above: bool) -> Option<String> {
+        match self.selected_row()? {
+            Row::Request { slug, .. } => Some(slug.clone()),
+            Row::Folder { path, .. } => {
+                let prefix = format!("{path}/");
+                let mut inside = self.rows.iter().filter_map(|r| match r {
+                    Row::Request { slug, .. } if slug.starts_with(&prefix) => Some(slug.clone()),
+                    _ => None,
+                });
+                if above { inside.next() } else { inside.next_back() }
+            }
+        }
+    }
+
     fn selected_row(&self) -> Option<&Row> {
         self.rows.get(self.selected?)
     }
@@ -1395,6 +1414,34 @@ mod tests {
         assert_eq!(s.request_slugs_from(3, 9), ["main/f/c", "main/d"], "clamped at the end");
         assert!(s.request_slugs_from(2, 3).is_empty(), "dd on a folder does nothing");
         assert!(s.request_slugs_from(9, 1).is_empty(), "no row there");
+    }
+
+    /// Spec §5.2: a put anchors only on a real request slug: the request
+    /// row itself, or a visible request inside the folder row. A collapsed
+    /// or empty folder, and no selection, give nothing.
+    #[test]
+    fn put_anchor_is_always_a_request_slug() {
+        let mut s = Sidebar {
+            rows: vec![
+                req_row("main/a"),
+                Row::Folder { path: "main/f".into(), name: "f".into(), depth: 0, expanded: true },
+                req_row("main/f/c"),
+                req_row("main/f/d"),
+                Row::Folder { path: "main/g".into(), name: "g".into(), depth: 0, expanded: false },
+                req_row("main/z"),
+            ],
+            ..Sidebar::default()
+        };
+        assert_eq!(s.put_anchor(false), None, "no selection");
+        s.selected = Some(0);
+        assert_eq!(s.put_anchor(false).as_deref(), Some("main/a"));
+        assert_eq!(s.put_anchor(true).as_deref(), Some("main/a"));
+        s.selected = Some(1);
+        assert_eq!(s.put_anchor(false).as_deref(), Some("main/f/d"), "below: the last inside");
+        assert_eq!(s.put_anchor(true).as_deref(), Some("main/f/c"), "above: the first inside");
+        s.selected = Some(4);
+        assert_eq!(s.put_anchor(false), None, "a collapsed folder has nothing visible inside");
+        assert_eq!(s.put_anchor(true), None);
     }
 
     fn key(code: KeyCode) -> KeyEvent {

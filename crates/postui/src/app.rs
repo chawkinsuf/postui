@@ -155,6 +155,9 @@ pub struct App {
     pub manage: crate::components::manage::Manage,
     /// The Variables tab's own state — the list, detail pane and edits.
     pub varmanager: VarManager,
+    /// The row register `yy`/`y` fills and `p`/`P` spends (piece 4 spec
+    /// §5.1). Dropped on a project switch.
+    pub yank: crate::yank::Register,
     /// The Settings tab's own state — the row cursor, the live field
     /// edit and which of a Files row's two buttons is aimed at.
     pub settings: crate::components::settings::SettingsTab,
@@ -1677,6 +1680,7 @@ impl App {
             editor: Editor::default(),
             manage: crate::components::manage::Manage::default(),
             varmanager: VarManager::default(),
+            yank: crate::yank::Register::default(),
             settings: crate::components::settings::SettingsTab::default(),
             session: crate::session::Session::default(),
             toasts,
@@ -3591,21 +3595,22 @@ impl App {
                 };
                 // The copy opens, so unsaved edits are gated first — before
                 // anything is written (spec §4.3: the gate runs before the op).
+                let force = Action::ForceDuplicateRequest { anchor: slug.clone(), slug, above: false };
                 if self.editor_holds_unsaved() {
-                    self.dirty_gate("duplicate", Action::ForceDuplicateRequest(slug));
+                    self.dirty_gate("duplicate", force);
                     true
                 } else {
-                    self.apply(Action::ForceDuplicateRequest(slug))
+                    self.apply(force)
                 }
             }
-            Action::ForceDuplicateRequest(slug) => {
+            Action::ForceDuplicateRequest { slug, anchor, above } => {
                 let t = self.begin_op();
                 let Some(p) = self.project.as_mut() else {
                     return true;
                 };
-                match p.duplicate_request(&slug) {
+                match p.duplicate_request_at(&slug, &anchor, above) {
                     Ok(new_slug) => {
-                        // Copies land next to the original and open, so the
+                        // Copies land beside their anchor and open, so the
                         // edit that motivated the duplicate can start at once.
                         self.land(Landing {
                             open: Some(crate::undo::Open::Request { slug: new_slug.clone(), buffer: None }),
@@ -3617,6 +3622,13 @@ impl App {
                         self.record_project_step(t, crate::undo::StepLabel::create(display));
                     }
                     Err(e) => {
+                        self.op_in_flight = false;
+                        // A register naming a source that is gone (deleted
+                        // since the yank) is stale: drop it rather than let
+                        // the next `p` fail the same way.
+                        if self.yank == crate::yank::Register::Request(slug.clone()) {
+                            self.yank = crate::yank::Register::Empty;
+                        }
                         self.toasts
                             .push(format!("could not duplicate {slug}: {e}"), ToastKind::Error);
                     }
@@ -3661,11 +3673,9 @@ impl App {
             }
             Action::ToggleTableRow(i) => {
                 self.no_coalesce = true;
-                let map = match self.editor.active_tab {
-                    EditorTab::Params => &mut self.editor.params,
-                    EditorTab::Headers => &mut self.editor.headers,
-                    EditorTab::Vars => &mut self.editor.variables,
-                    EditorTab::Body => return true,
+                let tab = self.editor.active_tab;
+                let Some(map) = self.editor.table_map_mut(tab) else {
+                    return true;
                 };
                 if let Some((_, e)) = map.get_index_mut(i) {
                     e.enabled = !e.enabled;
@@ -3713,26 +3723,92 @@ impl App {
                 true
             }
             Action::DuplicateTableRow(i) => {
-                self.no_coalesce = true;
-                let map = match self.editor.active_tab {
-                    EditorTab::Params => &mut self.editor.params,
-                    EditorTab::Headers => &mut self.editor.headers,
-                    EditorTab::Vars => &mut self.editor.variables,
-                    EditorTab::Body => return true,
-                };
-                let Some((key, option)) = map.get_index(i).map(|(k, e)| (k.clone(), e.clone()))
-                else {
-                    return true;
-                };
-                let mut new_key = format!("{key}-copy");
-                let mut n = 2;
-                while map.contains_key(&new_key) {
-                    new_key = format!("{key}-copy-{n}");
-                    n += 1;
+                let tab = self.editor.active_tab;
+                let row = self
+                    .editor
+                    .table_map(tab)
+                    .and_then(|m| m.get_index(i))
+                    .map(|(k, e)| (k.clone(), e.clone()));
+                if let Some((key, entry)) = row {
+                    self.insert_row_copy(tab, &key, entry, i + 1);
                 }
-                let insert_at = (i + 1).min(map.len());
-                map.shift_insert(insert_at, new_key, option);
-                self.editor.table.selected = Some(insert_at);
+                true
+            }
+            Action::YankRequest(slug) => {
+                // Invisible until a put spends it (spec §5.1).
+                self.yank = crate::yank::Register::Request(slug);
+                true
+            }
+            Action::YankTableRow(i) => {
+                let tab = self.editor.active_tab;
+                let row = self
+                    .editor
+                    .table_map(tab)
+                    .and_then(|m| m.get_index(i))
+                    .map(|(k, e)| (k.clone(), e.clone()));
+                if let Some((key, entry)) = row {
+                    self.yank = crate::yank::Register::Row { tab, key, entry };
+                }
+                true
+            }
+            Action::PutRequest { anchor, above } => {
+                let src = match self.yank.clone() {
+                    crate::yank::Register::Request(src) => src,
+                    // An empty register is vim's own no-op.
+                    crate::yank::Register::Empty => return true,
+                    // The register is invisible, so silence would read as a
+                    // dead key: say what it holds.
+                    crate::yank::Register::Row { .. } => {
+                        self.toasts.push(
+                            "nothing to put here: the register holds a table row",
+                            ToastKind::Warning,
+                        );
+                        self.last_action_failed = true;
+                        return true;
+                    }
+                };
+                // A copy's order slot only means something in its own
+                // space, and opening it would pull the user back there:
+                // refused, the register kept for a put back home.
+                if postui_core::storage::space_of(&src) != Some(self.active_space().as_str()) {
+                    let display = self.request_display(&src);
+                    self.toasts
+                        .push(format!("{display} was yanked from another space"), ToastKind::Warning);
+                    self.last_action_failed = true;
+                    return true;
+                }
+                let anchor = anchor.unwrap_or_else(|| src.clone());
+                let force = Action::ForceDuplicateRequest { slug: src, anchor, above };
+                // The copy opens, so unsaved edits are gated first, as
+                // Duplicate's are.
+                if self.editor_holds_unsaved() {
+                    self.dirty_gate("duplicate", force);
+                    true
+                } else {
+                    self.apply(force)
+                }
+            }
+            Action::PutTableRow { at } => {
+                let (tab, key, entry) = match self.yank.clone() {
+                    crate::yank::Register::Row { tab, key, entry } => (tab, key, entry),
+                    crate::yank::Register::Empty => return true,
+                    crate::yank::Register::Request(_) => {
+                        self.toasts.push(
+                            "nothing to put here: the register holds a request",
+                            ToastKind::Warning,
+                        );
+                        self.last_action_failed = true;
+                        return true;
+                    }
+                };
+                // A header is not a param: the register stays on its tab.
+                if tab != self.editor.active_tab {
+                    self.toasts
+                        .push(format!("{key} was yanked from another tab"), ToastKind::Warning);
+                    self.last_action_failed = true;
+                    return true;
+                }
+                self.insert_row_copy(tab, &key, entry, at);
                 true
             }
             Action::DeleteSelectedRequest => {
@@ -4423,6 +4499,9 @@ impl App {
                 // A copied option row names a selector in the project
                 // being left; nothing in the next one can take it.
                 self.varmanager.stash = None;
+                // The row register names a request in the project being
+                // left, or a row of a request about to close.
+                self.yank = crate::yank::Register::Empty;
                 self.shadow = None;
                 let slug = self.editor.slug.clone();
                 if let Some(p) = self.project_mut() {
@@ -9149,6 +9228,27 @@ impl App {
             .and_then(|p| p.requests().iter().find(|l| l.slug == slug))
             .and_then(|l| l.name.clone())
             .unwrap_or_else(|| slug.rsplit('/').next().unwrap_or(slug).to_string())
+    }
+
+    /// Inserts a copy of `key`/`entry` into `tab`'s table at row `at`
+    /// (clamped), named `<key>-copy`, `-copy-2`, …, and puts the cursor
+    /// on it. The one place the row menu's Duplicate and the register's
+    /// put share, so naming, clamping and the cursor never drift. A
+    /// wholesale row change is never coalesced into the keys around it.
+    fn insert_row_copy(&mut self, tab: EditorTab, key: &str, entry: postui_core::model::Entry, at: usize) {
+        self.no_coalesce = true;
+        let Some(map) = self.editor.table_map_mut(tab) else {
+            return;
+        };
+        let mut new_key = format!("{key}-copy");
+        let mut n = 2;
+        while map.contains_key(&new_key) {
+            new_key = format!("{key}-copy-{n}");
+            n += 1;
+        }
+        let at = at.min(map.len());
+        map.shift_insert(at, new_key, entry);
+        self.editor.table.selected = Some(at);
     }
 
     fn create_or_save_as(

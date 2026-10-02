@@ -21080,6 +21080,165 @@ mod undo_tests {
         app.update(Action::Undo);
         check(&app, "undo rename env");
     }
+
+    fn main_order(app: &App) -> Vec<String> {
+        postui_core::order::space_order(app.proj().meta(), "main").to_vec()
+    }
+
+    /// The `main` space's request files, sorted.
+    fn request_files(dir: &std::path::Path) -> Vec<String> {
+        let mut files: Vec<String> = std::fs::read_dir(dir.join("requests/main"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        files.sort();
+        files
+    }
+
+    /// Spec §5.1: a yank alone is invisible: no file, no undo step, no toast.
+    #[test]
+    fn a_yank_alone_changes_nothing() {
+        let (mut app, dir) = spaced_app();
+        let files = request_files(dir.path());
+        let (undo, redo) = (app.history.undo_len(), app.history.redo_len());
+        // `spaced_app` opens with the "no environments" toast already up.
+        let toasts = app.toasts.messages().len();
+        app.update(Action::YankRequest("main/alpha".into()));
+        assert_eq!(app.yank, crate::yank::Register::Request("main/alpha".into()));
+        assert_eq!(app.toasts.messages().len(), toasts, "a yank toasts nothing");
+        assert_eq!(request_files(dir.path()), files);
+        assert_eq!(
+            (app.history.undo_len(), app.history.redo_len()),
+            (undo, redo),
+            "a yank records no undo step"
+        );
+    }
+
+    /// `p`: the copy lands under the anchor and opens; one undo takes the
+    /// file and its order slot back.
+    #[test]
+    fn a_put_duplicates_the_yanked_request_below_the_anchor() {
+        let (mut app, dir) = spaced_app();
+        app.update(Action::YankRequest("main/alpha".into()));
+        app.update(Action::PutRequest { anchor: Some("main/beta".into()), above: false });
+        assert_eq!(main_order(&app), ["alpha", "beta", "alpha-copy"]);
+        assert_eq!(app.editor.slug.as_deref(), Some("main/alpha-copy"));
+        app.update(Action::Undo);
+        assert!(!postui_core::fixtures::request_exists(dir.path(), "main/alpha-copy"));
+        assert!(main_order(&app).is_empty(), "the seeded order goes with it");
+    }
+
+    /// `P`: the copy takes the anchor's slot.
+    #[test]
+    fn a_put_above_takes_the_anchors_slot() {
+        let (mut app, _dir) = spaced_app();
+        app.update(Action::YankRequest("main/alpha".into()));
+        app.update(Action::PutRequest { anchor: Some("main/beta".into()), above: true });
+        assert_eq!(main_order(&app), ["alpha", "alpha-copy", "beta"]);
+    }
+
+    /// Review Focus 4: the copy opens, so unsaved edits are gated first.
+    #[test]
+    fn a_put_over_unsaved_edits_asks_first() {
+        let (mut app, dir) = spaced_app();
+        app.update(Action::ForceOpenRequest("main/alpha".into()));
+        sidebar_on(&mut app, "main/alpha");
+        type_z_into_the_url(&mut app);
+        app.update(Action::YankRequest("main/beta".into()));
+        app.update(Action::PutRequest { anchor: Some("main/alpha".into()), above: false });
+        assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })), "the gate comes first");
+        assert!(!postui_core::fixtures::request_exists(dir.path(), "main/beta-copy"));
+    }
+
+    /// Review Focus 3: a put off the yank's space is refused, and the
+    /// register is kept so cycling back and putting again works.
+    #[test]
+    fn a_put_in_another_space_refuses_and_keeps_the_register() {
+        let (mut app, dir) = spaced_app();
+        app.update(Action::YankRequest("main/alpha".into()));
+        app.update(Action::SwitchSpace("auth".into()));
+        app.update(Action::PutRequest { anchor: Some("auth/login".into()), above: false });
+        assert!(
+            app.toasts.messages().iter().any(|m| m.contains("was yanked from another space")),
+            "{:?}",
+            app.toasts.messages()
+        );
+        assert!(!postui_core::fixtures::request_exists(dir.path(), "main/alpha-copy"));
+        assert_eq!(app.yank, crate::yank::Register::Request("main/alpha".into()));
+    }
+
+    /// Review Focus 3: a source deleted between the yank and the put
+    /// fails loudly and drops the stale register.
+    #[test]
+    fn a_put_of_a_deleted_request_says_so_and_drops_the_register() {
+        let (mut app, _dir) = spaced_app();
+        app.update(Action::YankRequest("main/alpha".into()));
+        app.update(Action::DeleteRequest("main/alpha".into()));
+        app.update(Action::PutRequest { anchor: Some("main/beta".into()), above: false });
+        assert!(
+            app.toasts.messages().iter().any(|m| m.starts_with("could not duplicate main/alpha")),
+            "{:?}",
+            app.toasts.messages()
+        );
+        assert_eq!(app.yank, crate::yank::Register::Empty);
+    }
+
+    /// An empty register is vim's own no-op; a table row on the sidebar
+    /// says why nothing happened.
+    #[test]
+    fn a_put_with_an_empty_or_wrong_register_writes_nothing() {
+        let (mut app, dir) = spaced_app();
+        let files = request_files(dir.path());
+        // `spaced_app` opens with the "no environments" toast already up.
+        let toasts = app.toasts.messages().len();
+        app.update(Action::PutRequest { anchor: None, above: false });
+        assert_eq!(app.toasts.messages().len(), toasts, "an empty register says nothing");
+        app.yank = crate::yank::Register::Row {
+            tab: EditorTab::Headers,
+            key: "X".into(),
+            entry: postui_core::model::Entry { value: "1".into(), enabled: true },
+        };
+        app.update(Action::PutRequest { anchor: None, above: false });
+        assert!(app.toasts.messages().iter().any(|m| m.contains("holds a table row")));
+        assert_eq!(request_files(dir.path()), files);
+    }
+
+    /// Spec §5.3: a table row yanked and put below lands as `<key>-copy`,
+    /// one editor undo step; a row from another tab is refused.
+    #[test]
+    fn a_table_row_yanks_and_puts_on_its_own_tab_only() {
+        let mut app = App::new_for_test();
+        app.update(Action::CreateRequest("rows".into()));
+        for k in ["a", "b"] {
+            app.editor
+                .headers
+                .insert(k.into(), postui_core::model::Entry { value: "1".into(), enabled: true });
+        }
+        app.editor.active_tab = EditorTab::Headers;
+        app.capture_undo();
+        app.update(Action::YankTableRow(0));
+        app.update(Action::PutTableRow { at: 1 });
+        app.capture_undo();
+        assert_eq!(app.editor.headers.keys().map(String::as_str).collect::<Vec<_>>(), ["a", "a-copy", "b"]);
+        assert_eq!(app.editor.table.selected, Some(1));
+        app.update(Action::Undo);
+        assert_eq!(app.editor.headers.keys().map(String::as_str).collect::<Vec<_>>(), ["a", "b"]);
+        app.editor.active_tab = EditorTab::Params;
+        app.update(Action::PutTableRow { at: 0 });
+        assert!(app.editor.params.is_empty());
+        assert!(app.toasts.messages().iter().any(|m| m.contains("was yanked from another tab")));
+    }
+
+    /// Spec §5.2: the register names a request in the project being left.
+    #[test]
+    fn a_project_switch_drops_the_register() {
+        let (mut app, _dir) = spaced_app();
+        app.update(Action::YankRequest("main/alpha".into()));
+        let other = tempfile::tempdir().unwrap();
+        postui_core::fixtures::ensure_project(other.path()).unwrap();
+        app.update(Action::ForceSwitchProject(other.path().to_path_buf()));
+        assert_eq!(app.yank, crate::yank::Register::Empty);
+    }
 }
 
 // --- right-click text menus (Copy / Paste on text surfaces) ---------------
