@@ -2503,14 +2503,6 @@ impl Response {
                     view.cursor,
                 )))
             }
-            KeyCode::Char('h') if ev.modifiers.is_empty() => {
-                view.scroll_h((-H_SCROLL_STEP).into());
-                Some(Action::Render)
-            }
-            KeyCode::Char('l') if ev.modifiers.is_empty() => {
-                view.scroll_h(H_SCROLL_STEP.into());
-                Some(Action::Render)
-            }
             KeyCode::Char('d') if ev.modifiers == KeyModifiers::CONTROL => {
                 view.move_cursor((view.height / 2).max(1) as i32);
                 Some(Action::Render)
@@ -2535,12 +2527,12 @@ impl Response {
                 view.select_line_extend(-1);
                 Some(Action::Render)
             }
-            KeyCode::Char('j') | KeyCode::Down if crate::keys::plain_letter(&ev) => {
+            KeyCode::Down => {
                 view.clear_sel();
                 view.move_cursor(1);
                 Some(Action::Render)
             }
-            KeyCode::Char('k') | KeyCode::Up if crate::keys::plain_letter(&ev) => {
+            KeyCode::Up => {
                 view.clear_sel();
                 view.move_cursor(-1);
                 Some(Action::Render)
@@ -2579,16 +2571,6 @@ impl Response {
             }
             KeyCode::End => {
                 view.scroll_h(i32::MAX);
-                Some(Action::Render)
-            }
-            KeyCode::Char('g') if ev.modifiers.is_empty() => {
-                view.cursor = 0;
-                view.follow_cursor();
-                Some(Action::Render)
-            }
-            KeyCode::Char('G') => {
-                view.cursor = view.visible_len().saturating_sub(1);
-                view.follow_cursor();
                 Some(Action::Render)
             }
             KeyCode::Char(' ') | KeyCode::Enter => {
@@ -4794,17 +4776,31 @@ mod tests {
     fn cursor_moves_and_clamps_at_both_ends() {
         let mut r = ready(r#"{"a": 1, "b": 2}"#); // 4 lines
         for _ in 0..20 {
-            r.handle_key(ch('j'));
+            r.handle_key(key(KeyCode::Down));
         }
         assert_eq!(r.view().unwrap().cursor, 3, "clamped to the last line");
         for _ in 0..20 {
             r.handle_key(key(KeyCode::Up));
         }
         assert_eq!(r.view().unwrap().cursor, 0, "clamped to the first line");
-        r.handle_key(ch('G'));
+        r.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::CONTROL));
         assert_eq!(r.view().unwrap().cursor, 3);
-        r.handle_key(ch('g'));
+        r.handle_key(KeyEvent::new(KeyCode::Home, KeyModifiers::CONTROL));
         assert_eq!(r.view().unwrap().cursor, 0);
+    }
+
+    /// The vim letters are the router's (piece 4 spec §4.5): the pane
+    /// answers none of them, and the cursor and scroll stay put.
+    #[test]
+    fn the_vim_letters_do_nothing_in_the_response_pane() {
+        let body = (0..30).map(|i| format!("{:>200}", i)).collect::<Vec<_>>().join("\n");
+        let mut r = ready(&body);
+        render(&mut r);
+        for letter in ['j', 'k', 'h', 'l', 'g', 'G'] {
+            assert_eq!(r.handle_key(ch(letter)), None, "{letter}");
+            let v = r.view().unwrap();
+            assert_eq!((v.cursor, v.h_scroll), (0, 0), "{letter} moved the view");
+        }
     }
 
     #[test]
@@ -4937,28 +4933,21 @@ mod tests {
         );
         assert!(
             !matches!(r.handle_key(ch('h')), Some(Action::ResponseViewMode(_))),
-            "h no longer switches views (it scrolls)"
-        );
-        assert_eq!(
-            r.handle_key(ch('h')),
-            Some(Action::Render),
-            "h scrolls instead"
+            "h never switches views"
         );
     }
 
     #[test]
-    fn h_and_l_scroll_like_the_arrows_and_ctrl_keys_page() {
+    fn the_arrows_scroll_and_the_ctrl_keys_page() {
         let body = (0..100).map(|i| format!("{:>200}", i)).collect::<Vec<_>>().join("\n");
         let mut a = ready(&body);
         let mut b = ready(&body);
         render(&mut a);
         render(&mut b);
         a.handle_key(key(KeyCode::Right));
-        b.handle_key(ch('l'));
-        assert_eq!(a.view().unwrap().h_scroll, b.view().unwrap().h_scroll);
+        assert_ne!(a.view().unwrap().h_scroll, 0, "Right scrolls sideways");
         a.handle_key(key(KeyCode::Left));
-        b.handle_key(ch('h'));
-        assert_eq!(a.view().unwrap().h_scroll, b.view().unwrap().h_scroll);
+        assert_eq!(a.view().unwrap().h_scroll, 0, "Left scrolls back");
         let height = a.view().unwrap().height;
         a.handle_key(key(KeyCode::PageDown));
         b.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL));
@@ -5149,7 +5138,7 @@ mod tests {
     fn space_toggles_collapse_at_the_cursor() {
         let mut r = ready(r#"{"a": {"b": 1, "c": 2}}"#);
         let before = r.view().unwrap().visible_len();
-        r.handle_key(ch('j')); // onto the "a" container line
+        r.handle_key(key(KeyCode::Down)); // onto the "a" container line
         assert_eq!(r.handle_key(key(KeyCode::Char(' '))), Some(Action::Render));
         assert!(r.view().unwrap().visible_len() < before, "collapsed");
         assert!(render(&mut r).contains("2 keys"));
@@ -5884,7 +5873,8 @@ mod tests {
     #[test]
     fn a_new_response_resets_the_view() {
         let mut r = ready("{\"a\": 1,\n \"b\": 2}");
-        r.handle_key(ch('G'));
+        let last = || KeyEvent::new(KeyCode::End, KeyModifiers::CONTROL);
+        r.handle_key(last());
         assert_eq!(r.view().unwrap().cursor, 3, "last pretty line");
         cycle(&mut r);
         assert_eq!(
@@ -5892,7 +5882,7 @@ mod tests {
             0,
             "switching views restarts at the top"
         );
-        r.handle_key(ch('G'));
+        r.handle_key(last());
         assert_eq!(r.view().unwrap().cursor, 1, "last raw line");
         r.set_state(ResponseState::Ready(Box::new(data(r#"{"z": 1}"#))), 0);
         let v = r.view().unwrap();

@@ -2645,6 +2645,14 @@ impl App {
                 ui.keymap = Some(profile);
                 self.reapply_ui_settings(ui);
                 self.keymap = self.keymap_for_profile();
+                // The installed keys.toml may bind letters vim reads
+                // itself; load and reload say so, and so does the switch
+                // that makes them shadow something (spec §4.4).
+                if profile == crate::config::KeyProfile::Vim {
+                    for w in self.keymap.vim_shadow_warnings() {
+                        self.toasts.push(w, ToastKind::Warning);
+                    }
+                }
                 if landed {
                     self.record_config_step(
                         SettingsField::Keymap.key(),
@@ -10197,17 +10205,7 @@ impl App {
                     .move_cursor(-1, self.ui_settings_are_editable());
                 true
             }
-            KeyCode::Char('k') if ev.modifiers.is_empty() => {
-                self.settings
-                    .move_cursor(-1, self.ui_settings_are_editable());
-                true
-            }
             KeyCode::Down => {
-                self.settings
-                    .move_cursor(1, self.ui_settings_are_editable());
-                true
-            }
-            KeyCode::Char('j') if ev.modifiers.is_empty() => {
                 self.settings
                     .move_cursor(1, self.ui_settings_are_editable());
                 true
@@ -10217,20 +10215,7 @@ impl App {
                     .move_cursor(i32::MIN / 2, self.ui_settings_are_editable());
                 true
             }
-            KeyCode::Char('g') if ev.modifiers.is_empty() => {
-                self.settings
-                    .move_cursor(i32::MIN / 2, self.ui_settings_are_editable());
-                true
-            }
             KeyCode::End => {
-                self.settings
-                    .move_cursor(i32::MAX / 2, self.ui_settings_are_editable());
-                true
-            }
-            // Unguarded, like every other surface's `G`: crossterm reports
-            // an uppercase char with `SHIFT` set, so an `is_empty()` guard
-            // would never match in a real terminal.
-            KeyCode::Char('G') => {
                 self.settings
                     .move_cursor(i32::MAX / 2, self.ui_settings_are_editable());
                 true
@@ -10243,17 +10228,7 @@ impl App {
                 self.settings.file_button = usize::from(ev.code == KeyCode::Right);
                 true
             }
-            KeyCode::Char('h') | KeyCode::Char('l')
-                if ev.modifiers.is_empty() && matches!(self.settings.row(), SettingsRow::File(_)) =>
-            {
-                self.settings.file_button = usize::from(matches!(ev.code, KeyCode::Char('l')));
-                true
-            }
-            KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Char('i')
-                if crate::keys::opens_field(&ev) =>
-            {
-                self.activate_settings_row()
-            }
+            KeyCode::Enter | KeyCode::Char(' ') => self.activate_settings_row(),
             // `u` / `:` (undo, palette) are not named here: they reach the
             // router's whitelist from the keymap, like on every screen.
             _ => return None,

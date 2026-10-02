@@ -1095,11 +1095,24 @@ impl VarManager {
         stops
     }
 
+    /// The most a repeated motion can move on the focused stop: one pass
+    /// over its rows plus, in the grid, its columns (`App::repeat_cap`).
+    pub fn repeat_cap(&self, ctx: &Project) -> usize {
+        match (self.focus, &self.detail) {
+            (VmFocus::List, _) => self.left_rows.len(),
+            (VmFocus::Grid, VmDetail::Group(sel)) => {
+                (entry_rows(ctx, sel).len() + 1) + (group_fields(ctx, sel).len() + 2)
+            }
+            (VmFocus::Form, VmDetail::Var(name)) => self.form_stops(ctx, name).len(),
+            _ => 1,
+        }
+    }
+
     /// Keys while the variable form is the focus stop: `Up`/`Down` (`k`/`j`)
     /// move the field cursor over the fields the form shows (the env-value
-    /// row only exists with an env active), `Home`/`End` (`g`/`G`) jump to
+    /// row only exists with an env active), `Home`/`End` jump to
     /// the first/last field, `Enter` starts the same in-place edit a click
-    /// does, and `Esc`/`BackTab`/`Left` (`h`) hand the keyboard back to the
+    /// does, and `Esc`/`BackTab`/`Left` hand the keyboard back to the
     /// left list — the grid's leave-the-inner-thing-first rhythm exactly.
     fn handle_form_focus_key(
         &mut self,
@@ -1120,33 +1133,30 @@ impl VarManager {
             .position(|f| *f == self.form_cursor)
             .unwrap_or(0);
         self.form_cursor = fields[at];
-        // The vim letters are strict synonyms of the arrows here, as in
-        // the grid: no field is live while the cursor rests, so they are
-        // free (spec 2026-09-15).
+        // Vim's letters reach these arms as the named keys: the router
+        // replays them (piece 4 spec §4.5).
         match ev.code {
-            KeyCode::Esc | KeyCode::BackTab | KeyCode::Left | KeyCode::Char('h') if crate::keys::plain_letter(&ev) => {
+            KeyCode::Esc | KeyCode::BackTab | KeyCode::Left => {
                 self.focus = VmFocus::List;
                 None
             }
-            KeyCode::Up | KeyCode::Char('k') if crate::keys::plain_letter(&ev) => {
+            KeyCode::Up => {
                 self.form_cursor = fields[at.saturating_sub(1)];
                 None
             }
-            KeyCode::Down | KeyCode::Char('j') if crate::keys::plain_letter(&ev) => {
+            KeyCode::Down => {
                 self.form_cursor = fields[(at + 1).min(fields.len() - 1)];
                 None
             }
-            KeyCode::Home | KeyCode::Char('g') if crate::keys::plain_letter(&ev) => {
+            KeyCode::Home => {
                 self.form_cursor = fields[0];
                 None
             }
-            KeyCode::End | KeyCode::Char('G') => {
+            KeyCode::End => {
                 self.form_cursor = fields[fields.len() - 1];
                 None
             }
-            KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Char('i')
-                if crate::keys::opens_field(&ev) =>
-            {
+            KeyCode::Enter | KeyCode::Char(' ') => {
                 match self.form_cursor {
                     FormStop::Field(field) => {
                         self.start_field_edit(ctx, field);
@@ -1361,23 +1371,22 @@ impl VarManager {
             // manager keeps the app-wide quit (the footer's quit chip
             // advertises it); live edits never reach here.
             KeyCode::Char('q') => return Some(Action::Quit),
-            KeyCode::Char('k') | KeyCode::Up if crate::keys::plain_letter(&ev) => {
+            KeyCode::Up => {
                 self.move_cursor(-1);
                 return None;
             }
-            KeyCode::Char('j') | KeyCode::Down if crate::keys::plain_letter(&ev) => {
+            KeyCode::Down => {
                 self.move_cursor(1);
                 return None;
             }
-            // `g`/Home and `G`/End jump to the first/last selectable row.
-            // `Home` shares the guard so a modified combo (there is none
-            // today, but the intent is "plain jump") never falls through
-            // here silently.
-            KeyCode::Char('g') | KeyCode::Home if ev.modifiers.is_empty() => {
+            // Home/End jump to the first/last selectable row. `Home` keeps
+            // the plain guard so a modified combo (there is none today, but
+            // the intent is "plain jump") never falls through here silently.
+            KeyCode::Home if ev.modifiers.is_empty() => {
                 self.jump_to_edge(false);
                 return None;
             }
-            KeyCode::Char('G') | KeyCode::End => {
+            KeyCode::End => {
                 self.jump_to_edge(true);
                 return None;
             }
@@ -1406,7 +1415,7 @@ impl VarManager {
                 return None;
             }
             // Into the grid or the form, whichever the detail pane shows.
-            KeyCode::Char('l') | KeyCode::Right | KeyCode::Tab if crate::keys::plain_letter(&ev) => {
+            KeyCode::Right | KeyCode::Tab => {
                 if self.form.editing.is_none() && self.grid.editing.is_none() {
                     match &self.detail {
                         VmDetail::Group(g)
@@ -1492,15 +1501,15 @@ impl VarManager {
                 self.focus = VmFocus::List;
                 None
             }
-            KeyCode::Char('k') | KeyCode::Up if crate::keys::plain_letter(&ev) => {
+            KeyCode::Up => {
                 *row = row.saturating_sub(1);
                 None
             }
-            KeyCode::Char('j') | KeyCode::Down if crate::keys::plain_letter(&ev) => {
+            KeyCode::Down => {
                 *row = (*row + 1).min(last_row);
                 None
             }
-            KeyCode::Char('h') | KeyCode::Left if crate::keys::plain_letter(&ev) => {
+            KeyCode::Left => {
                 if *col == 0 {
                     self.focus = VmFocus::List;
                 } else {
@@ -1508,19 +1517,19 @@ impl VarManager {
                 }
                 None
             }
-            KeyCode::Char('l') | KeyCode::Right | KeyCode::Tab if crate::keys::plain_letter(&ev) => {
+            KeyCode::Right | KeyCode::Tab => {
                 *col = (*col + 1).min(last_col);
                 None
             }
-            KeyCode::Char('g') | KeyCode::Home if crate::keys::plain_letter(&ev) => {
+            KeyCode::Home => {
                 *row = 0;
                 None
             }
-            KeyCode::Char('G') | KeyCode::End => {
+            KeyCode::End => {
                 *row = last_row;
                 None
             }
-            KeyCode::Enter | KeyCode::Char('i') if crate::keys::opens_field(&ev) => {
+            KeyCode::Enter => {
                 let (row, col) = self.grid.cursor;
                 self.start_cell_edit(ctx, row, col);
                 None
@@ -3063,20 +3072,27 @@ fields = ["user_id", "customer_id"]
     }
 
     #[test]
-    fn vim_aliases_are_strict_synonyms_in_the_left_list() {
+    fn page_chords_are_strict_synonyms_and_the_vim_letters_are_gone_in_the_left_list() {
         let (_dir, ctx) = fixture_with_shared_selector();
         let ctrl = |c: char| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+        for letter in [
+            key(KeyCode::Char('j')),
+            key(KeyCode::Char('k')),
+            key(KeyCode::Char('g')),
+            key(KeyCode::Char('l')),
+            KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT),
+        ] {
+            let mut vm = VarManager::default();
+            render(&mut vm, &ctx);
+            vm.select_row(2);
+            let cursor = vm.left_cursor;
+            assert_eq!(vm.handle_key(letter, &ctx, None), None, "{letter:?}");
+            assert_eq!(vm.left_cursor, cursor, "{letter:?} moved the cursor");
+            assert_eq!(vm.focus, VmFocus::List, "{letter:?} left the list");
+        }
         let pairs = [
-            (key(KeyCode::Char('j')), key(KeyCode::Down)),
-            (key(KeyCode::Char('k')), key(KeyCode::Up)),
-            (key(KeyCode::Char('g')), key(KeyCode::Home)),
-            (
-                KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT),
-                key(KeyCode::End),
-            ),
             (ctrl('f'), key(KeyCode::PageDown)),
             (ctrl('b'), key(KeyCode::PageUp)),
-            (key(KeyCode::Char('l')), key(KeyCode::Right)),
         ];
         for (alias, canonical) in pairs {
             let (mut a, mut b) = (VarManager::default(), VarManager::default());
@@ -3110,77 +3126,54 @@ fields = ["user_id", "customer_id"]
     }
 
     #[test]
-    fn vim_aliases_are_strict_synonyms_in_the_grid() {
+    fn the_vim_letters_do_nothing_in_the_grid() {
         let (_dir, ctx) = fixture_with_shared_selector();
-        let pairs = [
-            (key(KeyCode::Char('j')), key(KeyCode::Down)),
-            (key(KeyCode::Char('k')), key(KeyCode::Up)),
-            (key(KeyCode::Char('h')), key(KeyCode::Left)),
-            (key(KeyCode::Char('l')), key(KeyCode::Right)),
-            (key(KeyCode::Char('g')), key(KeyCode::Home)),
-            (
-                KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT),
-                key(KeyCode::End),
-            ),
-            // `i` opens the selected cell exactly as Enter does (spec
-            // 2026-09-16).
-            (key(KeyCode::Char('i')), key(KeyCode::Enter)),
-        ];
-        for (alias, canonical) in pairs {
-            let (mut a, mut b) = (VarManager::default(), VarManager::default());
-            for vm in [&mut a, &mut b] {
-                render(vm, &ctx);
-                select_group(vm, &ctx, "creds");
-                vm.focus = VmFocus::Grid;
-                vm.grid.cursor = (1, 1);
-            }
-            assert_eq!(
-                a.handle_key(alias, &ctx, None),
-                b.handle_key(canonical, &ctx, None),
-                "{alias:?}"
-            );
-            assert_eq!(a.grid.cursor, b.grid.cursor, "{alias:?}");
-            assert_eq!(a.focus, b.focus, "{alias:?}");
+        for letter in [
+            key(KeyCode::Char('j')),
+            key(KeyCode::Char('k')),
+            key(KeyCode::Char('h')),
+            key(KeyCode::Char('l')),
+            key(KeyCode::Char('g')),
+            key(KeyCode::Char('i')),
+            KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT),
+        ] {
+            let mut vm = VarManager::default();
+            render(&mut vm, &ctx);
+            select_group(&mut vm, &ctx, "creds");
+            vm.focus = VmFocus::Grid;
+            vm.grid.cursor = (1, 1);
+            assert_eq!(vm.handle_key(letter, &ctx, None), None, "{letter:?}");
+            assert_eq!(vm.grid.cursor, (1, 1), "{letter:?} moved the cursor");
+            assert_eq!(vm.focus, VmFocus::Grid, "{letter:?}");
+            assert!(vm.grid.editing.is_none(), "{letter:?} opened a cell");
         }
     }
 
-    /// The variable form is a resting-cursor stop like the grid: while no
-    /// field is under edit the letters are free, so the vim motions are
-    /// strict synonyms of the arrows there too (spec 2026-09-15).
+    /// The variable form is a resting-cursor stop like the grid: the vim
+    /// letters are not its keys (the router replays them as named keys).
     #[test]
-    fn vim_aliases_are_strict_synonyms_in_the_variable_form() {
+    fn the_vim_letters_do_nothing_in_the_variable_form() {
         let (_dir, ctx) = fixture();
-        let pairs = [
-            (key(KeyCode::Char('j')), key(KeyCode::Down)),
-            (key(KeyCode::Char('k')), key(KeyCode::Up)),
-            (key(KeyCode::Char('h')), key(KeyCode::Left)),
-            (key(KeyCode::Char('g')), key(KeyCode::Home)),
-            (
-                KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT),
-                key(KeyCode::End),
-            ),
-            // `i` opens the selected field exactly as Enter does (spec
-            // 2026-09-16).
-            (key(KeyCode::Char('i')), key(KeyCode::Enter)),
-        ];
-        for (alias, canonical) in pairs {
-            let (mut a, mut b) = (VarManager::default(), VarManager::default());
-            for vm in [&mut a, &mut b] {
-                select_var(vm, &ctx, "base_url");
-                vm.focus = VmFocus::Form;
-                vm.form_cursor = FormStop::Field(VmField::Default);
-            }
-            assert_eq!(
-                a.handle_key(alias, &ctx, None),
-                b.handle_key(canonical, &ctx, None),
-                "{alias:?}"
-            );
-            assert_eq!(a.form_cursor, b.form_cursor, "{alias:?}");
-            assert_eq!(a.focus, b.focus, "{alias:?}");
+        for letter in [
+            key(KeyCode::Char('j')),
+            key(KeyCode::Char('k')),
+            key(KeyCode::Char('h')),
+            key(KeyCode::Char('g')),
+            key(KeyCode::Char('i')),
+            KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT),
+        ] {
+            let mut vm = VarManager::default();
+            select_var(&mut vm, &ctx, "base_url");
+            vm.focus = VmFocus::Form;
+            vm.form_cursor = FormStop::Field(VmField::Default);
+            assert_eq!(vm.handle_key(letter, &ctx, None), None, "{letter:?}");
+            assert_eq!(vm.form_cursor, FormStop::Field(VmField::Default), "{letter:?}");
+            assert_eq!(vm.focus, VmFocus::Form, "{letter:?}");
+            assert!(vm.form.editing.is_none(), "{letter:?} opened a field");
         }
     }
 
-    /// `g`/`G` and Home/End jump the form's field cursor to its first and
+    /// Home/End jump the form's field cursor to its first and
     /// last field (the env value row is there because the fixture has an
     /// active environment).
     #[test]
@@ -3190,13 +3183,9 @@ fields = ["user_id", "customer_id"]
         select_var(&mut vm, &ctx, "base_url");
         vm.focus = VmFocus::Form;
         vm.form_cursor = FormStop::Field(VmField::Default);
-        vm.handle_key(key(KeyCode::Char('g')), &ctx, None);
+        vm.handle_key(key(KeyCode::Home), &ctx, None);
         assert_eq!(vm.form_cursor, FormStop::Field(VmField::Description));
-        vm.handle_key(
-            KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT),
-            &ctx,
-            None,
-        );
+        vm.handle_key(key(KeyCode::End), &ctx, None);
         assert_eq!(vm.form_cursor, FormStop::Field(VmField::EnvValue));
         assert_eq!(vm.focus, VmFocus::Form);
     }
@@ -3242,17 +3231,15 @@ fields = ["user_id", "customer_id"]
         );
     }
 
-    /// `i` opens a focused form field exactly as Enter/Space do (spec
-    /// 2026-09-16): the shared field-open key, not just another vim
-    /// motion alias.
+    /// Enter opens a focused form field (spec 2026-09-16).
     #[test]
-    fn i_opens_the_focused_form_field_like_enter() {
+    fn enter_opens_the_focused_form_field() {
         let (_dir, ctx) = fixture();
         let mut vm = VarManager::default();
         select_var(&mut vm, &ctx, "base_url");
         vm.focus = VmFocus::Form;
         vm.form_cursor = FormStop::Field(VmField::Default);
-        let action = vm.handle_key(key(KeyCode::Char('i')), &ctx, None);
+        let action = vm.handle_key(key(KeyCode::Enter), &ctx, None);
         assert!(action.is_none());
         assert!(vm.form.editing.is_some());
     }
@@ -4452,17 +4439,16 @@ fields = ["user_id", "customer_id"]
         );
     }
 
-    /// `i` opens the focused grid cell exactly as Enter does (spec
-    /// 2026-09-16). Unlike the form, the grid never had a `Char(' ')`
-    /// alias here and still does not -- only `i` is new.
+    /// Enter opens the focused grid cell (spec 2026-09-16). Unlike the
+    /// form, the grid has no `Char(' ')` alias: space selects the option.
     #[test]
-    fn i_opens_the_focused_grid_cell_like_enter() {
+    fn enter_opens_the_focused_grid_cell() {
         let (_dir, ctx) = fixture_with_shared_selector();
         let mut vm = VarManager::default();
         select_group(&mut vm, &ctx, "creds");
         vm.focus = VmFocus::Grid;
         vm.grid.cursor = (0, 1);
-        let action = vm.handle_key(key(KeyCode::Char('i')), &ctx, None);
+        let action = vm.handle_key(key(KeyCode::Enter), &ctx, None);
         assert!(action.is_none());
         assert!(vm.grid.editing.is_some());
     }

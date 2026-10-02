@@ -650,7 +650,7 @@ fn ctrl_d_pages_the_sidebar_through_the_router() {
         app.update(Action::CreateRequest(n.into()));
     }
     app.focus = PaneId::Sidebar;
-    app.handle_key(plain('g')); // Home: a known start, row 0
+    app.handle_key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE)); // a known start, row 0
     assert_eq!(app.sidebar.selected, Some(0));
     app.handle_key(ctrl('d'));
     assert_ne!(app.sidebar.selected, Some(0), "ctrl+d must move the selection");
@@ -3882,14 +3882,15 @@ fn sidebar_lists_requests_grouped_and_enter_opens() {
         "the space itself is never a row; its own top level is depth 0"
     );
 
-    // Nothing selected at startup: the first j lands on "ping" (index
+    // Nothing selected at startup: the first Down lands on "ping" (index
     // 0), the second reaches the "auth" folder (index 1); Enter expands
     // it, then "main/auth/login" (index 2) becomes visible and Enter
     // opens it.
-    app.handle_key(plain('j'));
-    app.handle_key(plain('j'));
+    let down = || KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
+    app.handle_key(down());
+    app.handle_key(down());
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    app.handle_key(plain('j'));
+    app.handle_key(down());
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert_eq!(app.editor.slug.as_deref(), Some("main/auth/login"));
 }
@@ -7605,11 +7606,11 @@ fn plain_keys_reach_the_focused_response_pane() {
         0,
     );
     app.focus = PaneId::Response;
-    app.handle_key(plain('j'));
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     assert_eq!(
         app.session.response.view().unwrap().cursor,
         1,
-        "j moved the response cursor"
+        "Down moved the response cursor"
     );
     // 'q' quits globally, but the pane's search input takes it first.
     app.handle_key(plain('/'));
@@ -27365,61 +27366,79 @@ fn esc_in_a_settings_field_keeps_the_text() {
 }
 
 #[test]
-fn settings_vim_aliases_are_strict_synonyms() {
-    fn fresh() -> App {
+fn settings_vim_letters_are_the_routers_not_the_arrows_profiles() {
+    use crate::config::KeyProfile;
+    fn fresh(profile: KeyProfile) -> App {
         let mut app = App::new_for_test();
+        app.use_profile(profile);
         app.update(Action::OpenManage {
             tab: Some(crate::components::manage::ManageTab::Settings),
         });
         app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         app
     }
+    let named = |code| KeyEvent::new(code, KeyModifiers::NONE);
+    // Vim's `g` is a prefix: `gg` is Home.
     let pairs = [
-        (plain('j'), KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
-        (plain('k'), KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)),
-        (plain('g'), KeyEvent::new(KeyCode::Home, KeyModifiers::NONE)),
+        (plain('j'), named(KeyCode::Down)),
+        (plain('k'), named(KeyCode::Up)),
+        (plain('g'), named(KeyCode::Home)),
         // Shaped as a terminal sends it: crossterm sets SHIFT on every
         // uppercase char.
         (
             KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT),
-            KeyEvent::new(KeyCode::End, KeyModifiers::NONE),
+            named(KeyCode::End),
         ),
-        // `i` opens a selected settings row exactly as Enter does (spec
-        // 2026-09-16).
-        (plain('i'), KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
     ];
-    for (alias, canonical) in pairs {
-        let (mut a, mut b) = (fresh(), fresh());
-        a.handle_key(alias);
-        b.handle_key(canonical);
-        assert_eq!(a.settings.cursor, b.settings.cursor, "{alias:?}");
+    for (letter, key) in pairs {
+        let mut arrows = fresh(KeyProfile::Arrows);
+        let start = arrows.settings.cursor;
+        arrows.handle_key(letter);
+        assert_eq!(arrows.settings.cursor, start, "{letter:?}: nothing in arrows");
+        let (mut vim, mut named_key) = (fresh(KeyProfile::Vim), fresh(KeyProfile::Vim));
+        vim.handle_key(letter);
+        if letter.code == KeyCode::Char('g') {
+            vim.handle_key(letter);
+        }
+        named_key.handle_key(key);
+        assert_eq!(vim.settings.cursor, named_key.settings.cursor, "{letter:?}: vim");
+        assert_ne!(vim.settings.cursor, start, "{letter:?}: vim moved");
     }
-    let (mut a, mut b) = (fresh(), fresh());
-    for app in [&mut a, &mut b] {
-        app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE)); // a Files row
-    }
-    a.handle_key(plain('l'));
-    b.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
-    assert_eq!(a.settings.file_button, b.settings.file_button);
-    assert_eq!(a.settings.file_button, 1);
+    let end_row = |profile| {
+        let mut app = fresh(profile);
+        app.handle_key(named(KeyCode::End)); // a Files row
+        app
+    };
+    let mut arrows = end_row(KeyProfile::Arrows);
+    arrows.handle_key(plain('l'));
+    assert_eq!(arrows.settings.file_button, 0, "l does nothing in arrows");
+    let mut vim = end_row(KeyProfile::Vim);
+    vim.handle_key(plain('l'));
+    assert_eq!(vim.settings.file_button, 1, "vim's l is Right");
 }
 
-/// `i` opens a Settings text row exactly as Enter/Space do (spec
-/// 2026-09-16): it is not just another vim alias for motion here, it is
-/// the shared field-open key.
+/// Enter opens a Settings text row; `i` is vim's key for it, through the
+/// router (spec 2026-09-16, piece 4 §4.5).
 #[test]
-fn i_opens_a_settings_text_row_like_enter() {
+fn enter_opens_a_settings_text_row_and_i_is_vims() {
     use crate::components::settings::{SettingsField, SettingsRow, SettingsTab};
-    let mut app = App::new_for_test();
-    app.update(Action::OpenManage {
-        tab: Some(crate::components::manage::ManageTab::Settings),
-    });
-    app.settings.cursor = SettingsTab::rows()
-        .iter()
-        .position(|r| matches!(r, SettingsRow::Setting(SettingsField::AiCmd)))
-        .expect("ai_cmd row exists");
-    app.handle_key(plain('i'));
-    assert!(app.settings.editing.is_some(), "i opens the text row");
+    use crate::config::KeyProfile;
+    let open = |profile, key: KeyEvent| {
+        let mut app = App::new_for_test();
+        app.use_profile(profile);
+        app.update(Action::OpenManage {
+            tab: Some(crate::components::manage::ManageTab::Settings),
+        });
+        app.settings.cursor = SettingsTab::rows()
+            .iter()
+            .position(|r| matches!(r, SettingsRow::Setting(SettingsField::AiCmd)))
+            .expect("ai_cmd row exists");
+        app.handle_key(key);
+        app.settings.editing.is_some()
+    };
+    assert!(open(KeyProfile::Arrows, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
+    assert!(!open(KeyProfile::Arrows, plain('i')), "arrows: i is nothing");
+    assert!(open(KeyProfile::Vim, plain('i')), "vim: i opens the text row");
 }
 
 /// A refused `osc52_limit` keeps its edit open, so a click landing on
@@ -29352,4 +29371,78 @@ fn a_reload_warns_of_keys_toml_letters_that_shadow_vim_keys() {
     std::fs::write(dir.path().join("keys.toml"), "save = [\"ctrl+s\", \"k\"]\n").unwrap();
     app.update(Action::ReloadFromDisk);
     assert_eq!(count(&app, 'k'), 1, "warned against the vim keymap: {:?}", app.toasts.messages());
+}
+
+/// Carried from Task 7's review: switching to vim (the Settings row, the
+/// first-launch question) warns of the `keys.toml` letters that now shadow
+/// vim's, as load and reload do. Switching to arrows says nothing.
+#[test]
+fn switching_to_vim_warns_of_keys_toml_letters_that_shadow_vim_keys() {
+    use crate::config::KeyProfile;
+    let mut app = App::new_for_test();
+    let dir = config_at_tempdir(&mut app);
+    std::fs::write(dir.path().join("keys.toml"), "save = [\"ctrl+s\", \"j\"]\n").unwrap();
+    let shadow = "keys.toml binds `j`, which shadows vim's `j`".to_string();
+    app.update(Action::SetKeyProfile(KeyProfile::Arrows));
+    assert!(!warning_toasts(&app).contains(&shadow), "{:?}", warning_toasts(&app));
+    app.update(Action::SetKeyProfile(KeyProfile::Vim));
+    assert_eq!(
+        warning_toasts(&app).iter().filter(|m| **m == shadow).count(),
+        1,
+        "{:?}",
+        warning_toasts(&app)
+    );
+}
+
+/// Spec §4.5: the vim aliases leave the arrows profile; vim reaches the
+/// same arms through the router's rows.
+#[test]
+fn the_vim_aliases_left_the_arrows_profile() {
+    use crate::config::KeyProfile;
+    let (mut app, _dir) = sidebar_test_app_three_flat_rows();
+    render_once(&mut app);
+    app.sidebar.selected = Some(0);
+    for c in ['j', 'l', 'G', 'k'] {
+        app.handle_key(plain(c));
+    }
+    assert_eq!(app.sidebar.selected, Some(0), "letters do nothing in arrows");
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert_eq!(app.sidebar.selected, Some(1));
+    app.use_profile(KeyProfile::Vim);
+    app.handle_key(plain('j'));
+    assert_eq!(app.sidebar.selected, Some(2), "vim's j is the router's");
+
+    let mut table = app_with_three_params();
+    table.editor.sub_focus = SubFocus::Content;
+    table.editor.table.selected = Some(0);
+    table.handle_key(plain('i'));
+    assert!(table.editor.table.editing.is_none(), "arrows: i no longer opens a cell");
+    table.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(table.editor.table.editing.is_some());
+}
+
+/// Carried from Task 7's review: a huge count on a Manage or Variables
+/// surface is capped by the surface's rows (Review Focus 4).
+#[test]
+fn repeat_cap_on_manage_and_variables_surfaces_is_row_based() {
+    use crate::components::manage::ManageTab;
+    use crate::keyroute::Surface;
+    use crate::vim::engine::settings::MAX_COUNT;
+    let (mut app, _dir) = sidebar_test_app_three_flat_rows();
+    app.update(Action::OpenManage { tab: Some(ManageTab::Spaces) });
+    render_once(&mut app);
+    let items = app.manage_items(ManageTab::Spaces).len();
+    assert!(items >= 1);
+    assert_eq!(app.repeat_cap(Surface::ManageList(ManageTab::Spaces)), items);
+    let detail = app.repeat_cap(Surface::ManageDetail(ManageTab::Spaces));
+    assert!((1..MAX_COUNT).contains(&detail), "detail cap {detail}");
+
+    app.update(Action::OpenManage { tab: Some(ManageTab::Variables) });
+    render_once(&mut app);
+    let rows = app.varmanager.left_rows.len();
+    assert_eq!(app.repeat_cap(Surface::VarList), rows.max(1));
+    for s in [Surface::VarGrid, Surface::VarForm] {
+        let cap = app.repeat_cap(s);
+        assert!((1..MAX_COUNT).contains(&cap), "{s:?} cap {cap}");
+    }
 }

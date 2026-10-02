@@ -728,11 +728,11 @@ impl Component for Sidebar {
                 .map(|slug| Action::MoveRequest { slug, delta });
         }
         match ev.code {
-            KeyCode::Char('j') | KeyCode::Down if crate::keys::plain_letter(&ev) => {
+            KeyCode::Down => {
                 self.move_selection(1);
                 Some(Action::Render)
             }
-            KeyCode::Char('k') | KeyCode::Up if crate::keys::plain_letter(&ev) => {
+            KeyCode::Up => {
                 self.move_selection(-1);
                 Some(Action::Render)
             }
@@ -747,16 +747,6 @@ impl Component for Sidebar {
                 } => Some(Action::ShowRequestError(slug.clone())),
                 Row::Folder { .. } => Some(Action::ToggleSelectedFolder),
             },
-            KeyCode::Char('l') if ev.modifiers.is_empty() => {
-                self.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE))
-            }
-            KeyCode::Char('h') if ev.modifiers.is_empty() => {
-                self.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE))
-            }
-            KeyCode::Char('g') if ev.modifiers.is_empty() => {
-                self.handle_key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE))
-            }
-            KeyCode::Char('G') => self.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE)),
             // ctrl+d/u are the half page; ctrl+f/b and PageDown/PageUp the
             // full one — the same two distances on every list surface.
             KeyCode::Char('d') if ev.modifiers == KeyModifiers::CONTROL => {
@@ -1529,8 +1519,8 @@ mod tests {
     fn enter_and_arrows_toggle_folders_and_navigate_all_rows() {
         let mut s = Sidebar::default();
         s.refresh(listing(&["api/ping", "top"]), "main", &expanded(&[]), &[]);
-        s.handle_key(key(KeyCode::Char('j'))); // first press lands on row 0 ("top")
-        s.handle_key(key(KeyCode::Char('j'))); // now on the "api" folder row
+        s.handle_key(key(KeyCode::Down)); // first press lands on row 0 ("top")
+        s.handle_key(key(KeyCode::Down)); // now on the "api" folder row
         assert!(matches!(
             s.rows[s.selected.expect("a selected row")],
             Row::Folder { .. }
@@ -1543,27 +1533,34 @@ mod tests {
         );
     }
 
-    /// Every vim alias lands in the same state as the key it stands for,
-    /// from the same start (spec 2026-09-15 "Aliases": strict synonyms).
+    /// The ctrl chords land in the same state as the named page keys they
+    /// stand for, from the same start; the vim letters are not the
+    /// sidebar's (piece 4 §4.5: the router replays them as named keys).
     #[test]
-    fn vim_aliases_are_strict_synonyms_of_the_arrows() {
+    fn page_chords_are_strict_synonyms_and_the_vim_letters_are_gone() {
         fn fresh() -> Sidebar {
             let mut s = Sidebar::default();
             s.refresh(listing(&["api/a", "api/b", "c", "d", "e", "f"]), "main", &expanded(&["api"]), &[]);
-            s.handle_key(key(KeyCode::Char('j')));
-            s.handle_key(key(KeyCode::Char('j')));
+            s.handle_key(key(KeyCode::Down));
+            s.handle_key(key(KeyCode::Down));
             s.last_list_height = 4;
             s
         }
         let ctrl = |c: char| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
-        let pairs: [(KeyEvent, KeyEvent); 6] = [
-            (key(KeyCode::Char('h')), key(KeyCode::Left)),
-            (key(KeyCode::Char('l')), key(KeyCode::Right)),
-            (key(KeyCode::Char('g')), key(KeyCode::Home)),
-            (
-                KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT),
-                key(KeyCode::End),
-            ),
+        for letter in [
+            key(KeyCode::Char('j')),
+            key(KeyCode::Char('k')),
+            key(KeyCode::Char('h')),
+            key(KeyCode::Char('l')),
+            key(KeyCode::Char('g')),
+            KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT),
+        ] {
+            let mut s = fresh();
+            let before = s.selected;
+            assert_eq!(s.handle_key(letter), None, "{letter:?}");
+            assert_eq!(s.selected, before, "{letter:?} moved the sidebar");
+        }
+        let pairs: [(KeyEvent, KeyEvent); 2] = [
             (ctrl('f'), key(KeyCode::PageDown)),
             (ctrl('b'), key(KeyCode::PageUp)),
         ];
@@ -1613,7 +1610,7 @@ mod tests {
             .unwrap();
         assert_eq!(s.scroll, 10, "free scroll survives draw");
         // moving the selection scrolls it back into view
-        s.handle_key(key(KeyCode::Char('j')));
+        s.handle_key(key(KeyCode::Down));
         let mut hits = crate::hit::HitMap::default();
         terminal
             .draw(|f| s.draw(f, f.area(), &ctx, &mut hits))

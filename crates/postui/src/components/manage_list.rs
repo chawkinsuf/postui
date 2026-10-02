@@ -363,6 +363,18 @@ impl ManageList {
         }
     }
 
+    /// How many controls the detail pane of `tab` holds: one pass over
+    /// them is all a repeated motion there can use (`App::repeat_cap`).
+    pub(crate) fn detail_span(tab: ManageTab) -> usize {
+        Self::detail_rows(tab)
+            .iter()
+            .map(|row| match row {
+                DetailRow::Buttons => Self::buttons(tab).len(),
+                DetailRow::Tls => TLS_SEGMENTS.len(),
+            })
+            .sum()
+    }
+
     /// The first and last aimable column of `row` -- only painted
     /// controls count, so the aim never sits on something invisible.
     fn col_range(&self, tab: ManageTab, row: DetailRow) -> (usize, usize) {
@@ -470,23 +482,23 @@ impl ManageList {
                 self.focus = ListFocus::List;
                 Some(None)
             }
-            KeyCode::Up | KeyCode::Char('k') if plain => {
+            KeyCode::Up if plain => {
                 set_row(self, at.saturating_sub(1));
                 Some(None)
             }
-            KeyCode::Down | KeyCode::Char('j') if plain => {
+            KeyCode::Down if plain => {
                 set_row(self, at + 1);
                 Some(None)
             }
-            KeyCode::Home | KeyCode::Char('g') if plain => {
+            KeyCode::Home if plain => {
                 set_row(self, 0);
                 Some(None)
             }
-            KeyCode::End | KeyCode::Char('G') => {
+            KeyCode::End => {
                 set_row(self, rows.len() - 1);
                 Some(None)
             }
-            KeyCode::Left | KeyCode::Char('h') if plain => {
+            KeyCode::Left if plain => {
                 let (first, _) = self.col_range(tab, self.detail_row);
                 if self.detail_col <= first {
                     self.focus = ListFocus::List;
@@ -495,7 +507,7 @@ impl ManageList {
                 }
                 Some(None)
             }
-            KeyCode::Right | KeyCode::Tab | KeyCode::Char('l') if plain => {
+            KeyCode::Right | KeyCode::Tab if plain => {
                 self.detail_col += 1;
                 self.clamp_detail_col(tab);
                 Some(None)
@@ -529,8 +541,8 @@ impl ManageList {
             KeyCode::Esc => Some(Action::CloseScreen),
             KeyCode::Char('q') => Some(Action::Quit),
             // Into the detail pane's controls (the Variable Manager's
-            // `l`/Right/Tab exactly).
-            KeyCode::Right | KeyCode::Tab | KeyCode::Char('l')
+            // Right/Tab exactly).
+            KeyCode::Right | KeyCode::Tab
                 if ev.modifiers.is_empty() && self.focus == ListFocus::List =>
             {
                 self.enter_detail(tab, ctx);
@@ -538,19 +550,19 @@ impl ManageList {
             }
             KeyCode::Up if alt => Some(Self::move_action(tab, self.selected(tab, ctx)?, -1)),
             KeyCode::Down if alt => Some(Self::move_action(tab, self.selected(tab, ctx)?, 1)),
-            KeyCode::Char('j') | KeyCode::Down if crate::keys::plain_letter(&ev) => {
+            KeyCode::Down => {
                 self.step(1, len);
                 None
             }
-            KeyCode::Char('k') | KeyCode::Up if crate::keys::plain_letter(&ev) => {
+            KeyCode::Up => {
                 self.step(-1, len);
                 None
             }
-            KeyCode::Char('g') | KeyCode::Home if crate::keys::plain_letter(&ev) => {
+            KeyCode::Home => {
                 self.step(i32::MIN / 2, len);
                 None
             }
-            KeyCode::Char('G') | KeyCode::End => {
+            KeyCode::End => {
                 self.step(i32::MAX / 2, len);
                 None
             }
@@ -1087,17 +1099,26 @@ mod tests {
     }
 
     #[test]
-    fn vim_aliases_are_strict_synonyms_in_the_manage_list() {
+    fn page_chords_are_strict_synonyms_and_the_vim_letters_are_gone_in_the_manage_list() {
         let (ctx, _dir) = ctx();
         let ctrl = |c: char| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+        for letter in [
+            key(KeyCode::Char('j')),
+            key(KeyCode::Char('k')),
+            key(KeyCode::Char('g')),
+            key(KeyCode::Char('l')),
+            KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT),
+        ] {
+            let mut l = ManageList {
+                cursor: 1,
+                visible_rows: 2,
+                ..Default::default()
+            };
+            assert_eq!(l.handle_key(letter, ManageTab::Spaces, &ctx), None, "{letter:?}");
+            assert_eq!(l.cursor, 1, "{letter:?} moved the cursor");
+            assert_eq!(l.focus, ListFocus::List, "{letter:?} entered the pane");
+        }
         let pairs = [
-            (key(KeyCode::Char('j')), key(KeyCode::Down)),
-            (key(KeyCode::Char('k')), key(KeyCode::Up)),
-            (key(KeyCode::Char('g')), key(KeyCode::Home)),
-            (
-                KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT),
-                key(KeyCode::End),
-            ),
             (ctrl('f'), key(KeyCode::PageDown)),
             (ctrl('b'), key(KeyCode::PageUp)),
         ];
@@ -1143,29 +1164,29 @@ mod tests {
         hits
     }
 
-    /// The detail pane is a focus stop like the Variable Manager's: `l`
-    /// (Right) enters it from the list, `h` (Left) on its first control
-    /// hands the keyboard back, and Esc there is "back", not "close".
+    /// The detail pane is a focus stop like the Variable Manager's: Right
+    /// enters it from the list, Left on its first control hands the
+    /// keyboard back, and Esc there is "back", not "close".
     #[test]
-    fn l_enters_the_detail_pane_and_h_on_its_first_control_leaves() {
+    fn right_enters_the_detail_pane_and_left_on_its_first_control_leaves() {
         let (ctx, _dir) = ctx();
         let mut l = ManageList::default();
         draw_at(&mut l, ManageTab::Environments, &ctx, 100);
         assert_eq!(l.focus, ListFocus::List);
-        assert_eq!(l.handle_key(key(KeyCode::Char('l')), ManageTab::Environments, &ctx), None);
+        assert_eq!(l.handle_key(key(KeyCode::Right), ManageTab::Environments, &ctx), None);
         assert_eq!(l.focus, ListFocus::Detail);
         // Environments: the buttons row reads Rename, Delete; the aim
         // starts on the first one.
         assert_eq!(l.detail_col, 0);
-        assert_eq!(l.handle_key(key(KeyCode::Char('l')), ManageTab::Environments, &ctx), None);
+        assert_eq!(l.handle_key(key(KeyCode::Right), ManageTab::Environments, &ctx), None);
         assert_eq!(l.detail_col, 1);
-        assert_eq!(l.handle_key(key(KeyCode::Char('l')), ManageTab::Environments, &ctx), None);
+        assert_eq!(l.handle_key(key(KeyCode::Right), ManageTab::Environments, &ctx), None);
         assert_eq!(l.detail_col, 1, "clamped to the last button");
-        l.handle_key(key(KeyCode::Char('h')), ManageTab::Environments, &ctx);
+        l.handle_key(key(KeyCode::Left), ManageTab::Environments, &ctx);
         assert_eq!(l.detail_col, 0);
         assert_eq!(l.focus, ListFocus::Detail);
-        l.handle_key(key(KeyCode::Char('h')), ManageTab::Environments, &ctx);
-        assert_eq!(l.focus, ListFocus::List, "h on the first control leaves");
+        l.handle_key(key(KeyCode::Left), ManageTab::Environments, &ctx);
+        assert_eq!(l.focus, ListFocus::List, "Left on the first control leaves");
         l.handle_key(key(KeyCode::Right), ManageTab::Environments, &ctx);
         assert_eq!(l.focus, ListFocus::Detail);
         assert_eq!(
@@ -1181,40 +1202,30 @@ mod tests {
     }
 
     #[test]
-    fn vim_aliases_are_strict_synonyms_in_the_detail_pane() {
+    fn the_vim_letters_do_nothing_in_the_detail_pane() {
         let (ctx, _dir) = ctx();
-        let pairs = [
-            (key(KeyCode::Char('j')), key(KeyCode::Down)),
-            (key(KeyCode::Char('k')), key(KeyCode::Up)),
-            (key(KeyCode::Char('h')), key(KeyCode::Left)),
-            (key(KeyCode::Char('l')), key(KeyCode::Right)),
-            (key(KeyCode::Char('g')), key(KeyCode::Home)),
-            (
-                KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT),
-                key(KeyCode::End),
-            ),
-        ];
-        for (alias, canonical) in pairs {
-            let (mut a, mut b) = (ManageList::default(), ManageList::default());
-            for l in [&mut a, &mut b] {
-                draw_at(l, ManageTab::Environments, &ctx, 100);
-                l.focus = ListFocus::Detail;
-                l.detail_row = DetailRow::Tls;
-                l.detail_col = 1;
-            }
-            assert_eq!(
-                a.handle_key(alias, ManageTab::Environments, &ctx),
-                b.handle_key(canonical, ManageTab::Environments, &ctx),
-                "{alias:?}"
-            );
-            assert_eq!(a.focus, b.focus, "{alias:?}");
-            assert_eq!(a.detail_row, b.detail_row, "{alias:?}");
-            assert_eq!(a.detail_col, b.detail_col, "{alias:?}");
+        for letter in [
+            key(KeyCode::Char('j')),
+            key(KeyCode::Char('k')),
+            key(KeyCode::Char('h')),
+            key(KeyCode::Char('l')),
+            key(KeyCode::Char('g')),
+            KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT),
+        ] {
+            let mut l = ManageList::default();
+            draw_at(&mut l, ManageTab::Environments, &ctx, 100);
+            l.focus = ListFocus::Detail;
+            l.detail_row = DetailRow::Tls;
+            l.detail_col = 1;
+            assert_eq!(l.handle_key(letter, ManageTab::Environments, &ctx), None, "{letter:?}");
+            assert_eq!(l.focus, ListFocus::Detail, "{letter:?}");
+            assert_eq!(l.detail_row, DetailRow::Tls, "{letter:?}");
+            assert_eq!(l.detail_col, 1, "{letter:?}");
         }
     }
 
     /// A terminal too short for the TLS row paints none of its segments;
-    /// `j` onto that row must aim at nothing (as the buttons row does with
+    /// Down onto that row must aim at nothing (as the buttons row does with
     /// nothing painted), so Enter never fires an invisible control.
     #[test]
     fn an_unpainted_tls_row_has_no_aim() {
@@ -1224,9 +1235,9 @@ mod tests {
         draw_sized(&mut l, ManageTab::Environments, &ctx, 100, 3);
         assert_eq!(l.painted_tls, 0, "precondition: no TLS segment painted");
         assert_ne!(l.painted_buttons, 0, "precondition: the buttons row is");
-        l.handle_key(key(KeyCode::Char('l')), ManageTab::Environments, &ctx);
+        l.handle_key(key(KeyCode::Right), ManageTab::Environments, &ctx);
         assert_eq!(l.focus, ListFocus::Detail);
-        l.handle_key(key(KeyCode::Char('j')), ManageTab::Environments, &ctx);
+        l.handle_key(key(KeyCode::Down), ManageTab::Environments, &ctx);
         assert_eq!(l.detail_row, DetailRow::Tls);
         assert_eq!(l.aimed(ManageTab::Environments), None);
         assert_eq!(

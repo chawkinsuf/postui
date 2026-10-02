@@ -57,8 +57,11 @@ impl App {
     /// - a table: its rows and the add row, and at least its two columns;
     /// - the response: its lines, or its widest line as last drawn (the
     ///   whole count while that is unmeasured);
-    /// - Settings: its rows.
-    fn repeat_cap(&self, surface: Surface) -> usize {
+    /// - Settings: its rows;
+    /// - a Manage list: its items; a Manage detail pane: its controls;
+    /// - the Variables screen: its left rows, the grid's rows and columns,
+    ///   or the form's stops.
+    pub(super) fn repeat_cap(&self, surface: Surface) -> usize {
         use crate::vim::engine::settings::MAX_COUNT;
         let most = match surface {
             Surface::Sidebar => self.sidebar.rows.len().saturating_mul(2),
@@ -67,6 +70,13 @@ impl App {
                 v.visible_len().max(v.measured_width().unwrap_or(MAX_COUNT))
             }),
             Surface::Settings => crate::components::settings::SettingsTab::rows().len(),
+            Surface::ManageList(tab) => self.manage_items(tab).len(),
+            Surface::ManageDetail(tab) => {
+                crate::components::manage_list::ManageList::detail_span(tab)
+            }
+            Surface::VarList | Surface::VarGrid | Surface::VarForm => self
+                .project()
+                .map_or(0, |p| self.varmanager.repeat_cap(p)),
             _ => MAX_COUNT,
         };
         most.max(1)

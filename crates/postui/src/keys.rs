@@ -30,16 +30,15 @@ pub fn alt_label() -> &'static str {
 }
 
 /// The keys that open a *selected* field into an editable one, on every
-/// surface that has the two-state field model (spec 2026-09-16): Enter,
-/// Space, or the vim `i` (plain only — `plain_letter` keeps ctrl+i and
-/// alt+i free for their own bindings, and `I`/shift+i is deferred).
+/// surface with the two-state field model (spec 2026-09-16): Enter and
+/// Space. Vim's `i` is a router row in the vim profile (piece 4 spec §4.5).
 pub(crate) fn opens_field(ev: &KeyEvent) -> bool {
     matches!(ev.code, KeyCode::Enter | KeyCode::Char(' '))
-        || (ev.code == KeyCode::Char('i') && plain_letter(ev))
 }
 
 /// Guard for a key arm that pairs a named key with its vim letter
-/// (`Left | Char('h')`, spec 2026-09-15): the letter counts only
+/// (`Left | Char('h')`, spec 2026-09-15; only `modal.rs` still has such
+/// arms, plan M1 Deviation 7): the letter counts only
 /// unmodified — ctrl+h is the legacy ctrl+backspace byte, ctrl+j/k and
 /// the alt+letters are chords of their own — while the named key matches
 /// as it always did. `G` arms stay unguarded (it arrives with SHIFT).
@@ -620,7 +619,8 @@ impl Keymap {
     /// The plural matters: `apply_overrides` removes *all* of an action's
     /// existing combos before binding the ones it is given, so a seed
     /// listing only one would silently unbind the rest the moment a user
-    /// uncommented it -- taking the vim-key aliases with it.
+    /// uncommented it -- taking the other defaults with it (`quit`'s `q`
+    /// beside its `ctrl+c`).
     pub fn combos_for(&self, action_id: &str) -> Vec<String> {
         let Some((_, action)) = named_actions().into_iter().find(|(n, _)| n == &action_id) else {
             return Vec::new();
@@ -1402,11 +1402,11 @@ mod tests {
     }
 
     #[test]
-    fn opens_field_matches_enter_space_and_plain_i() {
+    fn opens_field_matches_enter_and_space_only() {
         let key = |code: KeyCode, mods: KeyModifiers| KeyEvent::new(code, mods);
         assert!(opens_field(&key(KeyCode::Enter, KeyModifiers::NONE)));
         assert!(opens_field(&key(KeyCode::Char(' '), KeyModifiers::NONE)));
-        assert!(opens_field(&key(KeyCode::Char('i'), KeyModifiers::NONE)));
+        assert!(!opens_field(&key(KeyCode::Char('i'), KeyModifiers::NONE)));
         assert!(!opens_field(&key(KeyCode::Char('I'), KeyModifiers::SHIFT)));
         assert!(!opens_field(&key(
             KeyCode::Char('i'),

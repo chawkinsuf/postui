@@ -993,8 +993,8 @@ impl ModalStack {
     ///
     /// A form modal whose field is closed (selected, or the button row)
     /// reaches into `self.steps`/`self.redo` instead (spec 2026-09-16) —
-    /// reachable from any selected stop, ctrl+z and `u`, plus the button
-    /// row. Non-form modals are unaffected, same reasoning as
+    /// reachable from any selected stop with ctrl+z (vim's `u` is the
+    /// router's row), plus the button row. Non-form modals are unaffected, same reasoning as
     /// `field_edited`.
     pub fn field_undo(&mut self, redo: bool) -> bool {
         if self.stack.last().is_some_and(Modal::is_form) && !self.field_open() {
@@ -1934,8 +1934,8 @@ impl ModalStack {
                     }
                     None // swallowed: modals capture all input
                 }
-                // A non-text stop is never open (spec 2026-09-16): Enter,
-                // Space and plain `i` all flip the toggle here — the same
+                // A non-text stop is never open (spec 2026-09-16): Enter
+                // and Space both flip the toggle here — the same
                 // keys that would open a text field elsewhere — rather
                 // than falling through to the generic opener below, which
                 // must never see this stop selected with `on_toggle: true`.
@@ -1954,12 +1954,12 @@ impl ModalStack {
                     }
                     None // swallowed: modals capture all input
                 }
-                // Enter/Space/plain-i reopen a selected field (spec
+                // Enter/Space reopen a selected field (spec
                 // 2026-09-16's shared rule) — but only while it's actually
                 // selected, only once the two NewSelector-specific arms
                 // above have had first refusal, and never while the
                 // toggle stop has focus: that stop is never open (the arm
-                // above answers Enter/Space/i for it instead).
+                // above answers Enter/Space for it instead).
                 _ if crate::keys::opens_field(&key)
                     && !*field_open
                     && !matches!(
@@ -2012,7 +2012,7 @@ impl ModalStack {
                 on_path,
                 prefilled,
             } => match key.code {
-                // Enter/Space/plain-i reopen a selected field (spec
+                // Enter/Space reopen a selected field (spec
                 // 2026-09-16's shared rule), same as `Prompt`.
                 _ if crate::keys::opens_field(&key) && !*field_open => {
                     *field_open = true;
@@ -2258,7 +2258,7 @@ impl ModalStack {
                 focus,
                 ..
             } => match key.code {
-                // Enter/Space/plain-i reopen a selected field (spec
+                // Enter/Space reopen a selected field (spec
                 // 2026-09-16's shared rule) — a choice field never opens,
                 // it only cycles via Left/Right.
                 _ if crate::keys::opens_field(&key)
@@ -2438,7 +2438,7 @@ impl ModalStack {
                 _ => None, // selected, not a recognized nav/open key: swallowed
             },
             Modal::FieldsEditor(state) => match key.code {
-                // Enter/Space/plain-i reopen a selected row (spec
+                // Enter/Space reopen a selected row (spec
                 // 2026-09-16's shared rule), same as every other form
                 // modal.
                 _ if crate::keys::opens_field(&key) && !*field_open => {
@@ -5198,8 +5198,8 @@ mod tests {
     }
 
     #[test]
-    fn enter_space_or_i_reopens_a_selected_prompt_field() {
-        for opener in [KeyCode::Enter, KeyCode::Char(' '), KeyCode::Char('i')] {
+    fn enter_or_space_reopens_a_selected_prompt_field_and_i_does_not() {
+        for opener in [KeyCode::Enter, KeyCode::Char(' ')] {
             let mut m = ModalStack::default();
             m.push(Modal::Prompt {
                 title: "Rename".into(),
@@ -5212,6 +5212,16 @@ mod tests {
             m.handle_key(key(opener));
             assert!(m.field_open(), "{opener:?} reopened it");
         }
+        let mut m = ModalStack::default();
+        m.push(Modal::Prompt {
+            title: "Rename".into(),
+            input: LineInput::new("old"),
+            kind: PromptKind::RenameRequest { from: "old".into() },
+            revealed: false,
+        });
+        m.handle_key(key(KeyCode::Esc));
+        m.handle_key(key(KeyCode::Char('i')));
+        assert!(!m.field_open(), "i is vim's router row (M3), not the modal's");
     }
 
     #[test]
@@ -5390,7 +5400,7 @@ mod tests {
             "still the resting stop: the highlight stays lifted"
         );
 
-        // Enter/Space/i reopen it: the caret comes back.
+        // Enter/Space reopen it: the caret comes back.
         m.handle_key(key(KeyCode::Enter));
         let (buf, hits) = draw_modal_buf_with_hits(&mut m);
         let field = hits.rect_of(&crate::hit::Hit::ModalInput(0)).unwrap();
@@ -5438,7 +5448,7 @@ mod tests {
             "still the resting stop: the highlight stays lifted"
         );
 
-        // Enter/Space/i reopen it: the caret comes back.
+        // Enter/Space reopen it: the caret comes back.
         m.handle_key(key(KeyCode::Enter));
         let (buf, hits) = draw_modal_buf_with_hits(&mut m);
         let field = hits.rect_of(&crate::hit::Hit::ModalInput(0)).unwrap();
@@ -5532,12 +5542,12 @@ mod tests {
 
     /// Final-review finding 5: the shared toggle is a non-text stop —
     /// spec 2026-09-16 says it "is never open: Enter / Space activate
-    /// it." Enter and plain `i` must flip `shared` like Space already
-    /// does, and must never fall through to the generic opener (which
-    /// would set `field_open` on a stop that never renders as focused).
+    /// it." Enter and Space flip `shared` and must
+    /// never fall through to the generic opener (which would set
+    /// `field_open` on a stop that never renders as focused).
     #[test]
-    fn enter_and_i_flip_the_new_selector_toggle_without_opening_it() {
-        for opener in [KeyCode::Enter, KeyCode::Char('i')] {
+    fn enter_and_space_flip_the_new_selector_toggle_without_opening_it() {
+        for opener in [KeyCode::Enter, KeyCode::Char(' ')] {
             let mut m = ModalStack::default();
             // Reached the way the real prompt does: pushed with the name
             // field open and `on_toggle: false`, Esc closes it to
@@ -5694,15 +5704,17 @@ mod tests {
         assert!(m.confirm_top().is_some());
     }
 
-    /// Enter/Space/plain-i reopen a selected `FieldsEditor` row, same rule
-    /// as every other form modal.
+    /// Enter reopens a selected `FieldsEditor` row, same rule as every
+    /// other form modal; `i` does not.
     #[test]
-    fn fields_editor_i_reopens_a_selected_row() {
+    fn fields_editor_enter_reopens_a_selected_row_and_i_does_not() {
         let mut m = ModalStack::default();
         m.push(sample_fields_editor());
         m.handle_key(key(KeyCode::Esc));
         assert!(!m.field_open());
         m.handle_key(key(KeyCode::Char('i')));
+        assert!(!m.field_open());
+        m.handle_key(key(KeyCode::Enter));
         assert!(m.field_open());
     }
 
@@ -5794,7 +5806,7 @@ mod tests {
             "still the resting stop: the highlight stays lifted"
         );
 
-        m.handle_key(key(KeyCode::Char('i')));
+        m.handle_key(key(KeyCode::Enter));
         let (buf, hits) = draw_modal_buf_with_hits(&mut m);
         let field = hits.rect_of(&crate::hit::Hit::ModalInput(0)).unwrap();
         assert!(
