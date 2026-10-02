@@ -224,6 +224,10 @@ pub struct App {
     pub keymap: crate::keys::Keymap,
     /// The key router's pending keys (piece 4 spec §3.4).
     pub router: crate::keyroute::Router,
+    /// Whether the last `Action::Undo` or `Action::Redo` stepped anything:
+    /// a counted `u` or ctrl+r stops at the first repeat that did not
+    /// (`App::run_steps`).
+    history_stepped: bool,
     /// Palette command frecency stats (recency + count per command id),
     /// loaded from `ui.toml` at startup and saved back on quit.
     pub usage: crate::usage::UsageStore,
@@ -842,6 +846,19 @@ impl App {
             Ok(Some(text)) => crate::keys::Keymap::try_from_overrides_for(profile, &text)
                 .unwrap_or_else(|_| crate::keys::Keymap::default_bindings_for(profile)),
             _ => crate::keys::Keymap::default_bindings_for(profile),
+        }
+    }
+
+    /// In vim, says which letters the installed keys.toml binds that vim
+    /// reads itself. Load and reload say so, and so does every switch into
+    /// vim: the Settings row, the first-launch question, and an undo or
+    /// redo of either (spec §4.4).
+    fn warn_of_vim_shadows(&mut self) {
+        if self.profile() != crate::config::KeyProfile::Vim {
+            return;
+        }
+        for w in self.keymap.vim_shadow_warnings() {
+            self.toasts.push(w, ToastKind::Warning);
         }
     }
 
@@ -1656,12 +1673,7 @@ impl App {
             registry: crate::config::ProjectsRegistry::default(),
             config: crate::config::Config::none(),
             clipboard: crate::clipboard::Clipboard::new(&crate::config::UiSettings::default()),
-            // A test app has answered the keyboard question (spec §4.2):
-            // vim cases call `use_profile(Vim)` explicitly.
-            ui_settings: crate::config::UiSettings {
-                keymap: Some(crate::config::KeyProfile::Arrows),
-                ..crate::config::UiSettings::default()
-            },
+            ui_settings: crate::config::UiSettings::default(),
             themes: crate::theme::ThemeRegistry::builtin(),
             terminal_colors: crate::theme::QueriedColors::default(),
             theme_name: "terminal".into(),
@@ -1671,6 +1683,7 @@ impl App {
             animating_last_tick: false,
             keymap: crate::keys::Keymap::default_bindings(),
             router: crate::keyroute::Router::default(),
+            history_stepped: false,
             usage: crate::usage::UsageStore::default(),
             clients: crate::http::Clients::new(),
             tx,
@@ -1737,6 +1750,9 @@ impl App {
         let mut app = Self::with_root(tx, dir.path().to_path_buf());
         app._test_rx = Some(rx);
         app._test_dir = Some(dir);
+        // A test app has answered the keyboard question (spec §4.2): vim
+        // cases call `use_profile(Vim)` explicitly.
+        app.ui_settings.keymap = Some(crate::config::KeyProfile::Arrows);
         app
     }
 
@@ -2544,6 +2560,64 @@ impl App {
         }
     }
 
+    /// One undo (or `redo`): the open field's own step if it has one,
+    /// else the app history's. `true` when something was stepped; `false`
+    /// when there was nothing to step, or the step could not be applied.
+    fn step_history(&mut self, redo: bool) -> bool {
+        if self.undo_in_open_field(redo) {
+            return true;
+        }
+        // A field that has run out of steps still owns the key:
+        // `edited()` — the router carve-out's gate — stays true while the
+        // redo stack holds anything, so a step that found nothing must
+        // stop here rather than quietly spending an app-history step
+        // behind the user's back.
+        if self.open_text_field_edited() {
+            return false;
+        }
+        if !self.modals.is_empty() {
+            return false;
+        }
+        if redo {
+            self.commit_table_edit();
+            // A pending uncaptured edit means the user changed something
+            // after the last undo; capturing it clears the redo stack,
+            // which is exactly the linear-history contract.
+            self.capture_undo();
+        } else {
+            // A live cell edit is part of what's being undone: commit it
+            // so it becomes a step, then capture any pending delta. A live
+            // Settings field edit closes the same way (spec 2026-09-16):
+            // the close becomes the step the undo pops.
+            self.commit_settings_edit();
+            self.commit_table_edit();
+            self.capture_undo();
+        }
+        loop {
+            let popped = if redo {
+                self.history.pop_redo()
+            } else {
+                self.history.pop_undo()
+            };
+            let Some(step) = popped else {
+                let nothing = if redo { "Nothing to redo" } else { "Nothing to undo" };
+                self.toasts.push(nothing, ToastKind::Info);
+                return false;
+            };
+            // A marker whose journal entry is gone (merged away, netted to
+            // nothing) is not a step the user made: skip it and step the
+            // one beneath.
+            if self.is_stale_marker(&step, redo) {
+                continue;
+            }
+            let applied = self.apply_undo_step(step, redo);
+            if applied {
+                self.history.break_coalescing();
+            }
+            return applied;
+        }
+    }
+
     fn apply(&mut self, action: Action) -> bool {
         match action {
             // An unsaved request gates quitting behind the same confirm as
@@ -2646,14 +2720,7 @@ impl App {
                 ui.keymap = Some(profile);
                 self.reapply_ui_settings(ui);
                 self.keymap = self.keymap_for_profile();
-                // The installed keys.toml may bind letters vim reads
-                // itself; load and reload say so, and so does the switch
-                // that makes them shadow something (spec §4.4).
-                if profile == crate::config::KeyProfile::Vim {
-                    for w in self.keymap.vim_shadow_warnings() {
-                        self.toasts.push(w, ToastKind::Warning);
-                    }
-                }
+                self.warn_of_vim_shadows();
                 if landed {
                     self.record_config_step(
                         SettingsField::Keymap.key(),
@@ -2732,10 +2799,13 @@ impl App {
                     }
                     // With no keys.toml on disk this writes the seed, so
                     // the outcome is the same file either way rather than
-                    // a no-op.
+                    // a no-op. The seed documents the running profile's
+                    // defaults: vim's has no bare `q` quit or ctrl+r send.
                     ConfigFile::Keys => self.config.write_validated(
                         crate::config::KEYS_TOML,
-                        &crate::keys::keys_seed(&crate::keys::Keymap::default_bindings()),
+                        &crate::keys::keys_seed(&crate::keys::Keymap::default_bindings_for(
+                            self.profile(),
+                        )),
                     ),
                 };
                 match result {
@@ -4619,86 +4689,11 @@ impl App {
                 true
             }
             Action::Undo => {
-                if self.undo_in_open_field(false) {
-                    return true;
-                }
-                // A field that has run out of steps still owns the key:
-                // `edited()` — the router carve-out's gate — stays true
-                // while the redo stack holds anything, so a step that
-                // found nothing must stop here rather than quietly
-                // spending an app-history step behind the user's back.
-                if self.open_text_field_edited() {
-                    return true;
-                }
-                if !self.modals.is_empty() {
-                    return true;
-                }
-                // A live cell edit is part of what's being undone: commit it
-                // so it becomes a step, then capture any pending delta. A
-                // live Settings field edit closes the same way (spec
-                // 2026-09-16): the close becomes the step the undo pops.
-                self.commit_settings_edit();
-                self.commit_table_edit();
-                self.capture_undo();
-                loop {
-                    match self.history.pop_undo() {
-                        None => {
-                            self.toasts.push("Nothing to undo", ToastKind::Info);
-                            break;
-                        }
-                        Some(step) => {
-                            // A marker whose journal entry is gone (merged
-                            // away, netted to nothing) is not a step the
-                            // user made: skip it and undo the one beneath.
-                            if self.is_stale_marker(&step, false) {
-                                continue;
-                            }
-                            if self.apply_undo_step(step, false) {
-                                self.history.break_coalescing();
-                            }
-                            break;
-                        }
-                    }
-                }
+                self.history_stepped = self.step_history(false);
                 true
             }
             Action::Redo => {
-                if self.undo_in_open_field(true) {
-                    return true;
-                }
-                // A field that has run out of steps still owns the key:
-                // `edited()` — the router carve-out's gate — stays true
-                // while the redo stack holds anything, so a step that
-                // found nothing must stop here rather than quietly
-                // spending an app-history step behind the user's back.
-                if self.open_text_field_edited() {
-                    return true;
-                }
-                if !self.modals.is_empty() {
-                    return true;
-                }
-                self.commit_table_edit();
-                // A pending uncaptured edit means the user changed something
-                // after the last undo; capturing it clears the redo stack,
-                // which is exactly the linear-history contract.
-                self.capture_undo();
-                loop {
-                    match self.history.pop_redo() {
-                        None => {
-                            self.toasts.push("Nothing to redo", ToastKind::Info);
-                            break;
-                        }
-                        Some(step) => {
-                            if self.is_stale_marker(&step, true) {
-                                continue;
-                            }
-                            if self.apply_undo_step(step, true) {
-                                self.history.break_coalescing();
-                            }
-                            break;
-                        }
-                    }
-                }
+                self.history_stepped = self.step_history(true);
                 true
             }
             Action::ToggleJqBar => {
@@ -11109,6 +11104,7 @@ impl App {
                         self.reapply_ui_settings(ui);
                         if *key == "keymap" {
                             self.keymap = self.keymap_for_profile();
+                            self.warn_of_vim_shadows();
                             self.router.clear();
                         }
                         let verb = if redo { "Redid" } else { "Undid" };

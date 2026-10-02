@@ -56,6 +56,11 @@ impl Router {
         self.pending.echo()
     }
 
+    /// The surface the pending keys were typed on.
+    pub fn typed_on(&self) -> Option<Surface> {
+        self.surface
+    }
+
     /// Resolves one key against the pending state and the context: the
     /// router's whole job (spec §3.4). Declined keys run today's routing.
     pub fn resolve(&mut self, ev: KeyEvent, ctx: &KeyCtx) -> Resolved {

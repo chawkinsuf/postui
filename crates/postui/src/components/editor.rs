@@ -5771,8 +5771,8 @@ url = "https://api.example.com/users""#,
             "the resting-stop fill lift still applies while merely selected: {well:?}"
         );
 
-        // Opening the line (Enter/Space/i, or `Action::FocusUrl`) puts the
-        // caret live, and the reversed cell shows up.
+        // Opening the line (Enter/Space, vim's `i`, or `Action::FocusUrl`)
+        // puts the caret live, and the reversed cell shows up.
         e.open_url_from_app();
         let (terminal2, _) = draw_for_bar_test(&mut e);
         let buf2 = terminal2.backend().buffer();

@@ -86,16 +86,25 @@ impl App {
     /// through `handle_key_routed`, an action through `update`. A run of
     /// replayed keys stops once the surface changes under it (plan M1
     /// Deviation 13): `3j` from the URL line enters the table and stops.
-    /// Actions always all run: `3u` undoes three.
+    /// Actions run on whatever the surface: `3u` undoes three. A counted
+    /// undo or redo stops at the first repeat that stepped nothing, so
+    /// `10u` with three steps undoes three and says "Nothing to undo"
+    /// once (the final review's ruling, spec §9 M1).
     pub(super) fn run_steps(&mut self, steps: Vec<Step>) -> bool {
         let surface = self.surface();
         let mut changed = false;
         for step in steps {
-            changed |= match step {
+            match step {
                 Step::Key(_) if self.surface() != surface => break,
-                Step::Key(ev) => self.handle_key_routed(ev),
-                Step::Action(a) => self.update(a),
-            };
+                Step::Key(ev) => changed |= self.handle_key_routed(ev),
+                Step::Action(a) => {
+                    let history = matches!(a, Action::Undo | Action::Redo);
+                    changed |= self.update(a);
+                    if history && !self.history_stepped {
+                        break;
+                    }
+                }
+            }
         }
         changed
     }
@@ -109,8 +118,14 @@ impl App {
         }
     }
 
-    /// The router's half-typed keys for the footer (spec §3.8).
+    /// The router's half-typed keys for the footer (spec §3.8). Keys typed
+    /// on a surface the keyboard has since left with no key (a modal
+    /// raised by a background result, focus moved by a send) are not
+    /// shown: the next key there drops them (`Router::resolve`).
     pub fn key_echo(&self) -> String {
+        if self.router.typed_on() != Some(self.surface()) {
+            return String::new();
+        }
         self.router.echo()
     }
 
