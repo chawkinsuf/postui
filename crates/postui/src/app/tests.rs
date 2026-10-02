@@ -29920,3 +29920,63 @@ fn a_variables_edit_left_on_another_tab_does_not_take_the_caret() {
         assert_eq!(app.manage.list.cursor, 1, "vim j moves the list (form edit: {form})");
     }
 }
+
+/// Spec §5.2: N requests go as one undo step, with one toast.
+#[test]
+fn delete_requests_deletes_the_batch_as_one_undo_step() {
+    let (mut app, dir) = sidebar_test_app_three_flat_rows();
+    render_once(&mut app);
+    app.update(Action::DeleteRequests(vec!["main/beta".into(), "main/gamma".into()]));
+    assert!(!dir.path().join("requests/main/beta.toml").exists());
+    assert!(!dir.path().join("requests/main/gamma.toml").exists());
+    assert!(
+        app.toasts.messages().iter().any(|m| m.starts_with("Deleted 2 requests")),
+        "{:?}",
+        app.toasts.messages()
+    );
+    app.update(Action::Undo);
+    assert!(dir.path().join("requests/main/beta.toml").exists(), "one undo brings both back");
+    assert!(dir.path().join("requests/main/gamma.toml").exists());
+}
+
+/// A batch holding the open request leaves the editor on a scratch, as a
+/// single delete does.
+#[test]
+fn deleting_a_batch_that_holds_the_open_request_leaves_a_scratch() {
+    let (mut app, _dir) = sidebar_test_app_three_flat_rows();
+    render_once(&mut app);
+    app.update(Action::ForceOpenRequest("main/gamma".into()));
+    app.update(Action::DeleteRequests(vec!["main/beta".into(), "main/gamma".into()]));
+    assert_eq!(app.editor.slug, None);
+}
+
+/// Spec §5.3: N table rows go as one editor undo step.
+#[test]
+fn delete_table_rows_deletes_a_run_as_one_editor_step() {
+    let mut app = App::new_for_test();
+    app.update(Action::CreateRequest("rows".into()));
+    for k in ["a", "b", "c", "d"] {
+        app.editor
+            .headers
+            .insert(k.into(), postui_core::model::Entry { value: "1".into(), enabled: true });
+    }
+    app.editor.active_tab = EditorTab::Headers;
+    app.focus = PaneId::Editor;
+    app.editor.sub_focus = SubFocus::Content;
+    app.editor.table.selected = Some(1);
+    app.capture_undo();
+    app.update(Action::DeleteTableRows { start: 1, count: 2 });
+    app.capture_undo();
+    assert_eq!(app.editor.headers.keys().map(String::as_str).collect::<Vec<_>>(), ["a", "d"]);
+    assert!(
+        app.toasts.messages().iter().any(|m| m.starts_with("Deleted 2 rows")),
+        "{:?}",
+        app.toasts.messages()
+    );
+    app.update(Action::Undo);
+    assert_eq!(
+        app.editor.headers.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["a", "b", "c", "d"],
+        "one undo brings the run back"
+    );
+}

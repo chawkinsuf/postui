@@ -474,6 +474,24 @@ impl Sidebar {
         }
     }
 
+    /// The slugs of up to `n` request rows from row `start` down (piece 4
+    /// spec §5.2: a counted `dd`). Folder rows are skipped, a collapsed
+    /// folder's requests are not rows at all, and a folder at `start`
+    /// gives nothing: `dd` on a folder does nothing.
+    pub fn request_slugs_from(&self, start: usize, n: usize) -> Vec<String> {
+        if !matches!(self.rows.get(start), Some(Row::Request { .. })) {
+            return Vec::new();
+        }
+        self.rows[start..]
+            .iter()
+            .filter_map(|r| match r {
+                Row::Request { slug, .. } => Some(slug.clone()),
+                Row::Folder { .. } => None,
+            })
+            .take(n)
+            .collect()
+    }
+
     fn selected_row(&self) -> Option<&Row> {
         self.rows.get(self.selected?)
     }
@@ -1354,6 +1372,30 @@ mod tests {
     use crate::components::DrawCtx;
     use crate::theme::Theme;
     use ratatui::crossterm::event::KeyModifiers;
+
+    fn req_row(slug: &str) -> Row {
+        Row::Request { slug: slug.into(), name: slug.into(), depth: 0, broken: None, method: None }
+    }
+
+    /// Spec §5.2: N request rows from the cursor down, folder rows
+    /// skipped, a count past the end clamped, and nothing on a folder row.
+    #[test]
+    fn request_slugs_from_clamps_and_skips_folders() {
+        let s = Sidebar {
+            rows: vec![
+                req_row("main/a"),
+                req_row("main/b"),
+                Row::Folder { path: "main/f".into(), name: "f".into(), depth: 0, expanded: true },
+                req_row("main/f/c"),
+                req_row("main/d"),
+            ],
+            ..Sidebar::default()
+        };
+        assert_eq!(s.request_slugs_from(1, 2), ["main/b", "main/f/c"], "the folder row is skipped");
+        assert_eq!(s.request_slugs_from(3, 9), ["main/f/c", "main/d"], "clamped at the end");
+        assert!(s.request_slugs_from(2, 3).is_empty(), "dd on a folder does nothing");
+        assert!(s.request_slugs_from(9, 1).is_empty(), "no row there");
+    }
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)

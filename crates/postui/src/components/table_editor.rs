@@ -363,12 +363,24 @@ impl TableEditorState {
     /// the `󰅖` click land here directly): the deletion is an ordinary
     /// editor undo step.
     pub fn delete_row(&mut self, map: &mut IndexMap<String, Entry>, i: usize) {
-        if i >= map.len() {
-            return;
+        self.delete_rows(map, i, 1);
+    }
+
+    /// Deletes up to `n` rows from `start` down as one change (piece 4
+    /// spec §5.3: a counted `dd`); a count past the end is clamped. The
+    /// cursor lands on the row that moved up into `start` (or the add row
+    /// when the run reached the end). Returns how many rows went.
+    pub fn delete_rows(&mut self, map: &mut IndexMap<String, Entry>, start: usize, n: usize) -> usize {
+        if start >= map.len() || n == 0 {
+            return 0;
         }
+        let end = start.saturating_add(n).min(map.len());
         self.editing = None;
-        map.shift_remove_index(i);
-        self.selected = Some(i.min(map.len()));
+        for _ in start..end {
+            map.shift_remove_index(start);
+        }
+        self.selected = Some(start.min(map.len()));
+        end - start
     }
 
     /// Whether the cursor sits on the ghost row — one past the data rows —
@@ -1113,6 +1125,24 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    /// Spec §5.3: a counted delete takes a run of rows as one change; a
+    /// count past the end is clamped; the cursor lands where the run was.
+    #[test]
+    fn delete_rows_clamps_a_count_past_the_end() {
+        let mut map: IndexMap<String, Entry> = IndexMap::new();
+        for k in ["a", "b", "c", "d"] {
+            map.insert(k.into(), Entry { value: "1".into(), enabled: true });
+        }
+        let mut t = TableEditorState { selected: Some(1), ..TableEditorState::default() };
+        assert_eq!(t.delete_rows(&mut map, 1, 2), 2);
+        assert_eq!(map.keys().map(String::as_str).collect::<Vec<_>>(), ["a", "d"]);
+        assert_eq!(t.selected, Some(1));
+        assert_eq!(t.delete_rows(&mut map, 1, 9), 1, "clamped");
+        assert_eq!(map.keys().map(String::as_str).collect::<Vec<_>>(), ["a"]);
+        assert_eq!(t.delete_rows(&mut map, 5, 1), 0, "past the end: nothing");
+        assert_eq!(t.delete_rows(&mut map, 0, 0), 0, "no count: nothing");
+    }
 
     fn key(c: KeyCode) -> KeyEvent {
         KeyEvent::new(c, KeyModifiers::NONE)

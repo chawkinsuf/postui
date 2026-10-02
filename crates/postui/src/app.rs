@@ -3696,6 +3696,22 @@ impl App {
                 }
                 true
             }
+            Action::DeleteTableRows { start, count } => {
+                self.no_coalesce = true;
+                let map = match self.editor.active_tab {
+                    EditorTab::Params => &mut self.editor.params,
+                    EditorTab::Headers => &mut self.editor.headers,
+                    EditorTab::Vars => &mut self.editor.variables,
+                    EditorTab::Body => return true,
+                };
+                let gone = self.editor.table.delete_rows(map, start, count);
+                if gone > 0 {
+                    let noun = if gone == 1 { "row" } else { "rows" };
+                    self.toasts
+                        .push(format!("Deleted {gone} {noun}{}", self.undo_hint()), ToastKind::Info);
+                }
+                true
+            }
             Action::DuplicateTableRow(i) => {
                 self.no_coalesce = true;
                 let map = match self.editor.active_tab {
@@ -3928,6 +3944,39 @@ impl App {
                         self.op_in_flight = false;
                         self.toasts
                             .push(format!("could not delete {slug}: {e}"), ToastKind::Error);
+                    }
+                }
+                true
+            }
+            Action::DeleteRequests(slugs) => {
+                let n = slugs.len();
+                let noun = if n == 1 { "request" } else { "requests" };
+                let from_row = slugs.first().and_then(|s| self.sidebar.row_of(s));
+                let was_open = self.editor.slug.as_ref().is_some_and(|open| slugs.contains(open));
+                let t = self.begin_op();
+                let Some(p) = self.project.as_mut() else {
+                    self.op_in_flight = false;
+                    return true;
+                };
+                match p.delete_requests(&slugs) {
+                    Ok(()) => {
+                        self.toasts.push(
+                            format!("Deleted {n} {noun}{}", self.undo_hint()),
+                            ToastKind::Info,
+                        );
+                        // As a single delete: a scratch where the open
+                        // request was, the cursor on the batch's neighbour.
+                        self.land(Landing {
+                            open: was_open.then_some(Open::Scratch { buffer: None }),
+                            cursor: from_row.map(CursorAim::Neighbour),
+                            ..Landing::default()
+                        });
+                        self.record_project_step(t, crate::undo::StepLabel::delete(format!("{n} {noun}")));
+                    }
+                    Err(e) => {
+                        self.op_in_flight = false;
+                        self.toasts
+                            .push(format!("could not delete requests: {e}"), ToastKind::Error);
                     }
                 }
                 true

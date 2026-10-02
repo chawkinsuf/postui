@@ -215,6 +215,9 @@ pub enum Action {
     /// `d`/`Delete` key or the row's `󰅖` affordance). No confirm — the
     /// deletion is an ordinary editor undo step.
     DeleteTableRow(usize),
+    /// `{N}dd` on a table: rows `start..start+count` (clamped) as one
+    /// editor undo step (piece 4 spec §5.3).
+    DeleteTableRows { start: usize, count: usize },
     /// The row context menu's "Duplicate row" (Task 17, spec §5): copies row
     /// `i` of the active params/headers/vars table to `<key>-copy` (then
     /// `-copy-2`, …, same collision rule as `DuplicateRequest`/`DuplicateVar`)
@@ -339,6 +342,9 @@ pub enum Action {
     },
     /// Delete the request at `slug` from disk.
     DeleteRequest(String),
+    /// `{N}dd` on the sidebar: these requests as one undo step (piece 4
+    /// spec §5.2). Built by `Sidebar::request_slugs_from`.
+    DeleteRequests(Vec<String>),
     /// Save the request currently open in the editor as `name` (a slug).
     SaveRequestAs(String),
     /// User asked to send the current request. Validates first: an empty
