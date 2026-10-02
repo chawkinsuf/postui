@@ -47,8 +47,15 @@ impl Tok {
                     c
                 },
             )),
-            KeyCode::Char(c) if mods == KeyModifiers::CONTROL && c.is_ascii_alphabetic() => {
-                Some(Tok::Ctrl(c.to_ascii_lowercase()))
+            // Ctrl+shift+letter is a different chord (`KeyCombo::from_event`
+            // sees it as the uppercase char with CONTROL, in both delivery
+            // forms) and the notation has no `<C-S-x>`: no row names it.
+            KeyCode::Char(c)
+                if mods == KeyModifiers::CONTROL
+                    && c.is_ascii_lowercase()
+                    && !ev.modifiers.contains(KeyModifiers::SHIFT) =>
+            {
+                Some(Tok::Ctrl(c))
             }
             // BackTab arrives with SHIFT from some terminals and without
             // it from others; it is one key either way.
@@ -156,6 +163,15 @@ mod tests {
         assert_eq!(Tok::of(&KeyEvent::new(KeyCode::Char('d'), KeyModifiers::ALT)), None);
         assert_eq!(Tok::of(&KeyEvent::new(KeyCode::Home, KeyModifiers::CONTROL)), None);
         assert_eq!(Tok::of(&KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT)), None);
+        let ctrl_shift = KeyModifiers::CONTROL | KeyModifiers::SHIFT;
+        assert_eq!(Tok::of(&KeyEvent::new(KeyCode::Char('R'), KeyModifiers::CONTROL)), None, "uppercase form");
+        assert_eq!(Tok::of(&KeyEvent::new(KeyCode::Char('r'), ctrl_shift)), None, "kitty form");
+        assert_eq!(Tok::of(&KeyEvent::new(KeyCode::Char('R'), ctrl_shift)), None);
+        assert_eq!(
+            Tok::of(&KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL)),
+            Some(Tok::Ctrl('r')),
+            "plain ctrl+r still names"
+        );
         assert_eq!(
             Tok::of(&KeyEvent::new(KeyCode::Char('g'), KeyModifiers::SHIFT)),
             Some(Tok::Char('G')),
