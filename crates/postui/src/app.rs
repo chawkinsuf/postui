@@ -795,6 +795,23 @@ impl App {
         false
     }
 
+    /// The key profile the app runs on. An unset `keymap` runs arrows
+    /// until the first-launch question is raised (plan M1 Deviation 2; M3
+    /// raises it).
+    pub fn profile(&self) -> crate::config::KeyProfile {
+        self.ui_settings
+            .keymap
+            .unwrap_or(crate::config::KeyProfile::Arrows)
+    }
+
+    /// Switches a test app's profile: the setting and the keymap together,
+    /// as `Action::SetKeyProfile` does, without touching disk.
+    #[cfg(test)]
+    pub(crate) fn use_profile(&mut self, profile: crate::config::KeyProfile) {
+        self.ui_settings.keymap = Some(profile);
+        self.keymap = crate::keys::Keymap::default_bindings_for(profile);
+    }
+
     /// Reads `name` (`config.toml` or `keys.toml`) through the app's
     /// `Config` -- the sole owner of that file, per-repo rule. The only
     /// slice of `Config`'s surface `main::edit_config_externally` needs,
@@ -1596,7 +1613,12 @@ impl App {
             registry: crate::config::ProjectsRegistry::default(),
             config: crate::config::Config::none(),
             clipboard: crate::clipboard::Clipboard::new(&crate::config::UiSettings::default()),
-            ui_settings: crate::config::UiSettings::default(),
+            // A test app has answered the keyboard question (spec §4.2):
+            // vim cases call `use_profile(Vim)` explicitly.
+            ui_settings: crate::config::UiSettings {
+                keymap: Some(crate::config::KeyProfile::Arrows),
+                ..crate::config::UiSettings::default()
+            },
             themes: crate::theme::ThemeRegistry::builtin(),
             terminal_colors: crate::theme::QueriedColors::default(),
             theme_name: "terminal".into(),

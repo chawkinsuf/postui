@@ -217,6 +217,21 @@ pub enum JqTab {
     Menu,
 }
 
+/// Which keys the app runs on (`keymap` in `config.toml`, piece 4 spec
+/// §4.1). The two are equals: an unset `keymap` is `None` in
+/// [`UiSettings`], never one of these. `Default` exists only so zeroed
+/// context structs (`HintCtx::default()`) can be built; the running app
+/// asks `App::profile`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum KeyProfile {
+    /// Arrows and Enter: modeless, every verb on a named key, a chord or a
+    /// shared letter.
+    #[default]
+    Arrows,
+    /// Vim keys on lists, panes and fields.
+    Vim,
+}
+
 /// Mouse-first-GUI UI settings stored at the top level of `config.toml`:
 /// the tiered clipboard's optional external command and the OSC 52 size
 /// threshold.
@@ -251,6 +266,9 @@ pub struct UiSettings {
     /// Tab's job in the jq bar while a completion ghost shows; see
     /// [`JqTab`].
     pub jq_tab: JqTab,
+    /// The chosen key profile, or `None` while `config.toml` has never
+    /// carried a `keymap` (the first-launch question's trigger).
+    pub keymap: Option<KeyProfile>,
 }
 
 impl Default for UiSettings {
@@ -265,6 +283,7 @@ impl Default for UiSettings {
             ai_cmd: "claude -p".into(),
             ai_confirmed: false,
             jq_tab: JqTab::Menu,
+            keymap: None,
         }
     }
 }
@@ -375,6 +394,24 @@ impl UiSettings {
                 None => wrong_type("jq_tab", "a string"),
             },
         }
+        match value.get("keymap") {
+            None => {}
+            Some(v) => match v.as_str() {
+                Some("arrows") => settings.keymap = Some(KeyProfile::Arrows),
+                Some("vim") => settings.keymap = Some(KeyProfile::Vim),
+                Some(other) => warnings.push(format!(
+                    "invalid value {other:?} for keymap in config.toml \
+                     (expected \"arrows\" or \"vim\"); leaving the choice unmade"
+                )),
+                // Not `wrong_type`: that one says "using default", and
+                // `keymap` has no default to fall back to.
+                None => warnings.push(
+                    "invalid value for \"keymap\" in config.toml (expected a string); \
+                     leaving the choice unmade"
+                        .to_string(),
+                ),
+            },
+        }
 
         if let Some(table) = value.get("animation_ms").and_then(|v| v.as_table()) {
             const KNOWN_KEYS: [&str; 8] = [
@@ -456,6 +493,9 @@ pub fn config_seed() -> String {
 #   \"menu\"  - list the candidates below the bar, shell-style
 #   \"ghost\" - ghost the best one after the caret and step in place
 # jq_tab = \"menu\"
+
+# Which keys the app runs on: \"arrows\" (arrows and Enter) or \"vim\".
+# keymap = \"arrows\"
 
 # The shell command \"Describe a filter…\" pipes its prompt into.
 # ai_cmd = {:?}
@@ -575,7 +615,7 @@ impl Config {
             Ok(keymap) => keymap,
             Err(e) => {
                 warnings.push(format!("keys.toml ignored, using default keys: {e}"));
-                crate::keys::Keymap::default_bindings()
+                crate::keys::Keymap::default_bindings_for(ui.keymap.unwrap_or_default())
             }
         };
         warnings.extend(keymap.caret_warnings(macos));
@@ -667,9 +707,17 @@ impl Config {
         warnings.extend(theme_warnings);
         let themes = themes.ok_or_else(|| format!("{THEMES_DIR}/ could not be listed"));
 
+        // The chosen profile is the base `keys.toml` layers on. Unset, or a
+        // `config.toml` that will not parse, runs arrows (plan M1
+        // Deviation 2).
+        let profile = config
+            .as_ref()
+            .ok()
+            .and_then(|(_, ui)| ui.keymap)
+            .unwrap_or_default();
         let keymap = match self.read(KEYS_TOML) {
-            Ok(Some(text)) => crate::keys::Keymap::try_from_overrides(&text),
-            Ok(None) => Ok(crate::keys::Keymap::default_bindings()),
+            Ok(Some(text)) => crate::keys::Keymap::try_from_overrides_for(profile, &text),
+            Ok(None) => Ok(crate::keys::Keymap::default_bindings_for(profile)),
             Err(e) => Err(e),
         };
 
@@ -2035,5 +2083,39 @@ osc52_limit = 1024
             Some((ProjectsRegistry::default(), UiSettings::default()))
         );
         assert!(reloaded.keymap.is_some());
+    }
+
+    #[test]
+    fn keymap_parses_both_profiles_and_defaults_to_unset() {
+        assert_eq!(UiSettings::parse("").0.keymap, None, "never asked");
+        let (ui, w) = UiSettings::parse("keymap = \"vim\"\n");
+        assert_eq!((ui.keymap, w.len()), (Some(KeyProfile::Vim), 0));
+        let (ui, w) = UiSettings::parse("keymap = \"arrows\"\n");
+        assert_eq!((ui.keymap, w.len()), (Some(KeyProfile::Arrows), 0));
+    }
+
+    /// vim-mode spelled the arrows profile "default"; there is no default
+    /// any more, so that spelling is as unknown as any other (spec §4.1).
+    #[test]
+    fn an_unknown_keymap_warns_and_leaves_the_choice_unmade() {
+        for text in ["keymap = \"emacs\"\n", "keymap = \"default\"\n", "keymap = 3\n"] {
+            let (ui, w) = UiSettings::parse(text);
+            assert_eq!(ui.keymap, None, "{text}");
+            assert!(
+                w.iter().any(|w| w.contains("keymap") && w.contains("leaving the choice unmade")),
+                "{text}: {w:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn keys_toml_layers_on_the_chosen_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.toml"), "keymap = \"vim\"\n").unwrap();
+        std::fs::write(dir.path().join("keys.toml"), "save = [\"ctrl+s\", \"f2\"]\n").unwrap();
+        let (_cfg, loaded, _w) = Config::load_from(Config::at(dir.path().to_path_buf()), false);
+        let get = |s: &str| loaded.keymap.lookup(&crate::keys::KeyCombo::parse(s).unwrap());
+        assert_eq!(get("f2"), Some(crate::action::Action::SaveRequest), "keys.toml applied");
+        assert_eq!(get("q"), None, "on the vim profile's defaults");
     }
 }

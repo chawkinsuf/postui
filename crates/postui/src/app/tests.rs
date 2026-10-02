@@ -28816,3 +28816,16 @@ fn extract_to_request_from_a_field_mid_edit_is_one_undo_step() {
         "one undo peels the typing and the replacement together"
     );
 }
+
+/// Plan M1 Deviation 2: an unset `keymap` runs arrows until the
+/// first-launch question is raised (M3).
+#[test]
+fn an_unset_keymap_runs_the_arrows_profile() {
+    use crate::config::KeyProfile;
+    let mut app = App::new_for_test();
+    app.ui_settings.keymap = None;
+    assert_eq!(app.profile(), KeyProfile::Arrows);
+    app.use_profile(KeyProfile::Vim);
+    assert_eq!(app.profile(), KeyProfile::Vim);
+    assert_eq!(app.keymap.lookup(&KeyCombo::parse("q").unwrap()), None);
+}

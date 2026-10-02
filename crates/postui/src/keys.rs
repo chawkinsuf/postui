@@ -339,6 +339,20 @@ fn parse_overrides(toml_str: &str) -> anyhow::Result<Vec<(String, Vec<String>)>>
 }
 
 impl Keymap {
+    /// The bindings `profile` ships with (piece 4 spec §4.4, plan M1
+    /// Deviation 4). Vim gives up `q` (its macro prefix; `:q` quits) and
+    /// `ctrl+r` (redo, a router row). A user's `keys.toml` layers on top.
+    pub fn default_bindings_for(profile: crate::config::KeyProfile) -> Self {
+        let mut map = Self::default_bindings();
+        if profile == crate::config::KeyProfile::Vim {
+            for combo in ["q", "ctrl+r"] {
+                map.bindings
+                    .remove(&KeyCombo::parse(combo).expect("a valid default combo"));
+            }
+        }
+        map
+    }
+
     pub fn default_bindings() -> Self {
         let defaults = [
             ("q", Action::Quit),
@@ -489,11 +503,18 @@ impl Keymap {
     /// the user is already typing with. So the error comes back bare and
     /// each caller words the consequence itself.
     pub fn try_from_overrides(contents: &str) -> Result<Self, String> {
-        let mut map = Self::default_bindings();
-        match map.apply_overrides(contents) {
-            Ok(()) => Ok(map),
-            Err(e) => Err(e.to_string()),
-        }
+        Self::try_from_overrides_for(crate::config::KeyProfile::Arrows, contents)
+    }
+
+    /// [`Self::try_from_overrides`] on `profile`'s own defaults: the user's
+    /// `keys.toml` layers on whichever profile is active, and wins.
+    pub fn try_from_overrides_for(
+        profile: crate::config::KeyProfile,
+        contents: &str,
+    ) -> Result<Self, String> {
+        let mut map = Self::default_bindings_for(profile);
+        map.apply_overrides(contents).map_err(|e| e.to_string())?;
+        Ok(map)
     }
 
     /// The caret-conflict warnings for the startup toasts: on a macOS
@@ -1365,5 +1386,33 @@ mod tests {
         )));
         assert!(!opens_field(&key(KeyCode::Char('j'), KeyModifiers::NONE)));
         assert!(!opens_field(&key(KeyCode::Esc, KeyModifiers::NONE)));
+    }
+
+    /// Plan M1 Deviation 4: vim gives up only `q` (its macro prefix; `:q`
+    /// quits) and `ctrl+r` (redo, a router row) in M1. Every other chord
+    /// stays shared until the milestone that gives vim its own key for it.
+    #[test]
+    fn the_vim_profile_drops_q_and_gives_ctrl_r_to_the_router() {
+        use crate::config::KeyProfile::{Arrows, Vim};
+        let get = |p, s: &str| Keymap::default_bindings_for(p).lookup(&KeyCombo::parse(s).unwrap());
+        assert_eq!(get(Arrows, "q"), Some(Action::Quit));
+        assert_eq!(get(Arrows, "ctrl+r"), Some(Action::Send));
+        assert_eq!(get(Vim, "q"), None);
+        assert_eq!(get(Vim, "ctrl+r"), None, "a router row (redo), not a keymap binding");
+        assert_eq!(get(Vim, "ctrl+enter"), Some(Action::Send));
+        for combo in [
+            "ctrl+c", "ctrl+v", "ctrl+o", "ctrl+p", "ctrl+z", "ctrl+s", "alt+w", "alt+right", "alt+a",
+            "alt+t", "ctrl+1",
+        ] {
+            assert_eq!(get(Vim, combo), get(Arrows, combo), "{combo} is shared until its vim key lands");
+        }
+        assert_eq!(Keymap::default_bindings_for(Arrows), Keymap::default_bindings());
+    }
+
+    #[test]
+    fn overrides_layer_on_the_profile_they_are_given() {
+        let vim = Keymap::try_from_overrides_for(crate::config::KeyProfile::Vim, "save = \"f2\"\n").unwrap();
+        assert_eq!(vim.lookup(&KeyCombo::parse("f2").unwrap()), Some(Action::SaveRequest));
+        assert_eq!(vim.lookup(&KeyCombo::parse("q").unwrap()), None);
     }
 }
