@@ -8365,7 +8365,8 @@ fn manage_environments_pane_has_a_tls_control_that_writes_the_force() {
     );
     // Advertised in the footer.
     assert!(
-        crate::keyroute::spell::spelled(
+        crate::keyroute::spell::spelled_on(
+            crate::keyroute::Surface::ManageList(ManageTab::Environments),
             app.manage
                 .list
                 .footer_chips(ManageTab::Environments, app.proj())
@@ -16769,7 +16770,10 @@ fn vm_footer_advertises_the_option_verbs_while_the_grid_has_focus() {
         selector: "user".into(),
         name: "alice".into(),
     };
-    let chips = crate::keyroute::spell::spelled(app.varmanager.footer_chips(app.proj(), None));
+    let chips = crate::keyroute::spell::spelled_on(
+        crate::keyroute::Surface::VarGrid,
+        app.varmanager.footer_chips(app.proj(), None),
+    );
     assert!(
         chips
             .iter()
@@ -16852,7 +16856,13 @@ fn form_focus_advertises_and_handles_the_field_verbs() {
     let secret = Action::ToggleSecretVar {
         name: "base_url".into(),
     };
-    let chips = crate::keyroute::spell::spelled(app.varmanager.footer_chips(app.proj(), None));
+    let form_chips = |app: &App, open: Option<&postui_core::model::HttpRequest>| {
+        crate::keyroute::spell::spelled_on(
+            crate::keyroute::Surface::VarForm,
+            app.varmanager.footer_chips(app.proj(), open),
+        )
+    };
+    let chips = form_chips(&app, None);
     assert!(
         chips
             .iter()
@@ -16878,7 +16888,7 @@ fn form_focus_advertises_and_handles_the_field_verbs() {
         crate::components::varmanager::FormStop::Field(crate::components::varmanager::VmField::EnvValue),
         "three downs land on the env-value field"
     );
-    let chips = crate::keyroute::spell::spelled(app.varmanager.footer_chips(app.proj(), None));
+    let chips = form_chips(&app, None);
     assert!(
         chips
             .iter()
@@ -16888,7 +16898,7 @@ fn form_focus_advertises_and_handles_the_field_verbs() {
     app.handle_key(plain('x'));
     let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     assert!(!on_disk.contains("base_url"), "{on_disk}");
-    let chips = crate::keyroute::spell::spelled(app.varmanager.footer_chips(app.proj(), None));
+    let chips = form_chips(&app, None);
     assert!(
         !chips.iter().any(|(_, l, _)| *l == "clear env value"),
         "nothing stored, nothing to clear: {chips:?}"
@@ -16900,8 +16910,7 @@ fn form_focus_advertises_and_handles_the_field_verbs() {
         name: "base_url".into(),
     };
     let open_request = app.editor.current_request();
-    let chips =
-        crate::keyroute::spell::spelled(app.varmanager.footer_chips(app.proj(), Some(&open_request)));
+    let chips = form_chips(&app, Some(&open_request));
     assert!(
         chips
             .iter()
@@ -16936,14 +16945,22 @@ fn form_focus_r_toggles_reveal_on_a_secret_variable() {
     });
     app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
 
-    let chips = crate::keyroute::spell::spelled(app.varmanager.footer_chips(app.proj(), None));
+    let form_chips = |app: &App| {
+        crate::keyroute::spell::spelled_on(
+            crate::keyroute::Surface::VarForm,
+            app.varmanager.footer_chips(app.proj(), None),
+        )
+    };
+    let chips = form_chips(&app);
     assert!(
-        chips.iter().any(|(k, l, _)| *k == "r" && *l == "reveal"),
+        chips
+            .iter()
+            .any(|(k, l, a)| *k == "r" && *l == "reveal" && *a == Some(Action::ToggleVarReveal)),
         "{chips:?}"
     );
     app.handle_key(plain('r'));
     assert!(app.varmanager.form.revealed, "r reveals the secret");
-    let chips = crate::keyroute::spell::spelled(app.varmanager.footer_chips(app.proj(), None));
+    let chips = form_chips(&app);
     assert!(
         chips.iter().any(|(k, l, _)| *k == "r" && *l == "hide"),
         "{chips:?}"
@@ -16966,7 +16983,10 @@ fn vm_footer_advertises_edit_fields_on_a_selector() {
     let edit_fields = Action::PromptGroupFields {
         selector: "user".into(),
     };
-    let chips = crate::keyroute::spell::spelled(app.varmanager.footer_chips(app.proj(), None));
+    let chips = crate::keyroute::spell::spelled_on(
+        crate::keyroute::Surface::VarList,
+        app.varmanager.footer_chips(app.proj(), None),
+    );
     assert!(
         chips
             .iter()
@@ -16978,7 +16998,10 @@ fn vm_footer_advertises_edit_fields_on_a_selector() {
     goto_row(&mut app, |r| {
         r == &crate::components::varmanager::VmRow::Var("base_url".into())
     });
-    let chips = crate::keyroute::spell::spelled(app.varmanager.footer_chips(app.proj(), None));
+    let chips = crate::keyroute::spell::spelled_on(
+        crate::keyroute::Surface::VarList,
+        app.varmanager.footer_chips(app.proj(), None),
+    );
     assert!(
         !chips.iter().any(|(_, l, _)| *l == "edit fields"),
         "{chips:?}"
@@ -16998,9 +17021,12 @@ fn vm_footer_rename_delete_act_on_the_open_form_from_a_header_row() {
         r == &crate::components::varmanager::VmRow::Var("base_url".into())
     });
     app.varmanager.left_cursor = 0; // the "VARIABLES" section header
-    let chips = crate::keyroute::spell::spelled(app.varmanager.footer_chips(app.proj(), None));
+    let chips = crate::keyroute::spell::spelled_on(
+        crate::keyroute::Surface::VarList,
+        app.varmanager.footer_chips(app.proj(), None),
+    );
     assert!(
-        chips.iter().any(|(k, _, a)| *k == "e"
+        chips.iter().any(|(k, _, a)| *k == "r"
             && *a
                 == Some(Action::PromptRenameVar {
                     from: "base_url".into()
@@ -17029,22 +17055,23 @@ fn vm_footer_drops_chips_with_no_target() {
 
     // Fresh open: nothing selected, no detail — no rename/delete chips.
     app.update(Action::OpenManage { tab: None });
-    use crate::keyroute::spell::spelled;
-    let keys: Vec<String> = spelled(app.varmanager.footer_chips(app.proj(), None))
+    use crate::keyroute::Surface;
+    use crate::keyroute::spell::spelled_on;
+    let keys: Vec<String> = spelled_on(Surface::VarList, app.varmanager.footer_chips(app.proj(), None))
         .into_iter()
         .map(|(k, _, _)| k)
         .collect();
-    assert_eq!(keys, vec!["n", "a"]);
+    assert_eq!(keys, vec!["a", "A"]);
 
     // Grid focus with the cursor on the ghost row: only "new option".
     goto_group(&mut app, "user");
     app.varmanager.focus = VmFocus::Grid;
     app.varmanager.grid.cursor = (2, 0); // alice, bob, then the ghost
-    let keys: Vec<String> = spelled(app.varmanager.footer_chips(app.proj(), None))
+    let keys: Vec<String> = spelled_on(Surface::VarGrid, app.varmanager.footer_chips(app.proj(), None))
         .into_iter()
         .map(|(k, _, _)| k)
         .collect();
-    assert_eq!(keys, vec!["o"]);
+    assert_eq!(keys, vec!["a"]);
 }
 
 /// The option-row "rename" is the inline name-cell edit — the `e` key and
@@ -29756,16 +29783,41 @@ fn footer_keycaps_follow_the_profile() {
     let (mut app, _dir) = sidebar_test_app_three_flat_rows();
     app.focus = PaneId::Sidebar;
     assert_eq!(footer_chip_text(&mut app, Action::OpenPalette).as_deref(), Some("^P commands"));
-    assert_eq!(footer_chip_text(&mut app, Action::PromptNewRequest).as_deref(), Some("n new"));
+    assert_eq!(footer_chip_text(&mut app, Action::PromptNewRequest).as_deref(), Some("a new"));
+    assert_eq!(footer_chip_text(&mut app, Action::DeleteSelectedRequest).as_deref(), Some("d delete"));
     assert_eq!(footer_chip_text(&mut app, Action::Quit).as_deref(), Some("q quit"));
     app.use_profile(KeyProfile::Vim);
     assert_eq!(footer_chip_text(&mut app, Action::OpenPalette).as_deref(), Some(": commands"));
-    assert_eq!(
-        footer_chip_text(&mut app, Action::PromptNewRequest),
-        None,
-        "a verb chip waits for M2's vim key"
-    );
+    assert_eq!(footer_chip_text(&mut app, Action::PromptNewRequest).as_deref(), Some("a new"), "a shared letter");
+    assert_eq!(footer_chip_text(&mut app, Action::DeleteSelectedRequest).as_deref(), Some("dd delete"));
     assert_eq!(footer_chip_text(&mut app, Action::Quit).as_deref(), Some("^C quit"), "vim gave up q");
+}
+
+/// Spec §4.6 and §5.4: the Variables list's chips spell the shared
+/// letters in both profiles, and vim drops the chips whose verb waits
+/// for M4's ex rows.
+#[test]
+fn variables_list_chips_spell_the_shared_letters() {
+    use crate::components::varmanager::VmRow;
+    use crate::config::KeyProfile;
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_row(&mut app, |r| *r == VmRow::Group("user".into()));
+    assert_eq!(footer_chip_text(&mut app, Action::PromptNewVar).as_deref(), Some("a new variable"));
+    assert_eq!(footer_chip_text(&mut app, Action::PromptNewSelector).as_deref(), Some("A new selector"));
+    assert_eq!(
+        footer_chip_text(&mut app, Action::PromptGroupFields { selector: "user".into() }).as_deref(),
+        Some("m edit fields")
+    );
+    app.use_profile(KeyProfile::Vim);
+    assert_eq!(footer_chip_text(&mut app, Action::PromptNewVar).as_deref(), Some("a new variable"));
+    assert_eq!(
+        footer_chip_text(&mut app, Action::PromptGroupFields { selector: "user".into() }),
+        None,
+        "M4's :fields"
+    );
 }
 
 /// Plan M1 Deviation 17: the startup gate's chip names the key that works.

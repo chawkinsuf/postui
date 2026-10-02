@@ -1,4 +1,4 @@
-use crate::action::Action;
+use crate::action::{Action, Verb};
 use crate::hit::{Hit, HitMap};
 use crate::keyroute::spell::Key;
 use crate::layout::PaneId;
@@ -84,13 +84,24 @@ pub(crate) fn footer_chips(
     let chips: Vec<(Key, &'static str, Option<Action>)> = match focus {
         PaneId::Sidebar => vec![
             (Key::Named("enter"), "open", None),
-            (Key::Verb("n"), "new", Some(Action::PromptNewRequest)),
-            (Key::Verb("r"), "rename", Some(Action::PromptRenameRequest)),
-            (Key::Verb("d"), "delete", Some(Action::DeleteSelectedRequest)),
+            // The keycaps spell the router's verb rows (`a`, `dd`/`d`, …);
+            // each action is what `Sidebar::verb_action` resolves on a
+            // request row (plan M2 Deviation 3).
+            (Key::Of(Action::OnSelection(Verb::Add)), "new", Some(Action::PromptNewRequest)),
+            (Key::Of(Action::OnSelection(Verb::Rename)), "rename", Some(Action::PromptRenameRequest)),
+            (
+                Key::Of(Action::OnSelection(Verb::Delete { count: 1 })),
+                "delete",
+                Some(Action::DeleteSelectedRequest),
+            ),
             // Space *switching* is the header's job (its space pill and
             // cycle pill); the sidebar's own space action is moving the
             // selected request into another one.
-            (Key::Verb("m"), "move", Some(Action::PromptMoveSelectedRequestToSpace)),
+            (
+                Key::Of(Action::OnSelection(Verb::Move)),
+                "move",
+                Some(Action::PromptMoveSelectedRequestToSpace),
+            ),
             (Key::Named("alt+\u{2191}\u{2193}"), "reorder", None),
         ],
         PaneId::Editor => {
@@ -156,7 +167,17 @@ pub(crate) fn footer_chips(
                 // Headers, …); hidden on the Body tab, where the action is
                 // inert.
                 let at = chips.len() - 2;
-                chips.insert(at, (Key::Of(Action::TableAddRow), label, Some(Action::TableAddRow)));
+                // The keycap is the table's `a`; where that row does not
+                // apply (`SubFocus::None`, a live cell edit) arrows'
+                // `alt+a` stands in, and vim shows no key.
+                chips.insert(
+                    at,
+                    (
+                        Key::OneOf(Action::OnSelection(Verb::Add), Action::TableAddRow),
+                        label,
+                        Some(Action::TableAddRow),
+                    ),
+                );
             }
             if let Some((i, enabled)) = table_row_selected {
                 // Keyboard twins of the expanded row's ● toggle and 󰆴
@@ -164,7 +185,14 @@ pub(crate) fn footer_chips(
                 let toggle_label = if enabled { "disable" } else { "enable" };
                 let pos = chips.len() - 2; // before vars + tabs
                 chips.insert(pos, (Key::Named("␣"), toggle_label, Some(Action::ToggleTableRow(i))));
-                chips.insert(pos + 1, (Key::Verb("d"), "delete", Some(Action::DeleteTableRow(i))));
+                chips.insert(
+                    pos + 1,
+                    (
+                        Key::Of(Action::OnSelection(Verb::Delete { count: 1 })),
+                        "delete",
+                        Some(Action::DeleteTableRow(i)),
+                    ),
+                );
             }
             if field_open {
                 // Inserted last so the row/address-bar chips above land
@@ -600,8 +628,15 @@ mod tests {
         r.y + r.height / 2
     }
 
+    /// The spelling context of the sidebar: a verb chip is spelled from
+    /// the row on its pane's surface.
+    fn sidebar_spell() -> crate::keyroute::SpellCtx {
+        crate::keyroute::SpellCtx { surface: crate::keyroute::Surface::Sidebar, ..Default::default() }
+    }
+
     /// `super::footer_chips` as the arrows profile paints it: these tests
-    /// read the keycaps as text (`spell::spelled`).
+    /// read the keycaps as text. A verb chip (`a`, `d`) is spelled from the
+    /// row on its pane's surface: the sidebar, or the editor's table.
     #[allow(clippy::too_many_arguments)]
     fn footer_chips(
         focus: PaneId,
@@ -614,7 +649,11 @@ mod tests {
         jq_bar: JqBarState,
         field_open: bool,
     ) -> Vec<(String, &'static str, Option<Action>)> {
-        crate::keyroute::spell::spelled(super::footer_chips(
+        let surface = match focus {
+            PaneId::Sidebar => crate::keyroute::Surface::Sidebar,
+            _ => crate::keyroute::Surface::Table(crate::components::editor::EditorTab::Headers),
+        };
+        crate::keyroute::spell::spelled_on(surface, super::footer_chips(
             focus,
             shift_enter_send,
             sending,
@@ -708,7 +747,7 @@ mod tests {
                     true,
                     true,
                     None,
-                    crate::keyroute::SpellCtx::default(),
+                    sidebar_spell(),
                     &crate::keys::Keymap::default_bindings(),
                     None,
                     &mut hits,
@@ -1392,7 +1431,7 @@ mod tests {
                     true,
                     true,
                     None,
-                    crate::keyroute::SpellCtx::default(),
+                    sidebar_spell(),
                     &crate::keys::Keymap::default_bindings(),
                     None,
                     &mut hits,
@@ -1489,7 +1528,7 @@ mod tests {
                     true,
                     true,
                     None,
-                    crate::keyroute::SpellCtx::default(),
+                    sidebar_spell(),
                     &crate::keys::Keymap::default_bindings(),
                     None,
                     &mut hits,
@@ -1509,7 +1548,7 @@ mod tests {
         // enough that the tinted fill reads light too, so painting the
         // key in `theme.text_muted` unconditionally would be light-on-light).
         let key_cell = buf.cell((rect.x + 1, mid_of(&rect))).unwrap();
-        assert_eq!(key_cell.symbol(), "n");
+        assert_eq!(key_cell.symbol(), "a");
         let fill = theme.tint(theme.text_muted, theme.control);
         assert_eq!(key_cell.bg, fill);
         if crate::theme::is_light(fill) {
@@ -1566,7 +1605,7 @@ mod tests {
                     true,
                     true,
                     None,
-                    crate::keyroute::SpellCtx::default(),
+                    sidebar_spell(),
                     &crate::keys::Keymap::default_bindings(),
                     None,
                     &mut hits,
@@ -1589,7 +1628,7 @@ mod tests {
         );
         assert_eq!(plain_cell.fg, theme.text_muted);
 
-        // "n new" (PromptNewRequest) IS clickable: tinted key pill.
+        // "a new" (PromptNewRequest) IS clickable: tinted key pill.
         let rect = hits
             .rect_of(&Hit::FooterChip(Action::PromptNewRequest))
             .expect("new-request chip hit registered");

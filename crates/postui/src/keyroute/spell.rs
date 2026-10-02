@@ -23,9 +23,12 @@ pub enum Key {
     Named(&'static str),
     /// A move pair on a navigation surface: `↑↓` or `j/k`, `←→` or `h/l`.
     Nav(Nav),
-    /// A component's own verb letter (arrows): dropped in vim until M2
-    /// gives the verb its vim key.
-    Verb(&'static str),
+    /// The first of two actions that has a key here: the table's add-row
+    /// chip is `a` on the table, and arrows' `alt+a` where the table's row
+    /// does not apply (the url line's `SubFocus::None`, or while an
+    /// existing row's cell edit is live); vim gave up `alt+a` (plan M2
+    /// Deviations 4 and 5).
+    OneOf(Action, Action),
     /// A dialog's answer letter: the same in both profiles.
     Answer(char),
     /// The send chip: `⇧enter` where the terminal reports it, else `^R`
@@ -64,8 +67,7 @@ pub fn keycap(key: &Key, at: SpellCtx, keymap: &Keymap) -> Option<String> {
         Key::Named(s) => (*s).to_string(),
         Key::Nav(Nav::UpDown) => if vim { "j/k" } else { "\u{2191}\u{2193}" }.to_string(),
         Key::Nav(Nav::LeftRight) => if vim { "h/l" } else { "\u{2190}\u{2192}" }.to_string(),
-        Key::Verb(_) if vim => return None,
-        Key::Verb(s) => (*s).to_string(),
+        Key::OneOf(a, b) => glyphs(&spell(at, a, keymap).or_else(|| spell(at, b, keymap))?),
         Key::Answer(c) => c.to_string(),
         Key::Send { shift_enter: true } => "\u{21e7}enter".to_string(),
         Key::Send { shift_enter: false } if !vim => "^R".to_string(),
@@ -121,6 +123,13 @@ pub fn spelled<L>(chips: Vec<(Key, L, Option<Action>)>) -> Vec<(String, L, Optio
     resolve(chips, SpellCtx::default(), &Keymap::default_bindings())
 }
 
+/// [`spelled`] on `surface`: a verb chip is spelled from the row on the
+/// surface its pane is, so a test of a pane's chips names that surface.
+#[cfg(test)]
+pub fn spelled_on<L>(surface: crate::keyroute::Surface, chips: Vec<(Key, L, Option<Action>)>) -> Vec<(String, L, Option<Action>)> {
+    resolve(chips, SpellCtx { surface, ..SpellCtx::default() }, &Keymap::default_bindings())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,8 +154,21 @@ mod tests {
         let tabs = Key::Pair(Action::CycleTabs(-1), Action::CycleTabs(1));
         let alt = crate::keys::alt_label();
         assert_eq!(cap(tabs, at(Arrows, Surface::Sidebar), &a), Some(format!("{alt}+\u{2190}\u{2192}")));
-        assert_eq!(cap(Key::Verb("d"), at(Arrows, Surface::Sidebar), &a).as_deref(), Some("d"));
-        assert_eq!(cap(Key::Verb("d"), at(Vim, Surface::Sidebar), &v), None, "until M2");
+        let del = Key::Of(Action::OnSelection(crate::action::Verb::Delete { count: 1 }));
+        assert_eq!(cap(del.clone(), at(Arrows, Surface::Sidebar), &a).as_deref(), Some("d"));
+        assert_eq!(cap(del.clone(), at(Vim, Surface::Sidebar), &v).as_deref(), Some("dd"));
+        assert_eq!(cap(del, at(Vim, Surface::Settings), &v), None, "no row there: the chip drops");
+        let add = || Key::OneOf(Action::OnSelection(crate::action::Verb::Add), Action::TableAddRow);
+        let table = Surface::Table(crate::components::editor::EditorTab::Headers);
+        assert_eq!(cap(add(), at(Arrows, table), &a).as_deref(), Some("a"));
+        assert_eq!(cap(add(), at(Vim, table), &v).as_deref(), Some("a"));
+        let alt = crate::keys::alt_label();
+        assert_eq!(
+            cap(add(), at(Arrows, Surface::UrlLine), &a),
+            Some(format!("{alt}+a")),
+            "at SubFocus::None (the url line): the chord"
+        );
+        assert_eq!(cap(add(), at(Vim, Surface::UrlLine), &v), None, "vim gave up alt+a (plan M2 Deviation 5)");
         assert_eq!(cap(Key::Nav(Nav::UpDown), at(Vim, Surface::Settings), &v).as_deref(), Some("j/k"));
         assert_eq!(cap(Key::Quit { plain_q: true }, at(Arrows, Surface::Sidebar), &a).as_deref(), Some("q"));
         assert_eq!(cap(Key::Quit { plain_q: true }, at(Vim, Surface::Sidebar), &v).as_deref(), Some("^C"));

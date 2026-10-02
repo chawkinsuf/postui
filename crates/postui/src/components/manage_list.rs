@@ -653,15 +653,21 @@ impl ManageList {
             chips.push((Key::Named("esc"), "back", None));
             return chips;
         }
+        // Each chip spells its verb's row and carries what the verb
+        // resolves to here, so the key and the chip are one (plan M2
+        // Deviation 3).
+        let chip = |verb: Verb, label: &'static str| {
+            (Key::Of(Action::OnSelection(verb)), label, self.verb_action(tab, ctx, verb))
+        };
         let mut chips = vec![
-            (Key::Verb("n"), "new", Some(Self::new_action(tab))),
-            (Key::Verb("r"), "rename", selected.map(|n| Self::rename_action(tab, n))),
-            (Key::Verb("d"), "delete", selected.map(|n| Self::delete_action(tab, n))),
+            chip(Verb::Add, "new"),
+            chip(Verb::Rename, "rename"),
+            chip(Verb::Delete { count: 1 }, "delete"),
         ];
         if tab == ManageTab::Spaces {
-            chips.push((Key::Verb("m"), "move all", selected.map(Self::move_all_action)));
+            chips.push(chip(Verb::Move, "move all"));
         } else {
-            chips.push((Key::Verb("t"), "tls", selected.map(|n| Self::cycle_tls_action(ctx, n))));
+            chips.push(chip(Verb::Tls, "tls"));
         }
         // Both lists reorder with the same keys.
         chips.push((Key::Named("alt+↑↓"), "reorder", None));

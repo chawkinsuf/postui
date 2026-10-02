@@ -359,9 +359,9 @@ impl TableEditorState {
         self.start_edit(map.len(), Col::Key, map);
     }
 
-    /// Deletes row `i` outright — no confirm gate (both the `d` key and
-    /// the `󰅖` click land here directly): the deletion is an ordinary
-    /// editor undo step.
+    /// Deletes row `i` outright — no confirm gate (the `d`/`dd` rows reach
+    /// it through `Action::DeleteTableRow`, and the `󰅖` click dispatches the
+    /// same action): the deletion is an ordinary editor undo step.
     pub fn delete_row(&mut self, map: &mut IndexMap<String, Entry>, i: usize) {
         self.delete_rows(map, i, 1);
     }

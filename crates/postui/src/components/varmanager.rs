@@ -908,56 +908,43 @@ impl VarManager {
                 (Key::Named("esc"), "done", Some(Action::CloseField)),
             ];
         }
+        // Each verb chip spells its verb's row and carries the action the
+        // verb resolves to here (`verb_action`, the one the key resolves
+        // through), so a key and its chip cannot drift (plan M2
+        // Deviation 3). A verb with no target here yields no action and
+        // the chip is dropped below.
+        let chip = |verb: Verb, label: &'static str| {
+            (Key::Of(Action::OnSelection(verb)), label, self.verb_action(ctx, open_request, verb))
+        };
         // Form focus advertises the form's own quick actions — the
         // keyboard twins of its inline controls (secret toggle, the
         // env row's "✕ remove", the Promote button).
         if let (VmDetail::Var(name), VmFocus::Form) = (&self.detail, self.focus) {
-            let mut chips: Vec<(Key, &'static str, Option<Action>)> = Vec::new();
-            if ctx.variables().vars.contains_key(name) {
-                chips.push((
-                    Key::Verb("s"),
-                    "secret",
-                    Some(Action::ToggleSecretVar { name: name.clone() }),
-                ));
-            }
-            // The 👁 control's keyboard twin. A plain hint (no single
-            // dispatchable action — the toggle is component state), like
-            // the main screen's "enter open".
-            if ctx.variables().vars.get(name).is_some_and(|d| d.secret) {
-                chips.push((
-                    Key::Verb("r"),
-                    if self.form.revealed { "hide" } else { "reveal" },
-                    None,
-                ));
-            }
-            // Enter on the toggle stop flips it (the same action the `s`
-            // chip carries); on a field it opens the edit, which the
-            // pane's own affordance already says.
-            if self.form_cursor == FormStop::Secret && ctx.variables().vars.contains_key(name) {
+            // The 👁 control's keyboard twin is the reveal chip; it
+            // dispatches `ToggleVarReveal`, the same action the click does.
+            // Enter on the toggle stop flips the secret (the same action
+            // the secret chip carries); on a field it opens the edit,
+            // which the pane's own affordance already says.
+            let enter_toggles =
+                self.form_cursor == FormStop::Secret && ctx.variables().vars.contains_key(name);
+            let mut chips = vec![
+                chip(Verb::Secret, "secret"),
+                chip(Verb::Reveal, if self.form.revealed { "hide" } else { "reveal" }),
+            ];
+            if enter_toggles {
                 chips.push((
                     Key::Named("enter"),
                     "toggle secret",
                     Some(Action::ToggleSecretVar { name: name.clone() }),
                 ));
             }
-            if self.form_cursor == FormStop::Field(VmField::EnvValue) && env_stores(ctx, name) {
-                chips.push((
-                    Key::Verb("x"),
-                    "clear env value",
-                    Some(Action::RemoveVarValue {
-                        name: name.clone(),
-                        destination: crate::action::ExtractDestination::ActiveEnv,
-                    }),
-                ));
-            }
-            if let Some((_, action)) = promote_action(ctx, open_request, name) {
-                chips.push((Key::Verb("p"), "promote", Some(action)));
-            }
+            chips.push(chip(Verb::ClearValue, "clear env value"));
+            chips.push(chip(Verb::Promote, "promote"));
+            chips.retain(|(_, _, a)| a.is_some());
             return chips;
         }
         let mut chips: Vec<(Key, &'static str, Option<Action>)> =
             if let (VmDetail::Group(selector), VmFocus::Grid) = (&self.detail, self.focus) {
-                let target = op_env(ctx, selector).zip(self.entry_at(ctx, self.grid.cursor.0));
                 // Terse labels on purpose: seven chips share the footer
                 // with the right-aligned save/palette/quit group, and the
                 // grid context already names the target (an option).
@@ -970,110 +957,32 @@ impl VarManager {
                 // the strip it can appear without shifting a chip beside
                 // it. Its button is the protected one in the pane, so
                 // being first to drop on a narrow footer costs nothing.
+                // (`grid_verb` arms paste by what was copied, not by the
+                // cursor, so it shows on an empty grid too.)
                 vec![
-                    (
-                        Key::Verb("d"),
-                        "delete",
-                        target.clone().map(|(env, name)| Action::DeleteEntry {
-                            env,
-                            selector: selector.clone(),
-                            name,
-                        }),
-                    ),
-                    (
-                        Key::Verb("r"),
-                        "rename",
-                        target.clone().map(|_| Action::StartOptionNameEdit {
-                            row: self.grid.cursor.0,
-                        }),
-                    ),
-                    (
-                        Key::Verb("e"),
-                        "edit",
-                        target.clone().and_then(|(_, option)| {
-                            postui_core::varmodel::options_of(ctx.variables(), ctx.env_data(), selector)
-                                .and_then(|options| options.get(&option))
-                                .map(|decl| Action::OpenEditOptionPrompt {
-                                    owner: selector.clone(),
-                                    key: option,
-                                    description: decl.description.clone(),
-                                    values: decl.values.clone(),
-                                })
-                        }),
-                    ),
-                    (
-                        Key::Verb("c"),
-                        "copy",
-                        target
-                            .clone()
-                            .map(|_| Action::CopyOption { row: self.grid.cursor.0 }),
-                    ),
-                    (
-                        Key::Named("space"),
-                        "select",
-                        target.map(|(env, option)| {
-                            Action::VarEdit(VarEditOp::SelectOption {
-                                env,
-                                selector: selector.clone(),
-                                option,
-                            })
-                        }),
-                    ),
-                    (Key::Verb("o"), "new option", Some(Action::StartNewOptionEdit)),
-                    (
-                        Key::Verb("v"),
-                        "paste",
-                        // Armed by what was copied, not by the cursor: a
-                        // paste lands a row in this environment whatever
-                        // the grid is pointing at (an empty grid included).
-                        op_env(ctx, selector)
-                            .filter(|_| self.can_paste(selector))
-                            .map(|env| {
-                                Action::VarStruct(VarStructOp::PasteOption {
-                                    env,
-                                    selector: selector.clone(),
-                                })
-                            }),
-                    ),
+                    chip(Verb::Delete { count: 1 }, "delete"),
+                    chip(Verb::Rename, "rename"),
+                    chip(Verb::EditValue, "edit"),
+                    chip(Verb::Yank, "copy"),
+                    (Key::Named("space"), "select", self.select_entry_action(ctx, selector)),
+                    chip(Verb::Add, "new option"),
+                    chip(Verb::Put { above: false }, "paste"),
                 ]
             } else {
-                // The list cursor's row when it names something, else
-                // whatever the detail pane has open — so the chips stay
-                // clickable while a form is on screen even when the cursor
-                // sits on a section header.
-                let name = self
-                    .selected_row()
-                    .and_then(VmRow::name)
-                    .or_else(|| self.detail.name())
-                    .map(str::to_string);
                 // The selector pane's verbs in its buttons' order, then
                 // the left column's two `+` buttons in theirs — the same
                 // sequence the grid's strip runs in, so the footer reads
-                // the same wherever the keyboard is.
-                let mut chips = vec![
-                    (Key::Verb("d"), "delete", name.clone().map(|name| Action::DeleteVar { name })),
-                    (
-                        Key::Verb("e"),
-                        "rename",
-                        name.map(|from| Action::PromptRenameVar { from }),
-                    ),
-                ];
-                // With a selector open, its fields editor is one key away —
-                // the `m` binding predates this chip, but a key the footer
-                // never taught was as good as mouse-only. It sits third,
-                // where `[Edit fields]` sits among the buttons.
-                if let VmDetail::Group(selector) = &self.detail {
-                    chips.push((
-                        Key::Verb("m"),
-                        "edit fields",
-                        Some(Action::PromptGroupFields {
-                            selector: selector.clone(),
-                        }),
-                    ));
-                }
-                chips.push((Key::Verb("n"), "new variable", Some(Action::PromptNewVar)));
-                chips.push((Key::Verb("a"), "new selector", Some(Action::PromptNewSelector)));
-                chips
+                // the same wherever the keyboard is. The targets (the
+                // cursor's row, else the open detail, so the chips stay
+                // clickable on a section header) are `list_verb`'s; `edit
+                // fields` appears only with a selector open.
+                vec![
+                    chip(Verb::Delete { count: 1 }, "delete"),
+                    chip(Verb::Rename, "rename"),
+                    chip(Verb::Fields, "edit fields"),
+                    chip(Verb::Add, "new variable"),
+                    chip(Verb::AddAlt, "new selector"),
+                ]
             };
         chips.retain(|(_, _, a)| a.is_some());
         chips
@@ -1316,9 +1225,11 @@ impl VarManager {
     /// back out. Each keeps its own cursor, so returning to the list lands
     /// where it was. Inside the grid the arrows move the cell cursor,
     /// `Enter` starts editing the focused cell, `space` selects the cursor
-    /// row's option, and `e`/`d` rename/delete *that option* rather than the
-    /// selector (the list's own `e`/`d` still target the declaration — which
-    /// stop has focus is what tells them apart).
+    /// row's option. The verb letters (rename, delete, add, …) are the key
+    /// router's rows, not this handler's: they resolve through
+    /// [`Self::verb_action`], where the focused stop decides whether a verb
+    /// means the option under the grid cursor or the declaration under the
+    /// list cursor. This handler keeps the named keys (`Delete`, `F2`, …).
     pub fn handle_key(&mut self, ev: KeyEvent, ctx: &Project) -> Option<Action> {
         // The grid is a focus stop of its own: while it has the keyboard,
         // the arrows drive its cell cursor rather than the left list, and
@@ -4059,7 +3970,8 @@ fields = ["user_id", "customer_id"]
         );
         // The footer's grid chips stay armed too — their actions carry the
         // same empty env the ops above do.
-        let chips = crate::keyroute::spell::spelled(vm.footer_chips(&ctx, None));
+        let chips =
+            crate::keyroute::spell::spelled_on(crate::keyroute::Surface::VarGrid, vm.footer_chips(&ctx, None));
         let copy = chips
             .iter()
             .find(|(k, _, _)| *k == "c")
@@ -4180,29 +4092,30 @@ fields = ["user_id", "customer_id"]
 
         // The left list's strip: the selector-pane verbs in the order its
         // buttons stand in, then the two `+` buttons in theirs.
-        use crate::keyroute::spell::spelled;
-        let keys: Vec<String> = spelled(vm.footer_chips(&ctx, None))
+        use crate::keyroute::Surface;
+        use crate::keyroute::spell::spelled_on;
+        let keys: Vec<String> = spelled_on(Surface::VarList, vm.footer_chips(&ctx, None))
             .into_iter()
             .map(|(k, _, _)| k)
             .collect();
-        assert_eq!(keys, vec!["d", "e", "m", "n", "a"]);
+        assert_eq!(keys, vec!["d", "r", "m", "a", "A"]);
 
         // The grid's strip: the same verb order, and `paste` at the far
         // right — it comes and goes with what is copied, and from there it
         // can appear without shifting a single chip beside it.
         vm.focus = VmFocus::Grid;
-        let keys: Vec<String> = spelled(vm.footer_chips(&ctx, None))
+        let keys: Vec<String> = spelled_on(Surface::VarGrid, vm.footer_chips(&ctx, None))
             .into_iter()
             .map(|(k, _, _)| k)
             .collect();
-        assert_eq!(keys, vec!["d", "r", "e", "c", "space", "o"]);
+        assert_eq!(keys, vec!["d", "r", "e", "c", "space", "a"]);
 
         vm.stash = Some(vm.option_row(&ctx, 0).expect("row 0 is an option"));
-        let keys: Vec<String> = spelled(vm.footer_chips(&ctx, None))
+        let keys: Vec<String> = spelled_on(Surface::VarGrid, vm.footer_chips(&ctx, None))
             .into_iter()
             .map(|(k, _, _)| k)
             .collect();
-        assert_eq!(keys, vec!["d", "r", "e", "c", "space", "o", "v"]);
+        assert_eq!(keys, vec!["d", "r", "e", "c", "space", "a", "v"]);
     }
 
     #[test]
@@ -4497,7 +4410,8 @@ fields = ["user_id", "customer_id"]
         let mut vm = VarManager::default();
         select_group(&mut vm, &ctx, "creds");
         vm.focus = VmFocus::Grid;
-        let chips = crate::keyroute::spell::spelled(vm.footer_chips(&ctx, None));
+        let chips =
+            crate::keyroute::spell::spelled_on(crate::keyroute::Surface::VarGrid, vm.footer_chips(&ctx, None));
         let edit = chips
             .iter()
             .find(|(k, _, _)| *k == "e")
@@ -4524,7 +4438,8 @@ fields = ["user_id", "customer_id"]
             description: None,
             values: IndexMap::new(),
         });
-        let chips = crate::keyroute::spell::spelled(vm.footer_chips(&ctx, None));
+        let chips =
+            crate::keyroute::spell::spelled_on(crate::keyroute::Surface::VarGrid, vm.footer_chips(&ctx, None));
         let paste = chips
             .iter()
             .find(|(k, _, _)| *k == "v")
@@ -4540,7 +4455,8 @@ fields = ["user_id", "customer_id"]
         // drop (a dead chip advertises a key that would do nothing). Paste
         // stays: it lands a row wherever the cursor is.
         vm.grid.cursor.0 = 2;
-        let chips = crate::keyroute::spell::spelled(vm.footer_chips(&ctx, None));
+        let chips =
+            crate::keyroute::spell::spelled_on(crate::keyroute::Surface::VarGrid, vm.footer_chips(&ctx, None));
         assert!(!chips.iter().any(|(k, _, _)| *k == "e"), "{chips:?}");
         assert!(!chips.iter().any(|(k, _, _)| *k == "c"), "{chips:?}");
         assert!(chips.iter().any(|(k, _, _)| *k == "v"), "{chips:?}");
@@ -4614,7 +4530,8 @@ fields = ["user_id", "customer_id"]
         let mut vm = VarManager::default();
         select_group(&mut vm, &ctx, "creds");
         vm.focus = VmFocus::Grid;
-        let chips = crate::keyroute::spell::spelled(vm.footer_chips(&ctx, None));
+        let chips =
+            crate::keyroute::spell::spelled_on(crate::keyroute::Surface::VarGrid, vm.footer_chips(&ctx, None));
         let rename = chips
             .iter()
             .find(|(k, _, _)| *k == "r")
@@ -4633,7 +4550,8 @@ fields = ["user_id", "customer_id"]
 
         // The ghost row has no name to rename: no chip, and no verb.
         vm.grid.cursor.0 = 2;
-        let chips = crate::keyroute::spell::spelled(vm.footer_chips(&ctx, None));
+        let chips =
+            crate::keyroute::spell::spelled_on(crate::keyroute::Surface::VarGrid, vm.footer_chips(&ctx, None));
         assert!(!chips.iter().any(|(k, _, _)| *k == "r"), "{chips:?}");
         assert_eq!(vm.verb_action(&ctx, None, Verb::Rename), None);
     }
