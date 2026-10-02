@@ -1304,7 +1304,7 @@ lines = ["a-b a]b aXb ayb a[b", "a b\tc a_b a-b", "ab aab aaab", "ab-cd ef -a b"
 id = "search/patterns-cases"
 tier = 2
 keys = ["/\\<lt>foo\\><CR>", "/a[]-]b<CR>", "/a[\\]]b<CR>", "/a[^X]b<CR>", "/a[[]b<CR>", "/b\\sc<CR>", "/a\\Wb<CR>", "/a\\wb<CR>",
-        "/a\\{2,3}b<CR>", "/a\\{2,}b<CR>", "/a\\{,2}b<CR>", "/a\\{}b<CR>", "/a.*b\\><CR>", "/a.*\\><CR>", "/\\<lt>.*b<CR>", "/\\<lt>x<CR>",
+        "/a\\{2,3}b<CR>", "/a\\{2,}b<CR>", "/a\\{,2}b<CR>", "/a\\{}b<CR>", "/a\\{3,1}b<CR>", "/a\\{3,2}b<CR>", "/a.*b\\><CR>", "/a.*\\><CR>", "/\\<lt>.*b<CR>", "/\\<lt>x<CR>",
         "/\\<lt>y<CR>", "/b\\><CR>", "/\\<lt>\\><CR>", "/\\><CR>", "/\\<lt><CR>", "/\\<lt>a<CR>", "/\\<lt>ab\\>\\<lt><CR>", "/a\\\\r<CR>",
         "/\\\\<CR>", "/\\~<CR>", "/b[-]r<CR>", "/b[a-]r<CR>", "/b[\\-]r<CR>", "/b[\\\\]r<CR>", "/b[\\^]r<CR>", "/b[a^]r<CR>", "/b[\\t]r<CR>",
         "/b[.]r<CR>", "/b[\\.]r<CR>", "/b[]]r<CR>", "/b[^]]r<CR>", "/\\(x\\)\\{2}<CR>", "/\\(x\\|r\\)*<CR>", "/\\d\\+<CR>", "/\\D<CR>",
@@ -1349,7 +1349,8 @@ at = ["bol", "mid", "eol"]
 id = "search/ctrl-o"
 tier = 2
 keys = ["iX<C-o>/foo<CR>Y<Esc>", "iX<C-o>nY<Esc>", "iX<C-o>*Y<Esc>", "iX<C-o>/zzz<CR>Y<Esc>", "A<C-o>?foo<CR>Y<Esc>", "iX<C-o>d/foo<CR>Y<Esc>",
-        "iX<C-o>/foo<Esc>Y<Esc>", "/foo<CR>iX<C-o>nY<Esc>", "d/$<CR>jiX<C-o>.Y<Esc>"]
+        "iX<C-o>/foo<Esc>Y<Esc>", "/foo<CR>iX<C-o>nY<Esc>", "d/$<CR>jiX<C-o>.Y<Esc>", "iX<C-o>/$<CR>Y<Esc>", "A<C-o>/$<CR>Y<Esc>",
+        "iX<C-o>?$<CR>Y<Esc>", "/$<CR>ggiX<C-o>nY<Esc>", "iX<C-o>d/$<CR>Y<Esc>", "iX<C-o>v/$<CR><Esc>Y<Esc>"]
 on = ["search", "words"]
 at = ["bol", "mid"]
 

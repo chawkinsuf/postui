@@ -15,7 +15,7 @@ use super::history::{Ed, MarkMove, end_of};
 use super::keys::{Cmd, InsertHow, Key};
 use super::motion::{Want, col_for, vcol_of};
 use super::op::{RKind, Range, yank_of};
-use super::register::RegKind;
+use super::register::{PLUS_PASTE_NOTE, RegKind};
 use super::settings::TABSTOP;
 use super::{BufState, Engine, Mode, Note, Outcome, Restart, Target, ViewCtx, first_non_blank};
 use crate::components::line_input::flatten_paste;
@@ -360,7 +360,7 @@ impl Engine {
                 self.insert_register_text(name, how == RegPending::Literal, buf, st);
                 Outcome::consumed()
             }
-            (_, Key::Char('+')) => note("paste with your terminal (ctrl+v)".into()),
+            (_, Key::Char('+')) => note(PLUS_PASTE_NOTE.into()),
             (_, Key::Char(c)) => note(format!("register \"{c} not supported")),
             _ => Outcome::consumed(),
         }

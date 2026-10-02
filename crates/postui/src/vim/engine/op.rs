@@ -8,7 +8,7 @@ use super::class::white;
 use super::history::{Ed, MarkMove};
 use super::keys::{CaseOp, Cmd, Op, Reach};
 use super::motion::{self, MKind, MotionCx};
-use super::register::{RegKind, Register};
+use super::register::{PLUS_PASTE_NOTE, RegKind, Register};
 use super::settings::{SHIFTWIDTH, TABSTOP};
 use super::{BufState, Engine, Mode, Note, Outcome, ViewCtx, first_non_blank, first_non_blank_fix};
 use crate::components::line_input::flatten_paste;
@@ -386,7 +386,7 @@ impl Engine {
     /// the clipboard, so a note says how to paste (Deviation 14).
     pub(super) fn exec_put<B: TextBuf>(&mut self, before: bool, count: usize, reg: Option<char>, buf: &mut B, st: &mut BufState) {
         if reg == Some('+') {
-            self.note = Some(Note::Unsupported("paste with your terminal (ctrl+v)".into()));
+            self.note = Some(Note::Unsupported(PLUS_PASTE_NOTE.into()));
             return;
         }
         let reg = self.regs.read(reg).clone();

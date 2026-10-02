@@ -8,7 +8,7 @@ use super::keys::{Cmd, Object, VisualOp};
 use super::motion::{Want, WantUpdate, char_width, updated_want, vcol_of};
 use super::object;
 use super::op::{RKind, Range, delete, join_rows, put, put_lines, recase_range, recased_caret, shift_rows, yank_of};
-use super::register::RegKind;
+use super::register::{PLUS_PASTE_NOTE, RegKind};
 use super::{BufState, Engine, Mode, Note, Outcome, Shape, VisualSize, first_non_blank};
 
 impl Engine {
@@ -305,7 +305,7 @@ impl Engine {
     /// `exec_put`).
     fn visual_put<B: TextBuf>(&mut self, r: Range, before: bool, count: usize, reg: Option<char>, buf: &mut B, st: &mut BufState) -> Outcome {
         if reg == Some('+') {
-            self.note = Some(Note::Unsupported("paste with your terminal (ctrl+v)".into()));
+            self.note = Some(Note::Unsupported(PLUS_PASTE_NOTE.into()));
             return Outcome::consumed();
         }
         // What to put, read before the delete writes the unnamed register

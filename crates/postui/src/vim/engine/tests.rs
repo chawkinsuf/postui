@@ -2239,6 +2239,38 @@ fn search_survives_hostile_patterns_and_big_bodies() {
     assert!(b.engine.search_matches(&BodyBuf::new(&mut b.ed, &mut b.visual), 0..30).len() <= 30);
 }
 
+/// The highlight calls run on every frame: a long pattern (milliseconds to
+/// compile in a debug build) compiles once, not once per call.
+#[test]
+fn the_highlight_reuses_the_compiled_pattern() {
+    let mut b = Body::new("ab ab\nba", 0, 0);
+    b.keys("/\\(a\\|b\\)\\{500}\\|ab");
+    let started = std::time::Instant::now();
+    for _ in 0..200 {
+        assert_eq!(b.engine.search_matches(&BodyBuf::new(&mut b.ed, &mut b.visual), 0..2).len(), 2);
+        assert_eq!(b.engine.search_preview(&BodyBuf::new(&mut b.ed, &mut b.visual)), Some((Pos::new(0, 3), Pos::new(0, 5))));
+    }
+    let ms = started.elapsed().as_millis();
+    assert!(ms < 200, "200 frames took {ms} ms");
+}
+
+/// A counted search on one long line (a minified JSON body) reads each
+/// line's matches once, not once per step: no hit repeats, so the cycle
+/// shortcut never helps here.
+#[test]
+fn a_counted_search_on_one_long_line_is_fast() {
+    let mut b = Body::new(&"a,".repeat(50_000), 0, 0);
+    b.keys("/,");
+    b.key(code(KeyCode::Enter));
+    let started = std::time::Instant::now();
+    b.keys("9999n");
+    let ms = started.elapsed().as_millis();
+    assert_eq!(b.caret(), Pos::new(0, 19_999), "the 10,000th comma");
+    b.keys("9999N");
+    assert_eq!(b.caret(), Pos::new(0, 1));
+    assert!(started.elapsed().as_millis() < 1000, "9999n took {ms} ms, 9999N {} ms in all", started.elapsed().as_millis());
+}
+
 /// Review focus 2 and 5 (3b's sweep, extended): every second-wave key on an
 /// empty body, and edtui still renders.
 #[test]

@@ -39,6 +39,7 @@ pub use search::Dir;
 use insert::{InsertKey, RegPending};
 use keys::{Cmd, Motion, Op, ParseCx, Pending, Reach, Step, VisualOp};
 use ratatui::crossterm::event::KeyEvent;
+use std::cell::RefCell;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shape {
@@ -348,6 +349,9 @@ pub struct Engine {
     /// What the running search motion typed (an empty `text` for an empty
     /// prompt), for the `.` record (`Dot::search`).
     typed_search: Option<LastSearch>,
+    /// The last pattern compiled and the result, so the highlight calls
+    /// made on every frame do not recompile it ([`Engine::compiled`]).
+    compiled: RefCell<Option<(String, Result<search::Pattern, String>)>>,
 }
 
 impl Engine {
@@ -517,7 +521,7 @@ impl Engine {
     /// one row each, for the search highlight (Deviation 18).
     pub fn search_matches<B: TextBuf>(&self, buf: &B, rows: std::ops::Range<usize>) -> Vec<(Pos, Pos)> {
         let Some(text) = self.live_pattern() else { return Vec::new() };
-        let Ok(pat) = search::compile(&text) else { return Vec::new() };
+        let Ok(pat) = self.compiled(&text) else { return Vec::new() };
         let mut out = Vec::new();
         for row in rows.start..rows.end.min(buf.line_count()) {
             for (s, e) in pat.chain(&buf.line(row)) {
@@ -532,11 +536,26 @@ impl Engine {
     pub fn search_preview<B: TextBuf>(&self, buf: &B) -> Option<(Pos, Pos)> {
         let p = self.search.as_ref()?;
         let text = self.live_pattern()?;
-        let pat = search::compile(&text).ok()?;
+        let pat = self.compiled(&text).ok()?;
         let count = keys::combine_counts(self.pending.count1(), self.pending.count2());
         let (at, _) = search::search(buf, buf.cursor(), p.dir, count, &pat)?;
         let end = pat.chain(&buf.line(at.row)).into_iter().find(|&(s, _)| s == at.col).map_or(at.col, |(_, e)| e);
         Some((at, Pos::new(at.row, end)))
+    }
+
+    /// [`search::compile`], remembering the last pattern: the highlight
+    /// asks for the same one on every frame, and a long one takes
+    /// milliseconds to compile.
+    pub(super) fn compiled(&self, text: &str) -> Result<search::Pattern, String> {
+        let mut cache = self.compiled.borrow_mut();
+        match &*cache {
+            Some((cached, result)) if cached == text => result.clone(),
+            _ => {
+                let result = search::compile(text);
+                *cache = Some((text.to_string(), result.clone()));
+                result
+            }
+        }
     }
 
     pub fn registers(&self) -> &Registers {
@@ -1121,13 +1140,15 @@ impl Engine {
         }
     }
 
-    /// Where the caret may rest in the current mode: on a char in Normal,
-    /// also on the line's end in Insert and Visual (`selection=inclusive`),
-    /// and after a command inside Insert `ctrl+o` (Vim's `check_cursor_col()`
-    /// with `restart_edit` set: `x` on a line's last char leaves the caret on
-    /// the end, and Insert resumes there). A bare motion still stops on a
-    /// char there (`exec_move`).
-    fn clamped<B: TextBuf>(&self, buf: &B, at: Pos) -> Pos {
+    /// Where the caret may rest in the current mode (Vim's `check_cursor()`):
+    /// on a char in Normal, also on the line's end in Insert and Visual
+    /// (`selection=inclusive`), and after a command inside Insert `ctrl+o`
+    /// (`restart_edit` set: `x` on a line's last char or `/$` leaves the
+    /// caret on the end, and Insert resumes there). The mode, not
+    /// `self.restart`, tells `ctrl+o`: a `.` replay takes the restart while
+    /// it runs, and the mode stays. A bare motion other than a search still
+    /// stops on a char there (`adjust_cursor()`, `exec_move`).
+    pub(super) fn clamped<B: TextBuf>(&self, buf: &B, at: Pos) -> Pos {
         let row = at.row.min(buf.line_count() - 1);
         let len = buf.line_len(row);
         let max = if self.mode == Mode::Normal { len.saturating_sub(1) } else { len };

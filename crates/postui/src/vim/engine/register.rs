@@ -2,6 +2,10 @@
 //! every field and the body; tier 2 adds "0 (plan 3b) and "+ (plan 3c: the
 //! app copies out; nothing pastes in).
 
+/// The note `"+p`, Visual `"+p` and Insert `ctrl+r +` show instead of
+/// pasting: the engine cannot read the clipboard (Deviation 14).
+pub(super) const PLUS_PASTE_NOTE: &str = "paste with your terminal (ctrl+v)";
+
 /// Charwise or linewise, as Vim's `getregtype()` says `v` or `V`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RegKind {

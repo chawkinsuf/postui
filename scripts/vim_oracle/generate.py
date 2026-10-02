@@ -51,6 +51,10 @@ CHANGE_START = set("dcxXsSDCpPrJiaIAoO~><R") | {"<C-a>", "<C-x>", "<Del>"}
 # commands. A failed `ci"` once turned a typed `Q` into Ex mode and lost the
 # capture (2026-09-29). Typed text uses X, Y and the like instead.
 UNSAFE = {":", "Q", "K", "q", "@", "!", "&"}
+# Keys whose next key is a char argument, so a `/` or `?` after them opens
+# no prompt (`f/`, `"/p`, `<C-r>/`, `m/`): `in_prompt` must not mask what
+# follows, or an UNSAFE key there would pass the lint.
+TAKES_CHAR = {"f", "t", "F", "T", "r", '"', "m", "'", "`", "<C-r>", "<C-v>", "<C-q>"}
 
 
 def die(msg):
@@ -86,8 +90,9 @@ def glob_match(pattern, s):
 def in_prompt(out):
     """For each token, whether it is typed into a `/` or `?` prompt, where
     `.` and the UNSAFE keys are text (plan 3c Task 11). Conservative: a
-    prompt opens on `/` or `?` unless the key before takes a char (`f t F T
-    r`), and it ends on `<CR>`, `<Esc>`, `<C-[>`, any other chord, or a BS or
+    prompt opens on `/` or `?` unless the key before takes it as a char
+    (TAKES_CHAR: `f t F T r`, a register name, a mark), and it ends on
+    `<CR>`, `<Esc>`, `<C-[>`, any other chord, or a BS or
     Del that might find it empty (`<C-w>` and `<C-u>` count as emptying it).
     A `/` typed as Insert text opens one too, which is harmless: what follows
     is text either way, and if the change failed Vim opens a real prompt."""
@@ -105,7 +110,7 @@ def in_prompt(out):
                 inside = False
         else:
             mask.append(False)
-            if t in ("/", "?") and (i == 0 or out[i - 1] not in ("f", "t", "F", "T", "r")):
+            if t in ("/", "?") and (i == 0 or out[i - 1] not in TAKES_CHAR):
                 inside, typed = True, 0
     return mask
 

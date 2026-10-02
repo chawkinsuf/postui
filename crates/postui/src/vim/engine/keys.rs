@@ -500,8 +500,7 @@ impl Pending {
         }
         if let Key::Ctrl(c) = key
             && !matches!(c, 'r' | 'a' | 'x')
-            && !(cx.multiline && scroll(c).is_some())
-            && !(cx.visual && scroll(c).is_some())
+            && !((cx.multiline || cx.visual) && scroll(c).is_some())
         {
             return self.decline_alone(ev);
         }

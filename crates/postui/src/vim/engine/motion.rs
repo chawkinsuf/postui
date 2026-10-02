@@ -860,12 +860,16 @@ impl Engine {
         let from = buf.cursor();
         let want = self.want_at(buf, st, from);
         let cx = MotionCx { op: None, visual, want };
+        let search = matches!(motion, Motion::Search { .. } | Motion::SearchNext { .. } | Motion::Ident { .. });
         let m = self.run_motion(buf, from, motion, count, &cx, ctx);
         let mut to = self.clamped(buf, m.to);
-        if matches!(self.mode, Mode::InsertNormal { .. }) {
+        if matches!(self.mode, Mode::InsertNormal { .. }) && !search {
             // Inside `ctrl+o` a motion still stops on a char (`oneright()`,
             // `adjust_cursor()`); `j`, `k` and `$` reach the end through
-            // the wanted column when Insert resumes.
+            // the wanted column when Insert resumes. A search has no
+            // `adjust_cursor()`: `normal_search()` leaves the caret where
+            // `check_cursor()` puts it ([`Engine::clamped`]), so
+            // `<C-o>/$<CR>` resumes Insert at the line's end.
             to.col = to.col.min(buf.line_len(to.row).saturating_sub(1));
         }
         buf.set_cursor(to);
@@ -944,7 +948,7 @@ impl Engine {
     /// message, and the highlight goes on.
     pub(super) fn search_motion<B: TextBuf>(&mut self, buf: &B, from: Pos, text: &str, dir: Dir, count: usize) -> Moved {
         self.hl = true;
-        let pat = match search::compile(text) {
+        let pat = match self.compiled(text) {
             Ok(p) => p,
             Err(atom) => {
                 self.note = Some(Note::Message(format!("pattern not supported: {atom}")));
@@ -963,18 +967,12 @@ impl Engine {
                     ));
                 }
                 // `normal_search()` ends with `check_cursor()`: a match on
-                // the line's end (`/$`) lands on the last char, except in
-                // Visual (`selection=inclusive`) and inside Insert `ctrl+o`
-                // (`restart_edit`). The motion stays exclusive. The mode, not
-                // `self.restart`, tells `ctrl+o`: a `.` replay takes the
-                // restart while it runs, and the mode stays.
-                let len = buf.line_len(to.row);
-                let to = if to.col >= len && !matches!(self.mode, Mode::Visual(_) | Mode::InsertNormal { .. }) {
-                    Pos::new(to.row, len.saturating_sub(1))
-                } else {
-                    to
-                };
-                Moved::to(to, MKind::Exclusive, WantUpdate::Here)
+                // the line's end (`/$`) lands on the last char in Normal,
+                // and stays on the end in Visual and inside Insert `ctrl+o`
+                // (`clamped`). The motion stays exclusive, after an
+                // operator too: `d/$` keeps the last char in Normal and
+                // deletes it inside `ctrl+o`.
+                Moved::to(self.clamped(buf, to), MKind::Exclusive, WantUpdate::Here)
             }
             None => {
                 self.note = Some(Note::Message(format!("Pattern not found: {text}")));

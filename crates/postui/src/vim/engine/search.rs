@@ -6,6 +6,7 @@
 use super::buf::{Pos, TextBuf};
 use super::class::{class, is_space};
 use regex::Regex;
+use std::collections::HashMap;
 
 /// `/` or `?` (spec §3.14).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,7 +42,8 @@ const META: &str = "%&()*+.123456789<=>?@ACDFHIKLMOPSUVWXZ[_acdfhiklmnopsuvwxz{|
 /// chars, out of the subset.
 const ABBR: &str = "rteb";
 
-/// A compiled pattern.
+/// A compiled pattern. A clone shares the compiled regex.
+#[derive(Debug, Clone)]
 pub(crate) struct Pattern {
     re: Regex,
     /// The haystack needs the sentinels (`\<` or `\>` was used).
@@ -139,6 +141,14 @@ pub(crate) fn compile(source: &str) -> Result<Pattern, String> {
                         }
                         if !body.chars().all(|c| c.is_ascii_digit() || c == ',') || body.matches(',').count() > 1 {
                             return Err("\\{".into());
+                        }
+                        // Vim's `read_limits()` swaps a backwards range:
+                        // `\{3,1}` is `\{1,3}`, still as many as possible.
+                        if let Some((lo, hi)) = body.split_once(',')
+                            && let (Ok(l), Ok(h)) = (lo.parse::<u64>(), hi.parse::<u64>())
+                            && l > h
+                        {
+                            body = format!("{hi},{lo}");
                         }
                         out.push_str(&match body.as_str() {
                             "" => "*".to_string(),
@@ -273,6 +283,10 @@ fn collection(src: &[char]) -> Result<(String, usize), String> {
             // A char index, never a byte offset: the class name may be any text.
             let end = src[i..].windows(2).position(|w| w == [':', ']']).ok_or("[:")?;
             return Err(src[i..i + end + 2].iter().collect());
+        } else if c == '[' && matches!(src.get(i + 1), Some('=' | '.')) && src.get(i + 3) == src.get(i + 1) && src.get(i + 4) == Some(&']') {
+            // An equivalence class `[=x=]` or a collating element `[.x.]`
+            // (one char, as `skip_anyof()` reads them) is out of the subset.
+            return Err(src[i..i + 5].iter().collect());
         } else {
             i += 1;
             c
@@ -398,13 +412,16 @@ impl Pattern {
 ///
 /// Each hit depends only on the one before, so once a hit repeats the rest
 /// of the count is taken modulo the cycle: `9999*` on a word that occurs
-/// once costs two scans, not 9,999 (the cycle has wrapped by then).
+/// once costs two scans, not 9,999 (the cycle has wrapped by then). Each
+/// line's chain is found once per call, so `9999n` along one long line
+/// with no repeat reads that line once, not once per step.
 pub(crate) fn search<B: TextBuf>(buf: &B, from: Pos, dir: Dir, count: usize, pat: &Pattern) -> Option<(Pos, bool)> {
     let lines = buf.line_count();
     let total = count.max(1);
     let mut pos = from;
     let mut wrapped = false;
-    let mut seen: std::collections::HashMap<(usize, usize), usize> = std::collections::HashMap::new();
+    let mut seen: HashMap<(usize, usize), usize> = HashMap::new();
+    let mut chains: HashMap<usize, Vec<(usize, usize)>> = HashMap::new();
     let mut step = 0;
     while step < total {
         let start = pos;
@@ -415,12 +432,17 @@ pub(crate) fn search<B: TextBuf>(buf: &B, from: Pos, dir: Dir, count: usize, pat
                 let mut first = true;
                 for loop_ in 0..2 {
                     while row < lines {
-                        let line = buf.line(row);
-                        let hit = pat.chain(&line).into_iter().find(|&(s, _)| {
-                            let s_adj = if s == line.len() && s > 0 { s - 1 } else { s };
-                            !first || s_adj > start.col
-                        });
-                        if let Some((s, _)) = hit {
+                        let len = buf.line_len(row);
+                        let chain = chain_of(&mut chains, buf, pat, row);
+                        let skip = if first {
+                            chain.partition_point(|&(s, _)| {
+                                let s_adj = if s == len && s > 0 { s - 1 } else { s };
+                                s_adj <= start.col
+                            })
+                        } else {
+                            0
+                        };
+                        if let Some(&(s, _)) = chain.get(skip) {
                             found = Some(Pos::new(row, s));
                             break;
                         }
@@ -444,8 +466,9 @@ pub(crate) fn search<B: TextBuf>(buf: &B, from: Pos, dir: Dir, count: usize, pat
                 for loop_ in 0..2 {
                     while row >= 0 {
                         let r = row as usize;
-                        let hit = pat.chain(&buf.line(r)).into_iter().rfind(|&(s, _)| !first || s < start.col);
-                        if let Some((s, _)) = hit {
+                        let chain = chain_of(&mut chains, buf, pat, r);
+                        let before = if first { chain.partition_point(|&(s, _)| s < start.col) } else { chain.len() };
+                        if let Some(&(s, _)) = before.checked_sub(1).map(|i| &chain[i]) {
                             found = Some(Pos::new(r, s));
                             break;
                         }
@@ -472,6 +495,13 @@ pub(crate) fn search<B: TextBuf>(buf: &B, from: Pos, dir: Dir, count: usize, pat
         }
     }
     Some((pos, wrapped))
+}
+
+/// `row`'s chain, found the first time a [`search`] call asks. Its starts
+/// only grow (the line's end counted one column back included), so the
+/// callers binary-search it.
+fn chain_of<'a, B: TextBuf>(chains: &'a mut HashMap<usize, Vec<(usize, usize)>>, buf: &B, pat: &Pattern, row: usize) -> &'a [(usize, usize)] {
+    chains.entry(row).or_insert_with(|| pat.chain(&buf.line(row)))
 }
 
 /// Vim's `find_ident_at_pos(FIND_IDENT | FIND_STRING)`: the keyword under
@@ -747,6 +777,8 @@ mod tests {
             ("o\\{2}", "foo bar foo", vec![(1, 3), (9, 11)]),
             ("a\\{,2}b", "ab aab aaab", vec![(0, 2), (3, 6), (8, 11)]),
             ("a\\{}b", "ab aab", vec![(0, 2), (3, 6)]),
+            // Vim's `read_limits()` swaps a backwards range: `\{3,1}` is `\{1,3}`.
+            ("a\\{3,1}b", "xx aab aaaab", vec![(3, 6), (8, 12)]),
             ("\\.", "a.b", vec![(1, 2)]),
             ("a\\/b", "a/b", vec![(0, 3)]),
             ("*b", "a*b", vec![(1, 3)]),
@@ -801,6 +833,7 @@ mod tests {
             ("\\u", "\\u"), ("b[[:upper:]]r", "[:upper:]"), ("b\\)", "\\)"), ("\\(b", "\\("), ("\\{2}b", "\\{"), ("\\+b", "\\+"),
             ("^\\+b", "\\+"), ("b**r", "*"), ("o\\{", "\\{"), ("a\\{-1,}b", "\\{-"), ("\\<*", "*"), ("\\1", "\\1"),
             ("[[:日本:]", "[:日本:]"), ("x[[:é:]]", "[:é:]"), ("b[\\n]r", "\\n"), ("[\\d65]", "\\d"), ("[\\x41]", "\\x"),
+            ("[[=a=]]x", "[=a=]"), ("[[.a.]]x", "[.a.]"), ("[b[=日=]]", "[=日=]"),
         ] {
             assert_eq!(compile(pat).err().as_deref(), Some(atom), "{pat:?}");
         }
