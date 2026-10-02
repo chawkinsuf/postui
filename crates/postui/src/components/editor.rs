@@ -4271,7 +4271,7 @@ mod tests {
 
         // Typing an existing key into the ghost row warns too, rather than
         // silently overwriting the row that already owns the key.
-        e.handle_key(key(KeyCode::Char('a'))); // opens the ghost row
+        e.begin_add_row(); // opens the ghost row
         e.handle_key(key(KeyCode::Char('b')));
         let action = e.handle_key(key(KeyCode::Tab));
         assert!(
@@ -6329,7 +6329,7 @@ url = "https://api.example.com/users""#,
             ..Editor::default()
         };
         // Ghost "+ Add" -> type a new row.
-        e.handle_key(key(KeyCode::Char('a')));
+        e.begin_add_row();
         for c in "token".chars() {
             e.handle_key(key(KeyCode::Char(c)));
         }
@@ -6347,8 +6347,8 @@ url = "https://api.example.com/users""#,
         assert_eq!(e.table_len(), 1);
         assert_eq!(table_height(e.table_len()), 4);
 
-        // `d` requests a delete-confirm, same as Params/Headers.
-        let action = e.handle_key(key(KeyCode::Char('d')));
+        // Delete requests a delete-confirm, same as Params/Headers.
+        let action = e.handle_key(key(KeyCode::Delete));
         assert_eq!(action, Some(Action::DeleteTableRow(0)));
     }
 

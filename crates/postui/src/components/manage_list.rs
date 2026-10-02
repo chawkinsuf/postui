@@ -606,15 +606,7 @@ impl ManageList {
                 self.step(-self.page(), len);
                 None
             }
-            KeyCode::Char('n') => Some(Self::new_action(tab)),
-            KeyCode::Char('r') => Some(Self::rename_action(tab, self.selected(tab, ctx)?)),
-            KeyCode::Char('m') if tab == ManageTab::Spaces => {
-                Some(Self::move_all_action(self.selected(tab, ctx)?))
-            }
-            KeyCode::Char('t') if tab == ManageTab::Environments => {
-                Some(Self::cycle_tls_action(ctx, self.selected(tab, ctx)?))
-            }
-            KeyCode::Char('d') | KeyCode::Delete if ev.modifiers.is_empty() => {
+            KeyCode::Delete if ev.modifiers.is_empty() => {
                 Some(Self::delete_action(tab, self.selected(tab, ctx)?))
             }
             // `u` / `:` (undo, palette) are deliberately not named: an
@@ -1333,17 +1325,37 @@ mod tests {
         );
     }
 
-    /// The command letters and the reorder chord keep working from the
-    /// pane: the aim is about *which* control Enter fires, not a mode.
+    /// Spec §4.5: the list's verbs are the router's; Delete stays.
     #[test]
-    fn command_letters_and_reorder_still_work_from_the_detail_pane() {
+    fn the_manage_list_has_no_verb_letters() {
+        let (ctx, _dir) = ctx();
+        for tab in [ManageTab::Environments, ManageTab::Spaces] {
+            let mut l = ManageList::default();
+            draw_at(&mut l, tab, &ctx, 100);
+            for c in ['n', 'a', 'r', 'd', 'm', 't'] {
+                assert_eq!(l.handle_key(key(KeyCode::Char(c)), tab, &ctx), None, "{c} on {tab:?}");
+            }
+        }
+        let mut l = ManageList::default();
+        draw_at(&mut l, ManageTab::Environments, &ctx, 100);
+        assert!(matches!(
+            l.handle_key(key(KeyCode::Delete), ManageTab::Environments, &ctx),
+            Some(Action::DeleteEnv(_))
+        ));
+    }
+
+    /// The reorder chord keeps working from the pane, and the router's
+    /// rename verb resolves through `verb_action`: the aim is about
+    /// *which* control Enter fires, not a mode.
+    #[test]
+    fn verb_rename_and_reorder_still_work_from_the_detail_pane() {
         let (ctx, _dir) = ctx();
         let mut l = ManageList::default();
         draw_at(&mut l, ManageTab::Spaces, &ctx, 100);
         l.cursor = 1;
         l.handle_key(key(KeyCode::Right), ManageTab::Spaces, &ctx);
         assert_eq!(
-            l.handle_key(key(KeyCode::Char('r')), ManageTab::Spaces, &ctx),
+            l.verb_action(ManageTab::Spaces, &ctx, Verb::Rename),
             Some(Action::PromptRenameSpace("auth".into()))
         );
         assert_eq!(

@@ -865,15 +865,6 @@ impl Component for Sidebar {
                     Some(Action::Render)
                 }
             },
-            KeyCode::Char('n') => Some(Action::PromptNewRequest),
-            KeyCode::Char('r') => matches!(self.selected_row()?, Row::Request { .. })
-                .then_some(Action::PromptRenameRequest),
-            KeyCode::Char('d') if ev.modifiers.is_empty() => {
-                matches!(self.selected_row()?, Row::Request { .. })
-                    .then_some(Action::DeleteSelectedRequest)
-            }
-            KeyCode::Char('m') => matches!(self.selected_row()?, Row::Request { .. })
-                .then_some(Action::PromptMoveSelectedRequestToSpace),
             _ => None,
         }
     }
@@ -1428,6 +1419,16 @@ mod tests {
 
     fn req_row(slug: &str) -> Row {
         Row::Request { slug: slug.into(), name: slug.into(), depth: 0, broken: None, method: None }
+    }
+
+    /// Spec §4.5: the verbs are the router's rows now; the sidebar's own
+    /// keys are named keys only.
+    #[test]
+    fn the_sidebar_has_no_verb_letters() {
+        let mut s = Sidebar { rows: vec![req_row("main/a")], selected: Some(0), ..Sidebar::default() };
+        for c in ['n', 'a', 'r', 'd', 'm', 'y', 'p', 'P'] {
+            assert_eq!(s.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)), None, "{c}");
+        }
     }
 
     /// Spec §5.2: N request rows from the cursor down, folder rows

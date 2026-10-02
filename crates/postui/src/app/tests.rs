@@ -6884,7 +6884,7 @@ fn dirty_dot_renders_in_sidebar() {
 fn new_request_prompt_flow_creates_file_and_opens_it() {
     let mut app = App::new_for_test();
     app.focus = PaneId::Sidebar;
-    app.handle_key(plain('n'));
+    app.handle_key(plain('a'));
     assert!(matches!(
         app.modals.top(),
         Some(Modal::Prompt {
@@ -16134,10 +16134,11 @@ fn the_promote_button_promotes_the_requests_override_up_into_the_project() {
     assert!(!app.editor.variables.contains_key("base_url"));
 }
 
-/// Keyboard parity: `e`/`F2` rename and `s` secret-toggle still work while
-/// the variable form is on screen (unchanged from before this task).
+/// Keyboard parity: `r`/`F2` rename and `s` secret-toggle still work while
+/// the variable form is on screen (the letters now reach them through the
+/// router's rows).
 #[test]
-fn keyboard_e_and_s_still_work_with_the_form_on_screen() {
+fn keyboard_r_and_s_still_work_with_the_form_on_screen() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -16146,7 +16147,7 @@ fn keyboard_e_and_s_still_work_with_the_form_on_screen() {
         r == &crate::components::varmanager::VmRow::Var("base_url".into())
     });
 
-    app.handle_key(plain('e'));
+    app.handle_key(plain('r'));
     assert!(matches!(
         app.modals.top(),
         Some(Modal::Prompt {

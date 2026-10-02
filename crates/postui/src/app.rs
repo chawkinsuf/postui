@@ -10301,20 +10301,13 @@ impl App {
             if self.screen == Screen::Manage && self.varmanager.grid.editing.is_some() {
                 return self.handle_grid_key(ev);
             }
-            let open_request = self
-                .editor
-                .slug
-                .is_some()
-                .then(|| self.editor.current_request());
             let action = {
                 let Self {
                     project,
                     varmanager,
                     ..
                 } = self;
-                project
-                    .as_ref()
-                    .and_then(|p| varmanager.handle_key(ev, p, open_request.as_ref()))
+                project.as_ref().and_then(|p| varmanager.handle_key(ev, p))
             };
             if let Some(a) = action {
                 return self.update(a);

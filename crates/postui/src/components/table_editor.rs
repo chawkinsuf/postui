@@ -354,7 +354,7 @@ impl TableEditorState {
     }
 
     /// Starts a brand-new row: the ghost row's key cell, exactly like
-    /// clicking it. Shared by the `a` key path.
+    /// clicking it. Shared by the `+ Add` click and `Action::TableAddRow`.
     pub fn begin_add(&mut self, map: &IndexMap<String, Entry>) {
         self.start_edit(map.len(), Col::Key, map);
     }
@@ -454,12 +454,6 @@ impl TableEditorState {
                     TableOutcome::not_consumed()
                 }
             }
-            // `a` is the keyboard shorthand for "start a new row": it opens
-            // the ghost row's key cell, exactly like clicking it.
-            KeyCode::Char('a') if ev.modifiers.is_empty() => {
-                self.begin_add(map);
-                TableOutcome::consumed()
-            }
             KeyCode::Enter => {
                 if self.selected.is_none() {
                     return TableOutcome::not_consumed();
@@ -504,7 +498,7 @@ impl TableEditorState {
                 self.selected = Some(self.selected.unwrap_or(0).saturating_sub(half));
                 TableOutcome::consumed()
             }
-            KeyCode::Char('d') | KeyCode::Delete if ev.modifiers.is_empty() => {
+            KeyCode::Delete if ev.modifiers.is_empty() => {
                 if self.ghost_selected(map) || self.selected.is_none_or(|s| s >= map.len()) {
                     return TableOutcome::not_consumed();
                 }
@@ -1797,7 +1791,6 @@ mod tests {
         let mut map = map_of(&[("a", "1")]);
         let mut t = TableEditorState::default();
         assert!(!t.handle_key(key(KeyCode::Char(' ')), &mut map).consumed);
-        assert!(!t.handle_key(key(KeyCode::Char('d')), &mut map).consumed);
 
         t.selected = Some(0);
         assert!(t.handle_key(key(KeyCode::Char(' ')), &mut map).consumed);
@@ -1816,7 +1809,7 @@ mod tests {
         };
         assert!(!t.handle_key(key(KeyCode::Char(' ')), &mut map).consumed);
         assert_eq!(
-            t.handle_key(key(KeyCode::Char('d')), &mut map)
+            t.handle_key(key(KeyCode::Delete), &mut map)
                 .request_delete,
             None
         );
@@ -2033,14 +2026,18 @@ mod tests {
         assert_eq!(map.len(), 1);
     }
 
+    /// Spec §4.5: `a` and `d` are the router's; Delete stays the table's.
     #[test]
-    fn a_opens_the_ghost_rows_key_cell() {
-        let mut map = map_of(&[("a", "1")]);
-        let mut t = TableEditorState::default();
-        assert!(t.handle_key(key(KeyCode::Char('a')), &mut map).consumed);
-        let edit = t.editing.as_ref().unwrap();
-        assert_eq!((edit.row, edit.col), (1, Col::Key));
-        assert_eq!(edit.input.text(), "");
+    fn the_table_has_no_verb_letters() {
+        let mut map = map_of(&[("k", "v")]);
+        let mut t = TableEditorState { selected: Some(0), ..TableEditorState::default() };
+        for c in ['a', 'd'] {
+            let out = t.handle_key(key(KeyCode::Char(c)), &mut map);
+            assert!(!out.consumed, "{c}");
+        }
+        assert!(t.editing.is_none(), "a did not open the add row");
+        let del = t.handle_key(key(KeyCode::Delete), &mut map);
+        assert_eq!(del.request_delete, Some(0), "Delete stays");
     }
 
     #[test]
