@@ -2,11 +2,28 @@
 //! keys and the text field with the caret. `App::surface` and
 //! `App::field_caret` are the one place that reads them off the app.
 
+use crate::action::Action;
 use crate::components::editor::EditorTab;
 use crate::components::manage::ManageTab;
 use crate::components::response::ViewMode;
 use crate::components::settings::SettingsField;
 use crate::components::varmanager::VmField;
+use crate::config::KeyProfile;
+
+/// One snapshot of where a key lands (spec §3.2). `App::key_ctx` builds
+/// it fresh for every key; the router reads nothing else from the app.
+#[derive(Debug, Clone, PartialEq)]
+pub struct KeyCtx {
+    pub profile: KeyProfile,
+    pub surface: Surface,
+    pub field: FieldCaret,
+    /// In vim, what `keys.toml` binds this key to when it is a bare char
+    /// (spec §4.4): it wins over the table while nothing is pending.
+    pub user_bare: Option<Action>,
+    /// The most rows a repeated motion can move on this surface: a
+    /// replay past it would change nothing (plan M1 Deviation 11).
+    pub cap: usize,
+}
 
 /// The thing the keys go to. It never names a stale pane: `App::surface`
 /// reads the modal stack, the screen, the focus and the editor's
