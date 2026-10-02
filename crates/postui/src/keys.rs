@@ -349,12 +349,13 @@ fn parse_overrides(toml_str: &str) -> anyhow::Result<Vec<(String, Vec<String>)>>
 
 impl Keymap {
     /// The bindings `profile` ships with (piece 4 spec §4.4, plan M1
-    /// Deviation 4). Vim gives up `q` (its macro prefix; `:q` quits) and
-    /// `ctrl+r` (redo, a router row). A user's `keys.toml` layers on top.
+    /// Deviation 4). Vim gives up `q` (its macro prefix; `:q` quits),
+    /// `ctrl+r` (redo, a router row) and `alt+a` (`a` adds a table row,
+    /// plan M2 Deviation 5). A user's `keys.toml` layers on top.
     pub fn default_bindings_for(profile: crate::config::KeyProfile) -> Self {
         let mut map = Self::default_bindings();
         if profile == crate::config::KeyProfile::Vim {
-            for combo in ["q", "ctrl+r"] {
+            for combo in ["q", "ctrl+r", "alt+a"] {
                 map.bindings
                     .remove(&KeyCombo::parse(combo).expect("a valid default combo"));
             }
@@ -458,6 +459,17 @@ impl Keymap {
 
     pub fn lookup(&self, combo: &KeyCombo) -> Option<Action> {
         self.bindings.get(combo).cloned()
+    }
+
+    /// What `combo` is bound to when a `keys.toml` override put it there,
+    /// never a default binding (plan M2 Deviation 18: in arrows only the
+    /// user's letters beat the router's verb rows).
+    pub(crate) fn lookup_override(&self, combo: &KeyCombo) -> Option<Action> {
+        let action = self.bindings.get(combo)?;
+        self.overrides
+            .iter()
+            .any(|(a, combos)| a == action && combos.contains(combo))
+            .then(|| action.clone())
     }
 
     pub fn bind(&mut self, combo: KeyCombo, action: Action) {
@@ -1451,9 +1463,10 @@ mod tests {
         assert!(!opens_field(&key(KeyCode::Esc, KeyModifiers::NONE)));
     }
 
-    /// Plan M1 Deviation 4: vim gives up only `q` (its macro prefix; `:q`
-    /// quits) and `ctrl+r` (redo, a router row) in M1. Every other chord
-    /// stays shared until the milestone that gives vim its own key for it.
+    /// Plan M1 Deviation 4 and M2 Deviation 5: vim gives up `q` (its macro
+    /// prefix; `:q` quits), `ctrl+r` (redo, a router row) and `alt+a` (`a`
+    /// adds a row). Every other chord stays shared until the milestone
+    /// that gives vim its own key for it.
     #[test]
     fn the_vim_profile_drops_q_and_gives_ctrl_r_to_the_router() {
         use crate::config::KeyProfile::{Arrows, Vim};
@@ -1463,9 +1476,11 @@ mod tests {
         assert_eq!(get(Vim, "q"), None);
         assert_eq!(get(Vim, "ctrl+r"), None, "a router row (redo), not a keymap binding");
         assert_eq!(get(Vim, "ctrl+enter"), Some(Action::Send));
+        assert_eq!(get(Arrows, "alt+a"), Some(Action::TableAddRow));
+        assert_eq!(get(Vim, "alt+a"), None, "vim adds a row with `a` (plan M2 Deviation 5)");
         for combo in [
-            "ctrl+c", "ctrl+v", "ctrl+o", "ctrl+p", "ctrl+z", "ctrl+s", "alt+w", "alt+right", "alt+a",
-            "alt+t", "ctrl+1",
+            "ctrl+c", "ctrl+v", "ctrl+o", "ctrl+p", "ctrl+z", "ctrl+s", "alt+w", "alt+right", "alt+t",
+            "ctrl+1",
         ] {
             assert_eq!(get(Vim, combo), get(Arrows, combo), "{combo} is shared until its vim key lands");
         }

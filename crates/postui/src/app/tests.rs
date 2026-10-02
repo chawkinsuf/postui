@@ -12512,7 +12512,7 @@ fn toggle_secret_is_refused_for_a_group() {
 // -- every structural op is reachable both by key and by a painted chip --
 
 #[test]
-fn keyboard_n_and_a_open_the_new_var_and_new_group_prompts() {
+fn keyboard_a_and_shift_a_open_the_new_var_and_new_group_prompts() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -12520,7 +12520,8 @@ fn keyboard_n_and_a_open_the_new_var_and_new_group_prompts() {
     app.handle_key(alt('r'));
     rendered_text(&mut app);
 
-    app.handle_key(plain('n'));
+    // Plan M2: the shared letters. `a` adds a variable, `A` the other kind.
+    app.handle_key(plain('a'));
     assert!(matches!(
         app.modals.top(),
         Some(Modal::Prompt {
@@ -12534,7 +12535,7 @@ fn keyboard_n_and_a_open_the_new_var_and_new_group_prompts() {
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
-    app.handle_key(plain('a'));
+    app.handle_key(KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT));
     assert!(matches!(
         app.modals.top(),
         Some(Modal::Prompt {
@@ -29456,6 +29457,35 @@ fn a_keys_toml_letter_on_a_manage_screen_needs_the_whitelist() {
     assert_eq!(app.screen, Screen::Manage);
     app.handle_key(plain('y'));
     assert!(matches!(app.modals.top(), Some(Modal::Palette(_))), "a whitelisted action fires");
+}
+
+/// Plan M2 Deviation 18 (amendment A5-1): in arrows a `keys.toml` letter
+/// beats the list verbs' rows; with no override the row runs.
+#[test]
+fn an_arrows_keys_toml_letter_beats_a_verb_row_and_a_default_binding_does_not() {
+    use crate::config::KeyProfile;
+    let (mut app, _dir) = sidebar_test_app_three_flat_rows();
+    app.use_profile(KeyProfile::Arrows);
+    render_once(&mut app);
+    app.focus = PaneId::Sidebar;
+    app.sidebar.selected = Some(0);
+    // The default `q` is a keymap binding, not an override: the router
+    // does not take it, so a verb row could never be shadowed by a default.
+    assert_eq!(app.key_ctx(&plain('q')).user_bare, None, "a default binding is not an override");
+    assert_eq!(app.key_ctx(&plain('y')).user_bare, None);
+    app.handle_key(plain('y'));
+    assert_eq!(app.yank, crate::yank::Register::Request("main/alpha".into()), "no override: y yanks");
+
+    let (mut app, _dir) = sidebar_test_app_three_flat_rows();
+    app.use_profile(KeyProfile::Arrows);
+    app.keymap.apply_overrides("quit = [\"ctrl+c\", \"y\"]\n").unwrap();
+    render_once(&mut app);
+    app.focus = PaneId::Sidebar;
+    app.sidebar.selected = Some(0);
+    assert_eq!(app.key_ctx(&plain('y')).user_bare, Some(Action::Quit));
+    app.handle_key(plain('y'));
+    assert!(app.should_quit, "the keys.toml binding won");
+    assert_eq!(app.yank, crate::yank::Register::Empty, "and y did not yank");
 }
 
 /// Review Focus 4.
