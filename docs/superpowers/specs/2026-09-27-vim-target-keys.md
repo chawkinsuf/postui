@@ -116,65 +116,68 @@ and `l` do not), `selection=inclusive`. The full list is piece 3 §3.4.
 Lists: the sidebar, the Manage lists (Variables, Environments, Spaces), the
 variable picker lists. Tables: Headers / Params / Vars rows.
 
-| Keys | Tier | Test | Notes / Who |
-|---|---|---|---|
-| `j` `k` `gg` `G`, counts, `ctrl+d` `ctrl+u` | 1 | S | |
-| `h` `l` between cells (tables) | 1 | S | earlier |
-| `Enter` / `o` open a row; `i` opens a cell | 1 | S | earlier |
-| `a` add, `r` rename (lists), `m` move (sidebar) | 1 | S | same letters in both profiles — **you** (shared single-letter keys) |
-| `dd` delete, never asks to confirm | 1 | S | **you** (delete never confirms) |
-| `{N}dd` deletes N rows as one undo step | 2 | S | earlier |
-| `yy` then `p` / `P` duplicates below / above | 1 | S | earlier |
-| `u` `ctrl+r` app undo/redo, reselecting what came back | 1 | S | undo restores exactly — **you** |
-| `/` search or filter the list, `n` `N` | Out | | parked for a future update: a search that only moves to one row isn't enough, and the scope is already large (you) |
-| `zo` `zc` `za` fold/unfold sidebar folders | 2 | S | mine |
-| `.` repeats the last list action (e.g. `dd..`) | 2 | S | you (accepted my recommendation); each repeat is its own undo step |
-| `H` `M` `L`, `zz` `zt` `zb` in lists | Out | | little value in short lists |
+The ID column names each row for the matrix tests (piece 4 spec §8.1, crates/postui/src/keyroute/keylist.rs).
+
+| ID | Keys | Tier | Test | Notes / Who |
+|---|---|---|---|---|
+| `L.move` | `j` `k` `gg` `G`, counts, `ctrl+d` `ctrl+u` | 1 | S | |
+| `L.hl` | `h` `l` between cells (tables) | 1 | S | earlier |
+| `L.open` | `Enter` / `o` open a row; `i` opens a cell | 1 | S | earlier |
+| `L.verbs` | `a` add, `r` rename (lists), `m` move (sidebar) | 1 | S | same letters in both profiles — **you** (shared single-letter keys) |
+| `L.dd` | `dd` delete, never asks to confirm | 1 | S | **you** (delete never confirms) |
+| `L.Ndd` | `{N}dd` deletes N rows as one undo step | 2 | S | earlier |
+| `L.yank` | `yy` then `p` / `P` duplicates below / above | 1 | S | earlier |
+| `L.undo` | `u` `ctrl+r` app undo/redo, reselecting what came back | 1 | S | undo restores exactly — **you** |
+| `L.search` | `/` search or filter the list, `n` `N` | Out | | parked for a future update: a search that only moves to one row isn't enough, and the scope is already large (you) |
+| `L.fold` | `zo` `zc` `za` fold/unfold sidebar folders | 2 | S | mine |
+| `L.dot` | `.` repeats the last list action (e.g. `dd..`) | 2 | S | you (accepted my recommendation); each repeat is its own undo step |
+| `L.hml` | `H` `M` `L`, `zz` `zt` `zb` in lists | Out | | little value in short lists |
 
 ## 7. Response viewer (Tree / Raw / Headers)
 
-| Keys | Tier | Test | Notes |
-|---|---|---|---|
-| `j` `k` `gg` `G`, counts | 1 | S | |
-| `ctrl+d` `ctrl+u` scroll the view AND move the cursor by half a page | 1 | S | sweep 7 found only the cursor moves today; the fix applies to the arrows profile too — you (accepted my recommendation) |
-| `ctrl+f` `ctrl+b`, `zz` `zt` `zb` | 2 | S | |
-| `zo` `zc` `za`, `zR` `zM` (open/close all) | 1 / 2 | S | `zR`/`zM` tier 2 |
-| `/` `n` `N` search with a match counter | 1 | S | |
-| `*` `#` search for the word under the cursor | 2 | S | |
-| `yy` copy the line / node value | 2 | S | mine |
-| `v` `V` select + `y` in Raw | 2 | S | mine |
+| ID | Keys | Tier | Test | Notes |
+|---|---|---|---|---|
+| `R.move` | `j` `k` `gg` `G`, counts | 1 | S | |
+| `R.ctrl-d` | `ctrl+d` `ctrl+u` scroll the view AND move the cursor by half a page | 1 | S | sweep 7 found only the cursor moves today; the fix applies to the arrows profile too — you (accepted my recommendation) |
+| `R.page` | `ctrl+f` `ctrl+b`, `zz` `zt` `zb` | 2 | S | |
+| `R.fold` | `zo` `zc` `za` | 1 | S | |
+| `R.foldall` | `zR` `zM` (open/close all) | 2 | S | |
+| `R.search` | `/` `n` `N` search with a match counter | 1 | S | |
+| `R.star` | `*` `#` search for the word under the cursor | 2 | S | |
+| `R.yy` | `yy` copy the line / node value | 2 | S | mine |
+| `R.visual` | `v` `V` select + `y` in Raw | 2 | S | mine |
 
 ## 8. Panes, tabs, command line
 
-| Keys | Tier | Test | Notes / Who |
-|---|---|---|---|
-| `ctrl+w h/j/k/l`, `ctrl+w w/W/p` by pane geometry (sidebar left; editor over response) | 1 | S | earlier |
-| `ctrl+w` + arrow keys | 2 | S | |
-| `gt` `gT` `{N}gt` on every tab strip (editor, response, Manage) | 1 | S | earlier |
-| `:w` `:q` `:q!` `:wq` `:x` `:qa` `:wa` | 1 | S | |
-| `:e` / `:e!` reload from disk | 2 | S | |
-| `:` + app verbs (`:send`, `:new`, `:rename`, `:manage`, …) | 1 | S | earlier |
-| Command line editing: `ctrl+u` `ctrl+w`, `Backspace`, `Esc` cancels | 1 | S | |
-| Command-line history (`↑` `↓`) | 2 | S | |
-| `:s`, `:g`, `:set …` | Out | | show no match; never run something else |
-| `:noh` | Out, then 2 | S | Out until body search ships; then it clears the search highlight |
+| ID | Keys | Tier | Test | Notes / Who |
+|---|---|---|---|---|
+| `P.ctrlw` | `ctrl+w h/j/k/l`, `ctrl+w w/W/p` by pane geometry (sidebar left; editor over response) | 1 | S | earlier |
+| `P.ctrlw-arrows` | `ctrl+w` + arrow keys | 2 | S | |
+| `P.gt` | `gt` `gT` `{N}gt` on every tab strip (editor, response, Manage) | 1 | S | earlier |
+| `X.wq` | `:w` `:q` `:q!` `:wq` `:x` `:qa` `:wa` | 1 | S | |
+| `X.e` | `:e` / `:e!` reload from disk | 2 | S | |
+| `X.verbs` | `:` + app verbs (`:send`, `:new`, `:rename`, `:manage`, …) | 1 | S | earlier |
+| `X.edit` | Command line editing: `ctrl+u` `ctrl+w`, `Backspace`, `Esc` cancels | 1 | S | |
+| `X.history` | Command-line history (`↑` `↓`) | 2 | S | |
+| `X.unsupported` | `:s`, `:g`, `:set …` | Out | | show no match; never run something else |
+| `X.noh` | `:noh` | Out, then 2 | S | Out until body search ships; then it clears the search highlight |
 
 ## 9. Prompts, pickers, dialogs, and everything global
 
-| Keys | Tier | Test | Notes / Who |
-|---|---|---|---|
-| A prompt opens in Insert; `Esc` → Normal; `Esc` again cancels; `Enter` confirms from anywhere | 1 | S | earlier. In the arrows profile too, `Enter` confirms and `Esc` cancels a one-field prompt — you (accepted my recommendation) |
-| Pickers (palette, `{{` variables, choosers): type to filter, `ctrl+n` `ctrl+p` move | 1 | S | earlier |
-| Confirm dialogs answer with their letter keys (`y`/`n`, `s`/`d`), `Esc` cancels | 1 | S | earlier |
-| `ZZ` `ZQ` | 1 | S | follow Vim: `ZZ` = `:x`, `ZQ` = `:q!` — you (accepted my recommendation; replaces the vim-mode branch's save/discard-without-quitting) |
-| Macros `q{reg}` … `q`, `@{reg}` | Out | S | Shows "not supported"; must never type into a field or eat the next key. After `q{reg}` shows the note, the closing `q` is swallowed too (fixes the `qa x q @a` → INSERT problem sweep 7 found) — you (accepted my recommendation) |
-| Marks `m{a-z}`, `'` `` ` `` jumps | Out | S | `m` keeps its list meaning (move) — you (shared letters) |
-| `"0` (the yank register: `"0p` puts the last yank even after a delete) | 2 | V | first wave (piece 3 §5) — mine |
-| Named registers `"a`–`"z`, `"+` | Out / 2 | | `"+` (system clipboard) tier 2 — mine |
-| Jumps `ctrl+o` `ctrl+i` | Out | | `ctrl+o` keeps the project chooser — earlier |
-| Any unsupported key | — | S | does nothing visible except, where a vim user would expect something, a short "not supported" note; never arms a half-typed state that eats the next key |
-| The footer echoes counts and half-typed commands (`3`, `d`, `2d`, `g`) | 1 | S | earlier |
-| Mode indicator (NORMAL / INSERT / VISUAL) always names the thing taking the keys | 1 | S | earlier |
+| ID | Keys | Tier | Test | Notes / Who |
+|---|---|---|---|---|
+| `D.prompt` | A prompt opens in Insert; `Esc` → Normal; `Esc` again cancels; `Enter` confirms from anywhere | 1 | S | earlier. In the arrows profile too, `Enter` confirms and `Esc` cancels a one-field prompt — you (accepted my recommendation) |
+| `D.picker` | Pickers (palette, `{{` variables, choosers): type to filter, `ctrl+n` `ctrl+p` move | 1 | S | earlier |
+| `D.confirm` | Confirm dialogs answer with their letter keys (`y`/`n`, `s`/`d`), `Esc` cancels | 1 | S | earlier |
+| `G.ZZ` | `ZZ` `ZQ` | 1 | S | follow Vim: `ZZ` = `:x`, `ZQ` = `:q!` — you (accepted my recommendation; replaces the vim-mode branch's save/discard-without-quitting) |
+| `G.qa` | Macros `q{reg}` … `q`, `@{reg}` | Out | S | Shows "not supported"; must never type into a field or eat the next key. After `q{reg}` shows the note, the closing `q` is swallowed too (fixes the `qa x q @a` → INSERT problem sweep 7 found) — you (accepted my recommendation) |
+| `G.marks` | Marks `m{a-z}`, `'` `` ` `` jumps | Out | S | `m` keeps its list meaning (move) — you (shared letters) |
+| `G.reg0` | `"0` (the yank register: `"0p` puts the last yank even after a delete) | 2 | V | first wave (piece 3 §5) — mine |
+| `G.regs` | Named registers `"a`–`"z`, `"+` | Out / 2 | | `"+` (system clipboard) tier 2 — mine |
+| `G.jumps` | Jumps `ctrl+o` `ctrl+i` | Out | | `ctrl+o` keeps the project chooser — earlier |
+| `G.unsupported` | Any unsupported key | — | S | does nothing visible except, where a vim user would expect something, a short "not supported" note; never arms a half-typed state that eats the next key |
+| `G.echo` | The footer echoes counts and half-typed commands (`3`, `d`, `2d`, `g`) | 1 | S | earlier |
+| `G.mode` | Mode indicator (NORMAL / INSERT / VISUAL) always names the thing taking the keys | 1 | S | earlier |
 
 ---
 

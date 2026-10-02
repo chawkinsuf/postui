@@ -11215,4 +11215,6 @@ mod landing;
 mod mouse;
 mod router;
 #[cfg(test)]
+mod key_matrix_tests;
+#[cfg(test)]
 mod tests;
