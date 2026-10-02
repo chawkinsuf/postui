@@ -118,16 +118,23 @@ pub struct KeyCtx {
 }
 ```
 
-Amended by plan M1 (Deviations 5, 11, 26): `answers` is dropped with the
-engine fields (`field`'s `Parked`, `engine`) until M3. `user_bare` is the
-bound `Option<Action>`, not a `bool`, because the router runs the keys.toml
-binding itself. `KeyCtx` gains `cap`, the most rows (or columns) a repeated
-motion can move on the surface, floored at 1, so a 9 999 count costs at most
-one pass. `App::repeat_cap` gives it per surface: sidebar 2x rows, table
-(rows+1).max(2), response max(lines, widest measured line) (`MAX_COUNT` while
-unmeasured), Manage list and detail (`ManageList::detail_span`) and Variables
-row-based. `SpellCtx` (profile, surface, field live) is the `Copy` part the
-keycap speller and `HintCtx` need.
+Amended by plan M1 (Deviations 5, 11, 26):
+
+- `answers` is dropped until M3 (`you`, 2026-10-02, Deviation 26), and so
+  is `engine` (`mine`, Deviation 5). `field` keeps `Parked`: a modal with no
+  field of its own parks the field under it (`FieldCaret::Parked(FieldId)`).
+- `user_bare` is the bound `Option<Action>`, not a `bool`, because the
+  router runs the keys.toml binding itself (`mine`, Deviation 11).
+- `KeyCtx` gains `cap` (`mine`, Deviation 11): the most rows (or columns) a
+  repeated motion can move on the surface, floored at 1, so a 9 999 count
+  costs at most one pass. `App::repeat_cap` gives it per surface: the
+  sidebar 2x its rows; a table (rows+1).max(2); the response max(lines,
+  widest measured line) (`MAX_COUNT` while unmeasured); Settings its rows; a
+  Manage list its items, a Manage detail pane its controls
+  (`ManageList::detail_span`); the Variables list its rows, the options grid
+  (options+1) + (fields+2), the variable form its stops.
+- `SpellCtx` (profile, surface, field live) is the `Copy` part the keycap
+  speller and `HintCtx` need (`mine`, Deviation 11).
 
 ### 3.3 `Surface`, `FieldId`, `FieldSession`
 
@@ -492,25 +499,28 @@ which shadows vim's `x`", the same shape as `caret_warnings`
 
 Amended by plan M1 (Deviations 19, 21, 23, 4):
 
-- **Letter reach.** A keys.toml bare letter wins in vim only where today's
-  keymap step reaches: `Screen::Main` with no modal open and a navigation
-  surface (`Surfaces::NAV`). On the Manage screens it is also filtered
-  through `screen_escape_whitelist`. It never fires under a modal or a
-  non-whitelisted screen.
-- **Warnings.** They name only chars that start a vim row, plus the digits
-  1-9 (vim reads them as counts, so such a binding can never fire on a
-  count-taking surface). They are issued at load, on reload (only when the
-  keymap changed, computed against the keymap actually installed) and on
-  switching to vim from Settings.
-- **Reload.** A config.toml that will not parse on reload keeps the running
-  profile's keymap (`Config::reload` takes the running profile).
-- **M1's vim keymap** is the arrows keymap minus `q` and minus
-  `ctrl+r`->Send. `ctrl+s`, `alt+w`, `shift+alt+w`, `alt+left`/`alt+right`
-  and `alt+a` stay bound in vim until the milestone that gives each its vim
-  key (M2 for `a`, M4 for the rest); the table's "unbound" cells for them
-  hold from then on.
-- **Tokens.** `Tok::of` returns None for ctrl+shift letter chords (they are
-  not `<C-x>`).
+- **Letter reach** (`you`, 2026-10-02, Deviation 21). A keys.toml bare
+  letter wins in vim only where today's keymap step reaches: `Screen::Main`
+  with no modal open and a navigation surface (`Surfaces::NAV`). On the
+  Manage screens it is also filtered through `screen_escape_whitelist`. It
+  never fires under a modal or a non-whitelisted screen.
+- **Warnings** (`mine`, Deviation 19). They name only chars that start a vim
+  row, plus the digits 1-9 (vim reads them as counts, so such a binding can
+  never fire on a count-taking surface). They are issued at load, on reload
+  (only when the keymap changed, computed against the keymap actually
+  installed), on switching to vim from Settings, and on an undo or redo
+  that switches back into vim.
+- **Reload** (`you`, 2026-10-02, Deviation 23). A config.toml that will not
+  parse on reload keeps the running profile's keymap (`Config::reload`
+  takes the running profile).
+- **M1's vim keymap** (`mine`, Deviation 4) is the arrows keymap minus `q`
+  and minus `ctrl+r`->Send. `ctrl+s`, `alt+w`, `shift+alt+w`,
+  `alt+left`/`alt+right` and `alt+a` stay bound in vim until the milestone
+  that gives each its vim key (M2 for `a`, M4 for the rest); the table's
+  "unbound" cells for them hold from then on. A keys.toml reset seeds the
+  running profile's defaults.
+- **Tokens** (`mine`). `Tok::of` returns None for ctrl+shift letter chords
+  (they are not `<C-x>`).
 
 ### 4.5 Letters leave the components
 
@@ -584,10 +594,11 @@ pending state that eats the next key (key list §9, `earlier`).
 swallowed silently (`mine`).
 
 Amended by plan M1 (Deviation 22): digits build a count only in vim, and
-only on a navigation surface where some row takes a count
-(`table::takes_count`, derived from the table's `Repeat` and `Pass` rows).
-Elsewhere a digit goes on as it does today. A `0` with no count started is
-a key, not a count.
+only where some row takes a count (`you`, 2026-10-02). That is read as a
+navigation surface where some row takes one (`mine`: your "lists and panes
+only"), so `table::takes_count` is derived from the table's `Repeat` and
+`Pass` rows on `Surfaces::NAV`. Elsewhere a digit goes on as it does today.
+A `0` with no count started is a key, not a count.
 
 ### 5.2 Sidebar
 
@@ -1013,7 +1024,8 @@ milestone.
   - Footer mode indicator and echo (§3.8), computed keycaps (§4.6), the
     matrix harness (§8.1) and the invariant tests (§8.3).
   - **Shipped** by plan 2026-10-01-vim-profile-m1. Decided there with the user (2026-10-01): the verb letters stay in the components until M2's OnSelection; the first-launch question is built but raised from M3 (an unset keymap runs arrows until then); every footer keycap is computed. The plan's Deviations list the rest: notably the vim keymap keeps ctrl+s, alt+w, alt+←/→ and alt+a until the milestone that gives each its vim key, FieldSession and OpenAs arrive with the engine in M3, and modal.rs's own aliases stay until M3's prompt rows.
-  - Also decided 2026-10-02 (Deviations 21-27): keys.toml letter reach (§4.4), counts only where a row takes one (§5.1), a reload with an unparseable config.toml keeps the running keymap, vim `i` opens the field on Manage detail panes (§5.4), a Settings reset keeps the keyboard profile, and the arrows form chip `u undo` became `^Z undo`. Hover hints spell their keys from the action, so the arrows copy-URL and jq hints gain `· alt+y` and `· alt+q`.
+  - Also decided 2026-10-02, by you, each accepting my recommendation (`you`): keys.toml letter reach (§4.4, Deviation 21); counts only where a row takes one (§5.1, Deviation 22); a reload with an unparseable config.toml keeps the running keymap (§4.4, Deviation 23); vim `i` opens the field on Manage detail panes (§5.4, Deviation 24); a Settings reset keeps the keyboard profile (Deviation 25); the labelled spec departures (Deviation 26: the `u`/`ctrl+r`/`:` rows leave out dialogs too, the matrix's `Status::Engine` stands in for `Parked`, `KeyCtx.answers` is dropped, and the arrows form chip `u undo` became `^Z undo`); and the pre-flight scan's smaller items: the keyboard dialog shares one layout helper with the config dialogs, the letter/named-key synonym tests drop their letter pairs, and the unused `Profiles::ARROWS` and `FieldCaret: Default` are not added.
+  - My rulings during execution (`mine`): hover hints spell their keys from the action, so the arrows copy-URL and jq hints gain `· alt+y` and `· alt+q`; in vim a secret prompt's `ctrl+r reveal` chip is dropped while its field has no caret (the router owns `ctrl+r` there); the early `pub` arrivals (`keys_for`, `display`, `vim_first_chars`, `is_live`) are accepted; `Tok::of` gives no token for a ctrl+shift letter chord; "counts only where a row takes one" is read as navigation surfaces only, your "lists and panes only" (§5.1); a counted `u` or `ctrl+r` stops at the first repeat that steps nothing, each real step keeping its own toast (the final review); the first-launch answer is a config undo step; `g` then `ctrl+r` does nothing (the chord goes on past the dropped prefix, and the vim keymap binds no `ctrl+r`).
 - **M2: list and table verbs.**
   - Shared letters `a` `A` `r` `m` in both profiles, `dd`/`d`,
     `{N}dd` (the core `delete_requests` batch, ported from ada2e90 in
