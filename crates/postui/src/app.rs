@@ -832,20 +832,32 @@ impl App {
     /// until the first-launch question is raised (plan M1 Deviation 2; M3
     /// raises it).
     pub fn profile(&self) -> crate::config::KeyProfile {
-        self.ui_settings
-            .keymap
-            .unwrap_or(crate::config::KeyProfile::Arrows)
+        self.ui_settings.profile()
     }
 
     /// The keymap for the running profile: `keys.toml` over that profile's
-    /// defaults, or the defaults alone when the file is absent or will not
-    /// parse (its warning was given when it was read).
+    /// defaults, or the defaults alone when the file is absent. A file
+    /// that will not read or parse keeps the live bindings, laid on the
+    /// new profile's defaults, and says so: reload's rule, so a profile
+    /// switch never silently drops what the user is typing with.
     fn keymap_for_profile(&mut self) -> crate::keys::Keymap {
         let profile = self.profile();
-        match self.read_config_file(crate::config::KEYS_TOML) {
-            Ok(Some(text)) => crate::keys::Keymap::try_from_overrides_for(profile, &text)
-                .unwrap_or_else(|_| crate::keys::Keymap::default_bindings_for(profile)),
-            _ => crate::keys::Keymap::default_bindings_for(profile),
+        let read = self
+            .read_config_file(crate::config::KEYS_TOML)
+            .and_then(|text| match text {
+                Some(text) => crate::keys::Keymap::try_from_overrides_for(profile, &text).map(Some),
+                None => Ok(None),
+            });
+        match read {
+            Ok(Some(keymap)) => keymap,
+            Ok(None) => crate::keys::Keymap::default_bindings_for(profile),
+            Err(e) => {
+                self.toasts.push(
+                    format!("keys.toml ignored, keeping the current keys: {e}"),
+                    ToastKind::Warning,
+                );
+                self.keymap.rebased(profile)
+            }
         }
     }
 
@@ -2697,10 +2709,17 @@ impl App {
                 true
             }
             Action::SetKeyProfile(profile) => {
-                use crate::components::settings::{SettingsField, keymap_spelling};
+                use crate::components::settings::SettingsField;
                 use crate::undo::UiValue;
+                // The choice already made (a click on the lit segment):
+                // nothing to write, re-read or warn about again. An unset
+                // keymap that runs arrows is not a choice, so answering
+                // "arrows" to the question still writes it.
+                if self.ui_settings.keymap == Some(profile) {
+                    return true;
+                }
                 let before = self.ui_string("keymap");
-                let saved = self.config.save_ui_string("keymap", keymap_spelling(profile));
+                let saved = self.config.save_ui_string("keymap", profile.spelling());
                 let landed = saved.is_ok();
                 // Applied whether or not it landed (spec §4.2): left unset,
                 // the question would come straight back, and a question
@@ -2711,7 +2730,7 @@ impl App {
                         format!(
                             "could not save {}: {e}; using {} keys for this session",
                             crate::config::CONFIG_TOML,
-                            keymap_spelling(profile)
+                            profile.spelling()
                         ),
                         ToastKind::Error,
                     );
@@ -2725,7 +2744,7 @@ impl App {
                     self.record_config_step(
                         SettingsField::Keymap.key(),
                         UiValue::Text(before),
-                        UiValue::Text(keymap_spelling(profile).to_string()),
+                        UiValue::Text(profile.spelling().to_string()),
                     );
                 }
                 if matches!(self.modals.top(), Some(Modal::KeymapChoice { .. })) {
@@ -5087,9 +5106,19 @@ impl App {
                 // profile alone, and `reload` built the keymap (and its
                 // warnings) on that profile (plan M1 Deviation 23). A
                 // `keys.toml` that did not parse (`reloaded.keymap` is
-                // `None`) keeps the live keys.
-                if let Some(keymap) = reloaded.keymap {
-                    self.keymap = keymap;
+                // `None`) keeps the live keys -- laid on the new profile's
+                // defaults when config.toml switched it, so the old
+                // profile's keys (arrows' `q`, its `ctrl+r` send) never
+                // run under the new one. A switch also drops what was
+                // half-typed, as the Settings switch does.
+                let profile = self.profile();
+                match reloaded.keymap {
+                    Some(keymap) => self.keymap = keymap,
+                    None if profile != running => self.keymap = self.keymap.rebased(profile),
+                    None => {}
+                }
+                if profile != running {
+                    self.router.clear();
                 }
 
                 for w in warnings.into_iter().chain(theme_warning) {
@@ -10396,9 +10425,10 @@ impl App {
             "clipboard_cmd" => self.ui_settings.clipboard_cmd.clone().unwrap_or_default(),
             "jq_tab" => crate::components::settings::jq_tab_spelling(self.ui_settings.jq_tab)
                 .to_string(),
-            "keymap" => self.ui_settings.keymap.map_or(String::new(), |p| {
-                crate::components::settings::keymap_spelling(p).to_string()
-            }),
+            "keymap" => self
+                .ui_settings
+                .keymap
+                .map_or(String::new(), |p| p.spelling().to_string()),
             other => {
                 debug_assert!(false, "no string setting named {other:?}");
                 String::new()
@@ -11087,11 +11117,9 @@ impl App {
                                     }
                                 }
                                 "keymap" => {
-                                    ui.keymap = match v.as_str() {
-                                        "arrows" => Some(crate::config::KeyProfile::Arrows),
-                                        "vim" => Some(crate::config::KeyProfile::Vim),
-                                        _ => None,
-                                    }
+                                    // "" is the unset keymap the first
+                                    // answer replaced.
+                                    ui.keymap = crate::config::KeyProfile::from_spelling(v)
                                 }
                                 _ => {}
                             },

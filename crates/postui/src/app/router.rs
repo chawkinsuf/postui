@@ -8,13 +8,26 @@ use crate::keyroute::{FieldCaret, FieldId, KeyCtx, Step, Surface};
 
 impl App {
     /// One snapshot of where `ev` lands (spec §3.2).
+    /// A field with the caret takes every key and the router reads
+    /// nothing else, so typing never pays for the keymap lookup or the
+    /// surface's row count.
     pub fn key_ctx(&self, ev: &KeyEvent) -> KeyCtx {
         let profile = self.profile();
         let surface = self.surface();
+        let field = self.field_caret();
+        if field.is_live() {
+            return KeyCtx {
+                profile,
+                surface,
+                field,
+                user_bare: None,
+                cap: crate::vim::engine::settings::MAX_COUNT,
+            };
+        }
         KeyCtx {
             profile,
             surface,
-            field: self.field_caret(),
+            field,
             user_bare: self.user_bare(ev, profile, surface),
             cap: self.repeat_cap(surface),
         }
@@ -238,6 +251,10 @@ impl App {
             Screen::Manage if self.manage.tab == ManageTab::Settings => {
                 self.settings.editing.map(FieldId::Settings)
             }
+            // A Variables edit left live by a failed click-away commit
+            // stays behind a tab switch; key routing only reaches it on
+            // its own tab, and so does the caret.
+            Screen::Manage if self.manage.tab != ManageTab::Variables => None,
             Screen::Manage => {
                 if let Some(e) = &self.varmanager.form.editing {
                     return Some(FieldId::VmForm(e.field));

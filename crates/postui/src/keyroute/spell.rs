@@ -51,10 +51,7 @@ pub fn spell(at: SpellCtx, action: &Action, keymap: &Keymap) -> Option<String> {
     {
         return Some(notation::display(keys));
     }
-    let (name, _) = crate::keys::named_actions()
-        .into_iter()
-        .find(|(_, a)| a == action)?;
-    keymap.combo_for(name)
+    keymap.combo_for_action(action)
 }
 
 /// The text `key` paints as at `at`, or `None` when the chip has no key

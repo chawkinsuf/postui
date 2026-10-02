@@ -373,11 +373,11 @@ pub(crate) fn keymap_action_name(command_id: &str) -> Option<&'static str> {
         "body-external-editor" => Some("open_body_editor"),
         "body-toggle-vars" => Some("toggle_body_vars"),
         "project-choose" => Some("project_choose"),
-        "project-next" => Some("project_cycle"),
+        "project-next" => Some("project_next"),
         "project-new" => Some("project_new"),
         "reload-from-disk" => Some("reload"),
         "env-choose" => Some("env_choose"),
-        "env-next" => Some("env_cycle"),
+        "env-next" => Some("env_next"),
         "table-add-row" => Some("table_add_row"),
         "vars-insert" => Some("pick_variable"),
         "manage-variables" => Some("manage_open"),
@@ -1226,6 +1226,18 @@ mod tests {
             content.contains("^C"),
             "the quit row's bound combo must render in caret notation: {content}"
         );
+    }
+
+    /// Every keybinding name the palette looks up is one `keys.toml` (and
+    /// so `combo_for`) knows: a stale name paints its row with no key.
+    #[test]
+    fn every_keybinding_name_is_a_named_action() {
+        let names: Vec<&str> = crate::keys::named_actions().into_iter().map(|(n, _)| n).collect();
+        for c in all_commands() {
+            if let Some(name) = keymap_action_name(c.id) {
+                assert!(names.contains(&name), "{}: no action named {name:?}", c.id);
+            }
+        }
     }
 }
 

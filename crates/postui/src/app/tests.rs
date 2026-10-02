@@ -29679,7 +29679,7 @@ fn a_keys_toml_reset_documents_the_running_profiles_keymap() {
     for profile in [KeyProfile::Arrows, KeyProfile::Vim] {
         let mut app = App::new_for_test();
         let dir = config_at_tempdir(&mut app);
-        let spelling = crate::components::settings::keymap_spelling(profile);
+        let spelling = profile.spelling();
         std::fs::write(dir.path().join("config.toml"), format!("keymap = \"{spelling}\"\n")).unwrap();
         app.update(Action::ReloadFromDisk);
         assert_eq!(app.profile(), profile);
@@ -29740,4 +29740,183 @@ fn undo_or_redo_back_into_vim_warns_of_shadowing_letters() {
     app.update(Action::Undo);
     assert_eq!(app.profile(), KeyProfile::Vim);
     assert_eq!(warned(&app), 3, "undo into vim warns");
+}
+
+/// A reload whose config.toml switches the profile while keys.toml will
+/// not parse installs the new profile with the live keys.toml bindings
+/// on top, never the old profile's keymap: arrows' `q` and `ctrl+r` must
+/// not survive into vim.
+#[test]
+fn a_reload_that_switches_profile_with_a_broken_keys_toml_rebases_the_live_keys() {
+    use crate::config::KeyProfile;
+    let mut app = App::new_for_test();
+    let dir = config_at_tempdir(&mut app);
+    std::fs::write(dir.path().join("keys.toml"), "save = [\"ctrl+s\", \"f2\"]\n").unwrap();
+    app.update(Action::ReloadFromDisk);
+    assert_eq!(app.profile(), KeyProfile::Arrows);
+    assert_eq!(app.keymap.lookup(&KeyCombo::parse("f2").unwrap()), Some(Action::SaveRequest));
+
+    std::fs::write(dir.path().join("keys.toml"), "save = [\"ctrl+s\"\n").unwrap();
+    std::fs::write(dir.path().join("config.toml"), "keymap = \"vim\"\n").unwrap();
+    app.update(Action::ReloadFromDisk);
+
+    assert_eq!(app.profile(), KeyProfile::Vim);
+    assert_eq!(app.keymap.lookup(&KeyCombo::parse("q").unwrap()), None, "arrows' q is gone");
+    assert_ne!(
+        app.keymap.lookup(&KeyCombo::parse("ctrl+r").unwrap()),
+        Some(Action::Send),
+        "arrows' ctrl+r is gone"
+    );
+    assert_eq!(
+        app.keymap.lookup(&KeyCombo::parse("f2").unwrap()),
+        Some(Action::SaveRequest),
+        "the live keys.toml binding is kept"
+    );
+
+    // …and back again: arrows gets its own `q` back.
+    std::fs::write(dir.path().join("config.toml"), "keymap = \"arrows\"\n").unwrap();
+    app.update(Action::ReloadFromDisk);
+    assert_eq!(app.profile(), KeyProfile::Arrows);
+    assert_eq!(app.keymap.lookup(&KeyCombo::parse("q").unwrap()), Some(Action::Quit));
+    assert_eq!(app.keymap.lookup(&KeyCombo::parse("f2").unwrap()), Some(Action::SaveRequest));
+}
+
+/// A reload that switches the profile drops what was half-typed, as the
+/// Settings switch does: a vim prefix means nothing in arrows.
+#[test]
+fn a_reload_that_switches_profile_clears_the_pending_keys() {
+    use crate::config::KeyProfile;
+    let mut app = App::new_for_test();
+    let dir = config_at_tempdir(&mut app);
+    std::fs::write(dir.path().join("config.toml"), "keymap = \"vim\"\n").unwrap();
+    app.update(Action::ReloadFromDisk);
+    assert_eq!(app.profile(), KeyProfile::Vim);
+    app.handle_key(plain('g'));
+    assert_eq!(app.key_echo(), "g");
+
+    std::fs::write(dir.path().join("config.toml"), "keymap = \"arrows\"\n").unwrap();
+    app.update(Action::ReloadFromDisk);
+
+    assert_eq!(app.profile(), KeyProfile::Arrows);
+    assert_eq!(app.key_echo(), "", "the vim prefix is dropped");
+}
+
+/// Switching profile while keys.toml will not parse keeps the user's
+/// live bindings (on the new profile's defaults) and says so, as a
+/// reload does, rather than silently dropping them.
+#[test]
+fn switching_profile_with_a_broken_keys_toml_keeps_the_live_keys_and_says_so() {
+    use crate::config::KeyProfile;
+    let mut app = App::new_for_test();
+    let dir = config_at_tempdir(&mut app);
+    std::fs::write(dir.path().join("keys.toml"), "save = [\"ctrl+s\", \"f2\"]\n").unwrap();
+    app.update(Action::ReloadFromDisk);
+    std::fs::write(dir.path().join("keys.toml"), "save = [\"ctrl+s\"\n").unwrap();
+
+    app.update(Action::SetKeyProfile(KeyProfile::Vim));
+
+    assert_eq!(app.profile(), KeyProfile::Vim);
+    assert_eq!(app.keymap.lookup(&KeyCombo::parse("q").unwrap()), None, "vim's defaults");
+    assert_eq!(
+        app.keymap.lookup(&KeyCombo::parse("f2").unwrap()),
+        Some(Action::SaveRequest),
+        "the live keys.toml binding is kept"
+    );
+    assert!(
+        warning_toasts(&app)
+            .iter()
+            .any(|m| m.starts_with("keys.toml ignored, keeping the current keys")),
+        "{:?}",
+        warning_toasts(&app)
+    );
+
+    // An undo back to arrows keeps them the same way.
+    app.update(Action::Undo);
+    assert_eq!(app.profile(), KeyProfile::Arrows);
+    assert_eq!(app.keymap.lookup(&KeyCombo::parse("q").unwrap()), Some(Action::Quit));
+    assert_eq!(app.keymap.lookup(&KeyCombo::parse("f2").unwrap()), Some(Action::SaveRequest));
+}
+
+/// Choosing the profile already chosen (a click on the lit segment)
+/// changes nothing: no rewrite, no re-read of keys.toml, no repeated
+/// shadow warnings.
+#[test]
+fn choosing_the_running_profile_again_changes_nothing() {
+    use crate::config::KeyProfile;
+    let mut app = App::new_for_test();
+    let dir = config_at_tempdir(&mut app);
+    std::fs::write(dir.path().join("keys.toml"), "save = [\"ctrl+s\", \"j\"]\n").unwrap();
+    let shadow = "keys.toml binds `j`, which shadows vim's `j`".to_string();
+    let warned = |app: &App| warning_toasts(app).iter().filter(|m| **m == shadow).count();
+    app.update(Action::SetKeyProfile(KeyProfile::Vim));
+    assert_eq!(warned(&app), 1);
+    std::fs::write(dir.path().join("keys.toml"), "save = [\"ctrl+s\", \"f3\"]\n").unwrap();
+
+    app.update(Action::SetKeyProfile(KeyProfile::Vim));
+
+    assert_eq!(warned(&app), 1, "no second warning: {:?}", warning_toasts(&app));
+    assert_eq!(
+        app.keymap.lookup(&KeyCombo::parse("f3").unwrap()),
+        None,
+        "an unreloaded keys.toml edit is not picked up"
+    );
+    assert_eq!(
+        app.keymap.lookup(&KeyCombo::parse("j").unwrap()),
+        Some(Action::SaveRequest),
+        "the live keys stay"
+    );
+}
+
+/// An unset keymap runs arrows, but answering "arrows" still records the
+/// choice: the early return is for a choice already made, not a profile
+/// already running.
+#[test]
+fn answering_arrows_to_an_unset_keymap_still_writes_it() {
+    use crate::config::KeyProfile;
+    let mut app = app_with_unset_keymap();
+    let dir = config_at_tempdir(&mut app);
+    app.update(Action::SetKeyProfile(KeyProfile::Arrows));
+    assert!(app.modals.is_empty(), "the question is answered");
+    assert_eq!(app.ui_settings.keymap, Some(KeyProfile::Arrows));
+    let written = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+    assert!(written.contains("keymap = \"arrows\""), "{written}");
+}
+
+/// A Variables form or grid edit left live behind a tab switch (a
+/// click-away commit that failed keeps its edit, and the tab click still
+/// lands) is not the field with the caret on another Manage tab: key
+/// routing only sends it keys on the Variables tab, so the router must
+/// not decline the other tab's vim keys on its behalf.
+#[test]
+fn a_variables_edit_left_on_another_tab_does_not_take_the_caret() {
+    use crate::components::manage::ManageTab;
+    use crate::components::varmanager::VmField;
+    use crate::config::KeyProfile;
+    use crate::keyroute::FieldCaret;
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.use_profile(KeyProfile::Vim);
+    app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
+    assert!(app.manage_items(ManageTab::Environments).len() >= 2);
+    app.manage.list.cursor = 0;
+
+    for form in [true, false] {
+        if form {
+            app.varmanager.form.editing = Some(form_edit(VmField::Description, ""));
+        } else {
+            app.varmanager.form.editing = None;
+            app.varmanager.grid.editing = Some(crate::components::varmanager::GridEdit {
+                row: 0,
+                col: 0,
+                input: crate::components::line_input::LineInput::new(""),
+                original: String::new(),
+            });
+        }
+        assert_eq!(app.field_caret(), FieldCaret::None, "form edit: {form}");
+        app.manage.list.cursor = 0;
+        app.handle_key(plain('j'));
+        assert_eq!(app.manage.list.cursor, 1, "vim j moves the list (form edit: {form})");
+    }
 }

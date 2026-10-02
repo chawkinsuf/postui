@@ -858,12 +858,10 @@ impl ReadyView {
     /// matches.
     fn content_width(&mut self) -> usize {
         use unicode_width::UnicodeWidthStr;
-        let key = (self.mode, self.visible_len(), self.tree_epoch);
-        if let Some((mode, len, run, w)) = self.content_width
-            && (mode, len, run) == key
-        {
+        if let Some(w) = self.measured_width() {
             return w;
         }
+        let key = (self.mode, self.visible_len(), self.tree_epoch);
         let w = match self.mode {
             ViewMode::Pretty => self.active_tree().map_or(0, JsonTree::visible_width),
             ViewMode::Raw => self.raw_lines.iter().map(|l| l.width()).max().unwrap_or(0),

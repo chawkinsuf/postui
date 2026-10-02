@@ -232,9 +232,19 @@ pub fn fold_text_nav_bytes(ev: KeyEvent, macos: bool) -> KeyEvent {
 /// `PartialEq` compares the bindings: a live reload uses it to tell a
 /// keys.toml that changed from one that was merely re-read, and only
 /// re-issues its advisories for the former.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct Keymap {
     bindings: HashMap<KeyCombo, Action>,
+    /// The `keys.toml` rebindings applied on top of the profile's
+    /// defaults, in order, so [`Self::rebased`] can lay them on another
+    /// profile when the file itself will not parse any more.
+    overrides: Vec<(Action, Vec<KeyCombo>)>,
+}
+
+impl PartialEq for Keymap {
+    fn eq(&self, other: &Self) -> bool {
+        self.bindings == other.bindings
+    }
 }
 
 /// Every action a key combo can be bound to by name (`apply_overrides`'
@@ -435,6 +445,7 @@ impl Keymap {
         ];
         let mut map = Self {
             bindings: HashMap::new(),
+            overrides: Vec::new(),
         };
         for (s, a) in defaults {
             // Combos in this table are compile-time constants; parse cannot fail.
@@ -474,15 +485,33 @@ impl Keymap {
             resolved.push((action, combos));
         }
         // Phase 2: everything validated, now apply.
-        for (action, combos) in resolved {
-            self.bindings.retain(|_, a| *a != action); // rebind removes old combo(s)
+        self.rebind(&resolved);
+        self.overrides.extend(resolved);
+        Ok(())
+    }
+
+    /// Lays validated rebindings on the current bindings.
+    fn rebind(&mut self, overrides: &[(Action, Vec<KeyCombo>)]) {
+        for (action, combos) in overrides {
+            self.bindings.retain(|_, a| a != action); // rebind removes old combo(s)
             for combo in combos {
-                self.bind(combo, action.clone());
+                self.bind(combo.clone(), action.clone());
             }
         }
         // ctrl+c is always reserved for quit, regardless of overrides.
-        self.bind(ctrl_c, Action::Quit);
-        Ok(())
+        self.bind(KeyCombo::parse("ctrl+c").unwrap(), Action::Quit);
+    }
+
+    /// `profile`'s defaults with this keymap's `keys.toml` rebindings on
+    /// top: the keys the user is typing with, on another profile. A
+    /// profile switch uses it when `keys.toml` will not parse, so the
+    /// switch keeps the live bindings, as a reload does, rather than
+    /// dropping them or keeping the old profile's defaults.
+    pub fn rebased(&self, profile: crate::config::KeyProfile) -> Self {
+        let mut map = Self::default_bindings_for(profile);
+        map.rebind(&self.overrides);
+        map.overrides = self.overrides.clone();
+        map
     }
 
     /// The defaults with `contents` (a `keys.toml`) applied, or the error
@@ -588,10 +617,16 @@ impl Keymap {
             .into_iter()
             .find(|(name, _)| *name == action_id)
             .map(|(_, action)| action)?;
+        self.combo_for_action(&target)
+    }
+
+    /// [`Self::combo_for`] by the action itself: what a keycap spells
+    /// from, every frame, without the name round trip.
+    pub fn combo_for_action(&self, target: &Action) -> Option<String> {
         let combos: Vec<&KeyCombo> = self
             .bindings
             .iter()
-            .filter(|(_, action)| **action == target)
+            .filter(|(_, action)| *action == target)
             .map(|(combo, _)| combo)
             .collect();
         // A bare-key alias a `keys.toml` adds (":", "u") has no modifiers,

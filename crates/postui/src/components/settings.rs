@@ -178,13 +178,6 @@ pub fn jq_tab_spelling(mode: JqTab) -> &'static str {
 const KEYMAP_SEGMENTS: [(&str, KeyProfile); 2] =
     [("Arrows", KeyProfile::Arrows), ("Vim", KeyProfile::Vim)];
 
-/// The `keymap` value written for each profile.
-pub fn keymap_spelling(profile: KeyProfile) -> &'static str {
-    match profile {
-        KeyProfile::Arrows => "arrows",
-        KeyProfile::Vim => "vim",
-    }
-}
 
 impl SettingsTab {
     pub fn rows() -> &'static [SettingsRow] {
@@ -709,7 +702,7 @@ fn draw_setting_control(
         // An unset profile paints as the one the app runs on (plan M1
         // Deviation 2); turning `None` into a written choice is the
         // first-launch question's job, not this row's.
-        let current = ui.keymap.unwrap_or(KeyProfile::Arrows);
+        let current = ui.profile();
         let focused = tab.focused && tab.cursor == row;
         paint_segments(
             buf,
@@ -1360,8 +1353,11 @@ mod tests {
         use crate::config::KeyProfile;
         assert_eq!(SettingsField::Keymap.key(), "keymap");
         assert_eq!(SettingsField::from_key("keymap"), Some(SettingsField::Keymap));
-        assert_eq!(keymap_spelling(KeyProfile::Arrows), "arrows");
-        assert_eq!(keymap_spelling(KeyProfile::Vim), "vim");
+        for (profile, spelling) in [(KeyProfile::Arrows, "arrows"), (KeyProfile::Vim, "vim")] {
+            assert_eq!(profile.spelling(), spelling);
+            assert_eq!(KeyProfile::from_spelling(spelling), Some(profile));
+        }
+        assert_eq!(KeyProfile::from_spelling("emacs"), None);
         assert!(SettingsTab::rows().contains(&SettingsRow::Setting(SettingsField::Keymap)));
     }
 

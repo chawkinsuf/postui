@@ -232,6 +232,23 @@ pub enum KeyProfile {
     Vim,
 }
 
+impl KeyProfile {
+    /// The `keymap` value written for this profile.
+    pub fn spelling(self) -> &'static str {
+        match self {
+            KeyProfile::Arrows => "arrows",
+            KeyProfile::Vim => "vim",
+        }
+    }
+
+    /// The profile a `keymap` value names, or `None` for anything else.
+    pub fn from_spelling(s: &str) -> Option<Self> {
+        [KeyProfile::Arrows, KeyProfile::Vim]
+            .into_iter()
+            .find(|p| p.spelling() == s)
+    }
+}
+
 /// Mouse-first-GUI UI settings stored at the top level of `config.toml`:
 /// the tiered clipboard's optional external command and the OSC 52 size
 /// threshold.
@@ -289,6 +306,13 @@ impl Default for UiSettings {
 }
 
 impl UiSettings {
+    /// The key profile these settings run: the chosen one, or arrows while
+    /// `keymap` is unset, until the first-launch question is raised (plan
+    /// M1 Deviation 2; M3 raises it). The one place that rule lives.
+    pub fn profile(&self) -> KeyProfile {
+        self.keymap.unwrap_or(KeyProfile::Arrows)
+    }
+
     /// Reads the top-level `clipboard_cmd` (string), `osc52_limit`
     /// (integer), `theme` (string), `animations` (bool), `hover_hints`
     /// (bool), `ai_cmd` (string), `ai_confirmed` (bool), and `jq_tab`
@@ -397,8 +421,9 @@ impl UiSettings {
         match value.get("keymap") {
             None => {}
             Some(v) => match v.as_str() {
-                Some("arrows") => settings.keymap = Some(KeyProfile::Arrows),
-                Some("vim") => settings.keymap = Some(KeyProfile::Vim),
+                Some(s) if let Some(profile) = KeyProfile::from_spelling(s) => {
+                    settings.keymap = Some(profile)
+                }
                 Some(other) => warnings.push(format!(
                     "invalid value {other:?} for keymap in config.toml \
                      (expected \"arrows\" or \"vim\"); leaving the choice unmade"
@@ -619,7 +644,7 @@ impl Config {
             Ok(keymap) => keymap,
             Err(e) => {
                 warnings.push(format!("keys.toml ignored, using default keys: {e}"));
-                crate::keys::Keymap::default_bindings_for(ui.keymap.unwrap_or_default())
+                crate::keys::Keymap::default_bindings_for(ui.profile())
             }
         };
         warnings.extend(keymap.caret_warnings(macos));
@@ -722,7 +747,7 @@ impl Config {
         // arrows (plan M1 Deviation 2); a `config.toml` that will not
         // parse runs the caller's `fallback` (Deviation 23).
         let profile = match &config {
-            Ok((_, ui)) => ui.keymap.unwrap_or_default(),
+            Ok((_, ui)) => ui.profile(),
             Err(_) => fallback,
         };
         let keymap = match self.read(KEYS_TOML) {
