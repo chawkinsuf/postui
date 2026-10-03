@@ -191,6 +191,13 @@ While a session is Parked, `ctx.surface` is the modal on top. No
 field-only table row can match, so the rule "a parked field never claims
 the modal's keys" holds by construction, not by a guard.
 
+Amended by plan M3a (Deviations 2, 4, 5; all `mine`): the session lives in the engine glue (`keyroute/engine_glue.rs`), not the router, and `App::sync_session` applies the edges at the start and the end of every key and mouse button event. When the key that moved the caret also dropped the source field's buffer (Tab commits a cell), the engine leaves a stand-in built from the text and caret the glue last saw. When text changes outside the engine under a session (an app undo, a reload, `$EDITOR`, a request switch), the session re-enters on the new text in its current mode with a fresh `BufState`, without leaving the replaced buffer.
+
+Amended during M3a's execution:
+
+- **The body's state follows an in-place slug change** (`you`, 2026-10-03). `Glue::follow_body(from, to)` re-keys the body's engine state when the open request's slug changes under it. It is called by rename, both save-as arms, a space rename, and the undo and redo replay of a rename or move. A real request switch still drops the state and clears the search highlight. Extending it to the space rename and to the rename and move replay was `mine`. Treating the undo or redo of a save-as as a switch (it re-lands the editor) is `mine`.
+- **A carry whose source is the body lends the real body** (`you`, 2026-10-03): `carry_from` hands the engine the live body buffer. The ghost serves only a source that is gone, and a one-line source.
+
 ### 3.4 The pending machine
 
 One state machine replaces vim-mode's seven mechanisms: `seq::Pending`,
@@ -391,6 +398,16 @@ and the count lifting (`yield_count`).
 **`u` and `ctrl+r` in a field.** The field's own history goes first. If
 it has none, the key goes to the app history. This is the same rule main
 applies to ctrl+z (2026-09-15, step 1c, `app.rs:9913`) (`earlier`).
+
+Amended by plan M3a (Deviations 6–9; all `mine`, except where a line says `you`):
+
+- **A declined key** goes to the app history if it is `u` or ctrl+r. Otherwise it runs a field row if its keys match one. Otherwise it goes on to today's routing only if the keymap binds it or it is the container's named key (a one-line field: Esc, Enter, Tab, BackTab, Up, Down, PageUp, PageDown; the body: Esc). A declined key never reaches the field's text input in vim, so GUI keyboard selection, word hops and word deletes are arrows-only in fields. This narrows piece 3 §4.4's "route `Declined` keys exactly as if no engine were there": the app routes them, but the field's text input is not part of that routing in vim.
+- **The app-history step** per session goes through main's existing gate (`field_gate`), which reads the engine's `edited()` for the URL line and the body. The gate counts live engine edits: `glue.edited || can_undo || can_redo` (`you`, 2026-10-03). So ctrl+z in Insert before the first committed step never reaches the app history.
+- **The body's `BufState` is not `end_session()`-ed at close.** This follows piece 3 §3.11, against the sentence above ("then calls `end_session()`"). The body's engine history ends in the ways piece 3 §3.11 Decision 2 names, and in one more (`you`, 2026-10-03): `Glue::flush` always ends the line state, and ends the body state only when the body owns the session. So a flush while the body owns an edited session drops its engine history, because it was taken as one app step.
+- **The field caret is not undo state** (`you`, 2026-10-03). An app undo restores data and list cursors, not whether a text field is open or its mode.
+- **ctrl+z and ctrl+shift+z** in a vim field are `u` and ctrl+r in idle Normal, and do nothing in other modes while the field has history.
+- **The "esc done" CloseField chip** closes the field directly, as on main, even from Insert or Visual (`mine`, A4-2). It does not go through the engine's Esc.
+- **The field rows whose actions are M4's** (`gt`, `^W`, `ZZ`/`ZQ`, the recording flag) wait for M4. Until then `q<any>`, `@<any>`, `m<any>`, `'<any>`, `` `<any> `` show their notes and `Z<any>` is swallowed, so a prefix key never reaches the engine as a wrong edit.
 
 ### 3.8 Echo and mode indicator: one function
 
@@ -1056,6 +1073,9 @@ milestone.
     If the ex palette (M4) lands first, its query is main's LineInput
     until this milestone switches it.
   - Vim prompt rows (§5.10).
+  - **Split** by you (2026-10-03) into M3a and M3b. M3a covers the fields of kind Buffer and Body (the URL line, table cells, the Variables form and grid, Settings fields, the body): the session edges, the open modes, the field lookahead, `j`/`k` and the paging chords leaving a field, one app-history step per session, paste and picked tokens through the engine, and the body search's drawing. M3b covers the rest: modal fields and the query boxes in `Start::InsertOnly`, the vim prompt and dialog rows with `KeyCtx.answers`, the arrows prompt change, removing `modal.rs`'s aliases, the first-launch question, and the key-list rows `D.prompt`, `D.picker` and `D.confirm`.
+  - **Shipped (M3a)** by plan 2026-10-03-vim-profile-m3a. Decided by me, open for your review (`mine`): `OpenAs` travels as a step (Deviation 3); the opening seats, with `a` on the URL line one past the caret and a keyboard open clearing a GUI selection (12); paste outside Insert follows Vim's bracketed paste in Normal, and a picked token goes in at the Insert caret or by the same rule (13); the mode words `NORMAL INSERT REPLACE (insert) VISUAL V-LINE SEARCH` (14); engine notes are Info toasts and `"+y` copies with "Copied to the clipboard" (15); the body search paints matches REVERSED and the landing match REVERSED and BOLD, with the prompt on `panel` (16); Settings' text has one writer (17); keys.toml shadow warnings count navigation rows only (18); the body's state is keyed by the open request's slug (19); and §3.3 and §3.7's amendments above.
+  - Decided by you during execution (`you`, 2026-10-03): the field's undo gate counts live engine edits (C1); the body's engine state follows an in-place slug change (C2); a carry from the body lends the real body (C3); `Glue::flush` ends the body state only when the body owns the session, a further way the body history ends; the field caret is not undo state. Rulings by me (`mine`): the extension of C2 to the space rename and the rename and move replay, and the treatment of a save-as undo as a switch; the "esc done" chip closes the field directly (A4-2). All are written out in §3.3 and §3.7.
 - **M4: panes, tabs, command line, response, globals.** The closed-surface
   half can start before M3.
   - `ctrl+w` geometry; `gt` `gT` `{N}gt` and `FocusEditorContent`.
