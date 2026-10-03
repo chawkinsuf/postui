@@ -7411,7 +7411,7 @@ fn plain_enter_never_confirms_a_form_modal() {
 /// A hostile or careless `keys.toml` can bind bare `enter` to `send`
 /// (`KeyCombo::parse` accepts a modifierless combo, and
 /// `apply_overrides` only rejects unknown actions/combos and the
-/// reserved ctrl+c). The confirm dig-past in `handle_key_inner` (step
+/// reserved ctrl+c). The confirm dig-past in `handle_key_routed` (step
 /// 1d) must not trust the keymap alone for that — it checks the real
 /// key event's own modifiers, so even under this override plain Enter
 /// still only closes the field, exactly as it does under the default

@@ -6,7 +6,7 @@ use super::key_matrix_tests::{Fixture, build, draw, feed};
 use super::*;
 use crate::config::KeyProfile;
 use crate::keyroute::engine_glue::FieldSession;
-use crate::keyroute::{EngineKind, FieldId};
+use crate::keyroute::{EngineKind, FieldCaret, FieldId};
 
 fn vim(f: Fixture) -> App {
     let mut app = build(f);
@@ -229,6 +229,45 @@ fn switching_profiles_with_a_field_open_keeps_its_text() {
     assert_eq!(app.glue.session(), FieldSession::Live(FieldId::Url));
     assert_eq!(app.mode_indicator(), Some("INSERT"), "arrows to vim enters Insert");
     assert_eq!(url(&app), ("abc", 2));
+}
+
+/// Spec §4.3 ("the caret untouched"): leaving Insert for the switch must
+/// not step the caret back off the end of the line.
+#[test]
+fn switching_to_arrows_in_insert_keeps_the_caret_at_the_end() {
+    use super::fields::Cause;
+    let mut app = url_line("abc");
+    feed(&mut app, "<CR>A");
+    assert_eq!((app.mode_indicator(), url(&app)), (Some("INSERT"), ("abc", 3)));
+    app.use_profile(KeyProfile::Arrows);
+    app.sync_session(None, Cause::Before);
+    assert_eq!(url(&app), ("abc", 3), "the caret stays past the last char");
+    feed(&mut app, "d");
+    assert_eq!(url(&app).0, "abcd", "arrows types where the caret was");
+}
+
+/// Spec §4.3 and "nothing requires vim": a switch to arrows made after the
+/// body's vim session closed still gives edtui its Insert back, so the
+/// arrows body types.
+#[test]
+fn the_body_types_in_arrows_after_a_vim_session_closed() {
+    let mut app = vim(Fixture::TableThreeHeaders);
+    app.editor.active_tab = EditorTab::Body;
+    app.editor.preferred_tab = EditorTab::Body;
+    draw(&mut app);
+    feed(&mut app, "l");
+    assert_eq!(app.glue.session(), FieldSession::Live(FieldId::Body));
+    app.focus = PaneId::Sidebar;
+    feed(&mut app, "j");
+    assert_eq!(app.glue.session(), FieldSession::None, "the body's session closed");
+    assert_eq!(app.editor.body.mode, edtui::EditorMode::Normal, "vim left edtui in Normal");
+    app.use_profile(KeyProfile::Arrows);
+    feed(&mut app, "<Tab>");
+    assert_eq!(app.focus, PaneId::Editor, "the body is focused by keyboard");
+    assert_eq!(app.field_caret(), FieldCaret::Live(FieldId::Body));
+    let before = app.editor.body.lines.to_string();
+    feed(&mut app, "x");
+    assert_eq!(app.editor.body.lines.to_string(), format!("x{before}"), "the arrows body types");
 }
 
 /// Plan M3a Deviation 5: text replaced under a live session.

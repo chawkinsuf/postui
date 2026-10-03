@@ -6,8 +6,8 @@
 use super::*;
 use crate::config::KeyProfile;
 use crate::keyroute::engine_glue::{
-    self, AppRequest, Edge, FieldBuf, FieldSession, Glue, Mode, Note, OpenAs, OpenSeat, Outcome, Settled, Shape, Start,
-    ViewCtx,
+    self, AppRequest, Edge, FieldBuf, FieldSession, Glue, Mode, Note, OpenAs, OpenSeat, Outcome, Pos, Settled, Shape,
+    Start, ViewCtx,
 };
 use crate::keyroute::notation::Tok;
 use crate::keyroute::table::{self, Intent, Match};
@@ -106,15 +106,28 @@ impl App {
     /// every key and mouse button event (plan M3a Deviation 2).
     pub(crate) fn sync_session(&mut self, open_as: Option<OpenAs>, cause: Cause) {
         let profile = self.profile();
-        let switched_in = profile == KeyProfile::Vim && self.glue.profile() == Some(KeyProfile::Arrows);
+        let was = self.glue.profile();
+        let switched_in = profile == KeyProfile::Vim && was == Some(KeyProfile::Arrows);
         self.glue.set_profile(profile);
         if profile != KeyProfile::Vim {
             // Arrows has no Normal mode: an open field goes on as main's
-            // modeless field (spec §4.3).
+            // modeless field, its text and caret untouched (spec §4.3).
+            // Leaving Insert would step the caret back off the end, so it
+            // is put back where it was.
             if let Some(id) = self.glue.owned() {
+                let caret = self.session_parts(id).1.map(|buf| buf.caret());
                 self.close_session(id);
+                if let Some(at) = caret {
+                    self.put_caret(id, at);
+                }
                 self.unpaint(id, true);
                 self.glue.set_session(FieldSession::None);
+            }
+            // A body session that closed before the switch left edtui in
+            // Normal, where the arrows body binds no keys: give it its
+            // Insert back whether or not a session is still owned.
+            if was == Some(KeyProfile::Vim) {
+                self.unpaint(FieldId::Body, true);
             }
             return;
         }
@@ -218,6 +231,20 @@ impl App {
             Some(FieldBuf::Body(state, visual)) => {
                 *visual = None;
                 state.mode = if modeless { edtui::EditorMode::Insert } else { edtui::EditorMode::Normal };
+            }
+            None => {}
+        }
+    }
+
+    /// Puts `id`'s caret back at `at`, clamped into its text, if the field
+    /// is still open.
+    fn put_caret(&mut self, id: FieldId, at: Pos) {
+        match self.session_parts(id).1 {
+            Some(FieldBuf::Line(input)) => input.set_cursor(at.col),
+            Some(FieldBuf::Body(state, _)) => {
+                let row = at.row.min(state.lines.len().saturating_sub(1));
+                let len = state.lines.get(edtui::RowIndex::new(row)).map_or(0, Vec::len);
+                state.cursor = edtui::Index2::new(row, at.col.min(len));
             }
             None => {}
         }
