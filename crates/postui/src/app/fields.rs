@@ -282,6 +282,38 @@ impl App {
 
     /// An engine note is an Info toast; `"+y` copies through the app's
     /// clipboard path (plan M3a Deviation 15).
+    /// The app's undo path (`step_history`) reaching a vim field: the
+    /// field's own history first (spec §3.7). `None` when no engine field
+    /// has the caret. `Some(false)` when it has nothing to step that way,
+    /// or the engine is not in idle Normal, where the undo chords do
+    /// nothing (plan M3a Deviation 8).
+    pub(crate) fn engine_field_undo(&mut self, redo: bool) -> Option<bool> {
+        let id = self.glue.live()?;
+        if self.field_caret() != FieldCaret::Live(id) {
+            return None;
+        }
+        let kind = id.engine_kind()?;
+        let can = if redo { self.glue.can_redo(kind) } else { self.glue.can_undo(kind) };
+        let idle = self.glue.mode() == Mode::Normal && !self.glue.view().pending;
+        if !can || !idle {
+            return Some(false);
+        }
+        let key = if redo {
+            KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL)
+        } else {
+            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE)
+        };
+        let view = self.view_ctx(id);
+        let out = {
+            let (glue, buf) = self.session_parts(id);
+            glue.handle(key, &mut buf?, &view)
+        };
+        if let Outcome::Consumed { note, request, .. } = out {
+            self.engine_feedback(note, request);
+        }
+        Some(true)
+    }
+
     pub(crate) fn engine_feedback(&mut self, note: Option<Note>, request: Option<AppRequest>) {
         if let Some(Note::Unsupported(text) | Note::Message(text)) = note {
             self.toasts.push(text, ToastKind::Info);

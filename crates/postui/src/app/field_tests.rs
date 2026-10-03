@@ -2,7 +2,7 @@
 //! M3a): sessions follow the caret, keys go through the engine, and what
 //! the engine hands back never types.
 
-use super::key_matrix_tests::{Fixture, build, draw, feed};
+use super::key_matrix_tests::{Fixture, build, draw, feed, snapshot, snapshot_diff};
 use super::*;
 use crate::config::KeyProfile;
 use crate::keyroute::engine_glue::FieldSession;
@@ -318,6 +318,90 @@ fn u_with_nothing_to_undo_in_the_field_reaches_the_app_history() {
     assert_eq!(app.editor.headers.len(), 2);
     feed(&mut app, "<CR>u");
     assert_eq!(app.editor.headers.len(), 3, "the row delete came back");
+}
+
+/// Spec §3.7 and §8.1's undo check: a URL session is one app step, and one
+/// undo brings back exactly the state before it.
+#[test]
+fn a_url_session_is_one_app_step() {
+    let mut app = url_line("https://x.test/ab");
+    let steps = app.history.undo_len();
+    let before = snapshot(&app);
+    feed(&mut app, "<CR>xx");
+    assert_eq!(app.history.undo_len(), steps, "the session holds its keystrokes");
+    feed(&mut app, "<Esc>");
+    assert_eq!(app.history.undo_len(), steps + 1, "one step for the whole session");
+    feed(&mut app, "u");
+    let after = snapshot(&app);
+    assert!(after == before, "undo did not restore exactly:\n{}", snapshot_diff(&before, &after));
+}
+
+#[test]
+fn u_inside_a_session_steps_the_engine_not_the_app() {
+    let mut app = url_line("https://x.test/ab");
+    let steps = app.history.undo_len();
+    feed(&mut app, "<CR>xxu");
+    assert_eq!(url(&app).0, "https://x.test/a");
+    assert_eq!(app.history.undo_len(), steps);
+    assert!(app.field_caret().is_live());
+}
+
+/// Plan M3a Deviation 8.
+#[test]
+fn ctrl_z_and_ctrl_shift_z_are_u_and_ctrl_r_in_idle_normal() {
+    let mut app = url_line("abc");
+    feed(&mut app, "<CR>x<C-z>");
+    assert_eq!(url(&app).0, "abc");
+    assert!(app.field_caret().is_live(), "the field's own step; the field stays open");
+    app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL | KeyModifiers::SHIFT));
+    assert_eq!(url(&app).0, "ab");
+}
+
+/// Main's rule (step 1c): a field that has run out of undo steps but can
+/// still redo owns the key, so `u` does not reach the app history then.
+#[test]
+fn the_field_owns_u_while_it_can_still_redo() {
+    let mut app = vim(Fixture::TableAfterDelete);
+    let cell = |app: &App| app.editor.table.editing.as_ref().map(|e| e.input.text().to_string());
+    feed(&mut app, "l<CR>x");
+    assert_eq!(cell(&app).as_deref(), Some(""));
+    feed(&mut app, "u");
+    assert_eq!(cell(&app).as_deref(), Some("2"), "the engine's own undo");
+    feed(&mut app, "u");
+    assert_eq!(app.editor.headers.len(), 2, "the app history is not touched");
+    assert!(app.field_caret().is_live());
+    feed(&mut app, "<Esc>u");
+    assert_eq!(app.editor.headers.len(), 3, "closed, `u` is the app's again");
+}
+
+/// Review Focus 3 and plan M3a Deviation 5.
+#[test]
+fn an_app_undo_under_a_live_url_rebases_its_session() {
+    let mut app = url_line("abc");
+    app.history.break_coalescing();
+    app.editor.url = LineInput::new("abcdef");
+    app.capture_undo();
+    feed(&mut app, "<CR>u");
+    assert_eq!(url(&app).0, "abc", "nothing in the field to undo: the app's step came back");
+    assert!(app.field_caret().is_live(), "the field stays open");
+    assert!(!app.glue.can_undo(EngineKind::Line), "the session started over on the new text");
+    feed(&mut app, "x");
+    assert_eq!(url(&app).0, "ab", "the next x deletes under the caret on the new text");
+}
+
+/// Amendment C1: ctrl+z in Insert, before the engine has committed a step,
+/// belongs to the field (its live edit counts), so the typed text is not
+/// lost to an older app step.
+#[test]
+fn ctrl_z_in_insert_before_the_first_engine_step_leaves_the_app_history_alone() {
+    let mut app = url_line("abc");
+    let steps = app.history.undo_len();
+    feed(&mut app, "<CR>Acd");
+    assert_eq!(url(&app).0, "abccd");
+    feed(&mut app, "<C-z>");
+    assert_eq!(app.history.undo_len(), steps, "no app step was spent or applied");
+    assert!(app.field_caret().is_live());
+    assert_eq!(url(&app).0, "abccd", "the typed text is not lost to an older app step");
 }
 
 /// Plan M3a Deviation 15.

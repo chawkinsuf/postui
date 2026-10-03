@@ -511,7 +511,7 @@ fn check(app: &App, e: Expect) -> Result<(), String> {
 /// fills it and an undo empties it again, which is the journal's
 /// bookkeeping, not state the user sees (plan M2 Deviation 15).
 #[derive(Debug, PartialEq)]
-struct Snapshot {
+pub(super) struct Snapshot {
     files: std::collections::BTreeMap<String, Vec<u8>>,
     rows: Vec<String>,
     cursor: Option<crate::components::sidebar::RowKey>,
@@ -520,7 +520,7 @@ struct Snapshot {
     field: crate::keyroute::FieldCaret,
 }
 
-fn snapshot(app: &App) -> Snapshot {
+pub(super) fn snapshot(app: &App) -> Snapshot {
     let root = app.proj().root().to_path_buf();
     let mut files = std::collections::BTreeMap::new();
     let mut dirs = vec![root.clone()];
@@ -575,7 +575,7 @@ fn run(case: &Case) -> Result<(), String> {
 }
 
 /// Each field where `after` differs from `before`, files as text.
-fn snapshot_diff(before: &Snapshot, after: &Snapshot) -> String {
+pub(super) fn snapshot_diff(before: &Snapshot, after: &Snapshot) -> String {
     let text = |b: Option<&Vec<u8>>| b.map(|b| String::from_utf8_lossy(b).into_owned());
     let mut out = Vec::new();
     let paths: std::collections::BTreeSet<&String> = before.files.keys().chain(after.files.keys()).collect();

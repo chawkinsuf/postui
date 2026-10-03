@@ -2348,7 +2348,8 @@ impl App {
     }
 
     /// Whether a text field that writes into the request as you type has
-    /// keystrokes of its own in flight: the URL line, and the jq bar. While
+    /// keystrokes of its own in flight: the URL line, the jq bar, and in
+    /// vim the body (an engine session's `edited()`). While
     /// it does, the app history waits — the field's own history covers the
     /// keystrokes, and the close lands as one step (spec 2026-09-15, "Two
     /// histories, one handover").
@@ -2359,11 +2360,20 @@ impl App {
         if self.screen != Screen::Main {
             return false;
         }
+        // In vim an engine session holds the URL's and the body's
+        // keystrokes, and its `edited()` is the field's (plan M3a
+        // Deviation 7).
+        let engine = |id| self.glue.owned() == Some(id);
         let url = self.focus == PaneId::Editor
             && self.editor.url_open()
-            && self.editor.url.edited();
+            && if engine(crate::keyroute::FieldId::Url) {
+                self.glue.edited(crate::keyroute::EngineKind::Line)
+            } else {
+                self.editor.url.edited()
+            };
+        let body = engine(crate::keyroute::FieldId::Body) && self.glue.edited(crate::keyroute::EngineKind::Body);
         let jq = self.focus == PaneId::Response && self.session.response.jq_field_edited();
-        url || jq
+        url || body || jq
     }
 
     pub fn capture_undo(&mut self) -> bool {
@@ -2432,6 +2442,9 @@ impl App {
         }
         self.editor.url.end_edit();
         self.session.response.end_jq_edit_session();
+        // The engine's sessions hand their edits over too: what the fields
+        // hold now is where their next step starts (plan M3a Deviation 7).
+        self.glue.flush();
         self.field_gate_was_on = true; // the close is its own step
         self.capture_undo();
     }
@@ -2532,6 +2545,16 @@ impl App {
     /// Whether an open text field has keystrokes of its own to undo — the
     /// condition under which the undo keys belong to it.
     pub(crate) fn open_text_field_edited(&mut self) -> bool {
+        // A vim field the engine runs owns the undo keys while it has live
+        // edits or a step either way (amendment C1: before the first
+        // committed step the live edit still counts, or ctrl+z in Insert
+        // would undo an older app step and lose the typed text).
+        if let Some(id) = self.glue.live()
+            && self.field_caret() == crate::keyroute::FieldCaret::Live(id)
+            && let Some(kind) = id.engine_kind()
+        {
+            return self.glue.edited(kind) || self.glue.can_undo(kind) || self.glue.can_redo(kind);
+        }
         // Modals first, matching `open_text_field_mut` and `field_open`.
         if !self.modals.is_empty() {
             return self.modals.field_edited();
@@ -2553,6 +2576,10 @@ impl App {
     /// field with history took it; `false` leaves the key to the app
     /// history.
     fn undo_in_open_field(&mut self, redo: bool) -> bool {
+        // A vim field the engine runs: its own history (spec §3.7).
+        if let Some(stepped) = self.engine_field_undo(redo) {
+            return stepped;
+        }
         // Modals first, in the same order as `open_text_field_edited` (the
         // gate that sent the key here): a palette over a live Settings
         // edit owns the caret, and the key must step the field it gated on.
