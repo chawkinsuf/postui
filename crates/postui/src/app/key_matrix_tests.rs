@@ -17,6 +17,8 @@ use crate::keyroute::keylist::{self, Status};
 enum Fixture {
     /// Requests alpha, beta and gamma; the cursor on beta.
     SidebarThree,
+    /// `SidebarThree` with beta (under the cursor) open in the editor.
+    SidebarThreeBetaOpen,
     /// Headers a, b, c on an open request; the content focused on row 1.
     TableThreeHeaders,
     /// `TableThreeHeaders`, then row 0 deleted as one undo step.
@@ -77,6 +79,8 @@ enum Expect {
     /// Whether a field has the caret.
     FieldLive(bool),
     EditorSlug(&'static str),
+    /// No request is open (a scratch).
+    NoEditorSlug,
     Mode(&'static str),
     NoMode,
     Echo(&'static str),
@@ -237,6 +241,10 @@ const CASES: &[Case] = &[
     // Review Focus 1: counted deletes, clamped, one undo step.
     vim_u("L.Ndd", SidebarThree, "2dd", &[Requests(&["main/alpha"]), Toast("Deleted 2 requests")]),
     vim_u("L.Ndd", SidebarThree, "9dd", &[Requests(&["main/alpha"])]),
+    // The batch holds the open request: it becomes a scratch, and one undo
+    // brings back the files, the open request and its field exactly.
+    vim_u("L.Ndd", SidebarThreeBetaOpen, "2dd", &[Requests(&["main/alpha"]), NoEditorSlug]),
+    arrows_u("L.dd", SidebarThreeBetaOpen, "d", &[Requests(&["main/alpha", "main/gamma"]), NoEditorSlug]),
     vim_u("L.Ndd", TableThreeHeaders, "2dd", &[Headers(&["a"])]),
     vim("L.Ndd", ManageEnvs, "2dd", &[Toast("Counted delete works on requests and table rows"), EnvNames(&["prod", "qa", "dev"])]),
     // Yank is invisible; put lands under (p) or over (P) the cursor.
@@ -303,11 +311,15 @@ fn build(f: Fixture) -> App {
         _ => App::new_for_test(),
     };
     match f {
-        SidebarThree => {
+        SidebarThree | SidebarThreeBetaOpen => {
             for slug in ["main/alpha", "main/beta", "main/gamma"] {
                 postui_core::fixtures::save_request(app.proj().root(), slug, &req("https://x/1")).unwrap();
             }
             app.update(Action::RefreshSidebar);
+            if matches!(f, SidebarThreeBetaOpen) {
+                app.update(Action::ForceOpenRequest("main/beta".into()));
+                assert_eq!(app.editor.slug.as_deref(), Some("main/beta"));
+            }
             // `.local/state.toml` on disk before any snapshot, through the
             // project's own writer (plan M2 Deviation 15, amended): core
             // writes a missing one at the first journaled op, and undo
@@ -441,6 +453,7 @@ fn check(app: &App, e: Expect) -> Result<(), String> {
         PromptOpen => matches!(app.modals.top(), Some(Modal::Prompt { .. })),
         FieldLive(live) => app.field_caret().is_live() == live,
         EditorSlug(slug) => app.editor.slug.as_deref() == Some(slug),
+        NoEditorSlug => app.editor.slug.is_none(),
         Mode(m) => app.mode_indicator() == Some(m),
         NoMode => app.mode_indicator().is_none(),
         Echo(s) => app.key_echo() == s,
@@ -618,6 +631,10 @@ fn a_counted_table_delete_undone_reselects_the_first_restored_row() {
     draw(&mut app);
     feed(&mut app, "2dd");
     check(&app, Headers(&["a"])).unwrap();
+    // Move off the row the delete left selected, so an undo that never
+    // touches the cursor cannot pass.
+    feed(&mut app, "k");
+    check(&app, TableRow(0)).unwrap();
     feed(&mut app, "u");
     check(&app, Headers(&["a", "b", "c"])).unwrap();
     check(&app, TableRow(1)).unwrap();
@@ -690,6 +707,21 @@ const VIM_UNTIL_M4: &[(Surfaces, Verb)] = &[
     (Surfaces::VAR_FORM, Verb::Promote),
     (Surfaces::VAR_FORM, Verb::Reveal),
 ];
+
+/// No `VIM_UNTIL_M4` entry may have a vim row: that is the signal to take
+/// it off the list, and it needs no fixture (some entries no fixture
+/// offers).
+#[test]
+fn vim_until_m4_names_only_verbs_vim_cannot_reach() {
+    for (on, verb) in VIM_UNTIL_M4 {
+        let stale = table::TABLE.iter().find(|b| {
+            b.profile.has(KeyProfile::Vim)
+                && b.on.minus(*on) != b.on // the row's surfaces overlap the entry's
+                && matches!(b.intent, Intent::Verb(v) if v.kind() == verb.kind())
+        });
+        assert!(stale.is_none(), "{verb:?} has a vim row on {on:?} now; take it off VIM_UNTIL_M4");
+    }
+}
 
 const SWEEP: [Fixture; 9] = [
     SidebarThree,
@@ -774,6 +806,7 @@ fn every_verb_chip_resolves_to_its_chip() {
     use crate::keyroute::spell::Key;
     use crate::keyroute::{KeyCtx, Resolved, Router, Step};
     for profile in [KeyProfile::Vim, KeyProfile::Arrows] {
+        let mut checked = 0;
         for f in SWEEP {
             let mut app = build(f);
             app.use_profile(profile);
@@ -804,7 +837,10 @@ fn every_verb_chip_resolves_to_its_chip() {
                         [Step::Action(Action::OnSelection(v))] if v.kind() == verb.kind())),
                     "{profile:?} {f:?}: {keys:?} ran {last:?}, not the {label} chip's verb"
                 );
+                checked += 1;
             }
         }
+        // A floor, so a `continue` that skips every chip cannot pass.
+        assert!(checked >= 20, "{profile:?}: only {checked} verb chips were checked");
     }
 }
