@@ -2237,6 +2237,7 @@ impl App {
                 self.update(Action::VarStruct(VarStructOp::PasteOption {
                     env,
                     selector,
+                    count: 1,
                 }))
             }
             Hit::VmEntryDelete(row) => {

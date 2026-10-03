@@ -2394,13 +2394,13 @@ impl Editor {
             Verb::Delete { count: 0 | 1 } => row.map(Action::DeleteTableRow),
             Verb::Delete { count } => row.map(|start| Action::DeleteTableRows { start, count }),
             Verb::Yank => row.map(Action::YankTableRow),
-            Verb::Put { above } => {
+            Verb::Put { above, count } => {
                 let at = match self.table.selected {
                     Some(i) if above => i,
                     Some(i) => i + 1,
                     None => len,
                 };
-                Some(Action::PutTableRow { at: at.min(len) })
+                Some(Action::PutTableRow { at: at.min(len), count })
             }
             _ => None,
         }

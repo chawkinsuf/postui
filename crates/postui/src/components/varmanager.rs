@@ -183,10 +183,12 @@ pub enum VarStructOp {
     /// that is free there — its own, else `"<name> copy"`, then
     /// `"<name> copy-2"`, … Refused when nothing is copied, or when what
     /// is copied came from a different selector; pasting into the
-    /// environment the row came from duplicates it.
+    /// environment the row came from duplicates it. `count` rows land as
+    /// one undo step (`{N}p` on the grid), each under the next free name.
     PasteOption {
         env: String,
         selector: String,
+        count: usize,
     },
 }
 
@@ -966,16 +968,16 @@ impl VarManager {
                     chip(Verb::Yank, "copy"),
                     (Key::Named("space"), "select", self.select_entry_action(ctx, selector)),
                     chip(Verb::Add, "new option"),
-                    chip(Verb::Put { above: false }, "paste"),
+                    chip(Verb::Put { above: false, count: 1 }, "paste"),
                 ]
             } else {
                 // The selector pane's verbs in its buttons' order, then
                 // the left column's two `+` buttons in theirs — the same
                 // sequence the grid's strip runs in, so the footer reads
-                // the same wherever the keyboard is. The targets (the
-                // cursor's row, else the open detail, so the chips stay
-                // clickable on a section header) are `list_verb`'s; `edit
-                // fields` appears only with a selector open.
+                // the same wherever the keyboard is. The targets are
+                // `list_verb`'s: the cursor's row only, so on a section
+                // header just the two `new` chips remain; `edit fields`
+                // appears only on a selector's row.
                 vec![
                     chip(Verb::Delete { count: 1 }, "delete"),
                     chip(Verb::Rename, "rename"),
@@ -1433,10 +1435,11 @@ impl VarManager {
     }
 
     /// What a list verb means where the Variables tab's keyboard is (piece
-    /// 4 spec §5.4): on the list, the declaration under the cursor, else
-    /// the one the detail pane has open (the chips' rule, plan M2
-    /// Deviation 7); on the grid, the option under its cursor; on the
-    /// form, the open variable. The router's rows and the footer chips
+    /// 4 spec §5.4): on the list, the declaration under the cursor, and
+    /// nothing on a section header, as a vim operator acts only on what
+    /// the cursor is on (plan M2 Deviation 7, reverted); on the grid, the
+    /// option under its cursor; on the form, the open variable. The
+    /// router's rows and the footer chips
     /// both read it, so a key and its chip cannot drift.
     pub fn verb_action(&self, ctx: &Project, open_request: Option<&HttpRequest>, verb: Verb) -> Option<Action> {
         match (self.focus, &self.detail) {
@@ -1448,11 +1451,7 @@ impl VarManager {
     }
 
     fn list_verb(&self, ctx: &Project, verb: Verb) -> Option<Action> {
-        let name = self
-            .selected_row()
-            .and_then(VmRow::name)
-            .or_else(|| self.detail.name())
-            .map(str::to_string);
+        let name = self.selected_row().and_then(VmRow::name).map(str::to_string);
         match verb {
             Verb::Add => Some(Action::PromptNewVar),
             Verb::AddAlt => Some(Action::PromptNewSelector),
@@ -1461,8 +1460,8 @@ impl VarManager {
             Verb::Secret => name
                 .filter(|n| ctx.variables().vars.contains_key(n))
                 .map(|name| Action::ToggleSecretVar { name }),
-            Verb::Fields => match &self.detail {
-                VmDetail::Group(selector) => Some(Action::PromptGroupFields { selector: selector.clone() }),
+            Verb::Fields => match self.selected_row() {
+                Some(VmRow::Group(selector)) => Some(Action::PromptGroupFields { selector: selector.clone() }),
                 _ => None,
             },
             _ => None,
@@ -1493,9 +1492,9 @@ impl VarManager {
                 })
             }
             Verb::Yank => target.map(|_| Action::CopyOption { row }),
-            Verb::Put { .. } => op_env(ctx, selector)
+            Verb::Put { count, .. } => op_env(ctx, selector)
                 .filter(|_| self.can_paste(selector))
-                .map(|env| Action::VarStruct(VarStructOp::PasteOption { env, selector: selector.to_string() })),
+                .map(|env| Action::VarStruct(VarStructOp::PasteOption { env, selector: selector.to_string(), count })),
             Verb::Fields => Some(Action::PromptGroupFields { selector: selector.to_string() }),
             _ => None,
         }
@@ -1587,6 +1586,7 @@ impl VarManager {
                     Action::VarStruct(VarStructOp::PasteOption {
                         env: env.clone(),
                         selector: selector.clone(),
+                        count: 1,
                     }),
                 )
             } else {
@@ -2933,6 +2933,36 @@ fields = ["user_id", "customer_id"]
         vm.select_row(0);
         assert_eq!(vm.left_cursor, 0);
         assert_eq!(vm.detail, VmDetail::Var("base_url".into()));
+    }
+
+    /// A list verb acts on the row under the cursor, as vim's operators
+    /// do. A section header names nothing, so there the verbs resolve to
+    /// nothing and their chips drop, whatever the detail pane has open.
+    #[test]
+    fn a_section_header_takes_no_list_verb() {
+        let (_dir, ctx) = fixture();
+        let mut vm = VarManager::default();
+        render(&mut vm, &ctx);
+        let at = |vm: &VarManager, want: &VmRow| vm.left_rows.iter().position(|r| r == want).unwrap();
+        let creds = VmRow::Group("creds".into());
+        vm.select_row(at(&vm, &creds));
+        assert_eq!(
+            vm.verb_action(&ctx, None, Verb::Fields),
+            Some(Action::PromptGroupFields { selector: "creds".into() }),
+            "on its own row a selector's fields are one key away"
+        );
+        for (open, header) in [
+            (VmRow::Var("base_url".into()), VmRow::SectionVars),
+            (creds, VmRow::SectionGroups),
+        ] {
+            vm.select_row(at(&vm, &open));
+            vm.select_row(at(&vm, &header));
+            for verb in [Verb::Delete { count: 1 }, Verb::Rename, Verb::Secret, Verb::Fields] {
+                assert_eq!(vm.verb_action(&ctx, None, verb), None, "{verb:?} with {open:?} open");
+            }
+            let labels: Vec<_> = vm.footer_chips(&ctx, None).into_iter().map(|(_, l, _)| l).collect();
+            assert_eq!(labels, ["new variable", "new selector"], "{open:?} open");
+        }
     }
 
     #[test]
@@ -4447,7 +4477,7 @@ fields = ["user_id", "customer_id"]
         assert_eq!(paste.1, "paste");
         assert!(matches!(
             &paste.2,
-            Some(Action::VarStruct(VarStructOp::PasteOption { env, selector }))
+            Some(Action::VarStruct(VarStructOp::PasteOption { env, selector, count: 1 }))
                 if env == "qa" && selector == "creds"
         ));
 
@@ -4510,14 +4540,14 @@ fields = ["user_id", "customer_id"]
         );
         // Put is inert until something is copied — nothing dispatches a
         // paste core would refuse.
-        assert_eq!(vm.verb_action(&ctx, None, Verb::Put { above: false }), None);
+        assert_eq!(vm.verb_action(&ctx, None, Verb::Put { above: false, count: 1 }), None);
         vm.stash = Some(vm.option_row(&ctx, 1).expect("row 1 is an option"));
         assert_eq!(vm.stash.as_ref().unwrap().name, "bob");
-        let action = vm.verb_action(&ctx, None, Verb::Put { above: false });
+        let action = vm.verb_action(&ctx, None, Verb::Put { above: false, count: 3 });
         assert!(
             matches!(
                 &action,
-                Some(Action::VarStruct(VarStructOp::PasteOption { env, selector }))
+                Some(Action::VarStruct(VarStructOp::PasteOption { env, selector, count: 3 }))
                     if env == "qa" && selector == "creds"
             ),
             "{action:?}"

@@ -621,6 +621,32 @@ impl Project {
         self.duplicate_with(slug, anchor, above, true)
     }
 
+    /// A counted put (`{N}p`): `count` copies as one undo entry, the way
+    /// [`Self::delete_requests`] makes a counted `dd` one. The copies sit
+    /// together beside `anchor` in the order they were made: below it each
+    /// lands under the copy before, above it each takes the anchor's slot
+    /// in turn. Returns the copies' slugs, first made first.
+    pub fn duplicate_requests_at(
+        &mut self,
+        slug: &str,
+        anchor: &str,
+        above: bool,
+        count: usize,
+    ) -> Result<Vec<String>, Error> {
+        let meta = self.meta_for_moves(Vec::new());
+        self.transaction("duplicate requests", meta, |p| {
+            let mut made: Vec<String> = Vec::new();
+            for _ in 0..count.max(1) {
+                let at = match made.last() {
+                    Some(prev) if !above => prev.clone(),
+                    _ => anchor.to_string(),
+                };
+                made.push(p.duplicate_request_at(slug, &at, above)?);
+            }
+            Ok(made)
+        })
+    }
+
     /// The shared body. `seed` says whether a missing order array is
     /// written (a put) or left alone (a plain duplicate).
     fn duplicate_with(&mut self, slug: &str, anchor: &str, above: bool, seed: bool) -> Result<String, Error> {
@@ -1187,6 +1213,30 @@ mod tests {
         let copy = p.duplicate_request_at("main/a", "main/f/x", false).unwrap();
         assert_eq!(copy, "main/f/a-copy-2");
         assert!(read(&dir, "requests/main/f/a-copy-2.toml").unwrap().contains("a copy 2"));
+    }
+
+    /// `3p`: three copies directly below the anchor, in the order they were
+    /// made, as one undo step (vim's `3p` is one change).
+    #[test]
+    fn a_counted_put_lands_its_copies_below_the_anchor_as_one_undo_step() {
+        let (dir, mut p) = unordered_fixture();
+        let before = read(&dir, "project.toml").unwrap();
+        let copies = p.duplicate_requests_at("main/a", "main/b", false, 3).unwrap();
+        assert_eq!(copies, ["main/a-copy", "main/a-copy-2", "main/a-copy-3"]);
+        assert_eq!(order::space_order(p.meta(), "main"), ["a", "b", "a-copy", "a-copy-2", "a-copy-3", "c"]);
+        p.undo().unwrap();
+        for c in &copies {
+            assert!(!p.request_exists(c), "{c}");
+        }
+        assert_eq!(read(&dir, "project.toml").as_deref(), Some(before.as_str()));
+    }
+
+    /// `3P`: the copies sit above the anchor in the same reading order.
+    #[test]
+    fn a_counted_put_above_keeps_its_copies_in_order() {
+        let (_dir, mut p) = unordered_fixture();
+        p.duplicate_requests_at("main/a", "main/b", true, 3).unwrap();
+        assert_eq!(order::space_order(p.meta(), "main"), ["a", "a-copy", "a-copy-2", "a-copy-3", "b", "c"]);
     }
 
     #[test]

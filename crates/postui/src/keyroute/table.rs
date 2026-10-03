@@ -314,11 +314,11 @@ pub static TABLE: &[Binding] = &[
     ),
     arrows("y", Surfaces::SIDEBAR.or(Surfaces::TABLE), Intent::Verb(Verb::Yank)),
     arrows("c", Surfaces::VAR_GRID, Intent::Verb(Verb::Yank)),
-    row("p", Surfaces::SIDEBAR.or(Surfaces::TABLE).or(Surfaces::VAR_GRID), Intent::Verb(Verb::Put { above: false }), CountRule::Repeat),
-    row("P", Surfaces::SIDEBAR.or(Surfaces::TABLE).or(Surfaces::VAR_GRID), Intent::Verb(Verb::Put { above: true }), CountRule::Repeat),
-    arrows("p", Surfaces::SIDEBAR.or(Surfaces::TABLE), Intent::Verb(Verb::Put { above: false })),
-    arrows("P", Surfaces::SIDEBAR.or(Surfaces::TABLE), Intent::Verb(Verb::Put { above: true })),
-    arrows("v", Surfaces::VAR_GRID, Intent::Verb(Verb::Put { above: false })),
+    row("p", Surfaces::SIDEBAR.or(Surfaces::TABLE).or(Surfaces::VAR_GRID), Intent::Verb(Verb::Put { above: false, count: 1 }), CountRule::Pass),
+    row("P", Surfaces::SIDEBAR.or(Surfaces::TABLE).or(Surfaces::VAR_GRID), Intent::Verb(Verb::Put { above: true, count: 1 }), CountRule::Pass),
+    arrows("p", Surfaces::SIDEBAR.or(Surfaces::TABLE), Intent::Verb(Verb::Put { above: false, count: 1 })),
+    arrows("P", Surfaces::SIDEBAR.or(Surfaces::TABLE), Intent::Verb(Verb::Put { above: true, count: 1 })),
+    arrows("v", Surfaces::VAR_GRID, Intent::Verb(Verb::Put { above: false, count: 1 })),
     arrows("p", Surfaces::VAR_FORM, Intent::Verb(Verb::Promote)),
     arrows("s", Surfaces::VAR_LIST.or(Surfaces::VAR_FORM), Intent::Verb(Verb::Secret)),
     arrows("x", Surfaces::VAR_FORM, Intent::Verb(Verb::ClearValue)),
@@ -455,12 +455,12 @@ mod tests {
         use crate::action::Verb;
         for b in TABLE {
             let edge = matches!(b.intent, Intent::Edge { .. });
-            let counted_delete = matches!(b.intent, Intent::Verb(Verb::Delete { .. }));
+            let counted_verb = matches!(b.intent, Intent::Verb(Verb::Delete { .. } | Verb::Put { .. }));
             if edge {
                 assert_eq!(b.count, CountRule::Pass, "{}: an Edge row reads its count", b.keys);
             }
             if b.count == CountRule::Pass {
-                assert!(edge || counted_delete, "{}: Pass is for Edge rows and dd", b.keys);
+                assert!(edge || counted_verb, "{}: Pass is for Edge rows, dd and p", b.keys);
             }
             if matches!(b.intent, Intent::Pass | Intent::Note(_)) {
                 assert_eq!(b.count, CountRule::Ignore, "{}", b.keys);

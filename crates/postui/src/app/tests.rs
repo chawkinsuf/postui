@@ -11229,6 +11229,7 @@ fn a_copied_option_pastes_the_whole_row_into_another_environment() {
     app.update(Action::VarStruct(VarStructOp::PasteOption {
         env: "dev".into(),
         selector: "creds".into(),
+        count: 1,
     }));
 
     assert!(
@@ -11252,6 +11253,7 @@ fn pasting_back_into_the_environment_a_row_came_from_duplicates_it() {
     app.update(Action::VarStruct(VarStructOp::PasteOption {
         env: "qa".into(),
         selector: "creds".into(),
+        count: 1,
     }));
 
     let options =
@@ -11262,6 +11264,31 @@ fn pasting_back_into_the_environment_a_row_came_from_duplicates_it() {
     assert_eq!(options["alice"].values["user_id"], "1");
 }
 
+/// `3p` on the grid: three rows, each under the next free name, as one
+/// undo step (vim's `3p` is one change).
+#[test]
+fn a_counted_paste_lands_every_row_as_one_undo_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = creds_app(dir.path());
+    app.update(Action::CopyOption { row: 0 });
+    let before = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    app.update(Action::VarStruct(VarStructOp::PasteOption {
+        env: "qa".into(),
+        selector: "creds".into(),
+        count: 3,
+    }));
+    let options =
+        postui_core::varmodel::options_of(app.proj().variables(), app.proj().env_data(), "creds")
+            .cloned()
+            .unwrap_or_default();
+    for name in ["alice copy", "alice copy-2", "alice copy-3"] {
+        assert!(options.contains_key(name), "{name}: {:?}", options.keys().collect::<Vec<_>>());
+    }
+    app.update(Action::Undo);
+    let after = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert_eq!(after, before, "one undo takes all three back");
+}
+
 #[test]
 fn pasting_with_nothing_copied_says_so_and_writes_nothing() {
     let dir = tempfile::tempdir().unwrap();
@@ -11270,6 +11297,7 @@ fn pasting_with_nothing_copied_says_so_and_writes_nothing() {
     app.update(Action::VarStruct(VarStructOp::PasteOption {
         env: "qa".into(),
         selector: "creds".into(),
+        count: 1,
     }));
 
     assert!(
@@ -11295,6 +11323,7 @@ fn a_copied_row_does_not_paste_into_a_different_selector() {
     app.update(Action::VarStruct(VarStructOp::PasteOption {
         env: "qa".into(),
         selector: "other".into(),
+        count: 1,
     }));
 
     assert!(
@@ -11392,6 +11421,7 @@ fn shared_selector_paste_lands_in_variables_toml() {
     app.update(Action::VarStruct(VarStructOp::PasteOption {
         env: "qa".into(),
         selector: "locale".into(),
+        count: 1,
     }));
 
     assert_eq!(
@@ -17009,10 +17039,13 @@ fn vm_footer_advertises_edit_fields_on_a_selector() {
 }
 
 /// User finding: with a variable's form open but the left cursor on a
-/// section header, the rename/delete chips rendered as plain hints. They
-/// fall back to the open detail's name so they stay clickable.
+/// section header, the rename/delete chips rendered as plain hints. A
+/// verb acts only on the row under the cursor (vim's operator rule, plan
+/// M2 Deviation 7 reverted), so a header has no rename or delete target:
+/// those chips are dropped rather than painted dead, and the two `new`
+/// chips stay.
 #[test]
-fn vm_footer_rename_delete_act_on_the_open_form_from_a_header_row() {
+fn vm_footer_drops_rename_delete_on_a_header_row() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -17025,22 +17058,9 @@ fn vm_footer_rename_delete_act_on_the_open_form_from_a_header_row() {
         crate::keyroute::Surface::VarList,
         app.varmanager.footer_chips(app.proj(), None),
     );
-    assert!(
-        chips.iter().any(|(k, _, a)| *k == "r"
-            && *a
-                == Some(Action::PromptRenameVar {
-                    from: "base_url".into()
-                })),
-        "{chips:?}"
-    );
-    assert!(
-        chips.iter().any(|(k, _, a)| *k == "d"
-            && *a
-                == Some(Action::DeleteVar {
-                    name: "base_url".into()
-                })),
-        "{chips:?}"
-    );
+    let labels: Vec<&str> = chips.iter().map(|(_, l, _)| *l).collect();
+    assert_eq!(labels, ["new variable", "new selector"], "{chips:?}");
+    assert!(chips.iter().all(|(_, _, a)| a.is_some()), "no dead chip: {chips:?}");
 }
 
 /// User finding: chips with no target rendered as dead, unclickable text.
@@ -20918,6 +20938,17 @@ mod undo_tests {
         assert!(!app.op_in_flight);
     }
 
+    /// The arm itself clears the flag on its no-project exit, as its
+    /// siblings do, rather than leaning on `dispatch`'s safety net: a
+    /// nested `apply` (a put's own) runs before that net does.
+    #[test]
+    fn a_duplicate_with_no_project_leaves_no_op_in_flight() {
+        let (mut app, _dir) = spaced_app();
+        app.project = None;
+        app.apply(Action::ForceDuplicateRequest { slug: "main/alpha".into(), anchor: None, above: false, count: 1 });
+        assert!(!app.op_in_flight);
+    }
+
     /// Task 13, spec §6.5's last bullet, ruling C12: walks every row of
     /// §4.5 in turn on one fixture and asserts G5 — the sidebar cursor is
     /// never `None` while a row exists — after each. The step names name
@@ -21149,7 +21180,7 @@ mod undo_tests {
     fn a_put_duplicates_the_yanked_request_below_the_anchor() {
         let (mut app, dir) = spaced_app();
         app.update(Action::YankRequest("main/alpha".into()));
-        app.update(Action::PutRequest { anchor: Some("main/beta".into()), above: false });
+        app.update(Action::PutRequest { anchor: Some("main/beta".into()), above: false, count: 1 });
         assert_eq!(main_order(&app), ["alpha", "beta", "alpha-copy"]);
         assert_eq!(app.editor.slug.as_deref(), Some("main/alpha-copy"));
         app.update(Action::Undo);
@@ -21162,7 +21193,7 @@ mod undo_tests {
     fn a_put_above_takes_the_anchors_slot() {
         let (mut app, _dir) = spaced_app();
         app.update(Action::YankRequest("main/alpha".into()));
-        app.update(Action::PutRequest { anchor: Some("main/beta".into()), above: true });
+        app.update(Action::PutRequest { anchor: Some("main/beta".into()), above: true, count: 1 });
         assert_eq!(main_order(&app), ["alpha", "alpha-copy", "beta"]);
     }
 
@@ -21174,7 +21205,7 @@ mod undo_tests {
             let (mut app, _dir) = spaced_app();
             assert!(main_order(&app).is_empty());
             app.update(Action::YankRequest("main/alpha".into()));
-            app.update(Action::PutRequest { anchor: Some("main/alpha".into()), above });
+            app.update(Action::PutRequest { anchor: Some("main/alpha".into()), above, count: 1 });
             assert_eq!(main_order(&app), want, "above = {above}");
         }
     }
@@ -21193,7 +21224,7 @@ mod undo_tests {
         }];
         app.sidebar.selected = Some(0);
         let files = request_files(dir.path());
-        app.update(Action::PutRequest { anchor: app.sidebar.put_anchor(false), above: false });
+        app.update(Action::PutRequest { anchor: app.sidebar.put_anchor(false), above: false, count: 1 });
         assert!(
             app.toasts.messages().contains(&"No request in this folder to put beside"),
             "{:?}",
@@ -21219,7 +21250,7 @@ mod undo_tests {
         }];
         app.sidebar.selected = Some(0);
         let files = request_files(dir.path());
-        app.update(Action::PutRequest { anchor: app.sidebar.put_anchor(false), above: false });
+        app.update(Action::PutRequest { anchor: app.sidebar.put_anchor(false), above: false, count: 1 });
         assert!(
             app.toasts.messages().contains(&"Open the folder to put into it"),
             "{:?}",
@@ -21239,9 +21270,61 @@ mod undo_tests {
         sidebar_on(&mut app, "main/alpha");
         type_z_into_the_url(&mut app);
         app.update(Action::YankRequest("main/beta".into()));
-        app.update(Action::PutRequest { anchor: Some("main/alpha".into()), above: false });
+        app.update(Action::PutRequest { anchor: Some("main/alpha".into()), above: false, count: 1 });
         assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })), "the gate comes first");
         assert!(!postui_core::fixtures::request_exists(dir.path(), "main/beta-copy"));
+    }
+
+    /// Vim's `3p` is one command: over unsaved edits it asks once, then
+    /// makes all three copies, opens the first, and one undo takes all
+    /// three back.
+    #[test]
+    fn a_counted_put_over_unsaved_edits_asks_once_and_makes_every_copy() {
+        let (mut app, dir) = spaced_app();
+        app.use_profile(crate::config::KeyProfile::Vim);
+        app.update(Action::ForceOpenRequest("main/alpha".into()));
+        type_z_into_the_url(&mut app);
+        app.update(Action::YankRequest("main/beta".into()));
+        sidebar_on(&mut app, "main/alpha");
+        app.handle_key(plain('3'));
+        app.handle_key(plain('p'));
+        assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })), "the gate comes first");
+        app.handle_key(plain('d')); // Discard changes
+        let copies = ["main/beta-copy", "main/beta-copy-2", "main/beta-copy-3"];
+        for c in copies {
+            assert!(postui_core::fixtures::request_exists(dir.path(), c), "{c}");
+        }
+        assert_eq!(main_order(&app), ["alpha", "beta-copy", "beta-copy-2", "beta-copy-3", "beta"]);
+        assert_eq!(app.editor.slug.as_deref(), Some("main/beta-copy"), "the first copy opens");
+        app.update(Action::Undo);
+        for c in copies {
+            assert!(!postui_core::fixtures::request_exists(dir.path(), c), "{c}");
+        }
+    }
+
+    /// `3p` on a table: three rows under the cursor in one editor change,
+    /// the cursor on the first, as vim leaves it.
+    #[test]
+    fn a_counted_table_put_lands_every_row_as_one_step() {
+        let mut app = App::new_for_test();
+        app.update(Action::CreateRequest("rows".into()));
+        for k in ["a", "b"] {
+            app.editor
+                .headers
+                .insert(k.into(), postui_core::model::Entry { value: "1".into(), enabled: true });
+        }
+        app.editor.active_tab = EditorTab::Headers;
+        app.capture_undo();
+        app.update(Action::YankTableRow(0));
+        app.update(Action::PutTableRow { at: 1, count: 3 });
+        app.capture_undo();
+        assert_eq!(
+            app.editor.headers.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["a", "a-copy", "a-copy-2", "a-copy-3", "b"]
+        );
+        assert_eq!(app.editor.table.selected, Some(1));
+        app.update(Action::Undo);
+        assert_eq!(app.editor.headers.keys().map(String::as_str).collect::<Vec<_>>(), ["a", "b"]);
     }
 
     /// Review Focus 3: a put off the yank's space is refused, and the
@@ -21251,7 +21334,7 @@ mod undo_tests {
         let (mut app, dir) = spaced_app();
         app.update(Action::YankRequest("main/alpha".into()));
         app.update(Action::SwitchSpace("auth".into()));
-        app.update(Action::PutRequest { anchor: Some("auth/login".into()), above: false });
+        app.update(Action::PutRequest { anchor: Some("auth/login".into()), above: false, count: 1 });
         assert!(
             app.toasts.messages().iter().any(|m| m.contains("was yanked from another space")),
             "{:?}",
@@ -21268,13 +21351,33 @@ mod undo_tests {
         let (mut app, _dir) = spaced_app();
         app.update(Action::YankRequest("main/alpha".into()));
         app.update(Action::DeleteRequest("main/alpha".into()));
-        app.update(Action::PutRequest { anchor: Some("main/beta".into()), above: false });
+        app.update(Action::PutRequest { anchor: Some("main/beta".into()), above: false, count: 1 });
         assert!(
             app.toasts.messages().iter().any(|m| m.starts_with("could not duplicate main/alpha")),
             "{:?}",
             app.toasts.messages()
         );
         assert_eq!(app.yank, crate::yank::Register::Empty);
+    }
+
+    /// A put that fails for any other reason (here, a space directory it
+    /// can't write into) leaves the source in place, so the register is
+    /// kept for a put once the cause is fixed.
+    #[test]
+    fn a_put_that_fails_on_disk_keeps_the_register() {
+        use std::os::unix::fs::PermissionsExt;
+        let (mut app, dir) = spaced_app();
+        app.update(Action::YankRequest("main/alpha".into()));
+        let space = dir.path().join("requests/main");
+        std::fs::set_permissions(&space, std::fs::Permissions::from_mode(0o555)).unwrap();
+        app.update(Action::PutRequest { anchor: Some("main/beta".into()), above: false, count: 1 });
+        std::fs::set_permissions(&space, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(
+            app.toasts.messages().iter().any(|m| m.starts_with("could not duplicate main/alpha")),
+            "{:?}",
+            app.toasts.messages()
+        );
+        assert_eq!(app.yank, crate::yank::Register::Request("main/alpha".into()));
     }
 
     /// An empty register is vim's own no-op; a table row on the sidebar
@@ -21285,14 +21388,14 @@ mod undo_tests {
         let files = request_files(dir.path());
         // `spaced_app` opens with the "no environments" toast already up.
         let toasts = app.toasts.messages().len();
-        app.update(Action::PutRequest { anchor: None, above: false });
+        app.update(Action::PutRequest { anchor: None, above: false, count: 1 });
         assert_eq!(app.toasts.messages().len(), toasts, "an empty register says nothing");
         app.yank = crate::yank::Register::Row {
             tab: EditorTab::Headers,
             key: "X".into(),
             entry: postui_core::model::Entry { value: "1".into(), enabled: true },
         };
-        app.update(Action::PutRequest { anchor: None, above: false });
+        app.update(Action::PutRequest { anchor: None, above: false, count: 1 });
         assert!(app.toasts.messages().iter().any(|m| m.contains("holds a table row")));
         assert_eq!(request_files(dir.path()), files);
     }
@@ -21311,16 +21414,38 @@ mod undo_tests {
         app.editor.active_tab = EditorTab::Headers;
         app.capture_undo();
         app.update(Action::YankTableRow(0));
-        app.update(Action::PutTableRow { at: 1 });
+        app.update(Action::PutTableRow { at: 1, count: 1 });
         app.capture_undo();
         assert_eq!(app.editor.headers.keys().map(String::as_str).collect::<Vec<_>>(), ["a", "a-copy", "b"]);
         assert_eq!(app.editor.table.selected, Some(1));
         app.update(Action::Undo);
         assert_eq!(app.editor.headers.keys().map(String::as_str).collect::<Vec<_>>(), ["a", "b"]);
         app.editor.active_tab = EditorTab::Params;
-        app.update(Action::PutTableRow { at: 0 });
+        app.update(Action::PutTableRow { at: 0, count: 1 });
         assert!(app.editor.params.is_empty());
         assert!(app.toasts.messages().iter().any(|m| m.contains("was yanked from another tab")));
+    }
+
+    /// Vim's `p` puts exactly what was yanked: a row lands under its own key
+    /// when the table has no row by it (another request's table, or this
+    /// one after the row went), and steps aside to `-copy` only on a clash.
+    #[test]
+    fn a_table_row_put_keeps_its_key_when_the_table_has_none() {
+        let mut app = App::new_for_test();
+        app.update(Action::CreateRequest("rows".into()));
+        app.editor
+            .headers
+            .insert("Authorization".into(), postui_core::model::Entry { value: "t".into(), enabled: true });
+        app.editor.active_tab = EditorTab::Headers;
+        app.update(Action::YankTableRow(0));
+        app.editor.headers.clear();
+        app.update(Action::PutTableRow { at: 0, count: 1 });
+        assert_eq!(app.editor.headers.keys().map(String::as_str).collect::<Vec<_>>(), ["Authorization"]);
+        app.update(Action::PutTableRow { at: 1, count: 1 });
+        assert_eq!(
+            app.editor.headers.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["Authorization", "Authorization-copy"]
+        );
     }
 
     /// Spec §5.2: the register names a request in the project being left.
@@ -30308,8 +30433,8 @@ fn selection_action_on_the_sidebar() {
     );
     assert_eq!(at(&app, Verb::Yank), Some(Action::YankRequest("main/beta".into())));
     assert_eq!(
-        at(&app, Verb::Put { above: true }),
-        Some(Action::PutRequest { anchor: Some("main/beta".into()), above: true })
+        at(&app, Verb::Put { above: true, count: 2 }),
+        Some(Action::PutRequest { anchor: Some("main/beta".into()), above: true, count: 2 })
     );
     assert_eq!(at(&app, Verb::Tls), None, "no TLS on a request row");
     app.sidebar.selected = app.sidebar.row_of("main/gamma");
@@ -30350,8 +30475,14 @@ fn selection_action_on_a_table() {
         Some(Action::DeleteTableRows { start: 1, count: 2 })
     );
     assert_eq!(app.selection_action(s, Verb::Yank), Some(Action::YankTableRow(1)));
-    assert_eq!(app.selection_action(s, Verb::Put { above: false }), Some(Action::PutTableRow { at: 2 }));
-    assert_eq!(app.selection_action(s, Verb::Put { above: true }), Some(Action::PutTableRow { at: 1 }));
+    assert_eq!(
+        app.selection_action(s, Verb::Put { above: false, count: 2 }),
+        Some(Action::PutTableRow { at: 2, count: 2 })
+    );
+    assert_eq!(
+        app.selection_action(s, Verb::Put { above: true, count: 1 }),
+        Some(Action::PutTableRow { at: 1, count: 1 })
+    );
     assert_eq!(app.selection_action(s, Verb::Rename), None);
 }
 
@@ -30379,7 +30510,10 @@ fn delete_on_a_folder_or_the_add_row_does_nothing() {
     let s = Surface::Table(EditorTab::Headers);
     assert_eq!(table.selection_action(s, Verb::Delete { count: 1 }), None, "the add row");
     assert_eq!(table.selection_action(s, Verb::Yank), None);
-    assert_eq!(table.selection_action(s, Verb::Put { above: false }), Some(Action::PutTableRow { at: 3 }));
+    assert_eq!(
+        table.selection_action(s, Verb::Put { above: false, count: 1 }),
+        Some(Action::PutTableRow { at: 3, count: 1 })
+    );
 }
 
 /// Spec §6.1: `OnSelection` runs what `selection_action` resolves to, on
@@ -30455,7 +30589,7 @@ fn selection_action_on_the_variables_tab() {
     app.varmanager.grid.cursor = (0, 0);
     assert_eq!(app.selection_action(Surface::VarGrid, Verb::Add), Some(Action::StartNewOptionEdit));
     assert_eq!(app.selection_action(Surface::VarGrid, Verb::Yank), Some(Action::CopyOption { row: 0 }));
-    assert_eq!(app.selection_action(Surface::VarGrid, Verb::Put { above: false }), None, "nothing copied");
+    assert_eq!(app.selection_action(Surface::VarGrid, Verb::Put { above: false, count: 1 }), None, "nothing copied");
     assert_eq!(
         app.selection_action(Surface::VarGrid, Verb::Rename),
         Some(Action::StartOptionNameEdit { row: 0 })

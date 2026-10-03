@@ -640,8 +640,8 @@ fn a_counted_table_delete_undone_reselects_the_first_restored_row() {
     check(&app, TableRow(1)).unwrap();
 }
 
-/// A refused counted put stops at the first refusal: one toast, not one
-/// per repeat (final review M1).
+/// A refused counted put is one refusal: one toast, not one per copy
+/// (final review M1; the count rides on the one action).
 #[test]
 fn a_refused_counted_put_toasts_once() {
     let mut app = build(SidebarThree);
@@ -653,15 +653,18 @@ fn a_refused_counted_put_toasts_once() {
     assert_eq!(n, 1, "{:?}", app.toasts.messages());
 }
 
-/// A counted put that works still runs every repeat.
+/// A counted put that works makes every copy, and one `u` takes them all
+/// back (vim's `3p` is one change).
 #[test]
-fn a_counted_put_that_works_runs_every_repeat() {
+fn a_counted_put_that_works_makes_every_copy_as_one_undo_step() {
     let mut app = build(SidebarThree);
     app.use_profile(KeyProfile::Vim);
     draw(&mut app);
+    let requests = |app: &App| app.sidebar.rows.iter().filter(|r| matches!(r, Row::Request { .. })).count();
     feed(&mut app, "yy3p");
-    let requests = app.sidebar.rows.iter().filter(|r| matches!(r, Row::Request { .. })).count();
-    assert_eq!(requests, 6, "{:?}", app.sidebar.rows);
+    assert_eq!(requests(&app), 6, "{:?}", app.sidebar.rows);
+    feed(&mut app, "u");
+    assert_eq!(requests(&app), 3, "{:?}", app.sidebar.rows);
 }
 
 /// Spec §8.2's coverage, up to this build's milestone.
@@ -700,7 +703,7 @@ const VERBS: [Verb; 14] = [
     Verb::Move,
     Verb::Delete { count: 1 },
     Verb::Yank,
-    Verb::Put { above: false },
+    Verb::Put { above: false, count: 1 },
     Verb::EditValue,
     Verb::Promote,
     Verb::Fields,

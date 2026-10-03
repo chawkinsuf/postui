@@ -376,9 +376,7 @@ impl TableEditorState {
         }
         let end = start.saturating_add(n).min(map.len());
         self.editing = None;
-        for _ in start..end {
-            map.shift_remove_index(start);
-        }
+        map.drain(start..end);
         self.selected = Some(start.min(map.len()));
         end - start
     }

@@ -187,10 +187,13 @@ fn expand(b: &table::Binding, count: Option<usize>, cap: usize) -> Vec<Step> {
         },
         // An action's count is not the surface's rows: `5u` undoes five.
         Intent::Act(f) => vec![Step::Action(f()); times(usize::MAX)],
-        // `{N}dd` hands N to the verb; a put repeats, capped by the
-        // surface like a motion (plan M2 Deviation 10).
+        // `{N}dd` and `{N}p` hand N to the verb, which runs it as one
+        // undo step; a put's N is capped by the surface like a motion's
+        // (plan M2 Deviation 10), so `9999p` can't write 9 999 files.
         Intent::Verb(v) if b.count == CountRule::Pass => {
-            vec![Step::Action(Action::OnSelection(v.with_count(count.unwrap_or(1))))]
+            let n = count.unwrap_or(1);
+            let n = if matches!(v, crate::action::Verb::Put { .. }) { n.min(cap) } else { n };
+            vec![Step::Action(Action::OnSelection(v.with_count(n)))]
         }
         Intent::Verb(v) => vec![Step::Action(Action::OnSelection(v)); times(cap)],
         Intent::Note(text) => vec![note_step(text)],
@@ -359,7 +362,7 @@ mod tests {
     }
 
     /// Spec §5.1: the list verbs in vim: `dd` passes its count, `yy`
-    /// refuses one, `p` repeats (capped by the surface), shared letters
+    /// refuses one, `p` passes its count (capped by the surface), shared letters
     /// once.
     #[test]
     fn vim_list_verbs_resolve_to_on_selection() {
@@ -372,9 +375,14 @@ mod tests {
             feed(&mut Router::default(), &s, "3yy"),
             run(vec![Step::Action(Action::ShowToast("Counted yank is not supported".into(), ToastKind::Info))])
         );
-        assert_eq!(feed(&mut Router::default(), &s, "2p"), run(vec![sel(Verb::Put { above: false }); 2]));
+        assert_eq!(feed(&mut Router::default(), &s, "p"), run(vec![sel(Verb::Put { above: false, count: 1 })]));
+        assert_eq!(feed(&mut Router::default(), &s, "2p"), run(vec![sel(Verb::Put { above: false, count: 2 })]));
         let capped = KeyCtx { cap: 4, ..s.clone() };
-        assert_eq!(feed(&mut Router::default(), &capped, "9P"), run(vec![sel(Verb::Put { above: true }); 4]));
+        assert_eq!(
+            feed(&mut Router::default(), &capped, "9P"),
+            run(vec![sel(Verb::Put { above: true, count: 4 })]),
+            "a put's count is capped by the surface"
+        );
         assert_eq!(feed(&mut Router::default(), &s, "a"), run(vec![sel(Verb::Add)]));
         assert_eq!(feed(&mut Router::default(), &s, "3r"), run(vec![sel(Verb::Rename)]), "a count is ignored");
         let mut r = Router::default();
@@ -408,7 +416,7 @@ mod tests {
         let s = cx(Arrows, Surface::Sidebar);
         assert_eq!(feed(&mut Router::default(), &s, "d"), run(vec![sel(Verb::Delete { count: 1 })]));
         assert_eq!(feed(&mut Router::default(), &s, "y"), run(vec![sel(Verb::Yank)]));
-        assert_eq!(feed(&mut Router::default(), &s, "P"), run(vec![sel(Verb::Put { above: true })]));
+        assert_eq!(feed(&mut Router::default(), &s, "P"), run(vec![sel(Verb::Put { above: true, count: 1 })]));
         assert_eq!(feed(&mut Router::default(), &s, "a"), run(vec![sel(Verb::Add)]));
         assert_eq!(feed(&mut Router::default(), &s, "n"), Resolved::Declined, "n is no longer new");
         let env = cx(Arrows, Surface::ManageDetail(ManageTab::Environments));
@@ -418,7 +426,7 @@ mod tests {
         assert_eq!(feed(&mut Router::default(), &form, "p"), run(vec![sel(Verb::Promote)]));
         let grid = cx(Arrows, Surface::VarGrid);
         assert_eq!(feed(&mut Router::default(), &grid, "c"), run(vec![sel(Verb::Yank)]));
-        assert_eq!(feed(&mut Router::default(), &grid, "v"), run(vec![sel(Verb::Put { above: false })]));
+        assert_eq!(feed(&mut Router::default(), &grid, "v"), run(vec![sel(Verb::Put { above: false, count: 1 })]));
         assert_eq!(
             feed(&mut Router::default(), &grid, "o"),
             run(vec![Step::Action(Action::StartNewOptionEdit)])

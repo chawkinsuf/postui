@@ -537,7 +537,7 @@ impl Sidebar {
                 }
             }
             Verb::Yank => self.selected_slug().map(Action::YankRequest),
-            Verb::Put { above } => Some(Action::PutRequest { anchor: self.put_anchor(above), above }),
+            Verb::Put { above, count } => Some(Action::PutRequest { anchor: self.put_anchor(above), above, count }),
             _ => None,
         }
     }

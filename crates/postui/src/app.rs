@@ -3595,7 +3595,7 @@ impl App {
                 };
                 // The copy opens, so unsaved edits are gated first — before
                 // anything is written (spec §4.3: the gate runs before the op).
-                let force = Action::ForceDuplicateRequest { slug, anchor: None, above: false };
+                let force = Action::ForceDuplicateRequest { slug, anchor: None, above: false, count: 1 };
                 if self.editor_holds_unsaved() {
                     self.dirty_gate("duplicate", force);
                     true
@@ -3603,34 +3603,45 @@ impl App {
                     self.apply(force)
                 }
             }
-            Action::ForceDuplicateRequest { slug, anchor, above } => {
+            Action::ForceDuplicateRequest { slug, anchor, above, count } => {
                 let t = self.begin_op();
                 let Some(p) = self.project.as_mut() else {
+                    self.op_in_flight = false;
                     return true;
                 };
                 let made = match &anchor {
-                    None => p.duplicate_request(&slug),
-                    Some(a) => p.duplicate_request_at(&slug, a, above),
+                    None => p.duplicate_request(&slug).map(|s| vec![s]),
+                    Some(a) => p.duplicate_requests_at(&slug, a, above, count),
                 };
                 match made {
-                    Ok(new_slug) => {
-                        // Copies land beside their anchor and open, so the
-                        // edit that motivated the duplicate can start at once.
+                    Ok(copies) => {
+                        // Copies land beside their anchor and the first
+                        // opens (where vim's `3p` leaves the cursor), so
+                        // the edit that motivated the duplicate can start
+                        // at once.
+                        let first = copies.first().cloned().unwrap_or_default();
                         self.land(Landing {
-                            open: Some(crate::undo::Open::Request { slug: new_slug.clone(), buffer: None }),
+                            open: Some(crate::undo::Open::Request { slug: first.clone(), buffer: None }),
                             ..Landing::default()
                         });
-                        let display = self.request_display(&new_slug);
-                        self.toasts
-                            .push(format!("Duplicated to {display}"), ToastKind::Success);
-                        self.record_project_step(t, crate::undo::StepLabel::create(display));
+                        let display = self.request_display(&first);
+                        let (toast, label) = match copies.len() {
+                            1 => (format!("Duplicated to {display}"), display),
+                            n => (format!("Duplicated to {display} and {} more", n - 1), format!("{n} requests")),
+                        };
+                        self.toasts.push(toast, ToastKind::Success);
+                        self.record_project_step(t, crate::undo::StepLabel::create(label));
                     }
                     Err(e) => {
                         self.op_in_flight = false;
                         // A register naming a source that is gone (deleted
                         // since the yank) is stale: drop it rather than let
-                        // the next `p` fail the same way.
-                        if self.yank == crate::yank::Register::Request(slug.clone()) {
+                        // the next `p` fail the same way. Any other failure
+                        // leaves the source where it was, so the register
+                        // is kept for a put once the cause is fixed.
+                        if matches!(e, postui_core::project::Error::NotFound(_))
+                            && self.yank == crate::yank::Register::Request(slug.clone())
+                        {
                             self.yank = crate::yank::Register::Empty;
                         }
                         self.toasts
@@ -3755,7 +3766,7 @@ impl App {
                 }
                 true
             }
-            Action::PutRequest { anchor, above } => {
+            Action::PutRequest { anchor, above, count } => {
                 let src = match self.yank.clone() {
                     crate::yank::Register::Request(src) => src,
                     // An empty register is vim's own no-op.
@@ -3799,9 +3810,10 @@ impl App {
                     return true;
                 }
                 let anchor = Some(anchor.unwrap_or_else(|| src.clone()));
-                let force = Action::ForceDuplicateRequest { slug: src, anchor, above };
+                let force = Action::ForceDuplicateRequest { slug: src, anchor, above, count };
                 // The copy opens, so unsaved edits are gated first, as
-                // Duplicate's are.
+                // Duplicate's are: once, the count riding with the
+                // deferred put.
                 if self.editor_holds_unsaved() {
                     self.dirty_gate("duplicate", force);
                     true
@@ -3809,7 +3821,7 @@ impl App {
                     self.apply(force)
                 }
             }
-            Action::PutTableRow { at } => {
+            Action::PutTableRow { at, count } => {
                 let (tab, key, entry) = match self.yank.clone() {
                     crate::yank::Register::Row { tab, key, entry } => (tab, key, entry),
                     crate::yank::Register::Empty => return true,
@@ -3829,7 +3841,15 @@ impl App {
                     self.last_action_failed = true;
                     return true;
                 }
-                self.insert_row_copy(tab, &key, entry, at);
+                // Each copy goes under the one before, so the run reads in
+                // the order it was made; the cursor ends on the first, as
+                // vim's `3p` leaves it. One action is one editor change.
+                for i in 0..count.max(1) {
+                    self.insert_row_copy(tab, &key, entry.clone(), at + i);
+                }
+                if let Some(len) = self.editor.table_map(tab).map(|m| m.len()) {
+                    self.editor.table.selected = Some(at.min(len.saturating_sub(1)));
+                }
                 true
             }
             Action::DeleteSelectedRequest => {
@@ -7823,7 +7843,7 @@ impl App {
                 selector: selector.clone(),
                 name: name.clone(),
             },
-            VarStructOp::PasteOption { env, selector } => {
+            VarStructOp::PasteOption { env, selector, .. } => {
                 // The copied row lives in the Manager, which core never
                 // sees, so it is read here — and refused here too, in the
                 // same shape as `Promote`'s missing-value refusal.
@@ -7858,10 +7878,19 @@ impl App {
                 "{slug} changed outside the app — save or reload it first"
             ));
         }
-        self.project_mut()
-            .ok_or_else(|| NO_PROJECT.to_string())?
-            .apply_var_edit(&edit)
-            .map_err(|e| e.to_string())?;
+        // A counted paste (`{N}p` on the grid) lands its rows as one undo
+        // step; each paste finds the names before it taken and steps aside.
+        let times = match op {
+            VarStructOp::PasteOption { count, .. } => (*count).max(1),
+            _ => 1,
+        };
+        let p = self.project_mut().ok_or_else(|| NO_PROJECT.to_string())?;
+        if times == 1 {
+            p.apply_var_edit(&edit)
+        } else {
+            p.cascade(edit.label(), |p| (0..times).try_for_each(|_| p.apply_var_edit(&edit)))
+        }
+        .map_err(|e| e.to_string())?;
         if let VarStructOp::Promote { name, .. } = op {
             // The project side of the promote is durable the moment core
             // returns `Ok`. The compensating half — removing the option
@@ -9273,19 +9302,22 @@ impl App {
     }
 
     /// Inserts a copy of `key`/`entry` into `tab`'s table at row `at`
-    /// (clamped), named `<key>-copy`, `-copy-2`, …, and puts the cursor
-    /// on it. The one place the row menu's Duplicate and the register's
-    /// put share, so naming, clamping and the cursor never drift. A
-    /// wholesale row change is never coalesced into the keys around it.
+    /// (clamped) and puts the cursor on it. The copy keeps `key` when the
+    /// table has no row by it (vim's `p` puts exactly what was yanked), and
+    /// steps aside to `<key>-copy`, `-copy-2`, … when it does; a Duplicate
+    /// always clashes, its source being in the table. The one place the
+    /// row menu's Duplicate and the register's put share, so naming,
+    /// clamping and the cursor never drift. A wholesale row change is
+    /// never coalesced into the keys around it.
     fn insert_row_copy(&mut self, tab: EditorTab, key: &str, entry: postui_core::model::Entry, at: usize) {
         self.no_coalesce = true;
         let Some(map) = self.editor.table_map_mut(tab) else {
             return;
         };
-        let mut new_key = format!("{key}-copy");
-        let mut n = 2;
+        let mut new_key = key.to_string();
+        let mut n = 1;
         while map.contains_key(&new_key) {
-            new_key = format!("{key}-copy-{n}");
+            new_key = if n == 1 { format!("{key}-copy") } else { format!("{key}-copy-{n}") };
             n += 1;
         }
         let at = at.min(map.len());

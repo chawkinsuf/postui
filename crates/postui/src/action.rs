@@ -230,11 +230,13 @@ pub enum Action {
     YankTableRow(usize),
     /// `p` / `P` on the sidebar: duplicate the yanked request beside
     /// `anchor` (the cursor row; `None` falls back to the source's own
-    /// slot), below it or `above` it. Gated on unsaved edits: the copy
+    /// slot), below it or `above` it, `count` times as one undo step.
+    /// Gated on unsaved edits, once for the whole count: the first copy
     /// opens.
-    PutRequest { anchor: Option<String>, above: bool },
-    /// `p` / `P` on a table: insert a copy of the yanked row at `at`.
-    PutTableRow { at: usize },
+    PutRequest { anchor: Option<String>, above: bool, count: usize },
+    /// `p` / `P` on a table: insert `count` copies of the yanked row from
+    /// `at` down, as one editor change.
+    PutTableRow { at: usize, count: usize },
     /// Open the method-selector dropdown, anchored below the method badge.
     OpenMethodDropdown,
     /// Set the editor's method directly (the dropdown's row action).
@@ -308,8 +310,9 @@ pub enum Action {
     /// the copy sits beside its source and no order array is seeded.
     /// `Some(a)` is a put (piece 4 spec §5.2): the copy lands beside `a`
     /// (below, or above with `above`) and a missing order array is seeded,
-    /// even when `a` is the source itself.
-    ForceDuplicateRequest { slug: String, anchor: Option<String>, above: bool },
+    /// even when `a` is the source itself. A put makes `count` copies in
+    /// one undo step; a plain Duplicate's is 1.
+    ForceDuplicateRequest { slug: String, anchor: Option<String>, above: bool, count: usize },
     /// The scratch gate's save path: opens the Save-as name prompt with the
     /// deferred action to run once the save succeeds.
     PromptSaveScratch(Box<Action>),
@@ -1031,8 +1034,9 @@ pub enum Verb {
     Delete { count: usize },
     /// `yy` / `y`: into the row register (the grid: its option stash).
     Yank,
-    /// `p` / `P`: a copy of the register below, or `above`, the cursor.
-    Put { above: bool },
+    /// `p` / `P`: a copy of the register below, or `above`, the cursor;
+    /// `{N}p` puts N copies as one undo step, as vim's `3p` does.
+    Put { above: bool, count: usize },
     /// The options grid's Edit… prompt.
     EditValue,
     Promote,
@@ -1050,16 +1054,14 @@ pub enum Verb {
 impl Verb {
     /// The same verb whatever its count: `dd` and `3dd` spell alike.
     pub fn kind(self) -> Self {
-        match self {
-            Verb::Delete { .. } => Verb::Delete { count: 1 },
-            v => v,
-        }
+        self.with_count(1)
     }
 
     /// This verb with the count a row passes (spec §3.5 `Pass`).
     pub fn with_count(self, n: usize) -> Self {
         match self {
             Verb::Delete { .. } => Verb::Delete { count: n },
+            Verb::Put { above, .. } => Verb::Put { above, count: n },
             v => v,
         }
     }
