@@ -21204,6 +21204,33 @@ mod undo_tests {
         assert_eq!(app.yank, crate::yank::Register::Request("main/alpha".into()));
     }
 
+    /// Dev 16a: a collapsed folder's requests are hidden, not absent, so the
+    /// toast says to open it; the other text stays for a folder that really
+    /// has none. Nothing is written and the register is kept.
+    #[test]
+    fn a_put_on_a_collapsed_folder_says_to_open_it() {
+        let (mut app, dir) = spaced_app();
+        app.update(Action::YankRequest("main/alpha".into()));
+        app.sidebar.rows = vec![Row::Folder {
+            path: "main/api".into(),
+            name: "api".into(),
+            depth: 0,
+            expanded: false,
+        }];
+        app.sidebar.selected = Some(0);
+        let files = request_files(dir.path());
+        app.update(Action::PutRequest { anchor: app.sidebar.put_anchor(false), above: false });
+        assert!(
+            app.toasts.messages().contains(&"Open the folder to put into it"),
+            "{:?}",
+            app.toasts.messages()
+        );
+        assert!(!app.toasts.messages().contains(&"No request in this folder to put beside"));
+        assert!(app.last_action_failed);
+        assert_eq!(request_files(dir.path()), files);
+        assert_eq!(app.yank, crate::yank::Register::Request("main/alpha".into()));
+    }
+
     /// Review Focus 4: the copy opens, so unsaved edits are gated first.
     #[test]
     fn a_put_over_unsaved_edits_asks_first() {

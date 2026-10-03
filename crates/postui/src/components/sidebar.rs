@@ -547,6 +547,12 @@ impl Sidebar {
         matches!(self.selected_row(), Some(Row::Folder { .. }))
     }
 
+    /// Whether the cursor is on a collapsed folder row: its requests are
+    /// hidden, so a put cannot anchor among them.
+    pub fn selected_is_collapsed_folder(&self) -> bool {
+        matches!(self.selected_row(), Some(Row::Folder { expanded: false, .. }))
+    }
+
     fn selected_row(&self) -> Option<&Row> {
         self.rows.get(self.selected?)
     }

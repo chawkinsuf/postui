@@ -3786,8 +3786,15 @@ impl App {
                 // with no selection at all it falls back to the source's own
                 // slot. Either way this is a put, so it seeds.
                 if anchor.is_none() && self.sidebar.selected_is_folder() {
-                    self.toasts
-                        .push("No request in this folder to put beside", ToastKind::Warning);
+                    // A collapsed folder's requests are hidden, not absent;
+                    // anchoring into them would expand the folder outside
+                    // the journal (Dev 16a).
+                    let text = if self.sidebar.selected_is_collapsed_folder() {
+                        "Open the folder to put into it"
+                    } else {
+                        "No request in this folder to put beside"
+                    };
+                    self.toasts.push(text, ToastKind::Warning);
                     self.last_action_failed = true;
                     return true;
                 }

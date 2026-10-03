@@ -106,7 +106,9 @@ impl App {
     /// Actions run on whatever the surface: `3u` undoes three. A counted
     /// undo or redo stops at the first repeat that stepped nothing, so
     /// `10u` with three steps undoes three and says "Nothing to undo"
-    /// once (the final review's ruling, spec §9 M1).
+    /// once (the final review's ruling, spec §9 M1). A counted list verb
+    /// stops at the first repeat that was refused, so `9p` with the wrong
+    /// register toasts once.
     pub(super) fn run_steps(&mut self, steps: Vec<Step>) -> bool {
         let surface = self.surface();
         let mut changed = false;
@@ -116,8 +118,15 @@ impl App {
                 Step::Key(ev) => changed |= self.handle_key_routed(ev),
                 Step::Action(a) => {
                     let history = matches!(a, Action::Undo | Action::Redo);
+                    let selection = matches!(a, Action::OnSelection(_));
+                    self.last_action_failed = false;
                     changed |= self.update(a);
                     if history && !self.history_stepped {
+                        break;
+                    }
+                    // A refused verb (a put with the wrong register, say)
+                    // would refuse again and toast again on every repeat.
+                    if selection && self.last_action_failed {
                         break;
                     }
                 }

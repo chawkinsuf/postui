@@ -640,6 +640,30 @@ fn a_counted_table_delete_undone_reselects_the_first_restored_row() {
     check(&app, TableRow(1)).unwrap();
 }
 
+/// A refused counted put stops at the first refusal: one toast, not one
+/// per repeat (final review M1).
+#[test]
+fn a_refused_counted_put_toasts_once() {
+    let mut app = build(SidebarThree);
+    app.use_profile(KeyProfile::Vim);
+    draw(&mut app);
+    app.yank = crate::yank::Register::Request("auth/login".into());
+    feed(&mut app, "3p");
+    let n = app.toasts.messages().iter().filter(|m| m.contains("was yanked from another space")).count();
+    assert_eq!(n, 1, "{:?}", app.toasts.messages());
+}
+
+/// A counted put that works still runs every repeat.
+#[test]
+fn a_counted_put_that_works_runs_every_repeat() {
+    let mut app = build(SidebarThree);
+    app.use_profile(KeyProfile::Vim);
+    draw(&mut app);
+    feed(&mut app, "yy3p");
+    let requests = app.sidebar.rows.iter().filter(|r| matches!(r, Row::Request { .. })).count();
+    assert_eq!(requests, 6, "{:?}", app.sidebar.rows);
+}
+
 /// Spec §8.2's coverage, up to this build's milestone.
 #[test]
 fn every_shipped_key_list_row_has_a_case() {
