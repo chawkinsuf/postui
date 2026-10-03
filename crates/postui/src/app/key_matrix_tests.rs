@@ -647,3 +647,164 @@ fn every_shipped_key_list_row_has_a_case() {
         assert!(keylist::KEY_LIST.iter().any(|r| r.id == c.id), "a case names an unknown row: {}", c.id);
     }
 }
+
+use crate::action::Verb;
+use crate::keyroute::table::{self, Intent, Surfaces};
+
+/// Every verb, once (a count does not change what a verb reaches).
+const VERBS: [Verb; 14] = [
+    Verb::Add,
+    Verb::AddAlt,
+    Verb::Rename,
+    Verb::Move,
+    Verb::Delete { count: 1 },
+    Verb::Yank,
+    Verb::Put { above: false },
+    Verb::EditValue,
+    Verb::Promote,
+    Verb::Fields,
+    Verb::Secret,
+    Verb::ClearValue,
+    Verb::Reveal,
+    Verb::Tls,
+];
+
+/// Plan M2 Deviations 1 and 9: the verbs vim reaches only through M4's ex
+/// rows (`:tls`, `:secret`, `:fields`, `:promote`, `:clear`, `:reveal`,
+/// `:rename`, `:value`, `:delete` on a detail pane), or by mouse until
+/// then. M4 empties this list; nothing else may join it.
+const VIM_UNTIL_M4: &[(Surfaces, Verb)] = &[
+    (Surfaces::MANAGE_LIST, Verb::Tls),
+    (Surfaces::MANAGE_DETAIL, Verb::Add),
+    (Surfaces::MANAGE_DETAIL, Verb::Rename),
+    (Surfaces::MANAGE_DETAIL, Verb::Delete { count: 1 }),
+    (Surfaces::MANAGE_DETAIL, Verb::Move),
+    (Surfaces::MANAGE_DETAIL, Verb::Tls),
+    (Surfaces::VAR_LIST, Verb::Secret),
+    (Surfaces::VAR_LIST, Verb::Fields),
+    (Surfaces::VAR_GRID, Verb::Rename),
+    (Surfaces::VAR_GRID, Verb::EditValue),
+    (Surfaces::VAR_GRID, Verb::Fields),
+    (Surfaces::VAR_FORM, Verb::Secret),
+    (Surfaces::VAR_FORM, Verb::ClearValue),
+    (Surfaces::VAR_FORM, Verb::Promote),
+    (Surfaces::VAR_FORM, Verb::Reveal),
+];
+
+const SWEEP: [Fixture; 9] = [
+    SidebarThree,
+    TableThreeHeaders,
+    ManageEnvs,
+    ManageEnvDetail,
+    ManageSpaces,
+    VarList,
+    VarListGroup,
+    VarGrid,
+    VarForm,
+];
+
+fn verb_row(profile: KeyProfile, surface: crate::keyroute::Surface, verb: Verb) -> bool {
+    table::TABLE.iter().any(|b| {
+        b.profile.has(profile) && b.on.has(surface) && matches!(b.intent, Intent::Verb(v) if v.kind() == verb.kind())
+    })
+}
+
+/// Spec §8.2, as plan M2 Deviation 9 reads it: (1) every list verb a
+/// fixture offers has a row in each profile, but for `VIM_UNTIL_M4`;
+/// (2) every action an arrows default key reaches, vim reaches too — by
+/// its keymap, a table row, a verb row, or the palette (`:` opens it).
+#[test]
+fn every_action_is_keyboard_reachable_in_both_profiles() {
+    let mut vim_verb_actions: Vec<Action> = Vec::new();
+    for f in SWEEP {
+        let app = build(f);
+        let surface = app.surface();
+        for verb in VERBS {
+            let Some(action) = app.selection_action(surface, verb) else { continue };
+            assert!(verb_row(KeyProfile::Arrows, surface, verb), "{f:?}: arrows has no key for {verb:?}");
+            let waits = VIM_UNTIL_M4.iter().any(|(on, v)| on.has(surface) && v.kind() == verb.kind());
+            if verb_row(KeyProfile::Vim, surface, verb) {
+                assert!(!waits, "{f:?}: {verb:?} has a vim row now; take it off VIM_UNTIL_M4");
+                vim_verb_actions.push(action);
+            } else {
+                assert!(waits, "{f:?}: vim has no key for {verb:?}");
+            }
+        }
+    }
+    let arrows = crate::keys::Keymap::default_bindings_for(KeyProfile::Arrows);
+    let vim = crate::keys::Keymap::default_bindings_for(KeyProfile::Vim);
+    let palette: Vec<Action> = crate::components::palette::all_commands().into_iter().map(|c| c.action).collect();
+    for (name, action) in crate::keys::named_actions() {
+        if arrows.combo_for(name).is_none() {
+            continue; // keys.toml-only: no profile has a default key (Deviation 9)
+        }
+        let reached = vim.combo_for(name).is_some()
+            || table::TABLE.iter().any(|b| {
+                b.profile.has(KeyProfile::Vim) && matches!(b.intent, Intent::Act(f) if f() == action)
+            })
+            || vim_verb_actions.contains(&action)
+            || palette.contains(&action);
+        assert!(reached, "{name}: arrows binds a key to it, and vim reaches it no way at all");
+    }
+}
+
+/// The footer chips a fixture paints, unspelled: the Manage screens'
+/// own, or the main panes' as `ui` builds them.
+fn chips(app: &App, f: Fixture) -> Vec<crate::components::footer::FooterChip> {
+    use crate::components::footer::{JqBarState, footer_chips};
+    let main = |pane: PaneId, row: Option<(usize, bool)>| -> Vec<crate::components::footer::FooterChip> {
+        footer_chips(pane, false, false, Some("add header"), false, false, row, JqBarState::Closed, false)
+            .into_iter()
+            .map(|(k, l, a)| (k, l.to_string(), a))
+            .collect()
+    };
+    match f {
+        SidebarThree => main(PaneId::Sidebar, None),
+        TableThreeHeaders => main(PaneId::Editor, Some((1, true))),
+        _ => crate::ui::manage_tab_chips(app),
+    }
+}
+
+/// Spec §8.2's spelling test, for the verb chips (plan M2 Deviation 3):
+/// a chip whose keycap is a verb's row dispatches exactly what that verb
+/// resolves to on its surface, and the keycap's keys, fed to the router,
+/// run that verb.
+#[test]
+fn every_verb_chip_resolves_to_its_chip() {
+    use crate::keyroute::spell::Key;
+    use crate::keyroute::{KeyCtx, Resolved, Router, Step};
+    for profile in [KeyProfile::Vim, KeyProfile::Arrows] {
+        for f in SWEEP {
+            let mut app = build(f);
+            app.use_profile(profile);
+            draw(&mut app);
+            let surface = app.surface();
+            for (key, label, action) in chips(&app, f) {
+                let verb = match key {
+                    Key::Of(Action::OnSelection(v)) | Key::OneOf(Action::OnSelection(v), _) => v,
+                    _ => continue,
+                };
+                let Some(action) = action else { continue };
+                assert_eq!(
+                    app.selection_action(surface, verb),
+                    Some(action.clone()),
+                    "{profile:?} {f:?}: the {label} chip and its key disagree"
+                );
+                let Some(keys) = table::keys_for(profile, surface, &Action::OnSelection(verb)) else {
+                    continue; // no key in this profile: the chip drops its keycap
+                };
+                let ctx = KeyCtx { profile, surface, field: app.field_caret(), user_bare: None, cap: usize::MAX };
+                let mut router = Router::default();
+                let mut last = Resolved::Declined;
+                for ev in crate::keyroute::notation::events(keys) {
+                    last = router.resolve(ev, &ctx);
+                }
+                assert!(
+                    matches!(&last, Resolved::Run(steps) if matches!(steps.as_slice(),
+                        [Step::Action(Action::OnSelection(v))] if v.kind() == verb.kind())),
+                    "{profile:?} {f:?}: {keys:?} ran {last:?}, not the {label} chip's verb"
+                );
+            }
+        }
+    }
+}

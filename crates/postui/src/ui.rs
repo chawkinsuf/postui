@@ -771,7 +771,7 @@ fn draw_manage_without_a_project(
 }
 
 /// The Manage screen's per-tab chips: the tab body's own keys.
-fn manage_tab_chips(app: &App) -> Vec<FooterChip> {
+pub(crate) fn manage_tab_chips(app: &App) -> Vec<FooterChip> {
     // Settings publishes its own chips and works with no project open, so
     // it is answered before the project-scoped tabs.
     if app.manage.tab == crate::components::manage::ManageTab::Settings {
