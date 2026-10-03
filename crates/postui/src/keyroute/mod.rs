@@ -166,8 +166,9 @@ impl Router {
 
 /// A complete row's steps under its count rule.
 fn expand(b: &table::Binding, count: Option<usize>, cap: usize) -> Vec<Step> {
-    // A refused count runs nothing but its note (spec §3.5).
-    if let (CountRule::Refuse(note), Some(_)) = (b.count, count) {
+    // A refused count runs nothing but its note (spec §3.5). A count of
+    // one is no count, as in vim: `1yy` is `yy`.
+    if let (CountRule::Refuse(note), Some(2..)) = (b.count, count) {
         return vec![note_step(note)];
     }
     let times = |limit: usize| match b.count {
@@ -375,6 +376,7 @@ mod tests {
             feed(&mut Router::default(), &s, "3yy"),
             run(vec![Step::Action(Action::ShowToast("Counted yank is not supported".into(), ToastKind::Info))])
         );
+        assert_eq!(feed(&mut Router::default(), &s, "1yy"), run(vec![sel(Verb::Yank)]), "1yy is yy, as in vim");
         assert_eq!(feed(&mut Router::default(), &s, "p"), run(vec![sel(Verb::Put { above: false, count: 1 })]));
         assert_eq!(feed(&mut Router::default(), &s, "2p"), run(vec![sel(Verb::Put { above: false, count: 2 })]));
         let capped = KeyCtx { cap: 4, ..s.clone() };
@@ -391,7 +393,7 @@ mod tests {
     }
 
     /// Plan M2 Deviation 14: a counted `dd` is refused off the sidebar and
-    /// the tables; one `dd` still deletes.
+    /// the tables; one `dd` (or `1dd`) still deletes.
     #[test]
     fn a_counted_dd_is_refused_on_the_manage_and_variables_lists() {
         use crate::action::Verb;
@@ -404,6 +406,7 @@ mod tests {
             let s = cx(Vim, surface);
             assert_eq!(feed(&mut Router::default(), &s, "2dd"), run(vec![note.clone()]), "{surface:?}");
             assert_eq!(feed(&mut Router::default(), &s, "dd"), run(vec![sel(Verb::Delete { count: 1 })]), "{surface:?}");
+            assert_eq!(feed(&mut Router::default(), &s, "1dd"), run(vec![sel(Verb::Delete { count: 1 })]), "{surface:?}");
         }
     }
 
