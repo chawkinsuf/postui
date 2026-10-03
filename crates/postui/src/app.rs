@@ -9602,12 +9602,17 @@ impl App {
     }
 
     /// The text of whichever selection currently owns the keyboard, in
-    /// focus-priority order: the top modal's text field, a Variable
-    /// Manager edit, then (on the main screen) a table cell edit, the URL
-    /// bar, the body editor, and the response view. `None` when nothing
-    /// is selected anywhere — the caller falls back to the key's normal
-    /// meaning (ctrl+c quits).
-    fn active_selection_text(&self) -> Option<String> {
+    /// focus-priority order: in vim the live engine field's Visual (a
+    /// mouse selection there becomes Visual; a modal parks the field, so
+    /// it never has one under a modal), the top modal's text field, a
+    /// Variable Manager edit, then (on the main screen) a table cell edit,
+    /// the URL bar, the body editor, and the response view. `None` when
+    /// nothing is selected anywhere — the caller falls back to the key's
+    /// normal meaning (ctrl+c quits).
+    fn active_selection_text(&mut self) -> Option<String> {
+        if let Some(text) = self.engine_visual_text() {
+            return Some(text);
+        }
         if let Some(input) = self.modals.focused_input() {
             return input.selected_text();
         }

@@ -383,10 +383,12 @@ impl App {
     }
 
     /// A paste into the live vim field (spec §3.7; plan M3a Deviation 13):
-    /// Insert, Replace and the search prompt type it; anywhere else it goes
-    /// in by Vim's bracketed-paste rule, as one engine step. A one-line
-    /// field takes it flattened (today's rule). `None` when no engine field
-    /// has the caret: today's routing pastes.
+    /// Insert, Replace and the search prompt type it; in Visual (the
+    /// mouse's too) it replaces the selection (the user's ruling, final
+    /// review); anywhere else it goes in by Vim's bracketed-paste rule. Each
+    /// is one engine step. A one-line field takes it flattened (today's
+    /// rule). `None` when no engine field has the caret: today's routing
+    /// pastes.
     pub(crate) fn engine_paste(&mut self, text: &str) -> Option<bool> {
         let id = self.glue.live()?;
         if self.field_caret() != FieldCaret::Live(id) {
@@ -402,11 +404,16 @@ impl App {
         let feedback = {
             let (glue, buf) = self.session_parts(id);
             let mut buf = buf?;
-            match glue.paste(text, &mut buf) {
-                Outcome::Consumed { note, request, .. } => Some((note, request)),
-                Outcome::Declined { .. } => {
-                    glue.edit(&mut buf, &engine_glue::Edit::Append(text));
-                    None
+            if let Some((from, to)) = glue.visual_span(&mut buf) {
+                glue.edit(&mut buf, &engine_glue::Edit::Replace(from, to, text));
+                None
+            } else {
+                match glue.paste(text, &mut buf) {
+                    Outcome::Consumed { note, request, .. } => Some((note, request)),
+                    Outcome::Declined { .. } => {
+                        glue.edit(&mut buf, &engine_glue::Edit::Append(text));
+                        None
+                    }
                 }
             }
         };
@@ -417,23 +424,39 @@ impl App {
     }
 
     /// A picked `{{token}}` into the field the picker was opened from
-    /// (spec §3.7): at the caret in Insert, else by the bracketed-paste
-    /// rule (plan M3a Deviation 13). Only the fields main inserts into: the
-    /// URL line, a cell, the body. `false` leaves it to today's path.
+    /// (spec §3.7): at the caret in Insert, over the selection in Visual
+    /// (as a paste), else by the bracketed-paste rule (plan M3a Deviation
+    /// 13). Only the fields main inserts into: the URL line, a cell, the
+    /// body. `false` leaves it to today's path.
     pub(crate) fn engine_insert(&mut self, text: &str) -> bool {
         let Some(id) = self.glue.owned() else { return false };
         if !matches!(id, FieldId::Url | FieldId::TableCell { .. } | FieldId::Body) {
             return false;
         }
-        let edit = if matches!(self.glue.mode(), Mode::Insert | Mode::Replace) {
+        let typing = matches!(self.glue.mode(), Mode::Insert | Mode::Replace);
+        let (glue, buf) = self.session_parts(id);
+        let Some(mut buf) = buf else { return false };
+        let edit = if typing {
             engine_glue::Edit::AtCaret(text)
+        } else if let Some((from, to)) = glue.visual_span(&mut buf) {
+            engine_glue::Edit::Replace(from, to, text)
         } else {
             engine_glue::Edit::Append(text)
         };
-        let (glue, buf) = self.session_parts(id);
-        let Some(mut buf) = buf else { return false };
         glue.edit(&mut buf, &edit);
         true
+    }
+
+    /// The live engine field's Visual text, which ctrl+c and cmd+c copy
+    /// (the user's decision, final review I-2): a mouse selection in a vim
+    /// field becomes Visual, so without it ctrl+c would quit.
+    pub(crate) fn engine_visual_text(&mut self) -> Option<String> {
+        let id = self.glue.live()?;
+        if self.field_caret() != FieldCaret::Live(id) {
+            return None;
+        }
+        let (glue, buf) = self.session_parts(id);
+        glue.visual_text(&mut buf?)
     }
 
     /// An engine note is an Info toast; `"+y` copies through the app's

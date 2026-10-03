@@ -904,6 +904,124 @@ fn a_paste_into_the_search_prompt_types_the_pattern() {
     assert_eq!(caret(&app), (1, 2), "the search ran with the pasted pattern");
 }
 
+/// The user's ruling (final review T7): a paste in Visual replaces the
+/// selection, as one engine step, and ends in Normal on the last char put.
+#[test]
+fn a_paste_in_visual_replaces_the_selection() {
+    let mut app = url_line("abcdef");
+    feed(&mut app, "<CR>0llvl");
+    assert_eq!(app.mode_indicator(), Some("VISUAL"));
+    app.paste_text("X\nY");
+    assert_eq!(url(&app), ("abX Yef", 4), "flattened, the caret on the last char put");
+    assert_eq!(app.mode_indicator(), Some("NORMAL"));
+    feed(&mut app, "u");
+    assert_eq!(url(&app).0, "abcdef", "one undo step");
+}
+
+/// The same for a Visual the mouse made.
+#[test]
+fn a_paste_over_a_mouse_selection_replaces_it() {
+    use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    let mut app = url_line("https://x.test/ab");
+    feed(&mut app, "<CR>");
+    let area = app.editor.last_url_text_area.expect("the URL line is drawn");
+    let at = |kind, col| MouseEvent { kind, column: area.x + col, row: area.y, modifiers: KeyModifiers::NONE };
+    app.handle_mouse(at(MouseEventKind::Down(MouseButton::Left), 2));
+    app.handle_mouse(at(MouseEventKind::Drag(MouseButton::Left), 8));
+    app.handle_mouse(at(MouseEventKind::Up(MouseButton::Left), 8));
+    assert_eq!(app.mode_indicator(), Some("VISUAL"));
+    app.paste_text("XY");
+    assert_eq!(url(&app), ("htXYx.test/ab", 3));
+    feed(&mut app, "u");
+    assert_eq!(url(&app).0, "https://x.test/ab");
+}
+
+#[test]
+fn a_body_paste_in_charwise_visual_replaces_the_selection() {
+    let mut app = vim(Fixture::Body);
+    feed(&mut app, "jwvll");
+    app.paste_text("x\ny");
+    assert_eq!(body(&app), "{\n  x\ny: 1\n}");
+    assert_eq!(caret(&app), (2, 0), "on the last char put");
+    assert_eq!(app.mode_indicator(), Some("NORMAL"));
+    feed(&mut app, "u");
+    assert_eq!(body(&app), BODY, "one undo step");
+}
+
+#[test]
+fn a_body_paste_in_linewise_visual_replaces_the_lines() {
+    let mut app = vim(Fixture::Body);
+    feed(&mut app, "jV");
+    assert_eq!(app.mode_indicator(), Some("V-LINE"));
+    app.paste_text("XY");
+    assert_eq!(body(&app), "{\nXY\n}", "the line break after the lines stays");
+    assert_eq!(caret(&app), (1, 1));
+    feed(&mut app, "u");
+    assert_eq!(body(&app), BODY, "one undo step");
+}
+
+/// A picked token replaces a Visual selection the same way.
+#[test]
+fn a_picked_token_in_visual_replaces_the_selection() {
+    let mut app = url_line("abcdef");
+    feed(&mut app, "<CR>0llvl");
+    app.update(Action::InsertVarText("{{v}}".into()));
+    assert_eq!(url(&app), ("ab{{v}}ef", 6));
+    assert_eq!(app.mode_indicator(), Some("NORMAL"));
+    feed(&mut app, "u");
+    assert_eq!(url(&app).0, "abcdef", "one engine step");
+}
+
+/// An app whose clipboard writes to a file, and that file.
+fn with_clipboard_file(mut app: App) -> (App, tempfile::TempDir, std::path::PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.txt");
+    let cmd = format!("cat > {}", out.to_string_lossy());
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536, false));
+    (app, dir, out)
+}
+
+fn ctrl_c(app: &mut App) {
+    app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+}
+
+/// The user's decision on final review I-2: in vim a mouse selection
+/// becomes Visual, and ctrl+c copies it rather than quitting.
+#[test]
+fn ctrl_c_copies_a_mouse_selection_in_an_open_url() {
+    use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    let (mut app, _dir, out) = with_clipboard_file(url_line("https://x.test/ab"));
+    feed(&mut app, "<CR>");
+    let area = app.editor.last_url_text_area.expect("the URL line is drawn");
+    let at = |kind, col| MouseEvent { kind, column: area.x + col, row: area.y, modifiers: KeyModifiers::NONE };
+    app.handle_mouse(at(MouseEventKind::Down(MouseButton::Left), 2));
+    app.handle_mouse(at(MouseEventKind::Drag(MouseButton::Left), 8));
+    app.handle_mouse(at(MouseEventKind::Up(MouseButton::Left), 8));
+    assert_eq!(app.mode_indicator(), Some("VISUAL"));
+    ctrl_c(&mut app);
+    assert!(!app.should_quit && app.modals.is_empty(), "copy, not quit or its unsaved-changes gate");
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "tps://");
+}
+
+#[test]
+fn ctrl_c_copies_a_keyboard_visual_in_the_url() {
+    let (mut app, _dir, out) = with_clipboard_file(url_line("abcdef"));
+    feed(&mut app, "<CR>0lvll");
+    ctrl_c(&mut app);
+    assert!(!app.should_quit && app.modals.is_empty());
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "bcd");
+    assert_eq!(app.mode_indicator(), Some("VISUAL"), "the selection stays, as a GUI copy keeps it");
+}
+
+#[test]
+fn ctrl_c_copies_the_bodys_visual() {
+    let (mut app, _dir, out) = with_clipboard_file(vim(Fixture::Body));
+    feed(&mut app, "jV");
+    ctrl_c(&mut app);
+    assert!(!app.should_quit && app.modals.is_empty());
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "  \"a\": 1");
+}
+
 /// Spec §3.7: a picked token is an edit outside the key path.
 #[test]
 fn a_picked_token_goes_in_at_the_insert_caret() {

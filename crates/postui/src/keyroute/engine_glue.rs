@@ -83,6 +83,11 @@ pub enum Edit<'a> {
     Append(&'a str),
     /// The whole text, the caret kept where it was (the engine clamps it).
     Whole(&'a str),
+    /// `[from, to)` replaced, the caret on the last char put: a paste or
+    /// a picked token over a Visual selection ([`Glue::visual_span`]), as
+    /// Vim and GUI editors replace a selection (the user's ruling, final
+    /// review).
+    Replace(Pos, Pos, &'a str),
 }
 
 impl Edit<'_> {
@@ -106,8 +111,35 @@ impl Edit<'_> {
                 s.splice(Pos::new(0, 0), end, text);
                 s.set_cursor(caret);
             }
+            Edit::Replace(from, to, text) => {
+                s.splice(from, to, text);
+                let end = end_of(from, text);
+                s.set_cursor(Pos::new(end.row, end.col.saturating_sub(1)));
+            }
         }
     }
+}
+
+/// The Visual selection with its fixed end at `anchor` and the caret as
+/// the moving one, as a `[from, to)` range of `b` (see
+/// [`Glue::visual_span`]).
+fn span_of<B: TextBuf>(b: &B, anchor: Pos, shape: Shape) -> (Pos, Pos) {
+    let last = b.line_count() - 1;
+    let caret = b.cursor();
+    let (lo, hi) = if anchor <= caret { (anchor, caret) } else { (caret, anchor) };
+    let (lo_row, hi_row) = (lo.row.min(last), hi.row.min(last));
+    let len = b.line_len(hi_row);
+    if shape == Shape::Line {
+        return (Pos::new(lo_row, 0), Pos::new(hi_row, len));
+    }
+    let to = if hi.col < len {
+        Pos::new(hi_row, hi.col + 1)
+    } else if hi_row < last {
+        Pos::new(hi_row + 1, 0)
+    } else {
+        Pos::new(hi_row, len)
+    };
+    (Pos::new(lo_row, lo.col.min(b.line_len(lo_row))), to)
 }
 
 /// Where `text` put at `at` ends.
@@ -424,6 +456,32 @@ impl Glue {
         let out = target!(self, buf, |t| self.engine.paste(text, t));
         self.saw(buf);
         out
+    }
+
+    /// The Visual selection in `buf`, the field with the caret, as a
+    /// `[from, to)` range; `None` outside Visual (and while the search
+    /// prompt is open over it). Charwise it is inclusive and takes the line
+    /// break when it ends on a line's end with a line below, as the
+    /// engine's operators take it. Linewise it is the whole lines but the
+    /// last line break, so a replacement keeps that break (Vim's `c` on
+    /// lines). It covers what the selection paints.
+    pub fn visual_span(&self, buf: &mut FieldBuf<'_>) -> Option<(Pos, Pos)> {
+        let Mode::Visual(shape) = self.engine.mode() else { return None };
+        let anchor = self.engine.visual_anchor()?;
+        Some(match buf {
+            FieldBuf::Line(input) => span_of(&OneLineBuf::new(input), anchor, shape),
+            FieldBuf::Body(state, visual) => span_of(&BodyBuf::new(state, visual), anchor, shape),
+        })
+    }
+
+    /// The text of [`Glue::visual_span`], for ctrl+c and cmd+c (the
+    /// user's decision, final review I-2).
+    pub fn visual_text(&self, buf: &mut FieldBuf<'_>) -> Option<String> {
+        let (from, to) = self.visual_span(buf)?;
+        Some(match buf {
+            FieldBuf::Line(input) => OneLineBuf::new(input).slice(from, to),
+            FieldBuf::Body(state, visual) => BodyBuf::new(state, visual).slice(from, to),
+        })
     }
 
     /// Whether the text changed.
