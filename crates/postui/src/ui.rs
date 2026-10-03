@@ -113,6 +113,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 app.editor.recompute_computed_headers(&prepare_ctx);
             }
             app.editor.env_tls = app.env_tls();
+            app.mirror_body_search();
             let hovered = app.hovered.as_ref();
             let pointer = app.pointer;
             let dragged_pane = app.drag.as_ref().map(|d| d.pane);

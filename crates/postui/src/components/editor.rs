@@ -172,11 +172,16 @@ pub struct Editor {
     body_hl_marker: Option<ratatui::style::Color>,
     /// The vim engine's Visual span, written through
     /// the engine's body buffer. Draw puts it at the front of
-    /// `body.highlights`, where edtui gives it priority over the JSON
-    /// colours; `body_hl_visual` is the span currently there. Draw is the
-    /// only writer of `body.highlights`.
+    /// `body.highlights` with the search overlays behind it, where edtui
+    /// gives them priority over the JSON colours; `body_hl_overlays` are
+    /// the ones currently there. Draw is the only writer of
+    /// `body.highlights`.
     pub(crate) body_visual: BodyVisual,
-    body_hl_visual: BodyVisual,
+    /// The overlays now at the front of `body.highlights` (see `Overlay`).
+    body_hl_overlays: Vec<Overlay>,
+    /// The engine's search prompt and matches for the next draw, mirrored
+    /// in by `App::mirror_body_search` (spec §5.6). Empty in arrows.
+    pub(crate) body_search: crate::keyroute::engine_glue::BodySearch,
     /// The fixed end of an in-progress body selection: planted by a left
     /// click (mouse) or the first shifted motion (keyboard), consumed by
     /// `body_drag_to`/shifted motions to rebuild `body.selection` as the
@@ -306,7 +311,8 @@ impl Default for Editor {
             body_hl_text: String::new(),
             body_hl_marker: None,
             body_visual: None,
-            body_hl_visual: None,
+            body_hl_overlays: Vec::new(),
+            body_search: Default::default(),
             body_handler: EditorEventHandler::emacs_mode(),
             body_sel_anchor: None,
             body_word_anchor: None,
@@ -687,6 +693,29 @@ impl Editor {
         }
     }
 
+    /// The overlays this draw wants, in precedence order (see `Overlay`).
+    /// A search match is end-exclusive on one row; an empty one paints
+    /// nothing.
+    fn body_overlays(&self) -> Vec<Overlay> {
+        use crate::keyroute::engine_glue::Pos;
+        let span = |(s, e): (Pos, Pos)| {
+            (e.col > s.col).then(|| (edtui::Index2::new(s.row, s.col), edtui::Index2::new(e.row, e.col - 1)))
+        };
+        let mut out = Vec::new();
+        if let Some((from, to)) = self.body_visual {
+            out.push(Overlay { from, to, kind: OverlayKind::Visual });
+        }
+        if let Some((from, to)) = self.body_search.current.and_then(span) {
+            out.push(Overlay { from, to, kind: OverlayKind::Landing });
+        }
+        for &m in &self.body_search.matches {
+            if let Some((from, to)) = span(m) {
+                out.push(Overlay { from, to, kind: OverlayKind::Match });
+            }
+        }
+        out
+    }
+
     /// Replaces the whole body buffer. Only explicit user actions (loading a
     /// request, format, minify, the `$EDITOR` round-trip) may call this;
     /// typing goes through `body_handler`, so the text is never rewritten
@@ -696,7 +725,7 @@ impl Editor {
         // The fresh state has no highlights; force the next draw to relex.
         self.body_hl_text.clear();
         self.body_hl_marker = None;
-        self.body_hl_visual = None;
+        self.body_hl_overlays.clear();
     }
 
     /// Whether the body parses as JSON. An empty body is vacuously valid:
@@ -1458,6 +1487,37 @@ fn column_in_wrapped_line(
         col += 1;
     }
     col
+}
+
+/// One highlight the body paints over its JSON colours in the vim profile
+/// (plan M3a Deviation 16): the Visual span, the search match Enter would
+/// land on, then the other matches. edtui styles a cell with the first
+/// highlight that contains it, so this order is the precedence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Overlay {
+    from: edtui::Index2,
+    to: edtui::Index2,
+    kind: OverlayKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OverlayKind {
+    Visual,
+    Landing,
+    Match,
+}
+
+impl OverlayKind {
+    fn style(self, theme: &Theme) -> Style {
+        // The response viewer paints its search matches the same way
+        // (`highlighted`).
+        let found = Style::default().fg(theme.text).bg(theme.page).add_modifier(Modifier::REVERSED);
+        match self {
+            OverlayKind::Visual => Style::default().bg(theme.selection).fg(theme.text),
+            OverlayKind::Landing => found.add_modifier(Modifier::BOLD),
+            OverlayKind::Match => found,
+        }
+    }
 }
 
 /// edtui's emacs keybindings are all registered against `EditorMode::Insert`,
@@ -2982,19 +3042,18 @@ impl Editor {
                         .set_highlights(json_body_highlights(&self.body.lines, theme));
                     self.body_hl_text = text_now;
                     self.body_hl_marker = Some(theme.accent);
-                    self.body_hl_visual = None;
+                    self.body_hl_overlays.clear();
                 }
-                // The vim Visual span goes first: edtui styles a cell with
-                // the first highlight that contains it.
-                if self.body_hl_visual != self.body_visual {
-                    if self.body_hl_visual.is_some() {
-                        self.body.highlights.remove(0);
+                // The vim overlays go first: edtui styles a cell with the
+                // first highlight that contains it.
+                let overlays = self.body_overlays();
+                if self.body_hl_overlays != overlays {
+                    let stale = self.body_hl_overlays.len().min(self.body.highlights.len());
+                    self.body.highlights.drain(..stale);
+                    for (i, o) in overlays.iter().enumerate() {
+                        self.body.highlights.insert(i, edtui::Highlight::new(o.from, o.to, o.kind.style(theme)));
                     }
-                    if let Some((from, to)) = self.body_visual {
-                        let style = Style::default().bg(theme.selection).fg(theme.text);
-                        self.body.highlights.insert(0, edtui::Highlight::new(from, to, style));
-                    }
-                    self.body_hl_visual = self.body_visual;
+                    self.body_hl_overlays = overlays;
                 }
                 let mut edtui_theme = EditorTheme::default()
                     .base(Style::default().bg(theme.page).fg(theme.text))
@@ -3043,6 +3102,22 @@ impl Editor {
                     crate::components::var_tokens::paint_var_tokens(
                         buf, row, &text, area.x, &self.vars, theme, hits,
                     );
+                }
+                // The engine's search prompt on the pane's bottom row (spec
+                // §5.6; plan M3a Deviation 16).
+                if let Some(line) = &self.body_search.prompt {
+                    let y = area.bottom().saturating_sub(1);
+                    let row = Rect::new(area.x, y, area.width, 1);
+                    let style = Style::default().bg(theme.panel).fg(theme.text);
+                    let buf = frame.buffer_mut();
+                    buf.set_style(row, style);
+                    let text = format!("{}{}", line.dir.delim(), line.text);
+                    buf.set_stringn(row.x, y, &text, usize::from(row.width), style);
+                    let before: usize = line.text.chars().take(line.cursor).map(body_char_width).sum();
+                    let x = row.x.saturating_add(1).saturating_add(u16::try_from(before).unwrap_or(u16::MAX));
+                    if x < row.right() {
+                        buf[(x, y)].set_style(style.add_modifier(Modifier::REVERSED));
+                    }
                 }
             }
         }

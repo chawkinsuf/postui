@@ -753,3 +753,112 @@ fn typing_two_braces_opens_the_variable_picker() {
     assert_eq!(app.glue.session(), FieldSession::Parked(FieldId::Url));
     assert_eq!(url(&app).0, "ab{{");
 }
+
+use ratatui::style::Modifier;
+
+fn draw_buffer(app: &mut App) -> ratatui::buffer::Buffer {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    app.anims.finish_all();
+    let mut terminal = Terminal::new(TestBackend::new(160, 48)).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
+    terminal.backend().buffer().clone()
+}
+
+fn row_text(buf: &ratatui::buffer::Buffer, area: ratatui::layout::Rect, y: u16) -> String {
+    (area.x..area.right()).map(|x| buf[(x, y)].symbol()).collect()
+}
+
+/// The modifiers of each cell on the body's first row that shows `c`.
+fn cells_of(buf: &ratatui::buffer::Buffer, area: ratatui::layout::Rect, c: &str) -> Vec<Modifier> {
+    (area.x..area.right()).filter(|&x| buf[(x, area.y)].symbol() == c).map(|x| buf[(x, area.y)].modifier).collect()
+}
+
+/// Spec §5.6: the prompt is drawn on the body pane's bottom row.
+#[test]
+fn the_search_prompt_draws_on_the_bodys_bottom_row() {
+    let mut app = vim(Fixture::Body);
+    app.editor.set_body_text("foo bar foo");
+    feed(&mut app, "/fo");
+    let buf = draw_buffer(&mut app);
+    let area = app.editor.last_body_area.unwrap();
+    let bottom = row_text(&buf, area, area.bottom() - 1);
+    assert!(bottom.starts_with("/fo"), "{bottom:?}");
+    feed(&mut app, "<Esc>");
+    let buf = draw_buffer(&mut app);
+    assert!(!row_text(&buf, area, area.bottom() - 1).starts_with("/fo"), "Esc closes the prompt");
+}
+
+/// Plan M3a Deviation 16: matches REVERSED, the one Enter lands on also BOLD.
+#[test]
+fn search_matches_paint_and_the_landing_one_is_bold() {
+    let mut app = vim(Fixture::Body);
+    app.editor.set_body_text("foo bar foo");
+    feed(&mut app, "/foo");
+    let buf = draw_buffer(&mut app);
+    let area = app.editor.last_body_area.unwrap();
+    let fs = cells_of(&buf, area, "f");
+    assert_eq!(fs.len(), 2, "both f's are drawn");
+    assert!(fs[1].contains(Modifier::REVERSED | Modifier::BOLD), "incsearch: where Enter lands");
+    assert!(!cells_of(&buf, area, "b")[0].contains(Modifier::REVERSED), "bar is no match");
+    feed(&mut app, "<CR>");
+    let buf = draw_buffer(&mut app);
+    let fs = cells_of(&buf, area, "f");
+    assert!(fs.iter().all(|m| m.contains(Modifier::REVERSED)), "the highlight stays after the search");
+    assert!(fs.iter().all(|m| !m.contains(Modifier::BOLD)), "no prompt, no landing match");
+}
+
+/// Spec §3.14: a request switch clears the highlight (plan M3a Deviation 19).
+/// `ForceCreateRequest`: the dirty Body fixture would raise the unsaved
+/// changes confirm for `CreateRequest` (amendment A8-1).
+#[test]
+fn a_request_switch_clears_the_search_highlight() {
+    let mut app = vim(Fixture::Body);
+    app.editor.set_body_text("x foo");
+    feed(&mut app, "/foo<CR>");
+    app.update(Action::ForceCreateRequest("other".into()));
+    app.editor.method = postui_core::model::Method::Post;
+    app.editor.set_body_text("x foo");
+    app.editor.active_tab = EditorTab::Body;
+    app.focus = PaneId::Editor;
+    app.editor.sub_focus = SubFocus::Content;
+    feed(&mut app, "0");
+    let buf = draw_buffer(&mut app);
+    let area = app.editor.last_body_area.unwrap();
+    assert!(!cells_of(&buf, area, "f")[0].contains(Modifier::REVERSED));
+}
+
+/// Amendment C2 follow-on: a rename changes the slug in place, so the
+/// highlight stays.
+#[test]
+fn renaming_the_open_request_keeps_the_search_highlight() {
+    let mut app = vim(Fixture::Body);
+    app.editor.set_body_text("x foo");
+    feed(&mut app, "/foo<CR>");
+    let from = app.editor.slug.clone().expect("the fixture's request is saved");
+    app.update(Action::RenameRequest { from, to: "renamed".into() });
+    let buf = draw_buffer(&mut app);
+    let area = app.editor.last_body_area.unwrap();
+    // The `o`: the caret's own cell on the `f` is REVERSED regardless.
+    assert!(cells_of(&buf, area, "o")[0].contains(Modifier::REVERSED), "the highlight survives the rename");
+}
+
+/// Amendment A8-2: a match below the viewport is computed for the frame a
+/// jump scrolls it into view.
+#[test]
+fn a_far_search_paints_its_matches_in_the_frame_it_scrolls() {
+    let mut app = vim(Fixture::Body);
+    let mut lines: Vec<String> = (0..120).map(|i| format!("row{i}")).collect();
+    lines[100] = "needle".into();
+    app.editor.set_body_text(&lines.join("\n"));
+    draw(&mut app);
+    feed(&mut app, "/needle<CR>");
+    let buf = draw_buffer(&mut app);
+    let area = app.editor.last_body_area.unwrap();
+    let hit = (area.y..area.bottom())
+        .find(|&y| row_text(&buf, area, y).contains("needle"))
+        .expect("the match scrolled into view");
+    // The second letter: the caret's own cell is REVERSED regardless.
+    let x = (area.x..area.right()).find(|&x| buf[(x, hit)].symbol() == "e").unwrap();
+    assert!(buf[(x, hit)].modifier.contains(Modifier::REVERSED), "painted in the frame that scrolled");
+}

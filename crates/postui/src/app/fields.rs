@@ -432,6 +432,28 @@ impl App {
         }
     }
 
+    /// The engine's search prompt and highlight for the next draw (spec
+    /// §5.6), on the rows the body shows. Nothing in arrows, or off the Body
+    /// tab. The range reaches one screen either side of the viewport, so a
+    /// jump that scrolls during the render (`G`, a far `n`) still paints its
+    /// matches in that frame.
+    pub(crate) fn mirror_body_search(&mut self) {
+        if self.profile() != KeyProfile::Vim || self.editor.active_tab != EditorTab::Body {
+            self.editor.body_search = Default::default();
+            return;
+        }
+        let top = self.editor.body.viewport_offset().1;
+        let rows = match self.editor.last_body_area {
+            Some(a) => {
+                let h = usize::from(a.height);
+                top.saturating_sub(h)..top.saturating_add(h.saturating_mul(2))
+            }
+            None => 0..usize::MAX,
+        };
+        let found = self.glue.body_search(&mut self.editor.body, &mut self.editor.body_visual, rows);
+        self.editor.body_search = found;
+    }
+
     /// `{{` typed into the URL line or a cell opens the variable picker, as
     /// it does on main (`Editor::handle_key`).
     fn after_typed(&mut self, id: FieldId, ev: KeyEvent) {
