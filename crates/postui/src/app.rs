@@ -11156,6 +11156,12 @@ impl App {
             {
                 self.set_theme_by_name(&prior);
             }
+            // A field the modal parked has the caret again: its session goes
+            // live before the actions run, so an Undo, Redo or Paste reaches
+            // the engine (final review C-1). Without it the palette's Undo
+            // skipped the engine, the gate recorded nothing, and an older app
+            // step landed over the typed text.
+            self.sync_session(None, fields::Cause::Before);
         }
         if let Some(id) = &res.usage {
             self.usage.record(id, crate::usage::now());

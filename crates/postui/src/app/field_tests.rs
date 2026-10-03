@@ -389,6 +389,58 @@ fn an_app_undo_under_a_live_url_rebases_its_session() {
     assert_eq!(url(&app).0, "ab", "the next x deletes under the caret on the new text");
 }
 
+/// Confirms the palette with `action`, as its Enter would (`:` parks the
+/// open field under it).
+fn from_the_palette(app: &mut App, action: Action) {
+    feed(app, ":");
+    assert!(matches!(app.modals.top(), Some(Modal::Palette(_))));
+    app.apply_modal_result(ModalResult { actions: vec![action], close: true, usage: None });
+    app.capture_undo();
+    draw(app);
+}
+
+/// Final review C-1: the palette pops before its Undo runs, so the parked
+/// session must be live again by then, or the engine is skipped, the gate
+/// records nothing, and an older app step lands over the typed text.
+#[test]
+fn a_palette_undo_over_an_edited_url_steps_the_engine() {
+    let mut app = url_line("abc");
+    app.history.break_coalescing();
+    app.editor.url = LineInput::new("abcdef");
+    app.capture_undo();
+    let before = snapshot(&app);
+    feed(&mut app, "<CR>AXY<Esc>");
+    assert_eq!(url(&app).0, "abcdefXY");
+    from_the_palette(&mut app, Action::Undo);
+    assert_eq!(url(&app).0, "abcdef", "the engine's step, not the app's");
+    from_the_palette(&mut app, Action::Redo);
+    assert_eq!(url(&app).0, "abcdefXY", "no typed text is lost");
+    feed(&mut app, "<Esc>u");
+    let after = snapshot(&app);
+    assert!(after == before, "undo did not restore exactly:\n{}", snapshot_diff(&before, &after));
+}
+
+/// C-1's body twin.
+#[test]
+fn a_palette_undo_over_an_edited_body_steps_the_engine() {
+    let mut app = vim(Fixture::Body);
+    app.history.break_coalescing();
+    app.editor.set_body_text("[1]");
+    app.capture_undo();
+    let before = snapshot(&app);
+    feed(&mut app, "x");
+    assert_eq!(body(&app), "1]");
+    from_the_palette(&mut app, Action::Undo);
+    assert_eq!(body(&app), "[1]", "the engine's step, not the app's");
+    from_the_palette(&mut app, Action::Redo);
+    assert_eq!(body(&app), "1]", "no edit is lost");
+    feed(&mut app, "<Esc>");
+    assert_eq!(app.glue.session(), FieldSession::None);
+    feed(&mut app, "u");
+    let after = snapshot(&app);
+    assert!(after.same_but_field(&before), "undo did not restore exactly:\n{}", snapshot_diff(&before, &after));
+}
+
 /// Amendment C1: ctrl+z in Insert, before the engine has committed a step,
 /// belongs to the field (its live edit counts), so the typed text is not
 /// lost to an older app step.
