@@ -52,6 +52,13 @@ pub enum Intent {
     Verb(Verb),
     /// A short note (an Info toast, plan M1 Deviation 9); nothing else.
     Note(&'static str),
+    /// Leave the open one-line field, then this key on the closed surface:
+    /// `j` in the URL is Esc, then Down (spec §3.7, §5.6; plan M3a
+    /// Deviation 11). The count repeats the key.
+    Leave(Named),
+    /// A known key that does nothing here: `Z` and the key after it in a
+    /// field, until M4's `ZZ` and `ZQ` (plan M3a Deviation 9).
+    Swallow,
     /// The key goes on as typed: the surface's own arm already does what
     /// the vim key means (plan M1 Deviation 8).
     Pass,
@@ -111,6 +118,12 @@ impl Surfaces {
     pub const DIALOG: Self = Self(1 << 14);
     pub const PICKER: Self = Self(1 << 15);
     pub const OTHER: Self = Self(1 << 16);
+    /// An open one-line field in idle Normal (spec §3.7): the rows the
+    /// router checks before the engine sees a key. Never a `Surface`.
+    pub const FIELD_LINE: Self = Self(1 << 17);
+    /// The request body in idle Normal (spec §3.7).
+    pub const FIELD_BODY: Self = Self(1 << 18);
+    pub const FIELDS: Self = Self::FIELD_LINE.or(Self::FIELD_BODY);
 
     /// Every surface whose rows or controls the keyboard walks: vim's
     /// motions bind here, and in vim a bare char with no row is
@@ -192,6 +205,12 @@ impl Surfaces {
     pub fn has(self, s: Surface) -> bool {
         self.0 & Self::of(s).0 != 0
     }
+
+    /// Whether the two sets share a kind: how a row's `on` meets a field
+    /// class, which no `Surface` names.
+    pub const fn overlaps(self, o: Self) -> bool {
+        self.0 & o.0 != 0
+    }
 }
 
 /// One row: these keys, in these profiles, on these surfaces, mean this.
@@ -228,6 +247,8 @@ const fn both(keys: &'static str, on: Surfaces, intent: Intent) -> Binding {
 
 pub const NO_COUNTED_DELETE: &str = "Counted delete works on requests and table rows";
 pub const NO_COUNTED_YANK: &str = "Counted yank is not supported";
+pub const NO_MACROS: &str = "Macros are not supported";
+pub const NO_MARKS: &str = "Marks are not supported";
 
 fn new_option() -> Action {
     Action::StartNewOptionEdit
@@ -235,6 +256,8 @@ fn new_option() -> Action {
 
 const DOWN: Named = Named::key(KeyCode::Down);
 const HOME: Named = Named::key(KeyCode::Home);
+const UP: Named = Named::key(KeyCode::Up);
+pub(crate) const ESC: Named = Named::key(KeyCode::Esc);
 
 fn undo() -> Action {
     Action::Undo
@@ -327,6 +350,27 @@ pub static TABLE: &[Binding] = &[
     // `main`'s arrows `o` (new option) stays; vim's `o` there opens the row
     // (plan M2 Deviation 13).
     arrows("o", Surfaces::VAR_LIST.or(Surfaces::VAR_GRID), Intent::Act(new_option)),
+    // Spec §3.7: an open field in idle Normal. The router checks these
+    // before the engine; a key that matches none of them is replayed into
+    // the engine as typed. `j` `k` and the paging chords leave a one-line
+    // field (the user's decision 2), the rest are notes until M4 gives
+    // them their own meaning (plan M3a Deviation 9), so no prefix key ever
+    // reaches the engine as a wrong edit.
+    row(":", Surfaces::FIELDS, Intent::Act(palette), CountRule::Ignore),
+    row("j", Surfaces::FIELD_LINE, Intent::Leave(DOWN), CountRule::Repeat),
+    row("k", Surfaces::FIELD_LINE, Intent::Leave(UP), CountRule::Repeat),
+    row("<Down>", Surfaces::FIELD_LINE, Intent::Leave(DOWN), CountRule::Repeat),
+    row("<Up>", Surfaces::FIELD_LINE, Intent::Leave(UP), CountRule::Repeat),
+    row("<C-d>", Surfaces::FIELD_LINE, Intent::Leave(Named::ctrl(KeyCode::Char('d'))), CountRule::Ignore),
+    row("<C-u>", Surfaces::FIELD_LINE, Intent::Leave(Named::ctrl(KeyCode::Char('u'))), CountRule::Ignore),
+    row("<C-f>", Surfaces::FIELD_LINE, Intent::Leave(Named::ctrl(KeyCode::Char('f'))), CountRule::Ignore),
+    row("<C-b>", Surfaces::FIELD_LINE, Intent::Leave(Named::ctrl(KeyCode::Char('b'))), CountRule::Ignore),
+    row("q<any>", Surfaces::FIELDS, Intent::Note(NO_MACROS), CountRule::Ignore),
+    row("@<any>", Surfaces::FIELDS, Intent::Note(NO_MACROS), CountRule::Ignore),
+    row("m<any>", Surfaces::FIELDS, Intent::Note(NO_MARKS), CountRule::Ignore),
+    row("'<any>", Surfaces::FIELDS, Intent::Note(NO_MARKS), CountRule::Ignore),
+    row("`<any>", Surfaces::FIELDS, Intent::Note(NO_MARKS), CountRule::Ignore),
+    row("Z<any>", Surfaces::FIELDS, Intent::Swallow, CountRule::Ignore),
 ];
 
 /// Each row's keys, parsed once.
@@ -345,19 +389,50 @@ pub enum Match {
 }
 
 pub fn lookup(buf: &[Tok], profile: KeyProfile, surface: Surface) -> Match {
+    lookup_class(buf, profile, Surfaces::of(surface))
+}
+
+/// [`lookup`] on a set of surface kinds: a `Surface`'s, or a field class
+/// (`FIELD_LINE`, `FIELD_BODY`) that no `Surface` names.
+pub fn lookup_class(buf: &[Tok], profile: KeyProfile, class: Surfaces) -> Match {
+    let rows = TABLE
+        .iter()
+        .zip(parsed())
+        .filter(|(b, _)| b.profile.has(profile))
+        .map(|(b, keys)| (b, keys.as_slice()));
+    best(rows, buf, class)
+}
+
+/// Whether a row's keys `row` fit the typed keys `typed`, position by
+/// position, `<any>` fitting anything. Same length is the caller's check.
+fn fits(row: &[Tok], typed: &[Tok]) -> bool {
+    row.iter().zip(typed).all(|(r, t)| *r == Tok::Any || r == t)
+}
+
+/// The best row for `buf` among `rows` on `class`: a complete row with no
+/// `<any>` first, then one with `<any>` (plan M3a Deviation 10), then
+/// whether some row extends `buf`.
+fn best<'a>(rows: impl IntoIterator<Item = (&'static Binding, &'a [Tok])>, buf: &[Tok], class: Surfaces) -> Match {
     let mut prefix = false;
-    for (b, keys) in TABLE.iter().zip(parsed()) {
-        if !b.profile.has(profile) || !b.on.has(surface) {
+    let mut wild = None;
+    for (b, keys) in rows {
+        if !b.on.overlaps(class) {
             continue;
         }
-        if keys.as_slice() == buf {
-            return Match::Complete(b);
-        }
-        if keys.len() > buf.len() && keys.starts_with(buf) {
+        if keys.len() == buf.len() && fits(keys, buf) {
+            if !keys.contains(&Tok::Any) {
+                return Match::Complete(b);
+            }
+            wild.get_or_insert(b);
+        } else if keys.len() > buf.len() && fits(&keys[..buf.len()], buf) {
             prefix = true;
         }
     }
-    if prefix { Match::Prefix } else { Match::NoMatch }
+    match wild {
+        Some(b) => Match::Complete(b),
+        None if prefix => Match::Prefix,
+        None => Match::NoMatch,
+    }
 }
 
 /// The keys of the row that runs `action` here, for keycaps (spec §4.6).
@@ -382,7 +457,9 @@ pub fn vim_first_chars() -> Vec<char> {
     let mut out: Vec<char> = TABLE
         .iter()
         .zip(parsed())
-        .filter(|(b, _)| b.profile.has(KeyProfile::Vim))
+        // A keys.toml letter only ever reaches a navigation surface (spec
+        // §4.4), so a field row cannot be shadowed (plan M3a Deviation 18).
+        .filter(|(b, _)| b.profile.has(KeyProfile::Vim) && b.on.overlaps(Surfaces::NAV))
         .filter_map(|(_, keys)| match keys.first() {
             Some(Tok::Char(c)) => Some(*c),
             _ => None,
@@ -412,12 +489,62 @@ pub fn takes_count(surface: Surface) -> bool {
 mod tests {
     use super::*;
 
-    fn rows_on(profile: KeyProfile, surface: Surface) -> Vec<(&'static Binding, &'static Vec<Tok>)> {
-        TABLE
-            .iter()
-            .zip(parsed())
-            .filter(|(b, _)| b.profile.has(profile) && b.on.has(surface))
-            .collect()
+    fn class_match(keys: &str, class: Surfaces) -> Match {
+        lookup_class(&notation::parse(keys), KeyProfile::Vim, class)
+    }
+
+    /// Spec §3.7 and plan M3a Deviations 9 and 11: the rows an open field
+    /// checks in idle Normal.
+    #[test]
+    fn field_rows_leave_note_and_swallow() {
+        let line = Surfaces::FIELD_LINE;
+        let body = Surfaces::FIELD_BODY;
+        assert!(matches!(class_match("j", line), Match::Complete(b) if matches!(b.intent, Intent::Leave(n) if n == DOWN)));
+        assert!(matches!(class_match("<Up>", line), Match::Complete(b) if matches!(b.intent, Intent::Leave(_))));
+        assert!(matches!(class_match("<C-d>", line), Match::Complete(b) if b.count == CountRule::Ignore));
+        assert!(matches!(class_match("j", body), Match::NoMatch), "j is a motion in the body");
+        assert!(matches!(class_match("q", line), Match::Prefix));
+        for keys in ["qa", "q<CR>", "q<C-c>", "@a", "@<Esc>"] {
+            assert!(
+                matches!(class_match(keys, line), Match::Complete(b) if matches!(b.intent, Intent::Note(NO_MACROS))),
+                "{keys}"
+            );
+        }
+        for keys in ["ma", "'a", "`a"] {
+            assert!(matches!(class_match(keys, body), Match::Complete(b) if matches!(b.intent, Intent::Note(NO_MARKS))), "{keys}");
+        }
+        assert!(matches!(class_match("ZZ", line), Match::Complete(b) if matches!(b.intent, Intent::Swallow)));
+        assert!(matches!(class_match(":", body), Match::Complete(b) if matches!(b.intent, Intent::Act(_))));
+        assert!(matches!(class_match("x", line), Match::NoMatch), "the engine's");
+        assert!(matches!(class_match("g", line), Match::NoMatch), "gt is M4's; g goes to the engine");
+    }
+
+    /// Plan M3a Deviation 10: a specific row beats an `<any>` row of the
+    /// same length (M4's `ZZ` over `Z<any>`).
+    #[test]
+    fn a_specific_row_beats_an_any_row() {
+        static ROWS: [Binding; 2] = [
+            row("Z<any>", Surfaces::FIELDS, Intent::Swallow, CountRule::Ignore),
+            row("ZZ", Surfaces::FIELDS, Intent::Note("zz"), CountRule::Ignore),
+        ];
+        let keys: Vec<&'static [Tok]> =
+            ROWS.iter().map(|b| &*Box::leak(notation::parse(b.keys).into_boxed_slice())).collect();
+        let rows = || ROWS.iter().zip(keys.iter().copied());
+        let typed = |s: &str| notation::parse(s);
+        assert!(matches!(best(rows(), &typed("ZZ"), Surfaces::FIELD_LINE), Match::Complete(b) if b.keys == "ZZ"));
+        assert!(matches!(best(rows(), &typed("Zx"), Surfaces::FIELD_LINE), Match::Complete(b) if b.keys == "Z<any>"));
+        assert!(matches!(best(rows(), &typed("Z"), Surfaces::FIELD_LINE), Match::Prefix));
+    }
+
+    /// Plan M3a Deviation 18: a keys.toml letter never reaches a field, so
+    /// only navigation rows can be shadowed.
+    #[test]
+    fn shadow_chars_come_from_navigation_rows_only() {
+        let chars = vim_first_chars();
+        for c in ['q', '@', '\'', '`', 'Z'] {
+            assert!(!chars.contains(&c), "{c} starts only a field row");
+        }
+        assert!(chars.contains(&'j'), "j is a list motion too");
     }
 
     /// Spec §3.4: in the arrows profile the machine never leaves Idle.
@@ -432,15 +559,28 @@ mod tests {
 
     #[test]
     fn no_two_rows_collide() {
+        // Equal keys collide, and so does a complete row that is a strict
+        // prefix of another (`<any>` matching anything). Two rows of the same
+        // length that overlap only through `<any>` are allowed: the specific
+        // one wins (plan M3a Deviation 10).
+        let prefix_of = |a: &[Tok], b: &[Tok]| a.len() < b.len() && fits(&b[..a.len()], a);
+        let classes = Surface::SAMPLES
+            .iter()
+            .map(|s| (format!("{s:?}"), Surfaces::of(*s)))
+            .chain([("FIELD_LINE".to_string(), Surfaces::FIELD_LINE), ("FIELD_BODY".to_string(), Surfaces::FIELD_BODY)]);
         for profile in [KeyProfile::Arrows, KeyProfile::Vim] {
-            for surface in Surface::SAMPLES {
-                let rows = rows_on(profile, surface);
+            for (name, class) in classes.clone() {
+                let rows: Vec<_> = TABLE
+                    .iter()
+                    .zip(parsed())
+                    .filter(|(b, _)| b.profile.has(profile) && b.on.overlaps(class))
+                    .collect();
                 for (i, (a, ka)) in rows.iter().enumerate() {
                     for (b, kb) in &rows[i + 1..] {
-                        assert_ne!(ka, kb, "{} twice on {surface:?}", a.keys);
+                        assert_ne!(ka, kb, "{} twice on {name}", a.keys);
                         assert!(
-                            !kb.starts_with(ka) && !ka.starts_with(kb),
-                            "{} and {} on {surface:?}: a complete row is a prefix of another",
+                            !prefix_of(ka, kb) && !prefix_of(kb, ka),
+                            "{} and {} on {name}: a complete row is a prefix of another",
                             a.keys,
                             b.keys
                         );
@@ -462,7 +602,7 @@ mod tests {
             if b.count == CountRule::Pass {
                 assert!(edge || counted_verb, "{}: Pass is for Edge rows, dd and p", b.keys);
             }
-            if matches!(b.intent, Intent::Pass | Intent::Note(_)) {
+            if matches!(b.intent, Intent::Pass | Intent::Note(_) | Intent::Swallow) {
                 assert_eq!(b.count, CountRule::Ignore, "{}", b.keys);
             }
             if b.profile.has(KeyProfile::Arrows) {

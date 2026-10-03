@@ -119,6 +119,7 @@ impl Router {
                 self.pending.clear();
                 match b.intent {
                     Intent::Pass => Resolved::Declined,
+                    Intent::Swallow => Resolved::Consumed,
                     _ => Resolved::Run(expand(b, count, ctx.cap)),
                 }
             }
@@ -198,6 +199,14 @@ fn expand(b: &table::Binding, count: Option<usize>, cap: usize) -> Vec<Step> {
         }
         Intent::Verb(v) => vec![Step::Action(Action::OnSelection(v)); times(cap)],
         Intent::Note(text) => vec![note_step(text)],
+        // Esc closes the field (its own close, keeping the text), then the
+        // key runs on the closed surface (plan M3a Deviation 11).
+        Intent::Leave(k) => {
+            let mut steps = vec![Step::Key(table::ESC.event())];
+            steps.extend(std::iter::repeat_n(Step::Key(k.event()), times(cap)));
+            steps
+        }
+        Intent::Swallow => Vec::new(),
         Intent::Pass => unreachable!("Pass is declined before expand"),
     }
 }

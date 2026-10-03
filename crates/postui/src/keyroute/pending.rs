@@ -58,7 +58,7 @@ impl Pending {
                     out.push('^');
                     out.push(c.to_ascii_uppercase());
                 }
-                Tok::Named(_) => {}
+                Tok::Named(_) | Tok::Any => {}
             }
         }
         out
