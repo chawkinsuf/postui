@@ -394,18 +394,20 @@ impl Sidebar {
     }
 
     /// Queues `slug`'s ancestor folders open for the next refresh, without
-    /// moving the cursor (the landing places it once the rows exist).
+    /// moving the cursor (the landing places it once the rows exist). Only
+    /// folder rows' paths (`space/f`, `space/f/g`) are queued, never the
+    /// space itself: the tree is rooted at `space/`, so the space is no
+    /// row. A slug outside any space has no folder to open.
     pub fn expand_to(&mut self, slug: &str) {
-        let mut parts: Vec<&str> = slug.split('/').collect();
-        parts.pop();
-        let mut acc = String::new();
-        for seg in parts {
-            acc = if acc.is_empty() {
-                seg.to_string()
-            } else {
-                format!("{acc}/{seg}")
-            };
-            self.pending_expand.insert(acc.clone());
+        let Some(space) = postui_core::storage::space_of(slug) else {
+            return;
+        };
+        let mut segs: Vec<&str> = slug[space.len() + 1..].split('/').collect();
+        segs.pop();
+        let mut path = space.to_string();
+        for seg in segs {
+            path = format!("{path}/{seg}");
+            self.pending_expand.insert(path.clone());
         }
     }
 
@@ -1772,6 +1774,23 @@ mod tests {
         s.refresh(listing(&["a/b/c"]), "main", &expanded(&[]), &[]);
         s.select_slug("main/a/b/c");
         assert!(s.pending_expand.contains("main/a") && s.pending_expand.contains("main/a/b"));
+    }
+
+    /// Only folder rows' paths are queued, never the space: the tree is
+    /// rooted at `space/`, so the space is no row, and queuing it wrote a
+    /// meaningless `expanded` entry an undo could not take back. A loose
+    /// slug (no space; core never lists one) has no folder to open.
+    #[test]
+    fn expand_to_queues_folder_paths_only_not_the_space() {
+        let queued = |slug: &str| {
+            let mut s = Sidebar::default();
+            s.expand_to(slug);
+            s.pending_expand.into_iter().collect::<Vec<_>>()
+        };
+        assert_eq!(queued("main/f/x"), ["main/f"]);
+        assert_eq!(queued("main/f/g/x"), ["main/f", "main/f/g"]);
+        assert!(queued("main/alpha").is_empty());
+        assert!(queued("ping").is_empty());
     }
 
     #[test]
