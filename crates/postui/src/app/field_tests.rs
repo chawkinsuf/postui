@@ -734,6 +734,33 @@ fn a_format_with_the_body_open_is_one_engine_step() {
     assert_eq!(body(&app), "{\"a\":1}", "u takes the format back");
 }
 
+/// Final review triage (T6): a clear with the body open is one engine
+/// step, as a format is.
+#[test]
+fn a_body_clear_with_the_body_open_is_one_engine_step() {
+    let mut app = vim(Fixture::Body);
+    feed(&mut app, "0");
+    assert_eq!(app.glue.session(), FieldSession::Live(FieldId::Body));
+    let steps = app.history.undo_len();
+    app.update(Action::BodyClear);
+    assert_eq!(body(&app), "");
+    feed(&mut app, "u");
+    assert_eq!(body(&app), BODY, "u takes the clear back");
+    assert!(app.glue.can_redo(EngineKind::Body), "the engine's step, not the app's");
+    assert_eq!(app.history.undo_len(), steps, "no app step was spent");
+}
+
+/// Final review M-3: replacing the body drops the engine's Visual paint
+/// with it, so a stale span is never drawn over the new text.
+#[test]
+fn replacing_the_body_drops_its_visual_paint() {
+    let mut app = vim(Fixture::Body);
+    feed(&mut app, "jV");
+    assert!(app.editor.body_visual.is_some());
+    app.editor.set_body_text("[]");
+    assert_eq!(app.editor.body_visual, None);
+}
+
 /// Piece 3 §4.4: the engine pages by the rows the body last drew.
 #[test]
 fn ctrl_d_pages_by_the_drawn_body() {
@@ -774,6 +801,24 @@ fn renaming_the_open_request_keeps_the_bodys_history() {
     assert_ne!(app.editor.slug.as_deref(), Some(from.as_str()), "the editor follows the new slug");
     feed(&mut app, "u");
     assert_eq!(body(&app), BODY, "the engine's step, not the app's rename");
+}
+
+/// Final review triage (T6): a space rename re-keys the open request in
+/// place too (amendment C2's extension), and the body's state follows.
+#[test]
+fn renaming_the_open_requests_space_keeps_the_bodys_history() {
+    let mut app = vim(Fixture::Body);
+    feed(&mut app, "x<Esc>jj");
+    assert_eq!(app.glue.session(), FieldSession::Live(FieldId::Body));
+    let slug = app.editor.slug.clone().expect("the fixture's request is saved");
+    let (space, _) = slug.split_once('/').expect("a request lives in a space");
+    app.update(Action::RenameSpace { from: space.into(), to: "renamed".into() });
+    assert!(app.toasts.messages().iter().any(|m| m.contains("Renamed space")), "{:?}", app.toasts.messages());
+    assert_ne!(app.editor.slug.as_deref(), Some(slug.as_str()), "the editor follows the new slug");
+    let steps = app.history.undo_len();
+    feed(&mut app, "u");
+    assert_eq!(body(&app), BODY, "the engine's step from the earlier visit");
+    assert_eq!(app.history.undo_len(), steps, "not the app's step for the same edit");
 }
 
 /// Amendment C2 (controller ruling 2): an undo of the rename re-keys the
@@ -1085,6 +1130,25 @@ fn the_search_prompt_draws_on_the_bodys_bottom_row() {
     feed(&mut app, "<Esc>");
     let buf = draw_buffer(&mut app);
     assert!(!row_text(&buf, area, area.bottom() - 1).starts_with("/fo"), "Esc closes the prompt");
+}
+
+/// Final review M-4: the prompt covers the bottom row, so a `{{token}}`
+/// under it registers no hit a click could find.
+#[test]
+fn the_search_prompt_row_has_no_token_hits() {
+    let mut app = vim(Fixture::Body);
+    let h = usize::from(app.editor.last_body_area.expect("the body is drawn").height);
+    let mut lines = vec!["x"; h - 1];
+    lines.push("{{v}}");
+    app.editor.set_body_text(&lines.join("\n"));
+    draw(&mut app);
+    let area = app.editor.last_body_area.unwrap();
+    let bottom = area.bottom() - 1;
+    let on_bottom = |app: &App| app.hits.rects_of(&Hit::VarToken("v".into())).iter().any(|r| r.y == bottom);
+    assert!(on_bottom(&app), "the token is drawn on the bottom row");
+    feed(&mut app, "/x");
+    assert!(app.editor.body_search.prompt.is_some());
+    assert!(!on_bottom(&app), "the prompt row has no token hit");
 }
 
 /// Plan M3a Deviation 16: matches REVERSED, the one Enter lands on also BOLD.

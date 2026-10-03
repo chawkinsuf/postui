@@ -727,6 +727,9 @@ impl Editor {
     /// behind the user's back.
     pub fn set_body_text(&mut self, s: &str) {
         self.body = new_body_state(s);
+        // The engine's Visual span named the old text (final review M-3);
+        // the next key's rebase would clear it, a frame late.
+        self.body_visual = None;
         // The fresh state has no highlights; force the next draw to relex.
         self.body_hl_text.clear();
         self.body_hl_marker = None;
@@ -3106,7 +3109,14 @@ impl Editor {
                 // not `{{name}}` on either of them and is therefore skipped
                 // — the documented limitation of this approach.
                 let buf = frame.buffer_mut();
+                // The engine's search prompt covers the bottom row (below):
+                // a token under it gets no hit a click could find (final
+                // review M-4).
+                let prompt_row = self.body_search.prompt.is_some().then(|| area.bottom().saturating_sub(1));
                 for y in area.y..area.bottom() {
+                    if Some(y) == prompt_row {
+                        continue;
+                    }
                     let row = Rect::new(area.x, y, area.width, 1);
                     let text = crate::components::var_tokens::row_text(buf, row);
                     if !text.contains("{{") {

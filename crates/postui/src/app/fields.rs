@@ -231,10 +231,11 @@ impl App {
     /// The caret moved from `from` straight to `to` (spec §3.3's carry). The
     /// body still exists, so the engine leaves the real one (amendment C3):
     /// an unused autoindent goes from its text, and its history still fits
-    /// that text at the next visit. A source that is gone (a cell the key
-    /// committed) is left through the glue's ghost, its stale paint cleared
-    /// (plan M3a Deviation 4), as is a body whose text was replaced since
-    /// the engine last saw it, as `close_session` treats it.
+    /// that text at the next visit. Every other source is left through the
+    /// glue's ghost, its stale paint cleared (plan M3a Deviation 4): a
+    /// one-line source, whether gone (a cell the key committed) or not, and
+    /// a body whose text was replaced since the engine last saw it, as
+    /// `close_session` treats it.
     fn carry_session(&mut self, from: FieldId, to: FieldId) {
         if from == FieldId::Body {
             let (glue, mut body, to) = self.body_and(to);

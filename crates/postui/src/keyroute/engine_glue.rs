@@ -375,9 +375,12 @@ impl Glue {
     }
 
     /// The caret moved straight from the session's field to `to` in one
-    /// event (piece 3 §4.2 `carry`): the mode carries. The source is gone
-    /// (the key that moved the caret committed its cell), so it is left
+    /// event (piece 3 §4.2 `carry`): the mode carries. The source is left
     /// through a ghost of what the glue last saw (plan M3a Deviation 4).
+    /// The ghost serves a source that is gone (the key that moved the
+    /// caret committed its cell) and a one-line source, gone or not; the
+    /// body, while its text is the one the glue saw, is left in place
+    /// through [`Glue::carry_from`] (amendment C3).
     pub fn carry(&mut self, to: &mut FieldBuf<'_>) {
         let Some(seen) = self.seen.take() else {
             return self.enter(to, Start::Normal, OpenSeat::Keep);
