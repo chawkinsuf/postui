@@ -596,6 +596,30 @@ fn renaming_the_open_request_keeps_the_bodys_history() {
     assert_eq!(body(&app), BODY, "the engine's step, not the app's rename");
 }
 
+/// Amendment C2 (controller ruling 2): an undo of the rename re-keys the
+/// open request in place too, and the body's state follows it back.
+#[test]
+fn undoing_a_rename_keeps_the_bodys_history() {
+    let mut app = vim(Fixture::Body);
+    feed(&mut app, "x<Esc>jj");
+    assert_eq!(app.glue.session(), FieldSession::Live(FieldId::Body));
+    let from = app.editor.slug.clone().expect("the fixture's request is saved");
+    app.update(Action::RenameRequest { from: from.clone(), to: "renamed".into() });
+    feed(&mut app, "<Esc>");
+    assert_eq!(app.glue.session(), FieldSession::None, "the body closed: `u` is the app's");
+    feed(&mut app, "u");
+    assert_eq!(app.editor.slug.as_deref(), Some(from.as_str()), "the rename was undone in place");
+    app.focus = PaneId::Editor;
+    app.editor.active_tab = EditorTab::Body;
+    app.editor.sub_focus = SubFocus::Content;
+    draw(&mut app);
+    let steps = app.history.undo_len();
+    feed(&mut app, "u");
+    assert_eq!(app.glue.session(), FieldSession::Live(FieldId::Body));
+    assert_eq!(body(&app), BODY, "the engine's step from the earlier visit");
+    assert_eq!(app.history.undo_len(), steps, "not the app's step for the same edit");
+}
+
 /// Amendment C2: a scratch saved under a name keeps the body's state.
 #[test]
 fn saving_a_scratch_keeps_the_bodys_history() {

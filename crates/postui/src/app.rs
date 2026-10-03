@@ -4023,7 +4023,7 @@ impl App {
                         if self.editor.slug.as_deref() == Some(from.as_str()) {
                             self.editor.slug = Some(slug.clone());
                             // The body's engine state follows too (amendment C2).
-                            self.glue.follow_body(Some(&slug));
+                            self.glue.follow_body(Some(&from), Some(&slug));
                             // The rename wrote the new display name to
                             // disk; mirror it in both the live fields and
                             // the saved snapshot so a rename alone never
@@ -4141,10 +4141,11 @@ impl App {
                 }
                 self.commit_table_edit();
                 let req = self.editor.current_request();
+                let before = self.editor.slug.clone();
                 if self.create_or_save_as(&name, move |_| req.clone()) {
                     // The editor holds the same text under its new slug: the
                     // body's engine state follows it (amendment C2).
-                    self.glue.follow_body(self.editor.slug.as_deref());
+                    self.glue.follow_body(before.as_deref(), self.editor.slug.as_deref());
                 }
                 true
             }
@@ -4167,8 +4168,9 @@ impl App {
                 // The deferred step (quit, open another request, switch
                 // project) runs only when the save lands — a bad name or a
                 // write failure toasts and stays put, content intact.
+                let before = self.editor.slug.clone();
                 if self.create_or_save_as(&name, move |_| req.clone()) {
-                    self.glue.follow_body(self.editor.slug.as_deref());
+                    self.glue.follow_body(before.as_deref(), self.editor.slug.as_deref());
                     self.apply(*then);
                 }
                 true
@@ -6658,6 +6660,8 @@ impl App {
                             s.strip_prefix(&from_prefix).map(|rest| format!("{to}/{rest}"))
                         };
                         if let Some(new_slug) = self.editor.slug.as_deref().and_then(rekey) {
+                            // The body's engine state follows (amendment C2).
+                            self.glue.follow_body(self.editor.slug.as_deref(), Some(&new_slug));
                             self.editor.slug = Some(new_slug);
                             if let Some((slug, _)) = self.shadow.as_mut() {
                                 *slug = self.editor.slug.clone();

@@ -440,15 +440,16 @@ impl Glue {
         self.body_owner = Some(owner);
     }
 
-    /// The open request's slug changed in place (a rename, a scratch saved
-    /// under a name): the body's state follows it, its history and the
-    /// search highlight kept (amendment C2). A request switch still goes
-    /// through [`Glue::own_body`]. Only vim keeps the owner current (every
-    /// sync); in arrows it may name a request closed since, whose state
-    /// must not be adopted, so there the next vim sync decides.
-    pub fn follow_body(&mut self, slug: Option<&str>) {
-        if self.profile == Some(KeyProfile::Vim) {
-            self.body_owner = Some(slug.map(str::to_string));
+    /// The open request's slug changed in place from `from` to `to` (a
+    /// rename, a space rename, their undo or redo, a scratch saved under a
+    /// name): the body's state follows it, its history and the search
+    /// highlight kept (amendment C2). Only a state owned by `from` moves:
+    /// in arrows the owner may name a request closed since, whose state
+    /// must not be adopted. A request switch still goes through
+    /// [`Glue::own_body`].
+    pub fn follow_body(&mut self, from: Option<&str>, to: Option<&str>) {
+        if self.body_owner == Some(from.map(str::to_string)) {
+            self.body_owner = Some(to.map(str::to_string));
         }
     }
 
@@ -599,13 +600,15 @@ mod tests {
     #[test]
     fn the_body_state_follows_a_rename() {
         let mut g = Glue::default();
-        g.set_profile(KeyProfile::Vim);
         let mut body = EditorState::new(Lines::from("abc"));
         let mut visual: BodyVisual = None;
         g.own_body(Some("main/a"));
         g.enter(&mut FieldBuf::Body(&mut body, &mut visual), Start::Normal, OpenSeat::Keep);
         keys(&mut g, &mut FieldBuf::Body(&mut body, &mut visual), "x");
-        g.follow_body(Some("main/renamed"));
+        g.follow_body(Some("main/other"), Some("main/elsewhere"));
+        g.own_body(Some("main/a"));
+        assert!(g.can_undo(EngineKind::Body), "a rename of another request moves nothing");
+        g.follow_body(Some("main/a"), Some("main/renamed"));
         g.own_body(Some("main/renamed"));
         assert!(g.can_undo(EngineKind::Body), "the renamed request keeps it");
     }

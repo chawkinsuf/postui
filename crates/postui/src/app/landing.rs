@@ -186,6 +186,8 @@ impl App {
             });
             if let Some(new_slug) = moved_to {
                 self.editor.slug = Some(new_slug.clone());
+                // The body's engine state follows too (amendment C2).
+                self.glue.follow_body(Some(&open), Some(&new_slug));
                 // Assigned even when the file has no `name` (a legacy
                 // file): the name the op wrote must not outlive its undo,
                 // or a later save would write it back.
