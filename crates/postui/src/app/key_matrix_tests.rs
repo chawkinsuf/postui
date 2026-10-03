@@ -517,7 +517,20 @@ pub(super) struct Snapshot {
     cursor: Option<crate::components::sidebar::RowKey>,
     slug: Option<String>,
     request: String,
-    pub(super) field: crate::keyroute::FieldCaret,
+    field: crate::keyroute::FieldCaret,
+}
+
+impl Snapshot {
+    /// Every part but `field`. Whether a text field is open is not undo
+    /// state (user ruling 2026-10-03), so a test that starts from a
+    /// mid-session snapshot compares with this and checks `field` itself.
+    pub(super) fn same_but_field(&self, o: &Snapshot) -> bool {
+        self.files == o.files
+            && self.rows == o.rows
+            && self.cursor == o.cursor
+            && self.slug == o.slug
+            && self.request == o.request
+    }
 }
 
 pub(super) fn snapshot(app: &App) -> Snapshot {

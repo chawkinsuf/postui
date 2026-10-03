@@ -441,15 +441,14 @@ fn a_flush_mid_session_splits_it_into_two_exact_steps() {
     feed(&mut app, "<CR>Axy");
     app.flush_field_session();
     app.capture_undo();
-    // No undo reopens a field, so the reference is the flushed state with
-    // the caret closed, as the session's own close leaves it.
-    let mut flushed = snapshot(&app);
-    flushed.field = FieldCaret::None;
+    let flushed = snapshot(&app);
     feed(&mut app, "z<Esc><Esc>");
     assert_eq!(url(&app).0, "abcxyz");
     feed(&mut app, "u");
     let after = snapshot(&app);
-    assert!(after == flushed, "first undo:\n{}", snapshot_diff(&flushed, &after));
+    assert!(after.same_but_field(&flushed), "first undo:\n{}", snapshot_diff(&flushed, &after));
+    // App undo does not restore an open field or its mode (user ruling 2026-10-03).
+    assert_eq!(app.field_caret(), FieldCaret::None);
     feed(&mut app, "u");
     let after = snapshot(&app);
     assert!(after == start, "second undo:\n{}", snapshot_diff(&start, &after));
