@@ -354,21 +354,31 @@ impl TableEditorState {
     }
 
     /// Starts a brand-new row: the ghost row's key cell, exactly like
-    /// clicking it. Shared by the `a` key path.
+    /// clicking it. Shared by the `+ Add` click and `Action::TableAddRow`.
     pub fn begin_add(&mut self, map: &IndexMap<String, Entry>) {
         self.start_edit(map.len(), Col::Key, map);
     }
 
-    /// Deletes row `i` outright — no confirm gate (both the `d` key and
-    /// the `󰅖` click land here directly): the deletion is an ordinary
-    /// editor undo step.
+    /// Deletes row `i` outright — no confirm gate (the `d`/`dd` rows reach
+    /// it through `Action::DeleteTableRow`, and the `󰅖` click dispatches the
+    /// same action): the deletion is an ordinary editor undo step.
     pub fn delete_row(&mut self, map: &mut IndexMap<String, Entry>, i: usize) {
-        if i >= map.len() {
-            return;
+        self.delete_rows(map, i, 1);
+    }
+
+    /// Deletes up to `n` rows from `start` down as one change (piece 4
+    /// spec §5.3: a counted `dd`); a count past the end is clamped. The
+    /// cursor lands on the row that moved up into `start` (or the add row
+    /// when the run reached the end). Returns how many rows went.
+    pub fn delete_rows(&mut self, map: &mut IndexMap<String, Entry>, start: usize, n: usize) -> usize {
+        if start >= map.len() || n == 0 {
+            return 0;
         }
+        let end = start.saturating_add(n).min(map.len());
         self.editing = None;
-        map.shift_remove_index(i);
-        self.selected = Some(i.min(map.len()));
+        map.drain(start..end);
+        self.selected = Some(start.min(map.len()));
+        end - start
     }
 
     /// Whether the cursor sits on the ghost row — one past the data rows —
@@ -442,12 +452,6 @@ impl TableEditorState {
                     TableOutcome::not_consumed()
                 }
             }
-            // `a` is the keyboard shorthand for "start a new row": it opens
-            // the ghost row's key cell, exactly like clicking it.
-            KeyCode::Char('a') if ev.modifiers.is_empty() => {
-                self.begin_add(map);
-                TableOutcome::consumed()
-            }
             KeyCode::Enter => {
                 if self.selected.is_none() {
                     return TableOutcome::not_consumed();
@@ -492,7 +496,7 @@ impl TableEditorState {
                 self.selected = Some(self.selected.unwrap_or(0).saturating_sub(half));
                 TableOutcome::consumed()
             }
-            KeyCode::Char('d') | KeyCode::Delete if ev.modifiers.is_empty() => {
+            KeyCode::Delete if ev.modifiers.is_empty() => {
                 if self.ghost_selected(map) || self.selected.is_none_or(|s| s >= map.len()) {
                     return TableOutcome::not_consumed();
                 }
@@ -1113,6 +1117,24 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    /// Spec §5.3: a counted delete takes a run of rows as one change; a
+    /// count past the end is clamped; the cursor lands where the run was.
+    #[test]
+    fn delete_rows_clamps_a_count_past_the_end() {
+        let mut map: IndexMap<String, Entry> = IndexMap::new();
+        for k in ["a", "b", "c", "d"] {
+            map.insert(k.into(), Entry { value: "1".into(), enabled: true });
+        }
+        let mut t = TableEditorState { selected: Some(1), ..TableEditorState::default() };
+        assert_eq!(t.delete_rows(&mut map, 1, 2), 2);
+        assert_eq!(map.keys().map(String::as_str).collect::<Vec<_>>(), ["a", "d"]);
+        assert_eq!(t.selected, Some(1));
+        assert_eq!(t.delete_rows(&mut map, 1, 9), 1, "clamped");
+        assert_eq!(map.keys().map(String::as_str).collect::<Vec<_>>(), ["a"]);
+        assert_eq!(t.delete_rows(&mut map, 5, 1), 0, "past the end: nothing");
+        assert_eq!(t.delete_rows(&mut map, 0, 0), 0, "no count: nothing");
+    }
 
     fn key(c: KeyCode) -> KeyEvent {
         KeyEvent::new(c, KeyModifiers::NONE)
@@ -1767,7 +1789,6 @@ mod tests {
         let mut map = map_of(&[("a", "1")]);
         let mut t = TableEditorState::default();
         assert!(!t.handle_key(key(KeyCode::Char(' ')), &mut map).consumed);
-        assert!(!t.handle_key(key(KeyCode::Char('d')), &mut map).consumed);
 
         t.selected = Some(0);
         assert!(t.handle_key(key(KeyCode::Char(' ')), &mut map).consumed);
@@ -1786,7 +1807,7 @@ mod tests {
         };
         assert!(!t.handle_key(key(KeyCode::Char(' ')), &mut map).consumed);
         assert_eq!(
-            t.handle_key(key(KeyCode::Char('d')), &mut map)
+            t.handle_key(key(KeyCode::Delete), &mut map)
                 .request_delete,
             None
         );
@@ -2003,14 +2024,18 @@ mod tests {
         assert_eq!(map.len(), 1);
     }
 
+    /// Spec §4.5: `a` and `d` are the router's; Delete stays the table's.
     #[test]
-    fn a_opens_the_ghost_rows_key_cell() {
-        let mut map = map_of(&[("a", "1")]);
-        let mut t = TableEditorState::default();
-        assert!(t.handle_key(key(KeyCode::Char('a')), &mut map).consumed);
-        let edit = t.editing.as_ref().unwrap();
-        assert_eq!((edit.row, edit.col), (1, Col::Key));
-        assert_eq!(edit.input.text(), "");
+    fn the_table_has_no_verb_letters() {
+        let mut map = map_of(&[("k", "v")]);
+        let mut t = TableEditorState { selected: Some(0), ..TableEditorState::default() };
+        for c in ['a', 'd'] {
+            let out = t.handle_key(key(KeyCode::Char(c)), &mut map);
+            assert!(!out.consumed, "{c}");
+        }
+        assert!(t.editing.is_none(), "a did not open the add row");
+        let del = t.handle_key(key(KeyCode::Delete), &mut map);
+        assert_eq!(del.request_delete, Some(0), "Delete stays");
     }
 
     #[test]

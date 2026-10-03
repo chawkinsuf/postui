@@ -5,7 +5,7 @@
 //! pane's buttons right-aligned on it, then a detail block — the env
 //! file's path, or the space's requests by name.
 
-use crate::action::Action;
+use crate::action::{Action, Verb};
 use crate::components::manage::ManageTab;
 use crate::hit::{Hit, HitMap};
 use crate::keyroute::spell::{Key, Nav};
@@ -307,6 +307,21 @@ impl ManageList {
         }
     }
 
+    /// What a list verb means on the Environments or Spaces tab (piece 4
+    /// spec §5.4), on the list's selected item. The detail pane acts on
+    /// the same item.
+    pub fn verb_action(&self, tab: ManageTab, ctx: &Project, verb: Verb) -> Option<Action> {
+        let selected = self.selected(tab, ctx);
+        match verb {
+            Verb::Add => Some(Self::new_action(tab)),
+            Verb::Rename => Some(Self::rename_action(tab, selected?)),
+            Verb::Delete { .. } => Some(Self::delete_action(tab, selected?)),
+            Verb::Move if tab == ManageTab::Spaces => Some(Self::move_all_action(selected?)),
+            Verb::Tls if tab == ManageTab::Environments => Some(Self::cycle_tls_action(ctx, selected?)),
+            _ => None,
+        }
+    }
+
     /// The right-click menu for row `i` of `tab`'s list — the same
     /// actions the detail pane's buttons and footer keys offer, plus
     /// Move up/down, so a row can be worked on where it sits, like a
@@ -591,15 +606,7 @@ impl ManageList {
                 self.step(-self.page(), len);
                 None
             }
-            KeyCode::Char('n') => Some(Self::new_action(tab)),
-            KeyCode::Char('r') => Some(Self::rename_action(tab, self.selected(tab, ctx)?)),
-            KeyCode::Char('m') if tab == ManageTab::Spaces => {
-                Some(Self::move_all_action(self.selected(tab, ctx)?))
-            }
-            KeyCode::Char('t') if tab == ManageTab::Environments => {
-                Some(Self::cycle_tls_action(ctx, self.selected(tab, ctx)?))
-            }
-            KeyCode::Char('d') | KeyCode::Delete if ev.modifiers.is_empty() => {
+            KeyCode::Delete if ev.modifiers.is_empty() => {
                 Some(Self::delete_action(tab, self.selected(tab, ctx)?))
             }
             // `u` / `:` (undo, palette) are deliberately not named: an
@@ -646,15 +653,21 @@ impl ManageList {
             chips.push((Key::Named("esc"), "back", None));
             return chips;
         }
+        // Each chip spells its verb's row and carries what the verb
+        // resolves to here, so the key and the chip are one (plan M2
+        // Deviation 3).
+        let chip = |verb: Verb, label: &'static str| {
+            (Key::Of(Action::OnSelection(verb)), label, self.verb_action(tab, ctx, verb))
+        };
         let mut chips = vec![
-            (Key::Verb("n"), "new", Some(Self::new_action(tab))),
-            (Key::Verb("r"), "rename", selected.map(|n| Self::rename_action(tab, n))),
-            (Key::Verb("d"), "delete", selected.map(|n| Self::delete_action(tab, n))),
+            chip(Verb::Add, "new"),
+            chip(Verb::Rename, "rename"),
+            chip(Verb::Delete { count: 1 }, "delete"),
         ];
         if tab == ManageTab::Spaces {
-            chips.push((Key::Verb("m"), "move all", selected.map(Self::move_all_action)));
+            chips.push(chip(Verb::Move, "move all"));
         } else {
-            chips.push((Key::Verb("t"), "tls", selected.map(|n| Self::cycle_tls_action(ctx, n))));
+            chips.push(chip(Verb::Tls, "tls"));
         }
         // Both lists reorder with the same keys.
         chips.push((Key::Named("alt+↑↓"), "reorder", None));
@@ -1318,17 +1331,37 @@ mod tests {
         );
     }
 
-    /// The command letters and the reorder chord keep working from the
-    /// pane: the aim is about *which* control Enter fires, not a mode.
+    /// Spec §4.5: the list's verbs are the router's; Delete stays.
     #[test]
-    fn command_letters_and_reorder_still_work_from_the_detail_pane() {
+    fn the_manage_list_has_no_verb_letters() {
+        let (ctx, _dir) = ctx();
+        for tab in [ManageTab::Environments, ManageTab::Spaces] {
+            let mut l = ManageList::default();
+            draw_at(&mut l, tab, &ctx, 100);
+            for c in ['n', 'a', 'r', 'd', 'm', 't'] {
+                assert_eq!(l.handle_key(key(KeyCode::Char(c)), tab, &ctx), None, "{c} on {tab:?}");
+            }
+        }
+        let mut l = ManageList::default();
+        draw_at(&mut l, ManageTab::Environments, &ctx, 100);
+        assert!(matches!(
+            l.handle_key(key(KeyCode::Delete), ManageTab::Environments, &ctx),
+            Some(Action::DeleteEnv(_))
+        ));
+    }
+
+    /// The reorder chord keeps working from the pane, and the router's
+    /// rename verb resolves through `verb_action`: the aim is about
+    /// *which* control Enter fires, not a mode.
+    #[test]
+    fn verb_rename_and_reorder_still_work_from_the_detail_pane() {
         let (ctx, _dir) = ctx();
         let mut l = ManageList::default();
         draw_at(&mut l, ManageTab::Spaces, &ctx, 100);
         l.cursor = 1;
         l.handle_key(key(KeyCode::Right), ManageTab::Spaces, &ctx);
         assert_eq!(
-            l.handle_key(key(KeyCode::Char('r')), ManageTab::Spaces, &ctx),
+            l.verb_action(ManageTab::Spaces, &ctx, Verb::Rename),
             Some(Action::PromptRenameSpace("auth".into()))
         );
         assert_eq!(

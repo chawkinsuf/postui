@@ -6884,7 +6884,7 @@ fn dirty_dot_renders_in_sidebar() {
 fn new_request_prompt_flow_creates_file_and_opens_it() {
     let mut app = App::new_for_test();
     app.focus = PaneId::Sidebar;
-    app.handle_key(plain('n'));
+    app.handle_key(plain('a'));
     assert!(matches!(
         app.modals.top(),
         Some(Modal::Prompt {
@@ -8365,7 +8365,8 @@ fn manage_environments_pane_has_a_tls_control_that_writes_the_force() {
     );
     // Advertised in the footer.
     assert!(
-        crate::keyroute::spell::spelled(
+        crate::keyroute::spell::spelled_on(
+            crate::keyroute::Surface::ManageList(ManageTab::Environments),
             app.manage
                 .list
                 .footer_chips(ManageTab::Environments, app.proj())
@@ -11228,6 +11229,7 @@ fn a_copied_option_pastes_the_whole_row_into_another_environment() {
     app.update(Action::VarStruct(VarStructOp::PasteOption {
         env: "dev".into(),
         selector: "creds".into(),
+        count: 1,
     }));
 
     assert!(
@@ -11251,6 +11253,7 @@ fn pasting_back_into_the_environment_a_row_came_from_duplicates_it() {
     app.update(Action::VarStruct(VarStructOp::PasteOption {
         env: "qa".into(),
         selector: "creds".into(),
+        count: 1,
     }));
 
     let options =
@@ -11261,6 +11264,31 @@ fn pasting_back_into_the_environment_a_row_came_from_duplicates_it() {
     assert_eq!(options["alice"].values["user_id"], "1");
 }
 
+/// `3p` on the grid: three rows, each under the next free name, as one
+/// undo step (vim's `3p` is one change).
+#[test]
+fn a_counted_paste_lands_every_row_as_one_undo_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = creds_app(dir.path());
+    app.update(Action::CopyOption { row: 0 });
+    let before = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    app.update(Action::VarStruct(VarStructOp::PasteOption {
+        env: "qa".into(),
+        selector: "creds".into(),
+        count: 3,
+    }));
+    let options =
+        postui_core::varmodel::options_of(app.proj().variables(), app.proj().env_data(), "creds")
+            .cloned()
+            .unwrap_or_default();
+    for name in ["alice copy", "alice copy-2", "alice copy-3"] {
+        assert!(options.contains_key(name), "{name}: {:?}", options.keys().collect::<Vec<_>>());
+    }
+    app.update(Action::Undo);
+    let after = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert_eq!(after, before, "one undo takes all three back");
+}
+
 #[test]
 fn pasting_with_nothing_copied_says_so_and_writes_nothing() {
     let dir = tempfile::tempdir().unwrap();
@@ -11269,6 +11297,7 @@ fn pasting_with_nothing_copied_says_so_and_writes_nothing() {
     app.update(Action::VarStruct(VarStructOp::PasteOption {
         env: "qa".into(),
         selector: "creds".into(),
+        count: 1,
     }));
 
     assert!(
@@ -11294,6 +11323,7 @@ fn a_copied_row_does_not_paste_into_a_different_selector() {
     app.update(Action::VarStruct(VarStructOp::PasteOption {
         env: "qa".into(),
         selector: "other".into(),
+        count: 1,
     }));
 
     assert!(
@@ -11391,6 +11421,7 @@ fn shared_selector_paste_lands_in_variables_toml() {
     app.update(Action::VarStruct(VarStructOp::PasteOption {
         env: "qa".into(),
         selector: "locale".into(),
+        count: 1,
     }));
 
     assert_eq!(
@@ -12512,7 +12543,7 @@ fn toggle_secret_is_refused_for_a_group() {
 // -- every structural op is reachable both by key and by a painted chip --
 
 #[test]
-fn keyboard_n_and_a_open_the_new_var_and_new_group_prompts() {
+fn keyboard_a_and_shift_a_open_the_new_var_and_new_group_prompts() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -12520,7 +12551,8 @@ fn keyboard_n_and_a_open_the_new_var_and_new_group_prompts() {
     app.handle_key(alt('r'));
     rendered_text(&mut app);
 
-    app.handle_key(plain('n'));
+    // Plan M2: the shared letters. `a` adds a variable, `A` the other kind.
+    app.handle_key(plain('a'));
     assert!(matches!(
         app.modals.top(),
         Some(Modal::Prompt {
@@ -12534,7 +12566,7 @@ fn keyboard_n_and_a_open_the_new_var_and_new_group_prompts() {
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
-    app.handle_key(plain('a'));
+    app.handle_key(KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT));
     assert!(matches!(
         app.modals.top(),
         Some(Modal::Prompt {
@@ -16133,10 +16165,11 @@ fn the_promote_button_promotes_the_requests_override_up_into_the_project() {
     assert!(!app.editor.variables.contains_key("base_url"));
 }
 
-/// Keyboard parity: `e`/`F2` rename and `s` secret-toggle still work while
-/// the variable form is on screen (unchanged from before this task).
+/// Keyboard parity: `r`/`F2` rename and `s` secret-toggle still work while
+/// the variable form is on screen (the letters now reach them through the
+/// router's rows).
 #[test]
-fn keyboard_e_and_s_still_work_with_the_form_on_screen() {
+fn keyboard_r_and_s_still_work_with_the_form_on_screen() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -16145,7 +16178,7 @@ fn keyboard_e_and_s_still_work_with_the_form_on_screen() {
         r == &crate::components::varmanager::VmRow::Var("base_url".into())
     });
 
-    app.handle_key(plain('e'));
+    app.handle_key(plain('r'));
     assert!(matches!(
         app.modals.top(),
         Some(Modal::Prompt {
@@ -16767,7 +16800,10 @@ fn vm_footer_advertises_the_option_verbs_while_the_grid_has_focus() {
         selector: "user".into(),
         name: "alice".into(),
     };
-    let chips = crate::keyroute::spell::spelled(app.varmanager.footer_chips(app.proj(), None));
+    let chips = crate::keyroute::spell::spelled_on(
+        crate::keyroute::Surface::VarGrid,
+        app.varmanager.footer_chips(app.proj(), None),
+    );
     assert!(
         chips
             .iter()
@@ -16850,7 +16886,13 @@ fn form_focus_advertises_and_handles_the_field_verbs() {
     let secret = Action::ToggleSecretVar {
         name: "base_url".into(),
     };
-    let chips = crate::keyroute::spell::spelled(app.varmanager.footer_chips(app.proj(), None));
+    let form_chips = |app: &App, open: Option<&postui_core::model::HttpRequest>| {
+        crate::keyroute::spell::spelled_on(
+            crate::keyroute::Surface::VarForm,
+            app.varmanager.footer_chips(app.proj(), open),
+        )
+    };
+    let chips = form_chips(&app, None);
     assert!(
         chips
             .iter()
@@ -16876,7 +16918,7 @@ fn form_focus_advertises_and_handles_the_field_verbs() {
         crate::components::varmanager::FormStop::Field(crate::components::varmanager::VmField::EnvValue),
         "three downs land on the env-value field"
     );
-    let chips = crate::keyroute::spell::spelled(app.varmanager.footer_chips(app.proj(), None));
+    let chips = form_chips(&app, None);
     assert!(
         chips
             .iter()
@@ -16886,7 +16928,7 @@ fn form_focus_advertises_and_handles_the_field_verbs() {
     app.handle_key(plain('x'));
     let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     assert!(!on_disk.contains("base_url"), "{on_disk}");
-    let chips = crate::keyroute::spell::spelled(app.varmanager.footer_chips(app.proj(), None));
+    let chips = form_chips(&app, None);
     assert!(
         !chips.iter().any(|(_, l, _)| *l == "clear env value"),
         "nothing stored, nothing to clear: {chips:?}"
@@ -16898,8 +16940,7 @@ fn form_focus_advertises_and_handles_the_field_verbs() {
         name: "base_url".into(),
     };
     let open_request = app.editor.current_request();
-    let chips =
-        crate::keyroute::spell::spelled(app.varmanager.footer_chips(app.proj(), Some(&open_request)));
+    let chips = form_chips(&app, Some(&open_request));
     assert!(
         chips
             .iter()
@@ -16934,14 +16975,22 @@ fn form_focus_r_toggles_reveal_on_a_secret_variable() {
     });
     app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
 
-    let chips = crate::keyroute::spell::spelled(app.varmanager.footer_chips(app.proj(), None));
+    let form_chips = |app: &App| {
+        crate::keyroute::spell::spelled_on(
+            crate::keyroute::Surface::VarForm,
+            app.varmanager.footer_chips(app.proj(), None),
+        )
+    };
+    let chips = form_chips(&app);
     assert!(
-        chips.iter().any(|(k, l, _)| *k == "r" && *l == "reveal"),
+        chips
+            .iter()
+            .any(|(k, l, a)| *k == "r" && *l == "reveal" && *a == Some(Action::ToggleVarReveal)),
         "{chips:?}"
     );
     app.handle_key(plain('r'));
     assert!(app.varmanager.form.revealed, "r reveals the secret");
-    let chips = crate::keyroute::spell::spelled(app.varmanager.footer_chips(app.proj(), None));
+    let chips = form_chips(&app);
     assert!(
         chips.iter().any(|(k, l, _)| *k == "r" && *l == "hide"),
         "{chips:?}"
@@ -16964,7 +17013,10 @@ fn vm_footer_advertises_edit_fields_on_a_selector() {
     let edit_fields = Action::PromptGroupFields {
         selector: "user".into(),
     };
-    let chips = crate::keyroute::spell::spelled(app.varmanager.footer_chips(app.proj(), None));
+    let chips = crate::keyroute::spell::spelled_on(
+        crate::keyroute::Surface::VarList,
+        app.varmanager.footer_chips(app.proj(), None),
+    );
     assert!(
         chips
             .iter()
@@ -16976,7 +17028,10 @@ fn vm_footer_advertises_edit_fields_on_a_selector() {
     goto_row(&mut app, |r| {
         r == &crate::components::varmanager::VmRow::Var("base_url".into())
     });
-    let chips = crate::keyroute::spell::spelled(app.varmanager.footer_chips(app.proj(), None));
+    let chips = crate::keyroute::spell::spelled_on(
+        crate::keyroute::Surface::VarList,
+        app.varmanager.footer_chips(app.proj(), None),
+    );
     assert!(
         !chips.iter().any(|(_, l, _)| *l == "edit fields"),
         "{chips:?}"
@@ -16984,10 +17039,13 @@ fn vm_footer_advertises_edit_fields_on_a_selector() {
 }
 
 /// User finding: with a variable's form open but the left cursor on a
-/// section header, the rename/delete chips rendered as plain hints. They
-/// fall back to the open detail's name so they stay clickable.
+/// section header, the rename/delete chips rendered as plain hints. A
+/// verb acts only on the row under the cursor (vim's operator rule, plan
+/// M2 Deviation 7 reverted), so a header has no rename or delete target:
+/// those chips are dropped rather than painted dead, and the two `new`
+/// chips stay.
 #[test]
-fn vm_footer_rename_delete_act_on_the_open_form_from_a_header_row() {
+fn vm_footer_drops_rename_delete_on_a_header_row() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -16996,23 +17054,13 @@ fn vm_footer_rename_delete_act_on_the_open_form_from_a_header_row() {
         r == &crate::components::varmanager::VmRow::Var("base_url".into())
     });
     app.varmanager.left_cursor = 0; // the "VARIABLES" section header
-    let chips = crate::keyroute::spell::spelled(app.varmanager.footer_chips(app.proj(), None));
-    assert!(
-        chips.iter().any(|(k, _, a)| *k == "e"
-            && *a
-                == Some(Action::PromptRenameVar {
-                    from: "base_url".into()
-                })),
-        "{chips:?}"
+    let chips = crate::keyroute::spell::spelled_on(
+        crate::keyroute::Surface::VarList,
+        app.varmanager.footer_chips(app.proj(), None),
     );
-    assert!(
-        chips.iter().any(|(k, _, a)| *k == "d"
-            && *a
-                == Some(Action::DeleteVar {
-                    name: "base_url".into()
-                })),
-        "{chips:?}"
-    );
+    let labels: Vec<&str> = chips.iter().map(|(_, l, _)| *l).collect();
+    assert_eq!(labels, ["new variable", "new selector"], "{chips:?}");
+    assert!(chips.iter().all(|(_, _, a)| a.is_some()), "no dead chip: {chips:?}");
 }
 
 /// User finding: chips with no target rendered as dead, unclickable text.
@@ -17027,22 +17075,23 @@ fn vm_footer_drops_chips_with_no_target() {
 
     // Fresh open: nothing selected, no detail — no rename/delete chips.
     app.update(Action::OpenManage { tab: None });
-    use crate::keyroute::spell::spelled;
-    let keys: Vec<String> = spelled(app.varmanager.footer_chips(app.proj(), None))
+    use crate::keyroute::Surface;
+    use crate::keyroute::spell::spelled_on;
+    let keys: Vec<String> = spelled_on(Surface::VarList, app.varmanager.footer_chips(app.proj(), None))
         .into_iter()
         .map(|(k, _, _)| k)
         .collect();
-    assert_eq!(keys, vec!["n", "a"]);
+    assert_eq!(keys, vec!["a", "A"]);
 
     // Grid focus with the cursor on the ghost row: only "new option".
     goto_group(&mut app, "user");
     app.varmanager.focus = VmFocus::Grid;
     app.varmanager.grid.cursor = (2, 0); // alice, bob, then the ghost
-    let keys: Vec<String> = spelled(app.varmanager.footer_chips(app.proj(), None))
+    let keys: Vec<String> = spelled_on(Surface::VarGrid, app.varmanager.footer_chips(app.proj(), None))
         .into_iter()
         .map(|(k, _, _)| k)
         .collect();
-    assert_eq!(keys, vec!["o"]);
+    assert_eq!(keys, vec!["a"]);
 }
 
 /// The option-row "rename" is the inline name-cell edit — the `e` key and
@@ -20889,6 +20938,17 @@ mod undo_tests {
         assert!(!app.op_in_flight);
     }
 
+    /// The arm itself clears the flag on its no-project exit, as its
+    /// siblings do, rather than leaning on `dispatch`'s safety net: a
+    /// nested `apply` (a put's own) runs before that net does.
+    #[test]
+    fn a_duplicate_with_no_project_leaves_no_op_in_flight() {
+        let (mut app, _dir) = spaced_app();
+        app.project = None;
+        app.apply(Action::ForceDuplicateRequest { slug: "main/alpha".into(), anchor: None, above: false, count: 1 });
+        assert!(!app.op_in_flight);
+    }
+
     /// Task 13, spec §6.5's last bullet, ruling C12: walks every row of
     /// §4.5 in turn on one fixture and asserts G5 — the sidebar cursor is
     /// never `None` while a row exists — after each. The step names name
@@ -21079,6 +21139,324 @@ mod undo_tests {
         check(&app, "rename env");
         app.update(Action::Undo);
         check(&app, "undo rename env");
+    }
+
+    fn main_order(app: &App) -> Vec<String> {
+        postui_core::order::space_order(app.proj().meta(), "main").to_vec()
+    }
+
+    /// The `main` space's request files, sorted.
+    fn request_files(dir: &std::path::Path) -> Vec<String> {
+        let mut files: Vec<String> = std::fs::read_dir(dir.join("requests/main"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        files.sort();
+        files
+    }
+
+    /// Spec §5.1: a yank alone is invisible: no file, no undo step, no toast.
+    #[test]
+    fn a_yank_alone_changes_nothing() {
+        let (mut app, dir) = spaced_app();
+        let files = request_files(dir.path());
+        let (undo, redo) = (app.history.undo_len(), app.history.redo_len());
+        // `spaced_app` opens with the "no environments" toast already up.
+        let toasts = app.toasts.messages().len();
+        app.update(Action::YankRequest("main/alpha".into()));
+        assert_eq!(app.yank, crate::yank::Register::Request("main/alpha".into()));
+        assert_eq!(app.toasts.messages().len(), toasts, "a yank toasts nothing");
+        assert_eq!(request_files(dir.path()), files);
+        assert_eq!(
+            (app.history.undo_len(), app.history.redo_len()),
+            (undo, redo),
+            "a yank records no undo step"
+        );
+    }
+
+    /// `p`: the copy lands under the anchor and opens; one undo takes the
+    /// file and its order slot back.
+    #[test]
+    fn a_put_duplicates_the_yanked_request_below_the_anchor() {
+        let (mut app, dir) = spaced_app();
+        app.update(Action::YankRequest("main/alpha".into()));
+        app.update(Action::PutRequest { anchor: Some("main/beta".into()), above: false, count: 1 });
+        assert_eq!(main_order(&app), ["alpha", "beta", "alpha-copy"]);
+        assert_eq!(app.editor.slug.as_deref(), Some("main/alpha-copy"));
+        app.update(Action::Undo);
+        assert!(!postui_core::fixtures::request_exists(dir.path(), "main/alpha-copy"));
+        assert!(main_order(&app).is_empty(), "the seeded order goes with it");
+    }
+
+    /// `P`: the copy takes the anchor's slot.
+    #[test]
+    fn a_put_above_takes_the_anchors_slot() {
+        let (mut app, _dir) = spaced_app();
+        app.update(Action::YankRequest("main/alpha".into()));
+        app.update(Action::PutRequest { anchor: Some("main/beta".into()), above: true, count: 1 });
+        assert_eq!(main_order(&app), ["alpha", "alpha-copy", "beta"]);
+    }
+
+    /// `yyP` / `yyp` on the yanked row itself (anchor == source) is still a
+    /// put: it seeds the order and the copy lands above / below.
+    #[test]
+    fn a_put_on_the_yanked_row_itself_lands_above_or_below_it() {
+        for (above, want) in [(true, ["alpha-copy", "alpha", "beta"]), (false, ["alpha", "alpha-copy", "beta"])] {
+            let (mut app, _dir) = spaced_app();
+            assert!(main_order(&app).is_empty());
+            app.update(Action::YankRequest("main/alpha".into()));
+            app.update(Action::PutRequest { anchor: Some("main/alpha".into()), above, count: 1 });
+            assert_eq!(main_order(&app), want, "above = {above}");
+        }
+    }
+
+    /// Spec §5.2 (user ruling): a folder row with no direct request has
+    /// nothing to put beside. It says so, writes nothing, keeps the register.
+    #[test]
+    fn a_put_on_a_folder_with_no_direct_request_refuses() {
+        let (mut app, dir) = spaced_app();
+        app.update(Action::YankRequest("main/alpha".into()));
+        app.sidebar.rows = vec![Row::Folder {
+            path: "main/empty".into(),
+            name: "empty".into(),
+            depth: 0,
+            expanded: true,
+        }];
+        app.sidebar.selected = Some(0);
+        let files = request_files(dir.path());
+        app.update(Action::PutRequest { anchor: app.sidebar.put_anchor(false), above: false, count: 1 });
+        assert!(
+            app.toasts.messages().contains(&"No request in this folder to put beside"),
+            "{:?}",
+            app.toasts.messages()
+        );
+        assert!(app.last_action_failed);
+        assert_eq!(request_files(dir.path()), files);
+        assert_eq!(app.yank, crate::yank::Register::Request("main/alpha".into()));
+    }
+
+    /// Dev 16a: a collapsed folder's requests are hidden, not absent, so the
+    /// toast says to open it; the other text stays for a folder that really
+    /// has none. Nothing is written and the register is kept.
+    #[test]
+    fn a_put_on_a_collapsed_folder_says_to_open_it() {
+        let (mut app, dir) = spaced_app();
+        app.update(Action::YankRequest("main/alpha".into()));
+        app.sidebar.rows = vec![Row::Folder {
+            path: "main/api".into(),
+            name: "api".into(),
+            depth: 0,
+            expanded: false,
+        }];
+        app.sidebar.selected = Some(0);
+        let files = request_files(dir.path());
+        app.update(Action::PutRequest { anchor: app.sidebar.put_anchor(false), above: false, count: 1 });
+        assert!(
+            app.toasts.messages().contains(&"Open the folder to put into it"),
+            "{:?}",
+            app.toasts.messages()
+        );
+        assert!(!app.toasts.messages().contains(&"No request in this folder to put beside"));
+        assert!(app.last_action_failed);
+        assert_eq!(request_files(dir.path()), files);
+        assert_eq!(app.yank, crate::yank::Register::Request("main/alpha".into()));
+    }
+
+    /// Review Focus 4: the copy opens, so unsaved edits are gated first.
+    #[test]
+    fn a_put_over_unsaved_edits_asks_first() {
+        let (mut app, dir) = spaced_app();
+        app.update(Action::ForceOpenRequest("main/alpha".into()));
+        sidebar_on(&mut app, "main/alpha");
+        type_z_into_the_url(&mut app);
+        app.update(Action::YankRequest("main/beta".into()));
+        app.update(Action::PutRequest { anchor: Some("main/alpha".into()), above: false, count: 1 });
+        assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })), "the gate comes first");
+        assert!(!postui_core::fixtures::request_exists(dir.path(), "main/beta-copy"));
+    }
+
+    /// Vim's `3p` is one command: over unsaved edits it asks once, then
+    /// makes all three copies, opens the first, and one undo takes all
+    /// three back.
+    #[test]
+    fn a_counted_put_over_unsaved_edits_asks_once_and_makes_every_copy() {
+        let (mut app, dir) = spaced_app();
+        app.use_profile(crate::config::KeyProfile::Vim);
+        app.update(Action::ForceOpenRequest("main/alpha".into()));
+        type_z_into_the_url(&mut app);
+        app.update(Action::YankRequest("main/beta".into()));
+        sidebar_on(&mut app, "main/alpha");
+        app.handle_key(plain('3'));
+        app.handle_key(plain('p'));
+        assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })), "the gate comes first");
+        app.handle_key(plain('d')); // Discard changes
+        let copies = ["main/beta-copy", "main/beta-copy-2", "main/beta-copy-3"];
+        for c in copies {
+            assert!(postui_core::fixtures::request_exists(dir.path(), c), "{c}");
+        }
+        assert_eq!(main_order(&app), ["alpha", "beta-copy", "beta-copy-2", "beta-copy-3", "beta"]);
+        assert_eq!(app.editor.slug.as_deref(), Some("main/beta-copy"), "the first copy opens");
+        app.update(Action::Undo);
+        for c in copies {
+            assert!(!postui_core::fixtures::request_exists(dir.path(), c), "{c}");
+        }
+    }
+
+    /// `3p` on a table: three rows under the cursor in one editor change,
+    /// the cursor on the first, as vim leaves it.
+    #[test]
+    fn a_counted_table_put_lands_every_row_as_one_step() {
+        let mut app = App::new_for_test();
+        app.update(Action::CreateRequest("rows".into()));
+        for k in ["a", "b"] {
+            app.editor
+                .headers
+                .insert(k.into(), postui_core::model::Entry { value: "1".into(), enabled: true });
+        }
+        app.editor.active_tab = EditorTab::Headers;
+        app.capture_undo();
+        app.update(Action::YankTableRow(0));
+        app.update(Action::PutTableRow { at: 1, count: 3 });
+        app.capture_undo();
+        assert_eq!(
+            app.editor.headers.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["a", "a-copy", "a-copy-2", "a-copy-3", "b"]
+        );
+        assert_eq!(app.editor.table.selected, Some(1));
+        app.update(Action::Undo);
+        assert_eq!(app.editor.headers.keys().map(String::as_str).collect::<Vec<_>>(), ["a", "b"]);
+    }
+
+    /// Review Focus 3: a put off the yank's space is refused, and the
+    /// register is kept so cycling back and putting again works.
+    #[test]
+    fn a_put_in_another_space_refuses_and_keeps_the_register() {
+        let (mut app, dir) = spaced_app();
+        app.update(Action::YankRequest("main/alpha".into()));
+        app.update(Action::SwitchSpace("auth".into()));
+        app.update(Action::PutRequest { anchor: Some("auth/login".into()), above: false, count: 1 });
+        assert!(
+            app.toasts.messages().iter().any(|m| m.contains("was yanked from another space")),
+            "{:?}",
+            app.toasts.messages()
+        );
+        assert!(!postui_core::fixtures::request_exists(dir.path(), "main/alpha-copy"));
+        assert_eq!(app.yank, crate::yank::Register::Request("main/alpha".into()));
+    }
+
+    /// Review Focus 3: a source deleted between the yank and the put
+    /// fails loudly and drops the stale register.
+    #[test]
+    fn a_put_of_a_deleted_request_says_so_and_drops_the_register() {
+        let (mut app, _dir) = spaced_app();
+        app.update(Action::YankRequest("main/alpha".into()));
+        app.update(Action::DeleteRequest("main/alpha".into()));
+        app.update(Action::PutRequest { anchor: Some("main/beta".into()), above: false, count: 1 });
+        assert!(
+            app.toasts.messages().iter().any(|m| m.starts_with("could not duplicate main/alpha")),
+            "{:?}",
+            app.toasts.messages()
+        );
+        assert_eq!(app.yank, crate::yank::Register::Empty);
+    }
+
+    /// A put that fails for any other reason (here, a space directory it
+    /// can't write into) leaves the source in place, so the register is
+    /// kept for a put once the cause is fixed.
+    #[test]
+    fn a_put_that_fails_on_disk_keeps_the_register() {
+        use std::os::unix::fs::PermissionsExt;
+        let (mut app, dir) = spaced_app();
+        app.update(Action::YankRequest("main/alpha".into()));
+        let space = dir.path().join("requests/main");
+        std::fs::set_permissions(&space, std::fs::Permissions::from_mode(0o555)).unwrap();
+        app.update(Action::PutRequest { anchor: Some("main/beta".into()), above: false, count: 1 });
+        std::fs::set_permissions(&space, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(
+            app.toasts.messages().iter().any(|m| m.starts_with("could not duplicate main/alpha")),
+            "{:?}",
+            app.toasts.messages()
+        );
+        assert_eq!(app.yank, crate::yank::Register::Request("main/alpha".into()));
+    }
+
+    /// An empty register is vim's own no-op; a table row on the sidebar
+    /// says why nothing happened.
+    #[test]
+    fn a_put_with_an_empty_or_wrong_register_writes_nothing() {
+        let (mut app, dir) = spaced_app();
+        let files = request_files(dir.path());
+        // `spaced_app` opens with the "no environments" toast already up.
+        let toasts = app.toasts.messages().len();
+        app.update(Action::PutRequest { anchor: None, above: false, count: 1 });
+        assert_eq!(app.toasts.messages().len(), toasts, "an empty register says nothing");
+        app.yank = crate::yank::Register::Row {
+            tab: EditorTab::Headers,
+            key: "X".into(),
+            entry: postui_core::model::Entry { value: "1".into(), enabled: true },
+        };
+        app.update(Action::PutRequest { anchor: None, above: false, count: 1 });
+        assert!(app.toasts.messages().iter().any(|m| m.contains("holds a table row")));
+        assert_eq!(request_files(dir.path()), files);
+    }
+
+    /// Spec §5.3: a table row yanked and put below lands as `<key>-copy`,
+    /// one editor undo step; a row from another tab is refused.
+    #[test]
+    fn a_table_row_yanks_and_puts_on_its_own_tab_only() {
+        let mut app = App::new_for_test();
+        app.update(Action::CreateRequest("rows".into()));
+        for k in ["a", "b"] {
+            app.editor
+                .headers
+                .insert(k.into(), postui_core::model::Entry { value: "1".into(), enabled: true });
+        }
+        app.editor.active_tab = EditorTab::Headers;
+        app.capture_undo();
+        app.update(Action::YankTableRow(0));
+        app.update(Action::PutTableRow { at: 1, count: 1 });
+        app.capture_undo();
+        assert_eq!(app.editor.headers.keys().map(String::as_str).collect::<Vec<_>>(), ["a", "a-copy", "b"]);
+        assert_eq!(app.editor.table.selected, Some(1));
+        app.update(Action::Undo);
+        assert_eq!(app.editor.headers.keys().map(String::as_str).collect::<Vec<_>>(), ["a", "b"]);
+        app.editor.active_tab = EditorTab::Params;
+        app.update(Action::PutTableRow { at: 0, count: 1 });
+        assert!(app.editor.params.is_empty());
+        assert!(app.toasts.messages().iter().any(|m| m.contains("was yanked from another tab")));
+    }
+
+    /// Vim's `p` puts exactly what was yanked: a row lands under its own key
+    /// when the table has no row by it (another request's table, or this
+    /// one after the row went), and steps aside to `-copy` only on a clash.
+    #[test]
+    fn a_table_row_put_keeps_its_key_when_the_table_has_none() {
+        let mut app = App::new_for_test();
+        app.update(Action::CreateRequest("rows".into()));
+        app.editor
+            .headers
+            .insert("Authorization".into(), postui_core::model::Entry { value: "t".into(), enabled: true });
+        app.editor.active_tab = EditorTab::Headers;
+        app.update(Action::YankTableRow(0));
+        app.editor.headers.clear();
+        app.update(Action::PutTableRow { at: 0, count: 1 });
+        assert_eq!(app.editor.headers.keys().map(String::as_str).collect::<Vec<_>>(), ["Authorization"]);
+        app.update(Action::PutTableRow { at: 1, count: 1 });
+        assert_eq!(
+            app.editor.headers.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["Authorization", "Authorization-copy"]
+        );
+    }
+
+    /// Spec §5.2: the register names a request in the project being left.
+    #[test]
+    fn a_project_switch_drops_the_register() {
+        let (mut app, _dir) = spaced_app();
+        app.update(Action::YankRequest("main/alpha".into()));
+        let other = tempfile::tempdir().unwrap();
+        postui_core::fixtures::ensure_project(other.path()).unwrap();
+        app.update(Action::ForceSwitchProject(other.path().to_path_buf()));
+        assert_eq!(app.yank, crate::yank::Register::Empty);
     }
 }
 
@@ -29261,6 +29639,35 @@ fn a_keys_toml_letter_on_a_manage_screen_needs_the_whitelist() {
     assert!(matches!(app.modals.top(), Some(Modal::Palette(_))), "a whitelisted action fires");
 }
 
+/// Plan M2 Deviation 18 (amendment A5-1): in arrows a `keys.toml` letter
+/// beats the list verbs' rows; with no override the row runs.
+#[test]
+fn an_arrows_keys_toml_letter_beats_a_verb_row_and_a_default_binding_does_not() {
+    use crate::config::KeyProfile;
+    let (mut app, _dir) = sidebar_test_app_three_flat_rows();
+    app.use_profile(KeyProfile::Arrows);
+    render_once(&mut app);
+    app.focus = PaneId::Sidebar;
+    app.sidebar.selected = Some(0);
+    // The default `q` is a keymap binding, not an override: the router
+    // does not take it, so a verb row could never be shadowed by a default.
+    assert_eq!(app.key_ctx(&plain('q')).user_bare, None, "a default binding is not an override");
+    assert_eq!(app.key_ctx(&plain('y')).user_bare, None);
+    app.handle_key(plain('y'));
+    assert_eq!(app.yank, crate::yank::Register::Request("main/alpha".into()), "no override: y yanks");
+
+    let (mut app, _dir) = sidebar_test_app_three_flat_rows();
+    app.use_profile(KeyProfile::Arrows);
+    app.keymap.apply_overrides("quit = [\"ctrl+c\", \"y\"]\n").unwrap();
+    render_once(&mut app);
+    app.focus = PaneId::Sidebar;
+    app.sidebar.selected = Some(0);
+    assert_eq!(app.key_ctx(&plain('y')).user_bare, Some(Action::Quit));
+    app.handle_key(plain('y'));
+    assert!(app.should_quit, "the keys.toml binding won");
+    assert_eq!(app.yank, crate::yank::Register::Empty, "and y did not yank");
+}
+
 /// Review Focus 4.
 #[test]
 fn a_huge_count_is_capped_by_the_surface() {
@@ -29528,16 +29935,41 @@ fn footer_keycaps_follow_the_profile() {
     let (mut app, _dir) = sidebar_test_app_three_flat_rows();
     app.focus = PaneId::Sidebar;
     assert_eq!(footer_chip_text(&mut app, Action::OpenPalette).as_deref(), Some("^P commands"));
-    assert_eq!(footer_chip_text(&mut app, Action::PromptNewRequest).as_deref(), Some("n new"));
+    assert_eq!(footer_chip_text(&mut app, Action::PromptNewRequest).as_deref(), Some("a new"));
+    assert_eq!(footer_chip_text(&mut app, Action::DeleteSelectedRequest).as_deref(), Some("d delete"));
     assert_eq!(footer_chip_text(&mut app, Action::Quit).as_deref(), Some("q quit"));
     app.use_profile(KeyProfile::Vim);
     assert_eq!(footer_chip_text(&mut app, Action::OpenPalette).as_deref(), Some(": commands"));
-    assert_eq!(
-        footer_chip_text(&mut app, Action::PromptNewRequest),
-        None,
-        "a verb chip waits for M2's vim key"
-    );
+    assert_eq!(footer_chip_text(&mut app, Action::PromptNewRequest).as_deref(), Some("a new"), "a shared letter");
+    assert_eq!(footer_chip_text(&mut app, Action::DeleteSelectedRequest).as_deref(), Some("dd delete"));
     assert_eq!(footer_chip_text(&mut app, Action::Quit).as_deref(), Some("^C quit"), "vim gave up q");
+}
+
+/// Spec §4.6 and §5.4: the Variables list's chips spell the shared
+/// letters in both profiles, and vim drops the chips whose verb waits
+/// for M4's ex rows.
+#[test]
+fn variables_list_chips_spell_the_shared_letters() {
+    use crate::components::varmanager::VmRow;
+    use crate::config::KeyProfile;
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_row(&mut app, |r| *r == VmRow::Group("user".into()));
+    assert_eq!(footer_chip_text(&mut app, Action::PromptNewVar).as_deref(), Some("a new variable"));
+    assert_eq!(footer_chip_text(&mut app, Action::PromptNewSelector).as_deref(), Some("A new selector"));
+    assert_eq!(
+        footer_chip_text(&mut app, Action::PromptGroupFields { selector: "user".into() }).as_deref(),
+        Some("m edit fields")
+    );
+    app.use_profile(KeyProfile::Vim);
+    assert_eq!(footer_chip_text(&mut app, Action::PromptNewVar).as_deref(), Some("a new variable"));
+    assert_eq!(
+        footer_chip_text(&mut app, Action::PromptGroupFields { selector: "user".into() }),
+        None,
+        "M4's :fields"
+    );
 }
 
 /// Plan M1 Deviation 17: the startup gate's chip names the key that works.
@@ -29919,4 +30351,306 @@ fn a_variables_edit_left_on_another_tab_does_not_take_the_caret() {
         app.handle_key(plain('j'));
         assert_eq!(app.manage.list.cursor, 1, "vim j moves the list (form edit: {form})");
     }
+}
+
+/// Spec §5.2: N requests go as one undo step, with one toast.
+#[test]
+fn delete_requests_deletes_the_batch_as_one_undo_step() {
+    let (mut app, dir) = sidebar_test_app_three_flat_rows();
+    render_once(&mut app);
+    app.update(Action::DeleteRequests(vec!["main/beta".into(), "main/gamma".into()]));
+    assert!(!dir.path().join("requests/main/beta.toml").exists());
+    assert!(!dir.path().join("requests/main/gamma.toml").exists());
+    assert!(
+        app.toasts.messages().iter().any(|m| m.starts_with("Deleted 2 requests")),
+        "{:?}",
+        app.toasts.messages()
+    );
+    app.update(Action::Undo);
+    assert!(dir.path().join("requests/main/beta.toml").exists(), "one undo brings both back");
+    assert!(dir.path().join("requests/main/gamma.toml").exists());
+}
+
+/// A batch holding the open request leaves the editor on a scratch, as a
+/// single delete does.
+#[test]
+fn deleting_a_batch_that_holds_the_open_request_leaves_a_scratch() {
+    let (mut app, _dir) = sidebar_test_app_three_flat_rows();
+    render_once(&mut app);
+    app.update(Action::ForceOpenRequest("main/gamma".into()));
+    app.update(Action::DeleteRequests(vec!["main/beta".into(), "main/gamma".into()]));
+    assert_eq!(app.editor.slug, None);
+}
+
+/// Spec §5.3: N table rows go as one editor undo step.
+#[test]
+fn delete_table_rows_deletes_a_run_as_one_editor_step() {
+    let mut app = App::new_for_test();
+    app.update(Action::CreateRequest("rows".into()));
+    for k in ["a", "b", "c", "d"] {
+        app.editor
+            .headers
+            .insert(k.into(), postui_core::model::Entry { value: "1".into(), enabled: true });
+    }
+    app.editor.active_tab = EditorTab::Headers;
+    app.focus = PaneId::Editor;
+    app.editor.sub_focus = SubFocus::Content;
+    app.editor.table.selected = Some(1);
+    app.capture_undo();
+    app.update(Action::DeleteTableRows { start: 1, count: 2 });
+    app.capture_undo();
+    assert_eq!(app.editor.headers.keys().map(String::as_str).collect::<Vec<_>>(), ["a", "d"]);
+    assert!(
+        app.toasts.messages().iter().any(|m| m.starts_with("Deleted 2 rows")),
+        "{:?}",
+        app.toasts.messages()
+    );
+    app.update(Action::Undo);
+    assert_eq!(
+        app.editor.headers.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["a", "b", "c", "d"],
+        "one undo brings the run back"
+    );
+}
+
+/// Spec §5.2 and §6.1: each verb on the sidebar is main's own action on
+/// the cursor's request.
+#[test]
+fn selection_action_on_the_sidebar() {
+    use crate::action::Verb;
+    use crate::keyroute::Surface;
+    let (mut app, _dir) = sidebar_test_app_three_flat_rows();
+    render_once(&mut app);
+    app.sidebar.selected = app.sidebar.row_of("main/beta");
+    let at = |app: &App, v| app.selection_action(Surface::Sidebar, v);
+    assert_eq!(at(&app, Verb::Add), Some(Action::PromptNewRequest));
+    assert_eq!(at(&app, Verb::Rename), Some(Action::PromptRenameRequest));
+    assert_eq!(at(&app, Verb::Move), Some(Action::PromptMoveSelectedRequestToSpace));
+    assert_eq!(at(&app, Verb::Delete { count: 1 }), Some(Action::DeleteSelectedRequest));
+    assert_eq!(
+        at(&app, Verb::Delete { count: 2 }),
+        Some(Action::DeleteRequests(vec!["main/beta".into(), "main/gamma".into()]))
+    );
+    assert_eq!(at(&app, Verb::Yank), Some(Action::YankRequest("main/beta".into())));
+    assert_eq!(
+        at(&app, Verb::Put { above: true, count: 2 }),
+        Some(Action::PutRequest { anchor: Some("main/beta".into()), above: true, count: 2 })
+    );
+    assert_eq!(at(&app, Verb::Tls), None, "no TLS on a request row");
+    app.sidebar.selected = app.sidebar.row_of("main/gamma");
+    assert_eq!(
+        at(&app, Verb::Delete { count: 2 }),
+        Some(Action::DeleteRequest("main/gamma".into())),
+        "a count clamped to one row is a single delete"
+    );
+}
+
+fn three_header_app() -> App {
+    let mut app = App::new_for_test();
+    app.update(Action::CreateRequest("rows".into()));
+    for k in ["a", "b", "c"] {
+        app.editor
+            .headers
+            .insert(k.into(), postui_core::model::Entry { value: "1".into(), enabled: true });
+    }
+    app.editor.active_tab = EditorTab::Headers;
+    app.focus = PaneId::Editor;
+    app.editor.sub_focus = SubFocus::Content;
+    app.editor.table.selected = Some(1);
+    app.capture_undo();
+    app
+}
+
+/// Spec §5.3: each verb on a table is main's own row action.
+#[test]
+fn selection_action_on_a_table() {
+    use crate::action::Verb;
+    use crate::keyroute::Surface;
+    let app = three_header_app();
+    let s = Surface::Table(EditorTab::Headers);
+    assert_eq!(app.selection_action(s, Verb::Add), Some(Action::TableAddRow));
+    assert_eq!(app.selection_action(s, Verb::Delete { count: 1 }), Some(Action::DeleteTableRow(1)));
+    assert_eq!(
+        app.selection_action(s, Verb::Delete { count: 2 }),
+        Some(Action::DeleteTableRows { start: 1, count: 2 })
+    );
+    assert_eq!(app.selection_action(s, Verb::Yank), Some(Action::YankTableRow(1)));
+    assert_eq!(
+        app.selection_action(s, Verb::Put { above: false, count: 2 }),
+        Some(Action::PutTableRow { at: 2, count: 2 })
+    );
+    assert_eq!(
+        app.selection_action(s, Verb::Put { above: true, count: 1 }),
+        Some(Action::PutTableRow { at: 1, count: 1 })
+    );
+    assert_eq!(app.selection_action(s, Verb::Rename), None);
+}
+
+/// Review Focus 2: `dd` on a folder row, or on the table's add row, does
+/// nothing at all.
+#[test]
+fn delete_on_a_folder_or_the_add_row_does_nothing() {
+    use crate::action::Verb;
+    use crate::keyroute::Surface;
+    let (mut app, dir) = sidebar_test_app_three_flat_rows();
+    postui_core::fixtures::save_request(dir.path(), "main/f/inner", &req("https://x/1")).unwrap();
+    app.update(Action::RefreshSidebar);
+    render_once(&mut app);
+    let folder = app
+        .sidebar
+        .rows
+        .iter()
+        .position(|r| matches!(r, Row::Folder { .. }))
+        .expect("the folder is listed");
+    app.sidebar.selected = Some(folder);
+    assert_eq!(app.selection_action(Surface::Sidebar, Verb::Delete { count: 1 }), None);
+    assert_eq!(app.selection_action(Surface::Sidebar, Verb::Delete { count: 3 }), None);
+    let mut table = three_header_app();
+    table.editor.table.selected = Some(3);
+    let s = Surface::Table(EditorTab::Headers);
+    assert_eq!(table.selection_action(s, Verb::Delete { count: 1 }), None, "the add row");
+    assert_eq!(table.selection_action(s, Verb::Yank), None);
+    assert_eq!(
+        table.selection_action(s, Verb::Put { above: false, count: 1 }),
+        Some(Action::PutTableRow { at: 3, count: 1 })
+    );
+}
+
+/// Spec §6.1: `OnSelection` runs what `selection_action` resolves to, on
+/// the surface the keyboard is on.
+#[test]
+fn on_selection_runs_the_resolved_action() {
+    use crate::action::Verb;
+    let (mut app, dir) = sidebar_test_app_three_flat_rows();
+    render_once(&mut app);
+    app.focus = PaneId::Sidebar;
+    app.sidebar.selected = app.sidebar.row_of("main/beta");
+    app.update(Action::OnSelection(Verb::Delete { count: 1 }));
+    assert!(!dir.path().join("requests/main/beta.toml").exists());
+}
+
+/// Spec §5.4: the Environments and Spaces lists.
+#[test]
+fn selection_action_on_the_manage_lists() {
+    use crate::action::Verb;
+    use crate::components::manage::ManageTab;
+    use crate::keyroute::Surface;
+    let mut app = App::new_for_test();
+    for name in ["prod", "qa"] {
+        app.update(Action::CreateEnv(name.into()));
+    }
+    app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
+    app.manage.list.cursor = 0;
+    let first = app.manage_selected(ManageTab::Environments).unwrap();
+    for s in [Surface::ManageList(ManageTab::Environments), Surface::ManageDetail(ManageTab::Environments)] {
+        assert_eq!(app.selection_action(s, Verb::Add), Some(Action::OpenNewEnvPrompt));
+        assert_eq!(app.selection_action(s, Verb::Rename), Some(Action::PromptRenameEnv(first.clone())));
+        assert_eq!(app.selection_action(s, Verb::Delete { count: 1 }), Some(Action::DeleteEnv(first.clone())));
+        assert!(matches!(app.selection_action(s, Verb::Tls), Some(Action::SetEnvTls { .. })));
+        assert_eq!(app.selection_action(s, Verb::Move), None, "move all is the Spaces tab's");
+    }
+    app.update(Action::CreateSpace("auth".into()));
+    app.update(Action::SelectManageTab(ManageTab::Spaces));
+    let space = app.manage_selected(ManageTab::Spaces).unwrap();
+    let s = Surface::ManageList(ManageTab::Spaces);
+    assert_eq!(app.selection_action(s, Verb::Move), Some(Action::PromptMoveAllRequests(space)));
+    assert_eq!(app.selection_action(s, Verb::Tls), None);
+}
+
+/// Spec §5.4: the Variables list, grid and form.
+#[test]
+fn selection_action_on_the_variables_tab() {
+    use crate::action::Verb;
+    use crate::components::varmanager::{FormStop, VmField, VmFocus, VmRow};
+    use crate::keyroute::Surface;
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_row(&mut app, |r| *r == VmRow::Var("base_url".into()));
+    assert_eq!(app.selection_action(Surface::VarList, Verb::Add), Some(Action::PromptNewVar));
+    assert_eq!(app.selection_action(Surface::VarList, Verb::AddAlt), Some(Action::PromptNewSelector));
+    assert_eq!(
+        app.selection_action(Surface::VarList, Verb::Rename),
+        Some(Action::PromptRenameVar { from: "base_url".into() })
+    );
+    assert_eq!(
+        app.selection_action(Surface::VarList, Verb::Delete { count: 1 }),
+        Some(Action::DeleteVar { name: "base_url".into() })
+    );
+    assert_eq!(
+        app.selection_action(Surface::VarList, Verb::Secret),
+        Some(Action::ToggleSecretVar { name: "base_url".into() })
+    );
+    assert_eq!(app.selection_action(Surface::VarList, Verb::Fields), None, "a variable has no fields");
+
+    goto_row(&mut app, |r| *r == VmRow::Group("user".into()));
+    app.varmanager.focus = VmFocus::Grid;
+    app.varmanager.grid.cursor = (0, 0);
+    assert_eq!(app.selection_action(Surface::VarGrid, Verb::Add), Some(Action::StartNewOptionEdit));
+    assert_eq!(app.selection_action(Surface::VarGrid, Verb::Yank), Some(Action::CopyOption { row: 0 }));
+    assert_eq!(app.selection_action(Surface::VarGrid, Verb::Put { above: false, count: 1 }), None, "nothing copied");
+    assert_eq!(
+        app.selection_action(Surface::VarGrid, Verb::Rename),
+        Some(Action::StartOptionNameEdit { row: 0 })
+    );
+    assert!(matches!(
+        app.selection_action(Surface::VarGrid, Verb::Delete { count: 1 }),
+        Some(Action::DeleteEntry { .. })
+    ));
+    assert!(matches!(
+        app.selection_action(Surface::VarGrid, Verb::EditValue),
+        Some(Action::OpenEditOptionPrompt { .. })
+    ));
+
+    goto_row(&mut app, |r| *r == VmRow::Var("api_key".into()));
+    app.varmanager.focus = VmFocus::Form;
+    app.varmanager.form_cursor = FormStop::Field(VmField::Description);
+    assert_eq!(app.selection_action(Surface::VarForm, Verb::Reveal), Some(Action::ToggleVarReveal));
+    assert_eq!(
+        app.selection_action(Surface::VarForm, Verb::Secret),
+        Some(Action::ToggleSecretVar { name: "api_key".into() })
+    );
+    assert_eq!(app.selection_action(Surface::VarForm, Verb::ClearValue), None, "not on the env value");
+}
+
+/// Spec §5.4: the form's reveal is an action now (Deviation 1), and only
+/// a secret has one.
+#[test]
+fn toggle_var_reveal_flips_only_a_secret() {
+    use crate::components::varmanager::VmRow;
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_row(&mut app, |r| *r == VmRow::Var("api_key".into()));
+    app.update(Action::ToggleVarReveal);
+    assert!(app.varmanager.form.revealed);
+    goto_row(&mut app, |r| *r == VmRow::Var("base_url".into()));
+    app.varmanager.form.revealed = false;
+    app.update(Action::ToggleVarReveal);
+    assert!(!app.varmanager.form.revealed, "base_url is not secret");
+}
+
+/// Deviation 8: the options grid's inline rename works on a shared
+/// selector with no environment, as a new option already did.
+#[test]
+fn option_rename_starts_on_a_shared_selector_without_an_environment() {
+    use crate::components::varmanager::{VmFocus, VmRow};
+    let dir = tempfile::tempdir().unwrap();
+    postui_core::fixtures::init_project(dir.path(), Some("demo")).unwrap();
+    std::fs::write(
+        dir.path().join("variables.toml"),
+        "[selectors.locale]\nshared = true\nfields = [\"lang\"]\n\n[options.locale.en]\nlang = \"en\"\n\n[options.locale.fr]\nlang = \"fr\"\n",
+    )
+    .unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.project_mut().unwrap().set_active_env(None);
+    assert!(app.active_env().is_none(), "no environment is active");
+    goto_row(&mut app, |r| *r == VmRow::Group("locale".into()));
+    app.varmanager.focus = VmFocus::Grid;
+    app.varmanager.grid.cursor = (0, 0);
+    app.update(Action::StartOptionNameEdit { row: 0 });
+    assert!(app.varmanager.grid.editing.is_some());
 }

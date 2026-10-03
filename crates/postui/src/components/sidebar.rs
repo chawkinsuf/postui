@@ -1,5 +1,5 @@
 use super::{Component, DrawCtx};
-use crate::action::Action;
+use crate::action::{Action, Verb};
 use crate::anim::{AnimKey, ListId};
 use crate::hit::{self, Hit, HitMap, ScrollbarSpec};
 use crate::layout::PaneId;
@@ -394,18 +394,20 @@ impl Sidebar {
     }
 
     /// Queues `slug`'s ancestor folders open for the next refresh, without
-    /// moving the cursor (the landing places it once the rows exist).
+    /// moving the cursor (the landing places it once the rows exist). Only
+    /// folder rows' paths (`space/f`, `space/f/g`) are queued, never the
+    /// space itself: the tree is rooted at `space/`, so the space is no
+    /// row. A slug outside any space has no folder to open.
     pub fn expand_to(&mut self, slug: &str) {
-        let mut parts: Vec<&str> = slug.split('/').collect();
-        parts.pop();
-        let mut acc = String::new();
-        for seg in parts {
-            acc = if acc.is_empty() {
-                seg.to_string()
-            } else {
-                format!("{acc}/{seg}")
-            };
-            self.pending_expand.insert(acc.clone());
+        let Some(space) = postui_core::storage::space_of(slug) else {
+            return;
+        };
+        let mut segs: Vec<&str> = slug[space.len() + 1..].split('/').collect();
+        segs.pop();
+        let mut path = space.to_string();
+        for seg in segs {
+            path = format!("{path}/{seg}");
+            self.pending_expand.insert(path.clone());
         }
     }
 
@@ -472,6 +474,83 @@ impl Sidebar {
             Some(Row::Request { slug, .. }) => Some(slug.clone()),
             _ => None,
         }
+    }
+
+    /// The slugs of up to `n` request rows from row `start` down (piece 4
+    /// spec §5.2: a counted `dd`). Folder rows are skipped, a collapsed
+    /// folder's requests are not rows at all, and a folder at `start`
+    /// gives nothing: `dd` on a folder does nothing.
+    pub fn request_slugs_from(&self, start: usize, n: usize) -> Vec<String> {
+        if !matches!(self.rows.get(start), Some(Row::Request { .. })) {
+            return Vec::new();
+        }
+        self.rows[start..]
+            .iter()
+            .filter_map(|r| match r {
+                Row::Request { slug, .. } => Some(slug.clone()),
+                Row::Folder { .. } => None,
+            })
+            .take(n)
+            .collect()
+    }
+
+    /// The request slug a `p`/`P` anchors its copy on (piece 4 spec
+    /// §5.2). A request row is its own anchor. A folder row anchors on
+    /// the folder's own direct requests: the last visible one for a put
+    /// below and the first for a put above, which lands the copy in that
+    /// folder either way, never in a subfolder. A folder with no visible
+    /// direct request, and no selection, give `None`; use
+    /// `selected_is_folder` to tell the two apart.
+    pub fn put_anchor(&self, above: bool) -> Option<String> {
+        match self.selected_row()? {
+            Row::Request { slug, .. } => Some(slug.clone()),
+            Row::Folder { path, .. } => {
+                let mut direct = self.rows.iter().filter_map(|r| match r {
+                    Row::Request { slug, .. }
+                        if slug.rsplit_once('/').map(|(f, _)| f) == Some(path.as_str()) =>
+                    {
+                        Some(slug.clone())
+                    }
+                    _ => None,
+                });
+                if above { direct.next() } else { direct.next_back() }
+            }
+        }
+    }
+
+    /// What a list verb means on the sidebar (piece 4 spec §5.2): the
+    /// cursor's request, or the cursor's slot for add and put. A folder
+    /// row takes add and put only.
+    pub fn verb_action(&self, verb: Verb) -> Option<Action> {
+        let on_request = matches!(self.selected_row(), Some(Row::Request { .. }));
+        match verb {
+            Verb::Add => Some(Action::PromptNewRequest),
+            Verb::Rename => on_request.then_some(Action::PromptRenameRequest),
+            Verb::Move => on_request.then_some(Action::PromptMoveSelectedRequestToSpace),
+            Verb::Delete { count: 0 | 1 } => on_request.then_some(Action::DeleteSelectedRequest),
+            Verb::Delete { count } => {
+                let mut slugs = self.request_slugs_from(self.selected?, count);
+                match slugs.len() {
+                    0 => None,
+                    1 => slugs.pop().map(Action::DeleteRequest),
+                    _ => Some(Action::DeleteRequests(slugs)),
+                }
+            }
+            Verb::Yank => self.selected_slug().map(Action::YankRequest),
+            Verb::Put { above, count } => Some(Action::PutRequest { anchor: self.put_anchor(above), above, count }),
+            _ => None,
+        }
+    }
+
+    /// Whether the cursor is on a folder row.
+    pub fn selected_is_folder(&self) -> bool {
+        matches!(self.selected_row(), Some(Row::Folder { .. }))
+    }
+
+    /// Whether the cursor is on a collapsed folder row: its requests are
+    /// hidden, so a put cannot anchor among them.
+    pub fn selected_is_collapsed_folder(&self) -> bool {
+        matches!(self.selected_row(), Some(Row::Folder { expanded: false, .. }))
     }
 
     fn selected_row(&self) -> Option<&Row> {
@@ -794,15 +873,6 @@ impl Component for Sidebar {
                     Some(Action::Render)
                 }
             },
-            KeyCode::Char('n') => Some(Action::PromptNewRequest),
-            KeyCode::Char('r') => matches!(self.selected_row()?, Row::Request { .. })
-                .then_some(Action::PromptRenameRequest),
-            KeyCode::Char('d') if ev.modifiers.is_empty() => {
-                matches!(self.selected_row()?, Row::Request { .. })
-                    .then_some(Action::DeleteSelectedRequest)
-            }
-            KeyCode::Char('m') => matches!(self.selected_row()?, Row::Request { .. })
-                .then_some(Action::PromptMoveSelectedRequestToSpace),
             _ => None,
         }
     }
@@ -1355,6 +1425,88 @@ mod tests {
     use crate::theme::Theme;
     use ratatui::crossterm::event::KeyModifiers;
 
+    fn req_row(slug: &str) -> Row {
+        Row::Request { slug: slug.into(), name: slug.into(), depth: 0, broken: None, method: None }
+    }
+
+    /// Spec §4.5: the verbs are the router's rows now; the sidebar's own
+    /// keys are named keys only.
+    #[test]
+    fn the_sidebar_has_no_verb_letters() {
+        let mut s = Sidebar { rows: vec![req_row("main/a")], selected: Some(0), ..Sidebar::default() };
+        for c in ['n', 'a', 'r', 'd', 'm', 'y', 'p', 'P'] {
+            assert_eq!(s.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)), None, "{c}");
+        }
+    }
+
+    /// Spec §5.2: N request rows from the cursor down, folder rows
+    /// skipped, a count past the end clamped, and nothing on a folder row.
+    #[test]
+    fn request_slugs_from_clamps_and_skips_folders() {
+        let s = Sidebar {
+            rows: vec![
+                req_row("main/a"),
+                req_row("main/b"),
+                Row::Folder { path: "main/f".into(), name: "f".into(), depth: 0, expanded: true },
+                req_row("main/f/c"),
+                req_row("main/d"),
+            ],
+            ..Sidebar::default()
+        };
+        assert_eq!(s.request_slugs_from(1, 2), ["main/b", "main/f/c"], "the folder row is skipped");
+        assert_eq!(s.request_slugs_from(3, 9), ["main/f/c", "main/d"], "clamped at the end");
+        assert!(s.request_slugs_from(2, 3).is_empty(), "dd on a folder does nothing");
+        assert!(s.request_slugs_from(9, 1).is_empty(), "no row there");
+    }
+
+    /// Spec §5.2: a put anchors only on a real request slug: the request
+    /// row itself, or a visible request inside the folder row. A collapsed
+    /// or empty folder, and no selection, give nothing.
+    #[test]
+    fn put_anchor_is_always_a_request_slug() {
+        let mut s = Sidebar {
+            rows: vec![
+                req_row("main/a"),
+                Row::Folder { path: "main/f".into(), name: "f".into(), depth: 0, expanded: true },
+                req_row("main/f/c"),
+                req_row("main/f/d"),
+                Row::Folder { path: "main/g".into(), name: "g".into(), depth: 0, expanded: false },
+                req_row("main/z"),
+                // A folder holding only an expanded subfolder, and one
+                // holding direct requests around a subfolder.
+                Row::Folder { path: "main/h".into(), name: "h".into(), depth: 0, expanded: true },
+                Row::Folder { path: "main/h/i".into(), name: "i".into(), depth: 1, expanded: true },
+                req_row("main/h/i/e"),
+                Row::Folder { path: "main/j".into(), name: "j".into(), depth: 0, expanded: true },
+                req_row("main/j/k"),
+                Row::Folder { path: "main/j/m".into(), name: "m".into(), depth: 1, expanded: true },
+                req_row("main/j/m/n"),
+                req_row("main/j/o"),
+            ],
+            ..Sidebar::default()
+        };
+        assert_eq!(s.put_anchor(false), None, "no selection");
+        s.selected = Some(0);
+        assert_eq!(s.put_anchor(false).as_deref(), Some("main/a"));
+        assert_eq!(s.put_anchor(true).as_deref(), Some("main/a"));
+        s.selected = Some(1);
+        assert_eq!(s.put_anchor(false).as_deref(), Some("main/f/d"), "below: the last inside");
+        assert_eq!(s.put_anchor(true).as_deref(), Some("main/f/c"), "above: the first inside");
+        s.selected = Some(4);
+        assert_eq!(s.put_anchor(false), None, "a collapsed folder has nothing visible inside");
+        assert_eq!(s.put_anchor(true), None);
+        assert!(s.selected_is_folder());
+        s.selected = Some(6);
+        assert_eq!(s.put_anchor(false), None, "only a subfolder: no direct request");
+        assert_eq!(s.put_anchor(true), None);
+        assert!(s.selected_is_folder());
+        s.selected = Some(9);
+        assert_eq!(s.put_anchor(false).as_deref(), Some("main/j/o"), "never the subfolder's request");
+        assert_eq!(s.put_anchor(true).as_deref(), Some("main/j/k"));
+        s.selected = Some(0);
+        assert!(!s.selected_is_folder());
+    }
+
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
@@ -1628,6 +1780,23 @@ mod tests {
         s.refresh(listing(&["a/b/c"]), "main", &expanded(&[]), &[]);
         s.select_slug("main/a/b/c");
         assert!(s.pending_expand.contains("main/a") && s.pending_expand.contains("main/a/b"));
+    }
+
+    /// Only folder rows' paths are queued, never the space: the tree is
+    /// rooted at `space/`, so the space is no row, and queuing it wrote a
+    /// meaningless `expanded` entry an undo could not take back. A loose
+    /// slug (no space; core never lists one) has no folder to open.
+    #[test]
+    fn expand_to_queues_folder_paths_only_not_the_space() {
+        let queued = |slug: &str| {
+            let mut s = Sidebar::default();
+            s.expand_to(slug);
+            s.pending_expand.into_iter().collect::<Vec<_>>()
+        };
+        assert_eq!(queued("main/f/x"), ["main/f"]);
+        assert_eq!(queued("main/f/g/x"), ["main/f", "main/f/g"]);
+        assert!(queued("main/alpha").is_empty());
+        assert!(queued("ping").is_empty());
     }
 
     #[test]

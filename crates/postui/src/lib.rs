@@ -23,6 +23,7 @@ pub mod ui;
 pub mod undo;
 pub mod usage;
 pub mod vim;
+pub mod yank;
 
 #[cfg(test)]
 mod fs_lint_test {

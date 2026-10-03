@@ -2,7 +2,7 @@ use super::line_input::LineInput;
 use super::table_editor::{Col, TableEditorState, TableOutcome, table_height};
 use super::toast::ToastKind;
 use super::{Component, DrawCtx, pane_surface};
-use crate::action::Action;
+use crate::action::{Action, Verb};
 use crate::hit::ScrollbarSpec;
 use crate::layout::PaneId;
 use crate::theme::Theme;
@@ -329,6 +329,27 @@ impl Default for Editor {
 }
 
 impl Editor {
+    /// The key/value table behind `tab`; `None` for Body, which has none.
+    pub fn table_map(&self, tab: EditorTab) -> Option<&IndexMap<String, Entry>> {
+        match tab {
+            EditorTab::Params => Some(&self.params),
+            EditorTab::Headers => Some(&self.headers),
+            EditorTab::Vars => Some(&self.variables),
+            EditorTab::Body => None,
+        }
+    }
+
+    /// `table_map`, mutably. It borrows the whole editor, so a caller that
+    /// also needs `self.table` at once keeps its own field-wise match.
+    pub fn table_map_mut(&mut self, tab: EditorTab) -> Option<&mut IndexMap<String, Entry>> {
+        match tab {
+            EditorTab::Params => Some(&mut self.params),
+            EditorTab::Headers => Some(&mut self.headers),
+            EditorTab::Vars => Some(&mut self.variables),
+            EditorTab::Body => None,
+        }
+    }
+
     /// Whether a plain printable key typed right now lands in one of the
     /// pane's text inputs rather than falling through to the global
     /// keymap: the URL line, the body editor, or a live table-cell edit.
@@ -2359,6 +2380,32 @@ impl Editor {
         }
     }
 
+    /// What a list verb means on the active table (piece 4 spec §5.3), on
+    /// the row under the cursor. The add row takes add and put only; the
+    /// Body tab takes nothing.
+    pub fn table_verb_action(&self, verb: Verb) -> Option<Action> {
+        if self.active_tab == EditorTab::Body {
+            return None;
+        }
+        let len = self.table_len();
+        let row = self.table.selected.filter(|&i| i < len);
+        match verb {
+            Verb::Add => Some(Action::TableAddRow),
+            Verb::Delete { count: 0 | 1 } => row.map(Action::DeleteTableRow),
+            Verb::Delete { count } => row.map(|start| Action::DeleteTableRows { start, count }),
+            Verb::Yank => row.map(Action::YankTableRow),
+            Verb::Put { above, count } => {
+                let at = match self.table.selected {
+                    Some(i) if above => i,
+                    Some(i) => i + 1,
+                    None => len,
+                };
+                Some(Action::PutTableRow { at: at.min(len), count })
+            }
+            _ => None,
+        }
+    }
+
     /// Where `key` sits in the active tab's table now. `None` once the row
     /// is gone (a duplicate-key commit collapsed it away).
     pub fn table_index_of(&self, key: &str) -> Option<usize> {
@@ -4224,7 +4271,7 @@ mod tests {
 
         // Typing an existing key into the ghost row warns too, rather than
         // silently overwriting the row that already owns the key.
-        e.handle_key(key(KeyCode::Char('a'))); // opens the ghost row
+        e.begin_add_row(); // opens the ghost row
         e.handle_key(key(KeyCode::Char('b')));
         let action = e.handle_key(key(KeyCode::Tab));
         assert!(
@@ -6282,7 +6329,7 @@ url = "https://api.example.com/users""#,
             ..Editor::default()
         };
         // Ghost "+ Add" -> type a new row.
-        e.handle_key(key(KeyCode::Char('a')));
+        e.begin_add_row();
         for c in "token".chars() {
             e.handle_key(key(KeyCode::Char(c)));
         }
@@ -6300,8 +6347,8 @@ url = "https://api.example.com/users""#,
         assert_eq!(e.table_len(), 1);
         assert_eq!(table_height(e.table_len()), 4);
 
-        // `d` requests a delete-confirm, same as Params/Headers.
-        let action = e.handle_key(key(KeyCode::Char('d')));
+        // Delete requests a delete-confirm, same as Params/Headers.
+        let action = e.handle_key(key(KeyCode::Delete));
         assert_eq!(action, Some(Action::DeleteTableRow(0)));
     }
 

@@ -101,13 +101,14 @@ impl Router {
             {
                 return Resolved::Consumed;
             }
-            // keys.toml's bare chars win while nothing is pending (§4.4).
-            if self.pending.is_idle()
-                && matches!(tok, Tok::Char(_))
-                && let Some(a) = &ctx.user_bare
-            {
-                return Resolved::Run(vec![Step::Action(a.clone())]);
-            }
+        }
+        // keys.toml's bare chars win while nothing is pending, in both
+        // profiles (§4.4, plan M2 Deviation 18).
+        if self.pending.is_idle()
+            && matches!(tok, Tok::Char(_))
+            && let Some(a) = &ctx.user_bare
+        {
+            return Resolved::Run(vec![Step::Action(a.clone())]);
         }
         // 3. The table.
         let mut buf = self.pending.keys().to_vec();
@@ -165,9 +166,14 @@ impl Router {
 
 /// A complete row's steps under its count rule.
 fn expand(b: &table::Binding, count: Option<usize>, cap: usize) -> Vec<Step> {
+    // A refused count runs nothing but its note (spec §3.5). A count of
+    // one is no count, as in vim: `1yy` is `yy`.
+    if let (CountRule::Refuse(note), Some(2..)) = (b.count, count) {
+        return vec![note_step(note)];
+    }
     let times = |limit: usize| match b.count {
         CountRule::Repeat => count.unwrap_or(1).min(limit),
-        CountRule::Ignore | CountRule::Pass => 1,
+        CountRule::Ignore | CountRule::Pass | CountRule::Refuse(_) => 1,
     };
     match b.intent {
         Intent::Key(k) => vec![Step::Key(k.event()); times(cap)],
@@ -182,12 +188,23 @@ fn expand(b: &table::Binding, count: Option<usize>, cap: usize) -> Vec<Step> {
         },
         // An action's count is not the surface's rows: `5u` undoes five.
         Intent::Act(f) => vec![Step::Action(f()); times(usize::MAX)],
-        Intent::Note(text) => vec![Step::Action(Action::ShowToast(
-            text.to_string(),
-            crate::components::toast::ToastKind::Info,
-        ))],
+        // `{N}dd` and `{N}p` hand N to the verb, which runs it as one
+        // undo step; a put's N is capped by the surface like a motion's
+        // (plan M2 Deviation 10), so `9999p` can't write 9 999 files.
+        Intent::Verb(v) if b.count == CountRule::Pass => {
+            let n = count.unwrap_or(1);
+            let n = if matches!(v, crate::action::Verb::Put { .. }) { n.min(cap) } else { n };
+            vec![Step::Action(Action::OnSelection(v.with_count(n)))]
+        }
+        Intent::Verb(v) => vec![Step::Action(Action::OnSelection(v)); times(cap)],
+        Intent::Note(text) => vec![note_step(text)],
         Intent::Pass => unreachable!("Pass is declined before expand"),
     }
+}
+
+/// A short note: an Info toast (plan M1 Deviation 9).
+fn note_step(text: &str) -> Step {
+    Step::Action(Action::ShowToast(text.to_string(), crate::components::toast::ToastKind::Info))
 }
 
 #[cfg(test)]
@@ -339,6 +356,110 @@ mod tests {
         // binding on `x` must not fire while it does.
         assert_eq!(feed(&mut r, &cx(Vim, Surface::Sidebar), "g"), Resolved::Consumed);
         assert_eq!(feed(&mut r, &bound, "x"), Resolved::Consumed, "not while a prefix waits");
+    }
+
+    fn sel(v: crate::action::Verb) -> Step {
+        Step::Action(Action::OnSelection(v))
+    }
+
+    /// Spec §5.1: the list verbs in vim: `dd` passes its count, `yy`
+    /// refuses one, `p` passes its count (capped by the surface), shared letters
+    /// once.
+    #[test]
+    fn vim_list_verbs_resolve_to_on_selection() {
+        use crate::action::Verb;
+        let s = cx(Vim, Surface::Sidebar);
+        assert_eq!(feed(&mut Router::default(), &s, "dd"), run(vec![sel(Verb::Delete { count: 1 })]));
+        assert_eq!(feed(&mut Router::default(), &s, "3dd"), run(vec![sel(Verb::Delete { count: 3 })]));
+        assert_eq!(feed(&mut Router::default(), &s, "yy"), run(vec![sel(Verb::Yank)]));
+        assert_eq!(
+            feed(&mut Router::default(), &s, "3yy"),
+            run(vec![Step::Action(Action::ShowToast("Counted yank is not supported".into(), ToastKind::Info))])
+        );
+        assert_eq!(feed(&mut Router::default(), &s, "1yy"), run(vec![sel(Verb::Yank)]), "1yy is yy, as in vim");
+        assert_eq!(feed(&mut Router::default(), &s, "p"), run(vec![sel(Verb::Put { above: false, count: 1 })]));
+        assert_eq!(feed(&mut Router::default(), &s, "2p"), run(vec![sel(Verb::Put { above: false, count: 2 })]));
+        let capped = KeyCtx { cap: 4, ..s.clone() };
+        assert_eq!(
+            feed(&mut Router::default(), &capped, "9P"),
+            run(vec![sel(Verb::Put { above: true, count: 4 })]),
+            "a put's count is capped by the surface"
+        );
+        assert_eq!(feed(&mut Router::default(), &s, "a"), run(vec![sel(Verb::Add)]));
+        assert_eq!(feed(&mut Router::default(), &s, "3r"), run(vec![sel(Verb::Rename)]), "a count is ignored");
+        let mut r = Router::default();
+        assert_eq!(feed(&mut r, &s, "d"), Resolved::Consumed);
+        assert_eq!(r.echo(), "d");
+    }
+
+    /// Plan M2 Deviation 14: a counted `dd` is refused off the sidebar and
+    /// the tables; one `dd` (or `1dd`) still deletes.
+    #[test]
+    fn a_counted_dd_is_refused_on_the_manage_and_variables_lists() {
+        use crate::action::Verb;
+        use crate::components::manage::ManageTab;
+        let note = Step::Action(Action::ShowToast(
+            "Counted delete works on requests and table rows".into(),
+            ToastKind::Info,
+        ));
+        for surface in [Surface::ManageList(ManageTab::Environments), Surface::VarList, Surface::VarGrid] {
+            let s = cx(Vim, surface);
+            assert_eq!(feed(&mut Router::default(), &s, "2dd"), run(vec![note.clone()]), "{surface:?}");
+            assert_eq!(feed(&mut Router::default(), &s, "dd"), run(vec![sel(Verb::Delete { count: 1 })]), "{surface:?}");
+            assert_eq!(feed(&mut Router::default(), &s, "1dd"), run(vec![sel(Verb::Delete { count: 1 })]), "{surface:?}");
+        }
+    }
+
+    /// Spec §4.5: the arrows profile's verbs are one letter each, and its
+    /// old letters are gone.
+    #[test]
+    fn arrows_list_verbs_are_one_letter() {
+        use crate::action::Verb;
+        use crate::components::manage::ManageTab;
+        let s = cx(Arrows, Surface::Sidebar);
+        assert_eq!(feed(&mut Router::default(), &s, "d"), run(vec![sel(Verb::Delete { count: 1 })]));
+        assert_eq!(feed(&mut Router::default(), &s, "y"), run(vec![sel(Verb::Yank)]));
+        assert_eq!(feed(&mut Router::default(), &s, "P"), run(vec![sel(Verb::Put { above: true, count: 1 })]));
+        assert_eq!(feed(&mut Router::default(), &s, "a"), run(vec![sel(Verb::Add)]));
+        assert_eq!(feed(&mut Router::default(), &s, "n"), Resolved::Declined, "n is no longer new");
+        let env = cx(Arrows, Surface::ManageDetail(ManageTab::Environments));
+        assert_eq!(feed(&mut Router::default(), &env, "t"), run(vec![sel(Verb::Tls)]));
+        let form = cx(Arrows, Surface::VarForm);
+        assert_eq!(feed(&mut Router::default(), &form, "r"), run(vec![sel(Verb::Reveal)]));
+        assert_eq!(feed(&mut Router::default(), &form, "p"), run(vec![sel(Verb::Promote)]));
+        let grid = cx(Arrows, Surface::VarGrid);
+        assert_eq!(feed(&mut Router::default(), &grid, "c"), run(vec![sel(Verb::Yank)]));
+        assert_eq!(feed(&mut Router::default(), &grid, "v"), run(vec![sel(Verb::Put { above: false, count: 1 })]));
+        assert_eq!(
+            feed(&mut Router::default(), &grid, "o"),
+            run(vec![Step::Action(Action::StartNewOptionEdit)])
+        );
+    }
+
+    /// Plan M2 Deviation 1: vim takes only the shared letters on the
+    /// Variables form; its other verbs wait for M4's ex rows.
+    #[test]
+    fn vim_swallows_the_arrows_only_verb_letters() {
+        for (surface, keys) in [
+            (Surface::VarForm, "r"),
+            (Surface::VarForm, "s"),
+            (Surface::VarGrid, "e"),
+            (Surface::VarGrid, "c"),
+        ] {
+            assert_eq!(feed(&mut Router::default(), &cx(Vim, surface), keys), Resolved::Consumed, "{surface:?} {keys}");
+        }
+    }
+
+    /// Plan M2 Deviation 18 (amendment A5-1): a `keys.toml` letter wins
+    /// over an arrows verb row, as it does over a vim one.
+    #[test]
+    fn an_arrows_keys_toml_letter_wins_over_a_verb_row() {
+        let bound = KeyCtx { user_bare: Some(Action::Quit), ..cx(Arrows, Surface::Sidebar) };
+        assert_eq!(feed(&mut Router::default(), &bound, "y"), run(vec![Step::Action(Action::Quit)]));
+        assert_eq!(
+            feed(&mut Router::default(), &cx(Arrows, Surface::Sidebar), "y"),
+            run(vec![sel(crate::action::Verb::Yank)])
+        );
     }
 
     /// Deviation 22: a digit is a count only where some row takes one.

@@ -221,6 +221,7 @@ fn fallback_description(action: &Action) -> Option<String> {
         Action::CycleSplit => "Step the editor/response split".to_string(),
         Action::CycleSplitBack => "Step the split back".to_string(),
         Action::DeleteTableRow(_) => "Delete this row".to_string(),
+        Action::ToggleVarReveal => "Reveal or hide the secret value".to_string(),
         Action::ToggleJqBar => "Turn the jq filter off".to_string(),
         Action::ResponseViewMode(ViewMode::Raw) => "Show the raw response body".to_string(),
         Action::ResponseViewMode(ViewMode::Headers) => "Show the response headers".to_string(),
@@ -734,6 +735,11 @@ mod tests {
         assert_eq!(
             hint_for(&Hit::FooterChip(Action::DeleteTableRow(3)), &keymap, &ctx()).unwrap(),
             "Delete this row"
+        );
+        // The variable form's reveal chip dispatches this (plan M2 Task 7).
+        assert_eq!(
+            hint_for(&Hit::FooterChip(Action::ToggleVarReveal), &keymap, &ctx()).unwrap(),
+            "Reveal or hide the secret value"
         );
     }
 

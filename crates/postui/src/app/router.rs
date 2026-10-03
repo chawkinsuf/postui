@@ -33,11 +33,14 @@ impl App {
         }
     }
 
-    /// In vim, what `keys.toml` binds `ev` to when it is a bare char (spec
-    /// §4.4), where today's keymap step would reach it (plan M1 Deviation
-    /// 21): no modal open, a navigation surface, and either the Main
-    /// screen or a Manage screen whose whitelist admits the action. A
-    /// dialog's letters and a screen's captured keys stay theirs.
+    /// What `keys.toml` binds `ev` to when it is a bare char (spec §4.4),
+    /// where today's keymap step would reach it (plan M1 Deviation 21): no
+    /// modal open, a navigation surface, and either the Main screen or a
+    /// Manage screen whose whitelist admits the action. A dialog's letters
+    /// and a screen's captured keys stay theirs. In vim any keymap binding
+    /// counts; in arrows only a `keys.toml` override does, since an arrows
+    /// default must not shadow the router's verb rows (plan M2 Deviation
+    /// 18).
     fn user_bare(
         &self,
         ev: &KeyEvent,
@@ -46,14 +49,15 @@ impl App {
     ) -> Option<Action> {
         let bare = matches!(ev.code, KeyCode::Char(_))
             && ev.modifiers.difference(KeyModifiers::SHIFT).is_empty();
-        if profile != crate::config::KeyProfile::Vim
-            || !bare
-            || !self.modals.is_empty()
-            || !Surfaces::NAV.has(surface)
-        {
+        if !bare || !self.modals.is_empty() || !Surfaces::NAV.has(surface) {
             return None;
         }
-        let action = self.keymap.lookup(&KeyCombo::from_event(ev))?;
+        let combo = KeyCombo::from_event(ev);
+        let action = if profile == crate::config::KeyProfile::Vim {
+            self.keymap.lookup(&combo)?
+        } else {
+            self.keymap.lookup_override(&combo)?
+        };
         match self.screen {
             Screen::Main => Some(action),
             Screen::Manage => screen_escape_whitelist(&action).then_some(action),
@@ -102,7 +106,9 @@ impl App {
     /// Actions run on whatever the surface: `3u` undoes three. A counted
     /// undo or redo stops at the first repeat that stepped nothing, so
     /// `10u` with three steps undoes three and says "Nothing to undo"
-    /// once (the final review's ruling, spec §9 M1).
+    /// once (the final review's ruling, spec §9 M1). A counted list verb
+    /// is never repeated here: `{N}dd` and `{N}p` carry their count as one
+    /// action, so `9p` with the wrong register is refused, and toasts, once.
     pub(super) fn run_steps(&mut self, steps: Vec<Step>) -> bool {
         let surface = self.surface();
         let mut changed = false;

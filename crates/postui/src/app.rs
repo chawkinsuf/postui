@@ -155,6 +155,9 @@ pub struct App {
     pub manage: crate::components::manage::Manage,
     /// The Variables tab's own state — the list, detail pane and edits.
     pub varmanager: VarManager,
+    /// The row register `yy`/`y` fills and `p`/`P` spends (piece 4 spec
+    /// §5.1). Dropped on a project switch.
+    pub yank: crate::yank::Register,
     /// The Settings tab's own state — the row cursor, the live field
     /// edit and which of a Files row's two buttons is aimed at.
     pub settings: crate::components::settings::SettingsTab,
@@ -1677,6 +1680,7 @@ impl App {
             editor: Editor::default(),
             manage: crate::components::manage::Manage::default(),
             varmanager: VarManager::default(),
+            yank: crate::yank::Register::default(),
             settings: crate::components::settings::SettingsTab::default(),
             session: crate::session::Session::default(),
             toasts,
@@ -3591,32 +3595,55 @@ impl App {
                 };
                 // The copy opens, so unsaved edits are gated first — before
                 // anything is written (spec §4.3: the gate runs before the op).
+                let force = Action::ForceDuplicateRequest { slug, anchor: None, above: false, count: 1 };
                 if self.editor_holds_unsaved() {
-                    self.dirty_gate("duplicate", Action::ForceDuplicateRequest(slug));
+                    self.dirty_gate("duplicate", force);
                     true
                 } else {
-                    self.apply(Action::ForceDuplicateRequest(slug))
+                    self.apply(force)
                 }
             }
-            Action::ForceDuplicateRequest(slug) => {
+            Action::ForceDuplicateRequest { slug, anchor, above, count } => {
                 let t = self.begin_op();
                 let Some(p) = self.project.as_mut() else {
+                    self.op_in_flight = false;
                     return true;
                 };
-                match p.duplicate_request(&slug) {
-                    Ok(new_slug) => {
-                        // Copies land next to the original and open, so the
-                        // edit that motivated the duplicate can start at once.
+                let made = match &anchor {
+                    None => p.duplicate_request(&slug).map(|s| vec![s]),
+                    Some(a) => p.duplicate_requests_at(&slug, a, above, count),
+                };
+                match made {
+                    Ok(copies) => {
+                        // Copies land beside their anchor and the first
+                        // opens (where vim's `3p` leaves the cursor), so
+                        // the edit that motivated the duplicate can start
+                        // at once.
+                        let first = copies.first().cloned().unwrap_or_default();
                         self.land(Landing {
-                            open: Some(crate::undo::Open::Request { slug: new_slug.clone(), buffer: None }),
+                            open: Some(crate::undo::Open::Request { slug: first.clone(), buffer: None }),
                             ..Landing::default()
                         });
-                        let display = self.request_display(&new_slug);
-                        self.toasts
-                            .push(format!("Duplicated to {display}"), ToastKind::Success);
-                        self.record_project_step(t, crate::undo::StepLabel::create(display));
+                        let display = self.request_display(&first);
+                        let (toast, label) = match copies.len() {
+                            1 => (format!("Duplicated to {display}"), display),
+                            n => (format!("Duplicated to {display} and {} more", n - 1), format!("{n} requests")),
+                        };
+                        self.toasts.push(toast, ToastKind::Success);
+                        self.record_project_step(t, crate::undo::StepLabel::create(label));
                     }
                     Err(e) => {
+                        self.op_in_flight = false;
+                        // A register naming a source that is gone (deleted
+                        // since the yank) is stale: drop it rather than let
+                        // the next `p` fail the same way. Any other failure
+                        // leaves the source where it was, so the register
+                        // is kept for a put once the cause is fixed.
+                        if matches!(e, postui_core::project::Error::NotFound(_))
+                            && self.yank == crate::yank::Register::Request(slug.clone())
+                        {
+                            self.yank = crate::yank::Register::Empty;
+                        }
                         self.toasts
                             .push(format!("could not duplicate {slug}: {e}"), ToastKind::Error);
                     }
@@ -3661,11 +3688,9 @@ impl App {
             }
             Action::ToggleTableRow(i) => {
                 self.no_coalesce = true;
-                let map = match self.editor.active_tab {
-                    EditorTab::Params => &mut self.editor.params,
-                    EditorTab::Headers => &mut self.editor.headers,
-                    EditorTab::Vars => &mut self.editor.variables,
-                    EditorTab::Body => return true,
+                let tab = self.editor.active_tab;
+                let Some(map) = self.editor.table_map_mut(tab) else {
+                    return true;
                 };
                 if let Some((_, e)) = map.get_index_mut(i) {
                     e.enabled = !e.enabled;
@@ -3696,7 +3721,7 @@ impl App {
                 }
                 true
             }
-            Action::DuplicateTableRow(i) => {
+            Action::DeleteTableRows { start, count } => {
                 self.no_coalesce = true;
                 let map = match self.editor.active_tab {
                     EditorTab::Params => &mut self.editor.params,
@@ -3704,19 +3729,127 @@ impl App {
                     EditorTab::Vars => &mut self.editor.variables,
                     EditorTab::Body => return true,
                 };
-                let Some((key, option)) = map.get_index(i).map(|(k, e)| (k.clone(), e.clone()))
-                else {
-                    return true;
-                };
-                let mut new_key = format!("{key}-copy");
-                let mut n = 2;
-                while map.contains_key(&new_key) {
-                    new_key = format!("{key}-copy-{n}");
-                    n += 1;
+                let gone = self.editor.table.delete_rows(map, start, count);
+                if gone > 0 {
+                    let noun = if gone == 1 { "row" } else { "rows" };
+                    self.toasts
+                        .push(format!("Deleted {gone} {noun}{}", self.undo_hint()), ToastKind::Info);
                 }
-                let insert_at = (i + 1).min(map.len());
-                map.shift_insert(insert_at, new_key, option);
-                self.editor.table.selected = Some(insert_at);
+                true
+            }
+            Action::DuplicateTableRow(i) => {
+                let tab = self.editor.active_tab;
+                let row = self
+                    .editor
+                    .table_map(tab)
+                    .and_then(|m| m.get_index(i))
+                    .map(|(k, e)| (k.clone(), e.clone()));
+                if let Some((key, entry)) = row {
+                    self.insert_row_copy(tab, &key, entry, i + 1);
+                }
+                true
+            }
+            Action::YankRequest(slug) => {
+                // Invisible until a put spends it (spec §5.1).
+                self.yank = crate::yank::Register::Request(slug);
+                true
+            }
+            Action::YankTableRow(i) => {
+                let tab = self.editor.active_tab;
+                let row = self
+                    .editor
+                    .table_map(tab)
+                    .and_then(|m| m.get_index(i))
+                    .map(|(k, e)| (k.clone(), e.clone()));
+                if let Some((key, entry)) = row {
+                    self.yank = crate::yank::Register::Row { tab, key, entry };
+                }
+                true
+            }
+            Action::PutRequest { anchor, above, count } => {
+                let src = match self.yank.clone() {
+                    crate::yank::Register::Request(src) => src,
+                    // An empty register is vim's own no-op.
+                    crate::yank::Register::Empty => return true,
+                    // The register is invisible, so silence would read as a
+                    // dead key: say what it holds.
+                    crate::yank::Register::Row { .. } => {
+                        self.toasts.push(
+                            "nothing to put here: the register holds a table row",
+                            ToastKind::Warning,
+                        );
+                        self.last_action_failed = true;
+                        return true;
+                    }
+                };
+                // A copy's order slot only means something in its own
+                // space, and opening it would pull the user back there:
+                // refused, the register kept for a put back home.
+                if postui_core::storage::space_of(&src) != Some(self.active_space().as_str()) {
+                    let display = self.request_display(&src);
+                    self.toasts
+                        .push(format!("{display} was yanked from another space"), ToastKind::Warning);
+                    self.last_action_failed = true;
+                    return true;
+                }
+                // `None` with the cursor on a folder row means the folder has
+                // no direct request to put beside (`put_anchor`'s refusal);
+                // with no selection at all it falls back to the source's own
+                // slot. Either way this is a put, so it seeds.
+                if anchor.is_none() && self.sidebar.selected_is_folder() {
+                    // A collapsed folder's requests are hidden, not absent;
+                    // anchoring into them would expand the folder outside
+                    // the journal (Dev 16a).
+                    let text = if self.sidebar.selected_is_collapsed_folder() {
+                        "Open the folder to put into it"
+                    } else {
+                        "No request in this folder to put beside"
+                    };
+                    self.toasts.push(text, ToastKind::Warning);
+                    self.last_action_failed = true;
+                    return true;
+                }
+                let anchor = Some(anchor.unwrap_or_else(|| src.clone()));
+                let force = Action::ForceDuplicateRequest { slug: src, anchor, above, count };
+                // The copy opens, so unsaved edits are gated first, as
+                // Duplicate's are: once, the count riding with the
+                // deferred put.
+                if self.editor_holds_unsaved() {
+                    self.dirty_gate("duplicate", force);
+                    true
+                } else {
+                    self.apply(force)
+                }
+            }
+            Action::PutTableRow { at, count } => {
+                let (tab, key, entry) = match self.yank.clone() {
+                    crate::yank::Register::Row { tab, key, entry } => (tab, key, entry),
+                    crate::yank::Register::Empty => return true,
+                    crate::yank::Register::Request(_) => {
+                        self.toasts.push(
+                            "nothing to put here: the register holds a request",
+                            ToastKind::Warning,
+                        );
+                        self.last_action_failed = true;
+                        return true;
+                    }
+                };
+                // A header is not a param: the register stays on its tab.
+                if tab != self.editor.active_tab {
+                    self.toasts
+                        .push(format!("{key} was yanked from another tab"), ToastKind::Warning);
+                    self.last_action_failed = true;
+                    return true;
+                }
+                // Each copy goes under the one before, so the run reads in
+                // the order it was made; the cursor ends on the first, as
+                // vim's `3p` leaves it. One action is one editor change.
+                for i in 0..count.max(1) {
+                    self.insert_row_copy(tab, &key, entry.clone(), at + i);
+                }
+                if let Some(len) = self.editor.table_map(tab).map(|m| m.len()) {
+                    self.editor.table.selected = Some(at.min(len.saturating_sub(1)));
+                }
                 true
             }
             Action::DeleteSelectedRequest => {
@@ -3725,6 +3858,10 @@ impl App {
                 }
                 true
             }
+            Action::OnSelection(verb) => match self.selection_action(self.surface(), verb) {
+                Some(a) => self.apply(a),
+                None => false,
+            },
             Action::PromptMoveSelectedRequestToSpace => {
                 if let Some(slug) = self.sidebar.selected_slug() {
                     self.apply(Action::PromptMoveRequestToSpace(slug));
@@ -3928,6 +4065,39 @@ impl App {
                         self.op_in_flight = false;
                         self.toasts
                             .push(format!("could not delete {slug}: {e}"), ToastKind::Error);
+                    }
+                }
+                true
+            }
+            Action::DeleteRequests(slugs) => {
+                let n = slugs.len();
+                let noun = if n == 1 { "request" } else { "requests" };
+                let from_row = slugs.first().and_then(|s| self.sidebar.row_of(s));
+                let was_open = self.editor.slug.as_ref().is_some_and(|open| slugs.contains(open));
+                let t = self.begin_op();
+                let Some(p) = self.project.as_mut() else {
+                    self.op_in_flight = false;
+                    return true;
+                };
+                match p.delete_requests(&slugs) {
+                    Ok(()) => {
+                        self.toasts.push(
+                            format!("Deleted {n} {noun}{}", self.undo_hint()),
+                            ToastKind::Info,
+                        );
+                        // As a single delete: a scratch where the open
+                        // request was, the cursor on the batch's neighbour.
+                        self.land(Landing {
+                            open: was_open.then_some(Open::Scratch { buffer: None }),
+                            cursor: from_row.map(CursorAim::Neighbour),
+                            ..Landing::default()
+                        });
+                        self.record_project_step(t, crate::undo::StepLabel::delete(format!("{n} {noun}")));
+                    }
+                    Err(e) => {
+                        self.op_in_flight = false;
+                        self.toasts
+                            .push(format!("could not delete requests: {e}"), ToastKind::Error);
                     }
                 }
                 true
@@ -4374,6 +4544,9 @@ impl App {
                 // A copied option row names a selector in the project
                 // being left; nothing in the next one can take it.
                 self.varmanager.stash = None;
+                // The row register names a request in the project being
+                // left, or a row of a request about to close.
+                self.yank = crate::yank::Register::Empty;
                 self.shadow = None;
                 let slug = self.editor.slug.clone();
                 if let Some(p) = self.project_mut() {
@@ -5649,6 +5822,20 @@ impl App {
                 self.open_toggle_secret_confirm(name);
                 true
             }
+            Action::ToggleVarReveal => {
+                let VmDetail::Var(name) = &self.varmanager.detail else {
+                    return false;
+                };
+                let secret = self
+                    .project()
+                    .and_then(|p| p.variables().vars.get(name))
+                    .is_some_and(|d| d.secret);
+                if !secret {
+                    return false;
+                }
+                self.varmanager.form.revealed = !self.varmanager.form.revealed;
+                true
+            }
             Action::PromptPromoteVar { name } => {
                 // Finding 8: a secret already declared at `name` used to
                 // fall through to `upsert_var` writing a `default`
@@ -5793,9 +5980,12 @@ impl App {
                 true
             }
             Action::StartOptionNameEdit { row } => {
-                if !matches!(&self.varmanager.detail, VmDetail::Group(_))
-                    || self.active_env().is_none()
-                {
+                let VmDetail::Group(selector) = self.varmanager.detail.clone() else {
+                    return false;
+                };
+                // As a new option: a shared selector's options need no
+                // environment; anyone else's have nowhere to live without one.
+                if self.active_env().is_none() && !self.selector_is_shared(&selector) {
                     return false;
                 }
                 self.vm_start_cell_edit(row, 0);
@@ -7653,7 +7843,7 @@ impl App {
                 selector: selector.clone(),
                 name: name.clone(),
             },
-            VarStructOp::PasteOption { env, selector } => {
+            VarStructOp::PasteOption { env, selector, .. } => {
                 // The copied row lives in the Manager, which core never
                 // sees, so it is read here — and refused here too, in the
                 // same shape as `Promote`'s missing-value refusal.
@@ -7688,10 +7878,19 @@ impl App {
                 "{slug} changed outside the app — save or reload it first"
             ));
         }
-        self.project_mut()
-            .ok_or_else(|| NO_PROJECT.to_string())?
-            .apply_var_edit(&edit)
-            .map_err(|e| e.to_string())?;
+        // A counted paste (`{N}p` on the grid) lands its rows as one undo
+        // step; each paste finds the names before it taken and steps aside.
+        let times = match op {
+            VarStructOp::PasteOption { count, .. } => (*count).max(1),
+            _ => 1,
+        };
+        let p = self.project_mut().ok_or_else(|| NO_PROJECT.to_string())?;
+        if times == 1 {
+            p.apply_var_edit(&edit)
+        } else {
+            p.cascade(edit.label(), |p| (0..times).try_for_each(|_| p.apply_var_edit(&edit)))
+        }
+        .map_err(|e| e.to_string())?;
         if let VarStructOp::Promote { name, .. } = op {
             // The project side of the promote is durable the moment core
             // returns `Ok`. The compensating half — removing the option
@@ -9102,6 +9301,30 @@ impl App {
             .unwrap_or_else(|| slug.rsplit('/').next().unwrap_or(slug).to_string())
     }
 
+    /// Inserts a copy of `key`/`entry` into `tab`'s table at row `at`
+    /// (clamped) and puts the cursor on it. The copy keeps `key` when the
+    /// table has no row by it (vim's `p` puts exactly what was yanked), and
+    /// steps aside to `<key>-copy`, `-copy-2`, … when it does; a Duplicate
+    /// always clashes, its source being in the table. The one place the
+    /// row menu's Duplicate and the register's put share, so naming,
+    /// clamping and the cursor never drift. A wholesale row change is
+    /// never coalesced into the keys around it.
+    fn insert_row_copy(&mut self, tab: EditorTab, key: &str, entry: postui_core::model::Entry, at: usize) {
+        self.no_coalesce = true;
+        let Some(map) = self.editor.table_map_mut(tab) else {
+            return;
+        };
+        let mut new_key = key.to_string();
+        let mut n = 1;
+        while map.contains_key(&new_key) {
+            new_key = if n == 1 { format!("{key}-copy") } else { format!("{key}-copy-{n}") };
+            n += 1;
+        }
+        let at = at.min(map.len());
+        map.shift_insert(at, new_key, entry);
+        self.editor.table.selected = Some(at);
+    }
+
     fn create_or_save_as(
         &mut self,
         name: &str,
@@ -10117,20 +10340,13 @@ impl App {
             if self.screen == Screen::Manage && self.varmanager.grid.editing.is_some() {
                 return self.handle_grid_key(ev);
             }
-            let open_request = self
-                .editor
-                .slug
-                .is_some()
-                .then(|| self.editor.current_request());
             let action = {
                 let Self {
                     project,
                     varmanager,
                     ..
                 } = self;
-                project
-                    .as_ref()
-                    .and_then(|p| varmanager.handle_key(ev, p, open_request.as_ref()))
+                project.as_ref().and_then(|p| varmanager.handle_key(ev, p))
             };
             if let Some(a) = action {
                 return self.update(a);
@@ -11239,6 +11455,7 @@ fn screen_escape_whitelist(action: &Action) -> bool {
 mod landing;
 mod mouse;
 mod router;
+mod verbs;
 #[cfg(test)]
 mod key_matrix_tests;
 #[cfg(test)]

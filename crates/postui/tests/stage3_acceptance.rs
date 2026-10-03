@@ -161,11 +161,11 @@ async fn stage3_acceptance_flow() {
     app.registry.register(alpha_dir.path().to_path_buf());
     app.registry.register(beta_dir.path().to_path_buf());
 
-    // --- create "users/list" via the `n` prompt flow -----------------
-    app.handle_key(plain('n'));
+    // --- create "users/list" via the `a` prompt flow -----------------
+    app.handle_key(plain('a'));
     assert!(
         matches!(app.modals.top(), Some(Modal::Prompt { .. })),
-        "'n' opens the new-request prompt"
+        "'a' opens the new-request prompt"
     );
     for c in "users/list".chars() {
         app.handle_key(plain(c));

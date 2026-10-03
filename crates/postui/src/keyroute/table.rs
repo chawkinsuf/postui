@@ -1,13 +1,12 @@
 //! The binding table (piece 4 spec §3.5): one static table for both
 //! profiles and every surface. A key's meaning is a lookup here; what a
 //! prefix is follows from the rows, so no separate prefix list can drift.
-//! M1's rows are the vim profile's list, table, response and global keys
-//! (the motions, `u`, `ctrl+r`, `:`); the arrows profile has no rows yet
-//! (its letters are M2's shared verbs).
+//! M1's rows are the vim profile's motions and its `u`, `ctrl+r`, `:`; M2
+//! adds the list verbs in both profiles (spec §5.1–§5.4).
 
 use super::ctx::Surface;
 use super::notation::{self, Tok};
-use crate::action::Action;
+use crate::action::{Action, Verb};
 use crate::config::KeyProfile;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::sync::OnceLock;
@@ -48,6 +47,9 @@ pub enum Intent {
     Edge { bare: Named, home: Named },
     /// A fixed action.
     Act(fn() -> Action),
+    /// A list verb on the row under the cursor (spec §6.1): runs
+    /// `Action::OnSelection`, which the app resolves against the surface.
+    Verb(Verb),
     /// A short note (an Info toast, plan M1 Deviation 9); nothing else.
     Note(&'static str),
     /// The key goes on as typed: the surface's own arm already does what
@@ -64,6 +66,9 @@ pub enum CountRule {
     Ignore,
     /// The intent reads N itself (`Edge`).
     Pass,
+    /// A count runs nothing and shows this note; with no count the
+    /// intent runs once (spec §3.5).
+    Refuse(&'static str),
 }
 
 /// Which profiles a row binds in.
@@ -71,7 +76,9 @@ pub enum CountRule {
 pub struct Profiles(u8);
 
 impl Profiles {
+    pub const ARROWS: Self = Self(1);
     pub const VIM: Self = Self(2);
+    pub const BOTH: Self = Self(3);
 
     pub fn has(self, p: KeyProfile) -> bool {
         let bit = match p {
@@ -138,6 +145,12 @@ impl Surfaces {
         .or(Self::MANAGE_DETAIL);
     /// The lists vim's `/` has no search on yet (key list §6, parked).
     pub const SEARCHLESS: Self = Self::OPENS_ROW;
+    /// The lists and tables the list verbs act on (key list §6).
+    pub const ROWS: Self = Self::SIDEBAR
+        .or(Self::TABLE)
+        .or(Self::MANAGE_LIST)
+        .or(Self::VAR_LIST)
+        .or(Self::VAR_GRID);
     /// Where `u`, `ctrl+r` and `:` are the app's (spec §5.11): everywhere
     /// but pickers (they type) and dialogs (their letters answer).
     pub const APP: Self = Self::NAV
@@ -202,6 +215,24 @@ const fn row(keys: &'static str, on: Surfaces, intent: Intent, count: CountRule)
     }
 }
 
+/// An arrows row: one key, no count (arrows never builds one).
+const fn arrows(keys: &'static str, on: Surfaces, intent: Intent) -> Binding {
+    Binding { keys, profile: Profiles::ARROWS, on, intent, count: CountRule::Ignore }
+}
+
+/// A shared letter (the user's rule: a single-letter verb is the same
+/// key in both profiles); a vim count is ignored.
+const fn both(keys: &'static str, on: Surfaces, intent: Intent) -> Binding {
+    Binding { keys, profile: Profiles::BOTH, on, intent, count: CountRule::Ignore }
+}
+
+pub const NO_COUNTED_DELETE: &str = "Counted delete works on requests and table rows";
+pub const NO_COUNTED_YANK: &str = "Counted yank is not supported";
+
+fn new_option() -> Action {
+    Action::StartNewOptionEdit
+}
+
 const DOWN: Named = Named::key(KeyCode::Down);
 const HOME: Named = Named::key(KeyCode::Home);
 
@@ -254,6 +285,48 @@ pub static TABLE: &[Binding] = &[
     row("u", Surfaces::APP, Intent::Act(undo), CountRule::Repeat),
     row("<C-r>", Surfaces::APP, Intent::Act(redo), CountRule::Repeat),
     row(":", Surfaces::APP, Intent::Act(palette), CountRule::Ignore),
+    // Key list §6, spec §5.1–§5.4 and §6.1: the list verbs. The shared
+    // letters are one row for both profiles; vim doubles delete and yank
+    // and takes counts, arrows uses one letter. Vim's other verbs on the
+    // Manage and Variables screens are M4's ex rows (plan M2 Deviation 1).
+    both("a", Surfaces::ROWS, Intent::Verb(Verb::Add)),
+    arrows("a", Surfaces::MANAGE_DETAIL, Intent::Verb(Verb::Add)),
+    both("A", Surfaces::VAR_LIST, Intent::Verb(Verb::AddAlt)),
+    both("r", Surfaces::SIDEBAR.or(Surfaces::MANAGE_LIST).or(Surfaces::VAR_LIST), Intent::Verb(Verb::Rename)),
+    arrows("r", Surfaces::MANAGE_DETAIL.or(Surfaces::VAR_GRID), Intent::Verb(Verb::Rename)),
+    arrows("r", Surfaces::VAR_FORM, Intent::Verb(Verb::Reveal)),
+    both("m", Surfaces::SIDEBAR.or(Surfaces::MANAGE_LIST), Intent::Verb(Verb::Move)),
+    arrows("m", Surfaces::MANAGE_DETAIL, Intent::Verb(Verb::Move)),
+    arrows("m", Surfaces::VAR_LIST.or(Surfaces::VAR_GRID), Intent::Verb(Verb::Fields)),
+    row("dd", Surfaces::SIDEBAR.or(Surfaces::TABLE), Intent::Verb(Verb::Delete { count: 1 }), CountRule::Pass),
+    row(
+        "dd",
+        Surfaces::MANAGE_LIST.or(Surfaces::VAR_LIST).or(Surfaces::VAR_GRID),
+        Intent::Verb(Verb::Delete { count: 1 }),
+        CountRule::Refuse(NO_COUNTED_DELETE),
+    ),
+    arrows("d", Surfaces::ROWS.or(Surfaces::MANAGE_DETAIL), Intent::Verb(Verb::Delete { count: 1 })),
+    row(
+        "yy",
+        Surfaces::SIDEBAR.or(Surfaces::TABLE).or(Surfaces::VAR_GRID),
+        Intent::Verb(Verb::Yank),
+        CountRule::Refuse(NO_COUNTED_YANK),
+    ),
+    arrows("y", Surfaces::SIDEBAR.or(Surfaces::TABLE), Intent::Verb(Verb::Yank)),
+    arrows("c", Surfaces::VAR_GRID, Intent::Verb(Verb::Yank)),
+    row("p", Surfaces::SIDEBAR.or(Surfaces::TABLE).or(Surfaces::VAR_GRID), Intent::Verb(Verb::Put { above: false, count: 1 }), CountRule::Pass),
+    row("P", Surfaces::SIDEBAR.or(Surfaces::TABLE).or(Surfaces::VAR_GRID), Intent::Verb(Verb::Put { above: true, count: 1 }), CountRule::Pass),
+    arrows("p", Surfaces::SIDEBAR.or(Surfaces::TABLE), Intent::Verb(Verb::Put { above: false, count: 1 })),
+    arrows("P", Surfaces::SIDEBAR.or(Surfaces::TABLE), Intent::Verb(Verb::Put { above: true, count: 1 })),
+    arrows("v", Surfaces::VAR_GRID, Intent::Verb(Verb::Put { above: false, count: 1 })),
+    arrows("p", Surfaces::VAR_FORM, Intent::Verb(Verb::Promote)),
+    arrows("s", Surfaces::VAR_LIST.or(Surfaces::VAR_FORM), Intent::Verb(Verb::Secret)),
+    arrows("x", Surfaces::VAR_FORM, Intent::Verb(Verb::ClearValue)),
+    arrows("e", Surfaces::VAR_GRID, Intent::Verb(Verb::EditValue)),
+    arrows("t", Surfaces::MANAGE_LIST.or(Surfaces::MANAGE_DETAIL), Intent::Verb(Verb::Tls)),
+    // `main`'s arrows `o` (new option) stays; vim's `o` there opens the row
+    // (plan M2 Deviation 13).
+    arrows("o", Surfaces::VAR_LIST.or(Surfaces::VAR_GRID), Intent::Act(new_option)),
 ];
 
 /// Each row's keys, parsed once.
@@ -294,7 +367,11 @@ pub fn keys_for(profile: KeyProfile, surface: Surface, action: &Action) -> Optio
         .find(|b| {
             b.profile.has(profile)
                 && b.on.has(surface)
-                && matches!(b.intent, Intent::Act(f) if f() == *action)
+                && match b.intent {
+                    Intent::Act(f) => f() == *action,
+                    Intent::Verb(v) => matches!(action, Action::OnSelection(w) if w.kind() == v.kind()),
+                    _ => false,
+                }
         })
         .map(|b| b.keys)
 }
@@ -375,13 +452,38 @@ mod tests {
 
     #[test]
     fn counts_fit_their_intents() {
+        use crate::action::Verb;
         for b in TABLE {
             let edge = matches!(b.intent, Intent::Edge { .. });
-            assert_eq!(edge, b.count == CountRule::Pass, "{}: Pass is for Edge rows", b.keys);
+            let counted_verb = matches!(b.intent, Intent::Verb(Verb::Delete { .. } | Verb::Put { .. }));
+            if edge {
+                assert_eq!(b.count, CountRule::Pass, "{}: an Edge row reads its count", b.keys);
+            }
+            if b.count == CountRule::Pass {
+                assert!(edge || counted_verb, "{}: Pass is for Edge rows, dd and p", b.keys);
+            }
             if matches!(b.intent, Intent::Pass | Intent::Note(_)) {
                 assert_eq!(b.count, CountRule::Ignore, "{}", b.keys);
             }
+            if b.profile.has(KeyProfile::Arrows) {
+                assert_eq!(b.count, CountRule::Ignore, "{}: arrows never builds a count", b.keys);
+            }
         }
+    }
+
+    /// Spec §4.6: a verb's keycap is its row's keys, whatever the count.
+    #[test]
+    fn verb_rows_spell_their_keys() {
+        use crate::action::Verb;
+        use KeyProfile::{Arrows, Vim};
+        let del = Action::OnSelection(Verb::Delete { count: 1 });
+        assert_eq!(keys_for(Vim, Surface::Sidebar, &del), Some("dd"));
+        assert_eq!(keys_for(Arrows, Surface::Sidebar, &del), Some("d"));
+        assert_eq!(keys_for(Vim, Surface::Sidebar, &Action::OnSelection(Verb::Delete { count: 3 })), Some("dd"));
+        assert_eq!(keys_for(Vim, Surface::VarGrid, &Action::OnSelection(Verb::Yank)), Some("yy"));
+        assert_eq!(keys_for(Arrows, Surface::VarGrid, &Action::OnSelection(Verb::Yank)), Some("c"));
+        assert_eq!(keys_for(Vim, Surface::VarForm, &Action::OnSelection(Verb::Reveal)), None, "M4's :reveal");
+        assert!(vim_first_chars().contains(&'d') && vim_first_chars().contains(&'y'));
     }
 
     #[test]
