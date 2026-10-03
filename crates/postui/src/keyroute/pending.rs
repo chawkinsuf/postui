@@ -23,6 +23,14 @@ impl Pending {
         self.count
     }
 
+    /// The keys this state stands for, as typed: the count's digits, then
+    /// the buffered keys. Replayed into the engine when the field rows
+    /// match nothing (spec §3.7).
+    pub fn replay(&self) -> Vec<ratatui::crossterm::event::KeyEvent> {
+        let digits = self.count.map(|n| n.to_string()).unwrap_or_default();
+        digits.chars().map(|c| Tok::Char(c).event()).chain(self.keys.iter().map(|t| t.event())).collect()
+    }
+
     pub fn keys(&self) -> &[Tok] {
         &self.keys
     }
@@ -69,6 +77,16 @@ impl Pending {
 mod tests {
     use super::*;
     use crate::vim::engine::settings::MAX_COUNT;
+
+    #[test]
+    fn replay_types_the_count_then_the_keys() {
+        let mut p = Pending::default();
+        p.digit('1');
+        p.digit('2');
+        p.push(Tok::Char('g'));
+        let typed: Vec<Tok> = p.replay().iter().map(|e| Tok::of(e).unwrap()).collect();
+        assert_eq!(typed, vec![Tok::Char('1'), Tok::Char('2'), Tok::Char('g')]);
+    }
 
     #[test]
     fn digits_build_a_count_and_a_leading_zero_is_a_key() {

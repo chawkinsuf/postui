@@ -22,6 +22,7 @@ impl App {
                 field,
                 user_bare: None,
                 cap: crate::vim::engine::settings::MAX_COUNT,
+                engine: None,
             };
         }
         KeyCtx {
@@ -30,6 +31,7 @@ impl App {
             field,
             user_bare: self.user_bare(ev, profile, surface),
             cap: self.repeat_cap(surface),
+            engine: None,
         }
     }
 
@@ -114,6 +116,11 @@ impl App {
         let mut changed = false;
         for step in steps {
             match step {
+                // Plan M3a Task 4 applies these: until then no field has an
+                // engine session, so the router never makes an engine step,
+                // and an open mode has nothing to open.
+                Step::OpenAs(_) => {}
+                Step::Engine(_) => unreachable!("no field has an engine session before plan M3a Task 4"),
                 Step::Key(_) if self.surface() != surface => break,
                 Step::Key(ev) => changed |= self.handle_key_routed(ev),
                 Step::Action(a) => {

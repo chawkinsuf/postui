@@ -26,6 +26,11 @@ pub enum Step {
     /// A named key through today's routing (`App::handle_key_routed`).
     Key(KeyEvent),
     Action(Action),
+    /// A key for the engine on the live field (spec §3.7).
+    Engine(KeyEvent),
+    /// If this event opens a field, open it so (spec §3.1; plan M3a
+    /// Deviation 3). Applied by the end-of-event sync.
+    OpenAs(engine_glue::OpenAs),
 }
 
 /// What the router made of a key.
@@ -70,9 +75,16 @@ impl Router {
             self.pending.clear();
             self.surface = Some(ctx.surface);
         }
-        // A field with the caret takes every key, as the engine's Insert
-        // will (plan M1 Deviation 5).
-        if ctx.field.is_live() {
+        if let FieldCaret::Live(id) = ctx.field {
+            // A field the engine runs: the lookahead (spec §3.7).
+            if ctx.profile == KeyProfile::Vim
+                && let (Some(kind), Some(engine)) = (id.engine_kind(), ctx.engine)
+            {
+                return self.resolve_field(ev, kind, engine, ctx);
+            }
+            // Any other field with the caret types every key (plan M1
+            // Deviation 5; M3b brings the modal fields and the query boxes
+            // to the engine).
             self.pending.clear();
             return Resolved::Declined;
         }
@@ -84,6 +96,56 @@ impl Router {
             return Resolved::Declined;
         };
         self.step(ev, tok, ctx, true)
+    }
+
+    /// A key in a field the engine runs (spec §3.7). In Insert, Visual, the
+    /// search prompt, or with an engine command half-typed, the engine sees
+    /// it first. In idle Normal the router looks first, at the field rows
+    /// only, and replays whatever matches none of them into the engine as
+    /// typed: the engine never knows the router looked.
+    fn resolve_field(&mut self, ev: KeyEvent, kind: EngineKind, engine: EngineView, ctx: &KeyCtx) -> Resolved {
+        if engine.mode != engine_glue::Mode::Normal || engine.pending {
+            self.pending.clear();
+            return Resolved::Run(vec![Step::Engine(ev)]);
+        }
+        // An alt chord or a modified named key: no field row names it.
+        let Some(tok) = Tok::of(&ev) else {
+            return self.replay(ev);
+        };
+        if tok == Tok::Named(KeyCode::Esc) && !self.pending.is_idle() {
+            self.pending.clear();
+            return Resolved::Consumed;
+        }
+        if let Tok::Char(c) = tok
+            && self.pending.digit(c)
+        {
+            return Resolved::Consumed;
+        }
+        let mut buf = self.pending.keys().to_vec();
+        buf.push(tok);
+        match table::lookup_class(&buf, ctx.profile, kind.class()) {
+            Match::Complete(b) => {
+                let count = self.pending.count();
+                self.pending.clear();
+                match b.intent {
+                    Intent::Swallow => Resolved::Consumed,
+                    _ => Resolved::Run(expand(b, count, ctx.cap)),
+                }
+            }
+            Match::Prefix => {
+                self.pending.push(tok);
+                Resolved::Consumed
+            }
+            Match::NoMatch => self.replay(ev),
+        }
+    }
+
+    /// What the router held, then `ev`, into the engine in order.
+    fn replay(&mut self, ev: KeyEvent) -> Resolved {
+        let mut steps: Vec<Step> = self.pending.replay().into_iter().map(Step::Engine).collect();
+        steps.push(Step::Engine(ev));
+        self.pending.clear();
+        Resolved::Run(steps)
     }
 
     fn step(&mut self, ev: KeyEvent, tok: Tok, ctx: &KeyCtx, first: bool) -> Resolved {
@@ -167,7 +229,7 @@ impl Router {
 }
 
 /// A complete row's steps under its count rule.
-fn expand(b: &table::Binding, count: Option<usize>, cap: usize) -> Vec<Step> {
+pub(crate) fn expand(b: &table::Binding, count: Option<usize>, cap: usize) -> Vec<Step> {
     // A refused count runs nothing but its note (spec §3.5). A count of
     // one is no count, as in vim: `1yy` is `yy`.
     if let (CountRule::Refuse(note), Some(2..)) = (b.count, count) {
@@ -193,12 +255,21 @@ fn expand(b: &table::Binding, count: Option<usize>, cap: usize) -> Vec<Step> {
         // `{N}dd` and `{N}p` hand N to the verb, which runs it as one
         // undo step; a put's N is capped by the surface like a motion's
         // (plan M2 Deviation 10), so `9999p` can't write 9 999 files.
-        Intent::Verb(v) if b.count == CountRule::Pass => {
-            let n = count.unwrap_or(1);
-            let n = if matches!(v, crate::action::Verb::Put { .. }) { n.min(cap) } else { n };
-            vec![Step::Action(Action::OnSelection(v.with_count(n)))]
+        Intent::Verb(v) => {
+            let mut steps = if b.count == CountRule::Pass {
+                let n = count.unwrap_or(1);
+                let n = if matches!(v, crate::action::Verb::Put { .. }) { n.min(cap) } else { n };
+                vec![Step::Action(Action::OnSelection(v.with_count(n)))]
+            } else {
+                vec![Step::Action(Action::OnSelection(v)); times(cap)]
+            };
+            // An add verb opens what it makes in Insert (spec §5.6).
+            if matches!(v, crate::action::Verb::Add | crate::action::Verb::AddAlt) {
+                steps.insert(0, Step::OpenAs(engine_glue::OpenAs::Insert(engine_glue::OpenSeat::Keep)));
+            }
+            steps
         }
-        Intent::Verb(v) => vec![Step::Action(Action::OnSelection(v)); times(cap)],
+        Intent::Open { key, seat } => vec![Step::OpenAs(engine_glue::OpenAs::Insert(seat)), Step::Key(key.event())],
         Intent::Note(text) => vec![note_step(text)],
         // Esc closes the field (its own close, keeping the text), then the
         // key runs on the closed surface (plan M3a Deviation 11).
@@ -226,7 +297,141 @@ mod tests {
     use ratatui::crossterm::event::KeyModifiers;
 
     fn cx(profile: KeyProfile, surface: Surface) -> KeyCtx {
-        KeyCtx { profile, surface, field: FieldCaret::None, user_bare: None, cap: MAX_COUNT }
+        KeyCtx { profile, surface, field: FieldCaret::None, user_bare: None, cap: MAX_COUNT, engine: None }
+    }
+
+    use crate::keyroute::engine_glue::{Mode, OpenAs, OpenSeat};
+
+    /// An open URL line with an engine session in `mode`.
+    fn in_url(mode: Mode, pending: bool) -> KeyCtx {
+        KeyCtx {
+            field: FieldCaret::Live(FieldId::Url),
+            engine: Some(EngineView { mode, pending }),
+            ..cx(Vim, Surface::UrlLine)
+        }
+    }
+
+    fn eng(keys: &str) -> Vec<Step> {
+        notation::events(keys).into_iter().map(Step::Engine).collect()
+    }
+
+    /// Spec §3.7: in Insert, Visual, the search prompt or with a command
+    /// half-typed, the engine sees every key first.
+    #[test]
+    fn a_busy_engine_sees_every_key() {
+        for (mode, pending) in [(Mode::Insert, false), (Mode::Visual(crate::keyroute::engine_glue::Shape::Char), false), (Mode::Normal, true)] {
+            let s = in_url(mode, pending);
+            for keys in ["j", ":", "q", "3", "<Esc>", "<C-d>"] {
+                assert_eq!(feed(&mut Router::default(), &s, keys), run(eng(keys)), "{mode:?} {pending}: {keys}");
+            }
+        }
+    }
+
+    /// Spec §3.7: idle Normal looks at the field rows first and replays
+    /// anything else into the engine, count and prefix included.
+    #[test]
+    fn idle_normal_looks_ahead_then_replays() {
+        let s = in_url(Mode::Normal, false);
+        assert_eq!(feed(&mut Router::default(), &s, "x"), run(eng("x")));
+        let mut r = Router::default();
+        assert_eq!(feed(&mut r, &s, "2"), Resolved::Consumed);
+        assert_eq!(r.echo(), "2");
+        assert_eq!(feed(&mut r, &s, "d"), run(eng("2d")), "the count reaches the engine as typed");
+        assert_eq!(feed(&mut Router::default(), &s, "0"), run(eng("0")), "a leading 0 is the motion");
+        assert_eq!(feed(&mut Router::default(), &s, "12<C-a>"), run(eng("12<C-a>")));
+        assert_eq!(
+            feed(&mut Router::default(), &s, "<Esc>"),
+            run(eng("<Esc>")),
+            "an idle Esc is the engine's to decline"
+        );
+        let mut r = Router::default();
+        feed(&mut r, &s, "3");
+        assert_eq!(feed(&mut r, &s, "<Esc>"), Resolved::Consumed, "Esc drops the router's count");
+        assert_eq!(r.echo(), "");
+    }
+
+    /// Spec §3.7, §5.6 (the user's decision 2): `j` and `k` leave a one-line
+    /// field and move; the count repeats the move.
+    #[test]
+    fn j_and_k_leave_a_one_line_field() {
+        let s = in_url(Mode::Normal, false);
+        let esc = key(KeyCode::Esc);
+        assert_eq!(feed(&mut Router::default(), &s, "j"), run(vec![esc.clone(), key(KeyCode::Down)]));
+        assert_eq!(
+            feed(&mut Router::default(), &s, "3k"),
+            run(vec![esc.clone(), key(KeyCode::Up), key(KeyCode::Up), key(KeyCode::Up)])
+        );
+        assert_eq!(feed(&mut Router::default(), &s, "<C-d>"), run(vec![esc, ctrl_key(KeyCode::Char('d'))]));
+        let body = KeyCtx { field: FieldCaret::Live(FieldId::Body), surface: Surface::Body, ..s };
+        assert_eq!(feed(&mut Router::default(), &body, "j"), run(eng("j")), "a body motion");
+    }
+
+    /// Plan M3a Deviation 9: the prefix keys never reach the engine.
+    #[test]
+    fn the_prefix_keys_are_notes_or_swallowed() {
+        let s = in_url(Mode::Normal, false);
+        let macros = run(vec![Step::Action(Action::ShowToast(table::NO_MACROS.into(), ToastKind::Info))]);
+        let marks = run(vec![Step::Action(Action::ShowToast(table::NO_MARKS.into(), ToastKind::Info))]);
+        let mut r = Router::default();
+        assert_eq!(feed(&mut r, &s, "q"), Resolved::Consumed);
+        assert_eq!(r.echo(), "q");
+        assert_eq!(feed(&mut r, &s, "a"), macros);
+        assert_eq!(feed(&mut Router::default(), &s, "@<CR>"), macros, "any key completes it");
+        assert_eq!(feed(&mut Router::default(), &s, "ma"), marks);
+        assert_eq!(feed(&mut Router::default(), &s, "`x"), marks);
+        assert_eq!(feed(&mut Router::default(), &s, "Zx"), Resolved::Consumed);
+        assert_eq!(feed(&mut Router::default(), &s, ":"), run(vec![Step::Action(Action::OpenPalette)]));
+        let mut r = Router::default();
+        feed(&mut r, &s, "q");
+        assert_eq!(feed(&mut r, &s, "<Esc>"), Resolved::Consumed, "Esc cancels the pair silently");
+        assert_eq!(feed(&mut r, &s, "x"), run(eng("x")), "and the next key is fresh");
+    }
+
+    /// A field with no engine session (a modal's, until M3b) still types.
+    #[test]
+    fn a_field_without_an_engine_session_types() {
+        let s = KeyCtx { field: FieldCaret::Live(FieldId::Palette), ..cx(Vim, Surface::Picker) };
+        assert_eq!(feed(&mut Router::default(), &s, "j"), Resolved::Declined);
+        let unsynced = KeyCtx { engine: None, ..in_url(Mode::Normal, false) };
+        assert_eq!(feed(&mut Router::default(), &unsynced, "j"), Resolved::Declined);
+        let arrows = KeyCtx { profile: Arrows, ..in_url(Mode::Normal, false) };
+        assert_eq!(feed(&mut Router::default(), &arrows, "j"), Resolved::Declined, "arrows has no engine");
+    }
+
+    /// Spec §5.6 and plan M3a Deviation 12: the opening keys say how.
+    #[test]
+    fn opening_keys_carry_their_open_mode() {
+        let enter = key(KeyCode::Enter);
+        let open = |seat| run(vec![Step::OpenAs(OpenAs::Insert(seat)), enter.clone()]);
+        let url = cx(Vim, Surface::UrlLine);
+        assert_eq!(feed(&mut Router::default(), &url, "i"), open(OpenSeat::Keep));
+        assert_eq!(feed(&mut Router::default(), &url, "a"), open(OpenSeat::After));
+        assert_eq!(feed(&mut Router::default(), &url, "I"), open(OpenSeat::FirstNonBlank));
+        assert_eq!(feed(&mut Router::default(), &url, "A"), open(OpenSeat::End));
+        let table = cx(Vim, Surface::Table(crate::components::editor::EditorTab::Headers));
+        assert_eq!(feed(&mut Router::default(), &table, "i"), open(OpenSeat::Keep));
+        assert_eq!(
+            feed(&mut Router::default(), &table, "a"),
+            run(vec![Step::OpenAs(OpenAs::Insert(OpenSeat::Keep)), sel(crate::action::Verb::Add)]),
+            "an add verb opens what it makes in Insert"
+        );
+        assert_eq!(feed(&mut Router::default(), &table, "o"), run(vec![enter]), "o opens in Normal");
+    }
+
+    /// Spec §8.3 for the field classes: whatever follows a field prefix,
+    /// the machine ends idle, and a following `x` is fresh.
+    #[test]
+    fn unknown_after_a_field_prefix_never_leaks() {
+        let s = in_url(Mode::Normal, false);
+        for prefix in ["q", "@", "m", "'", "`", "Z"] {
+            for c in (b'!'..=b'~').map(char::from) {
+                let mut r = Router::default();
+                feed(&mut r, &s, prefix);
+                r.resolve(Tok::Char(c).event(), &s);
+                assert_eq!(r.echo(), "", "{prefix}{c}");
+                assert_eq!(r.resolve(Tok::Char('x').event(), &s), run(eng("x")), "{prefix}{c}: x is fresh");
+            }
+        }
     }
 
     /// Feeds `keys`, returning what the last key resolved to.
@@ -395,7 +600,7 @@ mod tests {
             run(vec![sel(Verb::Put { above: true, count: 4 })]),
             "a put's count is capped by the surface"
         );
-        assert_eq!(feed(&mut Router::default(), &s, "a"), run(vec![sel(Verb::Add)]));
+        assert_eq!(feed(&mut Router::default(), &s, "a"), run(vec![Step::OpenAs(OpenAs::Insert(OpenSeat::Keep)), sel(Verb::Add)]));
         assert_eq!(feed(&mut Router::default(), &s, "3r"), run(vec![sel(Verb::Rename)]), "a count is ignored");
         let mut r = Router::default();
         assert_eq!(feed(&mut r, &s, "d"), Resolved::Consumed);
@@ -430,7 +635,7 @@ mod tests {
         assert_eq!(feed(&mut Router::default(), &s, "d"), run(vec![sel(Verb::Delete { count: 1 })]));
         assert_eq!(feed(&mut Router::default(), &s, "y"), run(vec![sel(Verb::Yank)]));
         assert_eq!(feed(&mut Router::default(), &s, "P"), run(vec![sel(Verb::Put { above: true, count: 1 })]));
-        assert_eq!(feed(&mut Router::default(), &s, "a"), run(vec![sel(Verb::Add)]));
+        assert_eq!(feed(&mut Router::default(), &s, "a"), run(vec![Step::OpenAs(OpenAs::Insert(OpenSeat::Keep)), sel(Verb::Add)]));
         assert_eq!(feed(&mut Router::default(), &s, "n"), Resolved::Declined, "n is no longer new");
         let env = cx(Arrows, Surface::ManageDetail(ManageTab::Environments));
         assert_eq!(feed(&mut Router::default(), &env, "t"), run(vec![sel(Verb::Tls)]));

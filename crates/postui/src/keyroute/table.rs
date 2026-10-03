@@ -5,6 +5,7 @@
 //! adds the list verbs in both profiles (spec §5.1–§5.4).
 
 use super::ctx::Surface;
+use super::engine_glue::OpenSeat;
 use super::notation::{self, Tok};
 use crate::action::{Action, Verb};
 use crate::config::KeyProfile;
@@ -59,6 +60,10 @@ pub enum Intent {
     /// A known key that does nothing here: `Z` and the key after it in a
     /// field, until M4's `ZZ` and `ZQ` (plan M3a Deviation 9).
     Swallow,
+    /// Open the field under the cursor in Insert: `key` opens it as it does
+    /// today, and the end-of-event sync seats the engine (spec §5.6; plan
+    /// M3a Deviation 12).
+    Open { key: Named, seat: OpenSeat },
     /// The key goes on as typed: the surface's own arm already does what
     /// the vim key means (plan M1 Deviation 8).
     Pass,
@@ -265,6 +270,7 @@ fn new_option() -> Action {
 }
 
 const DOWN: Named = Named::key(KeyCode::Down);
+const ENTER: Named = Named::key(KeyCode::Enter);
 const HOME: Named = Named::key(KeyCode::Home);
 const UP: Named = Named::key(KeyCode::Up);
 pub(crate) const ESC: Named = Named::key(KeyCode::Esc);
@@ -307,7 +313,11 @@ pub static TABLE: &[Binding] = &[
     row("$", Surfaces::RESPONSE, Intent::Key(Named::key(KeyCode::End)), CountRule::Ignore),
     // Key list §6: opening.
     row("o", Surfaces::OPENS_ROW, Intent::Key(Named::key(KeyCode::Enter)), CountRule::Ignore),
-    row("i", Surfaces::OPENS_FIELD, Intent::Key(Named::key(KeyCode::Enter)), CountRule::Ignore),
+    row("i", Surfaces::OPENS_FIELD, Intent::Open { key: ENTER, seat: OpenSeat::Keep }, CountRule::Ignore),
+    // Spec §5.6: the closed URL line's own openings.
+    row("a", Surfaces::URL_LINE, Intent::Open { key: ENTER, seat: OpenSeat::After }, CountRule::Ignore),
+    row("I", Surfaces::URL_LINE, Intent::Open { key: ENTER, seat: OpenSeat::FirstNonBlank }, CountRule::Ignore),
+    row("A", Surfaces::URL_LINE, Intent::Open { key: ENTER, seat: OpenSeat::End }, CountRule::Ignore),
     // Key list §7: the response's own search keys go on as typed.
     row("/", Surfaces::RESPONSE, Intent::Pass, CountRule::Ignore),
     row("n", Surfaces::RESPONSE, Intent::Pass, CountRule::Ignore),
@@ -612,7 +622,7 @@ mod tests {
             if b.count == CountRule::Pass {
                 assert!(edge || counted_verb, "{}: Pass is for Edge rows, dd and p", b.keys);
             }
-            if matches!(b.intent, Intent::Pass | Intent::Note(_) | Intent::Swallow) {
+            if matches!(b.intent, Intent::Pass | Intent::Note(_) | Intent::Swallow | Intent::Open { .. }) {
                 assert_eq!(b.count, CountRule::Ignore, "{}", b.keys);
             }
             if b.profile.has(KeyProfile::Arrows) {

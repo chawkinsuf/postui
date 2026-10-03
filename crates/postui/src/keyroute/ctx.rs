@@ -23,6 +23,10 @@ pub struct KeyCtx {
     /// The most rows a repeated motion can move on this surface: a
     /// replay past it would change nothing (plan M1 Deviation 11).
     pub cap: usize,
+    /// The engine's mode and pending state while an engine session is live
+    /// on the field with the caret (spec §3.2, plan M3a). `None` anywhere
+    /// else, and for a field that types modelessly.
+    pub engine: Option<EngineView>,
 }
 
 /// What a keycap's spelling depends on (spec §4.6): the profile, the

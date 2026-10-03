@@ -853,15 +853,18 @@ fn every_verb_chip_resolves_to_its_chip() {
                 let Some(keys) = table::keys_for(profile, surface, &Action::OnSelection(verb)) else {
                     continue; // no key in this profile: the chip drops its keycap
                 };
-                let ctx = KeyCtx { profile, surface, field: app.field_caret(), user_bare: None, cap: usize::MAX };
+                let ctx = KeyCtx { profile, surface, field: app.field_caret(), user_bare: None, cap: usize::MAX, engine: None };
                 let mut router = Router::default();
                 let mut last = Resolved::Declined;
                 for ev in crate::keyroute::notation::events(keys) {
                     last = router.resolve(ev, &ctx);
                 }
+                let ran: Vec<&Step> = match &last {
+                    Resolved::Run(steps) => steps.iter().filter(|s| !matches!(s, Step::OpenAs(_))).collect(),
+                    _ => Vec::new(),
+                };
                 assert!(
-                    matches!(&last, Resolved::Run(steps) if matches!(steps.as_slice(),
-                        [Step::Action(Action::OnSelection(v))] if v.kind() == verb.kind())),
+                    matches!(ran.as_slice(), [Step::Action(Action::OnSelection(v))] if v.kind() == verb.kind()),
                     "{profile:?} {f:?}: {keys:?} ran {last:?}, not the {label} chip's verb"
                 );
                 checked += 1;
