@@ -3447,7 +3447,7 @@ impl App {
             }
             Action::BodyClear => {
                 self.no_coalesce = true;
-                if !self.editor.body_text().is_empty() {
+                if !self.editor.body_text().is_empty() && !self.engine_replace_body("") {
                     self.editor.set_body_text("");
                 }
                 true
@@ -4022,6 +4022,8 @@ impl App {
                         // reloading.
                         if self.editor.slug.as_deref() == Some(from.as_str()) {
                             self.editor.slug = Some(slug.clone());
+                            // The body's engine state follows too (amendment C2).
+                            self.glue.follow_body(Some(&slug));
                             // The rename wrote the new display name to
                             // disk; mirror it in both the live fields and
                             // the saved snapshot so a rename alone never
@@ -4139,7 +4141,11 @@ impl App {
                 }
                 self.commit_table_edit();
                 let req = self.editor.current_request();
-                self.create_or_save_as(&name, move |_| req.clone());
+                if self.create_or_save_as(&name, move |_| req.clone()) {
+                    // The editor holds the same text under its new slug: the
+                    // body's engine state follows it (amendment C2).
+                    self.glue.follow_body(self.editor.slug.as_deref());
+                }
                 true
             }
             Action::PromptSaveScratch(then) => {
@@ -4162,6 +4168,7 @@ impl App {
                 // project) runs only when the save lands — a bad name or a
                 // write failure toasts and stays put, content intact.
                 if self.create_or_save_as(&name, move |_| req.clone()) {
+                    self.glue.follow_body(self.editor.slug.as_deref());
                     self.apply(*then);
                 }
                 true
@@ -9438,7 +9445,11 @@ impl App {
         }
         match transform(&text) {
             Ok(formatted) => {
-                self.editor.set_body_text(&formatted);
+                // With the body's engine session open, the rewrite is one
+                // engine step that `u` takes back (spec §3.7).
+                if !self.engine_replace_body(&formatted) {
+                    self.editor.set_body_text(&formatted);
+                }
                 true
             }
             Err(e) => {
@@ -10407,6 +10418,9 @@ impl App {
             && self.focus == PaneId::Editor
             && self.editor.sub_focus == SubFocus::Content
             && self.editor.active_tab == EditorTab::Body
+            // In vim the engine owns the body's motions: the chord is the
+            // keymap's (plan M3a Deviation 6).
+            && self.glue.owned() != Some(crate::keyroute::FieldId::Body)
             && let Some(a) = self.focused_component_key(ev)
         {
             return self.update(a);

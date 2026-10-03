@@ -463,3 +463,191 @@ fn an_engine_note_is_an_info_toast() {
     feed(&mut app, "U");
     assert!(app.toasts.messages().iter().any(|m| m.contains("not supported")), "{:?}", app.toasts.messages());
 }
+
+const BODY: &str = "{\n  \"a\": 1\n}";
+
+fn body(app: &App) -> String {
+    app.editor.body_text()
+}
+
+fn caret(app: &App) -> (usize, usize) {
+    (app.editor.body.cursor.row, app.editor.body.cursor.col)
+}
+
+#[test]
+fn the_body_runs_the_engine_in_vim() {
+    let mut app = vim(Fixture::Body);
+    feed(&mut app, "jdd");
+    assert_eq!(app.glue.session(), FieldSession::Live(FieldId::Body));
+    assert_eq!(body(&app), "{\n}");
+    feed(&mut app, "u");
+    assert_eq!(body(&app), BODY);
+    feed(&mut app, "ggjA,<Esc>");
+    assert_eq!(body(&app), "{\n  \"a\": 1,\n}");
+    assert_eq!(app.mode_indicator(), Some("NORMAL"));
+}
+
+/// Spec §5.6: Esc in idle Normal is today's routing; the body blurs.
+#[test]
+fn esc_in_idle_normal_blurs_the_body() {
+    let mut app = vim(Fixture::Body);
+    feed(&mut app, "<Esc>");
+    assert_eq!(app.editor.sub_focus, SubFocus::None);
+    assert_eq!(app.glue.session(), FieldSession::None);
+}
+
+/// Spec §3.7 item 4 and plan M3a Deviation 6: edtui's own keys never run
+/// in vim. ctrl+e (edtui's end of line) and ctrl+k (kill line) are bound
+/// to nothing, in Normal and in Insert.
+#[test]
+fn edtui_never_runs_in_the_vim_body() {
+    let mut app = vim(Fixture::Body);
+    let before = (body(&app), caret(&app));
+    feed(&mut app, "<C-e><C-k>");
+    assert_eq!((body(&app), caret(&app)), before);
+    feed(&mut app, "i<C-e><C-k><Esc>");
+    assert_eq!((body(&app), caret(&app)), before);
+}
+
+/// Plan M3a Deviation 6: the body's alt+←/→ word jump is arrows-only; in
+/// vim the keymap's chord runs.
+#[test]
+fn alt_arrows_are_the_keymaps_in_the_vim_body() {
+    let mut app = vim(Fixture::Body);
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
+    assert_ne!(app.editor.active_tab, EditorTab::Body, "the tab cycle ran");
+    assert_eq!(body(&app), BODY);
+}
+
+/// Spec §3.7: the body gets one app step per session.
+#[test]
+fn a_body_session_is_one_app_step() {
+    let mut app = vim(Fixture::Body);
+    let steps = app.history.undo_len();
+    feed(&mut app, "xjx");
+    assert_eq!(app.history.undo_len(), steps, "the session holds its edits");
+    feed(&mut app, "<Esc>");
+    assert_eq!(app.history.undo_len(), steps + 1);
+    feed(&mut app, "u");
+    assert_eq!(body(&app), BODY);
+}
+
+/// Piece 3 §3.11: the body's state outlives a visit elsewhere.
+#[test]
+fn re_entering_the_body_keeps_its_history() {
+    let mut app = vim(Fixture::Body);
+    feed(&mut app, "x<Esc>");
+    feed(&mut app, "jj");
+    assert_eq!(app.glue.session(), FieldSession::Live(FieldId::Body), "back in by keyboard");
+    feed(&mut app, "u");
+    assert_eq!(body(&app), BODY, "the engine's step from the first visit");
+}
+
+/// Spec §3.7: a format with the body open is one engine step.
+#[test]
+fn a_format_with_the_body_open_is_one_engine_step() {
+    let mut app = vim(Fixture::Body);
+    app.editor.set_body_text("{\"a\":1}");
+    app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::ALT));
+    assert_eq!(body(&app), postui_core::json::format("{\"a\":1}").unwrap());
+    feed(&mut app, "u");
+    assert_eq!(body(&app), "{\"a\":1}", "u takes the format back");
+}
+
+/// Piece 3 §4.4: the engine pages by the rows the body last drew.
+#[test]
+fn ctrl_d_pages_by_the_drawn_body() {
+    let mut app = vim(Fixture::Body);
+    let lines: Vec<String> = (0..100).map(|i| format!("  \"k{i}\": {i},")).collect();
+    app.editor.set_body_text(&lines.join("\n"));
+    draw(&mut app);
+    feed(&mut app, "<C-d>");
+    let half = usize::from(app.editor.last_body_area.unwrap().height) / 2;
+    assert_eq!(caret(&app).0, half);
+}
+
+/// Plan M3a Deviation 19: the body's history never follows into another
+/// request. (`ForceCreateRequest`'s `begin_op` also flushes the session;
+/// the glue's own test `the_body_state_follows_the_open_request` pins the
+/// slug rule alone, and Task 8's `a_request_switch_clears_the_search_highlight`
+/// pins it in the app.)
+#[test]
+fn a_request_switch_drops_the_bodys_history() {
+    let mut app = vim(Fixture::Body);
+    feed(&mut app, "x");
+    assert!(app.glue.can_undo(EngineKind::Body));
+    app.update(Action::ForceCreateRequest("other".into()));
+    feed(&mut app, "<Esc>");
+    assert!(!app.glue.can_undo(EngineKind::Body));
+}
+
+/// Amendment C2: the body's state follows the open request's slug when a
+/// rename changes it in place. The edit is from an earlier visit, so the
+/// rename's `begin_op` has no live session edits to flush.
+#[test]
+fn renaming_the_open_request_keeps_the_bodys_history() {
+    let mut app = vim(Fixture::Body);
+    feed(&mut app, "x<Esc>jj");
+    assert_eq!(app.glue.session(), FieldSession::Live(FieldId::Body));
+    let from = app.editor.slug.clone().expect("the fixture's request is saved");
+    app.update(Action::RenameRequest { from: from.clone(), to: "renamed".into() });
+    assert_ne!(app.editor.slug.as_deref(), Some(from.as_str()), "the editor follows the new slug");
+    feed(&mut app, "u");
+    assert_eq!(body(&app), BODY, "the engine's step, not the app's rename");
+}
+
+/// Amendment C2: a scratch saved under a name keeps the body's state.
+#[test]
+fn saving_a_scratch_keeps_the_bodys_history() {
+    let mut app = App::new_for_test();
+    assert_eq!(app.editor.slug, None, "a scratch");
+    app.editor.method = postui_core::model::Method::Post;
+    app.editor.set_body_text(BODY);
+    app.editor.active_tab = EditorTab::Body;
+    app.editor.preferred_tab = EditorTab::Body;
+    app.focus = PaneId::Editor;
+    app.editor.sub_focus = SubFocus::Content;
+    app.capture_undo();
+    app.use_profile(KeyProfile::Vim);
+    draw(&mut app);
+    feed(&mut app, "x<Esc>jj");
+    assert_eq!(app.glue.session(), FieldSession::Live(FieldId::Body));
+    app.update(Action::SaveRequestAs("saved".into()));
+    assert!(app.editor.slug.is_some(), "the scratch is saved");
+    feed(&mut app, "u");
+    assert_eq!(body(&app), BODY, "the engine's step from before the save");
+}
+
+/// Amendment C3: a carry out of the body lends the real body to the
+/// engine, so leaving it strips an unused autoindent there, and its
+/// history survives for the next visit.
+#[test]
+fn a_carry_out_of_the_body_leaves_the_real_body() {
+    use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    let mut app = vim(Fixture::Body);
+    feed(&mut app, "jo");
+    assert_eq!(body(&app), "{\n  \"a\": 1\n  \n}", "o autoindents");
+    let area = app.editor.last_url_text_area.expect("the URL line is drawn");
+    let at = |kind| MouseEvent { kind, column: area.x, row: area.y, modifiers: KeyModifiers::NONE };
+    app.handle_mouse(at(MouseEventKind::Down(MouseButton::Left)));
+    app.handle_mouse(at(MouseEventKind::Up(MouseButton::Left)));
+    assert_eq!(app.glue.session(), FieldSession::Live(FieldId::Url), "the click carried the session");
+    let text = body(&app);
+    assert!(!text.split('\n').any(|l| !l.is_empty() && l.trim().is_empty()), "a whitespace-only line is left: {text:?}");
+    feed(&mut app, "<Esc><Esc>j");
+    assert_eq!(app.glue.session(), FieldSession::Live(FieldId::Body), "back in by keyboard");
+    feed(&mut app, "u");
+    assert_eq!(body(&app), BODY, "the body's history survived the carry");
+}
+
+/// Review Focus 4: the arrows body still goes through edtui.
+#[test]
+fn the_arrows_body_still_types_through_edtui() {
+    let mut app = build(Fixture::Body);
+    draw(&mut app);
+    feed(&mut app, "x");
+    assert_eq!(body(&app), format!("x{BODY}"), "a letter types");
+    feed(&mut app, "<C-e>");
+    assert_eq!(caret(&app), (0, 2), "edtui's end of line");
+    assert_eq!(app.glue.session(), FieldSession::None);
+}

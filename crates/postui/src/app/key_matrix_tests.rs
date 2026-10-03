@@ -48,6 +48,9 @@ pub(super) enum Fixture {
     ManageSpaces,
     /// `VarList` with the selector `user` under the cursor.
     VarListGroup,
+    /// An open POST request whose body is `{`, `  "a": 1`, `}`, the body
+    /// focused with the caret on row 0.
+    Body,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -414,6 +417,16 @@ pub(super) fn build(f: Fixture) -> App {
             app.manage.list.cursor = 0;
         }
         VarListGroup => select_var_row(&mut app, VmRow::Group("user".into())),
+        Body => {
+            app.update(Action::CreateRequest("matrix".into()));
+            app.editor.method = postui_core::model::Method::Post;
+            app.editor.set_body_text("{\n  \"a\": 1\n}");
+            app.editor.active_tab = EditorTab::Body;
+            app.editor.preferred_tab = EditorTab::Body;
+            app.focus = PaneId::Editor;
+            app.editor.sub_focus = SubFocus::Content;
+            app.capture_undo();
+        }
     }
     app.toasts = Default::default();
     app

@@ -317,37 +317,46 @@ impl Glue {
     }
 
     /// The caret moved straight from the session's field to `to` in one
-    /// event (piece 3 §4.2 `carry`): the mode carries. The source is left
-    /// through a ghost of what the glue last saw, since the key that moved
-    /// the caret may have dropped its buffer (plan M3a Deviation 4).
+    /// event (piece 3 §4.2 `carry`): the mode carries. The source is gone
+    /// (the key that moved the caret committed its cell), so it is left
+    /// through a ghost of what the glue last saw (plan M3a Deviation 4).
     pub fn carry(&mut self, to: &mut FieldBuf<'_>) {
         let Some(seen) = self.seen.take() else {
             return self.enter(to, Start::Normal, OpenSeat::Keep);
         };
-        match (Ghost::of(&seen), &mut *to) {
-            (Ghost::Line(mut from), FieldBuf::Line(input)) => {
+        let mut ghost = Ghost::of(&seen);
+        self.carry_from(&mut ghost.buf(), to);
+    }
+
+    /// [`Glue::carry`] from a source that still exists, lent with `to`
+    /// (amendment C3): the engine leaves the real text, so an unused
+    /// autoindent goes from the body itself, and the body's history still
+    /// fits its text at the next visit.
+    pub fn carry_from(&mut self, from: &mut FieldBuf<'_>, to: &mut FieldBuf<'_>) {
+        match (from, &mut *to) {
+            (FieldBuf::Line(from), FieldBuf::Line(input)) => {
                 let mut old = std::mem::take(&mut self.line);
                 self.engine.carry(
-                    Target { buf: &mut OneLineBuf::new(&mut from), state: &mut old },
+                    Target { buf: &mut OneLineBuf::new(from), state: &mut old },
                     Target { buf: &mut OneLineBuf::new(input), state: &mut self.line },
                 );
             }
-            (Ghost::Line(mut from), FieldBuf::Body(state, visual)) => {
+            (FieldBuf::Line(from), FieldBuf::Body(state, visual)) => {
                 let mut old = std::mem::take(&mut self.line);
                 self.engine.carry(
-                    Target { buf: &mut OneLineBuf::new(&mut from), state: &mut old },
+                    Target { buf: &mut OneLineBuf::new(from), state: &mut old },
                     Target { buf: &mut BodyBuf::new(state, visual), state: &mut self.body },
                 );
             }
-            (Ghost::Body(mut from, mut paint), FieldBuf::Line(input)) => {
+            (FieldBuf::Body(from, paint), FieldBuf::Line(input)) => {
                 self.line = BufState::new();
                 self.engine.carry(
-                    Target { buf: &mut BodyBuf::new(&mut from, &mut paint), state: &mut self.body },
+                    Target { buf: &mut BodyBuf::new(from, paint), state: &mut self.body },
                     Target { buf: &mut OneLineBuf::new(input), state: &mut self.line },
                 );
             }
             // The body is one field: a carry never goes from it to itself.
-            (Ghost::Body(..), FieldBuf::Body(..)) => {}
+            (FieldBuf::Body(..), FieldBuf::Body(..)) => {}
         }
         self.sweeping = false;
         self.saw(to);
@@ -429,6 +438,18 @@ impl Glue {
         }
         self.body = BufState::new();
         self.body_owner = Some(owner);
+    }
+
+    /// The open request's slug changed in place (a rename, a scratch saved
+    /// under a name): the body's state follows it, its history and the
+    /// search highlight kept (amendment C2). A request switch still goes
+    /// through [`Glue::own_body`]. Only vim keeps the owner current (every
+    /// sync); in arrows it may name a request closed since, whose state
+    /// must not be adopted, so there the next vim sync decides.
+    pub fn follow_body(&mut self, slug: Option<&str>) {
+        if self.profile == Some(KeyProfile::Vim) {
+            self.body_owner = Some(slug.map(str::to_string));
+        }
     }
 
     /// The app history took the live session's edits as a step
@@ -572,6 +593,41 @@ mod tests {
         assert!(g.can_undo(EngineKind::Body), "the same request keeps it");
         g.own_body(Some("main/b"));
         assert!(!g.can_undo(EngineKind::Body), "a switch drops it");
+    }
+
+    /// Amendment C2: a slug changed in place (a rename) keeps the state.
+    #[test]
+    fn the_body_state_follows_a_rename() {
+        let mut g = Glue::default();
+        g.set_profile(KeyProfile::Vim);
+        let mut body = EditorState::new(Lines::from("abc"));
+        let mut visual: BodyVisual = None;
+        g.own_body(Some("main/a"));
+        g.enter(&mut FieldBuf::Body(&mut body, &mut visual), Start::Normal, OpenSeat::Keep);
+        keys(&mut g, &mut FieldBuf::Body(&mut body, &mut visual), "x");
+        g.follow_body(Some("main/renamed"));
+        g.own_body(Some("main/renamed"));
+        assert!(g.can_undo(EngineKind::Body), "the renamed request keeps it");
+    }
+
+    /// Amendment C3: a carry out of the real body leaves it there, so an
+    /// unused autoindent goes from its text and its history still fits.
+    #[test]
+    fn a_carry_from_the_real_body_strips_its_autoindent() {
+        let mut g = Glue::default();
+        let mut body = EditorState::new(Lines::from("  a"));
+        let mut visual: BodyVisual = None;
+        g.own_body(Some("main/a"));
+        g.enter(&mut FieldBuf::Body(&mut body, &mut visual), Start::Normal, OpenSeat::Keep);
+        keys(&mut g, &mut FieldBuf::Body(&mut body, &mut visual), "o");
+        assert_eq!(body.lines.to_string(), "  a\n  ");
+        let mut url = LineInput::new("u");
+        g.carry_from(&mut FieldBuf::Body(&mut body, &mut visual), &mut FieldBuf::Line(&mut url));
+        assert_eq!((g.mode(), body.lines.to_string()), (Mode::Insert, "  a\n".to_string()));
+        g.leave(&mut FieldBuf::Line(&mut url));
+        g.enter(&mut FieldBuf::Body(&mut body, &mut visual), Start::Normal, OpenSeat::Keep);
+        keys(&mut g, &mut FieldBuf::Body(&mut body, &mut visual), "u");
+        assert_eq!(body.lines.to_string(), "  a", "the history survived");
     }
 
     /// Plan M3a Deviation 13: Vim's bracketed paste outside Insert.

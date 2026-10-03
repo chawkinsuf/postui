@@ -63,26 +63,49 @@ pub(crate) fn mode_word(mode: Mode) -> &'static str {
     }
 }
 
+/// `id`'s one-line buffer, or none when that field is not open (or is the
+/// body). Takes the parts of `App` that hold one, which leave the body
+/// free, so a carry out of the body can hold both (amendment C3).
+fn line_buf<'a>(
+    id: FieldId,
+    url: &'a mut LineInput,
+    table: &'a mut crate::components::table_editor::TableEditorState,
+    varmanager: &'a mut VarManager,
+    settings: &'a mut crate::components::settings::SettingsTab,
+) -> Option<FieldBuf<'a>> {
+    match id {
+        FieldId::Url => Some(FieldBuf::Line(url)),
+        FieldId::TableCell { .. } => table.editing.as_mut().map(|e| FieldBuf::Line(&mut e.input)),
+        FieldId::VmForm(_) => varmanager.form.editing.as_mut().map(|e| FieldBuf::Line(&mut e.input)),
+        FieldId::VmGrid { .. } => varmanager.grid.editing.as_mut().map(|e| FieldBuf::Line(&mut e.input)),
+        FieldId::Settings(_) => {
+            if settings.editing.is_some() {
+                Some(FieldBuf::Line(settings.input_mut()))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
 impl App {
     /// The glue and `id`'s buffer at once (disjoint fields), or no buffer
     /// when that field is not open.
     pub(crate) fn session_parts(&mut self, id: FieldId) -> (&mut Glue, Option<FieldBuf<'_>>) {
         let buf = match id {
-            FieldId::Url => Some(FieldBuf::Line(&mut self.editor.url)),
-            FieldId::TableCell { .. } => self.editor.table.editing.as_mut().map(|e| FieldBuf::Line(&mut e.input)),
             FieldId::Body => Some(FieldBuf::Body(&mut self.editor.body, &mut self.editor.body_visual)),
-            FieldId::VmForm(_) => self.varmanager.form.editing.as_mut().map(|e| FieldBuf::Line(&mut e.input)),
-            FieldId::VmGrid { .. } => self.varmanager.grid.editing.as_mut().map(|e| FieldBuf::Line(&mut e.input)),
-            FieldId::Settings(_) => {
-                if self.settings.editing.is_some() {
-                    Some(FieldBuf::Line(self.settings.input_mut()))
-                } else {
-                    None
-                }
-            }
-            _ => None,
+            _ => line_buf(id, &mut self.editor.url, &mut self.editor.table, &mut self.varmanager, &mut self.settings),
         };
         (&mut self.glue, buf)
+    }
+
+    /// The glue, the body and `to`'s buffer at once, for a carry out of the
+    /// body (amendment C3).
+    fn body_and(&mut self, to: FieldId) -> (&mut Glue, FieldBuf<'_>, Option<FieldBuf<'_>>) {
+        let body = FieldBuf::Body(&mut self.editor.body, &mut self.editor.body_visual);
+        let to = line_buf(to, &mut self.editor.url, &mut self.editor.table, &mut self.varmanager, &mut self.settings);
+        (&mut self.glue, body, to)
     }
 
     /// The field with an engine session now, and whether it has the caret
@@ -143,14 +166,7 @@ impl App {
                 let open = if switched_in { Some(OpenAs::Insert(OpenSeat::Keep)) } else { open_as };
                 self.open_session(id, open, !mouse);
             }
-            Edge::Carry(from, to) => {
-                self.unpaint(from, false);
-                let (glue, buf) = self.session_parts(to);
-                match buf {
-                    Some(mut buf) => glue.carry(&mut buf),
-                    None => glue.leave_ghost(),
-                }
-            }
+            Edge::Carry(from, to) => self.carry_session(from, to),
             // Spec §3.3: the close edge also drops the router's pending
             // keys (amendment A4-1).
             Edge::Close(id) => {
@@ -198,6 +214,32 @@ impl App {
             Some(OpenAs::Normal) | None => (Start::Normal, OpenSeat::Keep),
         };
         glue.enter(&mut buf, start, seat);
+    }
+
+    /// The caret moved from `from` straight to `to` (spec §3.3's carry). The
+    /// body still exists, so the engine leaves the real one (amendment C3):
+    /// an unused autoindent goes from its text, and its history still fits
+    /// that text at the next visit. A source that is gone (a cell the key
+    /// committed) is left through the glue's ghost, its stale paint cleared
+    /// (plan M3a Deviation 4), as is a body whose text was replaced since
+    /// the engine last saw it, as `close_session` treats it.
+    fn carry_session(&mut self, from: FieldId, to: FieldId) {
+        if from == FieldId::Body {
+            let (glue, mut body, to) = self.body_and(to);
+            if !glue.differs(&body) {
+                match to {
+                    Some(mut to) => glue.carry_from(&mut body, &mut to),
+                    None => glue.leave(&mut body),
+                }
+                return;
+            }
+        }
+        self.unpaint(from, false);
+        let (glue, buf) = self.session_parts(to);
+        match buf {
+            Some(mut buf) => glue.carry(&mut buf),
+            None => glue.leave_ghost(),
+        }
     }
 
     /// `id` lost the caret. Left in place while its buffer is still the one
@@ -310,6 +352,19 @@ impl App {
             self.engine_feedback(note, request);
         }
         Some(true)
+    }
+
+    /// The body's text replaced as one engine step while the body has an
+    /// engine session, live or parked (spec §3.7: format, minify, clear).
+    /// `false` leaves the rewrite to the caller.
+    pub(crate) fn engine_replace_body(&mut self, text: &str) -> bool {
+        if self.glue.owned() != Some(FieldId::Body) {
+            return false;
+        }
+        let (glue, buf) = self.session_parts(FieldId::Body);
+        let Some(mut buf) = buf else { return false };
+        glue.edit(&mut buf, &engine_glue::Edit::Whole(text));
+        true
     }
 
     /// An engine note is an Info toast; `"+y` copies through the app's
