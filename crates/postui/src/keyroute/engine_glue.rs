@@ -260,8 +260,34 @@ impl Glue {
         EngineView { mode: self.engine.mode(), pending: self.engine.pending() }
     }
 
+    /// The engine's half-typed command for the footer. A one-line field
+    /// has no prompt row, so there the open search prompt's pattern follows
+    /// its `/` or `?` (final review I-4); the body draws its own prompt.
     pub fn echo(&self) -> String {
-        self.engine.echo()
+        let echo = self.engine.echo();
+        let line = matches!(self.session, FieldSession::Live(id) if id.engine_kind() == Some(EngineKind::Line));
+        match self.engine.search_line() {
+            Some(search) if line => echo + &search.text,
+            _ => echo,
+        }
+    }
+
+    /// Whether the engine is in idle Normal, but for a count (and a
+    /// register, which undo ignores): a `u` or ctrl+r it hands back from
+    /// here found nothing to step in the field, so it is the app history's
+    /// (spec §3.7, repeated by the count). From Visual, Insert ctrl+o, or
+    /// with an operator or prefix pending it is not (final review M-1).
+    pub fn undo_ready(&self) -> bool {
+        if self.engine.mode() != Mode::Normal {
+            return false;
+        }
+        let echo = self.engine.echo();
+        let mut rest = echo.chars();
+        if echo.starts_with('"') {
+            rest.next();
+            rest.next();
+        }
+        rest.all(|c| c.is_ascii_digit())
     }
 
     fn state(&self, kind: EngineKind) -> &BufState {
@@ -410,9 +436,11 @@ impl Glue {
     /// The session's text was replaced outside the engine: start over on
     /// it in the same mode, with a fresh state (plan M3a Deviation 5). The
     /// replaced buffer is not left first: its positions no longer fit.
+    /// Insert ctrl+o was typing too, so it re-enters as Insert, as Insert
+    /// and Replace do (the user's ruling, final review).
     pub fn rebase(&mut self, buf: &mut FieldBuf<'_>) {
         let start = match self.engine.mode() {
-            Mode::Insert | Mode::Replace => Start::Insert,
+            Mode::Insert | Mode::Replace | Mode::InsertNormal { .. } => Start::Insert,
             _ => Start::Normal,
         };
         if matches!(buf, FieldBuf::Body(..)) {

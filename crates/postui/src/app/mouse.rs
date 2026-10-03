@@ -30,7 +30,13 @@ impl App {
         }
         // A button can open, move or close a field; motion and the wheel
         // cannot, so only a button event syncs the session (spec §3.1).
-        let button = matches!(m.kind, MouseEventKind::Down(_) | MouseEventKind::Up(_) | MouseEventKind::Drag(_));
+        // Of the drags only the left button's sweeps a selection: some
+        // terminals (Ghostty) report hover as `Drag(Right)`, and each sync
+        // reads the whole body (final review T4).
+        let button = matches!(
+            m.kind,
+            MouseEventKind::Down(_) | MouseEventKind::Up(_) | MouseEventKind::Drag(MouseButton::Left)
+        );
         if button {
             self.sync_session(None, super::fields::Cause::Before);
         }

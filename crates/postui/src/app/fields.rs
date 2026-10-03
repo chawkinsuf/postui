@@ -152,6 +152,7 @@ impl App {
             if was == Some(KeyProfile::Vim) {
                 self.unpaint(FieldId::Body, true);
             }
+            self.editor.body_engine = false;
             return;
         }
         self.glue.own_body(self.editor.slug.as_deref());
@@ -187,6 +188,7 @@ impl App {
             Some((id, false)) => FieldSession::Parked(id),
             None => FieldSession::None,
         });
+        self.editor.body_engine = self.glue.owned() == Some(FieldId::Body);
         let how = match cause {
             Cause::Mouse(how) => how,
             Cause::Key { routed: true } if matches!(edge, Edge::Same(_)) => Some(Settled::Key),
@@ -202,18 +204,28 @@ impl App {
 
     /// `id` got the caret: the engine enters it in the mode the key asked
     /// for, else Normal (spec §5.6; plan M3a Deviation 12). A keyboard open
-    /// drops a GUI selection (the Settings field selects all for arrows).
+    /// drops a GUI selection (the Settings field selects all for arrows). A
+    /// press that opened a one-line field keeps the anchor it planted, which
+    /// seating the caret drops, so a drag that follows selects (final
+    /// review I-3; the body's anchor lives apart from its caret).
     fn open_session(&mut self, id: FieldId, open: Option<OpenAs>, keyboard: bool) {
         let (glue, buf) = self.session_parts(id);
         let Some(mut buf) = buf else { return };
-        if keyboard && let FieldBuf::Line(input) = &mut buf {
-            input.clear_selection();
+        let mut pressed = false;
+        if let FieldBuf::Line(input) = &mut buf {
+            if keyboard {
+                input.clear_selection();
+            }
+            pressed = !keyboard && input.click_anchored();
         }
         let (start, seat) = match open {
             Some(OpenAs::Insert(seat)) => (Start::Insert, seat),
             Some(OpenAs::Normal) | None => (Start::Normal, OpenSeat::Keep),
         };
         glue.enter(&mut buf, start, seat);
+        if pressed && let FieldBuf::Line(input) = &mut buf {
+            input.begin_mouse_selection();
+        }
     }
 
     /// The caret moved from `from` straight to `to` (spec §3.3's carry). The
@@ -308,6 +320,9 @@ impl App {
             return None;
         }
         let view = self.view_ctx(id);
+        // Read before the key: whether a `u` or ctrl+r it hands back means
+        // the field had nothing to step (final review M-1).
+        let idle = self.glue.undo_ready();
         let out = {
             let (glue, buf) = self.session_parts(id);
             glue.handle(ev, &mut buf?, &view)
@@ -318,7 +333,7 @@ impl App {
                 self.after_typed(id, ev);
                 Ran::consumed()
             }
-            Outcome::Declined { count, keys } => self.route_declined(id, count, keys),
+            Outcome::Declined { count, keys } => self.route_declined(id, count, keys, idle),
         })
     }
 
@@ -468,13 +483,17 @@ impl App {
         }
     }
 
-    /// A key the engine handed back (plan M3a Deviation 6).
-    fn route_declined(&mut self, id: FieldId, count: Option<usize>, keys: Vec<KeyEvent>) -> Ran {
+    /// A key the engine handed back (plan M3a Deviation 6). `idle`: the
+    /// engine was in idle Normal before the key (`Glue::undo_ready`).
+    fn route_declined(&mut self, id: FieldId, count: Option<usize>, keys: Vec<KeyEvent>, idle: bool) -> Ran {
         let n = count.unwrap_or(1);
         // The field had nothing to step: the app history's turn (spec §3.7).
+        // Only from idle Normal: in Visual, or with an operator pending, the
+        // engine hands `u` or ctrl+r back as a key it has no use for, and
+        // Vim does nothing (final review M-1).
         match keys.last().and_then(Tok::of) {
-            Some(Tok::Char('u')) => return self.run_steps(vec![Step::Action(Action::Undo); n]),
-            Some(Tok::Ctrl('r')) => return self.run_steps(vec![Step::Action(Action::Redo); n]),
+            Some(Tok::Char('u')) if idle => return self.run_steps(vec![Step::Action(Action::Undo); n]),
+            Some(Tok::Ctrl('r')) if idle => return self.run_steps(vec![Step::Action(Action::Redo); n]),
             _ => {}
         }
         let cap = self.repeat_cap(self.surface());

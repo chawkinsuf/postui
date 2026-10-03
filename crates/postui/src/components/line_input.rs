@@ -296,6 +296,12 @@ impl LineInput {
         self.break_run();
     }
 
+    /// A click planted the anchor ([`Self::begin_mouse_selection`]) and no
+    /// drag has extended it yet.
+    pub(crate) fn click_anchored(&self) -> bool {
+        self.anchor.is_some() && self.word_anchor.is_none() && self.selection().is_none()
+    }
+
     /// Extends the live mouse selection to char index `idx`: word-wise
     /// when the sweep began with a double-click word select (the selection
     /// is the union of the anchored word and the word under the pointer —

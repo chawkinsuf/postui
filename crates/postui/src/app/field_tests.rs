@@ -283,6 +283,86 @@ fn text_replaced_under_a_session_rebases_it() {
     assert_eq!(url(&app).0, "xyz", "the next key edits the new text");
 }
 
+/// Final review, the user's ruling on plan M3a Deviation 5: text replaced
+/// under Insert ctrl+o re-enters as Insert, as Insert itself does.
+#[test]
+fn a_rebase_under_insert_ctrl_o_resumes_insert() {
+    use super::fields::Cause;
+    let mut app = url_line("abc");
+    feed(&mut app, "<CR>A<C-o>");
+    assert_eq!(app.mode_indicator(), Some("(insert)"));
+    app.editor.url = LineInput::new("wxyz");
+    app.sync_session(None, Cause::Before);
+    assert!(!app.glue.can_undo(EngineKind::Line), "the session started over");
+    assert_eq!(app.mode_indicator(), Some("INSERT"));
+}
+
+/// Final review T4: the user's terminal sends hover as `Drag(Right)`, so
+/// only a left-button drag (and any press or release) syncs the session.
+#[test]
+fn a_right_button_drag_does_not_sync_the_session() {
+    use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    let mut app = url_line("abc");
+    feed(&mut app, "<CR>x");
+    assert!(app.glue.can_undo(EngineKind::Line));
+    app.editor.url = LineInput::new("wxyz");
+    let hover = MouseEvent { kind: MouseEventKind::Drag(MouseButton::Right), column: 0, row: 0, modifiers: KeyModifiers::NONE };
+    app.handle_mouse(hover);
+    assert!(app.glue.can_undo(EngineKind::Line), "no sync ran, so no rebase");
+    feed(&mut app, "0");
+    assert!(!app.glue.can_undo(EngineKind::Line), "a key's sync still rebases");
+}
+
+/// Final review I-3: a press-drag that opens a closed field selects, as it
+/// does on an open one (and as arrows does).
+#[test]
+fn a_press_drag_over_the_closed_url_selects() {
+    use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    let mut app = url_line("https://x.test/ab");
+    let area = app.editor.last_url_text_area.expect("the URL line is drawn");
+    let at = |kind, col| MouseEvent { kind, column: area.x + col, row: area.y, modifiers: KeyModifiers::NONE };
+    app.handle_mouse(at(MouseEventKind::Down(MouseButton::Left), 2));
+    draw(&mut app);
+    app.handle_mouse(at(MouseEventKind::Drag(MouseButton::Left), 8));
+    app.handle_mouse(at(MouseEventKind::Up(MouseButton::Left), 8));
+    assert_eq!(app.mode_indicator(), Some("VISUAL"));
+    assert_eq!(app.editor.url.paint_span(), Some((2, 8)), "`tps://`, as arrows selects it");
+}
+
+/// I-3's body twin: the body opened by a press from another pane.
+#[test]
+fn a_press_drag_into_the_body_from_another_pane_selects() {
+    use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    let mut app = vim(Fixture::Body);
+    app.focus = PaneId::Sidebar;
+    let buf = draw_buffer(&mut app);
+    assert_eq!(app.glue.session(), FieldSession::None);
+    let area = app.editor.last_body_area.expect("the body is drawn");
+    let y = area.y + 1;
+    let x = (area.x..area.right()).find(|&x| buf[(x, y)].symbol() == "\"").expect("row 1 shows `\"a\"`");
+    let at = |kind, x| MouseEvent { kind, column: x, row: y, modifiers: KeyModifiers::NONE };
+    app.handle_mouse(at(MouseEventKind::Down(MouseButton::Left), x));
+    assert_eq!(app.glue.session(), FieldSession::Live(FieldId::Body));
+    draw(&mut app);
+    app.handle_mouse(at(MouseEventKind::Drag(MouseButton::Left), x + 2));
+    app.handle_mouse(at(MouseEventKind::Up(MouseButton::Left), x + 2));
+    assert_eq!(app.mode_indicator(), Some("VISUAL"));
+    let span = app.editor.body_visual.map(|(a, b)| ((a.row, a.col), (b.row, b.col)));
+    assert_eq!(span, Some(((1, 2), (1, 4))), "`\"a\"`");
+}
+
+/// Final review I-4: a one-line field has no prompt row, so the footer
+/// echo shows the pattern as it is typed.
+#[test]
+fn a_search_in_a_one_line_field_echoes_its_pattern() {
+    let mut app = url_line("foo bar");
+    feed(&mut app, "<CR>0/fo");
+    assert_eq!(app.key_echo(), "/fo");
+    assert_eq!(app.vim_status().as_deref(), Some("SEARCH  /fo"));
+    feed(&mut app, "<Esc>");
+    assert_eq!(app.key_echo(), "");
+}
+
 /// Spec §3.8 and plan M3a Deviation 14.
 #[test]
 fn the_mode_word_follows_the_engine() {
@@ -439,6 +519,54 @@ fn a_palette_undo_over_an_edited_body_steps_the_engine() {
     feed(&mut app, "u");
     let after = snapshot(&app);
     assert!(after.same_but_field(&before), "undo did not restore exactly:\n{}", snapshot_diff(&before, &after));
+}
+
+/// Final review M-1: a declined trailing ctrl+r is the app's Redo only when
+/// the engine was in idle Normal before it. In Visual, or with an operator
+/// pending, Vim does nothing.
+#[test]
+fn a_declined_ctrl_r_outside_idle_normal_is_not_an_app_redo() {
+    for keys in ["v<C-r>", "d<C-r>"] {
+        let mut app = url_line("abc");
+        app.history.break_coalescing();
+        app.editor.url = LineInput::new("abcdef");
+        app.capture_undo();
+        feed(&mut app, "u");
+        assert_eq!(url(&app).0, "abc", "the app step undone");
+        feed(&mut app, "<CR>");
+        feed(&mut app, keys);
+        assert_eq!(url(&app).0, "abc", "{keys}: nothing redid");
+        assert_eq!(app.history.redo_len(), 1, "{keys}: the redo is still there");
+    }
+}
+
+/// M-1's guard: a count before `u` still goes to the app history, repeated
+/// (spec §3.7).
+#[test]
+fn a_counted_u_with_nothing_to_undo_in_the_field_steps_the_app_history() {
+    let mut app = url_line("a");
+    for text in ["ab", "abc"] {
+        app.history.break_coalescing();
+        app.editor.url = LineInput::new(text);
+        app.capture_undo();
+    }
+    feed(&mut app, "<CR>2u");
+    assert_eq!(url(&app).0, "a");
+}
+
+/// Final review I-1: shift+Tab in the vim body's Insert never runs the
+/// body component's dedent, which would edit outside the engine and wipe
+/// the body's engine history.
+#[test]
+fn shift_tab_in_the_vim_body_never_dedents() {
+    let mut app = vim(Fixture::Body);
+    feed(&mut app, "jxi");
+    assert_eq!(body(&app), "{\n \"a\": 1\n}");
+    app.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+    app.capture_undo();
+    draw(&mut app);
+    assert_eq!(body(&app), "{\n \"a\": 1\n}", "not dedented");
+    assert!(app.glue.can_undo(EngineKind::Body), "the engine's history survives");
 }
 
 /// Amendment C1: ctrl+z in Insert, before the engine has committed a step,
