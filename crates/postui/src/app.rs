@@ -227,6 +227,9 @@ pub struct App {
     pub keymap: crate::keys::Keymap,
     /// The key router's pending keys (piece 4 spec §3.4).
     pub router: crate::keyroute::Router,
+    /// The vim profile's text engine and its field session (spec §3.7):
+    /// the one door to the engine (`keyroute::engine_glue`).
+    pub(crate) glue: crate::keyroute::engine_glue::Glue,
     /// Whether the last `Action::Undo` or `Action::Redo` stepped anything:
     /// a counted `u` or ctrl+r stops at the first repeat that did not
     /// (`App::run_steps`).
@@ -1699,6 +1702,7 @@ impl App {
             animating_last_tick: false,
             keymap: crate::keys::Keymap::default_bindings(),
             router: crate::keyroute::Router::default(),
+            glue: Default::default(),
             history_stepped: false,
             usage: crate::usage::UsageStore::default(),
             clients: crate::http::Clients::new(),
@@ -4266,10 +4270,13 @@ impl App {
             Action::CloseField => {
                 // The field rule, dispatched rather than typed: with a
                 // field open this is exactly the Esc it would have taken.
+                // In vim it skips the engine, so the chip always closes
+                // the field, as on main; the end-of-event sync then
+                // leaves the session (amendment A4-2).
                 if !self.field_open() {
                     return false;
                 }
-                self.handle_key_inner(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+                self.handle_key_routed(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
             }
             Action::SetSecret { name, value } => {
                 let t = self.begin_op();
@@ -10073,7 +10080,13 @@ impl App {
     /// `self.update(..)` call's result along the branch taken, plus any
     /// modal state change (close/typing) that bypasses `update`.
     pub fn handle_key(&mut self, ev: KeyEvent) -> bool {
-        let changed = self.handle_key_inner(ev);
+        // The field session catches up first with whatever moved the caret
+        // since the last event (an async result, a reload), then with what
+        // this key did (spec §3.1).
+        self.sync_session(None, fields::Cause::Before);
+        let ran = self.route_key(ev);
+        self.sync_session(ran.open_as, fields::Cause::Key { routed: ran.routed });
+        let changed = ran.changed;
         // The op safety net at the event boundary, as `dispatch` has one
         // per action: a key handled without an action (a var-form or
         // grid commit) can bail between `begin_op` and its record.
@@ -10086,7 +10099,7 @@ impl App {
         changed || regated || asked
     }
 
-    fn handle_key_inner(&mut self, ev: KeyEvent) -> bool {
+    fn route_key(&mut self, ev: KeyEvent) -> fields::Ran {
         let ev = crate::keys::normalize_super_keys(ev);
         // cmd+c — SUPER+c, from terminals that report it — is copy-only:
         // copy the live selection, otherwise nothing. It is deliberately
@@ -10097,7 +10110,7 @@ impl App {
             if let Some(text) = self.active_selection_text() {
                 self.copy_text_with_toast(&text, "Copied selection".to_string());
             }
-            return true;
+            return fields::Ran::routed(true);
         }
         let combo = KeyCombo::from_event(&ev);
         // Each keymap read (here, in `key_ctx`, and in `handle_key_routed`
@@ -10118,17 +10131,17 @@ impl App {
         if modified && global == Some(Action::Quit) {
             if let Some(text) = self.active_selection_text() {
                 self.copy_text_with_toast(&text, "Copied selection".to_string());
-                return true;
+                return fields::Ran::routed(true);
             }
-            return self.update(Action::Quit);
+            return fields::Ran::routed(self.update(Action::Quit));
         }
 
         // A live row drag owns Escape: it cancels the drag, nothing else.
         if ev.code == KeyCode::Esc && self.sidebar.drag.is_some() {
-            return self.finish_sidebar_drag(false);
+            return fields::Ran::routed(self.finish_sidebar_drag(false));
         }
         if ev.code == KeyCode::Esc && self.manage.list.drag.is_some() {
-            return self.finish_manage_drag(false);
+            return fields::Ran::routed(self.finish_manage_drag(false));
         }
 
         // …and a live row drag owns the rest of the keyboard: with a row
@@ -10139,17 +10152,17 @@ impl App {
         // and before the per-screen routes. The footer says as much: while
         // a drag is live its chips are the cancel keys and nothing else.
         if self.sidebar.drag.is_some() || self.manage.list.drag.is_some() {
-            return false;
+            return fields::Ran::routed(false);
         }
 
         // The key router (piece 4 spec §3.1): one snapshot of where the
         // key lands, one lookup. What it declines takes today's routing.
         let ctx = self.key_ctx(&ev);
         match self.router.resolve(ev, &ctx) {
-            crate::keyroute::Resolved::Declined => self.handle_key_routed(ev),
+            crate::keyroute::Resolved::Declined => fields::Ran::routed(self.handle_key_routed(ev)),
             // The pending keys grew (the footer echoes them), or vim
             // swallowed the key.
-            crate::keyroute::Resolved::Consumed => true,
+            crate::keyroute::Resolved::Consumed => fields::Ran::consumed(),
             crate::keyroute::Resolved::Run(steps) => self.run_steps(steps),
         }
     }
@@ -11455,7 +11468,10 @@ fn screen_escape_whitelist(action: &Action) -> bool {
 mod landing;
 mod mouse;
 mod router;
+mod fields;
 mod verbs;
+#[cfg(test)]
+mod field_tests;
 #[cfg(test)]
 mod key_matrix_tests;
 #[cfg(test)]

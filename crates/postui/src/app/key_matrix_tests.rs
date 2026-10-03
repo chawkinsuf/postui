@@ -14,7 +14,7 @@ use crate::config::KeyProfile;
 use crate::keyroute::keylist::{self, Status};
 
 #[derive(Debug, Clone, Copy)]
-enum Fixture {
+pub(super) enum Fixture {
     /// Requests alpha, beta and gamma; the cursor on beta.
     SidebarThree,
     /// `SidebarThree` with beta (under the cursor) open in the editor.
@@ -305,7 +305,7 @@ fn select_var_row(app: &mut App, row: VmRow) {
     app.varmanager.select_row(i);
 }
 
-fn build(f: Fixture) -> App {
+pub(super) fn build(f: Fixture) -> App {
     let mut app = match f {
         VarList | VarGrid | VarForm | VarListGroup => var_app(),
         _ => App::new_for_test(),
@@ -419,7 +419,7 @@ fn build(f: Fixture) -> App {
     app
 }
 
-fn draw(app: &mut App) {
+pub(super) fn draw(app: &mut App) {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     app.anims.finish_all();
@@ -605,7 +605,7 @@ fn snapshot_diff(before: &Snapshot, after: &Snapshot) -> String {
 
 /// Keys through `App::handle_key`, each followed by the event loop's
 /// undo capture and a draw (spec §8.1).
-fn feed(app: &mut App, keys: &str) {
+pub(super) fn feed(app: &mut App, keys: &str) {
     for ev in crate::keyroute::notation::events(keys) {
         app.handle_key(ev);
         app.capture_undo();

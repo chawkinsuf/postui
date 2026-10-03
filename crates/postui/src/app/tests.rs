@@ -476,8 +476,10 @@ fn plain_q_quits_when_no_modal_and_component_ignores_it() {
     assert!(app.should_quit);
 }
 
+/// Plan M3a: an open field in idle Normal looks at its field rows first,
+/// and `:` is one of them, so it opens the palette there too.
 #[test]
-fn colon_opens_the_palette_from_a_list_and_types_in_a_field() {
+fn colon_opens_the_palette_from_a_list_and_from_an_open_field() {
     let mut app = App::new_for_test();
     app.use_profile(crate::config::KeyProfile::Vim);
     app.focus = PaneId::Sidebar;
@@ -486,9 +488,10 @@ fn colon_opens_the_palette_from_a_list_and_types_in_a_field() {
     app.modals.pop();
     app.focus = PaneId::Editor;
     app.editor.open_url_from_app();
+    let before = app.editor.url.text().to_string();
     app.handle_key(plain(':'));
-    assert!(app.modals.is_empty(), "in a text field ':' is a character");
-    assert!(app.editor.url.text().ends_with(':'));
+    assert!(matches!(app.modals.top(), Some(Modal::Palette(_))), "an open field's Normal mode has `:` too");
+    assert_eq!(app.editor.url.text(), before, "nothing typed");
 }
 
 /// An app in `profile` with one undo step to take (a URL edit, closed),
@@ -497,7 +500,10 @@ fn app_with_an_undo_step(profile: crate::config::KeyProfile) -> (App, usize) {
     let mut app = App::new_for_test();
     app.use_profile(profile);
     app.update(Action::CreateRequest("r".into()));
-    dirty_the_editor(&mut app);
+    match profile {
+        crate::config::KeyProfile::Vim => dirty_the_editor_in_vim(&mut app),
+        crate::config::KeyProfile::Arrows => dirty_the_editor(&mut app),
+    }
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.capture_undo();
     let steps = app.history.undo_len();
@@ -4418,6 +4424,19 @@ fn dirty_the_editor(app: &mut App) {
     app.focus = PaneId::Editor;
     app.editor.open_url_from_app();
     app.handle_key(plain('/'));
+    assert!(app.editor.is_dirty());
+}
+
+/// [`dirty_the_editor`] in the vim profile (plan M3a): the URL opens in
+/// Normal, where `/` is the engine's search, so `A` types the keystroke and
+/// Esc leaves Insert. The field stays open, as `dirty_the_editor` leaves it.
+fn dirty_the_editor_in_vim(app: &mut App) {
+    app.focus = PaneId::Editor;
+    app.editor.open_url_from_app();
+    for ev in crate::keyroute::notation::events("A/<Esc>") {
+        app.handle_key(ev);
+    }
+    assert!(app.editor.url_open());
     assert!(app.editor.is_dirty());
 }
 
@@ -29602,7 +29621,7 @@ fn a_keys_toml_letter_does_not_fire_under_a_modal() {
     app.use_profile(KeyProfile::Vim);
     app.keymap.apply_overrides("save = [\"ctrl+s\", \"s\"]\n").unwrap();
     app.update(Action::ForceOpenRequest("main/a".into()));
-    dirty_the_editor(&mut app);
+    dirty_the_editor_in_vim(&mut app);
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert_eq!(app.key_ctx(&plain('s')).user_bare, Some(Action::SaveRequest), "bound on Main");
     app.update(Action::OpenRequest("main/b".into()));
@@ -29903,12 +29922,12 @@ fn the_footer_shows_vims_mode_and_pending_keys() {
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.focus = PaneId::Editor;
     app.editor.open_url_from_app();
-    assert_eq!(app.mode_indicator(), Some("INSERT"), "a field with the caret types");
+    assert_eq!(app.mode_indicator(), Some("NORMAL"), "an open field shows the engine's mode");
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(!app.editor.url_open(), "the URL is closed before the body check");
     app.editor.sub_focus = SubFocus::Content;
     app.editor.active_tab = EditorTab::Body;
-    assert_eq!(app.mode_indicator(), Some("INSERT"), "the body types until M3");
+    assert_eq!(app.mode_indicator(), Some("NORMAL"), "the body is the engine's too");
     app.update(Action::OpenPalette);
     assert_eq!(app.mode_indicator(), Some("INSERT"), "a picker types");
 }

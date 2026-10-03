@@ -150,14 +150,11 @@ pub struct SettingsTab {
     /// `App::on_hit`); any click or key on the tab's own controls sets
     /// it, as does the tab becoming visible.
     pub focused: bool,
-    /// What the live edit holds, and the `LineInput` that owns its
-    /// caret, selection and word-nav. Both are private and always
-    /// written together — [`SettingsTab::set_field_text`],
-    /// [`SettingsTab::type_key`] and [`SettingsTab::paste`] are the only
-    /// writers — because the commit reads the buffer while the paint
-    /// reads the input: a caller that set one alone would commit text
-    /// the user never saw, or see text the commit never reads.
-    field_text: String,
+    /// The live edit: its text, caret, selection and word-nav. The commit
+    /// reads [`SettingsTab::field_text`] from it and the paint draws it,
+    /// so there is one copy of the text and nothing can drift. The vim
+    /// engine edits it directly ([`SettingsTab::input_mut`]; plan M3a
+    /// Deviation 17).
     input: LineInput,
 }
 
@@ -241,14 +238,18 @@ impl SettingsTab {
 
     /// What the live edit holds. The commit reads this.
     pub fn field_text(&self) -> &str {
-        &self.field_text
+        self.input.text()
     }
 
-    /// Replaces the live edit's text, re-seeding the `LineInput` with it
-    /// so the caret and the buffer cannot drift apart.
+    /// Replaces the live edit's text, re-seeding the `LineInput` with it.
     pub fn set_field_text(&mut self, text: &str) {
-        self.field_text = text.to_string();
         self.input = LineInput::new(text);
+    }
+
+    /// The live edit's input, for the vim engine (plan M3a): the commit
+    /// reads the input's own text, so an edit made here is what commits.
+    pub(crate) fn input_mut(&mut self) -> &mut LineInput {
+        &mut self.input
     }
 
     /// The row the cursor is on.
@@ -293,33 +294,23 @@ impl SettingsTab {
         self.set_field_text("");
     }
 
-    /// Forwards one key to the live edit's `LineInput` and re-syncs the
-    /// buffer from it.
+    /// Forwards one key to the live edit's `LineInput`.
     pub fn type_key(&mut self, ev: KeyEvent) -> bool {
-        let changed = self.input.handle_key(ev);
-        self.field_text = self.input.text().to_string();
-        changed
+        self.input.handle_key(ev)
     }
 
-    /// Pastes into the live edit, re-syncing the buffer from it.
+    /// Pastes into the live edit.
     pub fn paste(&mut self, text: &str) {
         self.input.paste(text);
-        self.field_text = self.input.text().to_string();
     }
 
-    /// Undo (or redo) inside the live edit, re-syncing the buffer. `false`
-    /// when there is no live edit or nothing to step.
+    /// Undo (or redo) inside the live edit. `false` when there is no live
+    /// edit or nothing to step.
     pub fn field_undo(&mut self, redo: bool) -> bool {
         if self.editing.is_none() {
             return false;
         }
-        let stepped = if redo {
-            self.input.redo()
-        } else {
-            self.input.undo()
-        };
-        self.field_text = self.input.text().to_string();
-        stepped
+        if redo { self.input.redo() } else { self.input.undo() }
     }
 
     /// Whether the live edit has recorded any keystrokes.
@@ -349,9 +340,6 @@ impl SettingsTab {
     /// this click: a freshly opened one draws its window from 0, so the
     /// two cases resolve different indices for the same column.
     /// `double` selects the word instead of placing a bare caret.
-    ///
-    /// Neither path changes the text, so `field_text` stays in sync
-    /// with `input` without being rewritten.
     pub fn click_caret(&mut self, col: usize, inner_w: u16, already_editing: bool, double: bool) {
         let idx = self.input.window_start(already_editing, inner_w) + col;
         if double {
