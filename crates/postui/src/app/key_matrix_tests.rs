@@ -2,7 +2,8 @@
 //! key-list row ID, a profile, a named app state, keys in vim notation,
 //! and what must hold after. Keys go through `App::handle_key`, and the
 //! app renders at 160×48 after every key, so hit maps and viewports are
-//! real. M1 has no undo check yet (plan M1 Deviation 12).
+//! real. M2 adds the undo check (spec §8.1): a case marked `undo`
+//! snapshots the app, runs, undoes once, and must be back exactly.
 
 use super::*;
 use crate::components::manage::ManageTab;
@@ -41,6 +42,10 @@ enum Fixture {
     VarGrid,
     /// `VarList` with alpha's form focused on Description.
     VarForm,
+    /// The Spaces list with spaces main and auth, the cursor on row 0.
+    ManageSpaces,
+    /// `VarList` with the selector `user` under the cursor.
+    VarListGroup,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -79,6 +84,20 @@ enum Expect {
     NoToast,
     Palette,
     NoModal,
+    /// The sidebar's request slugs, in row order.
+    Requests(&'static [&'static str]),
+    /// The Headers table's keys, in order.
+    Headers(&'static [&'static str]),
+    /// The Environments list, in order.
+    EnvNames(&'static [&'static str]),
+    /// How many options the selector `user` has in the active environment.
+    OptionCount(usize),
+    /// A chooser is the top modal.
+    Picker,
+    /// The row register holds this request.
+    Yanked(&'static str),
+    /// A selector's fields editor is the top modal.
+    FieldsEditor,
 }
 
 struct Case {
@@ -87,14 +106,25 @@ struct Case {
     fixture: Fixture,
     keys: &'static str,
     expect: &'static [Expect],
+    undo: bool,
 }
 
 const fn vim(id: &'static str, fixture: Fixture, keys: &'static str, expect: &'static [Expect]) -> Case {
-    Case { id, profile: KeyProfile::Vim, fixture, keys, expect }
+    Case { id, profile: KeyProfile::Vim, fixture, keys, expect, undo: false }
 }
 
 const fn arrows(id: &'static str, fixture: Fixture, keys: &'static str, expect: &'static [Expect]) -> Case {
-    Case { id, profile: KeyProfile::Arrows, fixture, keys, expect }
+    Case { id, profile: KeyProfile::Arrows, fixture, keys, expect, undo: false }
+}
+
+/// A case that changes data: after its checks, one undo (`u` in vim,
+/// ctrl+z in arrows) must restore the snapshot taken before its keys.
+const fn vim_u(id: &'static str, fixture: Fixture, keys: &'static str, expect: &'static [Expect]) -> Case {
+    Case { id, profile: KeyProfile::Vim, fixture, keys, expect, undo: true }
+}
+
+const fn arrows_u(id: &'static str, fixture: Fixture, keys: &'static str, expect: &'static [Expect]) -> Case {
+    Case { id, profile: KeyProfile::Arrows, fixture, keys, expect, undo: true }
 }
 
 use Expect::*;
@@ -171,6 +201,59 @@ const CASES: &[Case] = &[
     // `:` is X.verbs' (M4); M1's row opens the plain palette (Deviation 20).
     vim("X.verbs", SidebarThree, ":", &[Palette]),
     arrows("X.verbs", SidebarThree, ":", &[NoModal]),
+    // Key list §6, M2: the list verbs (spec §5.1–§5.4). The shared letters
+    // are the same in both profiles (the user's rule).
+    vim("L.verbs", SidebarThree, "a", &[PromptOpen]),
+    vim("L.verbs", SidebarThree, "r", &[PromptOpen]),
+    vim("L.verbs", SidebarThree, "m", &[Toast("Only one space")]),
+    vim("L.verbs", TableThreeHeaders, "a", &[FieldLive(true)]),
+    vim("L.verbs", ManageEnvs, "a", &[PromptOpen]),
+    vim("L.verbs", ManageEnvs, "r", &[PromptOpen]),
+    vim("L.verbs", ManageSpaces, "m", &[Picker]),
+    vim("L.verbs", VarList, "a", &[PromptOpen]),
+    vim("L.verbs", VarList, "A", &[PromptOpen]),
+    vim("L.verbs", VarList, "r", &[PromptOpen]),
+    vim("L.verbs", VarGrid, "a", &[FieldLive(true)]),
+    arrows("L.verbs", SidebarThree, "a", &[PromptOpen]),
+    arrows("L.verbs", SidebarThree, "n", &[NoModal]),
+    arrows("L.verbs", SidebarThree, "r", &[PromptOpen]),
+    arrows("L.verbs", TableThreeHeaders, "a", &[FieldLive(true)]),
+    arrows("L.verbs", ManageEnvs, "a", &[PromptOpen]),
+    arrows("L.verbs", ManageSpaces, "m", &[Picker]),
+    arrows("L.verbs", VarList, "A", &[PromptOpen]),
+    arrows("L.verbs", VarList, "r", &[PromptOpen]),
+    arrows("L.verbs", VarListGroup, "m", &[FieldsEditor]),
+    arrows("L.verbs", VarGrid, "a", &[FieldLive(true)]),
+    arrows("L.verbs", VarGrid, "o", &[FieldLive(true)]),
+    // Delete never confirms (the user's rule); one undo brings it back.
+    vim_u("L.dd", SidebarThree, "dd", &[Requests(&["main/alpha", "main/gamma"]), NoModal]),
+    arrows_u("L.dd", SidebarThree, "d", &[Requests(&["main/alpha", "main/gamma"]), NoModal]),
+    vim_u("L.dd", TableThreeHeaders, "dd", &[Headers(&["a", "c"])]),
+    arrows_u("L.dd", TableThreeHeaders, "d", &[Headers(&["a", "c"])]),
+    vim_u("L.dd", ManageEnvs, "dd", &[EnvNames(&["qa", "dev"]), NoModal]),
+    arrows_u("L.dd", ManageEnvs, "d", &[EnvNames(&["qa", "dev"]), NoModal]),
+    // A `d` that is not completed is vim's beep: nothing is deleted.
+    vim("L.dd", SidebarThree, "dj", &[Requests(&["main/alpha", "main/beta", "main/gamma"]), SidebarSel("main/beta"), Echo("")]),
+    // Review Focus 1: counted deletes, clamped, one undo step.
+    vim_u("L.Ndd", SidebarThree, "2dd", &[Requests(&["main/alpha"]), Toast("Deleted 2 requests")]),
+    vim_u("L.Ndd", SidebarThree, "9dd", &[Requests(&["main/alpha"])]),
+    vim_u("L.Ndd", TableThreeHeaders, "2dd", &[Headers(&["a"])]),
+    vim("L.Ndd", ManageEnvs, "2dd", &[Toast("Counted delete works on requests and table rows"), EnvNames(&["prod", "qa", "dev"])]),
+    // Yank is invisible; put lands under (p) or over (P) the cursor.
+    vim("L.yank", SidebarThree, "yy", &[Yanked("main/beta"), NoToast, Requests(&["main/alpha", "main/beta", "main/gamma"])]),
+    vim("L.yank", SidebarThree, "3yy", &[Toast("Counted yank is not supported")]),
+    vim_u(
+        "L.yank",
+        SidebarThree,
+        "yyp",
+        &[Requests(&["main/alpha", "main/beta", "main/beta-copy", "main/gamma"]), EditorSlug("main/beta-copy")],
+    ),
+    vim_u("L.yank", SidebarThree, "yyP", &[Requests(&["main/alpha", "main/beta-copy", "main/beta", "main/gamma"])]),
+    arrows_u("L.yank", SidebarThree, "yp", &[Requests(&["main/alpha", "main/beta", "main/beta-copy", "main/gamma"])]),
+    vim_u("L.yank", TableThreeHeaders, "yyp", &[Headers(&["a", "b", "b-copy", "c"]), TableRow(2)]),
+    arrows_u("L.yank", TableThreeHeaders, "yP", &[Headers(&["a", "b-copy", "b", "c"]), TableRow(1)]),
+    vim_u("L.yank", VarGrid, "yyp", &[OptionCount(3)]),
+    arrows_u("L.yank", VarGrid, "cv", &[OptionCount(3)]),
 ];
 
 fn req(url: &str) -> postui_core::model::HttpRequest {
@@ -216,7 +299,7 @@ fn select_var_row(app: &mut App, row: VmRow) {
 
 fn build(f: Fixture) -> App {
     let mut app = match f {
-        VarList | VarGrid | VarForm => var_app(),
+        VarList | VarGrid | VarForm | VarListGroup => var_app(),
         _ => App::new_for_test(),
     };
     match f {
@@ -225,6 +308,12 @@ fn build(f: Fixture) -> App {
                 postui_core::fixtures::save_request(app.proj().root(), slug, &req("https://x/1")).unwrap();
             }
             app.update(Action::RefreshSidebar);
+            // `.local/state.toml` on disk before any snapshot, through the
+            // project's own writer (plan M2 Deviation 15, amended): core
+            // writes a missing one at the first journaled op, and undo
+            // leaves it.
+            let expanded = app.proj().local().expanded.clone();
+            app.proj_mut().set_expanded(expanded);
             app.focus = PaneId::Sidebar;
             let beta = app
                 .sidebar
@@ -307,6 +396,12 @@ fn build(f: Fixture) -> App {
             app.varmanager.focus = VmFocus::Form;
             app.varmanager.form_cursor = FormStop::Field(VmField::Description);
         }
+        ManageSpaces => {
+            app.update(Action::CreateSpace("auth".into()));
+            app.update(Action::OpenManage { tab: Some(ManageTab::Spaces) });
+            app.manage.list.cursor = 0;
+        }
+        VarListGroup => select_var_row(&mut app, VmRow::Group("user".into())),
     }
     app.toasts = Default::default();
     app
@@ -353,6 +448,30 @@ fn check(app: &App, e: Expect) -> Result<(), String> {
         NoToast => app.toasts.messages().is_empty(),
         Palette => matches!(app.modals.top(), Some(Modal::Palette(_))),
         NoModal => app.modals.is_empty(),
+        Requests(slugs) => app
+            .sidebar
+            .rows
+            .iter()
+            .filter_map(|r| match r {
+                Row::Request { slug, .. } => Some(slug.as_str()),
+                Row::Folder { .. } => None,
+            })
+            .eq(slugs.iter().copied()),
+        Headers(keys) => app.editor.headers.keys().map(String::as_str).eq(keys.iter().copied()),
+        EnvNames(names) => app
+            .manage_items(ManageTab::Environments)
+            .iter()
+            .map(String::as_str)
+            .eq(names.iter().copied()),
+        OptionCount(n) => {
+            app.project()
+                .and_then(|p| postui_core::varmodel::options_of(p.variables(), p.env_data(), "user"))
+                .map_or(0, |o| o.len())
+                == n
+        }
+        Picker => matches!(app.modals.top(), Some(Modal::Chooser(_))),
+        Yanked(slug) => app.yank == crate::yank::Register::Request(slug.into()),
+        FieldsEditor => matches!(app.modals.top(), Some(Modal::FieldsEditor(_))),
     };
     ok.then_some(()).ok_or_else(|| {
         format!(
@@ -374,18 +493,111 @@ fn check(app: &App, e: Expect) -> Result<(), String> {
     })
 }
 
+/// What an undo must bring back exactly (spec §8.1; the user's rule:
+/// side effects included). The project's trash is left out: a delete
+/// fills it and an undo empties it again, which is the journal's
+/// bookkeeping, not state the user sees (plan M2 Deviation 15).
+#[derive(Debug, PartialEq)]
+struct Snapshot {
+    files: std::collections::BTreeMap<String, Vec<u8>>,
+    rows: Vec<String>,
+    cursor: Option<crate::components::sidebar::RowKey>,
+    slug: Option<String>,
+    request: String,
+    field: crate::keyroute::FieldCaret,
+}
+
+fn snapshot(app: &App) -> Snapshot {
+    let root = app.proj().root().to_path_buf();
+    let mut files = std::collections::BTreeMap::new();
+    let mut dirs = vec![root.clone()];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            let rel = path.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/");
+            if rel == ".local/trash" || rel.starts_with(".local/trash/") {
+                continue;
+            }
+            if path.is_dir() {
+                dirs.push(path);
+            } else {
+                files.insert(rel, std::fs::read(&path).unwrap());
+            }
+        }
+    }
+    Snapshot {
+        files,
+        rows: app.sidebar.rows.iter().map(|r| format!("{r:?}")).collect(),
+        cursor: app.sidebar.selected_key(),
+        slug: app.editor.slug.clone(),
+        request: app.editor.current_request().to_toml_string(),
+        field: app.field_caret(),
+    }
+}
+
 fn run(case: &Case) -> Result<(), String> {
     let mut app = build(case.fixture);
     app.use_profile(case.profile);
     draw(&mut app);
-    for ev in crate::keyroute::notation::events(case.keys) {
-        app.handle_key(ev);
-        draw(&mut app);
-    }
+    let before = case.undo.then(|| {
+        assert!(
+            app.proj().root().join(".local/state.toml").is_file(),
+            "{:?} must write .local/state.toml before the snapshot (plan M2 Deviation 15)",
+            case.fixture
+        );
+        snapshot(&app)
+    });
+    feed(&mut app, case.keys);
     for e in case.expect {
         check(&app, *e)?;
     }
+    if let Some(before) = before {
+        feed(&mut app, if case.profile == KeyProfile::Vim { "u" } else { "<C-z>" });
+        let after = snapshot(&app);
+        if after != before {
+            return Err(format!("undo did not restore exactly:\n{}", snapshot_diff(&before, &after)));
+        }
+    }
     Ok(())
+}
+
+/// Each field where `after` differs from `before`, files as text.
+fn snapshot_diff(before: &Snapshot, after: &Snapshot) -> String {
+    let text = |b: Option<&Vec<u8>>| b.map(|b| String::from_utf8_lossy(b).into_owned());
+    let mut out = Vec::new();
+    let paths: std::collections::BTreeSet<&String> = before.files.keys().chain(after.files.keys()).collect();
+    for path in paths {
+        let (b, a) = (before.files.get(path), after.files.get(path));
+        if b != a {
+            out.push(format!("file {path}:\n  before {:?}\n  after  {:?}", text(b), text(a)));
+        }
+    }
+    if before.rows != after.rows {
+        out.push(format!("rows:\n  before {:?}\n  after  {:?}", before.rows, after.rows));
+    }
+    if before.cursor != after.cursor {
+        out.push(format!("cursor: before {:?}, after {:?}", before.cursor, after.cursor));
+    }
+    if before.slug != after.slug {
+        out.push(format!("slug: before {:?}, after {:?}", before.slug, after.slug));
+    }
+    if before.request != after.request {
+        out.push(format!("request:\n  before {:?}\n  after  {:?}", before.request, after.request));
+    }
+    if before.field != after.field {
+        out.push(format!("field: before {:?}, after {:?}", before.field, after.field));
+    }
+    out.join("\n")
+}
+
+/// Keys through `App::handle_key`, each followed by the event loop's
+/// undo capture and a draw (spec §8.1).
+fn feed(app: &mut App, keys: &str) {
+    for ev in crate::keyroute::notation::events(keys) {
+        app.handle_key(ev);
+        app.capture_undo();
+        draw(app);
+    }
 }
 
 #[test]
@@ -395,6 +607,20 @@ fn the_matrix_holds() {
         .filter_map(|c| run(c).err().map(|m| format!("{} {:?} {:?}: {m}", c.id, c.profile, c.keys)))
         .collect();
     assert!(failures.is_empty(), "{} case(s) failed:\n{}", failures.len(), failures.join("\n"));
+}
+
+/// Spec §5.3: undo of a counted table delete reselects the first restored
+/// row (amendment A8-3).
+#[test]
+fn a_counted_table_delete_undone_reselects_the_first_restored_row() {
+    let mut app = build(TableThreeHeaders);
+    app.use_profile(KeyProfile::Vim);
+    draw(&mut app);
+    feed(&mut app, "2dd");
+    check(&app, Headers(&["a"])).unwrap();
+    feed(&mut app, "u");
+    check(&app, Headers(&["a", "b", "c"])).unwrap();
+    check(&app, TableRow(1)).unwrap();
 }
 
 /// Spec §8.2's coverage, up to this build's milestone.
