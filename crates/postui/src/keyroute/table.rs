@@ -213,6 +213,16 @@ impl Surfaces {
     }
 }
 
+impl super::ctx::EngineKind {
+    /// The field class the router checks in idle Normal (spec §3.7).
+    pub const fn class(self) -> Surfaces {
+        match self {
+            super::ctx::EngineKind::Line => Surfaces::FIELD_LINE,
+            super::ctx::EngineKind::Body => Surfaces::FIELD_BODY,
+        }
+    }
+}
+
 /// One row: these keys, in these profiles, on these surfaces, mean this.
 #[derive(Debug, Clone, Copy)]
 pub struct Binding {

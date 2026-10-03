@@ -171,7 +171,7 @@ pub struct Editor {
     body_hl_text: String,
     body_hl_marker: Option<ratatui::style::Color>,
     /// The vim engine's Visual span, written through
-    /// [`crate::vim::engine::BodyBuf`]. Draw puts it at the front of
+    /// the engine's body buffer. Draw puts it at the front of
     /// `body.highlights`, where edtui gives it priority over the JSON
     /// colours; `body_hl_visual` is the span currently there. Draw is the
     /// only writer of `body.highlights`.

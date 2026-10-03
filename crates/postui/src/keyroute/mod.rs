@@ -3,6 +3,7 @@
 //! (`app/router.rs`); everything in this module is pure.
 
 pub mod ctx;
+pub mod engine_glue;
 #[cfg(test)]
 pub mod keylist;
 pub mod notation;
@@ -10,7 +11,7 @@ pub mod pending;
 pub mod spell;
 pub mod table;
 
-pub use ctx::{FieldCaret, FieldId, KeyCtx, SpellCtx, Surface};
+pub use ctx::{EngineKind, EngineView, FieldCaret, FieldId, KeyCtx, SpellCtx, Surface};
 
 use crate::action::Action;
 use crate::config::KeyProfile;
