@@ -517,7 +517,7 @@ pub(super) struct Snapshot {
     cursor: Option<crate::components::sidebar::RowKey>,
     slug: Option<String>,
     request: String,
-    field: crate::keyroute::FieldCaret,
+    pub(super) field: crate::keyroute::FieldCaret,
 }
 
 pub(super) fn snapshot(app: &App) -> Snapshot {

@@ -431,11 +431,16 @@ impl Glue {
         self.body_owner = Some(owner);
     }
 
-    /// The app history took the sessions' edits as a step (`App::flush_field_session`):
-    /// the text they hold is the new start.
+    /// The app history took the live session's edits as a step
+    /// (`App::flush_field_session`): the text it holds is the new start.
+    /// The line state is fresh at every enter, so it always ends. The body
+    /// state ends only when the body owns the session: its history outlives
+    /// closes, and an app op flushing the URL must not wipe it.
     pub fn flush(&mut self) {
         self.line.end_session();
-        self.body.end_session();
+        if self.owned() == Some(FieldId::Body) {
+            self.body.end_session();
+        }
     }
 
     /// What the body draws for the engine's search (spec §5.6). The prompt

@@ -404,6 +404,57 @@ fn ctrl_z_in_insert_before_the_first_engine_step_leaves_the_app_history_alone() 
     assert_eq!(url(&app).0, "abccd", "the typed text is not lost to an older app step");
 }
 
+/// Review F1: an app op flushing an edited URL session must not wipe the
+/// body's engine history, which outlives the body's own closes.
+#[test]
+fn a_flush_for_the_url_keeps_the_bodys_engine_history() {
+    let mut app = vim(Fixture::UrlLine);
+    app.editor.url = LineInput::new("abc");
+    app.capture_undo();
+    app.editor.active_tab = EditorTab::Body;
+    app.editor.preferred_tab = EditorTab::Body;
+    app.editor.sub_focus = SubFocus::Content;
+    draw(&mut app);
+    feed(&mut app, "lihello<Esc><Esc>");
+    assert_eq!(app.editor.body.lines.to_string(), "hello");
+    assert_eq!(app.glue.session(), FieldSession::None, "the body closed");
+    app.editor.sub_focus = SubFocus::Url;
+    draw(&mut app);
+    feed(&mut app, "<CR>x");
+    assert_eq!(url(&app).0, "ab");
+    app.flush_field_session();
+    feed(&mut app, "<Esc>");
+    assert_eq!(url(&app).0, "ab");
+    app.editor.sub_focus = SubFocus::Content;
+    draw(&mut app);
+    feed(&mut app, "lu");
+    assert_eq!(app.editor.body.lines.to_string(), "", "the body's own last edit undone");
+    assert_eq!(url(&app).0, "ab", "not the app's step");
+}
+
+/// Review F2: a flush mid-session. The text it took is the new start, and
+/// the rest of the session is one more step.
+#[test]
+fn a_flush_mid_session_splits_it_into_two_exact_steps() {
+    let mut app = url_line("abc");
+    let start = snapshot(&app);
+    feed(&mut app, "<CR>Axy");
+    app.flush_field_session();
+    app.capture_undo();
+    // No undo reopens a field, so the reference is the flushed state with
+    // the caret closed, as the session's own close leaves it.
+    let mut flushed = snapshot(&app);
+    flushed.field = FieldCaret::None;
+    feed(&mut app, "z<Esc><Esc>");
+    assert_eq!(url(&app).0, "abcxyz");
+    feed(&mut app, "u");
+    let after = snapshot(&app);
+    assert!(after == flushed, "first undo:\n{}", snapshot_diff(&flushed, &after));
+    feed(&mut app, "u");
+    let after = snapshot(&app);
+    assert!(after == start, "second undo:\n{}", snapshot_diff(&start, &after));
+}
+
 /// Plan M3a Deviation 15.
 #[test]
 fn an_engine_note_is_an_info_toast() {

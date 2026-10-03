@@ -280,8 +280,6 @@ impl App {
         })
     }
 
-    /// An engine note is an Info toast; `"+y` copies through the app's
-    /// clipboard path (plan M3a Deviation 15).
     /// The app's undo path (`step_history`) reaching a vim field: the
     /// field's own history first (spec §3.7). `None` when no engine field
     /// has the caret. `Some(false)` when it has nothing to step that way,
@@ -314,6 +312,8 @@ impl App {
         Some(true)
     }
 
+    /// An engine note is an Info toast; `"+y` copies through the app's
+    /// clipboard path (plan M3a Deviation 15).
     pub(crate) fn engine_feedback(&mut self, note: Option<Note>, request: Option<AppRequest>) {
         if let Some(Note::Unsupported(text) | Note::Message(text)) = note {
             self.toasts.push(text, ToastKind::Info);
