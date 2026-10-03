@@ -675,3 +675,81 @@ fn the_arrows_body_still_types_through_edtui() {
     assert_eq!(caret(&app), (0, 2), "edtui's end of line");
     assert_eq!(app.glue.session(), FieldSession::None);
 }
+
+/// Plan M3a Deviation 13: Vim's bracketed paste in Normal.
+#[test]
+fn a_paste_in_normal_goes_after_the_caret_as_one_step() {
+    let mut app = url_line("ab");
+    feed(&mut app, "<CR>");
+    app.paste_text("X\nY");
+    assert_eq!(url(&app), ("abX Y", 4), "flattened, after the caret, the caret on the last char");
+    assert_eq!(app.mode_indicator(), Some("NORMAL"));
+    feed(&mut app, "u");
+    assert_eq!(url(&app).0, "ab");
+}
+
+#[test]
+fn a_paste_at_column_zero_goes_before_the_caret() {
+    let mut app = url_line("ab");
+    feed(&mut app, "<CR>0");
+    app.paste_text("XY");
+    assert_eq!(url(&app), ("XYab", 1));
+}
+
+#[test]
+fn a_paste_in_insert_is_part_of_the_insert() {
+    let mut app = url_line("ab");
+    feed(&mut app, "<CR>A");
+    app.paste_text("cd");
+    assert_eq!(url(&app), ("abcd", 4));
+    assert_eq!(app.mode_indicator(), Some("INSERT"));
+    feed(&mut app, "<Esc>u");
+    assert_eq!(url(&app).0, "ab", "one undo step with the insert");
+}
+
+#[test]
+fn a_body_paste_keeps_its_line_breaks() {
+    let mut app = vim(Fixture::Body);
+    feed(&mut app, "j$");
+    app.paste_text("x\ny");
+    assert_eq!(body(&app), "{\n  \"a\": 1x\ny\n}");
+}
+
+#[test]
+fn a_paste_into_the_search_prompt_types_the_pattern() {
+    let mut app = vim(Fixture::Body);
+    feed(&mut app, "/");
+    app.paste_text("\"a");
+    feed(&mut app, "<CR>");
+    assert_eq!(caret(&app), (1, 2), "the search ran with the pasted pattern");
+}
+
+/// Spec §3.7: a picked token is an edit outside the key path.
+#[test]
+fn a_picked_token_goes_in_at_the_insert_caret() {
+    let mut app = url_line("ab");
+    feed(&mut app, "<CR>A");
+    app.update(Action::InsertVarText("{{v}}".into()));
+    assert_eq!(url(&app), ("ab{{v}}", 7));
+    assert_eq!(app.mode_indicator(), Some("INSERT"));
+}
+
+#[test]
+fn a_picked_token_in_normal_goes_after_the_caret() {
+    let mut app = url_line("ab");
+    feed(&mut app, "<CR>");
+    app.update(Action::InsertVarText("{{v}}".into()));
+    assert_eq!(url(&app).0, "ab{{v}}");
+    feed(&mut app, "u");
+    assert_eq!(url(&app).0, "ab", "one engine step");
+}
+
+/// Main's `{{` trigger, through the engine (Task 4's `after_typed`).
+#[test]
+fn typing_two_braces_opens_the_variable_picker() {
+    let mut app = url_line("ab");
+    feed(&mut app, "<CR>A{{");
+    assert!(matches!(app.modals.top(), Some(Modal::VarPicker(_))));
+    assert_eq!(app.glue.session(), FieldSession::Parked(FieldId::Url));
+    assert_eq!(url(&app).0, "ab{{");
+}

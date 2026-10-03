@@ -367,6 +367,60 @@ impl App {
         true
     }
 
+    /// A paste into the live vim field (spec §3.7; plan M3a Deviation 13):
+    /// Insert, Replace and the search prompt type it; anywhere else it goes
+    /// in by Vim's bracketed-paste rule, as one engine step. A one-line
+    /// field takes it flattened (today's rule). `None` when no engine field
+    /// has the caret: today's routing pastes.
+    pub(crate) fn engine_paste(&mut self, text: &str) -> Option<bool> {
+        let id = self.glue.live()?;
+        if self.field_caret() != FieldCaret::Live(id) {
+            return None;
+        }
+        let flat;
+        let text = if id.engine_kind() == Some(EngineKind::Line) {
+            flat = crate::components::line_input::flatten_paste(text);
+            flat.as_str()
+        } else {
+            text
+        };
+        let feedback = {
+            let (glue, buf) = self.session_parts(id);
+            let mut buf = buf?;
+            match glue.paste(text, &mut buf) {
+                Outcome::Consumed { note, request, .. } => Some((note, request)),
+                Outcome::Declined { .. } => {
+                    glue.edit(&mut buf, &engine_glue::Edit::Append(text));
+                    None
+                }
+            }
+        };
+        if let Some((note, request)) = feedback {
+            self.engine_feedback(note, request);
+        }
+        Some(self.update(Action::Render))
+    }
+
+    /// A picked `{{token}}` into the field the picker was opened from
+    /// (spec §3.7): at the caret in Insert, else by the bracketed-paste
+    /// rule (plan M3a Deviation 13). Only the fields main inserts into: the
+    /// URL line, a cell, the body. `false` leaves it to today's path.
+    pub(crate) fn engine_insert(&mut self, text: &str) -> bool {
+        let Some(id) = self.glue.owned() else { return false };
+        if !matches!(id, FieldId::Url | FieldId::TableCell { .. } | FieldId::Body) {
+            return false;
+        }
+        let edit = if matches!(self.glue.mode(), Mode::Insert | Mode::Replace) {
+            engine_glue::Edit::AtCaret(text)
+        } else {
+            engine_glue::Edit::Append(text)
+        };
+        let (glue, buf) = self.session_parts(id);
+        let Some(mut buf) = buf else { return false };
+        glue.edit(&mut buf, &edit);
+        true
+    }
+
     /// An engine note is an Info toast; `"+y` copies through the app's
     /// clipboard path (plan M3a Deviation 15).
     pub(crate) fn engine_feedback(&mut self, note: Option<Note>, request: Option<AppRequest>) {

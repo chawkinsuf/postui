@@ -5543,6 +5543,14 @@ impl App {
             }
             Action::InsertVarText(text) => {
                 self.no_coalesce = true;
+                // A vim field the engine runs takes the token as one engine
+                // step (spec §3.7).
+                if self.engine_insert(&text) {
+                    if self.glue.owned() == Some(crate::keyroute::FieldId::Body) {
+                        self.turn_on_body_vars();
+                    }
+                    return true;
+                }
                 if self.focus == PaneId::Editor && self.editor.url_open() {
                     self.editor.url.insert_str(&text);
                 } else if self.focus == PaneId::Editor
@@ -5560,11 +5568,7 @@ impl App {
                     && self.editor.sub_focus == SubFocus::Content
                 {
                     self.editor.body_insert_str(&text);
-                    if !self.editor.substitute_body {
-                        self.editor.substitute_body = true;
-                        self.toasts
-                            .push("body {{var}} substitution enabled", ToastKind::Success);
-                    }
+                    self.turn_on_body_vars();
                 } else {
                     self.toasts.push(
                         "nowhere to insert — focus a text field first",
@@ -9464,6 +9468,15 @@ impl App {
         }
     }
 
+    /// Inserting a token into the body switches its `{{var}}` substitution
+    /// on, and says so once.
+    fn turn_on_body_vars(&mut self) {
+        if !self.editor.substitute_body {
+            self.editor.substitute_body = true;
+            self.toasts.push("body {{var}} substitution enabled", ToastKind::Success);
+        }
+    }
+
     /// Routes pasted text — read from the OS clipboard by `Action::Paste`
     /// (ctrl+v), or delivered whole by a terminal bracketed paste
     /// (`Event::Paste`: cmd+V on macOS, ctrl+shift+V on Linux) — to
@@ -9479,6 +9492,11 @@ impl App {
     pub fn paste_text(&mut self, text: &str) -> bool {
         if text.is_empty() {
             return false;
+        }
+        // A vim field the engine runs takes the paste itself (plan M3a
+        // Deviation 13).
+        if let Some(changed) = self.engine_paste(text) {
+            return changed;
         }
         if !self.modals.is_empty() {
             // The filter-query modals hold their query as a plain String
