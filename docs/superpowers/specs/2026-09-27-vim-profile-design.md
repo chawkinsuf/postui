@@ -521,6 +521,8 @@ Amended by plan M1 (Deviations 19, 21, 23, 4):
   running profile's defaults.
 - **Tokens** (`mine`). `Tok::of` returns None for ctrl+shift letter chords
   (they are not `<C-x>`).
+- **M2** (`mine`, plan M2 Deviation 5): vim gives up `alt+a`; `a` on a table adds a row.
+- **M2 letter reach in arrows** (`you`, plan M2 Deviation 18): a keys.toml bare letter wins in arrows too, on the same navigation surfaces as vim, under Deviation 21's conditions. In arrows only a keys.toml override counts, not a default binding, because the components beat the arrows defaults on these surfaces today.
 
 ### 4.5 Letters leave the components
 
@@ -836,6 +838,8 @@ Footer chips and palette commands for these verbs carry
 `OnSelection(verb)` too, so a chip, its key and its ex verb are one
 action. The `yank.rs` register (vim-mode, 65 lines) is copied.
 
+Amended by plan M2 (Deviation 3, `mine`): a chip's *keycap* is `Key::Of(OnSelection(verb))`, spelled from the verb's row, while its *action* stays the concrete one the component's `verb_action` resolves — the same method `selection_action` asks — so a key and its chip still cannot drift, and the hover hints and mouse-parity tests keep their concrete actions.
+
 Main's existing `DeleteSelectedRequest` and
 `PromptMoveSelectedRequestToSpace` stay as they are. `selection_action`
 returns them, so nothing outside piece 4's scope churns.
@@ -951,6 +955,7 @@ viewport heights are real. Each failure names the case ID.
   main's `keyboard_only_navigation` (`app/tests.rs:17144`) and nothing
   else. It walks the real tables, not copies (`you`, rule 4, for the
   arrows half).
+  Amended by plan M2 (Deviation 9, `mine`): `main` ships named actions with no default key (`keys.toml`-only), so the named-action half covers the actions an arrows default key reaches, and vim may reach them by keymap, table row, verb row or the palette. Vim's verbs that wait for M4's ex rows are one explicit list (`VIM_UNTIL_M4`), which M4 empties.
 - **Spelling.** `every_painted_keycap_resolves_to_its_chip`: for each
   profile and fixture, every footer chip's computed keycap, fed through
   the router, dispatches the chip's action (vim-mode b34df69's idea).
@@ -1036,6 +1041,9 @@ milestone.
   - `OnSelection(Verb)` and `selection_action` (§6.1).
   - The Manage and Variable Manager rows (§5.4) and the reachability
     test (§8.2).
+  - **Shipped** by plan 2026-10-02-vim-profile-m2. Every component verb letter moved into the table's rows (both profiles); the components keep named keys, Space and their own chords, plus the `q` quit arms and the response's `c` until M4 (plan Deviations 1, 2). Arrows letters changed as §5.1–§5.4 say: `a` new (was `n`), `A` new selector (was `a`), `r` rename on the Variables list (was `e`; F2 kept), `a` new option on the grid (was `o`, which stays), and `y`/`p`/`P` arrived. Vim gave up `alt+a` (`a` adds a table row). Decided by me, open for your review (`mine`): footer chips keep their concrete action from the same `verb_action` the key resolves through, rather than carrying `OnSelection` (Deviation 3); `Key::OneOf` spells the add-row chip (4); labels unchanged (6); the Variables list's verbs take the chips' header-row rule (7); the grid's rename works on a shared selector with no environment (8); reachability reads "every named action" as every arrows-bound one plus every fixture verb, with vim's wait-for-M4 list explicit (9); a put's count is capped by the surface (10); `ForceDuplicateRequest` carries the anchor (11); no `y`/`p` chips (12); arrows `o` new option stays (13); `{N}dd` refused on the Variables list and grid too (14); the undo snapshot skips `.local/trash/` (15); the non-verb half of §8.2's spelling test is M4's, because every painted keycap is final only once M4's ex and pane rows land (19).
+  - Decided by you during execution (`you`): matrix fixtures materialise `.local/state.toml` through the project's own serializer before the snapshot, because core writes a missing `state.toml` at the first journaled op and undo leaves it, and the comparison stays byte for byte (Deviation 15, amended); a put creates the copy in the anchor's folder (16); a put on a folder row anchors on that folder's own direct requests (its last for `p`, its first for `P`), and a folder with none refuses with "No request in this folder to put beside" and keeps the register (16a); only a put seeds the order array, and it says so explicitly, so `yyP` on the yanked row itself still lands above: `ForceDuplicateRequest.anchor: Option<String>` (`None` is a plain Duplicate), core `duplicate_request_at` always seeds and `duplicate_request` never does (17, amended); `keys.toml` bare-letter overrides win in arrows too, on the same NAV surfaces as vim (18).
+  - A pre-existing bug the undo check found, fixed by your decision (`you`, commit dd36f81): `Sidebar::expand_to` queued the slug's space segment as a folder, and `refresh_sidebar` persisted it to `state.toml` outside the undo journal, so an undo did not restore the file exactly. It now queues folders only.
 - **M3: engine integration.** Needs piece 3.
   - `engine_glue.rs`, the session edges, the open modes (§5.6), the
     field-Normal lookahead rows (§3.7), and `j`/`k` and the paging
