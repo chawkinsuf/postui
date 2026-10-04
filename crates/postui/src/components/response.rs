@@ -1438,8 +1438,15 @@ impl Response {
     /// does, it leaves an entered menu row and marks the bar edited, so
     /// `App::sync_jq` carries the text into the request.
     pub(crate) fn mark_jq_typed(&mut self) {
-        self.jq.menu = None;
+        self.leave_jq_menu();
         self.jq.edited = true;
+    }
+
+    /// The vim engine took a key in the jq bar: as any key but Tab,
+    /// shift+Tab, Enter and Esc does in `ready_key`, it leaves an entered
+    /// menu row keeping the selection, whether or not it edited.
+    pub(crate) fn leave_jq_menu(&mut self) {
+        self.jq.menu = None;
     }
 
     /// Whether plain Right or End would accept the jq bar's offered

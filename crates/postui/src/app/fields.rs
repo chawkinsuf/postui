@@ -481,6 +481,11 @@ impl App {
         Some(match out {
             Outcome::Consumed { changed, note, request } => {
                 self.engine_feedback(note, request);
+                // Any key the engine takes leaves the jq bar's entered menu
+                // row, a move as well as an edit, as in arrows.
+                if id == FieldId::Jq {
+                    self.session.response.leave_jq_menu();
+                }
                 if changed {
                     self.query_edited(id);
                 }

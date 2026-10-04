@@ -373,7 +373,9 @@ fn ctrl_n_and_ctrl_p_move_a_pickers_highlight() {
     assert_eq!(p.selected(), 1);
 }
 
-/// Review Focus 5, plan M3b Deviation 5.
+/// Review Focus 5, plan M3b Deviation 5. Enter on a filtered folder
+/// rebuilds the filter from "inn" to "": the session rebases on the new
+/// text, and must stay Insert-only so Esc is still the picker's.
 #[test]
 fn the_file_picker_climbs_on_backspace_and_esc_still_closes() {
     let mut app = vim_app(Fixture::SidebarThree);
@@ -383,14 +385,18 @@ fn the_file_picker_climbs_on_backspace_and_esc_still_closes() {
     app.push_modal(Modal::FilePicker(crate::components::file_picker::FilePickerState::new(
         "Open",
         crate::components::file_picker::PickerTarget::OpenProject,
-        &inner,
+        dir.path(),
         "",
     )));
     draw(&mut app);
+    feed(&mut app, "inn<CR>");
+    let Some(Modal::FilePicker(p)) = app.modals.top() else { panic!("the file picker") };
+    assert_eq!(p.dir(), inner.as_path(), "Enter went into the filtered folder");
+    assert_eq!(p.input().text(), "", "and rebuilt the filter");
     feed(&mut app, "<BS>");
     let Some(Modal::FilePicker(p)) = app.modals.top() else { panic!("the file picker") };
     assert_eq!(p.dir(), dir.path(), "Backspace on an empty filter climbs");
-    feed(&mut app, "x<Esc>");
+    feed(&mut app, "<Esc>");
     assert!(app.modals.is_empty(), "Esc is still the picker's after the rebuild");
 }
 
@@ -454,6 +460,66 @@ fn the_jq_bars_tab_completes_a_quoted_key_in_vim() {
     assert_eq!(app.glue.session(), FieldSession::Live(FieldId::Jq));
     feed(&mut app, "z");
     assert_eq!(app.session.response.jq_text(), ".\"my key\"z", "the engine types on after the rewrite");
+}
+
+/// Arrows parity (Task 4 review): any key the engine takes leaves the jq
+/// bar's entered menu row keeping the candidate, a caret move included, so
+/// the Esc after it leaves the bar instead of un-picking.
+#[test]
+fn a_move_leaves_the_jq_menu_row_keeping_the_candidate() {
+    for profile in [KeyProfile::Vim, KeyProfile::Arrows] {
+        let mut app = app_in(Fixture::SidebarThree, profile);
+        json_response(&mut app, r#"{"my key": 1, "myth": 2}"#);
+        app.session.response.set_jq_tab(crate::config::JqTab::Menu);
+        app.update(Action::OpenJqBar);
+        draw(&mut app);
+        feed(&mut app, ".my<Tab>");
+        assert!(app.session.response.jq_menu_open(), "{profile:?}: Tab entered the row");
+        assert_eq!(app.session.response.jq_text(), ".\"my key\"", "{profile:?}");
+        feed(&mut app, "<Left>");
+        assert!(!app.session.response.jq_menu_open(), "{profile:?}: the move left the row");
+        feed(&mut app, "<Esc>");
+        assert!(!app.session.response.jq_focused(), "{profile:?}: Esc left the bar");
+        assert_eq!(app.session.response.jq_text(), ".\"my key\"", "{profile:?}: keeping the candidate");
+    }
+}
+
+/// Plan M3b Deviation 12: ctrl+z in a vim query box does nothing: not the
+/// box's text, not the app history (a table row delete waits there).
+#[test]
+fn ctrl_z_in_a_vim_query_box_does_nothing() {
+    let mut app = vim_app(Fixture::TableAfterDelete);
+    let (rows, steps) = (app.editor.headers.len(), app.history.undo_len());
+    feed(&mut app, ":ab<C-z>");
+    let Some(Modal::Palette(p)) = app.modals.top() else { panic!("the palette") };
+    assert_eq!(p.input(), "ab");
+    assert_eq!((app.editor.headers.len(), app.history.undo_len()), (rows, steps));
+}
+
+/// Plan M3b Deviation 16: a click from the jq bar into the URL line is a
+/// close and an open, so the URL line is not Insert-only: it opens in
+/// Normal, where `x` deletes.
+#[test]
+fn a_click_from_the_jq_bar_into_the_url_does_not_carry_insert_only() {
+    let mut app = vim_app(Fixture::UrlLine);
+    app.editor.url = LineInput::new("ab");
+    app.capture_undo();
+    json_response(&mut app, "[1]");
+    app.update(Action::OpenJqBar);
+    draw(&mut app);
+    feed(&mut app, ".");
+    assert_eq!(app.glue.session(), FieldSession::Live(FieldId::Jq));
+    let area = app.editor.last_url_text_area.expect("the URL line was drawn");
+    app.handle_mouse(ratatui::crossterm::event::MouseEvent {
+        kind: ratatui::crossterm::event::MouseEventKind::Down(ratatui::crossterm::event::MouseButton::Left),
+        column: area.x,
+        row: area.y,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert_eq!(app.glue.session(), FieldSession::Live(FieldId::Url));
+    assert_eq!(app.mode_indicator(), Some("NORMAL"));
+    feed(&mut app, "x");
+    assert_eq!(app.editor.url.text(), "b", "Normal's x deletes");
 }
 
 /// Amendment R8 (the user's decision): `G` and `gg` move the variable
