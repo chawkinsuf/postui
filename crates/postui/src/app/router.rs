@@ -157,9 +157,9 @@ impl App {
                 return pending;
             }
         }
-        match self.glue.live() {
-            Some(id) if self.field_caret() == FieldCaret::Live(id) => self.glue.echo(),
-            _ => String::new(),
+        match self.live_engine_field() {
+            Some(_) => self.glue.echo(),
+            None => String::new(),
         }
     }
 

@@ -182,10 +182,6 @@ pub struct Editor {
     /// The engine's search prompt and matches for the next draw, mirrored
     /// in by `App::mirror_body_search` (spec §5.6). Empty in arrows.
     pub(crate) body_search: crate::keyroute::engine_glue::BodySearch,
-    /// The vim engine has a session on the body, live or parked: mirrored
-    /// in by `App::sync_session`. The engine is then the body's only
-    /// editor, so the indent keys below edit nothing (final review I-1).
-    pub(crate) body_engine: bool,
     /// The fixed end of an in-progress body selection: planted by a left
     /// click (mouse) or the first shifted motion (keyboard), consumed by
     /// `body_drag_to`/shifted motions to rebuild `body.selection` as the
@@ -317,7 +313,6 @@ impl Default for Editor {
             body_visual: None,
             body_hl_overlays: Vec::new(),
             body_search: Default::default(),
-            body_engine: false,
             body_handler: EditorEventHandler::emacs_mode(),
             body_sel_anchor: None,
             body_word_anchor: None,
@@ -1727,23 +1722,15 @@ impl Component for Editor {
                 // shift+tab is consumed unconditionally — crossterm's
                 // BackTab has no edtui KeyCode conversion (it panics
                 // `unimplemented!()`), so it must never reach the handler.
-                // With a vim engine session on the body neither key
-                // indents and both are swallowed: the engine is the body's
-                // only editor, and an edit outside it would wipe its
-                // history (final review I-1).
                 if ev.code == KeyCode::BackTab {
-                    if !self.body_engine {
-                        self.indent_body_lines(false);
-                    }
+                    self.indent_body_lines(false);
                     return Some(Action::Render);
                 }
                 if ev.code == KeyCode::Tab
                     && ev.modifiers.is_empty()
-                    && (self.body.selection.is_some() || self.body_engine)
+                    && self.body.selection.is_some()
                 {
-                    if !self.body_engine {
-                        self.indent_body_lines(true);
-                    }
+                    self.indent_body_lines(true);
                     return Some(Action::Render);
                 }
                 if self.body.selection.is_some() {
@@ -3064,11 +3051,10 @@ impl Editor {
                 // first highlight that contains it.
                 let overlays = self.body_overlays();
                 if self.body_hl_overlays != overlays {
+                    // One splice: the JSON colours behind them move once.
                     let stale = self.body_hl_overlays.len().min(self.body.highlights.len());
-                    self.body.highlights.drain(..stale);
-                    for (i, o) in overlays.iter().enumerate() {
-                        self.body.highlights.insert(i, edtui::Highlight::new(o.from, o.to, o.kind.style(theme)));
-                    }
+                    let fresh = overlays.iter().map(|o| edtui::Highlight::new(o.from, o.to, o.kind.style(theme)));
+                    self.body.highlights.splice(..stale, fresh);
                     self.body_hl_overlays = overlays;
                 }
                 let mut edtui_theme = EditorTheme::default()

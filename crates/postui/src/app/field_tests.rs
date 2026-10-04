@@ -723,6 +723,82 @@ fn re_entering_the_body_keeps_its_history() {
     assert_eq!(body(&app), BODY, "the engine's step from the first visit");
 }
 
+/// Code review: a bracketed paste is an event of its own, so the session
+/// catches up first. A body replaced since (the `$EDITOR` round-trip) is
+/// rebased, and its old history never replays onto the new text.
+#[test]
+fn a_paste_after_the_body_was_replaced_rebases_first() {
+    let mut app = vim(Fixture::Body);
+    feed(&mut app, "x");
+    assert!(app.glue.can_undo(EngineKind::Body));
+    app.editor.set_body_text("[1]");
+    app.paste_text("Z");
+    feed(&mut app, "u");
+    assert_eq!(body(&app), "[1]", "u takes the paste back");
+    assert!(!app.glue.can_undo(EngineKind::Body), "the history of the old text is gone");
+}
+
+/// Code review: every scratch has the same (no) slug, so a fresh scratch
+/// must not inherit the last one's body history, even when the two bodies
+/// read the same.
+#[test]
+fn a_fresh_scratch_does_not_inherit_the_bodys_history() {
+    let on_body = |app: &mut App| {
+        app.editor.method = postui_core::model::Method::Post;
+        app.editor.active_tab = EditorTab::Body;
+        app.editor.preferred_tab = EditorTab::Body;
+        app.focus = PaneId::Editor;
+        app.editor.sub_focus = SubFocus::Content;
+        draw(app);
+    };
+    let mut app = App::new_for_test();
+    assert_eq!(app.editor.slug, None, "a scratch");
+    app.use_profile(KeyProfile::Vim);
+    on_body(&mut app);
+    feed(&mut app, "ihello<Esc>u");
+    assert_eq!(body(&app), "");
+    assert!(app.glue.can_redo(EngineKind::Body));
+    feed(&mut app, "<Esc>");
+    assert_eq!(app.glue.session(), FieldSession::None, "the body closed");
+    app.land(Landing { open: Some(crate::undo::Open::Scratch { buffer: None }), ..Landing::default() });
+    on_body(&mut app);
+    feed(&mut app, "0");
+    assert_eq!(app.glue.session(), FieldSession::Live(FieldId::Body));
+    assert!(!app.glue.can_redo(EngineKind::Body), "the old scratch's redo is gone");
+}
+
+/// Code review (final review I-1 generalized): a key keys.toml binds that
+/// the engine declines never reaches the body's own editor, which would
+/// select or edit outside the engine; the keymap's action runs instead.
+#[test]
+fn a_bound_key_the_engine_declines_skips_the_body_editor() {
+    let mut app = vim(Fixture::Body);
+    feed(&mut app, "x");
+    app.keymap.bind(KeyCombo::parse("shift+right").unwrap(), Action::OpenPalette);
+    let before = (body(&app), caret(&app));
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT));
+    assert!(matches!(app.modals.top(), Some(Modal::Palette(_))), "the keymap's action ran");
+    assert_eq!((body(&app), caret(&app)), before);
+    assert!(app.editor.body.selection.is_none(), "no GUI selection under the engine");
+    assert!(app.glue.can_undo(EngineKind::Body), "the engine's history survives");
+}
+
+/// Code review: a modal raised outside a key (an async result) parks the
+/// body at the main loop's catch-up, so its search prompt stops drawing
+/// before the next key.
+#[test]
+fn a_modal_raised_outside_a_key_parks_the_body_at_the_catch_up() {
+    let mut app = vim(Fixture::Body);
+    feed(&mut app, "/a");
+    draw(&mut app);
+    assert!(app.editor.body_search.prompt.is_some());
+    app.update(Action::OpenPalette);
+    app.catch_up_field_session();
+    draw(&mut app);
+    assert_eq!(app.glue.session(), FieldSession::Parked(FieldId::Body));
+    assert!(app.editor.body_search.prompt.is_none(), "no prompt drawn under the modal");
+}
+
 /// Spec §3.7: a format with the body open is one engine step.
 #[test]
 fn a_format_with_the_body_open_is_one_engine_step() {

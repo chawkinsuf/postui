@@ -215,8 +215,7 @@ impl App {
         if let Some(open) = self.editor.slug.clone()
             && !self.request_exists(&open)
         {
-            self.editor = Editor::default();
-            self.shadow = None;
+            self.fresh_scratch();
             reset = true;
         }
         // 4. Land on each part the op changed, from the side we are going to.
@@ -270,6 +269,15 @@ impl App {
         if self.open_state_stale() {
             self.persist_open_request();
         }
+    }
+
+    /// An empty scratch in the editor. Its body is a new buffer, so the
+    /// body's engine state goes with the old one: a scratch has no slug
+    /// for `Glue::own_body` to tell it from the scratch before.
+    fn fresh_scratch(&mut self) {
+        self.editor = Editor::default();
+        self.shadow = None;
+        self.glue.drop_body();
     }
 
     /// The view an undo step records (§4.1).
@@ -418,8 +426,7 @@ impl App {
                 {
                     p.close_request(&prev);
                 }
-                self.editor = Editor::default();
-                self.shadow = None;
+                self.fresh_scratch();
                 if let Some(buf) = buffer {
                     self.editor.apply_snapshot(&buf);
                     self.shadow = Some((None, *buf));

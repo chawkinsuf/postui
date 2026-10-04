@@ -2549,10 +2549,7 @@ impl App {
         // edits or a step either way (amendment C1: before the first
         // committed step the live edit still counts, or ctrl+z in Insert
         // would undo an older app step and lose the typed text).
-        if let Some(id) = self.glue.live()
-            && self.field_caret() == crate::keyroute::FieldCaret::Live(id)
-            && let Some(kind) = id.engine_kind()
-        {
+        if let Some(kind) = self.live_engine_field().and_then(|id| id.engine_kind()) {
             return self.glue.edited(kind) || self.glue.can_undo(kind) || self.glue.can_redo(kind);
         }
         // Modals first, matching `open_text_field_mut` and `field_open`.
@@ -9493,6 +9490,10 @@ impl App {
         if text.is_empty() {
             return false;
         }
+        // A bracketed paste is an event of its own, so the session catches
+        // up first, as a key's does: a body replaced since (`$EDITOR`)
+        // rebases before the paste lands on it.
+        self.sync_session(None, fields::Cause::Before);
         // A vim field the engine runs takes the paste itself (plan M3a
         // Deviation 13).
         if let Some(changed) = self.engine_paste(text) {

@@ -152,7 +152,6 @@ impl App {
             if was == Some(KeyProfile::Vim) {
                 self.unpaint(FieldId::Body, true);
             }
-            self.editor.body_engine = false;
             return;
         }
         self.glue.own_body(self.editor.slug.as_deref());
@@ -188,7 +187,6 @@ impl App {
             Some((id, false)) => FieldSession::Parked(id),
             None => FieldSession::None,
         });
-        self.editor.body_engine = self.glue.owned() == Some(FieldId::Body);
         let how = match cause {
             Cause::Mouse(how) => how,
             Cause::Key { routed: true } if matches!(edge, Edge::Same(_)) => Some(Settled::Key),
@@ -305,6 +303,21 @@ impl App {
         }
     }
 
+    /// The field whose session is live and that has the caret: the one
+    /// the engine may be handed keys, pastes and copies for.
+    pub(crate) fn live_engine_field(&self) -> Option<FieldId> {
+        self.glue.live().filter(|&id| self.field_caret() == FieldCaret::Live(id))
+    }
+
+    /// Catches the session up with what moved the caret or replaced a
+    /// field's text outside a key or a mouse button: an async result, a
+    /// reload, the `$EDITOR` round-trip. The main loop runs it after each,
+    /// so the next draw (the body's search prompt) and the next paste see
+    /// the session as it is.
+    pub fn catch_up_field_session(&mut self) {
+        self.sync_session(None, Cause::Before);
+    }
+
     /// What the engine needs to know about the view (piece 3 §4.1): the
     /// body's rows as last drawn.
     pub(crate) fn view_ctx(&self, id: FieldId) -> ViewCtx {
@@ -316,10 +329,7 @@ impl App {
     /// that field closed under an earlier key of the same run: the rest of
     /// what was typed for it goes nowhere.
     pub(super) fn engine_key(&mut self, ev: KeyEvent) -> Option<Ran> {
-        let id = self.glue.live()?;
-        if self.field_caret() != FieldCaret::Live(id) {
-            return None;
-        }
+        let id = self.live_engine_field()?;
         let view = self.view_ctx(id);
         // Read before the key: whether a `u` or ctrl+r it hands back means
         // the field had nothing to step (final review M-1).
@@ -344,10 +354,7 @@ impl App {
     /// or the engine is not in idle Normal, where the undo chords do
     /// nothing (plan M3a Deviation 8).
     pub(crate) fn engine_field_undo(&mut self, redo: bool) -> Option<bool> {
-        let id = self.glue.live()?;
-        if self.field_caret() != FieldCaret::Live(id) {
-            return None;
-        }
+        let id = self.live_engine_field()?;
         let kind = id.engine_kind()?;
         let can = if redo { self.glue.can_redo(kind) } else { self.glue.can_undo(kind) };
         let idle = self.glue.mode() == Mode::Normal && !self.glue.view().pending;
@@ -391,10 +398,7 @@ impl App {
     /// rule). `None` when no engine field has the caret: today's routing
     /// pastes.
     pub(crate) fn engine_paste(&mut self, text: &str) -> Option<bool> {
-        let id = self.glue.live()?;
-        if self.field_caret() != FieldCaret::Live(id) {
-            return None;
-        }
+        let id = self.live_engine_field()?;
         let flat;
         let text = if id.engine_kind() == Some(EngineKind::Line) {
             flat = crate::components::line_input::flatten_paste(text);
@@ -452,10 +456,7 @@ impl App {
     /// (the user's decision, final review I-2): a mouse selection in a vim
     /// field becomes Visual, so without it ctrl+c would quit.
     pub(crate) fn engine_visual_text(&mut self) -> Option<String> {
-        let id = self.glue.live()?;
-        if self.field_caret() != FieldCaret::Live(id) {
-            return None;
-        }
+        let id = self.live_engine_field()?;
         let (glue, buf) = self.session_parts(id);
         glue.visual_text(&mut buf?)
     }
@@ -541,10 +542,27 @@ impl App {
             let repeat = matches!(ev.code, KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown);
             let times = if repeat { n.min(cap) } else { 1 };
             for _ in 0..times {
-                ran = ran.and(Ran::routed(self.handle_key_routed(ev)));
+                ran = ran.and(self.route_forwarded(id, ev));
             }
         }
         ran
+    }
+
+    /// A declined key [`Self::forwards`] let through. The body's own
+    /// editor never gets one but Esc, which blurs it: the engine is the
+    /// body's only editor, and an edit or a selection made outside it would
+    /// wipe its history (final review I-1). Tab and shift+Tab, which that
+    /// editor indents with, do nothing; any other key runs what the keymap
+    /// binds it to, as it would once the editor passed on it.
+    fn route_forwarded(&mut self, id: FieldId, ev: KeyEvent) -> Ran {
+        if id != FieldId::Body || (ev.code == KeyCode::Esc && ev.modifiers.is_empty()) {
+            return Ran::routed(self.handle_key_routed(ev));
+        }
+        let indent = (ev.code == KeyCode::Tab && ev.modifiers.is_empty()) || ev.code == KeyCode::BackTab;
+        match self.keymap.lookup(&KeyCombo::from_event(&ev)) {
+            Some(a) if !indent => Ran::routed(self.update(a)),
+            _ => Ran::default(),
+        }
     }
 
     /// Whether a declined key goes on to today's routing (plan M3a

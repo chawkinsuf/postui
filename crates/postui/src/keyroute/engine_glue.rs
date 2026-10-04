@@ -529,6 +529,16 @@ impl Glue {
         self.body_owner = Some(owner);
     }
 
+    /// The editor was replaced by a fresh scratch. Every scratch has the
+    /// same owner (no slug), so [`Glue::own_body`] cannot tell a new one
+    /// from the old: the body's state and the search highlight go here.
+    pub fn drop_body(&mut self) {
+        if self.body_owner.is_some() {
+            self.engine.no_hlsearch();
+        }
+        self.body = BufState::new();
+    }
+
     /// The open request's slug changed in place from `from` to `to` (a
     /// rename, a space rename, their undo or redo, a scratch saved under a
     /// name): the body's state follows it, its history and the search
@@ -683,6 +693,21 @@ mod tests {
         assert!(g.can_undo(EngineKind::Body), "the same request keeps it");
         g.own_body(Some("main/b"));
         assert!(!g.can_undo(EngineKind::Body), "a switch drops it");
+    }
+
+    /// Every scratch has the same owner: a fresh one drops the state
+    /// explicitly.
+    #[test]
+    fn a_fresh_scratch_drops_the_body_state() {
+        let mut g = Glue::default();
+        let mut body = EditorState::new(Lines::from("abc"));
+        let mut visual: BodyVisual = None;
+        g.own_body(None);
+        g.enter(&mut FieldBuf::Body(&mut body, &mut visual), Start::Normal, OpenSeat::Keep);
+        keys(&mut g, &mut FieldBuf::Body(&mut body, &mut visual), "x");
+        g.drop_body();
+        g.own_body(None);
+        assert!(!g.can_undo(EngineKind::Body));
     }
 
     /// Amendment C2: a slug changed in place (a rename) keeps the state.
