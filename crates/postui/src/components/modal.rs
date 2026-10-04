@@ -741,6 +741,10 @@ pub struct ModalStack {
     steps: Vec<FieldStep>,
     /// Steps undone, newest last; cleared by any new field close.
     redo: Vec<FieldStep>,
+    /// One per dialog on the stack, bottom first: a number no other push
+    /// ever had (plan M3b Deviation 2).
+    serials: Vec<u64>,
+    next_serial: u64,
 }
 
 impl ModalStack {
@@ -749,6 +753,8 @@ impl ModalStack {
         self.field_open = true;
         self.steps.clear();
         self.redo.clear();
+        self.next_serial += 1;
+        self.serials.push(self.next_serial);
         self.stack.push(modal);
     }
 
@@ -757,7 +763,31 @@ impl ModalStack {
         self.field_open = true;
         self.steps.clear();
         self.redo.clear();
+        self.serials.pop();
         self.stack.pop()
+    }
+
+    /// The top dialog's serial (plan M3b Deviation 2).
+    pub(crate) fn top_serial(&self) -> Option<u64> {
+        self.serials.last().copied()
+    }
+
+    /// The top form's text field `i`, whatever has the focus: `None` for a
+    /// choice field, a removed row, or a modal that is not a form. The vim
+    /// engine edits it through this (plan M3b).
+    pub(crate) fn text_input_mut(&mut self, i: usize) -> Option<&mut LineInput> {
+        match self.stack.last_mut()? {
+            Modal::Prompt { input, .. } if i == 0 => Some(input),
+            Modal::NewProject { name, .. } if i == 0 => Some(name),
+            Modal::NewProject { path, .. } if i == 1 => Some(path),
+            Modal::MultiPrompt { fields, .. } => {
+                fields.get_mut(i).filter(|f| f.choices.is_empty()).map(|f| &mut f.input)
+            }
+            Modal::FieldsEditor(state) => {
+                state.rows.get_mut(i).filter(|r| !r.removed).map(|r| &mut r.input)
+            }
+            _ => None,
+        }
     }
 
     /// Whether the top form modal's field has the caret right now. `false`
@@ -5117,6 +5147,36 @@ mod tests {
             "sel".into(),
             &["a".to_string(), "b".to_string()],
         ))
+    }
+
+    /// Plan M3b Deviation 2: a dialog session is keyed by its dialog.
+    #[test]
+    fn every_push_has_its_own_serial() {
+        let mut m = prompt_stack();
+        let first = m.top_serial();
+        assert!(first.is_some());
+        m.push(sample_multi_prompt());
+        assert_ne!(m.top_serial(), first);
+        m.pop();
+        assert_eq!(m.top_serial(), first, "the dialog underneath is the same one");
+        m.pop();
+        assert_eq!(m.top_serial(), None);
+        m.push(sample_multi_prompt());
+        assert_ne!(m.top_serial(), first, "a new dialog never reuses a serial");
+    }
+
+    #[test]
+    fn text_inputs_are_named_by_index_and_skip_non_text_fields() {
+        let mut m = ModalStack::default();
+        m.push(sample_multi_prompt());
+        assert_eq!(m.text_input_mut(0).map(|i| i.text().to_string()).as_deref(), Some("seed"));
+        assert!(m.text_input_mut(1).is_none(), "a choice field is not text");
+        let mut p = ModalStack::default();
+        p.push(Modal::Palette(crate::components::palette::PaletteState::new(
+            &crate::usage::UsageStore::default(),
+            0,
+        )));
+        assert!(p.text_input_mut(0).is_none(), "a picker has no form field");
     }
 
     /// Plan M3b Deviation 10.

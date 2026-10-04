@@ -3,6 +3,28 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
+thread_local! {
+    /// Set while a key the vim engine handed back is routed on to a dialog
+    /// or a query box (plan M3b Deviation 6).
+    static QUIET: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// While alive, [`LineInput::handle_key`] types nothing and moves nothing:
+/// the engine owns the text, and a key it handed back reaches only the
+/// container's own arms (Enter, Esc, Tab, the picker moves, alt chords).
+/// Ends with its scope, restoring what was there before.
+pub(crate) struct Quiet(bool);
+
+pub(crate) fn quiet() -> Quiet {
+    Quiet(QUIET.replace(true))
+}
+
+impl Drop for Quiet {
+    fn drop(&mut self) {
+        QUIET.set(self.0);
+    }
+}
+
 /// A single-line, unicode-safe text input. Cursor position is a char index
 /// (not a byte offset), so operations stay correct with multi-byte
 /// characters. Shared by every single-line field in the app: the URL
@@ -42,6 +64,9 @@ pub struct LineInput {
     /// instead of opening a new one. `None` after a caret move, an undo,
     /// or a whole-value step.
     run: Option<EditKind>,
+    /// The text when the vim engine opened this field (plan M3b Deviation
+    /// 11): its edits record no snapshot, so `text_at_open` reads this.
+    opened: Option<String>,
 }
 
 /// Text and caret as they stood before a step.
@@ -87,6 +112,7 @@ impl LineInput {
             undo: Vec::new(),
             redo: Vec::new(),
             run: None,
+            opened: None,
         }
     }
 
@@ -217,14 +243,30 @@ impl LineInput {
         self.undo.clear();
         self.redo.clear();
         self.run = None;
+        self.opened = None;
+    }
+
+    /// Marks the text a vim engine session starts from, unless an earlier
+    /// open of this same edit already did (a cover over the field leaves
+    /// the edit open). For a container that records "what changed across
+    /// this open" (plan M3b Deviation 11).
+    pub(crate) fn mark_open(&mut self) {
+        if self.opened.is_none() {
+            self.opened = Some(self.text.clone());
+        }
     }
 
     /// The text as it stood when this open began — the bottom of the undo
-    /// stack, or the current text if nothing was edited. Used by a
-    /// container (a form modal) that needs "what changed across this
-    /// whole open", not step-by-step history.
+    /// stack, else the mark a vim session left ([`Self::mark_open`]), or
+    /// the current text if nothing was edited. Used by a container (a form
+    /// modal) that needs "what changed across this whole open", not
+    /// step-by-step history.
     pub fn text_at_open(&self) -> String {
-        self.undo.first().map(|s| s.text.clone()).unwrap_or_else(|| self.text.clone())
+        self.undo
+            .first()
+            .map(|s| s.text.clone())
+            .or_else(|| self.opened.clone())
+            .unwrap_or_else(|| self.text.clone())
     }
 
     /// Replaces the whole text (caret at the end) as one undoable step.
@@ -429,6 +471,9 @@ impl LineInput {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> bool {
+        if QUIET.get() {
+            return false;
+        }
         // The emacs caret bytes (ctrl+e, ESC b/f — also what mac
         // terminals send for cmd/option+arrows) fold into the
         // End/word-hop keys matched below on every platform; only ^A is
@@ -881,6 +926,45 @@ mod tests {
     }
     fn code(c: KeyCode) -> KeyEvent {
         KeyEvent::new(c, KeyModifiers::NONE)
+    }
+
+    /// Plan M3b Deviation 6: a key the vim engine handed back reaches a
+    /// dialog's own arms, never its text.
+    #[test]
+    fn a_quiet_input_types_and_moves_nothing() {
+        let mut input = LineInput::new("ab");
+        {
+            let _quiet = quiet();
+            assert!(!input.handle_key(key('x')));
+            assert!(!input.handle_key(code(KeyCode::Home)));
+        }
+        assert_eq!((input.text(), input.cursor()), ("ab", 2));
+        input.handle_key(key('x'));
+        assert_eq!(input.text(), "abx", "the guard ends with its scope");
+    }
+
+    /// Plan M3b Deviation 11: the engine's edits record no snapshot here,
+    /// so a dialog's close step reads the text at open from the mark.
+    #[test]
+    fn text_at_open_falls_back_to_the_mark() {
+        let mut input = LineInput::new("before");
+        input.mark_open();
+        input.splice_raw(0, 6, "after");
+        assert_eq!(input.text_at_open(), "before");
+        input.end_edit();
+        assert_eq!(input.text_at_open(), "after", "a closed edit forgets its mark");
+    }
+
+    /// A cover over a dialog field leaves its edit open: the session that
+    /// reopens it keeps the first mark.
+    #[test]
+    fn a_second_mark_keeps_the_first() {
+        let mut input = LineInput::new("before");
+        input.mark_open();
+        input.splice_raw(0, 6, "during");
+        input.mark_open();
+        input.splice_raw(0, 6, "after");
+        assert_eq!(input.text_at_open(), "before");
     }
 
     #[test]

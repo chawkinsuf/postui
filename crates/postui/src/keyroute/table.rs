@@ -54,8 +54,9 @@ pub enum Intent {
     /// A short note (an Info toast, plan M1 Deviation 9); nothing else.
     Note(&'static str),
     /// Leave the open one-line field, then this key on the closed surface:
-    /// `j` in the URL is Esc, then Down (spec §3.7, §5.6; plan M3a
-    /// Deviation 11). The count repeats the key.
+    /// `j` in the URL is `CloseField`, then Down (spec §3.7, §5.6; plan M3b
+    /// Deviation 7, which replaces M3a Deviation 11's Esc). The count
+    /// repeats the key.
     Leave(Named),
     /// A known key that does nothing here: `Z` and the key after it in a
     /// field, until M4's `ZZ` and `ZQ` (plan M3a Deviation 9).

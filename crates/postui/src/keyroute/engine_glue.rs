@@ -354,6 +354,13 @@ impl Glue {
         self.sweeping
     }
 
+    /// Trades registers with `other` (plan M3b Deviation 1): the dialog
+    /// engine takes the screen's when a dialog session opens and gives them
+    /// back when it closes, so the unnamed register is shared (key list §5).
+    pub fn swap_registers(&mut self, other: &mut Glue) {
+        std::mem::swap(self.engine.registers_mut(), other.engine.registers_mut());
+    }
+
     /// A field got the caret (piece 3 §4.2 `enter`). A one-line field
     /// starts a fresh state; the body keeps its own (§3.11).
     pub fn enter(&mut self, buf: &mut FieldBuf<'_>, start: Start, seat: OpenSeat) {
@@ -595,6 +602,21 @@ mod tests {
         input.set_cursor(caret);
         g.enter(&mut FieldBuf::Line(&mut input), start, seat);
         (g, input)
+    }
+
+    /// Plan M3b Deviation 1: a yank in one engine puts from the other.
+    #[test]
+    fn swapped_registers_carry_a_yank_between_engines() {
+        let (mut screen, mut url) = opened("abc", Start::Normal, OpenSeat::Keep, 0);
+        let mut dialog = Glue::default();
+        screen.swap_registers(&mut dialog);
+        let mut field = LineInput::new("xyz");
+        field.set_cursor(0);
+        dialog.enter(&mut FieldBuf::Line(&mut field), Start::Normal, OpenSeat::Keep);
+        keys(&mut dialog, &mut FieldBuf::Line(&mut field), "yw");
+        screen.swap_registers(&mut dialog);
+        keys(&mut screen, &mut FieldBuf::Line(&mut url), "P");
+        assert_eq!(url.text(), "xyzabc");
     }
 
     #[test]

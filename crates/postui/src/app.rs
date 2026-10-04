@@ -230,6 +230,15 @@ pub struct App {
     /// The vim profile's text engine and its field session (spec §3.7):
     /// the one door to the engine (`keyroute::engine_glue`).
     pub(crate) glue: crate::keyroute::engine_glue::Glue,
+    /// The top dialog's field's engine (plan M3b Deviation 1): a second
+    /// engine, so a screen field parked under a dialog keeps its state.
+    pub(crate) modal_glue: crate::keyroute::engine_glue::Glue,
+    /// The dialog field with a session, by its dialog's serial (plan M3b
+    /// Deviation 2).
+    pub(crate) modal_session: Option<(u64, crate::keyroute::FieldId)>,
+    /// The top dialog's serial at the last sync: a dialog field that opens
+    /// under a new top opens in Insert (plan M3b Deviation 3).
+    pub(crate) modal_seen: Option<u64>,
     /// Whether the last `Action::Undo` or `Action::Redo` stepped anything:
     /// a counted `u` or ctrl+r stops at the first repeat that did not
     /// (`App::run_steps`).
@@ -1703,6 +1712,9 @@ impl App {
             keymap: crate::keys::Keymap::default_bindings(),
             router: crate::keyroute::Router::default(),
             glue: Default::default(),
+            modal_glue: Default::default(),
+            modal_session: None,
+            modal_seen: None,
             history_stepped: false,
             usage: crate::usage::UsageStore::default(),
             clients: crate::http::Clients::new(),
@@ -2551,7 +2563,8 @@ impl App {
         // would undo an older app step and lose the typed text).
         if let Some(id) = self.live_engine_field() {
             let kind = id.engine_kind();
-            return self.glue.edited(kind) || self.glue.can_undo(kind) || self.glue.can_redo(kind);
+            let g = self.glue_of(id);
+            return g.edited(kind) || g.can_undo(kind) || g.can_redo(kind);
         }
         // Modals first, matching `open_text_field_mut` and `field_open`.
         if !self.modals.is_empty() {

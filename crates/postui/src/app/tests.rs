@@ -30012,7 +30012,9 @@ fn a_form_modals_undo_and_reveal_chips_name_live_keys() {
     use crate::components::line_input::LineInput;
     use crate::components::modal::{Modal, PromptKind};
     use crate::config::KeyProfile;
-    for (profile, undo) in [(KeyProfile::Arrows, "^Z undo"), (KeyProfile::Vim, "u undo")] {
+    // Vim's prompt field runs on the engine (plan M3b): Esc goes to
+    // Normal, and `j` then `k` close the field to selected.
+    for (profile, undo, close) in [(KeyProfile::Arrows, "^Z undo", "<Esc>"), (KeyProfile::Vim, "u undo", "<Esc>jk")] {
         let mut app = App::new_for_test();
         app.use_profile(profile);
         app.modals.push(Modal::Prompt {
@@ -30028,7 +30030,7 @@ fn a_form_modals_undo_and_reveal_chips_name_live_keys() {
         let footer = footer_text(&mut app);
         assert!(footer.contains("ctrl+r reveal"), "{profile:?}, caret: {footer}");
         app.handle_key(plain('a'));
-        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        type_keys(&mut app, close);
         assert!(!app.field_caret().is_live(), "{profile:?}: the field is only selected");
         let footer = footer_text(&mut app);
         assert!(!footer.contains("reveal"), "{profile:?}, no caret: {footer}");
