@@ -38,7 +38,7 @@ pub struct Row {
 
 /// The milestone this build ships through: the coverage test checks the
 /// rows up to it.
-pub const MILESTONE: u8 = 2;
+pub const MILESTONE: u8 = 3;
 
 const fn row(id: &'static str, tier: Tier, status: Status, milestone: u8, arrows: bool) -> Row {
     Row { id, tier, status, milestone, arrows }
