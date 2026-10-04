@@ -8,21 +8,22 @@ use crate::keyroute::{FieldCaret, FieldId, KeyCtx, Step, Surface};
 
 impl App {
     /// One snapshot of where `ev` lands (spec §3.2).
-    /// A field with the caret takes every key and the router reads
-    /// nothing else, so typing never pays for the keymap lookup or the
-    /// surface's row count.
+    /// A field with the caret never reads the keymap. While the engine
+    /// runs it, the snapshot carries the engine's mode and pending state
+    /// for the field lookahead (spec §3.7), and the surface's row count
+    /// caps a field row's move (`3j` leaving a cell).
     pub fn key_ctx(&self, ev: &KeyEvent) -> KeyCtx {
         let profile = self.profile();
         let surface = self.surface();
         let field = self.field_caret();
         if field.is_live() {
-            return KeyCtx {
-                profile,
-                surface,
-                field,
-                user_bare: None,
-                cap: crate::vim::engine::settings::MAX_COUNT,
+            // A live field's keys go to its engine (vim) or type (arrows, and
+            // the fields M3b brings to the engine): no keymap letter applies.
+            let engine = match field {
+                FieldCaret::Live(id) if self.glue.live() == Some(id) => Some(self.glue.view()),
+                _ => None,
             };
+            return KeyCtx { profile, surface, field, user_bare: None, cap: self.repeat_cap(surface), engine };
         }
         KeyCtx {
             profile,
@@ -30,6 +31,7 @@ impl App {
             field,
             user_bare: self.user_bare(ev, profile, surface),
             cap: self.repeat_cap(surface),
+            engine: None,
         }
     }
 
@@ -100,32 +102,40 @@ impl App {
     }
 
     /// Runs a resolved key's steps in order (spec §3.1): a named key
-    /// through `handle_key_routed`, an action through `update`. A run of
-    /// replayed keys stops once the surface changes under it (plan M1
-    /// Deviation 13): `3j` from the URL line enters the table and stops.
-    /// Actions run on whatever the surface: `3u` undoes three. A counted
-    /// undo or redo stops at the first repeat that stepped nothing, so
-    /// `10u` with three steps undoes three and says "Nothing to undo"
-    /// once (the final review's ruling, spec §9 M1). A counted list verb
-    /// is never repeated here: `{N}dd` and `{N}p` carry their count as one
-    /// action, so `9p` with the wrong register is refused, and toasts, once.
-    pub(super) fn run_steps(&mut self, steps: Vec<Step>) -> bool {
+    /// through `handle_key_routed`, an action through `update`, an engine
+    /// key into the live field, an open mode into the event's `Ran`. A run
+    /// of replayed named keys stops once the surface changes under it (plan
+    /// M1 Deviation 13): `3j` from the URL line enters the table and stops.
+    /// An engine run stops once its field closes. Actions run on whatever
+    /// the surface: `3u` undoes three. A counted undo or redo stops at the
+    /// first repeat that stepped nothing, so `10u` with three steps undoes
+    /// three and says "Nothing to undo" once (the final review's ruling,
+    /// spec §9 M1). A counted list verb is never repeated here: `{N}dd` and
+    /// `{N}p` carry their count as one action, so `9p` with the wrong
+    /// register is refused, and toasts, once.
+    pub(super) fn run_steps(&mut self, steps: Vec<Step>) -> super::fields::Ran {
+        use super::fields::Ran;
         let surface = self.surface();
-        let mut changed = false;
+        let mut ran = Ran::default();
         for step in steps {
             match step {
+                Step::OpenAs(open) => ran.open_as = Some(open),
+                Step::Engine(ev) => match self.engine_key(ev) {
+                    Some(r) => ran = ran.and(r),
+                    None => break,
+                },
                 Step::Key(_) if self.surface() != surface => break,
-                Step::Key(ev) => changed |= self.handle_key_routed(ev),
+                Step::Key(ev) => ran = ran.and(Ran::routed(self.handle_key_routed(ev))),
                 Step::Action(a) => {
                     let history = matches!(a, Action::Undo | Action::Redo);
-                    changed |= self.update(a);
+                    ran = ran.and(Ran::routed(self.update(a)));
                     if history && !self.history_stepped {
                         break;
                     }
                 }
             }
         }
-        changed
+        ran
     }
 
     /// The spelling context of where the keyboard is now (spec §4.6).
@@ -137,26 +147,35 @@ impl App {
         }
     }
 
-    /// The router's half-typed keys for the footer (spec §3.8). Keys typed
-    /// on a surface the keyboard has since left with no key (a modal
-    /// raised by a background result, focus moved by a send) are not
-    /// shown: the next key there drops them (`Router::resolve`).
+    /// The half-typed keys for the footer (spec §3.8): the router's, then
+    /// the engine's. Keys the router holds for a surface the keyboard has
+    /// since left with no key are not shown: the next key there drops them.
     pub fn key_echo(&self) -> String {
-        if self.router.typed_on() != Some(self.surface()) {
-            return String::new();
+        if self.router.typed_on() == Some(self.surface()) {
+            let pending = self.router.echo();
+            if !pending.is_empty() {
+                return pending;
+            }
         }
-        self.router.echo()
+        match self.live_engine_field() {
+            Some(_) => self.glue.echo(),
+            None => String::new(),
+        }
     }
 
-    /// The vim mode word (spec §3.8): what is taking the keys. A field
-    /// with the caret types, a picker's query included (`INSERT`, until M3
-    /// gives fields their Normal mode); everything else, a dropdown's
-    /// list among them, is `NORMAL`. `None` in the arrows profile.
+    /// The vim mode word (spec §3.8): what is taking the keys. A field the
+    /// engine runs shows the engine's mode; any other field with the caret
+    /// types (`INSERT`: modal fields and the query boxes until M3b);
+    /// everything else is `NORMAL`. `None` in the arrows profile.
     pub fn mode_indicator(&self) -> Option<&'static str> {
         if self.profile() != crate::config::KeyProfile::Vim {
             return None;
         }
-        Some(if self.field_caret().is_live() { "INSERT" } else { "NORMAL" })
+        Some(match self.field_caret() {
+            FieldCaret::Live(id) if id.engine_kind().is_some() => super::fields::mode_word(self.glue.mode()),
+            FieldCaret::Live(_) => "INSERT",
+            _ => "NORMAL",
+        })
     }
 
     /// The mode and the echo as the footer paints them: `NORMAL  3`.
@@ -250,7 +269,7 @@ impl App {
     }
 
     /// The screen's own field with the caret, modals aside.
-    fn screen_field(&self) -> Option<FieldId> {
+    pub(super) fn screen_field(&self) -> Option<FieldId> {
         use crate::components::manage::ManageTab;
         use crate::components::table_editor::Col;
         match self.screen {

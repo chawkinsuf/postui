@@ -13,6 +13,9 @@ pub enum Tok {
     Ctrl(char),
     /// An unmodified named key: `<CR>`, `<Esc>`, `<Down>`.
     Named(KeyCode),
+    /// `<any>` in a table row: any one key (spec §3.4 step 5: `q<any>`).
+    /// A pattern, never typed: [`Tok::of`] makes none.
+    Any,
 }
 
 /// The `<…>` names, and the named keys a token can be.
@@ -77,6 +80,7 @@ impl Tok {
             Tok::Ctrl(c) => KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL),
             Tok::Named(KeyCode::BackTab) => KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT),
             Tok::Named(code) => KeyEvent::new(code, KeyModifiers::NONE),
+            Tok::Any => unreachable!("<any> is a pattern in a row, never a typed key"),
         }
     }
 }
@@ -95,6 +99,7 @@ pub fn parse(notation: &str) -> Vec<Tok> {
             out.push(match name {
                 "Space" => Tok::Char(' '),
                 "lt" => Tok::Char('<'),
+                "any" => Tok::Any,
                 _ if name.len() == 3 && name.starts_with("C-") => {
                     Tok::Ctrl(name[2..].chars().next().expect("C-x").to_ascii_lowercase())
                 }
@@ -138,6 +143,7 @@ pub fn display(notation: &str) -> String {
                 out.push(c.to_ascii_uppercase());
             }
             Tok::Named(code) => out.push_str(&format!("{code:?}").to_lowercase()),
+            Tok::Any => out.push_str("<any>"),
         }
     }
     out
@@ -186,6 +192,13 @@ mod tests {
         assert_eq!(display("gg"), "gg");
         assert_eq!(display("<C-w>h"), "^W h");
         assert_eq!(display("<CR>"), "enter");
+    }
+
+    /// Plan M3a Deviation 10: `<any>` is a pattern a row holds, never a key.
+    #[test]
+    fn any_parses_as_a_pattern_token() {
+        assert_eq!(parse("q<any>"), vec![Tok::Char('q'), Tok::Any]);
+        assert_eq!(display("q<any>"), "q<any>");
     }
 
     #[test]

@@ -227,6 +227,9 @@ pub struct App {
     pub keymap: crate::keys::Keymap,
     /// The key router's pending keys (piece 4 spec §3.4).
     pub router: crate::keyroute::Router,
+    /// The vim profile's text engine and its field session (spec §3.7):
+    /// the one door to the engine (`keyroute::engine_glue`).
+    pub(crate) glue: crate::keyroute::engine_glue::Glue,
     /// Whether the last `Action::Undo` or `Action::Redo` stepped anything:
     /// a counted `u` or ctrl+r stops at the first repeat that did not
     /// (`App::run_steps`).
@@ -1699,6 +1702,7 @@ impl App {
             animating_last_tick: false,
             keymap: crate::keys::Keymap::default_bindings(),
             router: crate::keyroute::Router::default(),
+            glue: Default::default(),
             history_stepped: false,
             usage: crate::usage::UsageStore::default(),
             clients: crate::http::Clients::new(),
@@ -2344,7 +2348,8 @@ impl App {
     }
 
     /// Whether a text field that writes into the request as you type has
-    /// keystrokes of its own in flight: the URL line, and the jq bar. While
+    /// keystrokes of its own in flight: the URL line, the jq bar, and in
+    /// vim the body (an engine session's `edited()`). While
     /// it does, the app history waits — the field's own history covers the
     /// keystrokes, and the close lands as one step (spec 2026-09-15, "Two
     /// histories, one handover").
@@ -2355,11 +2360,20 @@ impl App {
         if self.screen != Screen::Main {
             return false;
         }
+        // In vim an engine session holds the URL's and the body's
+        // keystrokes, and its `edited()` is the field's (plan M3a
+        // Deviation 7).
+        let engine = |id| self.glue.owned() == Some(id);
         let url = self.focus == PaneId::Editor
             && self.editor.url_open()
-            && self.editor.url.edited();
+            && if engine(crate::keyroute::FieldId::Url) {
+                self.glue.edited(crate::keyroute::EngineKind::Line)
+            } else {
+                self.editor.url.edited()
+            };
+        let body = engine(crate::keyroute::FieldId::Body) && self.glue.edited(crate::keyroute::EngineKind::Body);
         let jq = self.focus == PaneId::Response && self.session.response.jq_field_edited();
-        url || jq
+        url || body || jq
     }
 
     pub fn capture_undo(&mut self) -> bool {
@@ -2428,6 +2442,9 @@ impl App {
         }
         self.editor.url.end_edit();
         self.session.response.end_jq_edit_session();
+        // The engine's sessions hand their edits over too: what the fields
+        // hold now is where their next step starts (plan M3a Deviation 7).
+        self.glue.flush();
         self.field_gate_was_on = true; // the close is its own step
         self.capture_undo();
     }
@@ -2528,6 +2545,13 @@ impl App {
     /// Whether an open text field has keystrokes of its own to undo — the
     /// condition under which the undo keys belong to it.
     pub(crate) fn open_text_field_edited(&mut self) -> bool {
+        // A vim field the engine runs owns the undo keys while it has live
+        // edits or a step either way (amendment C1: before the first
+        // committed step the live edit still counts, or ctrl+z in Insert
+        // would undo an older app step and lose the typed text).
+        if let Some(kind) = self.live_engine_field().and_then(|id| id.engine_kind()) {
+            return self.glue.edited(kind) || self.glue.can_undo(kind) || self.glue.can_redo(kind);
+        }
         // Modals first, matching `open_text_field_mut` and `field_open`.
         if !self.modals.is_empty() {
             return self.modals.field_edited();
@@ -2549,6 +2573,10 @@ impl App {
     /// field with history took it; `false` leaves the key to the app
     /// history.
     fn undo_in_open_field(&mut self, redo: bool) -> bool {
+        // A vim field the engine runs: its own history (spec §3.7).
+        if let Some(stepped) = self.engine_field_undo(redo) {
+            return stepped;
+        }
         // Modals first, in the same order as `open_text_field_edited` (the
         // gate that sent the key here): a palette over a live Settings
         // edit owns the caret, and the key must step the field it gated on.
@@ -3416,7 +3444,7 @@ impl App {
             }
             Action::BodyClear => {
                 self.no_coalesce = true;
-                if !self.editor.body_text().is_empty() {
+                if !self.editor.body_text().is_empty() && !self.engine_replace_body("") {
                     self.editor.set_body_text("");
                 }
                 true
@@ -3991,6 +4019,8 @@ impl App {
                         // reloading.
                         if self.editor.slug.as_deref() == Some(from.as_str()) {
                             self.editor.slug = Some(slug.clone());
+                            // The body's engine state follows too (amendment C2).
+                            self.glue.follow_body(Some(&from), Some(&slug));
                             // The rename wrote the new display name to
                             // disk; mirror it in both the live fields and
                             // the saved snapshot so a rename alone never
@@ -4108,7 +4138,12 @@ impl App {
                 }
                 self.commit_table_edit();
                 let req = self.editor.current_request();
-                self.create_or_save_as(&name, move |_| req.clone());
+                let before = self.editor.slug.clone();
+                if self.create_or_save_as(&name, move |_| req.clone()) {
+                    // The editor holds the same text under its new slug: the
+                    // body's engine state follows it (amendment C2).
+                    self.glue.follow_body(before.as_deref(), self.editor.slug.as_deref());
+                }
                 true
             }
             Action::PromptSaveScratch(then) => {
@@ -4130,7 +4165,9 @@ impl App {
                 // The deferred step (quit, open another request, switch
                 // project) runs only when the save lands — a bad name or a
                 // write failure toasts and stays put, content intact.
+                let before = self.editor.slug.clone();
                 if self.create_or_save_as(&name, move |_| req.clone()) {
+                    self.glue.follow_body(before.as_deref(), self.editor.slug.as_deref());
                     self.apply(*then);
                 }
                 true
@@ -4266,10 +4303,13 @@ impl App {
             Action::CloseField => {
                 // The field rule, dispatched rather than typed: with a
                 // field open this is exactly the Esc it would have taken.
+                // In vim it skips the engine, so the chip always closes
+                // the field, as on main; the end-of-event sync then
+                // leaves the session (amendment A4-2).
                 if !self.field_open() {
                     return false;
                 }
-                self.handle_key_inner(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+                self.handle_key_routed(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
             }
             Action::SetSecret { name, value } => {
                 let t = self.begin_op();
@@ -5500,6 +5540,14 @@ impl App {
             }
             Action::InsertVarText(text) => {
                 self.no_coalesce = true;
+                // A vim field the engine runs takes the token as one engine
+                // step (spec §3.7).
+                if self.engine_insert(&text) {
+                    if self.glue.owned() == Some(crate::keyroute::FieldId::Body) {
+                        self.turn_on_body_vars();
+                    }
+                    return true;
+                }
                 if self.focus == PaneId::Editor && self.editor.url_open() {
                     self.editor.url.insert_str(&text);
                 } else if self.focus == PaneId::Editor
@@ -5517,11 +5565,7 @@ impl App {
                     && self.editor.sub_focus == SubFocus::Content
                 {
                     self.editor.body_insert_str(&text);
-                    if !self.editor.substitute_body {
-                        self.editor.substitute_body = true;
-                        self.toasts
-                            .push("body {{var}} substitution enabled", ToastKind::Success);
-                    }
+                    self.turn_on_body_vars();
                 } else {
                     self.toasts.push(
                         "nowhere to insert — focus a text field first",
@@ -6617,6 +6661,8 @@ impl App {
                             s.strip_prefix(&from_prefix).map(|rest| format!("{to}/{rest}"))
                         };
                         if let Some(new_slug) = self.editor.slug.as_deref().and_then(rekey) {
+                            // The body's engine state follows (amendment C2).
+                            self.glue.follow_body(self.editor.slug.as_deref(), Some(&new_slug));
                             self.editor.slug = Some(new_slug);
                             if let Some((slug, _)) = self.shadow.as_mut() {
                                 *slug = self.editor.slug.clone();
@@ -9404,7 +9450,11 @@ impl App {
         }
         match transform(&text) {
             Ok(formatted) => {
-                self.editor.set_body_text(&formatted);
+                // With the body's engine session open, the rewrite is one
+                // engine step that `u` takes back (spec §3.7).
+                if !self.engine_replace_body(&formatted) {
+                    self.editor.set_body_text(&formatted);
+                }
                 true
             }
             Err(e) => {
@@ -9412,6 +9462,15 @@ impl App {
                     .push(e.to_string(), crate::components::toast::ToastKind::Error);
                 true
             }
+        }
+    }
+
+    /// Inserting a token into the body switches its `{{var}}` substitution
+    /// on, and says so once.
+    fn turn_on_body_vars(&mut self) {
+        if !self.editor.substitute_body {
+            self.editor.substitute_body = true;
+            self.toasts.push("body {{var}} substitution enabled", ToastKind::Success);
         }
     }
 
@@ -9430,6 +9489,15 @@ impl App {
     pub fn paste_text(&mut self, text: &str) -> bool {
         if text.is_empty() {
             return false;
+        }
+        // A bracketed paste is an event of its own, so the session catches
+        // up first, as a key's does: a body replaced since (`$EDITOR`)
+        // rebases before the paste lands on it.
+        self.sync_session(None, fields::Cause::Before);
+        // A vim field the engine runs takes the paste itself (plan M3a
+        // Deviation 13).
+        if let Some(changed) = self.engine_paste(text) {
+            return changed;
         }
         if !self.modals.is_empty() {
             // The filter-query modals hold their query as a plain String
@@ -9535,12 +9603,17 @@ impl App {
     }
 
     /// The text of whichever selection currently owns the keyboard, in
-    /// focus-priority order: the top modal's text field, a Variable
-    /// Manager edit, then (on the main screen) a table cell edit, the URL
-    /// bar, the body editor, and the response view. `None` when nothing
-    /// is selected anywhere — the caller falls back to the key's normal
-    /// meaning (ctrl+c quits).
-    fn active_selection_text(&self) -> Option<String> {
+    /// focus-priority order: in vim the live engine field's Visual (a
+    /// mouse selection there becomes Visual; a modal parks the field, so
+    /// it never has one under a modal), the top modal's text field, a
+    /// Variable Manager edit, then (on the main screen) a table cell edit,
+    /// the URL bar, the body editor, and the response view. `None` when
+    /// nothing is selected anywhere — the caller falls back to the key's
+    /// normal meaning (ctrl+c quits).
+    fn active_selection_text(&mut self) -> Option<String> {
+        if let Some(text) = self.engine_visual_text() {
+            return Some(text);
+        }
         if let Some(input) = self.modals.focused_input() {
             return input.selected_text();
         }
@@ -10073,7 +10146,13 @@ impl App {
     /// `self.update(..)` call's result along the branch taken, plus any
     /// modal state change (close/typing) that bypasses `update`.
     pub fn handle_key(&mut self, ev: KeyEvent) -> bool {
-        let changed = self.handle_key_inner(ev);
+        // The field session catches up first with whatever moved the caret
+        // since the last event (an async result, a reload), then with what
+        // this key did (spec §3.1).
+        self.sync_session(None, fields::Cause::Before);
+        let ran = self.route_key(ev);
+        self.sync_session(ran.open_as, fields::Cause::Key { routed: ran.routed });
+        let changed = ran.changed;
         // The op safety net at the event boundary, as `dispatch` has one
         // per action: a key handled without an action (a var-form or
         // grid commit) can bail between `begin_op` and its record.
@@ -10086,7 +10165,7 @@ impl App {
         changed || regated || asked
     }
 
-    fn handle_key_inner(&mut self, ev: KeyEvent) -> bool {
+    fn route_key(&mut self, ev: KeyEvent) -> fields::Ran {
         let ev = crate::keys::normalize_super_keys(ev);
         // cmd+c — SUPER+c, from terminals that report it — is copy-only:
         // copy the live selection, otherwise nothing. It is deliberately
@@ -10097,7 +10176,7 @@ impl App {
             if let Some(text) = self.active_selection_text() {
                 self.copy_text_with_toast(&text, "Copied selection".to_string());
             }
-            return true;
+            return fields::Ran::routed(true);
         }
         let combo = KeyCombo::from_event(&ev);
         // Each keymap read (here, in `key_ctx`, and in `handle_key_routed`
@@ -10118,17 +10197,17 @@ impl App {
         if modified && global == Some(Action::Quit) {
             if let Some(text) = self.active_selection_text() {
                 self.copy_text_with_toast(&text, "Copied selection".to_string());
-                return true;
+                return fields::Ran::routed(true);
             }
-            return self.update(Action::Quit);
+            return fields::Ran::routed(self.update(Action::Quit));
         }
 
         // A live row drag owns Escape: it cancels the drag, nothing else.
         if ev.code == KeyCode::Esc && self.sidebar.drag.is_some() {
-            return self.finish_sidebar_drag(false);
+            return fields::Ran::routed(self.finish_sidebar_drag(false));
         }
         if ev.code == KeyCode::Esc && self.manage.list.drag.is_some() {
-            return self.finish_manage_drag(false);
+            return fields::Ran::routed(self.finish_manage_drag(false));
         }
 
         // …and a live row drag owns the rest of the keyboard: with a row
@@ -10139,17 +10218,17 @@ impl App {
         // and before the per-screen routes. The footer says as much: while
         // a drag is live its chips are the cancel keys and nothing else.
         if self.sidebar.drag.is_some() || self.manage.list.drag.is_some() {
-            return false;
+            return fields::Ran::routed(false);
         }
 
         // The key router (piece 4 spec §3.1): one snapshot of where the
         // key lands, one lookup. What it declines takes today's routing.
         let ctx = self.key_ctx(&ev);
         match self.router.resolve(ev, &ctx) {
-            crate::keyroute::Resolved::Declined => self.handle_key_routed(ev),
+            crate::keyroute::Resolved::Declined => fields::Ran::routed(self.handle_key_routed(ev)),
             // The pending keys grew (the footer echoes them), or vim
             // swallowed the key.
-            crate::keyroute::Resolved::Consumed => true,
+            crate::keyroute::Resolved::Consumed => fields::Ran::consumed(),
             crate::keyroute::Resolved::Run(steps) => self.run_steps(steps),
         }
     }
@@ -10367,6 +10446,9 @@ impl App {
             && self.focus == PaneId::Editor
             && self.editor.sub_focus == SubFocus::Content
             && self.editor.active_tab == EditorTab::Body
+            // In vim the engine owns the body's motions: the chord is the
+            // keymap's (plan M3a Deviation 6).
+            && self.glue.owned() != Some(crate::keyroute::FieldId::Body)
             && let Some(a) = self.focused_component_key(ev)
         {
             return self.update(a);
@@ -11080,6 +11162,12 @@ impl App {
             {
                 self.set_theme_by_name(&prior);
             }
+            // A field the modal parked has the caret again: its session goes
+            // live before the actions run, so an Undo, Redo or Paste reaches
+            // the engine (final review C-1). Without it the palette's Undo
+            // skipped the engine, the gate recorded nothing, and an older app
+            // step landed over the typed text.
+            self.sync_session(None, fields::Cause::Before);
         }
         if let Some(id) = &res.usage {
             self.usage.record(id, crate::usage::now());
@@ -11455,7 +11543,10 @@ fn screen_escape_whitelist(action: &Action) -> bool {
 mod landing;
 mod mouse;
 mod router;
+mod fields;
 mod verbs;
+#[cfg(test)]
+mod field_tests;
 #[cfg(test)]
 mod key_matrix_tests;
 #[cfg(test)]

@@ -1814,7 +1814,7 @@ impl ModalStack {
                 _ => None, // swallowed: modals capture all input
             },
             // No `Esc` arm here either -- same reasoning as `ConfigStartup`.
-            // `k` (Keep editing) is intercepted in `App::handle_key_inner`
+            // `k` (Keep editing) is intercepted in `App::handle_key_routed`
             // before this is even reached, because it needs `App` to stash
             // `resumed_config_edit`; only `d` (Discard) is answerable from
             // here, since `Action::ConfigEditDiscard` needs nothing else.

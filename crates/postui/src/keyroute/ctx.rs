@@ -23,6 +23,10 @@ pub struct KeyCtx {
     /// The most rows a repeated motion can move on this surface: a
     /// replay past it would change nothing (plan M1 Deviation 11).
     pub cap: usize,
+    /// The engine's mode and pending state while an engine session is live
+    /// on the field with the caret (spec §3.2, plan M3a). `None` anywhere
+    /// else, and for a field that types modelessly.
+    pub engine: Option<EngineView>,
 }
 
 /// What a keycap's spelling depends on (spec §4.6): the profile, the
@@ -105,6 +109,47 @@ impl FieldCaret {
     pub fn is_live(self) -> bool {
         matches!(self, FieldCaret::Live(_))
     }
+}
+
+/// The engine buffer a field runs as in the vim profile (piece 3 §3.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EngineKind {
+    /// A one-line field: `OneLineBuf` over its `LineInput`.
+    Line,
+    /// The request body: `BodyBuf` over edtui's `EditorState`.
+    Body,
+}
+
+impl FieldId {
+    /// The engine buffer this field runs as in the vim profile, or `None`
+    /// for one that still types modelessly: modal fields and the query
+    /// boxes wait for M3b (plan M3a Deviation 1).
+    pub fn engine_kind(self) -> Option<EngineKind> {
+        match self {
+            FieldId::Url
+            | FieldId::TableCell { .. }
+            | FieldId::VmForm(_)
+            | FieldId::VmGrid { .. }
+            | FieldId::Settings(_) => Some(EngineKind::Line),
+            FieldId::Body => Some(EngineKind::Body),
+            FieldId::ModalInput(_)
+            | FieldId::FilePicker
+            | FieldId::Jq
+            | FieldId::Search
+            | FieldId::Palette
+            | FieldId::ChooserFilter
+            | FieldId::VarPickerFilter => None,
+        }
+    }
+}
+
+/// The engine's state the router needs (spec §3.2): its mode, and whether
+/// one of its commands is half-typed. `KeyCtx.engine` carries it while an
+/// engine session is live on the field with the caret.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct EngineView {
+    pub mode: super::engine_glue::Mode,
+    pub pending: bool,
 }
 
 impl Surface {

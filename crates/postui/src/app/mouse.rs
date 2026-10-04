@@ -21,12 +21,37 @@ impl App {
     ///   pane under the pointer. While a modal is open, wheel is a no-op
     ///   here — modal-list scrolling is a later task.
     pub fn handle_mouse(&mut self, m: ratatui::crossterm::event::MouseEvent) -> bool {
+        use crate::keyroute::engine_glue::Settled;
+        use ratatui::crossterm::event::{MouseButton, MouseEventKind};
         // A press drops a half-typed key (plan M1 Deviation 15): a `g`
         // never survives a click.
-        if matches!(m.kind, ratatui::crossterm::event::MouseEventKind::Down(_)) {
+        if matches!(m.kind, MouseEventKind::Down(_)) {
             self.router.clear();
         }
+        // A button can open, move or close a field; motion and the wheel
+        // cannot, so only a button event syncs the session (spec §3.1).
+        // Of the drags only the left button's sweeps a selection: some
+        // terminals (Ghostty) report hover as `Drag(Right)`, and each sync
+        // reads the whole body (final review T4).
+        let button = matches!(
+            m.kind,
+            MouseEventKind::Down(_) | MouseEventKind::Up(_) | MouseEventKind::Drag(MouseButton::Left)
+        );
+        if button {
+            self.sync_session(None, super::fields::Cause::Before);
+        }
+        let how = match m.kind {
+            MouseEventKind::Down(MouseButton::Left) => Some(Settled::Click),
+            MouseEventKind::Drag(MouseButton::Left) => Some(Settled::Sweep),
+            MouseEventKind::Up(MouseButton::Left) => {
+                Some(if self.glue.sweeping() { Settled::Release } else { Settled::Click })
+            }
+            _ => None,
+        };
         let changed = self.handle_mouse_inner(m);
+        if button {
+            self.sync_session(None, super::fields::Cause::Mouse(how));
+        }
         // The op safety net at the event boundary, as in `handle_key`: a
         // drag release commits without an action and can bail between
         // `begin_op` and its record.

@@ -113,6 +113,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 app.editor.recompute_computed_headers(&prepare_ctx);
             }
             app.editor.env_tls = app.env_tls();
+            app.mirror_body_search();
             let hovered = app.hovered.as_ref();
             let pointer = app.pointer;
             let dragged_pane = app.drag.as_ref().map(|d| d.pane);
@@ -319,7 +320,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         (app.screen == Screen::Manage).then(|| {
             let mut chips: Vec<FooterChip> = manage_tab_chips(app);
             // The tab strip belongs to the shell, not to any tab, and its
-            // chord runs above every tab body's keys (`handle_key_inner`),
+            // chord runs above every tab body's keys (`handle_key_routed`),
             // so it is the one chip every Manage tab shares -- last, so
             // nothing shifts as the tab's own chips come and go.
             chips.push((

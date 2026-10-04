@@ -14,7 +14,7 @@ use crate::config::KeyProfile;
 use crate::keyroute::keylist::{self, Status};
 
 #[derive(Debug, Clone, Copy)]
-enum Fixture {
+pub(super) enum Fixture {
     /// Requests alpha, beta and gamma; the cursor on beta.
     SidebarThree,
     /// `SidebarThree` with beta (under the cursor) open in the editor.
@@ -48,6 +48,9 @@ enum Fixture {
     ManageSpaces,
     /// `VarList` with the selector `user` under the cursor.
     VarListGroup,
+    /// An open POST request whose body is `{`, `  "a": 1`, `}`, the body
+    /// focused with the caret on row 0.
+    Body,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -305,7 +308,7 @@ fn select_var_row(app: &mut App, row: VmRow) {
     app.varmanager.select_row(i);
 }
 
-fn build(f: Fixture) -> App {
+pub(super) fn build(f: Fixture) -> App {
     let mut app = match f {
         VarList | VarGrid | VarForm | VarListGroup => var_app(),
         _ => App::new_for_test(),
@@ -414,12 +417,22 @@ fn build(f: Fixture) -> App {
             app.manage.list.cursor = 0;
         }
         VarListGroup => select_var_row(&mut app, VmRow::Group("user".into())),
+        Body => {
+            app.update(Action::CreateRequest("matrix".into()));
+            app.editor.method = postui_core::model::Method::Post;
+            app.editor.set_body_text("{\n  \"a\": 1\n}");
+            app.editor.active_tab = EditorTab::Body;
+            app.editor.preferred_tab = EditorTab::Body;
+            app.focus = PaneId::Editor;
+            app.editor.sub_focus = SubFocus::Content;
+            app.capture_undo();
+        }
     }
     app.toasts = Default::default();
     app
 }
 
-fn draw(app: &mut App) {
+pub(super) fn draw(app: &mut App) {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     app.anims.finish_all();
@@ -511,7 +524,7 @@ fn check(app: &App, e: Expect) -> Result<(), String> {
 /// fills it and an undo empties it again, which is the journal's
 /// bookkeeping, not state the user sees (plan M2 Deviation 15).
 #[derive(Debug, PartialEq)]
-struct Snapshot {
+pub(super) struct Snapshot {
     files: std::collections::BTreeMap<String, Vec<u8>>,
     rows: Vec<String>,
     cursor: Option<crate::components::sidebar::RowKey>,
@@ -520,7 +533,20 @@ struct Snapshot {
     field: crate::keyroute::FieldCaret,
 }
 
-fn snapshot(app: &App) -> Snapshot {
+impl Snapshot {
+    /// Every part but `field`. Whether a text field is open is not undo
+    /// state (user ruling 2026-10-03), so a test that starts from a
+    /// mid-session snapshot compares with this and checks `field` itself.
+    pub(super) fn same_but_field(&self, o: &Snapshot) -> bool {
+        self.files == o.files
+            && self.rows == o.rows
+            && self.cursor == o.cursor
+            && self.slug == o.slug
+            && self.request == o.request
+    }
+}
+
+pub(super) fn snapshot(app: &App) -> Snapshot {
     let root = app.proj().root().to_path_buf();
     let mut files = std::collections::BTreeMap::new();
     let mut dirs = vec![root.clone()];
@@ -575,7 +601,7 @@ fn run(case: &Case) -> Result<(), String> {
 }
 
 /// Each field where `after` differs from `before`, files as text.
-fn snapshot_diff(before: &Snapshot, after: &Snapshot) -> String {
+pub(super) fn snapshot_diff(before: &Snapshot, after: &Snapshot) -> String {
     let text = |b: Option<&Vec<u8>>| b.map(|b| String::from_utf8_lossy(b).into_owned());
     let mut out = Vec::new();
     let paths: std::collections::BTreeSet<&String> = before.files.keys().chain(after.files.keys()).collect();
@@ -605,7 +631,7 @@ fn snapshot_diff(before: &Snapshot, after: &Snapshot) -> String {
 
 /// Keys through `App::handle_key`, each followed by the event loop's
 /// undo capture and a draw (spec §8.1).
-fn feed(app: &mut App, keys: &str) {
+pub(super) fn feed(app: &mut App, keys: &str) {
     for ev in crate::keyroute::notation::events(keys) {
         app.handle_key(ev);
         app.capture_undo();
@@ -853,15 +879,18 @@ fn every_verb_chip_resolves_to_its_chip() {
                 let Some(keys) = table::keys_for(profile, surface, &Action::OnSelection(verb)) else {
                     continue; // no key in this profile: the chip drops its keycap
                 };
-                let ctx = KeyCtx { profile, surface, field: app.field_caret(), user_bare: None, cap: usize::MAX };
+                let ctx = KeyCtx { profile, surface, field: app.field_caret(), user_bare: None, cap: usize::MAX, engine: None };
                 let mut router = Router::default();
                 let mut last = Resolved::Declined;
                 for ev in crate::keyroute::notation::events(keys) {
                     last = router.resolve(ev, &ctx);
                 }
+                let ran: Vec<&Step> = match &last {
+                    Resolved::Run(steps) => steps.iter().filter(|s| !matches!(s, Step::OpenAs(_))).collect(),
+                    _ => Vec::new(),
+                };
                 assert!(
-                    matches!(&last, Resolved::Run(steps) if matches!(steps.as_slice(),
-                        [Step::Action(Action::OnSelection(v))] if v.kind() == verb.kind())),
+                    matches!(ran.as_slice(), [Step::Action(Action::OnSelection(v))] if v.kind() == verb.kind()),
                     "{profile:?} {f:?}: {keys:?} ran {last:?}, not the {label} chip's verb"
                 );
                 checked += 1;
