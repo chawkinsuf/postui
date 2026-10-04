@@ -145,6 +145,42 @@ fn j_in_a_prompts_normal_aims_the_buttons() {
     assert!(!app.field_caret().is_live());
 }
 
+fn on_toggle(app: &App) -> bool {
+    matches!(
+        app.modals.top(),
+        Some(Modal::Prompt { kind: crate::components::modal::PromptKind::NewSelector { on_toggle: true, .. }, .. })
+    )
+}
+
+fn new_selector_prompt(app: &mut App) {
+    app.push_modal(Modal::Prompt {
+        title: "New selector".into(),
+        input: crate::components::line_input::LineInput::new(""),
+        kind: crate::components::modal::PromptKind::NewSelector { shared: false, on_toggle: false },
+        revealed: false,
+    });
+}
+
+/// Final review M-1: Down from the open name field lands on the toggle in
+/// both profiles; vim's `j` from Normal still does.
+#[test]
+fn down_from_the_new_selector_name_lands_on_the_toggle_in_both_profiles() {
+    for keys in ["<Down>", "<Esc>j", "<Esc><Down>"] {
+        let mut app = vim_app(Fixture::SidebarThree);
+        new_selector_prompt(&mut app);
+        feed(&mut app, keys);
+        assert!(on_toggle(&app), "vim {keys}");
+        assert!(!app.modals.field_open(), "vim {keys}: field closed");
+        assert!(app.modals.button_focus().is_none(), "vim {keys}");
+    }
+    let mut app = arrows_app(Fixture::SidebarThree);
+    new_selector_prompt(&mut app);
+    feed(&mut app, "<Down>");
+    assert!(on_toggle(&app), "arrows");
+    assert!(!app.modals.field_open());
+    assert!(app.modals.button_focus().is_none());
+}
+
 /// Review Focus 3, plan M3b Deviation 11.
 #[test]
 fn an_engine_edit_closes_as_one_dialog_step() {

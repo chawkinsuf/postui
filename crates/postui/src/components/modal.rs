@@ -2089,6 +2089,13 @@ impl ModalStack {
                         let after = input.text().to_string();
                         Self::record_field_close(&mut self.steps, &mut self.redo, 0, before, after);
                         *field_open = false;
+                        // The new-selector prompt has a toggle stop below
+                        // its name: ↓ from the open field closes onto it,
+                        // as vim's `j` does (final review M-1).
+                        if let PromptKind::NewSelector { on_toggle, .. } = kind {
+                            *on_toggle = true;
+                            return None;
+                        }
                     }
                     *button_focus = Some(FormButton::Confirm);
                     None
@@ -6326,6 +6333,30 @@ mod tests {
         assert!(m.button_focus().is_none());
         let Some(Modal::Prompt { input, .. }) = m.top() else { panic!() };
         assert_eq!(input.text(), "j");
+    }
+
+    /// Final review M-1: ↓ from the OPEN name field closes it onto the
+    /// toggle (same recorded close step), not straight to the buttons.
+    #[test]
+    fn down_from_the_open_new_selector_name_lands_on_the_toggle() {
+        let mut m = ModalStack::default();
+        m.push(Modal::Prompt {
+            title: "New selector".into(),
+            input: LineInput::new("ab"),
+            kind: PromptKind::NewSelector { shared: false, on_toggle: false },
+            revealed: false,
+        });
+        m.handle_key(key(KeyCode::Char('c')));
+        assert!(m.field_open());
+        m.handle_key(key(KeyCode::Down));
+        let Some(Modal::Prompt { kind: PromptKind::NewSelector { on_toggle, .. }, .. }) = m.top()
+        else {
+            panic!("stays a NewSelector prompt");
+        };
+        assert!(*on_toggle);
+        assert!(!m.field_open());
+        assert!(m.button_focus().is_none());
+        assert!(!m.steps.is_empty(), "the close was recorded as a step");
     }
 
     /// The new-selector prompt's toggle row sits between the field and
