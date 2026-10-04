@@ -299,13 +299,13 @@ fn alt(c: char) -> KeyEvent {
     KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT)
 }
 
-/// Submits the top form modal's open field the long way (spec
-/// 2026-09-16): Enter no longer submits directly — the first Esc closes
-/// the field to selected, the second reaches the button row (Confirm
-/// aimed), and only then does Enter confirm. Replaces the single
-/// Enter-submits keypress these tests used before the field-open/selected
-/// split landed.
+/// Confirms the top dialog: a one-field prompt on Enter (spec §10 open
+/// question 2), a form by walking its ladder to the button row.
 fn submit_prompt(app: &mut App) {
+    if matches!(app.modals.top(), Some(Modal::Prompt { .. })) {
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        return;
+    }
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -1492,9 +1492,9 @@ fn redo_reaches_a_modal_field_close_after_its_last_undo_empties_the_step_stack()
         revealed: false,
     });
     type_chars(&mut app, "abc");
-    // Esc closes the field to selected, recording one step (the text
-    // changed) — the only step on the stack.
-    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    // Closing the field to selected records one step (the text
+    // changed) — the only step on the stack. (Esc would cancel the prompt.)
+    app.modals.close_top_field();
     assert!(!app.modals.field_open());
 
     // Undo through the normal key path: pops the one step, so `steps` is
@@ -7298,12 +7298,11 @@ fn clicking_a_field_closed_to_selected_reopens_it_for_typing() {
     for c in "hello".chars() {
         app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
     }
-    // Esc closes the field, keeping the text, and lands on the selected
-    // state (not the button row on the first Esc from a live field).
-    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    // Closing the field keeps the text and lands on the selected state.
+    app.modals.close_top_field();
     assert!(
         !app.modals.field_open(),
-        "Esc must close the field to selected"
+        "the field must close to selected"
     );
 
     render_once(&mut app);
@@ -7388,14 +7387,18 @@ fn ctrl_enter_confirms_a_prompt_modal_from_the_button_row() {
         kind: PromptKind::NewRequest,
         revealed: false,
     });
-    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)); // close to selected
+    app.modals.close_top_field(); // close to selected
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)); // to the button row
+    assert!(!app.modals.is_empty(), "Esc from selected only aimed the buttons");
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL));
     assert!(app.modals.is_empty());
 }
 
+/// Spec §10 open question 2: plain Enter confirms a one-field prompt
+/// (it used to close the field), but still only closes a multi-field
+/// form's field.
 #[test]
-fn plain_enter_never_confirms_a_form_modal() {
+fn plain_enter_confirms_a_one_field_prompt_but_never_a_multi_field_form() {
     use crate::components::modal::{Modal, PromptKind};
     let mut app = App::new_for_test();
     app.modals.push(Modal::Prompt {
@@ -7404,8 +7407,17 @@ fn plain_enter_never_confirms_a_form_modal() {
         kind: PromptKind::NewRequest,
         revealed: false,
     });
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(app.modals.is_empty(), "plain Enter confirmed the prompt");
+
+    app.modals.push(Modal::NewProject {
+        name: crate::components::line_input::LineInput::new("demo"),
+        path: crate::components::line_input::LineInput::new("/tmp/demo"),
+        on_path: false,
+        prefilled: true,
+    });
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)); // closes the field, does not confirm
-    assert!(!app.modals.is_empty(), "plain Enter only closed the field");
+    assert!(!app.modals.is_empty(), "plain Enter only closed the form's field");
 }
 
 /// A hostile or careless `keys.toml` can bind bare `enter` to `send`
@@ -7414,18 +7426,19 @@ fn plain_enter_never_confirms_a_form_modal() {
 /// reserved ctrl+c). The confirm dig-past in `handle_key_routed` (step
 /// 1d) must not trust the keymap alone for that — it checks the real
 /// key event's own modifiers, so even under this override plain Enter
-/// still only closes the field, exactly as it does under the default
-/// keymap.
+/// still only closes a multi-field form's field, exactly as it does
+/// under the default keymap. (A one-field prompt's plain Enter confirms
+/// by spec §10 open question 2, override or not.)
 #[test]
 fn plain_enter_never_confirms_a_form_modal_even_if_keys_toml_binds_it_to_send() {
-    use crate::components::modal::{Modal, PromptKind};
+    use crate::components::modal::Modal;
     let mut app = App::new_for_test();
     app.keymap.apply_overrides(r#"send = ["enter"]"#).unwrap();
-    app.modals.push(Modal::Prompt {
-        title: "New request".into(),
-        input: crate::components::line_input::LineInput::new("my-req"),
-        kind: PromptKind::NewRequest,
-        revealed: false,
+    app.modals.push(Modal::NewProject {
+        name: crate::components::line_input::LineInput::new("demo"),
+        path: crate::components::line_input::LineInput::new("/tmp/demo"),
+        on_path: false,
+        prefilled: true,
     });
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(
@@ -9974,7 +9987,7 @@ fn the_aimed_modal_button_paints_focused_and_the_field_does_not() {
     }
     let confirm_in_field = bg_of(&mut app, Hit::ModalConfirm);
     let field_in_field = bg_of(&mut app, Hit::ModalInput(0));
-    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)); // field to selected
+    app.modals.close_top_field(); // field to selected
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)); // to the button row
     assert_eq!(
         app.modals.button_focus(),
@@ -10013,7 +10026,7 @@ fn confirm_click_confirms_even_with_cancel_aimed() {
     app.anims.enabled = false;
     app.update(Action::PromptNewRequest);
     type_chars(&mut app, "api/ping");
-    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.modals.close_top_field();
     app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
     render_once(&mut app);
     let confirm = app.hits.rect_of(&Hit::ModalConfirm).unwrap();
@@ -11663,7 +11676,7 @@ fn new_selector_prompt_arrows_focus_the_toggle_and_space_flips_shared() {
     app.handle_key(plain(' '));
     // The toggle row is only reachable once the field is selected, not
     // open for typing (spec 2026-09-16).
-    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.modals.close_top_field();
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     app.handle_key(plain(' '));
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)); // to the button row
@@ -11721,14 +11734,14 @@ fn new_selector_prompt_tab_cycles_between_the_name_field_and_the_toggle() {
     }
     // The toggle row is only reachable once the field is selected, not
     // open for typing (spec 2026-09-16).
-    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.modals.close_top_field();
     app.handle_key(tab); // onto the toggle
     app.handle_key(plain(' ')); // shared on
     app.handle_key(tab); // back to the field stop
     // Space no longer types here directly — the field is still selected,
     // not open, so an opener key reopens it instead of a second flip.
     app.handle_key(plain(' '));
-    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)); // close the reopened field
+    app.modals.close_top_field(); // close the reopened field
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)); // to the button row
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
@@ -11750,14 +11763,14 @@ fn new_selector_prompt_up_returns_focus_to_the_name_field() {
     for c in "locale".chars() {
         app.handle_key(plain(c));
     }
-    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.modals.close_top_field();
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     app.handle_key(plain(' ')); // shared on
     app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
     // Back at the field stop (still selected, not open): an opener key
     // reopens the field rather than typing directly into it.
     app.handle_key(plain(' '));
-    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)); // close the reopened field
+    app.modals.close_top_field(); // close the reopened field
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)); // to the button row
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
@@ -12579,11 +12592,9 @@ fn keyboard_a_and_shift_a_open_the_new_var_and_new_group_prompts() {
             ..
         })
     ));
-    // The field rule (spec 2026-09-16): the first Esc closes the field to
-    // selected, the second reaches the button row, the third cancels.
+    // A one-field prompt's Esc cancels it (spec §10 open question 2).
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(app.modals.is_empty());
 
     app.handle_key(KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT));
     assert!(matches!(
@@ -12616,11 +12627,9 @@ fn keyboard_f2_d_s_open_the_matching_var_row_actions() {
             ..
         })
     ));
-    // The field rule (spec 2026-09-16): the first Esc closes the field to
-    // selected, the second reaches the button row, the third cancels.
+    // A one-field prompt's Esc cancels it (spec §10 open question 2).
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(app.modals.is_empty());
 
     app.handle_key(plain('d'));
     assert!(app.modals.is_empty(), "delete is undoable, no confirm");
@@ -16205,11 +16214,9 @@ fn keyboard_r_and_s_still_work_with_the_form_on_screen() {
             ..
         })
     ));
-    // The field rule (spec 2026-09-16): the first Esc closes the field to
-    // selected, the second reaches the button row, the third cancels.
+    // A one-field prompt's Esc cancels it (spec §10 open question 2).
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(app.modals.is_empty());
 
     app.handle_key(plain('s'));
     assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
@@ -19207,7 +19214,7 @@ mod undo_tests {
             revealed: false,
         });
         app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
-        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        app.modals.close_top_field(); // (Esc would cancel the prompt)
         app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL));
         assert_eq!(app.modals.focused_input().unwrap().text(), "old");
         assert!(!app.modals.is_empty(), "the modal is still open — app history untouched");
@@ -30005,16 +30012,19 @@ fn the_startup_gate_chip_names_its_real_key() {
 
 /// Plan M1 Deviations 26 and 27: a form modal's field-close undo chip
 /// names the key that undoes it in each profile (arrows lost bare `u`),
-/// and a secret prompt's `ctrl+r reveal` chip shows only while the field
-/// has the caret: without it, vim's `ctrl+r` is the router's redo.
+/// and a secret prompt's `ctrl+r reveal` chip shows with the caret and
+/// without it: ctrl+r is claimed ahead of the router in both profiles
+/// (plan M3b Deviation 4, which replaced M1 Deviation 27).
 #[test]
 fn a_form_modals_undo_and_reveal_chips_name_live_keys() {
     use crate::components::line_input::LineInput;
     use crate::components::modal::{Modal, PromptKind};
     use crate::config::KeyProfile;
-    // Vim's prompt field runs on the engine (plan M3b): Esc goes to
-    // Normal, and `j` then `k` close the field to selected.
-    for (profile, undo, close) in [(KeyProfile::Arrows, "^Z undo", "<Esc>"), (KeyProfile::Vim, "u undo", "<Esc>jk")] {
+    // Arrows: Esc now cancels a prompt, so the field is closed through the
+    // modal (the dialog's Down/Up walk does the same). Vim's prompt field
+    // runs on the engine (plan M3b): Esc goes to Normal, and `j` then `k`
+    // close the field to selected.
+    for (profile, undo, close) in [(KeyProfile::Arrows, "^Z undo", ""), (KeyProfile::Vim, "u undo", "<Esc>jk")] {
         let mut app = App::new_for_test();
         app.use_profile(profile);
         app.modals.push(Modal::Prompt {
@@ -30030,10 +30040,14 @@ fn a_form_modals_undo_and_reveal_chips_name_live_keys() {
         let footer = footer_text(&mut app);
         assert!(footer.contains("ctrl+r reveal"), "{profile:?}, caret: {footer}");
         app.handle_key(plain('a'));
-        type_keys(&mut app, close);
+        if close.is_empty() {
+            app.modals.close_top_field();
+        } else {
+            type_keys(&mut app, close);
+        }
         assert!(!app.field_caret().is_live(), "{profile:?}: the field is only selected");
         let footer = footer_text(&mut app);
-        assert!(!footer.contains("reveal"), "{profile:?}, no caret: {footer}");
+        assert!(footer.contains("ctrl+r reveal"), "{profile:?}, no caret: {footer}");
         assert!(footer.contains(undo), "{profile:?}: {footer}");
     }
 }

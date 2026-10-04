@@ -10268,6 +10268,17 @@ impl App {
             return fields::Ran::routed(false);
         }
 
+        // Plan M3b Deviation 4 (the user's decision): ctrl+r shows or hides
+        // the secret prompt's value in both profiles, field open or not,
+        // ahead of the router (vim's register paste and redo) and of step
+        // 1d (arrows' ctrl+r is Send, which used to confirm the prompt).
+        if ev.code == KeyCode::Char('r')
+            && ev.modifiers == KeyModifiers::CONTROL
+            && self.modals.toggle_secret_reveal()
+        {
+            return fields::Ran::routed(true);
+        }
+
         // The key router (piece 4 spec §3.1): one snapshot of where the
         // key lands, one lookup. What it declines takes today's routing.
         let ctx = self.key_ctx(&ev);

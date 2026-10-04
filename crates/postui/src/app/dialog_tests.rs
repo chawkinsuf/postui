@@ -552,3 +552,48 @@ fn g_and_gg_move_the_variable_pickers_option_cursor() {
     feed(&mut app, "gg");
     assert_eq!(selected(&app), 0, "the first option");
 }
+
+fn secret_prompt(app: &mut App) {
+    app.push_modal(Modal::Prompt {
+        title: "Secret".into(),
+        input: crate::components::line_input::LineInput::new("s3cret"),
+        kind: crate::components::modal::PromptKind::SecretValue {
+            name: "t".into(),
+            env: "dev".into(),
+            then_send: true,
+        },
+        revealed: false,
+    });
+    draw(app);
+}
+
+fn revealed(app: &App) -> bool {
+    matches!(app.modals.top(), Some(Modal::Prompt { revealed: true, .. }))
+}
+
+/// Plan M3b Deviation 4 (the user's decision): ctrl+r reveals in both
+/// profiles, never sends, and in vim beats the engine in either mode.
+#[test]
+fn ctrl_r_reveals_the_secret_prompt_in_both_profiles() {
+    let ctrl_r = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL);
+    let mut arrows = arrows_app(Fixture::SidebarThree);
+    secret_prompt(&mut arrows);
+    arrows.handle_key(ctrl_r);
+    assert!(revealed(&arrows), "arrows: revealed, not sent");
+    let mut vim = vim_app(Fixture::SidebarThree);
+    secret_prompt(&mut vim);
+    vim.handle_key(ctrl_r);
+    assert!(revealed(&vim), "vim Insert");
+    feed(&mut vim, "<Esc>");
+    vim.handle_key(ctrl_r);
+    assert!(!revealed(&vim), "vim Normal: hidden again, no redo");
+}
+
+/// Spec §10 open question 2 in the app: arrows' Enter renames at once.
+#[test]
+fn arrows_enter_confirms_a_rename() {
+    let mut app = arrows_app(Fixture::SidebarThree);
+    feed(&mut app, "r<C-u>delta<CR>");
+    assert!(app.modals.is_empty());
+    assert!(has_request(&app, "main/delta"));
+}

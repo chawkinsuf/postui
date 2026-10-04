@@ -422,11 +422,13 @@ fn key(app: &mut App, code: KeyCode) {
     app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
 }
 
-/// Submits the top form modal's open field the long way (spec
-/// 2026-09-16): Enter no longer submits directly — the first Esc closes
-/// the field to selected, the second reaches the button row (Confirm
-/// aimed), and only then does Enter confirm.
+/// Confirms the top dialog: a one-field prompt on Enter (spec §10 open
+/// question 2), a form by walking its ladder to the button row.
 fn submit_prompt(app: &mut App) {
+    if matches!(app.modals.top(), Some(postui::components::modal::Modal::Prompt { .. })) {
+        key(app, KeyCode::Enter);
+        return;
+    }
     key(app, KeyCode::Esc);
     key(app, KeyCode::Esc);
     key(app, KeyCode::Enter);
