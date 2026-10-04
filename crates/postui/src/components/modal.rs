@@ -5347,7 +5347,7 @@ mod tests {
     }
 
     #[test]
-    fn esc_closes_the_prompt_field_to_selected_before_leaving_to_buttons() {
+    fn closing_a_prompt_field_then_esc_reaches_the_buttons() {
         let mut m = ModalStack::default();
         m.push(Modal::Prompt {
             title: "Rename".into(),

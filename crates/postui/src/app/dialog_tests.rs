@@ -586,7 +586,22 @@ fn ctrl_r_reveals_the_secret_prompt_in_both_profiles() {
     assert!(revealed(&vim), "vim Insert");
     feed(&mut vim, "<Esc>");
     vim.handle_key(ctrl_r);
-    assert!(!revealed(&vim), "vim Normal: hidden again, no redo");
+    assert!(
+        matches!(vim.modals.top(), Some(Modal::Prompt { revealed: false, .. })),
+        "vim Normal: hidden again, the prompt still up, no redo"
+    );
+}
+
+/// Main's reveal arm matched `Char('r' | 'R')` with CONTROL contained, so
+/// ctrl+shift+r revealed in arrows; the claim keeps that.
+#[test]
+fn ctrl_shift_r_reveals_the_secret_prompt_in_arrows() {
+    let mut arrows = arrows_app(Fixture::SidebarThree);
+    secret_prompt(&mut arrows);
+    arrows.handle_key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::CONTROL | KeyModifiers::SHIFT));
+    assert!(revealed(&arrows));
+    arrows.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL | KeyModifiers::SHIFT));
+    assert!(matches!(arrows.modals.top(), Some(Modal::Prompt { revealed: false, .. })));
 }
 
 /// Spec §10 open question 2 in the app: arrows' Enter renames at once.

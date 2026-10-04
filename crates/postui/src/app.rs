@@ -10272,8 +10272,9 @@ impl App {
         // the secret prompt's value in both profiles, field open or not,
         // ahead of the router (vim's register paste and redo) and of step
         // 1d (arrows' ctrl+r is Send, which used to confirm the prompt).
-        if ev.code == KeyCode::Char('r')
-            && ev.modifiers == KeyModifiers::CONTROL
+        if matches!(ev.code, KeyCode::Char('r' | 'R'))
+            && ev.modifiers.contains(KeyModifiers::CONTROL)
+            && !ev.modifiers.contains(KeyModifiers::ALT)
             && self.modals.toggle_secret_reveal()
         {
             return fields::Ran::routed(true);

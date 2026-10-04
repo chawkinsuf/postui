@@ -3528,11 +3528,7 @@ fn escaping_the_gates_save_prompt_cancels_everything() {
     let mut app = scratch_app();
     app.update(Action::Quit);
     app.handle_key(plain('s'));
-    // The field rule (spec 2026-09-16): the first Esc closes the name
-    // field to selected, the second reaches the prompt's button row, and
-    // the third — from there — cancels the prompt.
-    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    // A one-field prompt's Esc cancels it (spec §10 open question 2).
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(app.modals.is_empty());
     assert!(!app.should_quit, "Esc means stay, with everything intact");
@@ -7410,9 +7406,10 @@ fn plain_enter_confirms_a_one_field_prompt_but_never_a_multi_field_form() {
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.modals.is_empty(), "plain Enter confirmed the prompt");
 
+    let dir = tempfile::tempdir().unwrap();
     app.modals.push(Modal::NewProject {
         name: crate::components::line_input::LineInput::new("demo"),
-        path: crate::components::line_input::LineInput::new("/tmp/demo"),
+        path: crate::components::line_input::LineInput::new(&dir.path().join("demo").to_string_lossy()),
         on_path: false,
         prefilled: true,
     });
@@ -7434,9 +7431,10 @@ fn plain_enter_never_confirms_a_form_modal_even_if_keys_toml_binds_it_to_send() 
     use crate::components::modal::Modal;
     let mut app = App::new_for_test();
     app.keymap.apply_overrides(r#"send = ["enter"]"#).unwrap();
+    let dir = tempfile::tempdir().unwrap();
     app.modals.push(Modal::NewProject {
         name: crate::components::line_input::LineInput::new("demo"),
-        path: crate::components::line_input::LineInput::new("/tmp/demo"),
+        path: crate::components::line_input::LineInput::new(&dir.path().join("demo").to_string_lossy()),
         on_path: false,
         prefilled: true,
     });
@@ -12904,11 +12902,9 @@ fn add_and_remove_group_members_one_at_a_time() {
     );
 
     // the failed duplicate keeps its prompt open for a retry; drop it
-    // The field rule (spec 2026-09-16): the first Esc closes the field to
-    // selected, the second reaches the button row, the third cancels.
+    // A one-field prompt's Esc cancels it (spec §10 open question 2).
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(app.modals.is_empty());
 
     // `d` flow: removal is immediate (undoable)
     app.update(Action::RemoveSelectorField {
@@ -13813,11 +13809,7 @@ fn confirming_the_popup_secret_prompt_saves_without_sending() {
 fn escaping_the_popup_secret_prompt_does_not_claim_a_canceled_send() {
     let (mut app, _dir) = token_popup_app();
     app.update(Action::OpenVarTokenPopup("api_key".into()));
-    // The field rule (spec 2026-09-16): the first Esc closes the field to
-    // selected, the second reaches the button row, and the third — from
-    // there — closes the modal.
-    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    // A one-field prompt's Esc cancels it (spec §10 open question 2).
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(app.modals.is_empty());
     assert!(!rendered_text(&mut app).contains("send canceled"));
@@ -14123,10 +14115,7 @@ async fn esc_mid_chain_cancels_the_send_and_keeps_only_confirmed_secrets() {
             ..
         }) if name == "api_secret"
     ));
-    // The field rule (spec 2026-09-16): the first Esc closes the field to
-    // selected, the second reaches the button row, the third cancels.
-    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    // A one-field prompt's Esc cancels it (spec §10 open question 2).
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
     assert!(app.modals.is_empty(), "esc closes the prompt");
@@ -16498,11 +16487,9 @@ fn the_quit_chip_shows_ctrl_c_wherever_plain_q_would_type() {
     app.update(Action::PromptNewRequest);
     let content = rendered_text(&mut app);
     assert!(content.contains("^C  quit"), "{content}");
-    // The field rule (spec 2026-09-16): the first Esc closes the field to
-    // selected, the second reaches the button row, the third cancels.
+    // A one-field prompt's Esc cancels it (spec §10 open question 2).
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(app.modals.is_empty());
 
     // The manager binds plain q to quit in every focus stop, so the chip
     // advertises it there.
