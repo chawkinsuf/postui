@@ -252,20 +252,20 @@ impl LineInput {
     /// this open" (plan M3b Deviation 11).
     pub(crate) fn mark_open(&mut self) {
         if self.opened.is_none() {
-            self.opened = Some(self.text.clone());
+            self.opened = Some(self.text_at_open());
         }
     }
 
-    /// The text as it stood when this open began — the bottom of the undo
-    /// stack, else the mark a vim session left ([`Self::mark_open`]), or
-    /// the current text if nothing was edited. Used by a container (a form
-    /// modal) that needs "what changed across this whole open", not
-    /// step-by-step history.
+    /// The text as it stood when this open began — the mark a vim session
+    /// left ([`Self::mark_open`]), else the bottom of the undo stack, or
+    /// the current text if nothing was edited. The mark wins: engine edits
+    /// record no snapshot, so after a profile switch the first snapshot is
+    /// already past them. Used by a container (a form modal) that needs
+    /// "what changed across this whole open", not step-by-step history.
     pub fn text_at_open(&self) -> String {
-        self.undo
-            .first()
-            .map(|s| s.text.clone())
-            .or_else(|| self.opened.clone())
+        self.opened
+            .clone()
+            .or_else(|| self.undo.first().map(|s| s.text.clone()))
             .unwrap_or_else(|| self.text.clone())
     }
 
@@ -964,6 +964,18 @@ mod tests {
         input.splice_raw(0, 6, "during");
         input.mark_open();
         input.splice_raw(0, 6, "after");
+        assert_eq!(input.text_at_open(), "before");
+    }
+
+    /// Final review M-2: a profile switch mid-edit puts snapshot-recording
+    /// edits after engine edits; the close step still reads the marked text.
+    #[test]
+    fn the_mark_beats_the_first_snapshot() {
+        let mut input = LineInput::new("before");
+        input.mark_open();
+        input.splice_raw(0, 6, "during");
+        input.handle_key(key('!'));
+        assert_eq!(input.text(), "during!");
         assert_eq!(input.text_at_open(), "before");
     }
 

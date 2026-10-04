@@ -29389,6 +29389,47 @@ fn the_keyboard_question_waits_for_other_modals() {
     assert!(app.raise_keymap_choice());
 }
 
+/// Final review I-1: the config gate's Edit hands the screen to `$EDITOR`;
+/// the keyboard question must not go up under that handover.
+#[test]
+fn the_keyboard_question_waits_out_the_config_gates_editor_handover() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("config.toml"), "not = [toml").unwrap();
+    let mut app = App::new_for_test();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+    let (_cfg, loaded, _warnings) = crate::config::Config::load_from(
+        crate::config::Config::at(dir.path().to_path_buf()),
+        false,
+    );
+    app.config_error = loaded.config_error;
+    app.ui_settings.keymap = None;
+    app.apply_startup_config_gate();
+
+    app.update(Action::ConfigStartupChoice(crate::action::ConfigStartupChoice::Edit));
+
+    assert!(app.pending_terminal_action.is_some(), "the editor is about to run");
+    assert!(
+        !matches!(app.modals.top(), Some(Modal::KeymapChoice { .. })),
+        "no keyboard question under the handover"
+    );
+    assert!(app.modals.is_empty());
+}
+
+/// Final review I-1: an already-answered question closes on its answer
+/// and changes nothing else.
+#[test]
+fn answering_a_stale_keyboard_question_only_closes_it() {
+    use crate::config::KeyProfile;
+    let mut app = App::new_for_test();
+    app.ui_settings.keymap = Some(KeyProfile::Vim);
+    app.push_modal(Modal::KeymapChoice { aimed: None });
+    let undo_before = app.history.undo_len();
+    app.handle_key(plain('v'));
+    assert!(app.modals.is_empty(), "the stale question closes");
+    assert_eq!(app.ui_settings.keymap, Some(KeyProfile::Vim));
+    assert_eq!(app.history.undo_len(), undo_before, "no undo step for a close");
+}
+
 /// Spec §4.2: with no profile chosen, the question comes up at the next
 /// event boundary and blocks until answered.
 #[test]

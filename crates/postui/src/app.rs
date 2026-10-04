@@ -731,7 +731,11 @@ impl App {
     /// gate: with any modal up it waits for the next event boundary,
     /// where the callers ask again.
     pub(crate) fn raise_keymap_choice(&mut self) -> bool {
-        if self.ui_settings.keymap.is_some() || self.modals.top().is_some() {
+        if self.ui_settings.keymap.is_some()
+            || self.modals.top().is_some()
+            || self.pending_terminal_action.is_some()
+            || self.startup_config_gate
+        {
             return false;
         }
         self.push_modal(Modal::KeymapChoice { aimed: None });
@@ -2759,6 +2763,11 @@ impl App {
                 // keymap that runs arrows is not a choice, so answering
                 // "arrows" to the question still writes it.
                 if self.ui_settings.keymap == Some(profile) {
+                    // A question left up after its answer arrived by
+                    // another route (a hand-edited reload) still closes.
+                    if matches!(self.modals.top(), Some(Modal::KeymapChoice { .. })) {
+                        self.modals.pop();
+                    }
                     return true;
                 }
                 let before = self.ui_string("keymap");

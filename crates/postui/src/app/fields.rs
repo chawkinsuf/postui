@@ -511,7 +511,9 @@ impl App {
                     && matches!(self.modals.top(), Some(Modal::FilePicker(p)) if p.input().text().is_empty())
             }
             FieldId::Jq => match ev.code {
-                KeyCode::Tab | KeyCode::BackTab => true,
+                KeyCode::Tab | KeyCode::BackTab => {
+                    !ev.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                }
                 KeyCode::Right | KeyCode::End => plain && self.session.response.jq_accepts_completion(),
                 _ => false,
             },

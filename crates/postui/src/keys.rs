@@ -36,7 +36,6 @@ pub(crate) fn opens_field(ev: &KeyEvent) -> bool {
     matches!(ev.code, KeyCode::Enter | KeyCode::Char(' '))
 }
 
-
 /// Rewrites a display label's leading `alt+` to the platform spelling
 /// (`opt+` on macOS — same width, so precomputed keycap layouts hold).
 /// Prefix-only on purpose: keycap labels are app-authored (`alt+shift+r`),
