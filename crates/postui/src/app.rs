@@ -27,12 +27,6 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 /// stack.
 const MIGRATION_TITLE: &str = "Migrate variables";
 
-/// Whether the first-launch keyboard question is asked (plan M1
-/// Deviation 2, the user's decision 2026-10-01: built in M1, raised from
-/// M3, once the vim profile is usable). Until then an unset `keymap` runs
-/// arrows and the Settings row switches profiles.
-const ASK_KEYMAP_ON_LAUNCH: bool = false;
-
 /// What a write refuses with when no project is open. Every such arm is
 /// already gated by `refuse_without_project`, so this is the belt to that
 /// braces — it exists so no write can be attempted against an empty root.
@@ -633,9 +627,7 @@ impl App {
                 ToastKind::Error,
             );
             app.apply_startup_config_gate();
-            if ASK_KEYMAP_ON_LAUNCH {
-                app.raise_keymap_choice();
-            }
+            app.raise_keymap_choice();
             if testbed {
                 app.screen = Screen::Testbed;
             }
@@ -669,9 +661,7 @@ impl App {
             // The project refused to open: the app runs empty until the
             // user opens another one, so none of the dispositions apply.
             app.apply_startup_config_gate();
-            if ASK_KEYMAP_ON_LAUNCH {
-                app.raise_keymap_choice();
-            }
+            app.raise_keymap_choice();
             if testbed {
                 app.screen = Screen::Testbed;
             }
@@ -714,9 +704,7 @@ impl App {
         }
 
         app.apply_startup_config_gate();
-        if ASK_KEYMAP_ON_LAUNCH {
-            app.raise_keymap_choice();
-        }
+        app.raise_keymap_choice();
 
         if testbed {
             app.screen = Screen::Testbed;
@@ -1701,7 +1689,13 @@ impl App {
             registry: crate::config::ProjectsRegistry::default(),
             config: crate::config::Config::none(),
             clipboard: crate::clipboard::Clipboard::new(&crate::config::UiSettings::default()),
-            ui_settings: crate::config::UiSettings::default(),
+            // A test app has answered the keyboard question (spec §4.2);
+            // `App::new` applies the user's own settings over this, so a
+            // real start with no `keymap` still asks.
+            ui_settings: crate::config::UiSettings {
+                keymap: Some(crate::config::KeyProfile::Arrows),
+                ..Default::default()
+            },
             themes: crate::theme::ThemeRegistry::builtin(),
             terminal_colors: crate::theme::QueriedColors::default(),
             theme_name: "terminal".into(),
@@ -1782,9 +1776,6 @@ impl App {
         let mut app = Self::with_root(tx, dir.path().to_path_buf());
         app._test_rx = Some(rx);
         app._test_dir = Some(dir);
-        // A test app has answered the keyboard question (spec §4.2): vim
-        // cases call `use_profile(Vim)` explicitly.
-        app.ui_settings.keymap = Some(crate::config::KeyProfile::Arrows);
         app
     }
 
@@ -1902,7 +1893,7 @@ impl App {
         // including a nested dispatch that pushed the gate's own
         // continuation, or one that finally fixed `config.toml`.
         let regated = self.reraise_startup_config_gate();
-        let asked = ASK_KEYMAP_ON_LAUNCH && self.raise_keymap_choice();
+        let asked = self.raise_keymap_choice();
         changed || regated || asked
     }
 
@@ -10208,7 +10199,7 @@ impl App {
         // Not every key reaches `update` -- Esc on a modal just pops it
         // -- so the gate is re-checked at the event boundary too.
         let regated = self.reraise_startup_config_gate();
-        let asked = ASK_KEYMAP_ON_LAUNCH && self.raise_keymap_choice();
+        let asked = self.raise_keymap_choice();
         changed || regated || asked
     }
 

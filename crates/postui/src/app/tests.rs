@@ -26725,6 +26725,9 @@ fn a_reload_does_not_stomp_a_live_settings_edit() {
 fn reload_from_disk_applies_a_new_keys_toml_end_to_end() {
     let mut app = App::new_for_test();
     let dir = config_at_tempdir(&mut app);
+    // The reload reads the keyboard choice back; unset, the question would
+    // block the keys below.
+    std::fs::write(dir.path().join("config.toml"), "keymap = \"arrows\"\n").unwrap();
     std::fs::write(dir.path().join("keys.toml"), "save = \"alt+shift+s\"\n").unwrap();
     // The rebound combo does nothing yet, and the default one still saves.
     let alt_shift_s = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::ALT | KeyModifiers::SHIFT);
@@ -26770,7 +26773,10 @@ fn alt_r_reloads_from_every_manage_tab() {
         var_project(dir.path());
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::with_root(tx, dir.path().to_path_buf());
-        let _cfg = config_at_tempdir(&mut app);
+        let cfg = config_at_tempdir(&mut app);
+        // The reload reads the keyboard choice back; unset, the question
+        // would be the modal this test looks for.
+        std::fs::write(cfg.path().join("config.toml"), "keymap = \"arrows\"\n").unwrap();
         app.update(Action::OpenManage { tab: Some(tab) });
         app.toasts = Default::default();
 
@@ -28233,6 +28239,10 @@ fn undo_of_a_config_reset_restores_the_previous_file() {
     });
     app.update(Action::ForceResetConfigFile(crate::action::ConfigFile::Config));
     assert!(app.ui_settings.animations, "reset restored the default");
+    // The reset also unset `keymap`, so the question is up; dismiss it to
+    // reach the undo.
+    assert!(matches!(app.modals.top(), Some(Modal::KeymapChoice { .. })));
+    app.modals.pop();
 
     app.update(Action::Undo);
     assert!(
@@ -29213,7 +29223,8 @@ fn extract_to_request_from_a_field_mid_edit_is_one_undo_step() {
 }
 
 /// Plan M1 Deviation 2: an unset `keymap` runs arrows until the
-/// first-launch question is raised (M3).
+/// first-launch question is answered (the question blocks at the next
+/// event boundary, spec §4.2; this pins what runs underneath it).
 #[test]
 fn an_unset_keymap_runs_the_arrows_profile() {
     use crate::config::KeyProfile;
@@ -29380,15 +29391,23 @@ fn the_keyboard_question_waits_for_other_modals() {
     assert!(app.raise_keymap_choice());
 }
 
-/// Plan M1 Deviation 2: the question is not raised before M3.
+/// Spec §4.2: with no profile chosen, the question comes up at the next
+/// event boundary and blocks until answered.
 #[test]
-fn the_keyboard_question_is_not_raised_before_m3() {
+fn the_keyboard_question_is_raised_while_no_profile_is_chosen() {
     let mut app = App::new_for_test();
     app.ui_settings.keymap = None;
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-    app.update(Action::Render);
-    assert!(app.modals.is_empty(), "ASK_KEYMAP_ON_LAUNCH is off until M3");
-    assert_eq!(app.profile(), crate::config::KeyProfile::Arrows);
+    assert!(matches!(app.modals.top(), Some(Modal::KeymapChoice { .. })));
+}
+
+/// Spec §4.2: every test app has answered it.
+#[test]
+fn a_bare_app_has_answered_the_keyboard_question() {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let dir = tempfile::tempdir().unwrap();
+    let app = App::with_root(tx, dir.path().to_path_buf());
+    assert_eq!(app.ui_settings.keymap, Some(crate::config::KeyProfile::Arrows));
 }
 
 #[test]
@@ -30088,8 +30107,8 @@ fn a_counted_undo_or_redo_stops_at_the_end_of_history() {
 }
 
 /// The final review's I2: M1's real first-launch path. An unset `keymap`
-/// switched to vim from the Settings row and undone is unset again: the
-/// line leaves config.toml, the arrows keymap is back, and nothing the
+/// answered with vim from the keyboard question and undone is unset again:
+/// the line leaves config.toml, the arrows keymap is back, and nothing the
 /// vim router held survives.
 #[test]
 fn an_unset_keymap_switched_to_vim_and_undone_is_unset_again() {
@@ -30099,8 +30118,8 @@ fn an_unset_keymap_switched_to_vim_and_undone_is_unset_again() {
     std::fs::write(dir.path().join("config.toml"), "animations = false\n").unwrap();
     app.ui_settings.keymap = None;
     app.keymap = crate::keys::Keymap::default_bindings();
-    app.update(Action::OpenManage { tab: Some(ManageTab::Settings) });
-    click_hit(&mut app, Hit::SettingsKeymap(KeyProfile::Vim));
+    assert!(app.raise_keymap_choice());
+    app.handle_key(plain('v'));
     assert_eq!(app.ui_settings.keymap, Some(KeyProfile::Vim));
     let written = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
     assert!(written.contains("keymap = \"vim\""), "{written}");
@@ -30115,8 +30134,7 @@ fn an_unset_keymap_switched_to_vim_and_undone_is_unset_again() {
     assert_eq!(app.ui_settings.keymap, None, "unset, as before the switch");
     assert_eq!(app.profile(), KeyProfile::Arrows);
     assert_eq!(app.keymap.lookup(&KeyCombo::parse("q").unwrap()), Some(Action::Quit), "the arrows keymap");
-    assert_eq!(app.key_echo(), "", "the router is idle");
-    assert_eq!(app.vim_status(), None);
+    assert!(matches!(app.modals.top(), Some(Modal::KeymapChoice { .. })), "unset again: the question is back");
 }
 
 /// The final review's M2: a keys.toml reset in vim seeds the vim keymap's

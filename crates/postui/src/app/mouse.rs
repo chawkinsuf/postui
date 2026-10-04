@@ -64,7 +64,7 @@ impl App {
         // never reaches `update`, and an unanswered startup gate must
         // not be left down.
         let regated = self.reraise_startup_config_gate();
-        let asked = super::ASK_KEYMAP_ON_LAUNCH && self.raise_keymap_choice();
+        let asked = self.raise_keymap_choice();
         changed || regated || asked
     }
 
