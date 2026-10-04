@@ -99,6 +99,11 @@ impl App {
                 (&mut self.glue, Some(FieldBuf::Body(&mut self.editor.body, &mut self.editor.body_visual)))
             }
             FieldId::ModalInput(i) => (&mut self.modal_glue, self.modals.text_input_mut(i).map(FieldBuf::Line)),
+            FieldId::Palette | FieldId::ChooserFilter | FieldId::VarPickerFilter | FieldId::FilePicker => {
+                (&mut self.modal_glue, self.modals.query_input_mut().map(FieldBuf::Line))
+            }
+            FieldId::Jq => (&mut self.glue, Some(FieldBuf::Line(&mut self.session.response.jq_bar_mut().input))),
+            FieldId::Search => (&mut self.glue, self.session.response.search_input_mut().map(FieldBuf::Line)),
             _ => (
                 &mut self.glue,
                 line_buf(id, &mut self.editor.url, &mut self.editor.table, &mut self.varmanager, &mut self.settings),
@@ -122,10 +127,10 @@ impl App {
             return None;
         }
         match self.field_caret() {
-            FieldCaret::Live(id) if !id.is_modal() && !id.insert_only() => Some((id, true)),
-            FieldCaret::Live(_) => self.screen_field().filter(|id| !id.insert_only()).map(|id| (id, false)),
-            FieldCaret::Parked(id) if !id.insert_only() => Some((id, false)),
-            FieldCaret::Parked(_) | FieldCaret::None => None,
+            FieldCaret::Live(id) if !id.is_modal() => Some((id, true)),
+            FieldCaret::Live(_) => self.screen_field().map(|id| (id, false)),
+            FieldCaret::Parked(id) => Some((id, false)),
+            FieldCaret::None => None,
         }
     }
 
@@ -183,6 +188,13 @@ impl App {
                 // it goes on in Insert (spec §4.3).
                 let open = if switched_in { Some(OpenAs::Insert(OpenSeat::Keep)) } else { open_as };
                 self.open_session(id, open, !mouse, Start::Normal);
+            }
+            // A carry across Insert-only is a close and an open (plan M3b
+            // Deviation 16): the engine would keep Insert-only on the field
+            // it carries to.
+            Edge::Carry(from, to) if from.insert_only() != to.insert_only() => {
+                self.close_session(from);
+                self.open_session(to, open_as, !mouse, Start::Normal);
             }
             Edge::Carry(from, to) => self.carry_session(from, to),
             // Spec §3.3: the close edge also drops the router's pending
@@ -294,7 +306,7 @@ impl App {
             return None;
         }
         match self.field_caret() {
-            FieldCaret::Live(id @ FieldId::ModalInput(_)) => self.modals.top_serial().map(|s| (s, id)),
+            FieldCaret::Live(id) if id.is_modal() => self.modals.top_serial().map(|s| (s, id)),
             _ => None,
         }
     }
@@ -455,6 +467,9 @@ impl App {
     /// what was typed for it goes nowhere.
     pub(super) fn engine_key(&mut self, ev: KeyEvent) -> Option<Ran> {
         let id = self.live_engine_field()?;
+        if self.box_claims(id, &ev) {
+            return Some(Ran::routed(self.handle_key_routed(ev)));
+        }
         let view = self.view_ctx(id);
         // Read before the key: whether a `u` or ctrl+r it hands back means
         // the field had nothing to step (final review M-1).
@@ -464,13 +479,56 @@ impl App {
             glue.handle(ev, &mut buf?, &view)
         };
         Some(match out {
-            Outcome::Consumed { note, request, .. } => {
+            Outcome::Consumed { changed, note, request } => {
                 self.engine_feedback(note, request);
+                if changed {
+                    self.query_edited(id);
+                }
                 self.after_typed(id, ev);
                 Ran::consumed()
             }
             Outcome::Declined { count, keys } => self.route_declined(id, count, keys, idle),
         })
+    }
+
+    /// Keys a query box owns before the engine (plan M3b Deviation 5, the
+    /// user's decision): the file picker's Backspace on an empty filter
+    /// climbs a folder; the jq bar's Tab and shift+Tab are its completion's
+    /// (menu mode rewrites a quoted key through the input's own keys, which
+    /// a declined key's quiet input would mute: amendment R4), and its
+    /// Right and End accept an offered completion.
+    fn box_claims(&self, id: FieldId, ev: &KeyEvent) -> bool {
+        let plain = ev.modifiers.is_empty();
+        match id {
+            FieldId::FilePicker => {
+                plain
+                    && ev.code == KeyCode::Backspace
+                    && matches!(self.modals.top(), Some(Modal::FilePicker(p)) if p.input().text().is_empty())
+            }
+            FieldId::Jq => match ev.code {
+                KeyCode::Tab | KeyCode::BackTab => true,
+                KeyCode::Right | KeyCode::End => plain && self.session.response.jq_accepts_completion(),
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
+    /// The engine changed a query box's text: the box follows, as after a
+    /// typed key (its rows, its theme preview, its filter).
+    fn query_edited(&mut self, id: FieldId) {
+        match id {
+            FieldId::Jq => {
+                self.session.response.mark_jq_typed();
+                self.sync_jq();
+            }
+            FieldId::ChooserFilter => {
+                self.modals.query_changed();
+                self.sync_theme_preview();
+            }
+            FieldId::Palette | FieldId::VarPickerFilter | FieldId::FilePicker => self.modals.query_changed(),
+            _ => {}
+        }
     }
 
     /// The app's undo path (`step_history`) reaching a vim field: the
@@ -525,6 +583,11 @@ impl App {
     /// pastes.
     pub(crate) fn engine_paste(&mut self, text: &str) -> Option<bool> {
         let id = self.live_engine_field()?;
+        // Today's routing pastes into the file picker, its folder jump
+        // included (plan M3b Deviation 13).
+        if id == FieldId::FilePicker {
+            return None;
+        }
         let flat;
         let text = if id.engine_kind() == EngineKind::Line {
             flat = crate::components::line_input::flatten_paste(text);
@@ -551,6 +614,7 @@ impl App {
         if let Some((note, request)) = feedback {
             self.engine_feedback(note, request);
         }
+        self.query_edited(id);
         Some(self.update(Action::Render))
     }
 

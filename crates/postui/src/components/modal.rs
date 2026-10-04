@@ -790,6 +790,31 @@ impl ModalStack {
         }
     }
 
+    /// The top picker's query: the palette's, a chooser's, the variable
+    /// picker's in Insert mode, or the file picker's.
+    pub(crate) fn query_input_mut(&mut self) -> Option<&mut LineInput> {
+        match self.stack.last_mut()? {
+            Modal::Palette(s) => Some(s.input_mut()),
+            Modal::Chooser(s) => Some(s.input_mut()),
+            Modal::VarPicker(s) if s.mode == crate::components::var_picker::PickerMode::Insert => {
+                Some(s.input_mut())
+            }
+            Modal::FilePicker(s) => Some(s.input_mut()),
+            _ => None,
+        }
+    }
+
+    /// The top picker's query changed outside its own keys: it re-filters.
+    pub(crate) fn query_changed(&mut self) {
+        match self.stack.last_mut() {
+            Some(Modal::Palette(s)) => s.filter_changed(),
+            Some(Modal::Chooser(s)) => s.filter_changed(),
+            Some(Modal::VarPicker(s)) => s.filter_changed(),
+            Some(Modal::FilePicker(s)) => s.filter_changed(),
+            _ => {}
+        }
+    }
+
     /// Whether the top form modal's field has the caret right now. `false`
     /// for a non-form modal, and for a form modal whose focus is on the
     /// button row.
@@ -5120,6 +5145,21 @@ mod tests {
             revealed: false,
         });
         m
+    }
+
+    #[test]
+    fn a_pickers_query_is_its_input() {
+        let mut m = prompt_stack();
+        assert!(m.query_input_mut().is_none(), "a form has no query");
+        m.push(Modal::Palette(crate::components::palette::PaletteState::new(
+            &crate::usage::UsageStore::default(),
+            0,
+        )));
+        m.query_input_mut().unwrap().splice_raw(0, 0, "zzzzqqq");
+        m.query_changed();
+        let Some(Modal::Palette(p)) = m.top() else { panic!("the palette") };
+        assert_eq!(p.input(), "zzzzqqq");
+        assert!(p.filtered().is_empty(), "the rows follow the query");
     }
 
     /// A `MultiPrompt` fixture matching what `Action::ExtractToVariable`

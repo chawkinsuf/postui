@@ -310,3 +310,179 @@ fn arrows_dialogs_still_type_modelessly() {
     assert_eq!(app.modal_glue.session(), FieldSession::None);
     assert_eq!(app.mode_indicator(), None);
 }
+
+/// One key as `feed` sends it, for a chord the notation cannot spell.
+fn feed_key(app: &mut App, ev: KeyEvent) {
+    app.handle_key(ev);
+    app.capture_undo();
+    draw(app);
+}
+
+/// A ready JSON response holding `body`, with the response pane focused.
+fn json_response(app: &mut App, body: &str) {
+    app.session.response.set_state(
+        ResponseState::Ready(Box::new(crate::http::ResponseData {
+            status: 200,
+            url: "https://x.test/a".into(),
+            headers: vec![("content-type".into(), "application/json".into())],
+            sent_headers: Vec::new(),
+            body: body.to_string(),
+            ttfb: std::time::Duration::from_millis(1),
+            elapsed: std::time::Duration::from_millis(1),
+            size: body.len(),
+            content_type: Some("application/json".into()),
+        })),
+        app.session.send_generation,
+    );
+    app.focus = PaneId::Response;
+}
+
+/// Key list D.picker: the palette query types through the engine.
+#[test]
+fn the_palette_query_types_through_the_engine() {
+    let mut app = vim_app(Fixture::SidebarThree);
+    feed(&mut app, ":ab<BS>");
+    let Some(Modal::Palette(p)) = app.modals.top() else { panic!("the palette") };
+    assert_eq!(p.input(), "a");
+    assert_eq!(app.mode_indicator(), Some("INSERT"));
+    assert_eq!(app.modal_glue.session(), FieldSession::Live(FieldId::Palette));
+    feed(&mut app, "<C-w>");
+    let Some(Modal::Palette(p)) = app.modals.top() else { panic!("the palette") };
+    assert_eq!(p.input(), "", "ctrl+w is the engine's Insert key");
+}
+
+/// Spec §3.7 item 2: no Normal layer, so `qa` types and Esc closes.
+#[test]
+fn a_query_box_types_letters_and_esc_closes_it() {
+    let mut app = vim_app(Fixture::SidebarThree);
+    feed(&mut app, ":qa");
+    let Some(Modal::Palette(p)) = app.modals.top() else { panic!("the palette") };
+    assert_eq!(p.input(), "qa");
+    assert!(app.toasts.messages().is_empty(), "no macro note");
+    feed(&mut app, "<Esc>");
+    assert!(app.modals.is_empty());
+    assert_eq!(app.modal_glue.session(), FieldSession::None);
+}
+
+/// Key list D.picker: ctrl+n and ctrl+p move the highlight.
+#[test]
+fn ctrl_n_and_ctrl_p_move_a_pickers_highlight() {
+    let mut app = vim_app(Fixture::SidebarThree);
+    feed(&mut app, ":<C-n><C-n><C-p>");
+    let Some(Modal::Palette(p)) = app.modals.top() else { panic!("the palette") };
+    assert_eq!(p.selected(), 1);
+}
+
+/// Review Focus 5, plan M3b Deviation 5.
+#[test]
+fn the_file_picker_climbs_on_backspace_and_esc_still_closes() {
+    let mut app = vim_app(Fixture::SidebarThree);
+    let dir = tempfile::tempdir().unwrap();
+    let inner = dir.path().join("inner");
+    std::fs::create_dir(&inner).unwrap();
+    app.push_modal(Modal::FilePicker(crate::components::file_picker::FilePickerState::new(
+        "Open",
+        crate::components::file_picker::PickerTarget::OpenProject,
+        &inner,
+        "",
+    )));
+    draw(&mut app);
+    feed(&mut app, "<BS>");
+    let Some(Modal::FilePicker(p)) = app.modals.top() else { panic!("the file picker") };
+    assert_eq!(p.dir(), dir.path(), "Backspace on an empty filter climbs");
+    feed(&mut app, "x<Esc>");
+    assert!(app.modals.is_empty(), "Esc is still the picker's after the rebuild");
+}
+
+/// Review Focus 4: the jq bar types through the engine, and its edit is
+/// one app step, a segment delete (claimed by no one, declined by the
+/// engine, taken by the bar) included (amendment R6).
+#[test]
+fn the_jq_bar_types_through_the_engine_as_one_app_step() {
+    let mut app = vim_app(Fixture::ResponseLines);
+    app.update(Action::OpenJqBar);
+    // The main loop's capture after the event that opened the bar: the
+    // app history's starting point.
+    app.capture_undo();
+    draw(&mut app);
+    feed(&mut app, ".x");
+    assert_eq!(app.session.response.jq_text(), ".x");
+    assert_eq!(app.mode_indicator(), Some("INSERT"));
+    assert_eq!(app.glue.session(), FieldSession::Live(FieldId::Jq));
+    assert_eq!(app.history.undo_len(), 0, "the engine's typing holds the gate");
+    feed_key(&mut app, KeyEvent::new(KeyCode::Backspace, KeyModifiers::CONTROL));
+    assert_eq!(app.session.response.jq_text(), ".", "the segment went");
+    assert_eq!(app.history.undo_len(), 0, "the bar's own delete holds it too");
+    feed(&mut app, "<Esc>");
+    assert!(!app.session.response.jq_focused(), "Esc leaves the bar");
+    assert_eq!(app.session.response.jq_text(), ".", "keeping its text");
+    feed(&mut app, "u");
+    assert_eq!(app.session.response.jq_text(), "", "one undo takes the whole edit back");
+}
+
+/// Plan M3b Deviation 13: a paste into the file picker keeps its jump.
+#[test]
+fn a_pasted_folder_jumps_the_file_picker() {
+    let mut app = vim_app(Fixture::SidebarThree);
+    let dir = tempfile::tempdir().unwrap();
+    let inner = dir.path().join("inner");
+    std::fs::create_dir(&inner).unwrap();
+    app.push_modal(Modal::FilePicker(crate::components::file_picker::FilePickerState::new(
+        "Open",
+        crate::components::file_picker::PickerTarget::OpenProject,
+        dir.path(),
+        "",
+    )));
+    draw(&mut app);
+    app.paste_text(&inner.to_string_lossy());
+    let Some(Modal::FilePicker(p)) = app.modals.top() else { panic!("the file picker") };
+    assert_eq!(p.dir(), inner.as_path());
+}
+
+/// Amendment R4: the jq bar's Tab is the bar's before the engine, so menu
+/// completion's rewrite of a key that needs quotes (it selects the token
+/// through the input's own keys) still lands.
+#[test]
+fn the_jq_bars_tab_completes_a_quoted_key_in_vim() {
+    let mut app = vim_app(Fixture::SidebarThree);
+    json_response(&mut app, r#"{"my key": 1}"#);
+    app.session.response.set_jq_tab(crate::config::JqTab::Menu);
+    app.update(Action::OpenJqBar);
+    draw(&mut app);
+    feed(&mut app, ".my<Tab>");
+    assert_eq!(app.session.response.jq_text(), ".\"my key\"");
+    assert_eq!(app.glue.session(), FieldSession::Live(FieldId::Jq));
+    feed(&mut app, "z");
+    assert_eq!(app.session.response.jq_text(), ".\"my key\"z", "the engine types on after the rewrite");
+}
+
+/// Amendment R8 (the user's decision): `G` and `gg` move the variable
+/// picker's option cursor, through the End and Home it gained.
+#[test]
+fn g_and_gg_move_the_variable_pickers_option_cursor() {
+    use crate::components::var_picker::{SelectOption, VarPickerState};
+    let mut app = vim_app(Fixture::SidebarThree);
+    let option = |key: &str, selected| SelectOption {
+        key: key.into(),
+        description: None,
+        value: None,
+        selected,
+        values: None,
+    };
+    app.push_modal(Modal::VarPicker(VarPickerState::new_select(
+        vec![option("alice", false), option("bob", true), option("carol", false)],
+        "user".into(),
+        "identity".into(),
+        "qa".into(),
+    )));
+    draw(&mut app);
+    let selected = |app: &App| match app.modals.top() {
+        Some(Modal::VarPicker(p)) => p.selected(),
+        _ => panic!("the variable picker"),
+    };
+    assert_eq!(selected(&app), 1);
+    feed(&mut app, "G");
+    assert_eq!(selected(&app), 3, "the last row");
+    feed(&mut app, "gg");
+    assert_eq!(selected(&app), 0, "the first option");
+}

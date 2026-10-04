@@ -257,6 +257,9 @@ pub struct Glue {
     profile: Option<KeyProfile>,
     /// A mouse sweep is in flight in the session's buffer.
     sweeping: bool,
+    /// The session is a query box's (piece 3 §4.2 `Start::InsertOnly`): a
+    /// rebase re-enters it so (plan M3b Review Focus 5).
+    insert_only: bool,
 }
 
 impl Glue {
@@ -376,6 +379,7 @@ impl Glue {
             OpenSeat::End => Seat::End,
             OpenSeat::FirstNonBlank => Seat::FirstNonBlank,
         };
+        self.insert_only = start == Start::InsertOnly;
         target!(self, buf, |t| self.engine.enter(start, seat, t));
         self.sweeping = false;
         self.saw(buf);
@@ -439,6 +443,7 @@ impl Glue {
         }
         self.seen = None;
         self.sweeping = false;
+        self.insert_only = false;
     }
 
     /// [`Glue::leave`] for a session buffer that is gone, or was replaced.
@@ -505,9 +510,11 @@ impl Glue {
     /// it in the same mode, with a fresh state (plan M3a Deviation 5). The
     /// replaced buffer is not left first: its positions no longer fit.
     /// Insert ctrl+o was typing too, so it re-enters as Insert, as Insert
-    /// and Replace do (the user's ruling, final review).
+    /// and Replace do (the user's ruling, final review). A query box stays
+    /// Insert-only (plan M3b).
     pub fn rebase(&mut self, buf: &mut FieldBuf<'_>) {
         let start = match self.engine.mode() {
+            _ if self.insert_only => Start::InsertOnly,
             Mode::Insert | Mode::Replace | Mode::InsertNormal { .. } => Start::Insert,
             _ => Start::Normal,
         };
@@ -589,6 +596,7 @@ impl Glue {
 mod tests {
     use super::*;
     use crate::keyroute::notation;
+    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 
     fn keys(g: &mut Glue, buf: &mut FieldBuf<'_>, typed: &str) {
         for ev in notation::events(typed) {
@@ -602,6 +610,22 @@ mod tests {
         input.set_cursor(caret);
         g.enter(&mut FieldBuf::Line(&mut input), start, seat);
         (g, input)
+    }
+
+    /// Plan M3b Review Focus 5: a box rebuilt under its session keeps
+    /// Insert-only, so Esc stays the box's.
+    #[test]
+    fn a_rebase_keeps_a_query_box_insert_only() {
+        let (mut g, _input) = opened("ab", Start::InsertOnly, OpenSeat::Keep, 2);
+        let mut replaced = LineInput::new("zz");
+        g.rebase(&mut FieldBuf::Line(&mut replaced));
+        let out = g.handle(
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            &mut FieldBuf::Line(&mut replaced),
+            &ViewCtx::default(),
+        );
+        assert!(matches!(out, Outcome::Declined { .. }), "Esc is still the box's");
+        assert_eq!(g.mode(), Mode::Insert);
     }
 
     /// Plan M3b Deviation 1: a yank in one engine puts from the other.

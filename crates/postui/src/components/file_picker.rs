@@ -253,6 +253,13 @@ impl FilePickerState {
         &mut self.input
     }
 
+    /// The filter changed outside this picker's own keys (the vim engine
+    /// typed into it): the rows follow, as after a typed key.
+    pub(crate) fn filter_changed(&mut self) {
+        self.filter_active = true;
+        self.rebuild_rows();
+    }
+
     pub fn rows(&self) -> &[Row] {
         &self.rows
     }
@@ -956,6 +963,19 @@ mod tests {
         b.handle_key(ctrl('p'));
         assert_eq!(a.selected(), b.selected());
         assert_eq!(b.input().text(), "", "ctrl+n/p never type");
+    }
+
+    /// Plan M3b: the engine edits the filter; the picker re-filters on its word.
+    #[test]
+    fn filter_changed_rebuilds_the_rows_from_the_query() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("alpha")).unwrap();
+        std::fs::create_dir(dir.path().join("beta")).unwrap();
+        let mut p = FilePickerState::new("Open", PickerTarget::OpenProject, dir.path(), "");
+        let all = p.rows().len();
+        p.input_mut().splice_raw(0, 0, "alp");
+        p.filter_changed();
+        assert!(p.rows().len() < all, "the rows follow the query");
     }
 
     /// Undo in the field is not just the field: the listing has to be

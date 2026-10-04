@@ -2384,7 +2384,13 @@ impl App {
                 self.editor.url.edited()
             };
         let body = engine(crate::keyroute::FieldId::Body) && self.glue.edited(crate::keyroute::EngineKind::Body);
-        let jq = self.focus == PaneId::Response && self.session.response.jq_field_edited();
+        // In vim the engine holds the jq bar's typing (plan M3b Review Focus
+        // 4); a key the bar claims or takes itself (a completion accept, a
+        // segment delete) edits its own line, and the rebase that follows
+        // starts the engine's count over, so either keeps the gate shut.
+        let jq = self.focus == PaneId::Response
+            && (engine(crate::keyroute::FieldId::Jq) && self.glue.edited(crate::keyroute::EngineKind::Line)
+                || self.session.response.jq_field_edited());
         url || body || jq
     }
 
@@ -9541,9 +9547,9 @@ impl App {
             return changed;
         }
         if !self.modals.is_empty() {
-            // The filter-query modals hold their query as a plain String
-            // (no LineInput), so they sit outside `focused_input_index` —
-            // but their queries took typed text, so they take pastes too.
+            // In vim the engine took the paste above, so these arms are
+            // arrows', and the file picker's in both profiles (it keeps its
+            // folder jump, plan M3b Deviation 13).
             match self.modals.top_mut() {
                 Some(crate::components::modal::Modal::Palette(p)) => {
                     p.paste(text);

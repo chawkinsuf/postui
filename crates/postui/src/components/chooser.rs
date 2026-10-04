@@ -133,6 +133,17 @@ impl ChooserState {
         self.input.text()
     }
 
+    /// The query, for the vim engine (plan M3b): it edits it in place.
+    pub(crate) fn input_mut(&mut self) -> &mut LineInput {
+        &mut self.input
+    }
+
+    /// The query changed outside this picker's own keys (the vim engine
+    /// typed into it): the rows follow, as after a typed key.
+    pub(crate) fn filter_changed(&mut self) {
+        self.refilter();
+    }
+
     pub fn selected(&self) -> usize {
         self.selected
     }
