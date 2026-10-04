@@ -36,15 +36,6 @@ pub(crate) fn opens_field(ev: &KeyEvent) -> bool {
     matches!(ev.code, KeyCode::Enter | KeyCode::Char(' '))
 }
 
-/// Guard for a key arm that pairs a named key with its vim letter
-/// (`Left | Char('h')`, spec 2026-09-15; only `modal.rs` still has such
-/// arms, plan M1 Deviation 7): the letter counts only
-/// unmodified — ctrl+h is the legacy ctrl+backspace byte, ctrl+j/k and
-/// the alt+letters are chords of their own — while the named key matches
-/// as it always did. `G` arms stay unguarded (it arrives with SHIFT).
-pub(crate) fn plain_letter(ev: &KeyEvent) -> bool {
-    !matches!(ev.code, KeyCode::Char(_)) || ev.modifiers.is_empty()
-}
 
 /// Rewrites a display label's leading `alt+` to the platform spelling
 /// (`opt+` on macOS — same width, so precomputed keycap layouts hold).

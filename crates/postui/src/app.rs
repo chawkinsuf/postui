@@ -11574,6 +11574,8 @@ mod router;
 mod fields;
 mod verbs;
 #[cfg(test)]
+mod dialog_tests;
+#[cfg(test)]
 mod field_tests;
 #[cfg(test)]
 mod key_matrix_tests;
