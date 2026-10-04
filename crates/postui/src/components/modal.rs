@@ -771,9 +771,42 @@ impl ModalStack {
 
     /// The top form modal's field that has the caret, by the index
     /// `FieldId::ModalInput` names: `None` on the button row, with the
-    /// field only selected, and for a modal that is not a form.
+    /// field only selected, and for a modal that is not a form. A choice
+    /// field and a removed fields-editor row are stops, never a field with
+    /// the caret (plan M3b Deviation 10).
     pub fn caret_field(&self) -> Option<usize> {
-        (self.field_open() && self.focused_input().is_some()).then(|| self.field_index())
+        (self.field_open() && self.focused_input_index().is_some()).then(|| self.field_index())
+    }
+
+    /// Opens the top form's selected text field, as Enter and Space do on
+    /// one (spec 2026-09-16), for vim's `i a I A o` (plan M3b Deviation 3).
+    /// `false` with the field already open, on the button row, and on a
+    /// stop with no text: the new-selector toggle, a choice field.
+    pub(crate) fn reopen_field(&mut self) -> bool {
+        if self.button_focus.is_some() || self.field_open || !self.top().is_some_and(Modal::is_form) {
+            return false;
+        }
+        let toggle = matches!(
+            self.stack.last(),
+            Some(Modal::Prompt { kind: PromptKind::NewSelector { on_toggle: true, .. }, .. })
+        );
+        if toggle || self.focused_input_index().is_none() {
+            return false;
+        }
+        self.field_open = true;
+        true
+    }
+
+    /// The letters that answer the top dialog (spec §5.10, plan M3b
+    /// Deviation 9): the router declines them to it before any row.
+    pub(crate) fn answer_letters(&self) -> Vec<char> {
+        match self.top() {
+            Some(Modal::Confirm { choices, .. }) => choices.iter().map(|(c, ..)| *c).collect(),
+            Some(Modal::ConfigStartup { .. }) => config_startup_choices().iter().map(|(c, ..)| *c).collect(),
+            Some(Modal::ConfigEditInvalid { .. }) => vec!['k', 'd'],
+            Some(Modal::KeymapChoice { .. }) => keymap_choices().iter().map(|(c, ..)| *c).collect(),
+            _ => Vec::new(),
+        }
     }
 
     /// Closes the top form modal's open field, keeping its text (the
@@ -5174,6 +5207,59 @@ mod tests {
             "sel".into(),
             &["a".to_string(), "b".to_string()],
         ))
+    }
+
+    /// Plan M3b Deviation 10.
+    #[test]
+    fn a_choice_field_never_has_the_caret() {
+        let mut m = ModalStack::default();
+        m.push(sample_multi_prompt());
+        assert_eq!(m.caret_field(), Some(0));
+        m.handle_key(key(KeyCode::Tab)); // focus 1: the choice field
+        m.push(Modal::Message {
+            title: "t".into(),
+            body: "b".into(),
+        });
+        m.pop(); // pop reopens the top form's field
+        assert!(m.field_open());
+        assert_eq!(
+            m.caret_field(),
+            None,
+            "the choice stepper is a stop, not a text field"
+        );
+    }
+
+    #[test]
+    fn reopen_opens_only_a_selected_text_field() {
+        let mut m = prompt_stack();
+        assert!(!m.reopen_field(), "already open");
+        m.close_top_field();
+        assert!(m.reopen_field());
+        assert!(m.field_open());
+        m.close_top_field();
+        m.handle_key(key(KeyCode::Down));
+        assert!(
+            m.button_focus().is_some(),
+            "Down from a selected prompt field aims the buttons"
+        );
+        assert!(!m.reopen_field(), "the button row has no field");
+    }
+
+    /// Plan M3b Deviation 9.
+    #[test]
+    fn a_dialogs_answer_letters() {
+        let mut m = ModalStack::default();
+        assert!(m.answer_letters().is_empty());
+        m.push(Modal::Confirm {
+            title: "t".into(),
+            body: "b".into(),
+            choices: vec![('y', "Yes".into(), vec![]), ('n', "No".into(), vec![])],
+        });
+        assert_eq!(m.answer_letters(), vec!['y', 'n']);
+        m.push(Modal::KeymapChoice { aimed: None });
+        assert_eq!(m.answer_letters(), vec!['a', 'v']);
+        m.push(prompt_stack().stack.pop().unwrap());
+        assert!(m.answer_letters().is_empty(), "a prompt types its letters");
     }
 
     #[test]

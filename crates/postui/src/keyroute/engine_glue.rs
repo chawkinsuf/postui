@@ -297,7 +297,7 @@ impl Glue {
     /// its `/` or `?` (final review I-4); the body draws its own prompt.
     pub fn echo(&self) -> String {
         let echo = self.engine.echo();
-        let line = matches!(self.session, FieldSession::Live(id) if id.engine_kind() == Some(EngineKind::Line));
+        let line = matches!(self.session, FieldSession::Live(id) if id.engine_kind() == EngineKind::Line);
         match self.engine.search_line() {
             Some(search) if line => echo + &search.text,
             _ => echo,

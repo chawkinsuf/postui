@@ -23,7 +23,15 @@ impl App {
                 FieldCaret::Live(id) if self.glue.live() == Some(id) => Some(self.glue.view()),
                 _ => None,
             };
-            return KeyCtx { profile, surface, field, user_bare: None, cap: self.repeat_cap(surface), engine };
+            return KeyCtx {
+                profile,
+                surface,
+                field,
+                user_bare: None,
+                cap: self.repeat_cap(surface),
+                engine,
+                answers: Vec::new(),
+            };
         }
         KeyCtx {
             profile,
@@ -32,6 +40,7 @@ impl App {
             user_bare: self.user_bare(ev, profile, surface),
             cap: self.repeat_cap(surface),
             engine: None,
+            answers: if surface == Surface::Dialog { self.modals.answer_letters() } else { Vec::new() },
         }
     }
 
@@ -172,7 +181,7 @@ impl App {
             return None;
         }
         Some(match self.field_caret() {
-            FieldCaret::Live(id) if id.engine_kind().is_some() => super::fields::mode_word(self.glue.mode()),
+            FieldCaret::Live(id) if !id.is_modal() && !id.insert_only() => super::fields::mode_word(self.glue.mode()),
             FieldCaret::Live(_) => "INSERT",
             _ => "NORMAL",
         })

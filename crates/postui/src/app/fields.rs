@@ -116,10 +116,10 @@ impl App {
             return None;
         }
         match self.field_caret() {
-            FieldCaret::Live(id) if id.engine_kind().is_some() => Some((id, true)),
-            FieldCaret::Live(_) => self.screen_field().filter(|id| id.engine_kind().is_some()).map(|id| (id, false)),
-            FieldCaret::Parked(id) => id.engine_kind().map(|_| (id, false)),
-            FieldCaret::None => None,
+            FieldCaret::Live(id) if !id.is_modal() && !id.insert_only() => Some((id, true)),
+            FieldCaret::Live(_) => self.screen_field().filter(|id| !id.insert_only()).map(|id| (id, false)),
+            FieldCaret::Parked(id) if !id.insert_only() => Some((id, false)),
+            FieldCaret::Parked(_) | FieldCaret::None => None,
         }
     }
 
@@ -355,7 +355,7 @@ impl App {
     /// nothing (plan M3a Deviation 8).
     pub(crate) fn engine_field_undo(&mut self, redo: bool) -> Option<bool> {
         let id = self.live_engine_field()?;
-        let kind = id.engine_kind()?;
+        let kind = id.engine_kind();
         let can = if redo { self.glue.can_redo(kind) } else { self.glue.can_undo(kind) };
         let idle = self.glue.mode() == Mode::Normal && !self.glue.view().pending;
         if !can || !idle {
@@ -400,7 +400,7 @@ impl App {
     pub(crate) fn engine_paste(&mut self, text: &str) -> Option<bool> {
         let id = self.live_engine_field()?;
         let flat;
-        let text = if id.engine_kind() == Some(EngineKind::Line) {
+        let text = if id.engine_kind() == EngineKind::Line {
             flat = crate::components::line_input::flatten_paste(text);
             flat.as_str()
         } else {
@@ -525,8 +525,8 @@ impl App {
         let cap = self.repeat_cap(self.surface());
         // A field row the engine handed back whole (M4's `gt`).
         let toks: Option<Vec<Tok>> = keys.iter().map(Tok::of).collect();
-        if let (Some(toks), Some(kind)) = (toks, id.engine_kind())
-            && let Match::Complete(b) = table::lookup_class(&toks, KeyProfile::Vim, kind.class())
+        if let Some(toks) = toks
+            && let Match::Complete(b) = table::lookup_class(&toks, KeyProfile::Vim, table::field_class(id, self.surface()))
         {
             return match b.intent {
                 Intent::Swallow => Ran::default(),
@@ -579,8 +579,8 @@ impl App {
         }
         let plain = ev.modifiers.difference(KeyModifiers::SHIFT).is_empty();
         match id.engine_kind() {
-            Some(EngineKind::Body) => ev.code == KeyCode::Esc && ev.modifiers.is_empty(),
-            _ => {
+            EngineKind::Body => ev.code == KeyCode::Esc && ev.modifiers.is_empty(),
+            EngineKind::Line => {
                 plain
                     && matches!(
                         ev.code,

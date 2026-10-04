@@ -387,6 +387,16 @@ pub enum Action {
     /// (spec 2026-09-15). The footer's `esc done` chip dispatches it; a
     /// no-op when nothing is open.
     CloseField,
+    /// Confirm the top dialog, as its Confirm button does, or press the
+    /// aimed button on its button row (spec §5.10: vim's Enter on a
+    /// one-field prompt; the prompt's `enter confirm` chip).
+    ConfirmTopModal,
+    /// Cancel the top dialog (spec §5.10: vim's Esc in a prompt field's idle
+    /// Normal; the prompt's `esc cancel` chip).
+    CancelTopModal,
+    /// Open the top form's selected text field (vim's `i a I A o`, plan M3b
+    /// Deviation 3). A no-op on the button row or a stop with no text.
+    ReopenField,
     /// Confirmed the send-time secret prompt (spec §3): writes `name`'s
     /// value to `secrets.toml` under the active environment, then re-runs
     /// `Action::ForceSend` on success (prompting for the next missing

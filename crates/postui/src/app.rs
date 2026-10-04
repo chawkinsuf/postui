@@ -2549,7 +2549,8 @@ impl App {
         // edits or a step either way (amendment C1: before the first
         // committed step the live edit still counts, or ctrl+z in Insert
         // would undo an older app step and lose the typed text).
-        if let Some(kind) = self.live_engine_field().and_then(|id| id.engine_kind()) {
+        if let Some(id) = self.live_engine_field() {
+            let kind = id.engine_kind();
             return self.glue.edited(kind) || self.glue.can_undo(kind) || self.glue.can_redo(kind);
         }
         // Modals first, matching `open_text_field_mut` and `field_open`.
@@ -4301,16 +4302,43 @@ impl App {
             }
             Action::CancelSend => self.session.cancel(),
             Action::CloseField => {
-                // The field rule, dispatched rather than typed: with a
-                // field open this is exactly the Esc it would have taken.
-                // In vim it skips the engine, so the chip always closes
-                // the field, as on main; the end-of-event sync then
+                // A dialog's field closes to selected, its edit one step on
+                // the dialog's own stack (spec 2026-09-16), never through
+                // Esc, which cancels a one-field prompt (plan M3b Deviation
+                // 7). Off a dialog this is exactly the Esc the field would
+                // have taken. In vim it skips the engine, so the chip always
+                // closes the field, as on main; the end-of-event sync then
                 // leaves the session (amendment A4-2).
+                if !self.modals.is_empty() {
+                    if !self.modals.field_open() {
+                        return false;
+                    }
+                    self.modals.close_top_field();
+                    return true;
+                }
                 if !self.field_open() {
                     return false;
                 }
                 self.handle_key_routed(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
             }
+            Action::ConfirmTopModal => {
+                // The button row's aim decides there (spec 2026-09-15); from
+                // a field or a stop it is the dialog's confirm. A refused
+                // confirm (an empty name) toasts and keeps the field as it is.
+                let res = match self.modals.button_focus() {
+                    Some(crate::components::modal::FormButton::Cancel) => self.modals.cancel_top(),
+                    _ => self.modals.confirm_top(),
+                };
+                match res {
+                    Some(res) => self.apply_modal_result(res),
+                    None => true,
+                }
+            }
+            Action::CancelTopModal => match self.modals.cancel_top() {
+                Some(res) => self.apply_modal_result(res),
+                None => false,
+            },
+            Action::ReopenField => self.modals.reopen_field(),
             Action::SetSecret { name, value } => {
                 let t = self.begin_op();
                 let result = match self.project.as_mut() {

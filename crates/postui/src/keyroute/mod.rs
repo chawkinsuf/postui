@@ -78,13 +78,12 @@ impl Router {
         if let FieldCaret::Live(id) = ctx.field {
             // A field the engine runs: the lookahead (spec §3.7).
             if ctx.profile == KeyProfile::Vim
-                && let (Some(kind), Some(engine)) = (id.engine_kind(), ctx.engine)
+                && let Some(engine) = ctx.engine
             {
-                return self.resolve_field(ev, kind, engine, ctx);
+                return self.resolve_field(ev, table::field_class(id, ctx.surface), engine, ctx);
             }
-            // Any other field with the caret types every key (plan M1
-            // Deviation 5; M3b brings the modal fields and the query boxes
-            // to the engine).
+            // Arrows, or a vim field whose session the sync has not opened
+            // (a dialog's, until plan M3b Task 3): the field types every key.
             self.pending.clear();
             return Resolved::Declined;
         }
@@ -103,7 +102,7 @@ impl Router {
     /// it first. In idle Normal the router looks first, at the field rows
     /// only, and replays whatever matches none of them into the engine as
     /// typed: the engine never knows the router looked.
-    fn resolve_field(&mut self, ev: KeyEvent, kind: EngineKind, engine: EngineView, ctx: &KeyCtx) -> Resolved {
+    fn resolve_field(&mut self, ev: KeyEvent, class: Surfaces, engine: EngineView, ctx: &KeyCtx) -> Resolved {
         if engine.mode != engine_glue::Mode::Normal || engine.pending {
             self.pending.clear();
             return Resolved::Run(vec![Step::Engine(ev)]);
@@ -123,7 +122,7 @@ impl Router {
         }
         let mut buf = self.pending.keys().to_vec();
         buf.push(tok);
-        match table::lookup_class(&buf, ctx.profile, kind.class()) {
+        match table::lookup_class(&buf, ctx.profile, class) {
             Match::Complete(b) => {
                 let count = self.pending.count();
                 self.pending.clear();
@@ -149,6 +148,15 @@ impl Router {
     }
 
     fn step(&mut self, ev: KeyEvent, tok: Tok, ctx: &KeyCtx, first: bool) -> Resolved {
+        // Spec §5.10 (plan M3b Deviation 9): a dialog's own letters answer
+        // it, ahead of any row, in either case as the dialog matches them.
+        if ctx.surface == Surface::Dialog
+            && let Tok::Char(c) = tok
+            && ctx.answers.iter().any(|a| a.eq_ignore_ascii_case(&c))
+        {
+            self.pending.clear();
+            return Resolved::Declined;
+        }
         // 1. Esc clears what is pending, silently.
         if tok == Tok::Named(KeyCode::Esc) && !self.pending.is_idle() {
             self.pending.clear();
@@ -271,13 +279,19 @@ pub(crate) fn expand(b: &table::Binding, count: Option<usize>, cap: usize) -> Ve
         }
         Intent::Open { key, seat } => vec![Step::OpenAs(engine_glue::OpenAs::Insert(seat)), Step::Key(key.event())],
         Intent::Note(text) => vec![note_step(text)],
-        // Esc closes the field (its own close, keeping the text), then the
-        // key runs on the closed surface (plan M3a Deviation 11).
+        // The field closes (its own close, keeping the text), then the key
+        // runs on the closed surface (plan M3b Deviation 7). A dialog's
+        // field closes to selected through `CloseField`, never its Esc,
+        // which cancels a one-field prompt.
         Intent::Leave(k) => {
-            let mut steps = vec![Step::Key(table::ESC.event())];
+            let mut steps = vec![Step::Action(Action::CloseField)];
             steps.extend(std::iter::repeat_n(Step::Key(k.event()), times(cap)));
             steps
         }
+        Intent::Reopen(seat) => vec![
+            Step::OpenAs(seat.map_or(engine_glue::OpenAs::Normal, engine_glue::OpenAs::Insert)),
+            Step::Action(Action::ReopenField),
+        ],
         Intent::Swallow => Vec::new(),
         Intent::Pass => unreachable!("Pass is declined before expand"),
     }
@@ -297,7 +311,7 @@ mod tests {
     use ratatui::crossterm::event::KeyModifiers;
 
     fn cx(profile: KeyProfile, surface: Surface) -> KeyCtx {
-        KeyCtx { profile, surface, field: FieldCaret::None, user_bare: None, cap: MAX_COUNT, engine: None }
+        KeyCtx { profile, surface, field: FieldCaret::None, user_bare: None, cap: MAX_COUNT, engine: None, answers: Vec::new() }
     }
 
     use crate::keyroute::engine_glue::{Mode, OpenAs, OpenSeat};
@@ -355,15 +369,101 @@ mod tests {
     #[test]
     fn j_and_k_leave_a_one_line_field() {
         let s = in_url(Mode::Normal, false);
-        let esc = key(KeyCode::Esc);
-        assert_eq!(feed(&mut Router::default(), &s, "j"), run(vec![esc.clone(), key(KeyCode::Down)]));
+        let close = Step::Action(Action::CloseField);
+        assert_eq!(feed(&mut Router::default(), &s, "j"), run(vec![close.clone(), key(KeyCode::Down)]));
         assert_eq!(
             feed(&mut Router::default(), &s, "3k"),
-            run(vec![esc.clone(), key(KeyCode::Up), key(KeyCode::Up), key(KeyCode::Up)])
+            run(vec![close.clone(), key(KeyCode::Up), key(KeyCode::Up), key(KeyCode::Up)])
         );
-        assert_eq!(feed(&mut Router::default(), &s, "<C-d>"), run(vec![esc, ctrl_key(KeyCode::Char('d'))]));
+        assert_eq!(feed(&mut Router::default(), &s, "<C-d>"), run(vec![close, ctrl_key(KeyCode::Char('d'))]));
         let body = KeyCtx { field: FieldCaret::Live(FieldId::Body), surface: Surface::Body, ..s };
         assert_eq!(feed(&mut Router::default(), &body, "j"), run(eng("j")), "a body motion");
+    }
+
+    /// Spec §5.10, plan M3b Deviation 9: a dialog's letters answer it; the
+    /// moves are rows only where they do not.
+    #[test]
+    fn a_dialogs_answer_letters_beat_its_moves() {
+        let dialog = KeyCtx { answers: vec!['y', 'n'], ..cx(Vim, Surface::Dialog) };
+        assert_eq!(feed(&mut Router::default(), &dialog, "y"), Resolved::Declined, "y answers");
+        assert_eq!(feed(&mut Router::default(), &dialog, "j"), run(vec![key(KeyCode::Down)]));
+        assert_eq!(feed(&mut Router::default(), &dialog, "G"), run(vec![key(KeyCode::End)]));
+        let j_answers = KeyCtx { answers: vec!['j'], ..cx(Vim, Surface::Dialog) };
+        assert_eq!(feed(&mut Router::default(), &j_answers, "j"), Resolved::Declined, "an answer is never a move");
+        assert_eq!(feed(&mut Router::default(), &j_answers, "J"), Resolved::Declined, "either case, as the dialog matches");
+        assert_eq!(feed(&mut Router::default(), &cx(Arrows, Surface::Dialog), "j"), Resolved::Declined, "arrows has no vim rows");
+    }
+
+    /// Plan M3b Deviations 7 and 8: a one-field prompt's field in idle
+    /// Normal confirms on Enter and cancels on Esc; `j` closes it, then moves.
+    #[test]
+    fn a_prompt_field_confirms_cancels_and_leaves() {
+        let s = KeyCtx {
+            field: FieldCaret::Live(FieldId::ModalInput(0)),
+            engine: Some(EngineView { mode: Mode::Normal, pending: false }),
+            ..cx(Vim, Surface::Prompt)
+        };
+        assert_eq!(feed(&mut Router::default(), &s, "<CR>"), run(vec![Step::Action(Action::ConfirmTopModal)]));
+        assert_eq!(feed(&mut Router::default(), &s, "<Esc>"), run(vec![Step::Action(Action::CancelTopModal)]));
+        assert_eq!(
+            feed(&mut Router::default(), &s, "j"),
+            run(vec![Step::Action(Action::CloseField), key(KeyCode::Down)])
+        );
+        let form = KeyCtx { surface: Surface::Form, ..s.clone() };
+        assert_eq!(feed(&mut Router::default(), &form, "<Esc>"), run(eng("<Esc>")), "a form field's idle Esc is the engine's to decline");
+        let insert = KeyCtx { engine: Some(EngineView { mode: Mode::Insert, pending: false }), ..s };
+        assert_eq!(feed(&mut Router::default(), &insert, "<Esc>"), run(eng("<Esc>")), "Insert's Esc is the engine's");
+    }
+
+    /// Spec §3.7 item 2: a query box has no Normal, so every key is the
+    /// engine's, the letters the field rows name included.
+    #[test]
+    fn a_query_box_sends_every_key_to_the_engine() {
+        let s = KeyCtx {
+            field: FieldCaret::Live(FieldId::Palette),
+            engine: Some(EngineView { mode: Mode::Insert, pending: false }),
+            ..cx(Vim, Surface::Picker)
+        };
+        for keys in ["j", ":", "q", "<Esc>", "<C-n>"] {
+            assert_eq!(feed(&mut Router::default(), &s, keys), run(eng(keys)), "{keys}");
+        }
+    }
+
+    /// Plan M3b Deviations 3 and 8: a selected dialog field reopens with its
+    /// mode; a prompt's Enter confirms; a form's Enter is modal.rs's ladder.
+    #[test]
+    fn a_selected_dialog_field_reopens_with_its_mode() {
+        let form = cx(Vim, Surface::Form);
+        assert_eq!(
+            feed(&mut Router::default(), &form, "i"),
+            run(vec![Step::OpenAs(OpenAs::Insert(OpenSeat::Keep)), Step::Action(Action::ReopenField)])
+        );
+        assert_eq!(
+            feed(&mut Router::default(), &form, "A"),
+            run(vec![Step::OpenAs(OpenAs::Insert(OpenSeat::End)), Step::Action(Action::ReopenField)])
+        );
+        assert_eq!(
+            feed(&mut Router::default(), &form, "o"),
+            run(vec![Step::OpenAs(OpenAs::Normal), Step::Action(Action::ReopenField)])
+        );
+        assert_eq!(feed(&mut Router::default(), &form, "<CR>"), Resolved::Declined);
+        assert_eq!(
+            feed(&mut Router::default(), &cx(Vim, Surface::Prompt), "<CR>"),
+            run(vec![Step::Action(Action::ConfirmTopModal)])
+        );
+        assert_eq!(feed(&mut Router::default(), &cx(Vim, Surface::Prompt), "l"), run(vec![key(KeyCode::Right)]));
+        assert_eq!(feed(&mut Router::default(), &cx(Arrows, Surface::Form), "i"), Resolved::Declined);
+    }
+
+    /// Plan M3b Deviation 19: a picker with no query of its own (the
+    /// dropdown) moves with vim's keys.
+    #[test]
+    fn a_field_less_picker_moves_with_vim_keys() {
+        let s = cx(Vim, Surface::Picker);
+        assert_eq!(feed(&mut Router::default(), &s, "j"), run(vec![key(KeyCode::Down)]));
+        assert_eq!(feed(&mut Router::default(), &s, "k"), run(vec![key(KeyCode::Up)]));
+        assert_eq!(feed(&mut Router::default(), &s, "gg"), run(vec![key(KeyCode::Home)]));
+        assert_eq!(feed(&mut Router::default(), &s, "G"), run(vec![key(KeyCode::End)]));
     }
 
     /// Plan M3a Deviation 9: the prefix keys never reach the engine.
@@ -387,7 +487,7 @@ mod tests {
         assert_eq!(feed(&mut r, &s, "x"), run(eng("x")), "and the next key is fresh");
     }
 
-    /// A field with no engine session (a modal's, until M3b) still types.
+    /// A field the sync has not opened yet still types.
     #[test]
     fn a_field_without_an_engine_session_types() {
         let s = KeyCtx { field: FieldCaret::Live(FieldId::Palette), ..cx(Vim, Surface::Picker) };

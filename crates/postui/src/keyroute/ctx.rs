@@ -27,6 +27,9 @@ pub struct KeyCtx {
     /// on the field with the caret (spec §3.2, plan M3a). `None` anywhere
     /// else, and for a field that types modelessly.
     pub engine: Option<EngineView>,
+    /// The top dialog's answer letters (spec §3.2, §5.10; plan M3b
+    /// Deviation 9): they answer it before any row moves.
+    pub answers: Vec<char>,
 }
 
 /// What a keycap's spelling depends on (spec §4.6): the profile, the
@@ -121,25 +124,39 @@ pub enum EngineKind {
 }
 
 impl FieldId {
-    /// The engine buffer this field runs as in the vim profile, or `None`
-    /// for one that still types modelessly: modal fields and the query
-    /// boxes wait for M3b (plan M3a Deviation 1).
-    pub fn engine_kind(self) -> Option<EngineKind> {
+    /// The engine buffer this field runs as in the vim profile.
+    pub fn engine_kind(self) -> EngineKind {
         match self {
-            FieldId::Url
-            | FieldId::TableCell { .. }
-            | FieldId::VmForm(_)
-            | FieldId::VmGrid { .. }
-            | FieldId::Settings(_) => Some(EngineKind::Line),
-            FieldId::Body => Some(EngineKind::Body),
-            FieldId::ModalInput(_)
-            | FieldId::FilePicker
-            | FieldId::Jq
-            | FieldId::Search
-            | FieldId::Palette
-            | FieldId::ChooserFilter
-            | FieldId::VarPickerFilter => None,
+            FieldId::Body => EngineKind::Body,
+            _ => EngineKind::Line,
         }
+    }
+
+    /// A dialog's field: a form's text field or a picker's query. Its
+    /// session runs on the dialog engine (plan M3b Deviation 1).
+    pub fn is_modal(self) -> bool {
+        matches!(
+            self,
+            FieldId::ModalInput(_)
+                | FieldId::Palette
+                | FieldId::ChooserFilter
+                | FieldId::VarPickerFilter
+                | FieldId::FilePicker
+        )
+    }
+
+    /// A query box (spec §3.7 item 2; plan M3b Deviation 14): Insert keys,
+    /// no Normal layer, Esc is the box's.
+    pub fn insert_only(self) -> bool {
+        matches!(
+            self,
+            FieldId::Palette
+                | FieldId::ChooserFilter
+                | FieldId::VarPickerFilter
+                | FieldId::FilePicker
+                | FieldId::Jq
+                | FieldId::Search
+        )
     }
 }
 
