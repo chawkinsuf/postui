@@ -259,8 +259,15 @@ impl App {
                 self.glue.swap_registers(&mut self.modal_glue);
                 self.open_session(to, open_as, !mouse, default);
             }
-            (Some((_, from)), None) => {
-                self.close_session(from);
+            // The field closed in its own dialog (`j` to the buttons), or
+            // its dialog was popped or covered: then it is left through the
+            // ghost, as above, since its index would name the top's field.
+            (Some((from_dialog, from)), None) => {
+                if Some(from_dialog) == top {
+                    self.close_session(from);
+                } else {
+                    self.modal_glue.leave_ghost();
+                }
                 self.glue.swap_registers(&mut self.modal_glue);
                 self.router.clear();
             }

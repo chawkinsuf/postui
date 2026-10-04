@@ -260,6 +260,47 @@ fn declined_keys_in_a_dialog_never_type() {
     assert!(matches!(form.modals.top(), Some(Modal::FilePicker(_))), "alt+b still browses");
 }
 
+/// A dialog session whose dialog is gone is left through the ghost: its
+/// index would name the field of the dialog now on top. Here the form
+/// under the prompt has its focus on a choice field, so no field takes the
+/// caret, and its text field 0 holds the prompt's text, so only the ghost
+/// keeps the engine's Insert leave off it.
+#[test]
+fn a_popped_prompt_leaves_the_form_under_it_alone() {
+    use crate::components::modal::{PromptField, PromptKind};
+    let mut app = vim_app(Fixture::SidebarThree);
+    app.push_modal(Modal::MultiPrompt {
+        title: "Extract to variable".into(),
+        fields: vec![
+            PromptField::text("name", "Name", "seed"),
+            PromptField::choice("destination", "Destination", &["Project default", "This request"]),
+        ],
+        focus: 0,
+        kind: PromptKind::ExtractVariable,
+    });
+    draw(&mut app);
+    feed(&mut app, "<Tab>");
+    assert_eq!(app.modals.caret_field(), None, "the choice field is a stop");
+    // Past the last char, where only a field the engine rests on is
+    // clamped back (Normal's caret sits on a char).
+    app.modals.text_input_mut(0).unwrap().set_cursor(4);
+    let caret = app.modals.text_input_mut(0).map(|i| i.cursor());
+    app.push_modal(Modal::Prompt {
+        title: "Name".into(),
+        input: LineInput::new("seed"),
+        kind: PromptKind::NewRequest,
+        revealed: false,
+    });
+    app.catch_up_field_session();
+    assert_eq!(app.mode_indicator(), Some("INSERT"));
+    app.update(Action::CancelTopModal);
+    app.catch_up_field_session();
+    assert!(matches!(app.modals.top(), Some(Modal::MultiPrompt { .. })));
+    assert_eq!(app.modals.text_input_mut(0).map(|i| i.cursor()), caret, "the form's field kept its caret");
+    assert_eq!(app.modal_glue.session(), FieldSession::None);
+    assert_eq!(app.modal_session, None);
+}
+
 /// The arrows profile has no dialog sessions: a prompt types as on main.
 #[test]
 fn arrows_dialogs_still_type_modelessly() {
