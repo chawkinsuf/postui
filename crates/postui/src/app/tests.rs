@@ -28232,6 +28232,7 @@ fn undo_of_a_config_reset_restores_the_previous_file() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = App::new_for_test();
     app.config = crate::config::Config::at(dir.path().to_path_buf());
+    std::fs::write(dir.path().join("config.toml"), "keymap = \"arrows\"\n").unwrap();
 
     app.update(Action::SetUiFlag {
         key: "animations",
@@ -28239,10 +28240,7 @@ fn undo_of_a_config_reset_restores_the_previous_file() {
     });
     app.update(Action::ForceResetConfigFile(crate::action::ConfigFile::Config));
     assert!(app.ui_settings.animations, "reset restored the default");
-    // The reset also unset `keymap`, so the question is up; dismiss it to
-    // reach the undo.
-    assert!(matches!(app.modals.top(), Some(Modal::KeymapChoice { .. })));
-    app.modals.pop();
+    assert!(app.modals.is_empty(), "a reset keeps the keymap, so nothing asks");
 
     app.update(Action::Undo);
     assert!(
