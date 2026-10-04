@@ -1153,6 +1153,18 @@ fn a_picked_token_goes_in_at_the_insert_caret() {
     assert_eq!(app.mode_indicator(), Some("INSERT"));
 }
 
+/// Insert ctrl+o is still typing: the token goes in where Insert would
+/// type it, not after the char under the ctrl+o caret.
+#[test]
+fn a_picked_token_after_insert_ctrl_o_goes_in_at_the_insert_caret() {
+    let mut app = url_line("abc");
+    feed(&mut app, "<CR>$i<C-o>");
+    assert_eq!(app.mode_indicator(), Some("(insert)"));
+    app.update(Action::InsertVarText("{{v}}".into()));
+    assert_eq!(url(&app), ("ab{{v}}c", 7));
+    assert_eq!(app.mode_indicator(), Some("INSERT"));
+}
+
 #[test]
 fn a_picked_token_in_normal_goes_after_the_caret() {
     let mut app = url_line("ab");

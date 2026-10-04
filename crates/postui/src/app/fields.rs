@@ -431,14 +431,15 @@ impl App {
     /// A picked `{{token}}` into the field the picker was opened from
     /// (spec §3.7): at the caret in Insert, over the selection in Visual
     /// (as a paste), else by the bracketed-paste rule (plan M3a Deviation
-    /// 13). Only the fields main inserts into: the URL line, a cell, the
-    /// body. `false` leaves it to today's path.
+    /// 13). Insert ctrl+o counts as Insert: the edit resumes it first, as
+    /// `Glue::rebase` does. Only the fields main inserts into: the URL
+    /// line, a cell, the body. `false` leaves it to today's path.
     pub(crate) fn engine_insert(&mut self, text: &str) -> bool {
         let Some(id) = self.glue.owned() else { return false };
         if !matches!(id, FieldId::Url | FieldId::TableCell { .. } | FieldId::Body) {
             return false;
         }
-        let typing = matches!(self.glue.mode(), Mode::Insert | Mode::Replace);
+        let typing = matches!(self.glue.mode(), Mode::Insert | Mode::Replace | Mode::InsertNormal { .. });
         let (glue, buf) = self.session_parts(id);
         let Some(mut buf) = buf else { return false };
         let edit = if typing {
