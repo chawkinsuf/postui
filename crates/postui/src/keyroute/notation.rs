@@ -120,9 +120,40 @@ pub fn parse(notation: &str) -> Vec<Tok> {
     out
 }
 
-/// The key events `notation` types, in order.
+/// The key events `notation` types, in order. A test may also type an alt
+/// chord, `<A-Right>` or `<A-x>`, which no table row can name, so
+/// [`parse`] does not know it (plan M4a Deviation 14).
 pub fn events(notation: &str) -> Vec<KeyEvent> {
-    parse(notation).into_iter().map(Tok::event).collect()
+    let mut out = Vec::new();
+    let mut rest = notation;
+    while !rest.is_empty() {
+        match rest.find("<A-") {
+            Some(0) => {
+                let end = rest.find('>').unwrap_or_else(|| panic!("unclosed <A-…> in {notation:?}"));
+                let name = &rest[3..end];
+                let mut chars = name.chars();
+                let code = match (chars.next(), chars.next()) {
+                    (Some(c), None) => KeyCode::Char(c),
+                    _ => NAMES
+                        .iter()
+                        .find(|(n, _)| *n == name)
+                        .unwrap_or_else(|| panic!("unknown key <A-{name}> in {notation:?}"))
+                        .1,
+                };
+                out.push(KeyEvent::new(code, KeyModifiers::ALT));
+                rest = &rest[end + 1..];
+            }
+            Some(i) => {
+                out.extend(parse(&rest[..i]).into_iter().map(Tok::event));
+                rest = &rest[i..];
+            }
+            None => {
+                out.extend(parse(rest).into_iter().map(Tok::event));
+                rest = "";
+            }
+        }
+    }
+    out
 }
 
 /// How `notation` reads on a keycap: `<C-r>` is `^R`, `<CR>` is
@@ -183,6 +214,16 @@ mod tests {
             Some(Tok::Char('G')),
             "a shifted letter folds to its capital, as `KeyCombo::from_event` does"
         );
+    }
+
+    #[test]
+    fn events_type_alt_chords_for_tests() {
+        let evs = events("j<A-Right>k<A-x>");
+        assert_eq!(evs[0], KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        assert_eq!(evs[1], KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
+        assert_eq!(evs[2], KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE));
+        assert_eq!(evs[3], KeyEvent::new(KeyCode::Char('x'), KeyModifiers::ALT));
+        assert_eq!(Tok::of(&evs[1]), None, "no row can name it");
     }
 
     #[test]

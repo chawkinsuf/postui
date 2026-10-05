@@ -113,6 +113,16 @@ enum Expect {
     Yanked(&'static str),
     /// A selector's fields editor is the top modal.
     FieldsEditor,
+    /// The main pane with the keyboard.
+    FocusIs(PaneId),
+    EditorTabIs(EditorTab),
+    ResponseModeIs(crate::components::response::ViewMode),
+    ManageTabIs(ManageTab),
+    /// How many lines the response view shows.
+    ResponseVisible(usize),
+    /// The response cursor is on the view's top line, and the view has
+    /// scrolled (a half page down from the top, `R.ctrl-d`).
+    ResponsePaged,
 }
 
 struct Case {
@@ -206,6 +216,43 @@ const CASES: &[Case] = &[
     arrows("R.move", ResponseLines, "<Down>", &[ResponseLine(1)]),
     vim("R.search", ResponseLines, "/", &[FieldLive(true)]),
     arrows("R.search", ResponseLines, "/", &[FieldLive(true)]),
+    // Key list §7, M4a: half a page of view and cursor together, both
+    // profiles; the tree's folds (ResponseLines' root is one array).
+    vim("R.ctrl-d", ResponseLines, "<C-d>", &[ResponsePaged]),
+    vim("R.ctrl-d", ResponseLines, "<C-d><C-u>", &[ResponseLine(0)]),
+    arrows("R.ctrl-d", ResponseLines, "<C-d>", &[ResponsePaged]),
+    vim("R.fold", ResponseLines, "jzc", &[ResponseVisible(1), ResponseLine(0)]),
+    vim("R.fold", ResponseLines, "jzczo", &[ResponseVisible(202)]),
+    vim("R.fold", ResponseLines, "za", &[ResponseVisible(1)]),
+    vim("R.fold", ResponseLines, "zaj", &[ResponseVisible(1), ResponseLine(0), NoToast]),
+    // Key list §8, M4a: panes by geometry (spec §5.8).
+    vim("P.ctrlw", ResponseLines, "<C-w>k", &[FocusIs(PaneId::Editor)]),
+    vim("P.ctrlw", ResponseLines, "<C-w>h", &[FocusIs(PaneId::Sidebar)]),
+    vim("P.ctrlw", ResponseLines, "<C-w>h<C-w>l", &[FocusIs(PaneId::Response)]),
+    vim("P.ctrlw", ResponseLines, "<C-w>k<C-w>j", &[FocusIs(PaneId::Response)]),
+    vim("P.ctrlw", ResponseLines, "<C-w>w", &[FocusIs(PaneId::Sidebar)]),
+    vim("P.ctrlw", ResponseLines, "<C-w>W", &[FocusIs(PaneId::Editor)]),
+    vim("P.ctrlw", ResponseLines, "<C-w>k<C-w>p", &[FocusIs(PaneId::Response)]),
+    vim("P.ctrlw", ResponseLines, "<C-w>xj", &[FocusIs(PaneId::Response), ResponseLine(1), NoToast]),
+    vim("P.ctrlw", UrlLine, "i<Esc><C-w>j", &[FocusIs(PaneId::Response), FieldLive(false)]),
+    vim("P.ctrlw", VarList, "<C-w>l", &[VmFocusIs(VmFocus::Form)]),
+    vim("P.ctrlw", VarForm, "<C-w>h", &[VmFocusIs(VmFocus::List)]),
+    vim("P.ctrlw", ManageEnvs, "<C-w>l", &[ManageFocus(ListFocus::Detail)]),
+    vim("P.ctrlw", ManageEnvDetail, "<C-w>h", &[ManageFocus(ListFocus::List)]),
+    arrows("P.ctrlw", ResponseLines, "<Tab>", &[FocusIs(PaneId::Sidebar)]),
+    // Key list §8, M4a: tab strips (spec §5.8). The fixture is a GET, so
+    // the editor's Body tab is disabled; the strip is Headers, Params, Vars.
+    vim("P.gt", TableThreeHeaders, "gt", &[EditorTabIs(EditorTab::Params), Sub(SubFocus::Content)]),
+    vim("P.gt", TableThreeHeaders, "gT", &[EditorTabIs(EditorTab::Vars)]),
+    vim("P.gt", TableThreeHeaders, "3gt", &[EditorTabIs(EditorTab::Vars)]),
+    vim("P.gt", TableThreeHeaders, "2gT", &[EditorTabIs(EditorTab::Params)]),
+    vim("P.gt", UrlLine, "gt", &[EditorTabIs(EditorTab::Params), Sub(SubFocus::Content)]),
+    vim("P.gt", UrlLine, "i<Esc>gt", &[EditorTabIs(EditorTab::Params), Sub(SubFocus::Content), FieldLive(false)]),
+    vim("P.gt", ResponseLines, "gt", &[ResponseModeIs(crate::components::response::ViewMode::Raw), FocusIs(PaneId::Response)]),
+    vim("P.gt", ManageEnvs, "gt", &[ManageTabIs(ManageTab::Spaces)]),
+    arrows("P.gt", TableThreeHeaders, "<A-Right>", &[EditorTabIs(EditorTab::Params)]),
+    arrows("P.gt", UrlLine, "<A-Right>", &[EditorTabIs(EditorTab::Params), Sub(SubFocus::Url)]),
+    vim("G.echo", ResponseLines, "<C-w>", &[Echo("^W")]),
     vim("G.unsupported", SidebarThree, "xj", &[SidebarSel("main/gamma"), NoModal, NoToast]),
     vim("G.echo", SidebarThree, "3", &[Echo("3")]),
     vim("G.echo", SidebarThree, "2g", &[Echo("2g")]),
@@ -483,6 +530,12 @@ fn check(app: &App, e: Expect) -> Result<(), String> {
         TableLen(n) => app.editor.headers.len() == n,
         ResponseLine(n) => app.session.response.view().is_some_and(|v| v.cursor == n),
         ResponseLast => app.session.response.view().is_some_and(|v| v.cursor + 1 == v.visible_len()),
+        FocusIs(p) => app.focus == p,
+        EditorTabIs(t) => app.editor.active_tab == t,
+        ResponseModeIs(m) => app.session.response.view().is_some_and(|v| v.mode == m),
+        ManageTabIs(t) => app.manage.tab == t,
+        ResponseVisible(n) => app.session.response.view().is_some_and(|v| v.visible_len() == n),
+        ResponsePaged => app.session.response.view().is_some_and(|v| v.scroll > 0 && v.cursor == v.scroll),
         ManageCursor(n) => app.manage.list.cursor == n,
         ManageFocus(f) => app.manage.list.focus == f,
         DetailAim(row, col) => {
