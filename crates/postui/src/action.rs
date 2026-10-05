@@ -114,8 +114,10 @@ pub enum Action {
     FocusPane(PaneId),
     /// A vim window key (piece 4 spec §5.8): resolved against the screen,
     /// the focused pane and what `App` remembers. A direction with no pane
-    /// does nothing.
-    PaneMove(PaneDir),
+    /// does nothing. `leave`: typed in an open field, which closes first,
+    /// but only when there is a pane to move to: a refused move leaves the
+    /// field open (the user's decision, 2026-10-05, as for `SelectTab`).
+    PaneMove { dir: PaneDir, leave: bool },
     ScrollPane(PaneId, i16),
     OpenPalette,
     Close,

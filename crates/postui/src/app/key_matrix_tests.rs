@@ -252,6 +252,11 @@ const CASES: &[Case] = &[
     vim("P.gt", ManageEnvs, "gt", &[ManageTabIs(ManageTab::Spaces)]),
     arrows("P.gt", TableThreeHeaders, "<A-Right>", &[EditorTabIs(EditorTab::Params)]),
     arrows("P.gt", UrlLine, "<A-Right>", &[EditorTabIs(EditorTab::Params), Sub(SubFocus::Url)]),
+    // Final review M-3 (the user's decision): vim's alt+←/→ do nothing on
+    // the main and Manage screens, never a plain arrow to the list.
+    vim("P.gt", TableThreeHeaders, "<A-Right>", &[EditorTabIs(EditorTab::Headers), TableRow(1), TableCol(0)]),
+    vim("P.gt", UrlLine, "<A-Left>", &[EditorTabIs(EditorTab::Headers), Sub(SubFocus::Url)]),
+    vim("P.gt", VarList, "<A-Right>", &[ManageTabIs(ManageTab::Variables), VmFocusIs(VmFocus::List)]),
     vim("G.echo", ResponseLines, "<C-w>", &[Echo("^W")]),
     vim("G.unsupported", SidebarThree, "xj", &[SidebarSel("main/gamma"), NoModal, NoToast]),
     vim("G.echo", SidebarThree, "3", &[Echo("3")]),

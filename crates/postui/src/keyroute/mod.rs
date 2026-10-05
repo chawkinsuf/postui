@@ -313,14 +313,10 @@ pub(crate) fn expand(b: &table::Binding, count: Option<usize>, cap: usize) -> Ve
                 steps
             }
         },
-        Intent::Pane { dir, leave } => {
-            let mut steps = Vec::new();
-            if leave {
-                steps.push(Step::Action(Action::CloseField));
-            }
-            steps.push(Step::Action(Action::PaneMove(dir)));
-            steps
-        }
+        // As `{N}gt`: a refused move leaves the field open, so the close
+        // rides in the action, which runs it only when there is a pane to
+        // move to (the user's decision, 2026-10-05).
+        Intent::Pane { dir, leave } => vec![Step::Action(Action::PaneMove { dir, leave })],
         Intent::Swallow => Vec::new(),
     }
 }
@@ -561,7 +557,7 @@ mod tests {
     fn window_keys_on_a_closed_surface() {
         use crate::action::PaneDir;
         let s = cx(Vim, Surface::Sidebar);
-        let mv = |d| run(vec![Step::Action(Action::PaneMove(d))]);
+        let mv = |dir| run(vec![Step::Action(Action::PaneMove { dir, leave: false })]);
         assert_eq!(feed(&mut Router::default(), &s, "<C-w>l"), mv(PaneDir::Right));
         assert_eq!(feed(&mut Router::default(), &s, "<C-w><C-l>"), mv(PaneDir::Right));
         assert_eq!(feed(&mut Router::default(), &s, "<C-w>W"), mv(PaneDir::Prev));
@@ -577,15 +573,17 @@ mod tests {
     }
 
     /// Spec §3.7 and §5.8 (plan M4a Deviations 2 and 4): from a screen
-    /// field's idle Normal the field closes first; junk is swallowed; in
-    /// Insert ctrl+w is the engine's.
+    /// field's idle Normal the move carries the close, which the app runs
+    /// only when there is a pane to move to (the user's decision,
+    /// 2026-10-05); junk is swallowed; in Insert ctrl+w is the engine's.
     #[test]
     fn window_keys_in_a_screen_field() {
         use crate::action::PaneDir;
         let s = in_url(Mode::Normal, false);
         assert_eq!(
             feed(&mut Router::default(), &s, "<C-w>j"),
-            run(vec![Step::Action(Action::CloseField), Step::Action(Action::PaneMove(PaneDir::Down))])
+            run(vec![Step::Action(Action::PaneMove { dir: PaneDir::Down, leave: true })]),
+            "no unconditional close: a refused move leaves the field open"
         );
         assert_eq!(feed(&mut Router::default(), &s, "<C-w>x"), Resolved::Consumed);
         let insert = in_url(Mode::Insert, false);

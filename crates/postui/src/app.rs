@@ -3044,7 +3044,7 @@ impl App {
                 self.focus = pane;
                 true
             }
-            Action::PaneMove(dir) => self.pane_move(dir),
+            Action::PaneMove { dir, leave } => self.pane_move(dir, leave),
             Action::ScrollPane(pane, delta) => {
                 // While the Manager screen is up its left list owns the
                 // sidebar's pane slot (see `App::scrollbar_spec`), so a
@@ -3178,8 +3178,7 @@ impl App {
                     // `EditorTabSelect` takes the on-screen position; the
                     // Body tab is disabled on a GET.
                     (Screen::Main, PaneId::Editor | PaneId::Sidebar) => {
-                        let enabled = |t: EditorTab| t != EditorTab::Body || !self.editor.body_tab_disabled();
-                        (i < EditorTab::COUNT && enabled(EditorTab::from_draw_position(i)))
+                        (i < EditorTab::COUNT && self.editor.tab_enabled(EditorTab::from_draw_position(i)))
                             .then_some(Action::EditorTabSelect(i))
                     }
                 };
@@ -3187,7 +3186,12 @@ impl App {
                 if leave {
                     self.update(Action::CloseField);
                 }
-                self.update(select);
+                // The tab already showing is not selected again, as in vim:
+                // a reselect would reset the table's row (final review M-1).
+                // The response's and Manage's strips do nothing there anyway.
+                if select != Action::EditorTabSelect(self.editor.active_tab.draw_position()) {
+                    self.update(select);
+                }
                 // Lands the caret with the editor focused; nothing elsewhere.
                 self.update(Action::FocusEditorContent);
                 true
@@ -3196,6 +3200,16 @@ impl App {
                 // Spec §5.8: only with the editor focused. The sidebar and
                 // the response step the strip from where they stand.
                 if self.screen != Screen::Main || self.focus != PaneId::Editor {
+                    return false;
+                }
+                // Already landed: the caret is in the body, or on a table
+                // row, of the tab showing. Nothing to land, and the body's
+                // session stays whole, its engine history with it (final
+                // review M-1). A tab switch clears the table's row, so a
+                // step to another table still lands on its first row.
+                if self.editor.sub_focus == SubFocus::Content
+                    && (self.editor.active_tab == EditorTab::Body || self.editor.table.selected.is_some())
+                {
                     return false;
                 }
                 // The field it leaves closes as its own history step first.
@@ -3401,7 +3415,7 @@ impl App {
             }
             Action::EditorTabSelect(i) => {
                 let target = EditorTab::from_index(i);
-                if target == EditorTab::Body && self.editor.body_tab_disabled() {
+                if !self.editor.tab_enabled(target) {
                     return false;
                 }
                 // Leaving a tab commits whatever cell was being typed — the
@@ -3418,15 +3432,22 @@ impl App {
                 // Cycles the on-screen order over the enabled tabs (the Body
                 // tab is disabled on a GET), not `EditorTab::index()`'s slot
                 // numbers. Any distance lands right (plan M4a Deviation 8).
-                self.commit_table_edit();
                 let prev = self.editor.active_tab;
                 let order: Vec<EditorTab> = (0..EditorTab::COUNT)
                     .map(EditorTab::from_draw_position)
-                    .filter(|t| *t != EditorTab::Body || !self.editor.body_tab_disabled())
+                    .filter(|t| self.editor.tab_enabled(*t))
                     .collect();
                 let at = order.iter().position(|t| *t == prev).unwrap_or(0);
-                self.editor.active_tab = order[(at as i8 + delta).rem_euclid(order.len() as i8) as usize];
-                self.editor.preferred_tab = self.editor.active_tab;
+                let target = order[(at as i8 + delta).rem_euclid(order.len() as i8) as usize];
+                // A step round to the tab already showing (`12gT`) changes
+                // nothing, as in vim: the table keeps its row (final review
+                // M-1). A step of one never does, so arrows is unchanged.
+                if target == prev {
+                    return false;
+                }
+                self.commit_table_edit();
+                self.editor.active_tab = target;
+                self.editor.preferred_tab = target;
                 self.editor.table.reset();
                 self.retarget_editor_tab_underline(prev);
                 true
@@ -10471,6 +10492,22 @@ impl App {
             return changed;
         }
 
+        // 2b. Vim binds no alt+←/→ (its tab keys are `gt` and `gT`): with no
+        // field holding the caret, on the main and Manage screens, the
+        // chord does nothing, rather than reaching the focused list as a
+        // plain arrow below (the user's decision, 2026-10-05; final review
+        // M-3). A `keys.toml` binding still wins; a field's keys are its
+        // engine's.
+        if self.profile() == crate::config::KeyProfile::Vim
+            && ev.modifiers == KeyModifiers::ALT
+            && matches!(ev.code, KeyCode::Left | KeyCode::Right)
+            && global.is_none()
+            && matches!(self.screen, Screen::Main | Screen::Manage)
+            && !self.field_caret().is_live()
+        {
+            return false;
+        }
+
         // 3. A non-Main screen captures all remaining input, like a modal —
         // except the small whitelist of global actions that legitimately
         // work "on top of" any screen still gets first refusal.
@@ -11040,7 +11077,7 @@ impl App {
     /// place (`Editor::preferred_tab`).
     fn sync_active_tab(&mut self) {
         let preferred = self.editor.preferred_tab;
-        let target = if preferred == EditorTab::Body && self.editor.body_tab_disabled() {
+        let target = if !self.editor.tab_enabled(preferred) {
             EditorTab::from_draw_position(0)
         } else {
             preferred

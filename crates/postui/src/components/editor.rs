@@ -758,6 +758,13 @@ impl Editor {
         !self.method.sends_body()
     }
 
+    /// Whether `t` can be selected: the one rule every tab switch asks
+    /// (a click, a cycle, `{N}gt`, a method change). Only the Body tab is
+    /// ever disabled.
+    pub fn tab_enabled(&self, t: EditorTab) -> bool {
+        t != EditorTab::Body || !self.body_tab_disabled()
+    }
+
     /// Whether the Body tab carries its validity badge: only once there's
     /// body text to validate, and never while the tab is disabled — a
     /// bright ✓ on a disabled tab made it read as lit as its neighbours.

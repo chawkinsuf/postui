@@ -74,8 +74,8 @@ pub enum Intent {
     /// typed in an open field, which closes first (for `{N}gt`, only when
     /// tab N is there to select).
     Tab { delta: i8, leave: bool },
-    /// A window key (spec §5.8): `PaneMove(dir)`. `leave`: typed in an open
-    /// field, which closes first.
+    /// A window key (spec §5.8): `PaneMove`. `leave`: typed in an open
+    /// field, which closes first, but only when there is a pane to move to.
     Pane { dir: PaneDir, leave: bool },
 }
 

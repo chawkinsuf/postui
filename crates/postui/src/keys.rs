@@ -1457,8 +1457,7 @@ mod tests {
     /// Plan M1 Deviation 4, M2 Deviation 5 and M4a Deviation 12: vim gives
     /// up `q` (its macro prefix; `:q` quits), `ctrl+r` (redo, a router row),
     /// `alt+a` (`a` adds a row) and `alt+←/→` (`gT`/`gt`). Every other chord
-    /// stays shared until the milestone
-    /// that gives vim its own key for it.
+    /// stays shared until the milestone that gives vim its own key for it.
     #[test]
     fn the_vim_profile_drops_q_and_gives_ctrl_r_to_the_router() {
         use crate::config::KeyProfile::{Arrows, Vim};
