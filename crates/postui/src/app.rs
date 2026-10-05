@@ -1,4 +1,4 @@
-use crate::action::{Action, CopyTarget, ExtractSource};
+use crate::action::{Action, CopyTarget, ExtractSource, TabTo};
 use crate::anim::{AnimKey, Anims, Easing, ListId, StripId};
 use crate::components::editor::{Editor, EditorTab, SubFocus};
 use crate::components::line_input::LineInput;
@@ -3125,73 +3125,22 @@ impl App {
                 self.retarget_response_tab_underline(prev_mode);
                 true
             }
-            Action::CycleResponseView(delta) => {
-                if let Some(next) = self.session.response.cycle_view_mode(delta) {
-                    self.update(Action::ResponseViewMode(next))
-                } else {
-                    false
-                }
-            }
-            Action::CycleTabs(delta) => {
-                // The one tab chord, resolved against what has focus: the
-                // Manage screen's strip when that screen is up (it belongs
-                // to the shell, above every tab body's own keys), otherwise
-                // the focused pane's strip — the sidebar has none, so it
-                // falls back to the editor's, the only other strip on the
-                // request screen.
-                if self.screen == Screen::Manage {
-                    return self.update(Action::SelectManageTab(
-                        self.manage.tab.cycle(delta.into()),
-                    ));
-                }
-                // On the any-screen whitelist for the Manage strip's sake;
-                // any other non-Main screen (the testbed) draws no strip,
-                // so the chord must not move the undrawn editor's tabs.
-                if self.screen != Screen::Main {
+            Action::CycleTabs(delta) => match self.tab_target(TabTo::By(delta)) {
+                Some(select) => self.update(select),
+                None => false,
+            },
+            Action::GoTab { to, leave } => {
+                // Where the key goes is settled before anything moves: a tab
+                // that is not there or is disabled, or the one already
+                // showing, does nothing, and the field the key was typed in
+                // stays open (the user's decision). So does a field whose
+                // close is refused (a Settings value that will not parse):
+                // its live edit is never stranded behind another tab.
+                let Some(select) = self.tab_target(to) else { return false };
+                if leave && !self.close_field_to_leave() {
                     return false;
                 }
-                match self.focus {
-                    PaneId::Response => self.update(Action::CycleResponseView(delta)),
-                    PaneId::Editor | PaneId::Sidebar => {
-                        self.update(Action::EditorTabCycle(delta))
-                    }
-                }
-            }
-            Action::SelectTab { n, leave } => {
-                // The strip `CycleTabs` would step, as drawn. Which action
-                // selects tab N is settled before anything moves: a tab that
-                // is not there, or is disabled, does nothing, and the field
-                // `{N}gt` was typed in stays open (the user's decision).
-                let Some(i) = n.checked_sub(1) else { return false };
-                let select = match (self.screen, self.focus) {
-                    (Screen::Manage, _) => crate::components::manage::ManageTab::ALL
-                        .get(i)
-                        .map(|tab| Action::SelectManageTab(*tab)),
-                    (Screen::Testbed, _) => None,
-                    // A body that is not JSON has no Tree tab.
-                    (Screen::Main, PaneId::Response) => self
-                        .session
-                        .response
-                        .tab_modes()
-                        .and_then(|m| m.get(i).copied())
-                        .map(Action::ResponseViewMode),
-                    // `EditorTabSelect` takes the on-screen position; the
-                    // Body tab is disabled on a GET.
-                    (Screen::Main, PaneId::Editor | PaneId::Sidebar) => {
-                        (i < EditorTab::COUNT && self.editor.tab_enabled(EditorTab::from_draw_position(i)))
-                            .then_some(Action::EditorTabSelect(i))
-                    }
-                };
-                let Some(select) = select else { return false };
-                if leave {
-                    self.update(Action::CloseField);
-                }
-                // The tab already showing is not selected again, as in vim:
-                // a reselect would reset the table's row (final review M-1).
-                // The response's and Manage's strips do nothing there anyway.
-                if select != Action::EditorTabSelect(self.editor.active_tab.draw_position()) {
-                    self.update(select);
-                }
+                self.update(select);
                 // Lands the caret with the editor focused; nothing elsewhere.
                 self.update(Action::FocusEditorContent);
                 true

@@ -769,18 +769,32 @@ impl VarManager {
         if self.form.editing.is_some() || self.grid.editing.is_some() {
             return false;
         }
+        match self.detail_focus(ctx) {
+            Some(focus) => {
+                self.focus = focus;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Whether the detail pane has something for the keyboard: a
+    /// variable's form, or a selector's grid with an env to edit it in (or
+    /// one that is shared). A live edit aside, what [`Self::enter_detail`]
+    /// asks.
+    pub(crate) fn detail_takes_keyboard(&self, ctx: &Project) -> bool {
+        self.detail_focus(ctx).is_some()
+    }
+
+    fn detail_focus(&self, ctx: &Project) -> Option<VmFocus> {
         match &self.detail {
             VmDetail::Group(g)
                 if ctx.variables().selectors.contains_key(g) && (ctx.active_env().is_some() || is_shared(ctx, g)) =>
             {
-                self.focus = VmFocus::Grid;
-                true
+                Some(VmFocus::Grid)
             }
-            VmDetail::Var(_) => {
-                self.focus = VmFocus::Form;
-                true
-            }
-            _ => false,
+            VmDetail::Var(_) => Some(VmFocus::Form),
+            _ => None,
         }
     }
 

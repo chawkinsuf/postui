@@ -65,12 +65,6 @@ impl ManageTab {
             .collect();
         TabStrip::spans_in(&tabs, Self::RIGHT_ANCHORED, width)
     }
-
-    /// Steps `delta` tabs along `ALL`, wrapping in both directions.
-    pub fn cycle(self, delta: i32) -> Self {
-        let n = Self::ALL.len() as i32;
-        Self::from_index((self.index() as i32 + delta).rem_euclid(n) as usize)
-    }
 }
 
 /// The Manage screen's own state: which tab is up, plus the list-edit
@@ -368,20 +362,16 @@ mod tests {
         );
     }
 
+    /// The tab chord's walk over this strip, wrapping, is the app's
+    /// (`App::tab_target`; `pane_tests`).
     #[test]
-    fn settings_is_the_right_anchored_tab_and_joins_the_cycle() {
+    fn settings_is_the_right_anchored_tab() {
         assert_eq!(ManageTab::ALL.len(), 4);
         assert_eq!(ManageTab::ALL[3], ManageTab::Settings);
-        assert_eq!(ManageTab::Spaces.cycle(1), ManageTab::Settings);
-        assert_eq!(ManageTab::Settings.cycle(1), ManageTab::Variables, "wraps");
-        assert_eq!(ManageTab::Variables.cycle(-1), ManageTab::Settings);
     }
 
     #[test]
-    fn cycle_wraps_in_both_directions() {
-        assert_eq!(ManageTab::Settings.cycle(1), ManageTab::Variables);
-        assert_eq!(ManageTab::Variables.cycle(-1), ManageTab::Settings);
-        assert_eq!(ManageTab::Variables.cycle(1), ManageTab::Environments);
+    fn index_and_from_index_agree() {
         for (i, t) in ManageTab::ALL.iter().enumerate() {
             assert_eq!(t.index(), i);
             assert_eq!(ManageTab::from_index(i), *t);

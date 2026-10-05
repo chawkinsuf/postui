@@ -68,11 +68,11 @@ pub enum Intent {
     /// Reopen a dialog's selected text field (plan M3b Deviation 3): in
     /// Insert at this seat, or in Normal (`None`).
     Reopen(Option<OpenSeat>),
-    /// `gt` (`delta` 1) and `gT` (-1) (spec §5.8): no count steps the strip
-    /// and lands the caret (`FocusEditorContent`); `{N}gt` is `SelectTab`;
-    /// `{N}gT` steps back N, as one step of N mod [`TAB_CYCLE`]. `leave`:
-    /// typed in an open field, which closes first (for `{N}gt`, only when
-    /// tab N is there to select).
+    /// `gt` (`delta` 1) and `gT` (-1) (spec §5.8), as `GoTab`: no count
+    /// steps the strip; `{N}gt` goes to tab N; `{N}gT` steps back N, as one
+    /// step of N mod [`TAB_CYCLE`]. A tab it selects lands the caret
+    /// (`FocusEditorContent`). `leave`: typed in an open field, which
+    /// closes first, only when there is a tab to go to.
     Tab { delta: i8, leave: bool },
     /// A window key (spec §5.8): `PaneMove`. `leave`: typed in an open
     /// field, which closes first, but only when there is a pane to move to.

@@ -785,14 +785,6 @@ impl ReadyView {
             .collect()
     }
 
-    /// The view `delta` tabs away along the strip, wrapping at either end.
-    fn cycle_view_mode(&self, delta: i8) -> ViewMode {
-        let order = self.tab_modes();
-        let at = order.iter().position(|m| *m == self.mode).unwrap_or(0);
-        let len = order.len() as i8;
-        order[(at as i8 + delta).rem_euclid(len) as usize]
-    }
-
     /// The tree the `Pretty` view actually shows: the filtered tree while a
     /// jq filter is applied, otherwise the body tree.
     pub fn active_tree(&self) -> Option<&JsonTree> {
@@ -967,7 +959,9 @@ impl ReadyView {
         let last = self.visible_len().saturating_sub(1);
         let max_scroll = self.visible_len().saturating_sub(height);
         if down {
-            self.scroll = (self.scroll + half).min(max_scroll);
+            // A view already past the end (the pane grew, or a fold shrank
+            // what shows) stays put rather than jump back up.
+            self.scroll = (self.scroll + half).min(max_scroll).max(self.scroll);
             self.cursor = (self.cursor + half).min(last);
         } else {
             self.scroll = self.scroll.saturating_sub(half);
@@ -1340,15 +1334,8 @@ impl Response {
         self.view.as_ref()
     }
 
-    /// The view `delta` tabs away (alt+←/→ with the pane focused), or
-    /// `None` when there is no ready view (the chord is a no-op then). See
-    /// `ReadyView::cycle_view_mode`.
-    pub fn cycle_view_mode(&self, delta: i8) -> Option<ViewMode> {
-        self.view.as_ref().map(|v| v.cycle_view_mode(delta))
-    }
-
-    /// The response's tab strip, in on-screen order (`{N}gt`), or `None`
-    /// with no ready view.
+    /// The response's tab strip, in on-screen order (the tab keys, through
+    /// `App::tab_target`), or `None` with no ready view.
     pub fn tab_modes(&self) -> Option<Vec<ViewMode>> {
         self.view.as_ref().map(ReadyView::tab_modes)
     }
@@ -4091,12 +4078,12 @@ mod tests {
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
-    /// Steps the view forward the way `app.rs`'s `CycleResponseView(1)`
-    /// arm does (alt+→ with the pane focused).
+    /// Steps the view one tab forward along the strip, wrapping, as alt+→
+    /// with the pane focused does (`App::tab_target`).
     fn cycle(r: &mut Response) {
-        if let Some(next) = r.cycle_view_mode(1) {
-            r.set_view_mode(next);
-        }
+        let Some(modes) = r.tab_modes() else { return };
+        let at = modes.iter().position(|m| Some(*m) == r.view().map(|v| v.mode)).unwrap_or(0);
+        r.set_view_mode(modes[(at + 1) % modes.len()]);
     }
 
     fn ch(c: char) -> KeyEvent {
@@ -5041,6 +5028,14 @@ mod tests {
         r.handle_key(up());
         let v = r.view().unwrap();
         assert_eq!((v.cursor, v.scroll), (0, 0), "at the top the cursor still moves");
+        // A view left past the end (the pane grew, or a fold shrank what
+        // shows) never scrolls back up on ctrl+d.
+        let past = 100 - height + 3;
+        r.view.as_mut().unwrap().scroll = past;
+        r.view.as_mut().unwrap().cursor = past;
+        r.handle_key(down());
+        let v = r.view().unwrap();
+        assert_eq!((v.cursor, v.scroll), (past + half, past), "ctrl+d never moves the view up");
     }
 
     /// Piece 4 spec §5.7 (`R.fold`): `zo` `zc` `za` on the tree view only.
@@ -5471,26 +5466,16 @@ mod tests {
         assert_eq!(r.view().unwrap().mode, ViewMode::Pretty);
     }
 
-    /// `cycle_view_mode` walks Pretty → Raw → Headers and wraps in both
-    /// directions, skipping Pretty when there is no tree to show.
+    /// The strip `App::tab_target` walks: Pretty, Raw, Headers, with no
+    /// Pretty when there is no tree to show, and no strip at all with no
+    /// ready view.
     #[test]
-    fn cycle_view_mode_walks_both_ways_and_skips_pretty_without_a_tree() {
+    fn tab_modes_skip_pretty_without_a_tree() {
         let r = ready(r#"{"a": 1}"#);
-        assert_eq!(r.cycle_view_mode(1), Some(ViewMode::Raw));
-        assert_eq!(r.cycle_view_mode(-1), Some(ViewMode::Headers), "wraps backward");
-        let mut r = ready(r#"{"a": 1}"#);
-        r.set_view_mode(ViewMode::Headers);
-        assert_eq!(r.cycle_view_mode(1), Some(ViewMode::Pretty), "wraps forward");
-        assert_eq!(r.cycle_view_mode(-1), Some(ViewMode::Raw));
-
-        let mut r = ready("not json");
-        assert_eq!(r.view().unwrap().mode, ViewMode::Raw);
-        assert_eq!(r.cycle_view_mode(-1), Some(ViewMode::Headers), "no Pretty to land on");
-        r.set_view_mode(ViewMode::Headers);
-        assert_eq!(r.cycle_view_mode(1), Some(ViewMode::Raw));
-
-        let r = Response::default();
-        assert_eq!(r.cycle_view_mode(1), None, "no ready view: nothing to cycle");
+        assert_eq!(r.tab_modes(), Some(vec![ViewMode::Pretty, ViewMode::Raw, ViewMode::Headers]));
+        let r = ready("not json");
+        assert_eq!(r.tab_modes(), Some(vec![ViewMode::Raw, ViewMode::Headers]));
+        assert_eq!(Response::default().tab_modes(), None);
     }
 
     #[test]

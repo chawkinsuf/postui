@@ -123,6 +123,7 @@ pub fn parse(notation: &str) -> Vec<Tok> {
 /// The key events `notation` types, in order. A test may also type an alt
 /// chord, `<A-Right>` or `<A-x>`, which no table row can name, so
 /// [`parse`] does not know it (plan M4a Deviation 14).
+#[cfg(test)]
 pub fn events(notation: &str) -> Vec<KeyEvent> {
     let mut out = Vec::new();
     let mut rest = notation;

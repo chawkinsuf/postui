@@ -77,6 +77,66 @@ fn a_tab_step_onto_the_current_tab_keeps_the_table_row() {
     }
 }
 
+/// Spec §5.8 as amended: a step onto the tab already showing changes
+/// nothing, so typed in an open field it leaves the field open, caret and
+/// all, as a refused `{N}gt` does.
+#[test]
+fn a_tab_step_onto_the_current_tab_keeps_an_open_field_open() {
+    let mut app = app_in(Fixture::UrlLine, KeyProfile::Vim);
+    app.editor.url = LineInput::new("https://x.test/ab");
+    app.capture_undo();
+    draw(&mut app);
+    feed(&mut app, "<CR>0");
+    assert_eq!(app.glue.session(), FieldSession::Live(FieldId::Url));
+    let before = (app.editor.url.text().to_string(), app.editor.url.cursor());
+    // Headers is tab 1 of the GET's three.
+    for keys in ["1gt", "3gT", "12gT"] {
+        feed(&mut app, keys);
+        assert_eq!(app.glue.session(), FieldSession::Live(FieldId::Url), "{keys}: the field stays open");
+        assert!(app.editor.url_open(), "{keys}");
+        assert_eq!((app.editor.url.text().to_string(), app.editor.url.cursor()), before, "{keys}: text and caret");
+        assert_eq!(app.editor.active_tab, EditorTab::Headers, "{keys}");
+        assert_eq!(app.editor.sub_focus, SubFocus::Url, "{keys}");
+    }
+}
+
+/// As above, with the URL line selected but not open: the caret stays on
+/// it, since no tab moved for it to land in.
+#[test]
+fn a_tab_step_onto_the_current_tab_keeps_the_url_line_selected() {
+    let mut app = app_in(Fixture::UrlLine, KeyProfile::Vim);
+    assert_eq!(app.editor.sub_focus, SubFocus::Url);
+    for keys in ["1gt", "3gT", "12gT"] {
+        feed(&mut app, keys);
+        assert_eq!(app.editor.active_tab, EditorTab::Headers, "{keys}");
+        assert_eq!(app.editor.sub_focus, SubFocus::Url, "{keys}: the caret stays");
+    }
+    feed(&mut app, "gt");
+    assert_eq!(app.editor.active_tab, EditorTab::Params);
+    assert_eq!(app.editor.sub_focus, SubFocus::Content, "a step that moves lands the caret");
+}
+
+/// A field whose close is refused (a Settings value that will not parse)
+/// keeps the keyboard: `{N}gt` and `gt` leave the tab where it is rather
+/// than strand the live edit behind another tab.
+#[test]
+fn a_tab_key_whose_field_close_is_refused_moves_nothing() {
+    use crate::components::manage::ManageTab;
+    use crate::components::settings::SettingsField;
+    for keys in ["2gt", "gt", "gT"] {
+        let mut app = app_in(Fixture::Settings, KeyProfile::Vim);
+        app.settings.begin_edit(SettingsField::Osc52Limit, "abc");
+        draw(&mut app);
+        feed(&mut app, "<Esc>");
+        assert_eq!(app.settings.editing, Some(SettingsField::Osc52Limit), "the fixture's commit is refused");
+        assert_eq!(app.mode_indicator(), Some("NORMAL"));
+        feed(&mut app, keys);
+        assert_eq!(app.manage.tab, ManageTab::Settings, "{keys}: the tab stays");
+        assert_eq!(app.settings.editing, Some(SettingsField::Osc52Limit), "{keys}: the edit stays live");
+        assert_eq!(app.settings.field_text(), "abc", "{keys}");
+    }
+}
+
 /// Final review M-1: a `{N}gt` onto the body's own tab leaves the body's
 /// session whole, so `u` still undoes the engine's last edit, not the
 /// whole visit as one app step.
@@ -129,6 +189,24 @@ fn a_refused_ctrl_w_in_an_open_field_keeps_it_open() {
     feed(&mut app, "i<Esc><C-w>l");
     assert!(app.field_caret().is_live(), "a refused move on Manage keeps the field open too");
     assert_eq!(app.varmanager.focus, crate::components::varmanager::VmFocus::Form);
+}
+
+/// A `<C-w>` move whose field refuses to close (the variable it edits is
+/// gone, so the commit fails and the edit stays live) moves nothing.
+#[test]
+fn a_ctrl_w_whose_field_close_is_refused_moves_nothing() {
+    use crate::components::varmanager::VmFocus;
+    let mut app = app_in(Fixture::VarForm, KeyProfile::Vim);
+    feed(&mut app, "ix<Esc>");
+    assert!(app.field_caret().is_live());
+    app.proj_mut()
+        .apply_var_edit(&postui_core::project::VarEdit::Delete { name: "alpha".into() })
+        .unwrap();
+    feed(&mut app, "<C-w>h");
+    assert!(app.field_caret().is_live(), "the edit stays live");
+    assert!(app.varmanager.form.editing.is_some());
+    assert_eq!(app.varmanager.focus, VmFocus::Form, "the keyboard stays");
+    assert!(!app.toasts.is_empty(), "the refusal says so");
 }
 
 /// Final review M-3 (the user's decision, 2026-10-05): vim binds no
@@ -216,6 +294,59 @@ fn a_count_gt_selects_on_the_response_and_manage_strips() {
     assert_eq!(app.manage.tab, ManageTab::Spaces);
     feed(&mut app, "5gt");
     assert_eq!(app.manage.tab, ManageTab::Spaces, "four tabs");
+}
+
+/// The tab chord on the response walks Pretty, Raw, Headers and wraps both
+/// ways, skipping Pretty when there is no tree to show (the strip
+/// `App::tab_target` resolves for every tab key).
+#[test]
+fn the_tab_chord_walks_the_response_strip_both_ways() {
+    use crate::components::response::ViewMode;
+    let mut app = app_in(Fixture::ResponseLines, KeyProfile::Arrows);
+    let mode = |app: &App| app.session.response.view().map(|v| v.mode);
+    assert_eq!(mode(&app), Some(ViewMode::Pretty));
+    assert!(app.update(Action::CycleTabs(-1)));
+    assert_eq!(mode(&app), Some(ViewMode::Headers), "wraps backward");
+    assert!(app.update(Action::CycleTabs(1)));
+    assert_eq!(mode(&app), Some(ViewMode::Pretty), "wraps forward");
+    assert!(app.update(Action::CycleTabs(1)));
+    assert_eq!(mode(&app), Some(ViewMode::Raw));
+    app.session.response.set_state(
+        ResponseState::Ready(Box::new(crate::http::ResponseData {
+            status: 200,
+            url: "https://x.test/a".into(),
+            headers: vec![],
+            sent_headers: vec![],
+            body: "not json".into(),
+            ttfb: std::time::Duration::from_millis(1),
+            elapsed: std::time::Duration::from_millis(1),
+            size: 8,
+            content_type: None,
+        })),
+        app.session.send_generation,
+    );
+    assert_eq!(mode(&app), Some(ViewMode::Raw));
+    assert!(app.update(Action::CycleTabs(-1)));
+    assert_eq!(mode(&app), Some(ViewMode::Headers), "no Pretty to land on");
+    assert!(app.update(Action::CycleTabs(1)));
+    assert_eq!(mode(&app), Some(ViewMode::Raw));
+    app.session.response = Default::default();
+    assert!(!app.update(Action::CycleTabs(1)), "no ready view: nothing to cycle");
+}
+
+/// The tab chord on the Manage screen walks its strip, Settings included,
+/// and wraps both ways.
+#[test]
+fn the_tab_chord_walks_the_manage_strip_both_ways() {
+    use crate::components::manage::ManageTab;
+    let mut app = app_in(Fixture::ManageSpaces, KeyProfile::Arrows);
+    assert_eq!(app.manage.tab, ManageTab::Spaces);
+    assert!(app.update(Action::CycleTabs(1)));
+    assert_eq!(app.manage.tab, ManageTab::Settings);
+    assert!(app.update(Action::CycleTabs(1)));
+    assert_eq!(app.manage.tab, ManageTab::Variables, "wraps forward");
+    assert!(app.update(Action::CycleTabs(-1)));
+    assert_eq!(app.manage.tab, ManageTab::Settings, "wraps backward");
 }
 
 /// Review Focus 1: `g` is a field prefix now, and `gg` still reaches the

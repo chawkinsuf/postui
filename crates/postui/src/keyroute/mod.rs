@@ -14,7 +14,7 @@ pub mod table;
 
 pub use ctx::{EngineKind, EngineView, FieldCaret, FieldId, KeyCtx, SpellCtx, Surface};
 
-use crate::action::Action;
+use crate::action::{Action, TabTo};
 use crate::config::KeyProfile;
 use notation::Tok;
 use pending::Pending;
@@ -293,26 +293,17 @@ pub(crate) fn expand(b: &table::Binding, count: Option<usize>, cap: usize) -> Ve
             Step::Action(Action::ReopenField),
         ],
         // Spec §5.8 (plan M4a Deviations 7 and 8).
-        Intent::Tab { delta, leave } => match count {
-            // `{N}gt`: tab N, which lands the caret itself, or refuses. A
-            // refused tab leaves the field open, so the close rides in the
-            // action, which runs it only when tab N is there (the user's
-            // decision, amendment C1).
-            Some(n) if delta > 0 => vec![Step::Action(Action::SelectTab { n, leave })],
-            _ => {
-                let mut steps = Vec::new();
-                if leave {
-                    steps.push(Step::Action(Action::CloseField));
-                }
-                let by = match count {
-                    Some(n) => -((n % table::TAB_CYCLE) as i8),
-                    None => delta,
-                };
-                steps.push(Step::Action(Action::CycleTabs(by)));
-                steps.push(Step::Action(Action::FocusEditorContent));
-                steps
-            }
-        },
+        // A refused key, or one onto the tab already showing, leaves the
+        // field open, so the close rides in the action, which runs it only
+        // when there is a tab to go to (the user's decision, amendment C1).
+        Intent::Tab { delta, leave } => {
+            let to = match count {
+                Some(n) if delta > 0 => TabTo::Nth(n),
+                Some(n) => TabTo::By(-((n % table::TAB_CYCLE) as i8)),
+                None => TabTo::By(delta),
+            };
+            vec![Step::Action(Action::GoTab { to, leave })]
+        }
         // As `{N}gt`: a refused move leaves the field open, so the close
         // rides in the action, which runs it only when there is a pane to
         // move to (the user's decision, 2026-10-05).
@@ -500,13 +491,13 @@ mod tests {
         assert_eq!(feed(&mut Router::default(), &cx(Arrows, resp.surface), "z"), Resolved::Declined, "arrows has no fold keys");
     }
 
-    /// Spec §5.8 (plan M4a Deviations 7 and 8): `gt` and `gT` step the strip
-    /// and land the caret; `{N}gt` selects tab N; `{N}gT` steps back N.
+    /// Spec §5.8 (plan M4a Deviations 7 and 8): `gt` and `gT` step the strip;
+    /// `{N}gt` selects tab N; `{N}gT` steps back N. The app lands the caret.
     #[test]
     fn tab_keys_on_a_closed_surface() {
         let s = cx(Vim, Surface::Sidebar);
-        let step = |d: i8| run(vec![Step::Action(Action::CycleTabs(d)), Step::Action(Action::FocusEditorContent)]);
-        let select = |n: usize| run(vec![Step::Action(Action::SelectTab { n, leave: false })]);
+        let step = |d: i8| run(vec![Step::Action(Action::GoTab { to: TabTo::By(d), leave: false })]);
+        let select = |n: usize| run(vec![Step::Action(Action::GoTab { to: TabTo::Nth(n), leave: false })]);
         assert_eq!(feed(&mut Router::default(), &s, "gt"), step(1));
         assert_eq!(feed(&mut Router::default(), &s, "gT"), step(-1));
         assert_eq!(feed(&mut Router::default(), &s, "3gt"), select(3));
@@ -519,25 +510,15 @@ mod tests {
 
     /// Spec §3.7's field rows (plan M4a Deviation 2): in a screen field's idle
     /// Normal the tab keys close the field first; `g` + anything else replays.
-    /// `{N}gt` carries the close into the action, which closes the field only
-    /// when tab N is there to select (amendment C1, the user's decision).
+    /// The close rides in the action, which closes the field only when there
+    /// is a tab to go to (amendment C1, the user's decision).
     #[test]
     fn tab_keys_in_a_screen_field() {
         let s = in_url(Mode::Normal, false);
-        let close = Step::Action(Action::CloseField);
-        assert_eq!(
-            feed(&mut Router::default(), &s, "gt"),
-            run(vec![close.clone(), Step::Action(Action::CycleTabs(1)), Step::Action(Action::FocusEditorContent)])
-        );
-        assert_eq!(
-            feed(&mut Router::default(), &s, "2gT"),
-            run(vec![close, Step::Action(Action::CycleTabs(-2)), Step::Action(Action::FocusEditorContent)])
-        );
-        assert_eq!(
-            feed(&mut Router::default(), &s, "2gt"),
-            run(vec![Step::Action(Action::SelectTab { n: 2, leave: true })]),
-            "no unconditional close: a refused tab leaves the field open"
-        );
+        let go = |to| run(vec![Step::Action(Action::GoTab { to, leave: true })]);
+        assert_eq!(feed(&mut Router::default(), &s, "gt"), go(TabTo::By(1)), "no unconditional close");
+        assert_eq!(feed(&mut Router::default(), &s, "2gT"), go(TabTo::By(-2)));
+        assert_eq!(feed(&mut Router::default(), &s, "2gt"), go(TabTo::Nth(2)));
         assert_eq!(feed(&mut Router::default(), &s, "gg"), run(eng("gg")), "gg is the engine's");
         assert_eq!(feed(&mut Router::default(), &s, "3ge"), run(eng("3ge")));
         let mut r = Router::default();
