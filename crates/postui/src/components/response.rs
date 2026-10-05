@@ -953,6 +953,26 @@ impl ReadyView {
         self.follow_cursor();
     }
 
+    /// `ctrl+d` (`down`) or `ctrl+u` (piece 4 spec §5.7, both profiles):
+    /// the view and the cursor move half a page together, so the cursor
+    /// keeps its screen row. Where the view cannot scroll further the
+    /// cursor still moves, clamped to the first or last line (plan M4a
+    /// Deviation 10).
+    fn half_page(&mut self, down: bool) {
+        let height = self.height.max(1);
+        let half = (height / 2).max(1);
+        let last = self.visible_len().saturating_sub(1);
+        let max_scroll = self.visible_len().saturating_sub(height);
+        if down {
+            self.scroll = (self.scroll + half).min(max_scroll);
+            self.cursor = (self.cursor + half).min(last);
+        } else {
+            self.scroll = self.scroll.saturating_sub(half);
+            self.cursor = self.cursor.saturating_sub(half);
+        }
+        self.follow_cursor();
+    }
+
     fn set_mode(&mut self, mode: ViewMode) {
         if self.mode == mode {
             return;
@@ -2236,6 +2256,28 @@ impl Response {
         }
     }
 
+    /// `zo` `zc` `za` (piece 4 spec §5.7): the fold under the cursor on
+    /// the tree view, the cursor landing on the fold's opening line.
+    /// Whether anything changed; Raw and Headers have no folds.
+    pub fn fold(&mut self, op: crate::action::FoldOp) -> bool {
+        let Some(view) = self.view.as_mut() else {
+            return false;
+        };
+        if view.mode != ViewMode::Pretty {
+            return false;
+        }
+        let cursor = view.cursor;
+        let Some(at) = view.active_tree_mut().and_then(|tree| tree.fold(cursor, op)) else {
+            return false;
+        };
+        // Folding renumbers the visible lines a selection is addressed in.
+        view.cursor = at;
+        view.clear_sel();
+        view.clamp_cursor();
+        view.follow_cursor();
+        true
+    }
+
     /// Plants a selection anchor at the screen position of a left click in
     /// the body content (clearing any previous selection). Returns whether
     /// an anchor was planted — the caller arms the drag sweep on `true`.
@@ -2523,11 +2565,11 @@ impl Response {
                 )))
             }
             KeyCode::Char('d') if ev.modifiers == KeyModifiers::CONTROL => {
-                view.move_cursor((view.height / 2).max(1) as i32);
+                view.half_page(true);
                 Some(Action::Render)
             }
             KeyCode::Char('u') if ev.modifiers == KeyModifiers::CONTROL => {
-                view.move_cursor(-((view.height / 2).max(1) as i32));
+                view.half_page(false);
                 Some(Action::Render)
             }
             KeyCode::Char('f') if ev.modifiers == KeyModifiers::CONTROL => {
@@ -4954,6 +4996,55 @@ mod tests {
             !matches!(r.handle_key(ch('h')), Some(Action::ResponseViewMode(_))),
             "h never switches views"
         );
+    }
+
+    /// Piece 4 spec §5.7 (`R.ctrl-d`) and plan M4a Deviation 10: half a page
+    /// of view and cursor together; at the ends the cursor still moves.
+    #[test]
+    fn ctrl_d_and_ctrl_u_scroll_with_the_cursor_and_stop_at_the_ends() {
+        let body = (0..100).map(|i| i.to_string()).collect::<Vec<_>>().join("\n");
+        let mut r = ready(&body);
+        render(&mut r);
+        let height = r.view().unwrap().height;
+        let half = (height / 2).max(1);
+        let down = || KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL);
+        let up = || KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL);
+        r.handle_key(down());
+        let v = r.view().unwrap();
+        assert_eq!((v.cursor, v.scroll), (half, half), "the view scrolls with the cursor");
+        r.handle_key(up());
+        let v = r.view().unwrap();
+        assert_eq!((v.cursor, v.scroll), (0, 0));
+        for _ in 0..100 {
+            r.handle_key(down());
+        }
+        let v = r.view().unwrap();
+        assert_eq!(v.cursor, 99, "the cursor reaches the last line");
+        assert_eq!(v.scroll, 100 - height, "the view never scrolls past the end");
+        r.handle_key(up());
+        let v = r.view().unwrap();
+        assert_eq!(v.cursor, 99 - half);
+        r.view.as_mut().unwrap().cursor = 3;
+        r.view.as_mut().unwrap().scroll = 0;
+        r.handle_key(up());
+        let v = r.view().unwrap();
+        assert_eq!((v.cursor, v.scroll), (0, 0), "at the top the cursor still moves");
+    }
+
+    /// Piece 4 spec §5.7 (`R.fold`): `zo` `zc` `za` on the tree view only.
+    #[test]
+    fn fold_works_on_the_tree_view_only() {
+        use crate::action::FoldOp;
+        let mut r = ready(r#"{"a": {"b": 1}, "c": 2}"#);
+        render(&mut r);
+        assert_eq!(r.view().unwrap().mode, ViewMode::Pretty);
+        r.view.as_mut().unwrap().cursor = 2;
+        assert!(r.fold(FoldOp::Close));
+        assert_eq!(r.view().unwrap().cursor, 1, "on the fold's opening line");
+        assert_eq!(r.view().unwrap().visible_len(), 4);
+        assert!(!r.fold(FoldOp::Close), "nothing changed");
+        r.set_view_mode(ViewMode::Raw);
+        assert!(!r.fold(FoldOp::Toggle), "Raw has no folds");
     }
 
     #[test]

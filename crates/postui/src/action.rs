@@ -689,6 +689,9 @@ pub enum Action {
         row: usize,
         toggle: bool,
     },
+    /// `zo` `zc` `za` on the response's tree view (piece 4 spec §5.7): the
+    /// fold under the cursor. Nothing on Raw or Headers.
+    TreeFold(FoldOp),
     /// Copy `target`'s text to the clipboard through `App::clipboard`'s
     /// tiered copy. Toasts "nothing to copy — send a request first" when
     /// there's no ready response and `target` needs one.
@@ -1028,6 +1031,15 @@ pub enum Action {
     },
     /// Structural menu's "Collect into array": wraps the bar text in `[ … ]`.
     JqCollect,
+}
+
+/// Vim's fold keys on the response tree (piece 4 spec §5.7): `zo` opens,
+/// `zc` closes, `za` toggles the fold under the cursor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FoldOp {
+    Open,
+    Close,
+    Toggle,
 }
 
 /// What a list or table key does to the row under the cursor (piece 4

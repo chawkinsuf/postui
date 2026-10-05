@@ -311,6 +311,18 @@ fn cancel_top() -> Action {
     Action::CancelTopModal
 }
 
+fn fold_open() -> Action {
+    Action::TreeFold(crate::action::FoldOp::Open)
+}
+
+fn fold_close() -> Action {
+    Action::TreeFold(crate::action::FoldOp::Close)
+}
+
+fn fold_toggle() -> Action {
+    Action::TreeFold(crate::action::FoldOp::Toggle)
+}
+
 /// Every row. Order does not matter: no complete row is a prefix of
 /// another on a shared surface (`no_two_rows_collide`).
 pub static TABLE: &[Binding] = &[
@@ -335,6 +347,10 @@ pub static TABLE: &[Binding] = &[
     ),
     row("0", Surfaces::RESPONSE, Intent::Key(HOME), CountRule::Ignore),
     row("$", Surfaces::RESPONSE, Intent::Key(Named::key(KeyCode::End)), CountRule::Ignore),
+    // Key list §7 (`R.fold`): the tree's folds. Nothing on Raw or Headers.
+    row("zo", Surfaces::RESPONSE, Intent::Act(fold_open), CountRule::Ignore),
+    row("zc", Surfaces::RESPONSE, Intent::Act(fold_close), CountRule::Ignore),
+    row("za", Surfaces::RESPONSE, Intent::Act(fold_toggle), CountRule::Ignore),
     // Key list §6: opening.
     row("o", Surfaces::OPENS_ROW, Intent::Key(Named::key(KeyCode::Enter)), CountRule::Ignore),
     row("i", Surfaces::OPENS_FIELD, Intent::Open { key: ENTER, seat: OpenSeat::Keep }, CountRule::Ignore),

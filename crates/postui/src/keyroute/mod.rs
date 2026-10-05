@@ -466,6 +466,16 @@ mod tests {
         assert_eq!(feed(&mut Router::default(), &s, "G"), run(vec![key(KeyCode::End)]));
     }
 
+    /// Spec §5.7: the response's fold keys.
+    #[test]
+    fn the_response_folds() {
+        use crate::action::FoldOp;
+        let resp = cx(Vim, Surface::Response(crate::components::response::ViewMode::Pretty));
+        assert_eq!(feed(&mut Router::default(), &resp, "zc"), run(vec![Step::Action(Action::TreeFold(FoldOp::Close))]));
+        assert_eq!(feed(&mut Router::default(), &resp, "3za"), run(vec![Step::Action(Action::TreeFold(FoldOp::Toggle))]), "a count is ignored");
+        assert_eq!(feed(&mut Router::default(), &cx(Arrows, resp.surface), "z"), Resolved::Declined, "arrows has no fold keys");
+    }
+
     /// Plan M3a Deviation 9: the prefix keys never reach the engine.
     #[test]
     fn the_prefix_keys_are_notes_or_swallowed() {
