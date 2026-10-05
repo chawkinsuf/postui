@@ -90,14 +90,25 @@ fn line_buf<'a>(
 }
 
 impl App {
-    /// The glue and `id`'s buffer at once (disjoint fields), or no buffer
-    /// when that field is not open.
+    /// The glue `id` runs on and `id`'s buffer at once (disjoint fields),
+    /// or no buffer when that field is not open. A dialog's field lends the
+    /// dialog engine and the top dialog's input (plan M3b Deviation 1).
     pub(crate) fn session_parts(&mut self, id: FieldId) -> (&mut Glue, Option<FieldBuf<'_>>) {
-        let buf = match id {
-            FieldId::Body => Some(FieldBuf::Body(&mut self.editor.body, &mut self.editor.body_visual)),
-            _ => line_buf(id, &mut self.editor.url, &mut self.editor.table, &mut self.varmanager, &mut self.settings),
-        };
-        (&mut self.glue, buf)
+        match id {
+            FieldId::Body => {
+                (&mut self.glue, Some(FieldBuf::Body(&mut self.editor.body, &mut self.editor.body_visual)))
+            }
+            FieldId::ModalInput(i) => (&mut self.modal_glue, self.modals.text_input_mut(i).map(FieldBuf::Line)),
+            FieldId::Palette | FieldId::ChooserFilter | FieldId::VarPickerFilter | FieldId::FilePicker => {
+                (&mut self.modal_glue, self.modals.query_input_mut().map(FieldBuf::Line))
+            }
+            FieldId::Jq => (&mut self.glue, Some(FieldBuf::Line(&mut self.session.response.jq_bar_mut().input))),
+            FieldId::Search => (&mut self.glue, self.session.response.search_input_mut().map(FieldBuf::Line)),
+            _ => (
+                &mut self.glue,
+                line_buf(id, &mut self.editor.url, &mut self.editor.table, &mut self.varmanager, &mut self.settings),
+            ),
+        }
     }
 
     /// The glue, the body and `to`'s buffer at once, for a carry out of the
@@ -116,9 +127,9 @@ impl App {
             return None;
         }
         match self.field_caret() {
-            FieldCaret::Live(id) if id.engine_kind().is_some() => Some((id, true)),
-            FieldCaret::Live(_) => self.screen_field().filter(|id| id.engine_kind().is_some()).map(|id| (id, false)),
-            FieldCaret::Parked(id) => id.engine_kind().map(|_| (id, false)),
+            FieldCaret::Live(id) if !id.is_modal() => Some((id, true)),
+            FieldCaret::Live(_) => self.screen_field().map(|id| (id, false)),
+            FieldCaret::Parked(id) => Some((id, false)),
             FieldCaret::None => None,
         }
     }
@@ -146,6 +157,24 @@ impl App {
                 self.unpaint(id, true);
                 self.glue.set_session(FieldSession::None);
             }
+            // The dialog session goes the same way, and its engine gives
+            // the registers back (plan M3b Deviation 1). A dialog no longer
+            // on top is left through the ghost, as `sync_modal_session`
+            // leaves it: its field index would name the top's field.
+            if let Some((dialog, id)) = self.modal_session.take() {
+                if Some(dialog) == self.modals.top_serial() {
+                    let caret = self.session_parts(id).1.map(|buf| buf.caret());
+                    self.close_session(id);
+                    if let Some(at) = caret {
+                        self.put_caret(id, at);
+                    }
+                    self.unpaint(id, true);
+                } else {
+                    self.modal_glue.leave_ghost();
+                }
+                self.glue.swap_registers(&mut self.modal_glue);
+                self.modal_glue.set_session(FieldSession::None);
+            }
             // A body session that closed before the switch left edtui in
             // Normal, where the arrows body binds no keys: give it its
             // Insert back whether or not a session is still owned.
@@ -164,7 +193,14 @@ impl App {
                 // Arrows to vim with a field open: it was being typed in, so
                 // it goes on in Insert (spec §4.3).
                 let open = if switched_in { Some(OpenAs::Insert(OpenSeat::Keep)) } else { open_as };
-                self.open_session(id, open, !mouse);
+                self.open_session(id, open, !mouse, Start::Normal);
+            }
+            // A carry across Insert-only is a close and an open (plan M3b
+            // Deviation 16): the engine would keep Insert-only on the field
+            // it carries to.
+            Edge::Carry(from, to) if from.insert_only() != to.insert_only() => {
+                self.close_session(from);
+                self.open_session(to, open_as, !mouse, Start::Normal);
             }
             Edge::Carry(from, to) => self.carry_session(from, to),
             // Spec §3.3: the close edge also drops the router's pending
@@ -198,15 +234,105 @@ impl App {
                 glue.settle(&mut buf, how);
             }
         }
+        self.sync_modal_session(open_as, cause, switched_in);
+    }
+
+    /// The dialog session's half of [`Self::sync_session`] (plan M3b
+    /// Deviations 1–3): open, carry within one dialog, move to another
+    /// dialog, close, or rebase. The registers go to the dialog engine when
+    /// a dialog session opens and come back when it closes.
+    fn sync_modal_session(&mut self, open_as: Option<OpenAs>, cause: Cause, switched_in: bool) {
+        let now = self.modal_engine_field();
+        let was = self.modal_session;
+        let top = self.modals.top_serial();
+        let fresh = top != self.modal_seen;
+        self.modal_seen = top;
+        let mouse = matches!(cause, Cause::Mouse(_));
+        // A field opens in Insert when its dialog is new, on a click, after
+        // a dialog over it closed, and when vim was just switched on; from
+        // the keyboard in a dialog that stays, in Normal (Deviation 3).
+        let default = if fresh || mouse || switched_in { Start::Insert } else { Start::Normal };
+        match (was, now) {
+            (None, None) => {}
+            // A field reseeded in place (`alt+d`'s fresh `LineInput`) has
+            // lost its mark: the close step starts from the new text, as
+            // arrows' first snapshot does (Deviation 11). A `set_text`
+            // reseed kept the first mark, and keeps it.
+            (Some(a), Some(b)) if a == b => {
+                let (glue, buf) = self.session_parts(b.1);
+                if let Some(mut buf) = buf
+                    && glue.differs(&buf)
+                {
+                    glue.rebase(&mut buf);
+                    if let FieldBuf::Line(input) = &mut buf {
+                        input.mark_open();
+                    }
+                }
+            }
+            // Tab in a form: the same dialog, the mode carries (spec §3.3).
+            (Some((from_dialog, from)), Some((to_dialog, to))) if from_dialog == to_dialog => {
+                self.carry_session(from, to)
+            }
+            // Another dialog took the caret, or came back to it. The field
+            // left belongs to a dialog that is not the top, so it is left
+            // through the ghost: its index would name the new top's field.
+            (Some(_), Some((_, to))) => {
+                self.modal_glue.leave_ghost();
+                self.open_session(to, open_as, !mouse, default);
+            }
+            (None, Some((_, to))) => {
+                self.glue.swap_registers(&mut self.modal_glue);
+                self.open_session(to, open_as, !mouse, default);
+            }
+            // The field closed in its own dialog (`j` to the buttons), or
+            // its dialog was popped or covered: then it is left through the
+            // ghost, as above, since its index would name the top's field.
+            (Some((from_dialog, from)), None) => {
+                if Some(from_dialog) == top {
+                    self.close_session(from);
+                } else {
+                    self.modal_glue.leave_ghost();
+                }
+                self.glue.swap_registers(&mut self.modal_glue);
+                self.router.clear();
+            }
+        }
+        self.modal_session = now;
+        self.modal_glue.set_session(now.map_or(FieldSession::None, |(_, id)| FieldSession::Live(id)));
+        let how = match cause {
+            Cause::Mouse(how) => how,
+            Cause::Key { routed: true } if was == now => Some(Settled::Key),
+            _ => None,
+        };
+        if let (Some(how), Some((_, id))) = (how, now) {
+            let (glue, buf) = self.session_parts(id);
+            if let Some(mut buf) = buf {
+                glue.settle(&mut buf, how);
+            }
+        }
+    }
+
+    /// The dialog field with the caret, and its dialog (plan M3b Deviation
+    /// 2). Only in the vim profile.
+    fn modal_engine_field(&self) -> Option<(u64, FieldId)> {
+        if self.profile() != KeyProfile::Vim {
+            return None;
+        }
+        match self.field_caret() {
+            FieldCaret::Live(id) if id.is_modal() => self.modals.top_serial().map(|s| (s, id)),
+            _ => None,
+        }
     }
 
     /// `id` got the caret: the engine enters it in the mode the key asked
-    /// for, else Normal (spec §5.6; plan M3a Deviation 12). A keyboard open
-    /// drops a GUI selection (the Settings field selects all for arrows). A
-    /// press that opened a one-line field keeps the anchor it planted, which
-    /// seating the caret drops, so a drag that follows selects (final
-    /// review I-3; the body's anchor lives apart from its caret).
-    fn open_session(&mut self, id: FieldId, open: Option<OpenAs>, keyboard: bool) {
+    /// for, else `default`: Normal on the screen; a dialog field's rule is
+    /// plan M3b Deviation 3; a query box is always Insert-only (spec §5.6;
+    /// plan M3a Deviation 12). A keyboard open drops a GUI selection (the
+    /// Settings field selects all for arrows). A press that opened a
+    /// one-line field keeps the anchor it planted, which seating the caret
+    /// drops, so a drag that follows selects (final review I-3; the body's
+    /// anchor lives apart from its caret).
+    fn open_session(&mut self, id: FieldId, open: Option<OpenAs>, keyboard: bool, default: Start) {
         let (glue, buf) = self.session_parts(id);
         let Some(mut buf) = buf else { return };
         let mut pressed = false;
@@ -217,12 +343,21 @@ impl App {
             pressed = !keyboard && input.click_anchored();
         }
         let (start, seat) = match open {
+            _ if id.insert_only() => (Start::InsertOnly, OpenSeat::Keep),
             Some(OpenAs::Insert(seat)) => (Start::Insert, seat),
-            Some(OpenAs::Normal) | None => (Start::Normal, OpenSeat::Keep),
+            Some(OpenAs::Normal) => (Start::Normal, OpenSeat::Keep),
+            None => (default, OpenSeat::Keep),
         };
         glue.enter(&mut buf, start, seat);
-        if pressed && let FieldBuf::Line(input) = &mut buf {
-            input.begin_mouse_selection();
+        if let FieldBuf::Line(input) = &mut buf {
+            if pressed {
+                input.begin_mouse_selection();
+            }
+            // A dialog records its field's close from the text at open
+            // (plan M3b Deviation 11).
+            if id.is_modal() {
+                input.mark_open();
+            }
         }
     }
 
@@ -248,7 +383,12 @@ impl App {
         self.unpaint(from, false);
         let (glue, buf) = self.session_parts(to);
         match buf {
-            Some(mut buf) => glue.carry(&mut buf),
+            Some(mut buf) => {
+                glue.carry(&mut buf);
+                if let (true, FieldBuf::Line(input)) = (to.is_modal(), &mut buf) {
+                    input.mark_open();
+                }
+            }
             None => glue.leave_ghost(),
         }
     }
@@ -306,7 +446,17 @@ impl App {
     /// The field whose session is live and that has the caret: the one
     /// the engine may be handed keys, pastes and copies for.
     pub(crate) fn live_engine_field(&self) -> Option<FieldId> {
-        self.glue.live().filter(|&id| self.field_caret() == FieldCaret::Live(id))
+        let caret = self.field_caret();
+        [self.modal_glue.live(), self.glue.live()]
+            .into_iter()
+            .flatten()
+            .find(|&id| caret == FieldCaret::Live(id))
+    }
+
+    /// The engine `id` runs on: the dialog engine for a dialog's field
+    /// (plan M3b Deviation 1), else the screen's.
+    pub(crate) fn glue_of(&self, id: FieldId) -> &Glue {
+        if id.is_modal() { &self.modal_glue } else { &self.glue }
     }
 
     /// Catches the session up with what moved the caret or replaced a
@@ -330,22 +480,75 @@ impl App {
     /// what was typed for it goes nowhere.
     pub(super) fn engine_key(&mut self, ev: KeyEvent) -> Option<Ran> {
         let id = self.live_engine_field()?;
+        if self.box_claims(id, &ev) {
+            return Some(Ran::routed(self.handle_key_routed(ev)));
+        }
         let view = self.view_ctx(id);
         // Read before the key: whether a `u` or ctrl+r it hands back means
         // the field had nothing to step (final review M-1).
-        let idle = self.glue.undo_ready();
+        let idle = self.glue_of(id).undo_ready();
         let out = {
             let (glue, buf) = self.session_parts(id);
             glue.handle(ev, &mut buf?, &view)
         };
         Some(match out {
-            Outcome::Consumed { note, request, .. } => {
+            Outcome::Consumed { changed, note, request } => {
                 self.engine_feedback(note, request);
+                // Any key the engine takes leaves the jq bar's entered menu
+                // row, a move as well as an edit, as in arrows.
+                if id == FieldId::Jq {
+                    self.session.response.leave_jq_menu();
+                }
+                if changed {
+                    self.query_edited(id);
+                }
                 self.after_typed(id, ev);
                 Ran::consumed()
             }
             Outcome::Declined { count, keys } => self.route_declined(id, count, keys, idle),
         })
+    }
+
+    /// Keys a query box owns before the engine (plan M3b Deviation 5, the
+    /// user's decision): the file picker's Backspace on an empty filter
+    /// climbs a folder; the jq bar's Tab and shift+Tab are its completion's
+    /// (menu mode rewrites a quoted key through the input's own keys, which
+    /// a declined key's quiet input would mute: amendment R4), and its
+    /// Right and End accept an offered completion.
+    fn box_claims(&self, id: FieldId, ev: &KeyEvent) -> bool {
+        let plain = ev.modifiers.is_empty();
+        match id {
+            FieldId::FilePicker => {
+                plain
+                    && ev.code == KeyCode::Backspace
+                    && matches!(self.modals.top(), Some(Modal::FilePicker(p)) if p.input().text().is_empty())
+            }
+            FieldId::Jq => match ev.code {
+                KeyCode::Tab | KeyCode::BackTab => {
+                    !ev.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                }
+                KeyCode::Right | KeyCode::End => plain && self.session.response.jq_accepts_completion(),
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
+    /// The engine changed a query box's text: the box follows, as after a
+    /// typed key (its rows, its theme preview, its filter).
+    fn query_edited(&mut self, id: FieldId) {
+        match id {
+            FieldId::Jq => {
+                self.session.response.mark_jq_typed();
+                self.sync_jq();
+            }
+            FieldId::ChooserFilter => {
+                self.modals.query_changed();
+                self.sync_theme_preview();
+            }
+            FieldId::Palette | FieldId::VarPickerFilter | FieldId::FilePicker => self.modals.query_changed(),
+            _ => {}
+        }
     }
 
     /// The app's undo path (`step_history`) reaching a vim field: the
@@ -355,9 +558,10 @@ impl App {
     /// nothing (plan M3a Deviation 8).
     pub(crate) fn engine_field_undo(&mut self, redo: bool) -> Option<bool> {
         let id = self.live_engine_field()?;
-        let kind = id.engine_kind()?;
-        let can = if redo { self.glue.can_redo(kind) } else { self.glue.can_undo(kind) };
-        let idle = self.glue.mode() == Mode::Normal && !self.glue.view().pending;
+        let kind = id.engine_kind();
+        let glue = self.glue_of(id);
+        let can = if redo { glue.can_redo(kind) } else { glue.can_undo(kind) };
+        let idle = glue.mode() == Mode::Normal && !glue.view().pending;
         if !can || !idle {
             return Some(false);
         }
@@ -399,8 +603,13 @@ impl App {
     /// pastes.
     pub(crate) fn engine_paste(&mut self, text: &str) -> Option<bool> {
         let id = self.live_engine_field()?;
+        // Today's routing pastes into the file picker, its folder jump
+        // included (plan M3b Deviation 13).
+        if id == FieldId::FilePicker {
+            return None;
+        }
         let flat;
-        let text = if id.engine_kind() == Some(EngineKind::Line) {
+        let text = if id.engine_kind() == EngineKind::Line {
             flat = crate::components::line_input::flatten_paste(text);
             flat.as_str()
         } else {
@@ -425,6 +634,7 @@ impl App {
         if let Some((note, request)) = feedback {
             self.engine_feedback(note, request);
         }
+        self.query_edited(id);
         Some(self.update(Action::Render))
     }
 
@@ -498,7 +708,7 @@ impl App {
     /// `{{` typed into the URL line or a cell opens the variable picker, as
     /// it does on main (`Editor::handle_key`).
     fn after_typed(&mut self, id: FieldId, ev: KeyEvent) {
-        let typing = matches!(self.glue.mode(), Mode::Insert | Mode::Replace);
+        let typing = matches!(self.glue_of(id).mode(), Mode::Insert | Mode::Replace);
         if ev.code != KeyCode::Char('{') || !typing || !matches!(id, FieldId::Url | FieldId::TableCell { .. }) {
             return;
         }
@@ -525,8 +735,8 @@ impl App {
         let cap = self.repeat_cap(self.surface());
         // A field row the engine handed back whole (M4's `gt`).
         let toks: Option<Vec<Tok>> = keys.iter().map(Tok::of).collect();
-        if let (Some(toks), Some(kind)) = (toks, id.engine_kind())
-            && let Match::Complete(b) = table::lookup_class(&toks, KeyProfile::Vim, kind.class())
+        if let Some(toks) = toks
+            && let Match::Complete(b) = table::lookup_class(&toks, KeyProfile::Vim, table::field_class(id, self.surface()))
         {
             return match b.intent {
                 Intent::Swallow => Ran::default(),
@@ -549,13 +759,19 @@ impl App {
         ran
     }
 
-    /// A declined key [`Self::forwards`] let through. The body's own
+    /// A declined key [`Self::forwards`] let through. A dialog or a query
+    /// box takes it on its own arms with its text input quiet (plan M3b
+    /// Deviation 6). The body's own
     /// editor never gets one but Esc, which blurs it: the engine is the
     /// body's only editor, and an edit or a selection made outside it would
     /// wipe its history (final review I-1). Tab and shift+Tab, which that
     /// editor indents with, do nothing; any other key runs what the keymap
     /// binds it to, as it would once the editor passed on it.
     fn route_forwarded(&mut self, id: FieldId, ev: KeyEvent) -> Ran {
+        if id.is_modal() || id.insert_only() {
+            let _quiet = crate::components::line_input::quiet();
+            return Ran::routed(self.handle_key_routed(ev));
+        }
         if id != FieldId::Body || (ev.code == KeyCode::Esc && ev.modifiers.is_empty()) {
             return Ran::routed(self.handle_key_routed(ev));
         }
@@ -567,20 +783,27 @@ impl App {
     }
 
     /// Whether a declined key goes on to today's routing (plan M3a
-    /// Deviation 6): never a plain char, which would type in Normal; a key
+    /// Deviation 6): never a plain char, which would type in Normal; any
+    /// other key in a dialog or a query box (plan M3b Deviation 6); a key
     /// the keymap binds; and the container's own named keys.
     fn forwards(&self, id: FieldId, ev: &KeyEvent) -> bool {
         let chord = ev.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
         if matches!(ev.code, KeyCode::Char(_)) && !chord {
             return false;
         }
+        // A dialog's or a query box's own keys (its moves, its buttons, its
+        // chords) all go on; its text input stays quiet (plan M3b
+        // Deviation 6).
+        if id.is_modal() || id.insert_only() {
+            return true;
+        }
         if self.keymap.lookup(&KeyCombo::from_event(ev)).is_some() {
             return true;
         }
         let plain = ev.modifiers.difference(KeyModifiers::SHIFT).is_empty();
         match id.engine_kind() {
-            Some(EngineKind::Body) => ev.code == KeyCode::Esc && ev.modifiers.is_empty(),
-            _ => {
+            EngineKind::Body => ev.code == KeyCode::Esc && ev.modifiers.is_empty(),
+            EngineKind::Line => {
                 plain
                     && matches!(
                         ev.code,

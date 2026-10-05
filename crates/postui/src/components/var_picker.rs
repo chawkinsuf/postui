@@ -207,6 +207,17 @@ impl VarPickerState {
         self.input.text()
     }
 
+    /// The query, for the vim engine (plan M3b): it edits it in place.
+    pub(crate) fn input_mut(&mut self) -> &mut LineInput {
+        &mut self.input
+    }
+
+    /// The query changed outside this picker's own keys (the vim engine
+    /// typed into it): the rows follow, as after a typed key.
+    pub(crate) fn filter_changed(&mut self) {
+        self.refilter();
+    }
+
     /// Pastes into the fuzzy filter (the bracketed-paste/ctrl+v path),
     /// flattened to one line. Only Insert mode has a filter — mirroring
     /// the typed-char path, a paste in `SelectOption` mode is inert and
@@ -408,6 +419,12 @@ impl VarPickerState {
                 }
                 self.ensure_visible = true;
             }
+            // The option list has no caret to move, so Home and End jump
+            // to its first and last rows, as a dropdown's do (vim's `gg`
+            // and `G` replay them; plan M3b amendment R8). In Insert mode
+            // they stay the filter's.
+            KeyCode::Home if self.mode != PickerMode::Insert => self.select(0),
+            KeyCode::End if self.mode != PickerMode::Insert => self.select(self.row_count() - 1),
             // SelectOption mode has no filter (its option lists are a
             // handful of rows; the detail pane owns the freed space), so
             // typed text is inert there — only Insert mode edits `input`.
@@ -1437,6 +1454,38 @@ mod tests {
             "Enter still confirms the highlighted row: {:?}",
             res.actions
         );
+    }
+
+    /// Plan M3b amendment R8 (the user's decision): Home and End move the
+    /// option cursor to the first and the last row, as a dropdown's do, so
+    /// vim's `gg` and `G` (which replay them) work here too.
+    #[test]
+    fn select_mode_home_and_end_reach_the_first_and_last_rows() {
+        let mut p = VarPickerState::new_select(
+            identity_options(),
+            "user_id".into(),
+            "identity".into(),
+            "qa".into(),
+        );
+        assert_eq!(p.selected(), 1, "opens on bob");
+        assert!(p.handle_key(key(KeyCode::End)).is_none());
+        assert_eq!(p.selected(), 2, "the last row: add new option");
+        assert!(p.handle_key(key(KeyCode::Home)).is_none());
+        assert_eq!(p.selected(), 0, "the first option");
+    }
+
+    /// Insert mode's Home and End stay the filter's caret keys.
+    #[test]
+    fn insert_mode_home_and_end_move_the_filters_caret() {
+        let entries = vec![var_entry("a", None, None), var_entry("b", None, None)];
+        let mut p = VarPickerState::new(entries, true);
+        p.handle_key(key(KeyCode::Char('a')));
+        p.handle_key(key(KeyCode::Down));
+        assert_eq!(p.selected(), 1, "the ghost row, under the one match");
+        p.handle_key(key(KeyCode::Home));
+        assert_eq!((p.selected(), p.input.cursor()), (1, 0));
+        p.handle_key(key(KeyCode::End));
+        assert_eq!((p.selected(), p.input.cursor()), (1, 1));
     }
 
     #[test]

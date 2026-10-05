@@ -1434,6 +1434,30 @@ impl Response {
         self.jq.focused && self.jq.input.edited()
     }
 
+    /// The vim engine typed into the jq bar (plan M3b): as a typed key
+    /// does, it leaves an entered menu row and marks the bar edited, so
+    /// `App::sync_jq` carries the text into the request.
+    pub(crate) fn mark_jq_typed(&mut self) {
+        self.leave_jq_menu();
+        self.jq.edited = true;
+    }
+
+    /// The vim engine took a key in the jq bar: as any key but Tab,
+    /// shift+Tab, Enter and Esc does in `ready_key`, it leaves an entered
+    /// menu row keeping the selection, whether or not it edited.
+    pub(crate) fn leave_jq_menu(&mut self) {
+        self.jq.menu = None;
+    }
+
+    /// Whether plain Right or End accepts the jq bar's offered completion:
+    /// `ready_key`'s offer arm, and in vim the claim that puts those keys
+    /// before the engine (plan M3b Deviation 5).
+    pub(crate) fn jq_accepts_completion(&self) -> bool {
+        self.jq.focused
+            && (self.jq.ghost().is_some() || self.jq.menu_row().is_some())
+            && (self.jq.tab == JqTab::Cycle || self.jq.completion.closer)
+    }
+
     /// Ends the bar's edit session in place — the caret stays, the text
     /// stays, only the keystroke history closes — so the app history can
     /// take the edit as a step before something replaces the request
@@ -1938,15 +1962,15 @@ impl Response {
 
     /// The bar's ctrl/alt+backspace: a path segment when the caret is in
     /// a path token and nothing is selected, else the input's own rule.
-    fn jq_segment_backspace(&mut self, ev: KeyEvent) {
+    /// Both are calls, not keys: the vim profile forwards this key with
+    /// the input quiet (plan M3b Deviation 6).
+    fn jq_segment_backspace(&mut self) {
         self.jq.menu = None;
         match self.jq.segment_delete_target() {
             Some(target) if self.jq.input.selection().is_none() => {
                 self.jq.input.delete_back_to(target);
             }
-            _ => {
-                self.jq.input.handle_key(ev);
-            }
+            _ => self.jq.input.delete_word_back(),
         }
         self.jq.edited = true;
     }
@@ -2064,11 +2088,7 @@ impl Response {
         search.input.selected_text()
     }
 
-    /// Test-only mutable reach into the live search box's input, so a test
-    /// can drive a selection the way `select_all` does — there is no
-    /// production path that needs to reach in and mutate the search input
-    /// directly (typing and pasting both go through dedicated methods).
-    #[cfg(test)]
+    /// The in-pane search's input, for the vim engine (plan M3b).
     pub fn search_input_mut(&mut self) -> Option<&mut LineInput> {
         let search = self.view.as_mut()?.search.as_mut()?;
         Some(&mut search.input)
@@ -2417,7 +2437,8 @@ impl Response {
                     }
                     // Right/End accept a ghost. Menu mode has one only
                     // for a closer, so there they accept exactly that.
-                    KeyCode::Right | KeyCode::End if plain && (cycle || self.jq.completion.closer) => {
+                    // The vim profile asks the same before its engine.
+                    KeyCode::Right | KeyCode::End if plain && self.jq_accepts_completion() => {
                         self.accept_jq_completion();
                         return Some(Action::Render);
                     }
@@ -2439,10 +2460,10 @@ impl Response {
                         .modifiers
                         .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
                 {
-                    self.jq_segment_backspace(ev);
+                    self.jq_segment_backspace();
                 }
                 KeyCode::Char('h') if ev.modifiers.contains(KeyModifiers::CONTROL) => {
-                    self.jq_segment_backspace(ev);
+                    self.jq_segment_backspace();
                 }
                 KeyCode::Esc => {
                     if self.jq.ai_pending {

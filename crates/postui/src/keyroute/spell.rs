@@ -37,6 +37,9 @@ pub enum Key {
     /// The quit chip: `q` in arrows where a plain `q` quits, else spelled
     /// (Deviation 16).
     Quit { plain_q: bool },
+    /// A picker's highlight moves (spec §5.10): `↑↓` in arrows, `^N/^P` in
+    /// vim, where the arrows still work too.
+    Pick,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,6 +77,7 @@ pub fn keycap(key: &Key, at: SpellCtx, keymap: &Keymap) -> Option<String> {
         Key::Send { .. } => glyphs(&spell(at, &Action::Send, keymap)?),
         Key::Quit { plain_q: true } if !vim => "q".to_string(),
         Key::Quit { .. } => glyphs(&spell(at, &Action::Quit, keymap)?),
+        Key::Pick => if vim { "^N/^P" } else { "\u{2191}\u{2193}" }.to_string(),
     })
 }
 
@@ -138,6 +142,15 @@ mod tests {
 
     fn at(profile: KeyProfile, surface: Surface) -> SpellCtx {
         SpellCtx { profile, surface, field_live: false }
+    }
+
+    /// Spec §5.10: the footer advertises `^N/^P` on a picker in vim.
+    #[test]
+    fn a_pickers_move_keys_per_profile() {
+        let keymap = Keymap::default_bindings();
+        let at = |profile| SpellCtx { profile, surface: Surface::Picker, field_live: true };
+        assert_eq!(keycap(&Key::Pick, at(Arrows), &keymap).as_deref(), Some("\u{2191}\u{2193}"));
+        assert_eq!(keycap(&Key::Pick, at(Vim), &keymap).as_deref(), Some("^N/^P"));
     }
 
     #[test]

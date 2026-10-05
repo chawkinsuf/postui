@@ -232,6 +232,8 @@ fn fallback_description(action: &Action) -> Option<String> {
         Action::CycleTabs(_) => "Switch to the next tab".to_string(),
         Action::CloseScreen => "Go back to the request screen".to_string(),
         Action::SelectManageTab(tab) => format!("Show the {} tab", tab.label()),
+        Action::ConfirmTopModal => "Confirm the dialog".to_string(),
+        Action::CancelTopModal => "Cancel the dialog".to_string(),
         _ => return None,
     })
 }
@@ -741,6 +743,29 @@ mod tests {
             hint_for(&Hit::FooterChip(Action::ToggleVarReveal), &keymap, &ctx()).unwrap(),
             "Reveal or hide the secret value"
         );
+    }
+
+    /// A one-field prompt's chips run `ConfirmTopModal` and
+    /// `CancelTopModal`; each hints in words, not by its debug name.
+    #[test]
+    fn a_prompts_chips_hint_with_their_own_wording() {
+        use crate::components::line_input::LineInput;
+        use crate::components::modal::{Modal, ModalStack, PromptKind};
+        let keymap = Keymap::default_bindings();
+        let mut stack = ModalStack::default();
+        stack.push(Modal::Prompt {
+            title: "Name".into(),
+            input: LineInput::new(""),
+            kind: PromptKind::NewRequest,
+            revealed: false,
+        });
+        let chips = stack.footer_chips().unwrap();
+        let hints: Vec<String> = chips
+            .into_iter()
+            .filter_map(|(_, _, action)| action)
+            .map(|a| hint_for(&Hit::FooterChip(a), &keymap, &ctx()).unwrap())
+            .collect();
+        assert_eq!(hints, ["Confirm the dialog", "Cancel the dialog"]);
     }
 
     /// No control falls through to the `{action:?}` last resort: every

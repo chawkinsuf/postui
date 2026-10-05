@@ -54,8 +54,9 @@ pub enum Intent {
     /// A short note (an Info toast, plan M1 Deviation 9); nothing else.
     Note(&'static str),
     /// Leave the open one-line field, then this key on the closed surface:
-    /// `j` in the URL is Esc, then Down (spec §3.7, §5.6; plan M3a
-    /// Deviation 11). The count repeats the key.
+    /// `j` in the URL is `CloseField`, then Down (spec §3.7, §5.6; plan M3b
+    /// Deviation 7, which replaces M3a Deviation 11's Esc). The count
+    /// repeats the key.
     Leave(Named),
     /// A known key that does nothing here: `Z` and the key after it in a
     /// field, until M4's `ZZ` and `ZQ` (plan M3a Deviation 9).
@@ -64,6 +65,9 @@ pub enum Intent {
     /// today, and the end-of-event sync seats the engine (spec §5.6; plan
     /// M3a Deviation 12).
     Open { key: Named, seat: OpenSeat },
+    /// Reopen a dialog's selected text field (plan M3b Deviation 3): in
+    /// Insert at this seat, or in Normal (`None`).
+    Reopen(Option<OpenSeat>),
     /// The key goes on as typed: the surface's own arm already does what
     /// the vim key means (plan M1 Deviation 8).
     Pass,
@@ -129,6 +133,12 @@ impl Surfaces {
     /// The request body in idle Normal (spec §3.7).
     pub const FIELD_BODY: Self = Self(1 << 18);
     pub const FIELDS: Self = Self::FIELD_LINE.or(Self::FIELD_BODY);
+    /// A one-field prompt's own field in idle Normal (plan M3b): Enter
+    /// confirms, Esc cancels. Always with `FIELD_LINE`.
+    pub const FIELD_PROMPT: Self = Self(1 << 19);
+    /// A query box (spec §3.7 item 2): always Insert, so no field row ever
+    /// applies; the class only keeps `FIELD_LINE`'s rows away.
+    pub const FIELD_QUERY: Self = Self(1 << 20);
 
     /// Every surface whose rows or controls the keyboard walks: vim's
     /// motions bind here, and in vim a bare char with no row is
@@ -176,6 +186,8 @@ impl Surfaces {
         .or(Self::PROMPT)
         .or(Self::FORM)
         .or(Self::OTHER);
+    /// The dialogs with a field: a one-field prompt and a form.
+    pub const FORMS: Self = Self::PROMPT.or(Self::FORM);
 
     pub const fn or(self, o: Self) -> Self {
         Self(self.0 | o.0)
@@ -218,13 +230,15 @@ impl Surfaces {
     }
 }
 
-impl super::ctx::EngineKind {
-    /// The field class the router checks in idle Normal (spec §3.7).
-    pub const fn class(self) -> Surfaces {
-        match self {
-            super::ctx::EngineKind::Line => Surfaces::FIELD_LINE,
-            super::ctx::EngineKind::Body => Surfaces::FIELD_BODY,
-        }
+/// The field class the router checks in idle Normal and after a key the
+/// engine hands back (spec §3.7; plan M3b).
+pub fn field_class(id: super::ctx::FieldId, surface: Surface) -> Surfaces {
+    use super::ctx::FieldId;
+    match id {
+        _ if id.insert_only() => Surfaces::FIELD_QUERY,
+        FieldId::Body => Surfaces::FIELD_BODY,
+        FieldId::ModalInput(_) if surface == Surface::Prompt => Surfaces::FIELD_LINE.or(Surfaces::FIELD_PROMPT),
+        _ => Surfaces::FIELD_LINE,
     }
 }
 
@@ -273,7 +287,9 @@ const DOWN: Named = Named::key(KeyCode::Down);
 const ENTER: Named = Named::key(KeyCode::Enter);
 const HOME: Named = Named::key(KeyCode::Home);
 const UP: Named = Named::key(KeyCode::Up);
-pub(crate) const ESC: Named = Named::key(KeyCode::Esc);
+const LEFT: Named = Named::key(KeyCode::Left);
+const RIGHT: Named = Named::key(KeyCode::Right);
+const END: Named = Named::key(KeyCode::End);
 
 fn undo() -> Action {
     Action::Undo
@@ -285,6 +301,14 @@ fn redo() -> Action {
 
 fn palette() -> Action {
     Action::OpenPalette
+}
+
+fn confirm_top() -> Action {
+    Action::ConfirmTopModal
+}
+
+fn cancel_top() -> Action {
+    Action::CancelTopModal
 }
 
 /// Every row. Order does not matter: no complete row is a prefix of
@@ -391,6 +415,29 @@ pub static TABLE: &[Binding] = &[
     row("'<any>", Surfaces::FIELDS, Intent::Note(NO_MARKS), CountRule::Ignore),
     row("`<any>", Surfaces::FIELDS, Intent::Note(NO_MARKS), CountRule::Ignore),
     row("Z<any>", Surfaces::FIELDS, Intent::Swallow, CountRule::Ignore),
+    // Spec §5.10, key list D.prompt (plan M3b Deviations 7 and 8): a
+    // one-field prompt confirms on Enter from anywhere, field or not; its
+    // field's Esc in idle Normal cancels (Insert's Esc is the engine's).
+    // Enter typed in Insert reaches the first row too: the engine hands a
+    // one-line field's Enter back.
+    row("<CR>", Surfaces::PROMPT.or(Surfaces::FIELD_PROMPT), Intent::Act(confirm_top), CountRule::Ignore),
+    row("<Esc>", Surfaces::FIELD_PROMPT, Intent::Act(cancel_top), CountRule::Ignore),
+    // Spec §5.10 and §4.5: a dialog's stops, its buttons and a field-less
+    // picker (the dropdown) move with vim's keys; modal.rs no longer
+    // aliases them. A dialog's own answer letters come first (`answers`).
+    row("j", Surfaces::FORMS.or(Surfaces::DIALOG).or(Surfaces::PICKER), Intent::Key(DOWN), CountRule::Ignore),
+    row("k", Surfaces::FORMS.or(Surfaces::DIALOG).or(Surfaces::PICKER), Intent::Key(UP), CountRule::Ignore),
+    row("h", Surfaces::FORMS.or(Surfaces::DIALOG), Intent::Key(LEFT), CountRule::Ignore),
+    row("l", Surfaces::FORMS.or(Surfaces::DIALOG), Intent::Key(RIGHT), CountRule::Ignore),
+    row("G", Surfaces::DIALOG.or(Surfaces::PICKER), Intent::Key(END), CountRule::Ignore),
+    row("gg", Surfaces::PICKER, Intent::Key(HOME), CountRule::Ignore),
+    // Spec §5.6 (plan M3b Deviation 3): a selected dialog field reopens,
+    // `o` in Normal, `i a I A` in Insert seated as on the URL line.
+    row("o", Surfaces::FORMS, Intent::Reopen(None), CountRule::Ignore),
+    row("i", Surfaces::FORMS, Intent::Reopen(Some(OpenSeat::Keep)), CountRule::Ignore),
+    row("a", Surfaces::FORMS, Intent::Reopen(Some(OpenSeat::After)), CountRule::Ignore),
+    row("I", Surfaces::FORMS, Intent::Reopen(Some(OpenSeat::FirstNonBlank)), CountRule::Ignore),
+    row("A", Surfaces::FORMS, Intent::Reopen(Some(OpenSeat::End)), CountRule::Ignore),
 ];
 
 /// Each row's keys, parsed once.
@@ -413,7 +460,8 @@ pub fn lookup(buf: &[Tok], profile: KeyProfile, surface: Surface) -> Match {
 }
 
 /// [`lookup`] on a set of surface kinds: a `Surface`'s, or a field class
-/// (`FIELD_LINE`, `FIELD_BODY`) that no `Surface` names.
+/// (`FIELD_LINE`, `FIELD_BODY`, `FIELD_PROMPT`, `FIELD_QUERY`) that no
+/// `Surface` names.
 pub fn lookup_class(buf: &[Tok], profile: KeyProfile, class: Surfaces) -> Match {
     let rows = TABLE
         .iter()
@@ -578,6 +626,19 @@ mod tests {
     }
 
     #[test]
+    fn field_classes() {
+        use crate::keyroute::FieldId;
+        assert_eq!(field_class(FieldId::Url, Surface::UrlLine), Surfaces::FIELD_LINE);
+        assert_eq!(field_class(FieldId::Body, Surface::Body), Surfaces::FIELD_BODY);
+        assert_eq!(field_class(FieldId::ModalInput(0), Surface::Prompt), Surfaces::FIELD_LINE.or(Surfaces::FIELD_PROMPT));
+        assert_eq!(field_class(FieldId::ModalInput(1), Surface::Form), Surfaces::FIELD_LINE);
+        for id in [FieldId::Palette, FieldId::Jq, FieldId::Search, FieldId::FilePicker] {
+            assert_eq!(field_class(id, Surface::Picker), Surfaces::FIELD_QUERY, "{id:?}");
+        }
+        assert!(matches!(lookup_class(&notation::parse("j"), KeyProfile::Vim, Surfaces::FIELD_QUERY), Match::NoMatch), "no row in a query box");
+    }
+
+    #[test]
     fn no_two_rows_collide() {
         // Equal keys collide, and so does a complete row that is a strict
         // prefix of another (`<any>` matching anything). Two rows of the same
@@ -587,7 +648,12 @@ mod tests {
         let classes = Surface::SAMPLES
             .iter()
             .map(|s| (format!("{s:?}"), Surfaces::of(*s)))
-            .chain([("FIELD_LINE".to_string(), Surfaces::FIELD_LINE), ("FIELD_BODY".to_string(), Surfaces::FIELD_BODY)]);
+            .chain([
+                ("FIELD_LINE".to_string(), Surfaces::FIELD_LINE),
+                ("FIELD_BODY".to_string(), Surfaces::FIELD_BODY),
+                ("FIELD_PROMPT".to_string(), Surfaces::FIELD_LINE.or(Surfaces::FIELD_PROMPT)),
+                ("FIELD_QUERY".to_string(), Surfaces::FIELD_QUERY),
+            ]);
         for profile in [KeyProfile::Arrows, KeyProfile::Vim] {
             for (name, class) in classes.clone() {
                 let rows: Vec<_> = TABLE
@@ -622,7 +688,10 @@ mod tests {
             if b.count == CountRule::Pass {
                 assert!(edge || counted_verb, "{}: Pass is for Edge rows, dd and p", b.keys);
             }
-            if matches!(b.intent, Intent::Pass | Intent::Note(_) | Intent::Swallow | Intent::Open { .. }) {
+            if matches!(
+                b.intent,
+                Intent::Pass | Intent::Note(_) | Intent::Swallow | Intent::Open { .. } | Intent::Reopen(_)
+            ) {
                 assert_eq!(b.count, CountRule::Ignore, "{}", b.keys);
             }
             if b.profile.has(KeyProfile::Arrows) {
@@ -653,7 +722,10 @@ mod tests {
         assert!(matches!(lookup(&[Tok::Char('g')], Vim, Surface::Sidebar), Match::Prefix));
         assert!(matches!(lookup(&[Tok::Char('x')], Vim, Surface::Sidebar), Match::NoMatch));
         assert!(matches!(lookup(&[Tok::Char('j')], KeyProfile::Arrows, Surface::Sidebar), Match::NoMatch));
-        assert!(matches!(lookup(&[Tok::Char('j')], Vim, Surface::Picker), Match::NoMatch), "a picker types");
+        assert!(
+            matches!(lookup(&[Tok::Char('j')], Vim, Surface::Picker), Match::Complete(b) if b.keys == "j"),
+            "a field-less picker (the dropdown) moves; a query box never reaches the table"
+        );
         assert_eq!(keys_for(Vim, Surface::Sidebar, &Action::Undo), Some("u"));
         assert_eq!(keys_for(Vim, Surface::Picker, &Action::Undo), None);
         assert!(vim_first_chars().contains(&'g'));

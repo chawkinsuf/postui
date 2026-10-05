@@ -3,6 +3,28 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
+thread_local! {
+    /// Set while a key the vim engine handed back is routed on to a dialog
+    /// or a query box (plan M3b Deviation 6).
+    static QUIET: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// While alive, [`LineInput::handle_key`] types nothing and moves nothing:
+/// the engine owns the text, and a key it handed back reaches only the
+/// container's own arms (Enter, Esc, Tab, the picker moves, alt chords).
+/// Ends with its scope, restoring what was there before.
+pub(crate) struct Quiet(bool);
+
+pub(crate) fn quiet() -> Quiet {
+    Quiet(QUIET.replace(true))
+}
+
+impl Drop for Quiet {
+    fn drop(&mut self) {
+        QUIET.set(self.0);
+    }
+}
+
 /// A single-line, unicode-safe text input. Cursor position is a char index
 /// (not a byte offset), so operations stay correct with multi-byte
 /// characters. Shared by every single-line field in the app: the URL
@@ -42,6 +64,9 @@ pub struct LineInput {
     /// instead of opening a new one. `None` after a caret move, an undo,
     /// or a whole-value step.
     run: Option<EditKind>,
+    /// The text when the vim engine opened this field (plan M3b Deviation
+    /// 11): its edits record no snapshot, so `text_at_open` reads this.
+    opened: Option<String>,
 }
 
 /// Text and caret as they stood before a step.
@@ -87,6 +112,7 @@ impl LineInput {
             undo: Vec::new(),
             redo: Vec::new(),
             run: None,
+            opened: None,
         }
     }
 
@@ -217,14 +243,30 @@ impl LineInput {
         self.undo.clear();
         self.redo.clear();
         self.run = None;
+        self.opened = None;
     }
 
-    /// The text as it stood when this open began — the bottom of the undo
-    /// stack, or the current text if nothing was edited. Used by a
-    /// container (a form modal) that needs "what changed across this
-    /// whole open", not step-by-step history.
+    /// Marks the text a vim engine session starts from, unless an earlier
+    /// open of this same edit already did (a cover over the field leaves
+    /// the edit open). For a container that records "what changed across
+    /// this open" (plan M3b Deviation 11).
+    pub(crate) fn mark_open(&mut self) {
+        if self.opened.is_none() {
+            self.opened = Some(self.text_at_open());
+        }
+    }
+
+    /// The text as it stood when this open began — the mark a vim session
+    /// left ([`Self::mark_open`]), else the bottom of the undo stack, or
+    /// the current text if nothing was edited. The mark wins: engine edits
+    /// record no snapshot, so after a profile switch the first snapshot is
+    /// already past them. Used by a container (a form modal) that needs
+    /// "what changed across this whole open", not step-by-step history.
     pub fn text_at_open(&self) -> String {
-        self.undo.first().map(|s| s.text.clone()).unwrap_or_else(|| self.text.clone())
+        self.opened
+            .clone()
+            .or_else(|| self.undo.first().map(|s| s.text.clone()))
+            .unwrap_or_else(|| self.text.clone())
     }
 
     /// Replaces the whole text (caret at the end) as one undoable step.
@@ -380,6 +422,37 @@ impl LineInput {
         self.anchor = None;
     }
 
+    /// ctrl+backspace as a call, not a key, so it runs under
+    /// [`quiet`]: the selection, else the word behind the caret. For the
+    /// jq bar's fallback when there is no path segment to delete (plan
+    /// M3b Deviation 5).
+    pub fn delete_word_back(&mut self) {
+        if self.selection().is_some() {
+            self.record(EditKind::Whole);
+            self.delete_selection();
+            return;
+        }
+        self.delete_back_from(self.word_target(false));
+    }
+
+    /// Backspace's delete without a selection: the chars from `target` up
+    /// to the caret, one `DeleteBack` step that a burst extends.
+    fn delete_back_from(&mut self, target: usize) {
+        // A click plants the anchor on the caret and leaves it there; the
+        // caret moving off it would read as a selection. Not
+        // `clear_selection`: that breaks the run, and a burst of
+        // backspaces is one step.
+        self.anchor = None;
+        self.word_anchor = None;
+        if self.cursor > target {
+            self.record(EditKind::DeleteBack);
+            let start = self.byte_offset(target);
+            let end = self.byte_offset(self.cursor);
+            self.text.replace_range(start..end, "");
+            self.cursor = target;
+        }
+    }
+
     /// Inserts `s` at the cursor and advances the cursor by `s`'s char
     /// count. Used to splice in multi-character text (e.g. a picked
     /// variable token) in one shot, rather than one `handle_key` per char.
@@ -429,6 +502,9 @@ impl LineInput {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> bool {
+        if QUIET.get() {
+            return false;
+        }
         // The emacs caret bytes (ctrl+e, ESC b/f — also what mac
         // terminals send for cmd/option+arrows) fold into the
         // End/word-hop keys matched below on every platform; only ^A is
@@ -524,12 +600,6 @@ impl LineInput {
                     self.delete_selection();
                     return true;
                 }
-                // A click plants the anchor on the caret and leaves it
-                // there; the caret moving off it would read as a selection.
-                // Not `clear_selection`: that breaks the run, and a burst
-                // of backspaces is one step.
-                self.anchor = None;
-                self.word_anchor = None;
                 // ctrl/alt+backspace removes the whole word behind the
                 // caret, the same hop word-left would make.
                 let target = if word {
@@ -537,13 +607,7 @@ impl LineInput {
                 } else {
                     self.cursor.saturating_sub(1)
                 };
-                if self.cursor > target {
-                    self.record(EditKind::DeleteBack);
-                    let start = self.byte_offset(target);
-                    let end = self.byte_offset(self.cursor);
-                    self.text.replace_range(start..end, "");
-                    self.cursor = target;
-                }
+                self.delete_back_from(target);
                 true
             }
             KeyCode::Delete => {
@@ -881,6 +945,57 @@ mod tests {
     }
     fn code(c: KeyCode) -> KeyEvent {
         KeyEvent::new(c, KeyModifiers::NONE)
+    }
+
+    /// Plan M3b Deviation 6: a key the vim engine handed back reaches a
+    /// dialog's own arms, never its text.
+    #[test]
+    fn a_quiet_input_types_and_moves_nothing() {
+        let mut input = LineInput::new("ab");
+        {
+            let _quiet = quiet();
+            assert!(!input.handle_key(key('x')));
+            assert!(!input.handle_key(code(KeyCode::Home)));
+        }
+        assert_eq!((input.text(), input.cursor()), ("ab", 2));
+        input.handle_key(key('x'));
+        assert_eq!(input.text(), "abx", "the guard ends with its scope");
+    }
+
+    /// Plan M3b Deviation 11: the engine's edits record no snapshot here,
+    /// so a dialog's close step reads the text at open from the mark.
+    #[test]
+    fn text_at_open_falls_back_to_the_mark() {
+        let mut input = LineInput::new("before");
+        input.mark_open();
+        input.splice_raw(0, 6, "after");
+        assert_eq!(input.text_at_open(), "before");
+        input.end_edit();
+        assert_eq!(input.text_at_open(), "after", "a closed edit forgets its mark");
+    }
+
+    /// A cover over a dialog field leaves its edit open: the session that
+    /// reopens it keeps the first mark.
+    #[test]
+    fn a_second_mark_keeps_the_first() {
+        let mut input = LineInput::new("before");
+        input.mark_open();
+        input.splice_raw(0, 6, "during");
+        input.mark_open();
+        input.splice_raw(0, 6, "after");
+        assert_eq!(input.text_at_open(), "before");
+    }
+
+    /// Final review M-2: a profile switch mid-edit puts snapshot-recording
+    /// edits after engine edits; the close step still reads the marked text.
+    #[test]
+    fn the_mark_beats_the_first_snapshot() {
+        let mut input = LineInput::new("before");
+        input.mark_open();
+        input.splice_raw(0, 6, "during");
+        input.handle_key(key('!'));
+        assert_eq!(input.text(), "during!");
+        assert_eq!(input.text_at_open(), "before");
     }
 
     #[test]

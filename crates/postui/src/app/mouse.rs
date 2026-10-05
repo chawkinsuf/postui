@@ -40,11 +40,14 @@ impl App {
         if button {
             self.sync_session(None, super::fields::Cause::Before);
         }
+        // The sweep in flight is the live field's own engine's: a dialog
+        // field runs on the dialog engine (plan M3b Deviation 1).
+        let sweeping = self.live_engine_field().is_some_and(|id| self.glue_of(id).sweeping());
         let how = match m.kind {
             MouseEventKind::Down(MouseButton::Left) => Some(Settled::Click),
             MouseEventKind::Drag(MouseButton::Left) => Some(Settled::Sweep),
             MouseEventKind::Up(MouseButton::Left) => {
-                Some(if self.glue.sweeping() { Settled::Release } else { Settled::Click })
+                Some(if sweeping { Settled::Release } else { Settled::Click })
             }
             _ => None,
         };
@@ -61,7 +64,7 @@ impl App {
         // never reaches `update`, and an unanswered startup gate must
         // not be left down.
         let regated = self.reraise_startup_config_gate();
-        let asked = super::ASK_KEYMAP_ON_LAUNCH && self.raise_keymap_choice();
+        let asked = self.raise_keymap_choice();
         changed || regated || asked
     }
 

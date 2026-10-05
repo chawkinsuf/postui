@@ -17,13 +17,19 @@ impl App {
         let surface = self.surface();
         let field = self.field_caret();
         if field.is_live() {
-            // A live field's keys go to its engine (vim) or type (arrows, and
-            // the fields M3b brings to the engine): no keymap letter applies.
-            let engine = match field {
-                FieldCaret::Live(id) if self.glue.live() == Some(id) => Some(self.glue.view()),
-                _ => None,
+            // A live field's keys go to its engine (vim), on either glue, or
+            // type (arrows, and a field before its session syncs): no keymap
+            // letter applies.
+            let engine = self.live_engine_field().map(|id| self.glue_of(id).view());
+            return KeyCtx {
+                profile,
+                surface,
+                field,
+                user_bare: None,
+                cap: self.repeat_cap(surface),
+                engine,
+                answers: Vec::new(),
             };
-            return KeyCtx { profile, surface, field, user_bare: None, cap: self.repeat_cap(surface), engine };
         }
         KeyCtx {
             profile,
@@ -32,6 +38,7 @@ impl App {
             user_bare: self.user_bare(ev, profile, surface),
             cap: self.repeat_cap(surface),
             engine: None,
+            answers: if surface == Surface::Dialog { self.modals.answer_letters() } else { Vec::new() },
         }
     }
 
@@ -158,23 +165,32 @@ impl App {
             }
         }
         match self.live_engine_field() {
-            Some(_) => self.glue.echo(),
+            Some(id) => self.glue_of(id).echo(),
             None => String::new(),
         }
     }
 
-    /// The vim mode word (spec §3.8): what is taking the keys. A field the
-    /// engine runs shows the engine's mode; any other field with the caret
-    /// types (`INSERT`: modal fields and the query boxes until M3b);
-    /// everything else is `NORMAL`. `None` in the arrows profile.
+    /// The vim mode word (spec §3.8): what is taking the keys. A field with
+    /// a live session shows its engine's mode, on either glue (plan M3b
+    /// Deviation 1); a screen field not synced yet shows the screen
+    /// engine's; any other field with the caret types (`INSERT`: a dialog
+    /// field before its session opens, which opens it in Insert, and the
+    /// query boxes); everything else is `NORMAL`. `None` in the arrows
+    /// profile.
     pub fn mode_indicator(&self) -> Option<&'static str> {
         if self.profile() != crate::config::KeyProfile::Vim {
             return None;
         }
-        Some(match self.field_caret() {
-            FieldCaret::Live(id) if id.engine_kind().is_some() => super::fields::mode_word(self.glue.mode()),
-            FieldCaret::Live(_) => "INSERT",
-            _ => "NORMAL",
+        Some(match (self.live_engine_field(), self.field_caret()) {
+            (Some(id), _) => super::fields::mode_word(self.glue_of(id).mode()),
+            // A screen field whose session has not synced yet (opened with
+            // no event) shows the screen engine's mode, as before M3b: the
+            // sync opens it in Normal.
+            (None, FieldCaret::Live(id)) if !id.is_modal() && !id.insert_only() => {
+                super::fields::mode_word(self.glue.mode())
+            }
+            (None, FieldCaret::Live(_)) => "INSERT",
+            (None, _) => "NORMAL",
         })
     }
 

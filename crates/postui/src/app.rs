@@ -27,12 +27,6 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 /// stack.
 const MIGRATION_TITLE: &str = "Migrate variables";
 
-/// Whether the first-launch keyboard question is asked (plan M1
-/// Deviation 2, the user's decision 2026-10-01: built in M1, raised from
-/// M3, once the vim profile is usable). Until then an unset `keymap` runs
-/// arrows and the Settings row switches profiles.
-const ASK_KEYMAP_ON_LAUNCH: bool = false;
-
 /// What a write refuses with when no project is open. Every such arm is
 /// already gated by `refuse_without_project`, so this is the belt to that
 /// braces — it exists so no write can be attempted against an empty root.
@@ -230,6 +224,15 @@ pub struct App {
     /// The vim profile's text engine and its field session (spec §3.7):
     /// the one door to the engine (`keyroute::engine_glue`).
     pub(crate) glue: crate::keyroute::engine_glue::Glue,
+    /// The top dialog's field's engine (plan M3b Deviation 1): a second
+    /// engine, so a screen field parked under a dialog keeps its state.
+    pub(crate) modal_glue: crate::keyroute::engine_glue::Glue,
+    /// The dialog field with a session, by its dialog's serial (plan M3b
+    /// Deviation 2).
+    pub(crate) modal_session: Option<(u64, crate::keyroute::FieldId)>,
+    /// The top dialog's serial at the last sync: a dialog field that opens
+    /// under a new top opens in Insert (plan M3b Deviation 3).
+    pub(crate) modal_seen: Option<u64>,
     /// Whether the last `Action::Undo` or `Action::Redo` stepped anything:
     /// a counted `u` or ctrl+r stops at the first repeat that did not
     /// (`App::run_steps`).
@@ -624,9 +627,7 @@ impl App {
                 ToastKind::Error,
             );
             app.apply_startup_config_gate();
-            if ASK_KEYMAP_ON_LAUNCH {
-                app.raise_keymap_choice();
-            }
+            app.raise_keymap_choice();
             if testbed {
                 app.screen = Screen::Testbed;
             }
@@ -660,9 +661,7 @@ impl App {
             // The project refused to open: the app runs empty until the
             // user opens another one, so none of the dispositions apply.
             app.apply_startup_config_gate();
-            if ASK_KEYMAP_ON_LAUNCH {
-                app.raise_keymap_choice();
-            }
+            app.raise_keymap_choice();
             if testbed {
                 app.screen = Screen::Testbed;
             }
@@ -705,9 +704,7 @@ impl App {
         }
 
         app.apply_startup_config_gate();
-        if ASK_KEYMAP_ON_LAUNCH {
-            app.raise_keymap_choice();
-        }
+        app.raise_keymap_choice();
 
         if testbed {
             app.screen = Screen::Testbed;
@@ -734,7 +731,11 @@ impl App {
     /// gate: with any modal up it waits for the next event boundary,
     /// where the callers ask again.
     pub(crate) fn raise_keymap_choice(&mut self) -> bool {
-        if self.ui_settings.keymap.is_some() || self.modals.top().is_some() {
+        if self.ui_settings.keymap.is_some()
+            || self.modals.top().is_some()
+            || self.pending_terminal_action.is_some()
+            || self.startup_config_gate
+        {
             return false;
         }
         self.push_modal(Modal::KeymapChoice { aimed: None });
@@ -1692,7 +1693,13 @@ impl App {
             registry: crate::config::ProjectsRegistry::default(),
             config: crate::config::Config::none(),
             clipboard: crate::clipboard::Clipboard::new(&crate::config::UiSettings::default()),
-            ui_settings: crate::config::UiSettings::default(),
+            // A test app has answered the keyboard question (spec §4.2);
+            // `App::new` applies the user's own settings over this, so a
+            // real start with no `keymap` still asks.
+            ui_settings: crate::config::UiSettings {
+                keymap: Some(crate::config::KeyProfile::Arrows),
+                ..Default::default()
+            },
             themes: crate::theme::ThemeRegistry::builtin(),
             terminal_colors: crate::theme::QueriedColors::default(),
             theme_name: "terminal".into(),
@@ -1703,6 +1710,9 @@ impl App {
             keymap: crate::keys::Keymap::default_bindings(),
             router: crate::keyroute::Router::default(),
             glue: Default::default(),
+            modal_glue: Default::default(),
+            modal_session: None,
+            modal_seen: None,
             history_stepped: false,
             usage: crate::usage::UsageStore::default(),
             clients: crate::http::Clients::new(),
@@ -1770,9 +1780,6 @@ impl App {
         let mut app = Self::with_root(tx, dir.path().to_path_buf());
         app._test_rx = Some(rx);
         app._test_dir = Some(dir);
-        // A test app has answered the keyboard question (spec §4.2): vim
-        // cases call `use_profile(Vim)` explicitly.
-        app.ui_settings.keymap = Some(crate::config::KeyProfile::Arrows);
         app
     }
 
@@ -1890,7 +1897,7 @@ impl App {
         // including a nested dispatch that pushed the gate's own
         // continuation, or one that finally fixed `config.toml`.
         let regated = self.reraise_startup_config_gate();
-        let asked = ASK_KEYMAP_ON_LAUNCH && self.raise_keymap_choice();
+        let asked = self.raise_keymap_choice();
         changed || regated || asked
     }
 
@@ -2372,7 +2379,13 @@ impl App {
                 self.editor.url.edited()
             };
         let body = engine(crate::keyroute::FieldId::Body) && self.glue.edited(crate::keyroute::EngineKind::Body);
-        let jq = self.focus == PaneId::Response && self.session.response.jq_field_edited();
+        // In vim the engine holds the jq bar's typing (plan M3b Review Focus
+        // 4); a key the bar claims or takes itself (a completion accept, a
+        // segment delete) edits its own line, and the rebase that follows
+        // starts the engine's count over, so either keeps the gate shut.
+        let jq = self.focus == PaneId::Response
+            && (engine(crate::keyroute::FieldId::Jq) && self.glue.edited(crate::keyroute::EngineKind::Line)
+                || self.session.response.jq_field_edited());
         url || body || jq
     }
 
@@ -2549,8 +2562,10 @@ impl App {
         // edits or a step either way (amendment C1: before the first
         // committed step the live edit still counts, or ctrl+z in Insert
         // would undo an older app step and lose the typed text).
-        if let Some(kind) = self.live_engine_field().and_then(|id| id.engine_kind()) {
-            return self.glue.edited(kind) || self.glue.can_undo(kind) || self.glue.can_redo(kind);
+        if let Some(id) = self.live_engine_field() {
+            let kind = id.engine_kind();
+            let g = self.glue_of(id);
+            return g.edited(kind) || g.can_undo(kind) || g.can_redo(kind);
         }
         // Modals first, matching `open_text_field_mut` and `field_open`.
         if !self.modals.is_empty() {
@@ -2748,6 +2763,11 @@ impl App {
                 // keymap that runs arrows is not a choice, so answering
                 // "arrows" to the question still writes it.
                 if self.ui_settings.keymap == Some(profile) {
+                    // A question left up after its answer arrived by
+                    // another route (a hand-edited reload) still closes.
+                    if matches!(self.modals.top(), Some(Modal::KeymapChoice { .. })) {
+                        self.modals.pop();
+                    }
                     return true;
                 }
                 let before = self.ui_string("keymap");
@@ -4301,16 +4321,43 @@ impl App {
             }
             Action::CancelSend => self.session.cancel(),
             Action::CloseField => {
-                // The field rule, dispatched rather than typed: with a
-                // field open this is exactly the Esc it would have taken.
-                // In vim it skips the engine, so the chip always closes
-                // the field, as on main; the end-of-event sync then
+                // A dialog's field closes to selected, its edit one step on
+                // the dialog's own stack (spec 2026-09-16), never through
+                // Esc, which cancels a one-field prompt (plan M3b Deviation
+                // 7). Off a dialog this is exactly the Esc the field would
+                // have taken. In vim it skips the engine, so the chip always
+                // closes the field, as on main; the end-of-event sync then
                 // leaves the session (amendment A4-2).
+                if !self.modals.is_empty() {
+                    if !self.modals.field_open() {
+                        return false;
+                    }
+                    self.modals.close_top_field();
+                    return true;
+                }
                 if !self.field_open() {
                     return false;
                 }
                 self.handle_key_routed(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
             }
+            Action::ConfirmTopModal => {
+                // The button row's aim decides there (spec 2026-09-15); from
+                // a field or a stop it is the dialog's confirm. A refused
+                // confirm (an empty name) toasts and keeps the field as it is.
+                let res = match self.modals.button_focus() {
+                    Some(crate::components::modal::FormButton::Cancel) => self.modals.cancel_top(),
+                    _ => self.modals.confirm_top(),
+                };
+                match res {
+                    Some(res) => self.apply_modal_result(res),
+                    None => true,
+                }
+            }
+            Action::CancelTopModal => match self.modals.cancel_top() {
+                Some(res) => self.apply_modal_result(res),
+                None => false,
+            },
+            Action::ReopenField => self.modals.reopen_field(),
             Action::SetSecret { name, value } => {
                 let t = self.begin_op();
                 let result = match self.project.as_mut() {
@@ -9500,9 +9547,9 @@ impl App {
             return changed;
         }
         if !self.modals.is_empty() {
-            // The filter-query modals hold their query as a plain String
-            // (no LineInput), so they sit outside `focused_input_index` —
-            // but their queries took typed text, so they take pastes too.
+            // In vim the engine took the paste above, so these arms are
+            // arrows', and the file picker's in both profiles (it keeps its
+            // folder jump, plan M3b Deviation 13).
             match self.modals.top_mut() {
                 Some(crate::components::modal::Modal::Palette(p)) => {
                     p.paste(text);
@@ -10161,7 +10208,7 @@ impl App {
         // Not every key reaches `update` -- Esc on a modal just pops it
         // -- so the gate is re-checked at the event boundary too.
         let regated = self.reraise_startup_config_gate();
-        let asked = ASK_KEYMAP_ON_LAUNCH && self.raise_keymap_choice();
+        let asked = self.raise_keymap_choice();
         changed || regated || asked
     }
 
@@ -10219,6 +10266,18 @@ impl App {
         // a drag is live its chips are the cancel keys and nothing else.
         if self.sidebar.drag.is_some() || self.manage.list.drag.is_some() {
             return fields::Ran::routed(false);
+        }
+
+        // Plan M3b Deviation 4 (the user's decision): ctrl+r shows or hides
+        // the secret prompt's value in both profiles, field open or not,
+        // ahead of the router (vim's register paste and redo) and of step
+        // 1d (arrows' ctrl+r is Send, which used to confirm the prompt).
+        if matches!(ev.code, KeyCode::Char('r' | 'R'))
+            && ev.modifiers.contains(KeyModifiers::CONTROL)
+            && !ev.modifiers.contains(KeyModifiers::ALT)
+            && self.modals.toggle_secret_reveal()
+        {
+            return fields::Ran::routed(true);
         }
 
         // The key router (piece 4 spec §3.1): one snapshot of where the
@@ -10338,7 +10397,7 @@ impl App {
             // above — it can't live in the modal's own key handler.
             // Discard needs nothing extra and is handled there instead.
             if let KeyCode::Char(c) = ev.code
-                && c.eq_ignore_ascii_case(&'k')
+                && c.eq_ignore_ascii_case(&crate::components::modal::CONFIG_EDIT_KEEP)
                 && let Some(crate::components::modal::Modal::ConfigEditInvalid {
                     file, path, ..
                 }) = self.modals.top()
@@ -11545,6 +11604,8 @@ mod mouse;
 mod router;
 mod fields;
 mod verbs;
+#[cfg(test)]
+mod dialog_tests;
 #[cfg(test)]
 mod field_tests;
 #[cfg(test)]

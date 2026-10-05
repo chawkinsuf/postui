@@ -19,6 +19,8 @@ pub(super) enum Fixture {
     SidebarThree,
     /// `SidebarThree` with beta (under the cursor) open in the editor.
     SidebarThreeBetaOpen,
+    /// `SidebarThree` with a y/n confirm on top; `y` toasts "yes".
+    ConfirmYesNo,
     /// Headers a, b, c on an open request; the content focused on row 1.
     TableThreeHeaders,
     /// `TableThreeHeaders`, then row 0 deleted as one undo step.
@@ -101,6 +103,12 @@ enum Expect {
     OptionCount(usize),
     /// A chooser is the top modal.
     Picker,
+    /// A confirm is the top dialog.
+    Dialog,
+    /// The palette's query text.
+    PaletteQuery(&'static str),
+    /// The palette's highlighted row.
+    PaletteRow(usize),
     /// The row register holds this request.
     Yanked(&'static str),
     /// A selector's fields editor is the top modal.
@@ -265,6 +273,23 @@ const CASES: &[Case] = &[
     arrows_u("L.yank", TableThreeHeaders, "yP", &[Headers(&["a", "b-copy", "b", "c"]), TableRow(1)]),
     vim_u("L.yank", VarGrid, "yyp", &[OptionCount(3)]),
     arrows_u("L.yank", VarGrid, "cv", &[OptionCount(3)]),
+    // Key list §9, M3: prompts, pickers and confirms (spec §5.10).
+    vim("D.prompt", SidebarThree, "r", &[PromptOpen, Mode("INSERT")]),
+    vim("D.prompt", SidebarThree, "r<Esc>", &[PromptOpen, Mode("NORMAL")]),
+    vim("D.prompt", SidebarThree, "r<Esc><Esc>", &[NoModal, Requests(&["main/alpha", "main/beta", "main/gamma"])]),
+    vim_u("D.prompt", SidebarThree, "r<Esc>ccdelta<CR>", &[NoModal, Requests(&["main/alpha", "main/delta", "main/gamma"])]),
+    arrows_u("D.prompt", SidebarThree, "r<C-u>delta<CR>", &[NoModal, Requests(&["main/alpha", "main/delta", "main/gamma"])]),
+    arrows("D.prompt", SidebarThree, "r<Esc>", &[NoModal, Requests(&["main/alpha", "main/beta", "main/gamma"])]),
+    vim("D.picker", SidebarThree, ":xyz", &[PaletteQuery("xyz"), Mode("INSERT")]),
+    vim("D.picker", SidebarThree, ":<C-n>", &[PaletteRow(1)]),
+    vim("D.picker", SidebarThree, ":<Esc>", &[NoModal]),
+    arrows("D.picker", SidebarThree, "<C-p>xyz", &[PaletteQuery("xyz")]),
+    arrows("D.picker", SidebarThree, "<C-p><C-n>", &[PaletteRow(1)]),
+    vim("D.confirm", ConfirmYesNo, "y", &[NoModal, Toast("yes")]),
+    vim("D.confirm", ConfirmYesNo, "jx", &[Dialog, NoToast]),
+    vim("D.confirm", ConfirmYesNo, "<Esc>", &[NoModal, NoToast]),
+    arrows("D.confirm", ConfirmYesNo, "y", &[NoModal, Toast("yes")]),
+    arrows("D.confirm", ConfirmYesNo, "<Esc>", &[NoModal]),
 ];
 
 fn req(url: &str) -> postui_core::model::HttpRequest {
@@ -314,7 +339,7 @@ pub(super) fn build(f: Fixture) -> App {
         _ => App::new_for_test(),
     };
     match f {
-        SidebarThree | SidebarThreeBetaOpen => {
+        SidebarThree | SidebarThreeBetaOpen | ConfirmYesNo => {
             for slug in ["main/alpha", "main/beta", "main/gamma"] {
                 postui_core::fixtures::save_request(app.proj().root(), slug, &req("https://x/1")).unwrap();
             }
@@ -337,6 +362,16 @@ pub(super) fn build(f: Fixture) -> App {
                 .position(|r| matches!(r, Row::Request { slug, .. } if slug == "main/beta"))
                 .expect("beta is listed");
             app.sidebar.selected = Some(beta);
+            if matches!(f, ConfirmYesNo) {
+                app.push_modal(Modal::Confirm {
+                    title: "Sure?".into(),
+                    body: "b".into(),
+                    choices: vec![
+                        ('y', "Yes".into(), vec![Action::ShowToast("yes".into(), ToastKind::Info)]),
+                        ('n', "No".into(), vec![]),
+                    ],
+                });
+            }
         }
         TableThreeHeaders | TableAfterDelete | Method | UrlLine => {
             app.update(Action::CreateRequest("matrix".into()));
@@ -495,6 +530,9 @@ fn check(app: &App, e: Expect) -> Result<(), String> {
                 .map_or(0, |o| o.len())
                 == n
         }
+        Dialog => matches!(app.modals.top(), Some(Modal::Confirm { .. })),
+        PaletteQuery(q) => matches!(app.modals.top(), Some(Modal::Palette(p)) if p.input() == q),
+        PaletteRow(n) => matches!(app.modals.top(), Some(Modal::Palette(p)) if p.selected() == n),
         Picker => matches!(app.modals.top(), Some(Modal::Chooser(_))),
         Yanked(slug) => app.yank == crate::yank::Register::Request(slug.into()),
         FieldsEditor => matches!(app.modals.top(), Some(Modal::FieldsEditor(_))),
@@ -879,7 +917,7 @@ fn every_verb_chip_resolves_to_its_chip() {
                 let Some(keys) = table::keys_for(profile, surface, &Action::OnSelection(verb)) else {
                     continue; // no key in this profile: the chip drops its keycap
                 };
-                let ctx = KeyCtx { profile, surface, field: app.field_caret(), user_bare: None, cap: usize::MAX, engine: None };
+                let ctx = KeyCtx { profile, surface, field: app.field_caret(), user_bare: None, cap: usize::MAX, engine: None, answers: Vec::new() };
                 let mut router = Router::default();
                 let mut last = Resolved::Declined;
                 for ev in crate::keyroute::notation::events(keys) {

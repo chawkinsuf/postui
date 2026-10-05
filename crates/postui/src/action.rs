@@ -383,10 +383,23 @@ pub enum Action {
     /// Cancel the in-flight request, if any: aborts its task and marks the
     /// response pane `Cancelled`.
     CancelSend,
-    /// Close the open text field keeping its text — what Esc does there
-    /// (spec 2026-09-15). The footer's `esc done` chip dispatches it; a
-    /// no-op when nothing is open.
+    /// Close the open text field keeping its text (spec 2026-09-15). On a
+    /// screen field it is what Esc does there; on a dialog it closes the
+    /// dialog's field to selected (`ModalStack::close_top_field`), never
+    /// through Esc, which may cancel the dialog (plan M3b Deviation 7). The
+    /// footer's `esc done` chip and vim's `Leave` rows dispatch it; a no-op
+    /// when nothing is open.
     CloseField,
+    /// Confirm the top dialog, as its Confirm button does, or press the
+    /// aimed button on its button row (spec §5.10: vim's Enter on a
+    /// one-field prompt; the prompt's `enter confirm` chip).
+    ConfirmTopModal,
+    /// Cancel the top dialog (spec §5.10: vim's Esc in a prompt field's idle
+    /// Normal; the prompt's `esc cancel` chip).
+    CancelTopModal,
+    /// Open the top form's selected text field (vim's `i a I A o`, plan M3b
+    /// Deviation 3). A no-op on the button row or a stop with no text.
+    ReopenField,
     /// Confirmed the send-time secret prompt (spec §3): writes `name`'s
     /// value to `secrets.toml` under the active environment, then re-runs
     /// `Action::ForceSend` on success (prompting for the next missing
