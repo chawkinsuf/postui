@@ -3141,29 +3141,7 @@ impl App {
                     return false;
                 }
                 self.update(select);
-                // Lands the caret with the editor focused; nothing elsewhere.
-                self.update(Action::FocusEditorContent);
-                true
-            }
-            Action::FocusEditorContent => {
-                // Spec §5.8: only with the editor focused. The sidebar and
-                // the response step the strip from where they stand.
-                if self.screen != Screen::Main || self.focus != PaneId::Editor {
-                    return false;
-                }
-                // Already landed: the caret is in the body, or on a table
-                // row, of the tab showing. Nothing to land, and the body's
-                // session stays whole, its engine history with it (final
-                // review M-1). A tab switch clears the table's row, so a
-                // step to another table still lands on its first row.
-                if self.editor.sub_focus == SubFocus::Content
-                    && (self.editor.active_tab == EditorTab::Body || self.editor.table.selected.is_some())
-                {
-                    return false;
-                }
-                // The field it leaves closes as its own history step first.
-                self.flush_field_session();
-                self.editor.focus_content_from_app();
+                self.land_editor_caret();
                 true
             }
             Action::OpenResponseSearch => {
@@ -3377,30 +3355,14 @@ impl App {
                 self.retarget_editor_tab_underline(prev);
                 true
             }
-            Action::EditorTabCycle(delta) => {
-                // Cycles the on-screen order over the enabled tabs (the Body
-                // tab is disabled on a GET), not `EditorTab::index()`'s slot
-                // numbers. Any distance lands right (plan M4a Deviation 8).
-                let prev = self.editor.active_tab;
-                let order: Vec<EditorTab> = (0..EditorTab::COUNT)
-                    .map(EditorTab::from_draw_position)
-                    .filter(|t| self.editor.tab_enabled(*t))
-                    .collect();
-                let at = order.iter().position(|t| *t == prev).unwrap_or(0);
-                let target = order[(at as i8 + delta).rem_euclid(order.len() as i8) as usize];
-                // A step round to the tab already showing (`12gT`) changes
-                // nothing, as in vim: the table keeps its row (final review
-                // M-1). A step of one never does, so arrows is unchanged.
-                if target == prev {
-                    return false;
-                }
-                self.commit_table_edit();
-                self.editor.active_tab = target;
-                self.editor.preferred_tab = target;
-                self.editor.table.reset();
-                self.retarget_editor_tab_underline(prev);
-                true
-            }
+            // Cycles the on-screen order over the enabled tabs (the Body tab
+            // is disabled on a GET). A step round to the tab already showing
+            // changes nothing, as in vim: the table keeps its row (final
+            // review M-1).
+            Action::EditorTabCycle(delta) => match self.editor_tab_step(delta) {
+                Some(select) => self.update(select),
+                None => false,
+            },
             Action::CycleMethod => {
                 self.no_coalesce = true;
                 self.editor.method = self.editor.method.cycle();
@@ -10224,9 +10186,12 @@ impl App {
         // since the last event (an async result, a reload), then with what
         // this key did (spec §3.1).
         self.sync_session(None, fields::Cause::Before);
+        let echo = self.key_echo();
         let ran = self.route_key(ev);
         self.sync_session(ran.open_as, fields::Cause::Key { routed: ran.routed });
-        let changed = ran.changed;
+        // A key that does nothing may still drop the pending keys the
+        // footer echoes (a refused `<C-w>h`, `5gt` past the strip).
+        let changed = ran.changed || self.key_echo() != echo;
         // The op safety net at the event boundary, as `dispatch` has one
         // per action: a key handled without an action (a var-form or
         // grid commit) can bail between `begin_op` and its record.

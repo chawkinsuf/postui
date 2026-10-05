@@ -192,10 +192,6 @@ pub enum Action {
     /// the field open (the user's decision, plan M4a), and so does a close
     /// the field itself refuses.
     GoTab { to: TabTo, leave: bool },
-    /// After a vim tab key with the editor focused (spec §5.8): the caret
-    /// lands in the selected tab's content, so `gt a` adds a row. It never
-    /// moves panes. Arrows' tab chord does not run it (plan M4a Deviation 7).
-    FocusEditorContent,
     CycleMethod,
     FocusUrl,
     /// Toggles `App::table_collapsed` (params/headers table body vs. tab

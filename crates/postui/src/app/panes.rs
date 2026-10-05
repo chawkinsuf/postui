@@ -32,15 +32,13 @@ impl App {
                 self.update(Action::FocusPane(to))
             }
             Screen::Manage => {
-                if leave {
-                    if self.manage_pane_target(dir).is_none() {
-                        return false;
-                    }
-                    if !self.close_field_to_leave() {
-                        return false;
-                    }
+                let Some(to_detail) = self.manage_pane_target(dir) else {
+                    return false;
+                };
+                if leave && !self.close_field_to_leave() {
+                    return false;
                 }
-                self.manage_pane_move(dir)
+                self.manage_pane_move(to_detail)
             }
             Screen::Testbed => false,
         }
@@ -49,10 +47,34 @@ impl App {
     /// Closes the open field for a key that leaves it (a window or tab
     /// key): whether it closed. A field may refuse (a Settings value that
     /// will not parse keeps its edit live, and says so), and then the key
-    /// does nothing else.
+    /// does nothing else. On the Settings tab only its own edit counts:
+    /// a Variables edit left live behind it (`screen_field`) is not the
+    /// field the key leaves, though [`Self::field_open`] still sees it.
     pub(super) fn close_field_to_leave(&mut self) -> bool {
         self.update(Action::CloseField);
-        !self.field_open()
+        let settings = self.screen == Screen::Manage
+            && self.manage.tab == crate::components::manage::ManageTab::Settings;
+        !if settings { self.settings_edit_live() } else { self.field_open() }
+    }
+
+    /// After a vim tab key selects a tab (spec §5.8): with the editor
+    /// focused, the caret lands in that tab's content, so `gt a` adds a
+    /// row. It never moves panes; the sidebar and the response step the
+    /// strip from where they stand. Arrows' tab chord does not run it (plan
+    /// M4a Deviation 7).
+    pub(super) fn land_editor_caret(&mut self) {
+        if self.screen != Screen::Main || self.focus != PaneId::Editor {
+            return;
+        }
+        // Already in the body: nothing to land, and the body's session
+        // stays whole, its engine history with it (final review M-1). A
+        // tab switch clears the table's row, so a table tab always lands.
+        if self.editor.sub_focus == SubFocus::Content && self.editor.active_tab == EditorTab::Body {
+            return;
+        }
+        // The field it leaves closes as its own history step first.
+        self.flush_field_session();
+        self.editor.focus_content_from_app();
     }
 
     /// Which half a Manage screen's window key goes to (plan M4a Deviation
@@ -92,12 +114,9 @@ impl App {
         Some(to_detail)
     }
 
-    /// Moves to the half [`Self::manage_pane_target`] names.
-    fn manage_pane_move(&mut self, dir: PaneDir) -> bool {
+    /// Moves to the half [`Self::manage_pane_target`] named.
+    fn manage_pane_move(&mut self, to_detail: bool) -> bool {
         use crate::components::manage::ManageTab;
-        let Some(to_detail) = self.manage_pane_target(dir) else {
-            return false;
-        };
         let tab = self.manage.tab;
         let Self { project, varmanager, manage, .. } = self;
         match (tab, to_detail) {
@@ -134,15 +153,26 @@ impl App {
                 let at = modes.iter().position(|m| *m == showing)?;
                 Some((modes.into_iter().map(|m| Some(Action::ResponseViewMode(m))).collect(), at))
             }
-            // `EditorTabSelect` takes the on-screen position; the Body tab
-            // is disabled on a GET.
-            (Screen::Main, PaneId::Editor | PaneId::Sidebar) => Some((
-                (0..EditorTab::COUNT)
-                    .map(|i| self.editor.tab_enabled(EditorTab::from_draw_position(i)).then_some(Action::EditorTabSelect(i)))
-                    .collect(),
-                self.editor.active_tab.draw_position(),
-            )),
+            (Screen::Main, PaneId::Editor | PaneId::Sidebar) => Some(self.editor_tab_strip()),
         }
+    }
+
+    /// The editor's strip, whatever has focus: `EditorTabSelect` takes the
+    /// on-screen position; the Body tab is disabled on a GET.
+    fn editor_tab_strip(&self) -> (Vec<Option<Action>>, usize) {
+        (
+            (0..EditorTab::COUNT)
+                .map(|i| self.editor.tab_enabled(EditorTab::from_draw_position(i)).then_some(Action::EditorTabSelect(i)))
+                .collect(),
+            self.editor.active_tab.draw_position(),
+        )
+    }
+
+    /// `Action::EditorTabCycle` (`keys.toml`'s `editor_tab_next` and
+    /// `editor_tab_prev`): the editor's strip from any focus, stepped as
+    /// [`Self::tab_target`] steps.
+    pub(super) fn editor_tab_step(&self, delta: i8) -> Option<Action> {
+        strip_target(self.editor_tab_strip(), TabTo::By(delta))
     }
 
     /// The action that selects where a tab key goes on [`Self::tab_strip`],
@@ -152,21 +182,25 @@ impl App {
     /// walks the enabled tabs only, wrapping, so any distance lands right
     /// (plan M4a Deviation 8).
     pub(super) fn tab_target(&self, to: TabTo) -> Option<Action> {
-        let (strip, showing) = self.tab_strip()?;
-        let target = match to {
-            TabTo::Nth(n) => n.checked_sub(1).filter(|i| strip.get(*i).is_some_and(Option::is_some))?,
-            TabTo::By(delta) => {
-                let enabled: Vec<usize> = (0..strip.len()).filter(|i| strip[*i].is_some()).collect();
-                if enabled.is_empty() {
-                    return None;
-                }
-                let at = enabled.iter().position(|i| *i == showing).unwrap_or(0) as i64;
-                enabled[(at + i64::from(delta)).rem_euclid(enabled.len() as i64) as usize]
-            }
-        };
-        if target == showing {
-            return None;
-        }
-        strip.into_iter().nth(target).flatten()
+        strip_target(self.tab_strip()?, to)
     }
+}
+
+/// Where a tab key goes on a strip (see [`App::tab_target`]).
+fn strip_target((strip, showing): (Vec<Option<Action>>, usize), to: TabTo) -> Option<Action> {
+    let target = match to {
+        TabTo::Nth(n) => n.checked_sub(1).filter(|i| strip.get(*i).is_some_and(Option::is_some))?,
+        TabTo::By(delta) => {
+            let enabled: Vec<usize> = (0..strip.len()).filter(|i| strip[*i].is_some()).collect();
+            if enabled.is_empty() {
+                return None;
+            }
+            let at = enabled.iter().position(|i| *i == showing).unwrap_or(0) as i64;
+            enabled[(at + i64::from(delta)).rem_euclid(enabled.len() as i64) as usize]
+        }
+    };
+    if target == showing {
+        return None;
+    }
+    strip.into_iter().nth(target).flatten()
 }

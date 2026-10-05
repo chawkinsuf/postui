@@ -137,6 +137,47 @@ fn a_tab_key_whose_field_close_is_refused_moves_nothing() {
     }
 }
 
+/// A Settings field that does close lets the tab key go, even with a
+/// Variables edit left live behind another tab (a failed click-away
+/// commit leaves one, `screen_field` says): that edit is not this tab's.
+#[test]
+fn a_tab_key_leaves_a_settings_field_past_a_variables_edit_behind_it() {
+    use crate::components::manage::ManageTab;
+    use crate::components::settings::SettingsField;
+    let mut app = app_in(Fixture::VarForm, KeyProfile::Vim);
+    feed(&mut app, "i<Esc>");
+    assert!(app.varmanager.form.editing.is_some(), "the Variables edit is live");
+    app.manage.tab = ManageTab::Settings;
+    app.settings.begin_edit(SettingsField::Osc52Limit, "1000");
+    draw(&mut app);
+    assert_eq!(app.field_caret(), crate::keyroute::FieldCaret::Live(FieldId::Settings(SettingsField::Osc52Limit)));
+    assert_eq!(app.mode_indicator(), Some("NORMAL"));
+    feed(&mut app, "gT");
+    assert_eq!(app.settings.editing, None, "the Settings field closed");
+    assert_ne!(app.manage.tab, ManageTab::Settings, "and the tab moved");
+    assert!(app.varmanager.form.editing.is_some(), "the Variables edit is untouched");
+}
+
+/// A pending key the footer echoes is dropped by a key that then does
+/// nothing (a refused window or tab key, vim's unbound alt+→): the event
+/// still redraws, or the footer keeps showing it.
+#[test]
+fn a_refused_key_that_drops_the_echo_redraws() {
+    let last = |keys: &str| *crate::keyroute::notation::events(keys).last().expect("a key");
+    let cases: [(Fixture, &str, KeyEvent); 3] = [
+        (Fixture::SidebarThree, "<C-w>", last("h")),
+        (Fixture::UrlLine, "5g", last("t")),
+        (Fixture::SidebarThree, "g", KeyEvent::new(KeyCode::Right, KeyModifiers::ALT)),
+    ];
+    for (fixture, prefix, ev) in cases {
+        let mut app = app_in(fixture, KeyProfile::Vim);
+        feed(&mut app, prefix);
+        assert_ne!(app.key_echo(), "", "{prefix}: echoed");
+        assert!(app.handle_key(ev), "{prefix} {ev:?}: redraws");
+        assert_eq!(app.key_echo(), "", "{prefix} {ev:?}");
+    }
+}
+
 /// Final review M-1: a `{N}gt` onto the body's own tab leaves the body's
 /// session whole, so `u` still undoes the engine's last edit, not the
 /// whole visit as one app step.

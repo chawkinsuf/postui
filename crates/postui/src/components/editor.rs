@@ -385,7 +385,7 @@ impl Editor {
         self.open_url();
     }
 
-    /// `Action::FocusEditorContent`: the URL line closes if it was open, and
+    /// `App::land_editor_caret`: the URL line closes if it was open, and
     /// the caret goes into the active tab's content.
     pub fn focus_content_from_app(&mut self) {
         self.close_url();

@@ -71,7 +71,7 @@ pub enum Intent {
     /// `gt` (`delta` 1) and `gT` (-1) (spec §5.8), as `GoTab`: no count
     /// steps the strip; `{N}gt` goes to tab N; `{N}gT` steps back N, as one
     /// step of N mod [`TAB_CYCLE`]. A tab it selects lands the caret
-    /// (`FocusEditorContent`). `leave`: typed in an open field, which
+    /// (`App::land_editor_caret`). `leave`: typed in an open field, which
     /// closes first, only when there is a tab to go to.
     Tab { delta: i8, leave: bool },
     /// A window key (spec §5.8): `PaneMove`. `leave`: typed in an open
