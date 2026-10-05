@@ -419,14 +419,16 @@ impl ManageList {
 
     /// Moves the keyboard into the detail pane, aimed at its first
     /// painted control. A no-op with nothing selected (the pane is empty).
-    fn enter_detail(&mut self, tab: ManageTab, ctx: &Project) {
+    /// Whether it moved.
+    pub(crate) fn enter_detail(&mut self, tab: ManageTab, ctx: &Project) -> bool {
         if self.selected(tab, ctx).is_none() {
-            return;
+            return false;
         }
         self.focus = ListFocus::Detail;
         self.detail_row = DetailRow::Buttons;
         self.detail_col = 0;
         self.clamp_detail_col(tab);
+        true
     }
 
     /// Hands the keyboard back to the row list (a click on a row does

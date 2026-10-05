@@ -221,6 +221,8 @@ pub struct App {
     pub keymap: crate::keys::Keymap,
     /// The key router's pending keys (piece 4 spec §3.4).
     pub router: crate::keyroute::Router,
+    /// What `ctrl+w l` and `ctrl+w p` remember (piece 4 spec §5.8).
+    pub(crate) panes: crate::keyroute::panes::PaneMemory,
     /// The vim profile's text engine and its field session (spec §3.7):
     /// the one door to the engine (`keyroute::engine_glue`).
     pub(crate) glue: crate::keyroute::engine_glue::Glue,
@@ -1709,6 +1711,7 @@ impl App {
             animating_last_tick: false,
             keymap: crate::keys::Keymap::default_bindings(),
             router: crate::keyroute::Router::default(),
+            panes: Default::default(),
             glue: Default::default(),
             modal_glue: Default::default(),
             modal_session: None,
@@ -3041,6 +3044,7 @@ impl App {
                 self.focus = pane;
                 true
             }
+            Action::PaneMove(dir) => self.pane_move(dir),
             Action::ScrollPane(pane, delta) => {
                 // While the Manager screen is up its left list owns the
                 // sidebar's pane slot (see `App::scrollbar_spec`), so a
@@ -10244,6 +10248,8 @@ impl App {
     /// `self.update(..)` call's result along the branch taken, plus any
     /// modal state change (close/typing) that bypasses `update`.
     pub fn handle_key(&mut self, ev: KeyEvent) -> bool {
+        // Where the keyboard is before this key (plan M4a Deviation 6).
+        self.note_pane();
         // The field session catches up first with whatever moved the caret
         // since the last event (an async result, a reload), then with what
         // this key did (spec §3.1).
@@ -11654,6 +11660,7 @@ mod landing;
 mod mouse;
 mod router;
 mod fields;
+mod panes;
 mod verbs;
 #[cfg(test)]
 mod dialog_tests;

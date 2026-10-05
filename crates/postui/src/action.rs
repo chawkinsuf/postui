@@ -112,6 +112,10 @@ pub enum Action {
     FocusNext,
     FocusPrev,
     FocusPane(PaneId),
+    /// A vim window key (piece 4 spec §5.8): resolved against the screen,
+    /// the focused pane and what `App` remembers. A direction with no pane
+    /// does nothing.
+    PaneMove(PaneDir),
     ScrollPane(PaneId, i16),
     OpenPalette,
     Close,
@@ -1057,6 +1061,20 @@ pub enum FoldOp {
     Open,
     Close,
     Toggle,
+}
+
+/// Where `ctrl+w` moves the keyboard (piece 4 spec §5.8): `h` `j` `k` `l`
+/// by the layout's geometry, `w` `W` the next and previous pane, `p` the
+/// pane before this one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaneDir {
+    Left,
+    Down,
+    Up,
+    Right,
+    Next,
+    Prev,
+    Last,
 }
 
 /// What a list or table key does to the row under the cursor (piece 4

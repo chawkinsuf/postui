@@ -761,6 +761,40 @@ fn is_unresolved(ctx: &Project, name: &str) -> bool {
 }
 
 impl VarManager {
+    /// The keyboard from the left list into the detail pane: the grid when
+    /// it shows a selector it can edit, the form when it shows a variable.
+    /// The list's Right and Tab, and vim's `<C-w>l` (piece 4 spec §5.8).
+    /// Whether it moved; never while an edit is live.
+    pub(crate) fn enter_detail(&mut self, ctx: &Project) -> bool {
+        if self.form.editing.is_some() || self.grid.editing.is_some() {
+            return false;
+        }
+        match &self.detail {
+            VmDetail::Group(g)
+                if ctx.variables().selectors.contains_key(g) && (ctx.active_env().is_some() || is_shared(ctx, g)) =>
+            {
+                self.focus = VmFocus::Grid;
+                true
+            }
+            VmDetail::Var(_) => {
+                self.focus = VmFocus::Form;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The keyboard back to the left list from the grid or the form: vim's
+    /// `<C-w>h` (piece 4 spec §5.8). Whether it moved; never while an edit
+    /// is live.
+    pub(crate) fn leave_detail(&mut self) -> bool {
+        if self.form.editing.is_some() || self.grid.editing.is_some() || self.focus == VmFocus::List {
+            return false;
+        }
+        self.focus = VmFocus::List;
+        true
+    }
+
     /// Points the detail pane at `left_rows[i]` and moves the cursor there.
     /// A section header is a label, not a selection: the cursor still moves
     /// (a click landed there) but the detail pane keeps what it had.
@@ -1303,18 +1337,7 @@ impl VarManager {
             }
             // Into the grid or the form, whichever the detail pane shows.
             KeyCode::Right | KeyCode::Tab => {
-                if self.form.editing.is_none() && self.grid.editing.is_none() {
-                    match &self.detail {
-                        VmDetail::Group(g)
-                            if ctx.variables().selectors.contains_key(g)
-                                && (ctx.active_env().is_some() || is_shared(ctx, g)) =>
-                        {
-                            self.focus = VmFocus::Grid;
-                        }
-                        VmDetail::Var(_) => self.focus = VmFocus::Form,
-                        _ => {}
-                    }
-                }
+                self.enter_detail(ctx);
                 return None;
             }
             _ => {}

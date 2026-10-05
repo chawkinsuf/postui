@@ -7,7 +7,7 @@
 use super::ctx::Surface;
 use super::engine_glue::OpenSeat;
 use super::notation::{self, Tok};
-use crate::action::{Action, Verb};
+use crate::action::{Action, PaneDir, Verb};
 use crate::config::KeyProfile;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::sync::OnceLock;
@@ -74,6 +74,9 @@ pub enum Intent {
     /// typed in an open field, which closes first (for `{N}gt`, only when
     /// tab N is there to select).
     Tab { delta: i8, leave: bool },
+    /// A window key (spec §5.8): `PaneMove(dir)`. `leave`: typed in an open
+    /// field, which closes first.
+    Pane { dir: PaneDir, leave: bool },
 }
 
 /// How a count applies (spec §3.5).
@@ -283,6 +286,12 @@ const fn both(keys: &'static str, on: Surfaces, intent: Intent) -> Binding {
     Binding { keys, profile: Profiles::BOTH, on, intent, count: CountRule::Ignore }
 }
 
+/// A vim window row: `<C-w>` and a target (spec §5.8), on a closed surface
+/// or from a screen field's idle Normal; a count is dropped.
+const fn pane(keys: &'static str, on: Surfaces, dir: PaneDir, leave: bool) -> Binding {
+    row(keys, on, Intent::Pane { dir, leave }, CountRule::Ignore)
+}
+
 pub const NO_COUNTED_DELETE: &str = "Counted delete works on requests and table rows";
 pub const NO_COUNTED_YANK: &str = "Counted yank is not supported";
 pub const NO_MACROS: &str = "Macros are not supported";
@@ -386,6 +395,36 @@ pub static TABLE: &[Binding] = &[
     row("gT", Surfaces::NAV, Intent::Tab { delta: -1, leave: false }, CountRule::Pass),
     row("gt", Surfaces::FIELD_SCREEN, Intent::Tab { delta: 1, leave: true }, CountRule::Pass),
     row("gT", Surfaces::FIELD_SCREEN, Intent::Tab { delta: -1, leave: true }, CountRule::Pass),
+    // Key list §8 (`P.ctrlw`), spec §5.8: the window keys, with Vim's ctrl
+    // spellings of the targets (plan M4a Deviation 3). In a screen field a
+    // non-target is swallowed, never replayed as an edit (Deviation 4).
+    pane("<C-w>h", Surfaces::NAV, PaneDir::Left, false),
+    pane("<C-w>j", Surfaces::NAV, PaneDir::Down, false),
+    pane("<C-w>k", Surfaces::NAV, PaneDir::Up, false),
+    pane("<C-w>l", Surfaces::NAV, PaneDir::Right, false),
+    pane("<C-w>w", Surfaces::NAV, PaneDir::Next, false),
+    pane("<C-w>W", Surfaces::NAV, PaneDir::Prev, false),
+    pane("<C-w>p", Surfaces::NAV, PaneDir::Last, false),
+    pane("<C-w><C-h>", Surfaces::NAV, PaneDir::Left, false),
+    pane("<C-w><C-j>", Surfaces::NAV, PaneDir::Down, false),
+    pane("<C-w><C-k>", Surfaces::NAV, PaneDir::Up, false),
+    pane("<C-w><C-l>", Surfaces::NAV, PaneDir::Right, false),
+    pane("<C-w><C-w>", Surfaces::NAV, PaneDir::Next, false),
+    pane("<C-w><C-p>", Surfaces::NAV, PaneDir::Last, false),
+    pane("<C-w>h", Surfaces::FIELD_SCREEN, PaneDir::Left, true),
+    pane("<C-w>j", Surfaces::FIELD_SCREEN, PaneDir::Down, true),
+    pane("<C-w>k", Surfaces::FIELD_SCREEN, PaneDir::Up, true),
+    pane("<C-w>l", Surfaces::FIELD_SCREEN, PaneDir::Right, true),
+    pane("<C-w>w", Surfaces::FIELD_SCREEN, PaneDir::Next, true),
+    pane("<C-w>W", Surfaces::FIELD_SCREEN, PaneDir::Prev, true),
+    pane("<C-w>p", Surfaces::FIELD_SCREEN, PaneDir::Last, true),
+    pane("<C-w><C-h>", Surfaces::FIELD_SCREEN, PaneDir::Left, true),
+    pane("<C-w><C-j>", Surfaces::FIELD_SCREEN, PaneDir::Down, true),
+    pane("<C-w><C-k>", Surfaces::FIELD_SCREEN, PaneDir::Up, true),
+    pane("<C-w><C-l>", Surfaces::FIELD_SCREEN, PaneDir::Right, true),
+    pane("<C-w><C-w>", Surfaces::FIELD_SCREEN, PaneDir::Next, true),
+    pane("<C-w><C-p>", Surfaces::FIELD_SCREEN, PaneDir::Last, true),
+    row("<C-w><any>", Surfaces::FIELD_SCREEN, Intent::Swallow, CountRule::Ignore),
     // Key list §6: opening.
     row("o", Surfaces::OPENS_ROW, Intent::Key(Named::key(KeyCode::Enter)), CountRule::Ignore),
     row("i", Surfaces::OPENS_FIELD, Intent::Open { key: ENTER, seat: OpenSeat::Keep }, CountRule::Ignore),
@@ -783,7 +822,7 @@ mod tests {
             }
             if matches!(
                 b.intent,
-                Intent::Note(_) | Intent::Swallow | Intent::Open { .. } | Intent::Reopen(_)
+                Intent::Note(_) | Intent::Swallow | Intent::Open { .. } | Intent::Reopen(_) | Intent::Pane { .. }
             ) {
                 assert_eq!(b.count, CountRule::Ignore, "{}", b.keys);
             }

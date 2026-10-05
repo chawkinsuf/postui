@@ -7,6 +7,7 @@ pub mod engine_glue;
 #[cfg(test)]
 pub mod keylist;
 pub mod notation;
+pub mod panes;
 pub mod pending;
 pub mod spell;
 pub mod table;
@@ -312,6 +313,14 @@ pub(crate) fn expand(b: &table::Binding, count: Option<usize>, cap: usize) -> Ve
                 steps
             }
         },
+        Intent::Pane { dir, leave } => {
+            let mut steps = Vec::new();
+            if leave {
+                steps.push(Step::Action(Action::CloseField));
+            }
+            steps.push(Step::Action(Action::PaneMove(dir)));
+            steps
+        }
         Intent::Swallow => Vec::new(),
     }
 }
@@ -546,6 +555,43 @@ mod tests {
         assert_eq!(feed(&mut Router::default(), &prompt, "g"), run(eng("g")), "a dialog field's g is the engine's");
     }
 
+    /// Spec §5.8 (plan M4a Deviations 3 and 4): the window keys, their ctrl
+    /// spellings, a dropped count, and junk after `<C-w>`.
+    #[test]
+    fn window_keys_on_a_closed_surface() {
+        use crate::action::PaneDir;
+        let s = cx(Vim, Surface::Sidebar);
+        let mv = |d| run(vec![Step::Action(Action::PaneMove(d))]);
+        assert_eq!(feed(&mut Router::default(), &s, "<C-w>l"), mv(PaneDir::Right));
+        assert_eq!(feed(&mut Router::default(), &s, "<C-w><C-l>"), mv(PaneDir::Right));
+        assert_eq!(feed(&mut Router::default(), &s, "<C-w>W"), mv(PaneDir::Prev));
+        assert_eq!(feed(&mut Router::default(), &s, "<C-w><C-w>"), mv(PaneDir::Next));
+        assert_eq!(feed(&mut Router::default(), &s, "<C-w>p"), mv(PaneDir::Last));
+        assert_eq!(feed(&mut Router::default(), &s, "3<C-w>j"), mv(PaneDir::Down), "the count is dropped");
+        let mut r = Router::default();
+        assert_eq!(feed(&mut r, &s, "<C-w>"), Resolved::Consumed);
+        assert_eq!(r.echo(), "^W");
+        assert_eq!(feed(&mut r, &s, "x"), Resolved::Consumed, "junk is swallowed");
+        assert_eq!(feed(&mut r, &s, "j"), run(vec![key(KeyCode::Down)]), "and the next key is fresh");
+        assert_eq!(feed(&mut Router::default(), &cx(Arrows, Surface::Sidebar), "<C-w>"), Resolved::Declined);
+    }
+
+    /// Spec §3.7 and §5.8 (plan M4a Deviations 2 and 4): from a screen
+    /// field's idle Normal the field closes first; junk is swallowed; in
+    /// Insert ctrl+w is the engine's.
+    #[test]
+    fn window_keys_in_a_screen_field() {
+        use crate::action::PaneDir;
+        let s = in_url(Mode::Normal, false);
+        assert_eq!(
+            feed(&mut Router::default(), &s, "<C-w>j"),
+            run(vec![Step::Action(Action::CloseField), Step::Action(Action::PaneMove(PaneDir::Down))])
+        );
+        assert_eq!(feed(&mut Router::default(), &s, "<C-w>x"), Resolved::Consumed);
+        let insert = in_url(Mode::Insert, false);
+        assert_eq!(feed(&mut Router::default(), &insert, "<C-w>"), run(eng("<C-w>")), "Insert deletes a word");
+    }
+
     /// Plan M3a Deviation 9: the prefix keys never reach the engine.
     #[test]
     fn the_prefix_keys_are_notes_or_swallowed() {
@@ -603,7 +649,7 @@ mod tests {
     #[test]
     fn unknown_after_a_field_prefix_never_leaks() {
         let s = in_url(Mode::Normal, false);
-        for prefix in ["q", "@", "m", "'", "`", "Z", "g"] {
+        for prefix in ["q", "@", "m", "'", "`", "Z", "g", "<C-w>"] {
             for c in (b'!'..=b'~').map(char::from) {
                 let mut r = Router::default();
                 feed(&mut r, &s, prefix);

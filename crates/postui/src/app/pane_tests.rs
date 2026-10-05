@@ -120,3 +120,66 @@ fn a_multi_step_cycle_skips_the_disabled_body_tab() {
     feed(&mut app, "5gT");
     assert_eq!(app.editor.active_tab, EditorTab::Headers, "Vars back five over three enabled tabs");
 }
+
+/// Review Focus 5: a focus change made without ctrl+w is learned.
+#[test]
+fn ctrl_w_l_returns_to_the_right_pane_last_used() {
+    let mut app = app_in(Fixture::ResponseLines, KeyProfile::Vim);
+    // A click's focus change, outside any key.
+    app.update(Action::FocusPane(PaneId::Editor));
+    feed(&mut app, "<C-w>h");
+    assert_eq!(app.focus, PaneId::Sidebar);
+    feed(&mut app, "<C-w>l");
+    assert_eq!(app.focus, PaneId::Editor, "the right pane last used, not the response");
+    feed(&mut app, "<C-w>j<C-w>p");
+    assert_eq!(app.focus, PaneId::Editor, "p goes back to the pane before");
+    feed(&mut app, "<C-w>p");
+    assert_eq!(app.focus, PaneId::Response, "and p again returns");
+}
+
+/// Review Focus 5: nothing earlier, nothing happens.
+#[test]
+fn ctrl_w_p_with_no_earlier_pane_does_nothing() {
+    let mut app = app_in(Fixture::ResponseLines, KeyProfile::Vim);
+    feed(&mut app, "<C-w>p");
+    assert_eq!(app.focus, PaneId::Response);
+    assert!(app.toasts.messages().is_empty());
+}
+
+/// Review Focus 2: `<C-w>` then a key that is no window command, in an
+/// open field, edits nothing; the next key is fresh.
+#[test]
+fn ctrl_w_then_junk_in_a_field_edits_nothing() {
+    let mut app = app_in(Fixture::UrlLine, KeyProfile::Vim);
+    app.editor.url = crate::components::line_input::LineInput::new("abc");
+    app.capture_undo();
+    draw(&mut app);
+    feed(&mut app, "i<Esc><C-w>x");
+    assert_eq!(app.editor.url.text(), "abc");
+    assert!(app.field_caret().is_live(), "the field stays open");
+    feed(&mut app, "x");
+    assert_eq!(app.editor.url.text(), "ab", "the next x is fresh");
+}
+
+/// Spec §5.8 and plan M4a Deviation 5: list and detail on the Manage screens.
+#[test]
+fn ctrl_w_moves_between_a_manage_list_and_its_detail() {
+    use crate::components::manage_list::ListFocus;
+    use crate::components::varmanager::VmFocus;
+    let mut app = app_in(Fixture::ManageEnvs, KeyProfile::Vim);
+    feed(&mut app, "<C-w>l");
+    assert_eq!(app.manage.list.focus, ListFocus::Detail);
+    feed(&mut app, "<C-w>j");
+    assert_eq!(app.manage.list.focus, ListFocus::Detail, "no pane below");
+    feed(&mut app, "<C-w>w");
+    assert_eq!(app.manage.list.focus, ListFocus::List, "w: the other half");
+    let mut app = app_in(Fixture::VarGrid, KeyProfile::Vim);
+    feed(&mut app, "l<C-w>h");
+    assert_eq!(app.varmanager.focus, VmFocus::List, "from any grid column");
+    feed(&mut app, "<C-w>l");
+    assert_eq!(app.varmanager.focus, VmFocus::Grid);
+    let mut app = app_in(Fixture::VarForm, KeyProfile::Vim);
+    feed(&mut app, "i<Esc><C-w>h");
+    assert_eq!(app.varmanager.focus, VmFocus::List, "an open form field closes first");
+    assert!(!app.field_caret().is_live());
+}
