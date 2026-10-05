@@ -68,6 +68,12 @@ pub enum Intent {
     /// Reopen a dialog's selected text field (plan M3b Deviation 3): in
     /// Insert at this seat, or in Normal (`None`).
     Reopen(Option<OpenSeat>),
+    /// `gt` (`delta` 1) and `gT` (-1) (spec §5.8): no count steps the strip
+    /// and lands the caret (`FocusEditorContent`); `{N}gt` is `SelectTab`;
+    /// `{N}gT` steps back N, as one step of N mod [`TAB_CYCLE`]. `leave`:
+    /// typed in an open field, which closes first (for `{N}gt`, only when
+    /// tab N is there to select).
+    Tab { delta: i8, leave: bool },
 }
 
 /// How a count applies (spec §3.5).
@@ -136,6 +142,11 @@ impl Surfaces {
     /// A query box (spec §3.7 item 2): always Insert, so no field row ever
     /// applies; the class only keeps `FIELD_LINE`'s rows away.
     pub const FIELD_QUERY: Self = Self(1 << 20);
+    /// A screen field (plan M4a Deviation 2): the URL line, a table cell,
+    /// the body, the Variables form and grid, the Settings field. The pane
+    /// and tab rows apply in their idle Normal; never in a dialog's field,
+    /// which keeps `g` and `ctrl+w` for the engine.
+    pub const FIELD_SCREEN: Self = Self(1 << 21);
 
     /// Every surface whose rows or controls the keyboard walks: vim's
     /// motions bind here, and in vim a bare char with no row is
@@ -228,14 +239,15 @@ impl Surfaces {
 }
 
 /// The field class the router checks in idle Normal and after a key the
-/// engine hands back (spec §3.7; plan M3b).
+/// engine hands back (spec §3.7; plans M3b and M4a).
 pub fn field_class(id: super::ctx::FieldId, surface: Surface) -> Surfaces {
     use super::ctx::FieldId;
     match id {
         _ if id.insert_only() => Surfaces::FIELD_QUERY,
-        FieldId::Body => Surfaces::FIELD_BODY,
+        FieldId::Body => Surfaces::FIELD_BODY.or(Surfaces::FIELD_SCREEN),
         FieldId::ModalInput(_) if surface == Surface::Prompt => Surfaces::FIELD_LINE.or(Surfaces::FIELD_PROMPT),
-        _ => Surfaces::FIELD_LINE,
+        FieldId::ModalInput(_) => Surfaces::FIELD_LINE,
+        _ => Surfaces::FIELD_LINE.or(Surfaces::FIELD_SCREEN),
     }
 }
 
@@ -275,6 +287,10 @@ pub const NO_COUNTED_DELETE: &str = "Counted delete works on requests and table 
 pub const NO_COUNTED_YANK: &str = "Counted yank is not supported";
 pub const NO_MACROS: &str = "Macros are not supported";
 pub const NO_MARKS: &str = "Marks are not supported";
+
+/// A multiple of every tab strip's length (2–4 tabs): `{N}gT` steps back
+/// N mod this, exactly (plan M4a Deviation 8).
+pub const TAB_CYCLE: usize = 12;
 
 fn new_option() -> Action {
     Action::StartNewOptionEdit
@@ -364,6 +380,12 @@ pub static TABLE: &[Binding] = &[
     row("zo", Surfaces::RESPONSE, Intent::Act(fold_open), CountRule::Ignore),
     row("zc", Surfaces::RESPONSE, Intent::Act(fold_close), CountRule::Ignore),
     row("za", Surfaces::RESPONSE, Intent::Act(fold_toggle), CountRule::Ignore),
+    // Key list §8 (`P.gt`), spec §5.8: every tab strip, on a closed
+    // surface or from a screen field's idle Normal (§3.7).
+    row("gt", Surfaces::NAV, Intent::Tab { delta: 1, leave: false }, CountRule::Pass),
+    row("gT", Surfaces::NAV, Intent::Tab { delta: -1, leave: false }, CountRule::Pass),
+    row("gt", Surfaces::FIELD_SCREEN, Intent::Tab { delta: 1, leave: true }, CountRule::Pass),
+    row("gT", Surfaces::FIELD_SCREEN, Intent::Tab { delta: -1, leave: true }, CountRule::Pass),
     // Key list §6: opening.
     row("o", Surfaces::OPENS_ROW, Intent::Key(Named::key(KeyCode::Enter)), CountRule::Ignore),
     row("i", Surfaces::OPENS_FIELD, Intent::Open { key: ENTER, seat: OpenSeat::Keep }, CountRule::Ignore),
@@ -491,7 +513,8 @@ pub fn lookup(buf: &[Tok], profile: KeyProfile, surface: Surface) -> Match {
 }
 
 /// [`lookup`] on a set of surface kinds: a `Surface`'s, or a field class
-/// (`FIELD_LINE`, `FIELD_BODY`, `FIELD_PROMPT`, `FIELD_QUERY`) that no
+/// (`FIELD_LINE`, `FIELD_BODY`, `FIELD_PROMPT`, `FIELD_QUERY`,
+/// `FIELD_SCREEN`) that no
 /// `Surface` names.
 pub fn lookup_class(buf: &[Tok], profile: KeyProfile, class: Surfaces) -> Match {
     let rows = TABLE
@@ -544,6 +567,7 @@ pub fn keys_for(profile: KeyProfile, surface: Surface, action: &Action) -> Optio
                 && match b.intent {
                     Intent::Act(f) => f() == *action,
                     Intent::Verb(v) => matches!(action, Action::OnSelection(w) if w.kind() == v.kind()),
+                    Intent::Tab { delta, leave: false } => *action == Action::CycleTabs(delta),
                     _ => false,
                 }
         })
@@ -615,7 +639,7 @@ mod tests {
         assert!(matches!(class_match("ZZ", line), Match::Complete(b) if matches!(b.intent, Intent::Swallow)));
         assert!(matches!(class_match(":", body), Match::Complete(b) if matches!(b.intent, Intent::Act(_))));
         assert!(matches!(class_match("x", line), Match::NoMatch), "the engine's");
-        assert!(matches!(class_match("g", line), Match::NoMatch), "gt is M4's; g goes to the engine");
+        assert!(matches!(class_match("g", line), Match::NoMatch), "a dialog field's g is the engine's");
     }
 
     /// Plan M3a Deviation 10: a specific row beats an `<any>` row of the
@@ -659,14 +683,49 @@ mod tests {
     #[test]
     fn field_classes() {
         use crate::keyroute::FieldId;
-        assert_eq!(field_class(FieldId::Url, Surface::UrlLine), Surfaces::FIELD_LINE);
-        assert_eq!(field_class(FieldId::Body, Surface::Body), Surfaces::FIELD_BODY);
+        let screen_line = Surfaces::FIELD_LINE.or(Surfaces::FIELD_SCREEN);
+        assert_eq!(field_class(FieldId::Url, Surface::UrlLine), screen_line);
+        assert_eq!(field_class(FieldId::TableCell { row: 0, col: 1 }, Surface::Table(crate::components::editor::EditorTab::Headers)), screen_line);
+        assert_eq!(field_class(FieldId::Body, Surface::Body), Surfaces::FIELD_BODY.or(Surfaces::FIELD_SCREEN));
         assert_eq!(field_class(FieldId::ModalInput(0), Surface::Prompt), Surfaces::FIELD_LINE.or(Surfaces::FIELD_PROMPT));
         assert_eq!(field_class(FieldId::ModalInput(1), Surface::Form), Surfaces::FIELD_LINE);
         for id in [FieldId::Palette, FieldId::Jq, FieldId::Search, FieldId::FilePicker] {
             assert_eq!(field_class(id, Surface::Picker), Surfaces::FIELD_QUERY, "{id:?}");
         }
         assert!(matches!(lookup_class(&notation::parse("j"), KeyProfile::Vim, Surfaces::FIELD_QUERY), Match::NoMatch), "no row in a query box");
+    }
+
+    /// Plan M4a Deviation 8: `{N}gT` runs as one step of N mod `TAB_CYCLE`,
+    /// exact only while every strip's length divides it. The lengths are
+    /// read from the strips themselves (amendment R7).
+    #[test]
+    fn every_tab_strip_divides_the_tab_cycle() {
+        use crate::components::editor::EditorTab;
+        use crate::components::manage::ManageTab;
+        use crate::components::response::{Response, ResponseState};
+        let response = |body: &str| {
+            let mut r = Response::default();
+            r.set_state(
+                ResponseState::Ready(Box::new(crate::http::ResponseData {
+                    status: 200,
+                    url: "https://x.test/a".into(),
+                    headers: Vec::new(),
+                    sent_headers: Vec::new(),
+                    body: body.into(),
+                    ttfb: std::time::Duration::ZERO,
+                    elapsed: std::time::Duration::ZERO,
+                    size: body.len(),
+                    content_type: Some("application/json".into()),
+                })),
+                0,
+            );
+            r.tab_modes().expect("a ready view").len()
+        };
+        let (tree, no_tree) = (response(r#"{"a": 1}"#), response("not json"));
+        assert_eq!((tree, no_tree), (3, 2), "a JSON body has a Tree tab");
+        for len in [ManageTab::ALL.len(), EditorTab::COUNT, tree, no_tree] {
+            assert_eq!(TAB_CYCLE % len, 0, "a strip of {len}");
+        }
     }
 
     #[test]
@@ -684,6 +743,8 @@ mod tests {
                 ("FIELD_BODY".to_string(), Surfaces::FIELD_BODY),
                 ("FIELD_PROMPT".to_string(), Surfaces::FIELD_LINE.or(Surfaces::FIELD_PROMPT)),
                 ("FIELD_QUERY".to_string(), Surfaces::FIELD_QUERY),
+                ("FIELD_SCREEN_LINE".to_string(), Surfaces::FIELD_LINE.or(Surfaces::FIELD_SCREEN)),
+                ("FIELD_SCREEN_BODY".to_string(), Surfaces::FIELD_BODY.or(Surfaces::FIELD_SCREEN)),
             ]);
         for profile in [KeyProfile::Arrows, KeyProfile::Vim] {
             for (name, class) in classes.clone() {
@@ -716,8 +777,9 @@ mod tests {
             if edge {
                 assert_eq!(b.count, CountRule::Pass, "{}: an Edge row reads its count", b.keys);
             }
+            let tab = matches!(b.intent, Intent::Tab { .. });
             if b.count == CountRule::Pass {
-                assert!(edge || counted_verb, "{}: Pass is for Edge rows, dd and p", b.keys);
+                assert!(edge || counted_verb || tab, "{}: Pass is for Edge rows, dd, p and the tab keys", b.keys);
             }
             if matches!(
                 b.intent,
@@ -743,6 +805,9 @@ mod tests {
         assert_eq!(keys_for(Vim, Surface::VarGrid, &Action::OnSelection(Verb::Yank)), Some("yy"));
         assert_eq!(keys_for(Arrows, Surface::VarGrid, &Action::OnSelection(Verb::Yank)), Some("c"));
         assert_eq!(keys_for(Vim, Surface::VarForm, &Action::OnSelection(Verb::Reveal)), None, "M4's :reveal");
+        assert_eq!(keys_for(Vim, Surface::Sidebar, &Action::CycleTabs(1)), Some("gt"));
+        assert_eq!(keys_for(Vim, Surface::Sidebar, &Action::CycleTabs(-1)), Some("gT"));
+        assert_eq!(keys_for(Arrows, Surface::Sidebar, &Action::CycleTabs(1)), None, "arrows' tab keys are the keymap's");
         assert!(vim_first_chars().contains(&'d') && vim_first_chars().contains(&'y'));
     }
 

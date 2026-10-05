@@ -689,14 +689,19 @@ fn edtui_never_runs_in_the_vim_body() {
     assert_eq!((body(&app), caret(&app)), before);
 }
 
-/// Plan M3a Deviation 6: the body's alt+←/→ word jump is arrows-only; in
-/// vim the keymap's chord runs.
+/// Plan M3a Deviation 6: the body's alt+←/→ word jump is arrows-only; and
+/// vim's keymap binds no alt+←/→ (plan M4a Deviation 12: `gT`/`gt`), so the
+/// chord does nothing in the vim body.
 #[test]
-fn alt_arrows_are_the_keymaps_in_the_vim_body() {
+fn alt_arrows_do_nothing_in_the_vim_body() {
     let mut app = vim(Fixture::Body);
-    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
-    assert_ne!(app.editor.active_tab, EditorTab::Body, "the tab cycle ran");
-    assert_eq!(body(&app), BODY);
+    let before = caret(&app);
+    for code in [KeyCode::Right, KeyCode::Left] {
+        app.handle_key(KeyEvent::new(code, KeyModifiers::ALT));
+        assert_eq!(app.editor.active_tab, EditorTab::Body, "{code:?}: no tab cycle");
+        assert_eq!(body(&app), BODY, "{code:?}");
+        assert_eq!(caret(&app), before, "{code:?}: no word jump");
+    }
 }
 
 /// Spec §3.7: the body gets one app step per session.

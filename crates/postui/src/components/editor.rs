@@ -42,6 +42,9 @@ const DRAW_ORDER: [EditorTab; 4] = [
 ];
 
 impl EditorTab {
+    /// How many tabs the strip draws (`{N}gt`'s range; plan M4a).
+    pub const COUNT: usize = DRAW_ORDER.len();
+
     /// Slot number for the `editor_tab_N` shortcuts
     /// (`Action::EditorTabSelect`) — identical to [`EditorTab::draw_position`]
     /// so the bound numbers match the tab strip left to right.
@@ -380,6 +383,13 @@ impl Editor {
     /// names the field to type into.
     pub fn open_url_from_app(&mut self) {
         self.open_url();
+    }
+
+    /// `Action::FocusEditorContent`: the URL line closes if it was open, and
+    /// the caret goes into the active tab's content.
+    pub fn focus_content_from_app(&mut self) {
+        self.close_url();
+        self.enter_content();
     }
 
     fn select_url(&mut self) {

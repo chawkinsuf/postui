@@ -178,6 +178,17 @@ pub enum Action {
     /// it falls back to the editor's strip, the only one on screen with
     /// no pane of its own.
     CycleTabs(i8),
+    /// `{N}gt` (piece 4 spec §5.8): tab `n`, 1-based in on-screen order,
+    /// on the strip `CycleTabs` would step. A disabled or out-of-range tab
+    /// does nothing. With the editor focused, a tab it selects lands the
+    /// caret in that tab's content. `leave`: typed in an open field, which
+    /// closes first, but only when the tab is there to select: a refused
+    /// `{N}gt` leaves the field open (the user's decision, plan M4a).
+    SelectTab { n: usize, leave: bool },
+    /// After a vim tab key with the editor focused (spec §5.8): the caret
+    /// lands in the selected tab's content, so `gt a` adds a row. It never
+    /// moves panes. Arrows' tab chord does not run it (plan M4a Deviation 7).
+    FocusEditorContent,
     CycleMethod,
     FocusUrl,
     /// Toggles `App::table_collapsed` (params/headers table body vs. tab

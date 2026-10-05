@@ -3153,6 +3153,52 @@ impl App {
                     }
                 }
             }
+            Action::SelectTab { n, leave } => {
+                // The strip `CycleTabs` would step, as drawn. Which action
+                // selects tab N is settled before anything moves: a tab that
+                // is not there, or is disabled, does nothing, and the field
+                // `{N}gt` was typed in stays open (the user's decision).
+                let Some(i) = n.checked_sub(1) else { return false };
+                let select = match (self.screen, self.focus) {
+                    (Screen::Manage, _) => crate::components::manage::ManageTab::ALL
+                        .get(i)
+                        .map(|tab| Action::SelectManageTab(*tab)),
+                    (Screen::Testbed, _) => None,
+                    // A body that is not JSON has no Tree tab.
+                    (Screen::Main, PaneId::Response) => self
+                        .session
+                        .response
+                        .tab_modes()
+                        .and_then(|m| m.get(i).copied())
+                        .map(Action::ResponseViewMode),
+                    // `EditorTabSelect` takes the on-screen position; the
+                    // Body tab is disabled on a GET.
+                    (Screen::Main, PaneId::Editor | PaneId::Sidebar) => {
+                        let enabled = |t: EditorTab| t != EditorTab::Body || !self.editor.body_tab_disabled();
+                        (i < EditorTab::COUNT && enabled(EditorTab::from_draw_position(i)))
+                            .then_some(Action::EditorTabSelect(i))
+                    }
+                };
+                let Some(select) = select else { return false };
+                if leave {
+                    self.update(Action::CloseField);
+                }
+                self.update(select);
+                // Lands the caret with the editor focused; nothing elsewhere.
+                self.update(Action::FocusEditorContent);
+                true
+            }
+            Action::FocusEditorContent => {
+                // Spec §5.8: only with the editor focused. The sidebar and
+                // the response step the strip from where they stand.
+                if self.screen != Screen::Main || self.focus != PaneId::Editor {
+                    return false;
+                }
+                // The field it leaves closes as its own history step first.
+                self.flush_field_session();
+                self.editor.focus_content_from_app();
+                true
+            }
             Action::OpenResponseSearch => {
                 self.update(Action::FocusPane(PaneId::Response));
                 self.session.response.open_search();
@@ -3365,18 +3411,17 @@ impl App {
                 true
             }
             Action::EditorTabCycle(delta) => {
-                // Cycles the on-screen order (Params → Headers → Vars →
-                // Body), not `EditorTab::index()`'s tab slot numbers
-                // (bindable as `editor_tab_N`).
+                // Cycles the on-screen order over the enabled tabs (the Body
+                // tab is disabled on a GET), not `EditorTab::index()`'s slot
+                // numbers. Any distance lands right (plan M4a Deviation 8).
                 self.commit_table_edit();
                 let prev = self.editor.active_tab;
-                let mut next = (prev.draw_position() as i8 + delta).rem_euclid(4);
-                if EditorTab::from_draw_position(next as usize) == EditorTab::Body
-                    && self.editor.body_tab_disabled()
-                {
-                    next = (next + delta.signum()).rem_euclid(4);
-                }
-                self.editor.active_tab = EditorTab::from_draw_position(next as usize);
+                let order: Vec<EditorTab> = (0..EditorTab::COUNT)
+                    .map(EditorTab::from_draw_position)
+                    .filter(|t| *t != EditorTab::Body || !self.editor.body_tab_disabled())
+                    .collect();
+                let at = order.iter().position(|t| *t == prev).unwrap_or(0);
+                self.editor.active_tab = order[(at as i8 + delta).rem_euclid(order.len() as i8) as usize];
                 self.editor.preferred_tab = self.editor.active_tab;
                 self.editor.table.reset();
                 self.retarget_editor_tab_underline(prev);
@@ -11612,6 +11657,8 @@ mod fields;
 mod verbs;
 #[cfg(test)]
 mod dialog_tests;
+#[cfg(test)]
+mod pane_tests;
 #[cfg(test)]
 mod field_tests;
 #[cfg(test)]

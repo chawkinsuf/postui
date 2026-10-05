@@ -776,15 +776,18 @@ impl ReadyView {
         self.parsing && self.generation == generation
     }
 
-    /// The view `delta` tabs away along the strip's on-screen order
-    /// (Pretty, Raw, Headers), wrapping at either end, with Pretty
-    /// skipped when there is no tree to show.
-    fn cycle_view_mode(&self, delta: i8) -> ViewMode {
-        const ORDER: [ViewMode; 3] = [ViewMode::Pretty, ViewMode::Raw, ViewMode::Headers];
-        let order: Vec<ViewMode> = ORDER
+    /// The views on the tab strip, in on-screen order: Pretty (when there
+    /// is a tree to show), Raw, Headers. `response_tab_defs` draws them.
+    fn tab_modes(&self) -> Vec<ViewMode> {
+        [ViewMode::Pretty, ViewMode::Raw, ViewMode::Headers]
             .into_iter()
             .filter(|m| *m != ViewMode::Pretty || self.has_tree_view())
-            .collect();
+            .collect()
+    }
+
+    /// The view `delta` tabs away along the strip, wrapping at either end.
+    fn cycle_view_mode(&self, delta: i8) -> ViewMode {
+        let order = self.tab_modes();
         let at = order.iter().position(|m| *m == self.mode).unwrap_or(0);
         let len = order.len() as i8;
         order[(at as i8 + delta).rem_euclid(len) as usize]
@@ -1342,6 +1345,12 @@ impl Response {
     /// `ReadyView::cycle_view_mode`.
     pub fn cycle_view_mode(&self, delta: i8) -> Option<ViewMode> {
         self.view.as_ref().map(|v| v.cycle_view_mode(delta))
+    }
+
+    /// The response's tab strip, in on-screen order (`{N}gt`), or `None`
+    /// with no ready view.
+    pub fn tab_modes(&self) -> Option<Vec<ViewMode>> {
+        self.view.as_ref().map(ReadyView::tab_modes)
     }
 
     /// The jq bar's current text.
@@ -3134,20 +3143,23 @@ pub fn response_tab_defs(
     bar: &JqBar,
     theme: &Theme,
 ) -> (TabLabels, Vec<ViewMode>) {
-    let mut tabs: TabLabels = Vec::new();
-    let mut modes: Vec<ViewMode> = Vec::new();
-    if view.has_tree_view() {
-        let badge = view.jq_tree.is_some().then_some((
-            crate::glyph::FILTER,
-            if bar.stale { theme.error } else { theme.accent },
-        ));
-        tabs.push(("Tree".to_string(), badge));
-        modes.push(ViewMode::Pretty);
-    }
-    tabs.push(("Raw".to_string(), None));
-    modes.push(ViewMode::Raw);
-    tabs.push(("Headers".to_string(), None));
-    modes.push(ViewMode::Headers);
+    // The strip's order lives in `ReadyView::tab_modes` alone, so `{N}gt`
+    // and the tab chord can never disagree with what is drawn.
+    let modes = view.tab_modes();
+    let tabs: TabLabels = modes
+        .iter()
+        .map(|mode| match mode {
+            ViewMode::Pretty => {
+                let badge = view.jq_tree.is_some().then_some((
+                    crate::glyph::FILTER,
+                    if bar.stale { theme.error } else { theme.accent },
+                ));
+                ("Tree".to_string(), badge)
+            }
+            ViewMode::Raw => ("Raw".to_string(), None),
+            ViewMode::Headers => ("Headers".to_string(), None),
+        })
+        .collect();
     (tabs, modes)
 }
 

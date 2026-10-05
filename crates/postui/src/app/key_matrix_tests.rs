@@ -863,7 +863,12 @@ fn every_action_is_keyboard_reachable_in_both_profiles() {
         }
         let reached = vim.combo_for(name).is_some()
             || table::TABLE.iter().any(|b| {
-                b.profile.has(KeyProfile::Vim) && matches!(b.intent, Intent::Act(f) if f() == action)
+                b.profile.has(KeyProfile::Vim)
+                    && match b.intent {
+                        Intent::Act(f) => f() == action,
+                        Intent::Tab { delta, leave: false } => action == Action::CycleTabs(delta),
+                        _ => false,
+                    }
             })
             || vim_verb_actions.contains(&action)
             || palette.contains(&action);

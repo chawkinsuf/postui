@@ -291,6 +291,27 @@ pub(crate) fn expand(b: &table::Binding, count: Option<usize>, cap: usize) -> Ve
             Step::OpenAs(seat.map_or(engine_glue::OpenAs::Normal, engine_glue::OpenAs::Insert)),
             Step::Action(Action::ReopenField),
         ],
+        // Spec §5.8 (plan M4a Deviations 7 and 8).
+        Intent::Tab { delta, leave } => match count {
+            // `{N}gt`: tab N, which lands the caret itself, or refuses. A
+            // refused tab leaves the field open, so the close rides in the
+            // action, which runs it only when tab N is there (the user's
+            // decision, amendment C1).
+            Some(n) if delta > 0 => vec![Step::Action(Action::SelectTab { n, leave })],
+            _ => {
+                let mut steps = Vec::new();
+                if leave {
+                    steps.push(Step::Action(Action::CloseField));
+                }
+                let by = match count {
+                    Some(n) => -((n % table::TAB_CYCLE) as i8),
+                    None => delta,
+                };
+                steps.push(Step::Action(Action::CycleTabs(by)));
+                steps.push(Step::Action(Action::FocusEditorContent));
+                steps
+            }
+        },
         Intent::Swallow => Vec::new(),
     }
 }
@@ -474,6 +495,57 @@ mod tests {
         assert_eq!(feed(&mut Router::default(), &cx(Arrows, resp.surface), "z"), Resolved::Declined, "arrows has no fold keys");
     }
 
+    /// Spec §5.8 (plan M4a Deviations 7 and 8): `gt` and `gT` step the strip
+    /// and land the caret; `{N}gt` selects tab N; `{N}gT` steps back N.
+    #[test]
+    fn tab_keys_on_a_closed_surface() {
+        let s = cx(Vim, Surface::Sidebar);
+        let step = |d: i8| run(vec![Step::Action(Action::CycleTabs(d)), Step::Action(Action::FocusEditorContent)]);
+        let select = |n: usize| run(vec![Step::Action(Action::SelectTab { n, leave: false })]);
+        assert_eq!(feed(&mut Router::default(), &s, "gt"), step(1));
+        assert_eq!(feed(&mut Router::default(), &s, "gT"), step(-1));
+        assert_eq!(feed(&mut Router::default(), &s, "3gt"), select(3));
+        assert_eq!(feed(&mut Router::default(), &s, "1gt"), select(1));
+        assert_eq!(feed(&mut Router::default(), &s, "2gT"), step(-2));
+        assert_eq!(feed(&mut Router::default(), &s, "14gT"), step(-2), "N mod 12");
+        assert_eq!(feed(&mut Router::default(), &s, "12gT"), step(0));
+        assert_eq!(feed(&mut Router::default(), &cx(Arrows, Surface::Sidebar), "g"), Resolved::Declined);
+    }
+
+    /// Spec §3.7's field rows (plan M4a Deviation 2): in a screen field's idle
+    /// Normal the tab keys close the field first; `g` + anything else replays.
+    /// `{N}gt` carries the close into the action, which closes the field only
+    /// when tab N is there to select (amendment C1, the user's decision).
+    #[test]
+    fn tab_keys_in_a_screen_field() {
+        let s = in_url(Mode::Normal, false);
+        let close = Step::Action(Action::CloseField);
+        assert_eq!(
+            feed(&mut Router::default(), &s, "gt"),
+            run(vec![close.clone(), Step::Action(Action::CycleTabs(1)), Step::Action(Action::FocusEditorContent)])
+        );
+        assert_eq!(
+            feed(&mut Router::default(), &s, "2gT"),
+            run(vec![close, Step::Action(Action::CycleTabs(-2)), Step::Action(Action::FocusEditorContent)])
+        );
+        assert_eq!(
+            feed(&mut Router::default(), &s, "2gt"),
+            run(vec![Step::Action(Action::SelectTab { n: 2, leave: true })]),
+            "no unconditional close: a refused tab leaves the field open"
+        );
+        assert_eq!(feed(&mut Router::default(), &s, "gg"), run(eng("gg")), "gg is the engine's");
+        assert_eq!(feed(&mut Router::default(), &s, "3ge"), run(eng("3ge")));
+        let mut r = Router::default();
+        assert_eq!(feed(&mut r, &s, "g"), Resolved::Consumed);
+        assert_eq!(r.echo(), "g");
+        let prompt = KeyCtx {
+            field: FieldCaret::Live(FieldId::ModalInput(0)),
+            engine: Some(EngineView { mode: Mode::Normal, pending: false }),
+            ..cx(Vim, Surface::Prompt)
+        };
+        assert_eq!(feed(&mut Router::default(), &prompt, "g"), run(eng("g")), "a dialog field's g is the engine's");
+    }
+
     /// Plan M3a Deviation 9: the prefix keys never reach the engine.
     #[test]
     fn the_prefix_keys_are_notes_or_swallowed() {
@@ -531,7 +603,7 @@ mod tests {
     #[test]
     fn unknown_after_a_field_prefix_never_leaks() {
         let s = in_url(Mode::Normal, false);
-        for prefix in ["q", "@", "m", "'", "`", "Z"] {
+        for prefix in ["q", "@", "m", "'", "`", "Z", "g"] {
             for c in (b'!'..=b'~').map(char::from) {
                 let mut r = Router::default();
                 feed(&mut r, &s, prefix);
