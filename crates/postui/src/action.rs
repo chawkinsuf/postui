@@ -1076,7 +1076,7 @@ pub enum TabTo {
     /// `{N}gt`: tab N, 1-based in on-screen order.
     Nth(usize),
     /// `gt`, `gT` and `{N}gT`: this many enabled tabs along, wrapping.
-    By(i8),
+    By(i64),
 }
 
 /// What a list or table key does to the row under the cursor (piece 4

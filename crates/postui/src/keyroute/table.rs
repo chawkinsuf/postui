@@ -69,8 +69,8 @@ pub enum Intent {
     /// Insert at this seat, or in Normal (`None`).
     Reopen(Option<OpenSeat>),
     /// `gt` (`delta` 1) and `gT` (-1) (spec §5.8), as `GoTab`: no count
-    /// steps the strip; `{N}gt` goes to tab N; `{N}gT` steps back N, as one
-    /// step of N mod [`TAB_CYCLE`]. A tab it selects lands the caret
+    /// steps the strip; `{N}gt` goes to tab N; `{N}gT` steps back N enabled
+    /// tabs, wrapping. A tab it selects lands the caret
     /// (`App::land_editor_caret`). `leave`: typed in an open field, which
     /// closes first, only when there is a tab to go to.
     Tab { delta: i8, leave: bool },
@@ -296,10 +296,6 @@ pub const NO_COUNTED_DELETE: &str = "Counted delete works on requests and table 
 pub const NO_COUNTED_YANK: &str = "Counted yank is not supported";
 pub const NO_MACROS: &str = "Macros are not supported";
 pub const NO_MARKS: &str = "Marks are not supported";
-
-/// A multiple of every tab strip's length (2–4 tabs): `{N}gT` steps back
-/// N mod this, exactly (plan M4a Deviation 8).
-pub const TAB_CYCLE: usize = 12;
 
 fn new_option() -> Action {
     Action::StartNewOptionEdit
@@ -732,39 +728,6 @@ mod tests {
             assert_eq!(field_class(id, Surface::Picker), Surfaces::FIELD_QUERY, "{id:?}");
         }
         assert!(matches!(lookup_class(&notation::parse("j"), KeyProfile::Vim, Surfaces::FIELD_QUERY), Match::NoMatch), "no row in a query box");
-    }
-
-    /// Plan M4a Deviation 8: `{N}gT` runs as one step of N mod `TAB_CYCLE`,
-    /// exact only while every strip's length divides it. The lengths are
-    /// read from the strips themselves (amendment R7).
-    #[test]
-    fn every_tab_strip_divides_the_tab_cycle() {
-        use crate::components::editor::EditorTab;
-        use crate::components::manage::ManageTab;
-        use crate::components::response::{Response, ResponseState};
-        let response = |body: &str| {
-            let mut r = Response::default();
-            r.set_state(
-                ResponseState::Ready(Box::new(crate::http::ResponseData {
-                    status: 200,
-                    url: "https://x.test/a".into(),
-                    headers: Vec::new(),
-                    sent_headers: Vec::new(),
-                    body: body.into(),
-                    ttfb: std::time::Duration::ZERO,
-                    elapsed: std::time::Duration::ZERO,
-                    size: body.len(),
-                    content_type: Some("application/json".into()),
-                })),
-                0,
-            );
-            r.tab_modes().expect("a ready view").len()
-        };
-        let (tree, no_tree) = (response(r#"{"a": 1}"#), response("not json"));
-        assert_eq!((tree, no_tree), (3, 2), "a JSON body has a Tree tab");
-        for len in [ManageTab::ALL.len(), EditorTab::COUNT, tree, no_tree] {
-            assert_eq!(TAB_CYCLE % len, 0, "a strip of {len}");
-        }
     }
 
     #[test]

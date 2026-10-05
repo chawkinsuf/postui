@@ -47,14 +47,10 @@ impl App {
     /// Closes the open field for a key that leaves it (a window or tab
     /// key): whether it closed. A field may refuse (a Settings value that
     /// will not parse keeps its edit live, and says so), and then the key
-    /// does nothing else. On the Settings tab only its own edit counts:
-    /// a Variables edit left live behind it (`screen_field`) is not the
-    /// field the key leaves, though [`Self::field_open`] still sees it.
+    /// does nothing else.
     pub(super) fn close_field_to_leave(&mut self) -> bool {
         self.update(Action::CloseField);
-        let settings = self.screen == Screen::Manage
-            && self.manage.tab == crate::components::manage::ManageTab::Settings;
-        !if settings { self.settings_edit_live() } else { self.field_open() }
+        !self.field_open()
     }
 
     /// After a vim tab key selects a tab (spec §5.8): with the editor
@@ -105,7 +101,7 @@ impl App {
             let project = self.project.as_ref()?;
             let has_detail = match self.manage.tab {
                 ManageTab::Variables => self.varmanager.detail_takes_keyboard(project),
-                tab => self.manage.list.selected(tab, project).is_some(),
+                tab => self.manage.list.detail_takes_keyboard(tab, project),
             };
             if !has_detail {
                 return None;
@@ -172,7 +168,7 @@ impl App {
     /// `editor_tab_prev`): the editor's strip from any focus, stepped as
     /// [`Self::tab_target`] steps.
     pub(super) fn editor_tab_step(&self, delta: i8) -> Option<Action> {
-        strip_target(self.editor_tab_strip(), TabTo::By(delta))
+        strip_target(self.editor_tab_strip(), TabTo::By(i64::from(delta)))
     }
 
     /// The action that selects where a tab key goes on [`Self::tab_strip`],
@@ -196,7 +192,7 @@ fn strip_target((strip, showing): (Vec<Option<Action>>, usize), to: TabTo) -> Op
                 return None;
             }
             let at = enabled.iter().position(|i| *i == showing).unwrap_or(0) as i64;
-            enabled[(at + i64::from(delta)).rem_euclid(enabled.len() as i64) as usize]
+            enabled[(at + delta.rem_euclid(enabled.len() as i64)).rem_euclid(enabled.len() as i64) as usize]
         }
     };
     if target == showing {

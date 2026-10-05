@@ -2478,6 +2478,10 @@ impl App {
             return self.modals.focused_input_mut();
         }
         match self.screen {
+            // A Variables edit left live behind another tab (a failed
+            // click-away commit) is that tab's field, not this one's, as
+            // `screen_field` has it.
+            Screen::Manage if self.manage.tab != crate::components::manage::ManageTab::Variables => None,
             Screen::Manage => {
                 if let Some(edit) = self.varmanager.form.editing.as_mut() {
                     return Some(&mut edit.input);
@@ -2531,7 +2535,8 @@ impl App {
         }
         match self.screen {
             Screen::Manage => {
-                self.varmanager.form.editing.is_some() || self.varmanager.grid.editing.is_some()
+                self.manage.tab == crate::components::manage::ManageTab::Variables
+                    && (self.varmanager.form.editing.is_some() || self.varmanager.grid.editing.is_some())
             }
             Screen::Main => match self.focus {
                 PaneId::Editor => self.editor.table.editing.is_some() || self.editor.url_open(),
@@ -3125,10 +3130,20 @@ impl App {
                 self.retarget_response_tab_underline(prev_mode);
                 true
             }
-            Action::CycleTabs(delta) => match self.tab_target(TabTo::By(delta)) {
-                Some(select) => self.update(select),
-                None => false,
-            },
+            Action::CycleTabs(delta) => {
+                let Some(select) = self.tab_target(TabTo::By(i64::from(delta))) else {
+                    return false;
+                };
+                // A Manage tab's field closes before its tab goes, as a
+                // click on the strip commits it first: a refused close (a
+                // Settings value that will not parse, a variable commit
+                // that fails) keeps the tab, so the edit is never stranded
+                // or dropped. On the main screen the caret stays put.
+                if self.screen == Screen::Manage && self.field_open() && !self.close_field_to_leave() {
+                    return false;
+                }
+                self.update(select)
+            }
             Action::GoTab { to, leave } => {
                 // Where the key goes is settled before anything moves: a tab
                 // that is not there or is disabled, or the one already
@@ -3140,7 +3155,11 @@ impl App {
                 if leave && !self.close_field_to_leave() {
                     return false;
                 }
-                self.update(select);
+                // Only a key that changes the tab lands the caret; a field
+                // it closed still counts as a change.
+                if !self.update(select) {
+                    return leave;
+                }
                 self.land_editor_caret();
                 true
             }

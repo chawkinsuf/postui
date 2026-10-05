@@ -421,7 +421,7 @@ impl ManageList {
     /// painted control. A no-op with nothing selected (the pane is empty).
     /// Whether it moved.
     pub(crate) fn enter_detail(&mut self, tab: ManageTab, ctx: &Project) -> bool {
-        if self.selected(tab, ctx).is_none() {
+        if !self.detail_takes_keyboard(tab, ctx) {
             return false;
         }
         self.focus = ListFocus::Detail;
@@ -429,6 +429,13 @@ impl ManageList {
         self.detail_col = 0;
         self.clamp_detail_col(tab);
         true
+    }
+
+    /// Whether the detail pane has something for the keyboard: a selected
+    /// row. What [`Self::enter_detail`] asks, and what a window key checks
+    /// before it closes a field to move there.
+    pub(crate) fn detail_takes_keyboard(&self, tab: ManageTab, ctx: &Project) -> bool {
+        self.selected(tab, ctx).is_some()
     }
 
     /// Hands the keyboard back to the row list (a click on a row does

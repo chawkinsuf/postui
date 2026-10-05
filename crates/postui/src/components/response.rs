@@ -5049,6 +5049,8 @@ mod tests {
         assert!(r.fold(FoldOp::Close));
         assert_eq!(r.view().unwrap().cursor, 1, "on the fold's opening line");
         assert_eq!(r.view().unwrap().visible_len(), 4);
+        assert!(r.fold(FoldOp::Close), "zc again climbs to the root");
+        assert_eq!((r.view().unwrap().cursor, r.view().unwrap().visible_len()), (0, 1));
         assert!(!r.fold(FoldOp::Close), "nothing changed");
         r.set_view_mode(ViewMode::Raw);
         assert!(!r.fold(FoldOp::Toggle), "Raw has no folds");

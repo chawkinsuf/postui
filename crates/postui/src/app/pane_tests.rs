@@ -390,6 +390,64 @@ fn the_tab_chord_walks_the_manage_strip_both_ways() {
     assert_eq!(app.manage.tab, ManageTab::Settings, "wraps backward");
 }
 
+/// Arrows' tab chord on the Manage screen closes the tab's field first, as
+/// a click on the strip commits it: the typed value is saved, never dropped
+/// or left live behind the next tab, and a close the field refuses keeps
+/// the tab.
+#[test]
+fn arrows_tab_chord_commits_a_manage_field_first() {
+    use crate::components::manage::ManageTab;
+    use crate::components::settings::SettingsField;
+    let alt_right = KeyEvent::new(KeyCode::Right, KeyModifiers::ALT);
+    let mut app = app_in(Fixture::Settings, KeyProfile::Arrows);
+    app.ui_settings.osc52_limit = 65536;
+    app.settings.begin_edit(SettingsField::Osc52Limit, "abc");
+    app.handle_key(alt_right);
+    assert_eq!(app.manage.tab, ManageTab::Settings, "a refused commit keeps the tab");
+    assert_eq!(app.settings.editing, Some(SettingsField::Osc52Limit));
+    assert_eq!(app.settings.field_text(), "abc");
+    app.settings.begin_edit(SettingsField::Osc52Limit, "1024");
+    app.handle_key(alt_right);
+    assert_eq!(app.ui_settings.osc52_limit, 1024, "the value is committed, not dropped");
+    assert_eq!(app.settings.editing, None);
+    assert_ne!(app.manage.tab, ManageTab::Settings);
+
+    let mut app = app_in(Fixture::VarForm, KeyProfile::Arrows);
+    feed(&mut app, "<CR>x");
+    assert!(app.varmanager.form.editing.is_some(), "the form field is open");
+    let steps = app.history.undo_len();
+    app.handle_key(alt_right);
+    assert!(app.varmanager.form.editing.is_none(), "not left live behind the next tab");
+    assert_eq!(app.history.undo_len(), steps + 1, "the edit is committed");
+    assert_eq!(app.manage.tab, ManageTab::Environments);
+
+    let mut app = app_in(Fixture::VarForm, KeyProfile::Arrows);
+    feed(&mut app, "<CR>x");
+    app.proj_mut()
+        .apply_var_edit(&postui_core::project::VarEdit::Delete { name: "alpha".into() })
+        .unwrap();
+    app.handle_key(alt_right);
+    assert!(app.varmanager.form.editing.is_some(), "a failed commit keeps the edit live");
+    assert_eq!(app.manage.tab, ManageTab::Variables, "and the tab");
+}
+
+/// A Variables edit left live behind another tab (a failed click-away
+/// commit) is not the open field there: `CloseField` on the Settings tab
+/// does not reach that tab's Esc (which would close the screen).
+#[test]
+fn a_variables_edit_behind_another_tab_is_not_its_open_field() {
+    use crate::components::manage::ManageTab;
+    let mut app = app_in(Fixture::VarForm, KeyProfile::Arrows);
+    feed(&mut app, "<CR>x");
+    assert!(app.field_open());
+    app.manage.tab = ManageTab::Settings;
+    assert!(!app.field_open());
+    assert!(app.open_text_field_mut().is_none());
+    assert!(!app.update(Action::CloseField));
+    assert_eq!(app.screen, Screen::Manage, "the screen stays up");
+    assert!(app.varmanager.form.editing.is_some(), "the edit is untouched");
+}
+
 /// Review Focus 1: `g` is a field prefix now, and `gg` still reaches the
 /// body's engine.
 #[test]

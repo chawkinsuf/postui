@@ -299,8 +299,8 @@ pub(crate) fn expand(b: &table::Binding, count: Option<usize>, cap: usize) -> Ve
         Intent::Tab { delta, leave } => {
             let to = match count {
                 Some(n) if delta > 0 => TabTo::Nth(n),
-                Some(n) => TabTo::By(-((n % table::TAB_CYCLE) as i8)),
-                None => TabTo::By(delta),
+                Some(n) => TabTo::By(-i64::try_from(n).unwrap_or(i64::MAX)),
+                None => TabTo::By(i64::from(delta)),
             };
             vec![Step::Action(Action::GoTab { to, leave })]
         }
@@ -496,15 +496,14 @@ mod tests {
     #[test]
     fn tab_keys_on_a_closed_surface() {
         let s = cx(Vim, Surface::Sidebar);
-        let step = |d: i8| run(vec![Step::Action(Action::GoTab { to: TabTo::By(d), leave: false })]);
+        let step = |d: i64| run(vec![Step::Action(Action::GoTab { to: TabTo::By(d), leave: false })]);
         let select = |n: usize| run(vec![Step::Action(Action::GoTab { to: TabTo::Nth(n), leave: false })]);
         assert_eq!(feed(&mut Router::default(), &s, "gt"), step(1));
         assert_eq!(feed(&mut Router::default(), &s, "gT"), step(-1));
         assert_eq!(feed(&mut Router::default(), &s, "3gt"), select(3));
         assert_eq!(feed(&mut Router::default(), &s, "1gt"), select(1));
         assert_eq!(feed(&mut Router::default(), &s, "2gT"), step(-2));
-        assert_eq!(feed(&mut Router::default(), &s, "14gT"), step(-2), "N mod 12");
-        assert_eq!(feed(&mut Router::default(), &s, "12gT"), step(0));
+        assert_eq!(feed(&mut Router::default(), &s, "14gT"), step(-14), "the strip wraps it");
         assert_eq!(feed(&mut Router::default(), &cx(Arrows, Surface::Sidebar), "g"), Resolved::Declined);
     }
 
