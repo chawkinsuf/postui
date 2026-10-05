@@ -716,6 +716,8 @@ ctrl+End here, because the response's bare Home/End scroll sideways
 | `yy` | 2 | copy the line (Raw), the node's value (Pretty) or the header value (Headers), with the same toast as `c`. Arrows keeps `c` | mine |
 | `V` then `j`/`k`, `y` | 2 | line selection (main's `select_line_extend`), then `y` copies and clears it. `v` shows the note "Only line selection (V) here" | mine |
 
+Amended by plan M4a: `ctrl+d`/`ctrl+u` move the view and the cursor by the same half page, and where the view cannot scroll further the cursor still moves, clamped to the first or last line (`mine`). A fold is the container the line opens, or else the one it sits in, so `zc` or `za` on a value closes the object around it and puts the cursor on its opening line, as Vim does (`mine`). `/`, `n` and `N` are table rows in both profiles, their count ignored, and arrows' `c` is a row too: the response component keeps named keys only (§4.5; `mine` where the spec is silent).
+
 ### 5.8 Panes and tabs
 
 | Keys (vim) | Arrows | Behaviour | Who |
@@ -729,6 +731,10 @@ ctrl+End here, because the response's bare Home/End scroll sideways
 | `{N}gt` | — | `SelectTab(N)`; a disabled or out-of-range tab does nothing | earlier |
 | `{N}gT` | — | back N tabs (Repeat) | mine |
 | after a keyboard tab move with the editor focused | — | `FocusEditorContent`: the caret lands in the new tab's content, so `gt a` adds a row. Focus never moves panes | earlier (2026-09-21/22) |
+
+Amended by plan M4a (all `mine`): the window and tab rows apply on navigation surfaces and in a screen field's idle Normal (the URL line, a cell, the body, the Variables form and grid, the Settings field), never in a dialog's field or a query box. Vim's ctrl spellings of the targets (`<C-w><C-w>`, `<C-w><C-h>`, …) work too. In a screen field, `<C-w>` and a non-target are swallowed. On the Manage screens, `l` and `h` move between the list and the detail pane, `w` `W` `p` go to the other half, and Settings has one pane. Pane memory is learned at the start of each key or mouse event, so a click's focus change counts, even two clicks in a row. `{N}gT` steps back N mod 12, exact for every strip, and the editor's cycle steps over the enabled tabs only. Arrows' `alt+←/→` keep the caret where it is; vim's keymap no longer binds them.
+
+A refused `{N}gt` (a disabled or out-of-range tab) changes nothing, and typed in an open field it leaves the field open with the caret where it was (`you`, 2026-10-04, accepting my recommendation).
 
 ### 5.9 The `:` command line
 
@@ -1098,6 +1104,8 @@ milestone.
   - The ex table, the unsupported rows, `WriteQuit`, `ZZ`/`ZQ`, the
     macro, mark and register notes, and the recording flag.
   - Response tier 1: the ctrl+d/ctrl+u fix, `zo` `zc` `za`, `/` `n` `N`.
+  - **Split** (`you`, 2026-10-04, accepting my recommendation) into M4a (panes, tabs, the response's tier 1 and its letter rows, `alt+←/→` out of the vim keymap) and M4b (the `:` command line and the ex table, `ZZ`/`ZQ`, the notes and the recording flag, the Manage screens' `q`, `VIM_UNTIL_M4`, the spelling pass, and `ctrl+s`/`alt+w`/`shift+alt+w` out of the vim keymap).
+  - **Shipped (M4a)** by plan 2026-10-04-vim-profile-m4a. Decided by you (`you`, 2026-10-04, accepting my recommendation): a refused `{N}gt` in an open field leaves the field open. Decided by me, open for your review (`mine`): the plan's Deviations 2–14, recorded in §5.7 and §5.8 above. Key-list milestones are an enum with `M4a` and `M4b`.
 - **M5: tier 2 and acceptance.**
   - `.`; sidebar folds; `zR` `zM` `zz` `zt` `zb`; `ctrl+f` `ctrl+b` in
     the response; `*` `#`; `yy` and `V`+`y` in the response.
