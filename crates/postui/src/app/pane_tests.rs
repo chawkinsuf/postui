@@ -137,6 +137,48 @@ fn ctrl_w_l_returns_to_the_right_pane_last_used() {
     assert_eq!(app.focus, PaneId::Response, "and p again returns");
 }
 
+/// Review Focus 5: the right pane is learned from where the keyboard was,
+/// not the default (the editor) and not only from `ctrl+w`'s own moves.
+#[test]
+fn ctrl_w_l_learns_the_right_pane_from_a_plain_key() {
+    let mut app = app_in(Fixture::ResponseLines, KeyProfile::Vim);
+    feed(&mut app, "j");
+    assert_eq!(app.focus, PaneId::Response);
+    // A focus change outside any key.
+    app.update(Action::FocusPane(PaneId::Sidebar));
+    feed(&mut app, "<C-w>l");
+    assert_eq!(app.focus, PaneId::Response, "the response was the right pane last used");
+}
+
+/// A left press on the sidebar pane's background, through `handle_mouse`.
+fn click_sidebar(app: &mut App) {
+    use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    draw(app);
+    let r = app.hits.rect_of(&crate::hit::Hit::Pane(PaneId::Sidebar)).expect("the sidebar pane is drawn");
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: r.x + 1,
+        row: r.y + r.height.saturating_sub(2),
+        modifiers: KeyModifiers::NONE,
+    });
+    assert_eq!(app.focus, PaneId::Sidebar, "the click focused the sidebar");
+}
+
+/// Review Focus 5 (fix round 1): a click with no key before it is learned
+/// too: the memory notes the pane at the start of every input event.
+#[test]
+fn ctrl_w_learns_the_pane_a_click_left() {
+    let mut app = app_in(Fixture::ResponseLines, KeyProfile::Vim);
+    assert_eq!(app.focus, PaneId::Response);
+    click_sidebar(&mut app);
+    feed(&mut app, "<C-w>l");
+    assert_eq!(app.focus, PaneId::Response, "l: the right pane the click left");
+    let mut app = app_in(Fixture::ResponseLines, KeyProfile::Vim);
+    click_sidebar(&mut app);
+    feed(&mut app, "<C-w>p");
+    assert_eq!(app.focus, PaneId::Response, "p: the pane before the click");
+}
+
 /// Review Focus 5: nothing earlier, nothing happens.
 #[test]
 fn ctrl_w_p_with_no_earlier_pane_does_nothing() {

@@ -6,8 +6,10 @@ use super::*;
 use crate::action::PaneDir;
 
 impl App {
-    /// Learns where the keyboard is before a key runs (plan M4a Deviation
+    /// Learns where the keyboard is at the start of each input event, a key
+    /// (`handle_key`) or a mouse event (`handle_mouse`) (plan M4a Deviation
     /// 6), so a focus change by click or Tab counts for `<C-w>l` and `p`.
+    /// A paste never moves focus, so it needs no note.
     pub(super) fn note_pane(&mut self) {
         self.panes.note(self.focus);
     }

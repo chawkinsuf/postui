@@ -23,6 +23,10 @@ impl App {
     pub fn handle_mouse(&mut self, m: ratatui::crossterm::event::MouseEvent) -> bool {
         use crate::keyroute::engine_glue::Settled;
         use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+        // Where the keyboard is before this event, as `handle_key` learns
+        // it: a click's focus change counts for `<C-w>l` and `p` (plan M4a
+        // Deviation 6).
+        self.note_pane();
         // A press drops a half-typed key (plan M1 Deviation 15): a `g`
         // never survives a click.
         if matches!(m.kind, MouseEventKind::Down(_)) {

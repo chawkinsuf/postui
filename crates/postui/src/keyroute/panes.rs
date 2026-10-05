@@ -7,8 +7,8 @@ use crate::layout::PaneId;
 
 /// What `<C-w>l` and `<C-w>p` remember (spec §5.8): the right-hand pane
 /// last used, and the main pane the keyboard was on before this one.
-/// `App::note_pane` feeds it at the start of every key (plan M4a
-/// Deviation 6).
+/// `App::note_pane` feeds it at the start of each input event, key or
+/// mouse (plan M4a Deviation 6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PaneMemory {
     seen: Option<PaneId>,
