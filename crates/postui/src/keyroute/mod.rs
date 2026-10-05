@@ -189,7 +189,6 @@ impl Router {
                 let count = self.pending.count();
                 self.pending.clear();
                 match b.intent {
-                    Intent::Pass => Resolved::Declined,
                     Intent::Swallow => Resolved::Consumed,
                     _ => Resolved::Run(expand(b, count, ctx.cap)),
                 }
@@ -293,7 +292,6 @@ pub(crate) fn expand(b: &table::Binding, count: Option<usize>, cap: usize) -> Ve
             Step::Action(Action::ReopenField),
         ],
         Intent::Swallow => Vec::new(),
-        Intent::Pass => unreachable!("Pass is declined before expand"),
     }
 }
 
@@ -828,15 +826,31 @@ mod tests {
         assert_eq!(feed(&mut Router::default(), &cx(Vim, Surface::Picker), "u"), Resolved::Declined, "a picker types it");
     }
 
+    /// Spec §4.5 (plan M4a Deviation 11): the response's letters are rows in
+    /// both profiles; a vim count on them is ignored. The lists' `/` is a note.
     #[test]
-    fn notes_and_passes() {
+    fn the_response_letters_are_rows() {
+        use crate::components::response::ViewMode;
         assert_eq!(
             feed(&mut Router::default(), &cx(Vim, Surface::Sidebar), "/"),
             run(vec![Step::Action(Action::ShowToast("No search in this list yet".into(), ToastKind::Info))])
         );
-        let resp = cx(Vim, Surface::Response(crate::components::response::ViewMode::Pretty));
-        assert_eq!(feed(&mut Router::default(), &resp, "/"), Resolved::Declined);
-        assert_eq!(feed(&mut Router::default(), &resp, "3n"), Resolved::Declined);
+        let search = run(vec![Step::Action(Action::OpenResponseSearch)]);
+        let next = run(vec![Step::Action(Action::StepResponseSearch(1))]);
+        let prev = run(vec![Step::Action(Action::StepResponseSearch(-1))]);
+        for profile in [Vim, Arrows] {
+            let resp = cx(profile, Surface::Response(ViewMode::Pretty));
+            assert_eq!(feed(&mut Router::default(), &resp, "/"), search, "{profile:?}");
+            assert_eq!(feed(&mut Router::default(), &resp, "n"), next, "{profile:?}");
+            assert_eq!(feed(&mut Router::default(), &resp, "N"), prev, "{profile:?}");
+        }
+        let resp = cx(Vim, Surface::Response(ViewMode::Headers));
+        assert_eq!(feed(&mut Router::default(), &resp, "3n"), next, "the count is ignored");
+        assert_eq!(feed(&mut Router::default(), &resp, "c"), Resolved::Consumed, "vim's c waits for M5's yy");
+        assert_eq!(
+            feed(&mut Router::default(), &cx(Arrows, Surface::Response(ViewMode::Headers)), "c"),
+            run(vec![Step::Action(Action::CopyResponseHeader)])
+        );
     }
 
     /// Review Focus 4.

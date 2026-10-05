@@ -1,7 +1,7 @@
 use super::json_tree::{JsonTree, TokenKind};
 use super::line_input::LineInput;
 use super::{Component, DrawCtx, pane_surface};
-use crate::action::{Action, CopyTarget};
+use crate::action::Action;
 use crate::config::JqTab;
 use crate::hit::ScrollbarSpec;
 use crate::layout::PaneId;
@@ -2234,6 +2234,16 @@ impl Response {
         true
     }
 
+    /// The cursor's row on the Headers view when it is a header with a
+    /// value to copy (a received or sent header, not the divider or a
+    /// note): what arrows' `c` copies (`Action::CopyResponseHeader`).
+    pub fn copyable_header_row(&self) -> Option<usize> {
+        let view = self.view.as_ref()?;
+        (view.mode == ViewMode::Headers
+            && matches!(view.header_row(view.cursor), Some(HeaderRow::Received(_) | HeaderRow::Sent(_))))
+        .then_some(view.cursor)
+    }
+
     /// Clicking a body row: moves the cursor there, and — when `toggle` is
     /// set and the view is `Pretty` — collapses/expands the container it
     /// opens (a no-op on a scalar row).
@@ -2551,19 +2561,8 @@ impl Response {
             // No pane-local view key: the strip is walked by the tab chord
             // every pane shares (alt+←/→ → `Action::CycleTabs`, resolved
             // against the focused pane in `app.rs`).
-            // Only a header row has a value to copy: on the divider or a
-            // note the key dispatches nothing.
-            KeyCode::Char('c')
-                if view.mode == ViewMode::Headers
-                    && matches!(
-                        view.header_row(view.cursor),
-                        Some(HeaderRow::Received(_) | HeaderRow::Sent(_))
-                    ) =>
-            {
-                Some(Action::CopyToClipboard(CopyTarget::ResponseHeader(
-                    view.cursor,
-                )))
-            }
+            // The pane's letters (`c`, `/`, `n`, `N`) are the router's table
+            // rows (piece 4 spec §4.5): the component keeps named keys only.
             KeyCode::Char('d') if ev.modifiers == KeyModifiers::CONTROL => {
                 view.half_page(true);
                 Some(Action::Render)
@@ -2644,18 +2643,6 @@ impl Response {
                     view.clamp_cursor();
                     view.follow_cursor();
                 }
-                Some(Action::Render)
-            }
-            KeyCode::Char('/') => {
-                view.open_search();
-                Some(Action::Render)
-            }
-            KeyCode::Char('n') => {
-                view.step_match(1);
-                Some(Action::Render)
-            }
-            KeyCode::Char('N') => {
-                view.step_match(-1);
                 Some(Action::Render)
             }
             KeyCode::Esc if view.sel.is_some() => {
@@ -4439,21 +4426,34 @@ mod tests {
         assert!(!out.contains("s3cret"), "the secret never renders: {out}");
     }
 
-    /// `c` copies the header under the cursor; on the divider there is no
-    /// header, so it dispatches nothing at all.
+    /// `c` (the router's row) copies the header under the cursor; on the
+    /// divider there is no header, so there is nothing to copy.
     #[test]
     fn c_on_the_sent_divider_copies_nothing() {
         let mut r = ready(r#"{"a": 1}"#);
         r.set_view_mode(ViewMode::Headers);
-        let key = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
-        assert_eq!(
-            r.handle_key(key('c')),
-            Some(Action::CopyToClipboard(CopyTarget::ResponseHeader(0))),
-            "row 0 is a response header"
-        );
+        assert_eq!(r.copyable_header_row(), Some(0), "row 0 is a response header");
         r.view.as_mut().unwrap().cursor = 1;
         assert_eq!(r.view().unwrap().header_row(1), Some(HeaderRow::Divider));
-        assert_eq!(r.handle_key(key('c')), None, "the divider has nothing to copy");
+        assert_eq!(r.copyable_header_row(), None, "the divider has nothing to copy");
+    }
+
+    /// Plan M4a Deviation 11: `c` copies only a header row on the Headers
+    /// view; the response no longer reads its letters itself.
+    #[test]
+    fn only_a_header_row_is_copyable_and_the_letters_are_not_the_panes() {
+        let mut r = ready(r#"{"a": 1}"#);
+        render(&mut r);
+        assert_eq!(r.copyable_header_row(), None, "not the Headers view");
+        assert_eq!(r.handle_key(ch('/')), None, "the router's row opens the search now");
+        assert_eq!(r.handle_key(ch('n')), None);
+        r.set_view_mode(ViewMode::Headers);
+        render(&mut r);
+        assert_eq!(r.handle_key(ch('c')), None);
+        let row = (0..20).find(|&i| matches!(r.view().unwrap().header_row(i), Some(HeaderRow::Received(_))));
+        let row = row.expect("the fixture has a received header");
+        r.view.as_mut().unwrap().cursor = row;
+        assert_eq!(r.copyable_header_row(), Some(row));
     }
 
     /// The timing chip pairs time-to-first-byte with the total as one
@@ -5259,7 +5259,7 @@ mod tests {
     #[test]
     fn search_commits_counts_matches_and_wraps() {
         let mut r = ready(r#"{"aa": "zz", "bb": "zz"}"#);
-        assert_eq!(r.handle_key(ch('/')), Some(Action::Render));
+        assert!(r.open_search());
         for c in "zz".chars() {
             assert_eq!(r.handle_key(ch(c)), Some(Action::Render));
         }
@@ -5273,11 +5273,11 @@ mod tests {
         let out = render(&mut r);
         assert!(out.contains("1/2"), "match counter: {out}");
         assert_eq!(r.view().unwrap().cursor, 1, "jumped to the first match");
-        r.handle_key(ch('n'));
+        r.step_search(1);
         assert!(render(&mut r).contains("2/2"));
-        r.handle_key(ch('n'));
+        r.step_search(1);
         assert!(render(&mut r).contains("1/2"), "n wraps around");
-        r.handle_key(ch('N'));
+        r.step_search(-1);
         assert!(render(&mut r).contains("2/2"), "N wraps backwards");
         r.handle_key(key(KeyCode::Esc));
         assert!(r.view().unwrap().search.is_none(), "esc closes search");
@@ -5315,7 +5315,7 @@ mod tests {
     #[test]
     fn typing_while_search_is_active_does_not_move_the_cursor() {
         let mut r = ready(r#"{"a": 1, "b": 2}"#);
-        r.handle_key(ch('/'));
+        r.open_search();
         for c in "jjG".chars() {
             assert_eq!(r.handle_key(ch(c)), Some(Action::Render));
         }
@@ -5332,7 +5332,7 @@ mod tests {
         r.handle_key(ch('j'));
         r.handle_key(key(KeyCode::Char(' '))); // collapse "a"
         assert!(!render(&mut r).contains("needle"), "hidden while collapsed");
-        r.handle_key(ch('/'));
+        r.open_search();
         for c in "needle".chars() {
             r.handle_key(ch(c));
         }
@@ -5348,30 +5348,26 @@ mod tests {
     #[test]
     fn search_is_case_insensitive_and_finds_nothing_gracefully() {
         let mut r = ready(r#"{"Needle": 1}"#);
-        r.handle_key(ch('/'));
+        r.open_search();
         for c in "NEEDLE".chars() {
             r.handle_key(ch(c));
         }
         r.handle_key(key(KeyCode::Enter));
         assert!(render(&mut r).contains("1/1"));
-        r.handle_key(ch('/'));
+        r.open_search();
         for c in "absent".chars() {
             r.handle_key(ch(c));
         }
         r.handle_key(key(KeyCode::Enter));
         let out = render(&mut r);
         assert!(out.contains("no matches"), "{out}");
-        assert_eq!(
-            r.handle_key(ch('n')),
-            Some(Action::Render),
-            "n with no matches is inert"
-        );
+        assert!(r.step_search(1), "n with no matches is inert");
     }
 
     #[test]
     fn search_works_in_raw_view_too() {
         let mut r = ready("plain text with a needle inside");
-        r.handle_key(ch('/'));
+        r.open_search();
         for c in "needle".chars() {
             r.handle_key(ch(c));
         }
@@ -7578,7 +7574,7 @@ mod tests {
     fn a_raw_search_match_far_into_a_windowed_line_still_highlights() {
         let body = format!("{}needle{}", "x".repeat(300), "y".repeat(300));
         let mut r = ready(&body);
-        r.handle_key(ch('/'));
+        r.open_search();
         for c in "needle".chars() {
             r.handle_key(ch(c));
         }

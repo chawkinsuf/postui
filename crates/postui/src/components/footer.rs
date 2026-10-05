@@ -282,8 +282,8 @@ pub(crate) fn footer_chips(
             } else {
                 let mut chips = vec![
                     (tabs_key(), "tabs", Some(Action::CycleTabs(1))),
-                    // The pane's own key in arrows, a `Pass` row in vim.
-                    (Key::Named("/"), "search", Some(Action::OpenResponseSearch)),
+                    // The search row's key in both profiles (spec §4.6).
+                    (Key::Of(Action::OpenResponseSearch), "search", Some(Action::OpenResponseSearch)),
                     (Key::Of(Action::OpenJqBar), "filter", Some(Action::OpenJqBar)),
                 ];
                 if jq_bar == JqBarState::Open {
@@ -936,6 +936,12 @@ mod tests {
     }
 
     fn render_hits(focus: PaneId) -> (String, crate::hit::HitMap) {
+        render_hits_on(focus, crate::keyroute::SpellCtx::default())
+    }
+
+    /// The footer drawn as the app draws it: with the focused surface's
+    /// spelling context (a row-spelled chip only shows where its row binds).
+    fn render_hits_on(focus: PaneId, spell: crate::keyroute::SpellCtx) -> (String, crate::hit::HitMap) {
         let theme = Theme::for_terminal();
         let backend = TestBackend::new(120, FOOTER_HEIGHT);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -959,7 +965,7 @@ mod tests {
                     true,
                     true,
                     None,
-                    crate::keyroute::SpellCtx::default(),
+                    spell,
                     &crate::keys::Keymap::default_bindings(),
                     None,
                     &mut hits,
@@ -1351,9 +1357,17 @@ mod tests {
         assert!(content.contains("alt+←→  tabs"), "{content}");
     }
 
+    /// The spelling context while the response is focused.
+    fn response_spell() -> crate::keyroute::SpellCtx {
+        crate::keyroute::SpellCtx {
+            surface: crate::keyroute::Surface::Response(crate::components::response::ViewMode::Pretty),
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn response_focus_shows_response_hints() {
-        let content = render(PaneId::Response);
+        let (content, _) = render_hits_on(PaneId::Response, response_spell());
         assert!(content.contains("alt+←→  tabs"), "{content}");
         assert!(!content.contains("t  view"), "{content}");
         assert!(content.contains("/  search"));
@@ -1387,7 +1401,7 @@ mod tests {
                     true,
                     true,
                     None,
-                    crate::keyroute::SpellCtx::default(),
+                    response_spell(),
                     &crate::keys::Keymap::default_bindings(),
                     None,
                     &mut hits,

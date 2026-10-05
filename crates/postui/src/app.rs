@@ -3158,6 +3158,11 @@ impl App {
                 self.session.response.open_search();
                 true
             }
+            Action::StepResponseSearch(delta) => self.session.response.step_search(delta.into()),
+            Action::CopyResponseHeader => match self.session.response.copyable_header_row() {
+                Some(row) => self.update(Action::CopyToClipboard(CopyTarget::ResponseHeader(row))),
+                None => false,
+            },
             Action::JsonRowClicked { row, toggle } => {
                 self.session.response.click_row(row, toggle);
                 true

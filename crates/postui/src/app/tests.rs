@@ -10438,18 +10438,21 @@ fn header_copy_click_and_key_parity_both_copy_the_header() {
     );
     assert!(rendered_text(&mut app).contains("Copied content-type"));
 
-    // `c` key parity in Headers view produces the same action.
-    let action = app
-        .session
-        .response
-        .handle_key(ratatui::crossterm::event::KeyEvent::new(
-            KeyCode::Char('c'),
-            KeyModifiers::NONE,
-        ));
+    // `c` key parity in Headers view (arrows' row, through the router)
+    // copies the same header again (the file is cleared so only the key
+    // can have written it).
+    std::fs::remove_file(&out).unwrap();
+    app.update(Action::FocusPane(PaneId::Response));
+    app.handle_key(ratatui::crossterm::event::KeyEvent::new(
+        KeyCode::Char('c'),
+        KeyModifiers::NONE,
+    ));
     assert_eq!(
-        action,
-        Some(Action::CopyToClipboard(CopyTarget::ResponseHeader(0)))
+        std::fs::read_to_string(&out).unwrap(),
+        "application/json",
+        "the `c` key copies the header under the cursor"
     );
+    assert!(rendered_text(&mut app).contains("Copied content-type"));
 }
 
 /// The sent section's copy pill yields the header's real value — the row

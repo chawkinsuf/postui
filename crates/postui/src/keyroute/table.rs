@@ -68,9 +68,6 @@ pub enum Intent {
     /// Reopen a dialog's selected text field (plan M3b Deviation 3): in
     /// Insert at this seat, or in Normal (`None`).
     Reopen(Option<OpenSeat>),
-    /// The key goes on as typed: the surface's own arm already does what
-    /// the vim key means (plan M1 Deviation 8).
-    Pass,
 }
 
 /// How a count applies (spec §3.5).
@@ -323,6 +320,22 @@ fn fold_toggle() -> Action {
     Action::TreeFold(crate::action::FoldOp::Toggle)
 }
 
+fn response_search() -> Action {
+    Action::OpenResponseSearch
+}
+
+fn next_match() -> Action {
+    Action::StepResponseSearch(1)
+}
+
+fn prev_match() -> Action {
+    Action::StepResponseSearch(-1)
+}
+
+fn copy_header() -> Action {
+    Action::CopyResponseHeader
+}
+
 /// Every row. Order does not matter: no complete row is a prefix of
 /// another on a shared surface (`no_two_rows_collide`).
 pub static TABLE: &[Binding] = &[
@@ -358,10 +371,12 @@ pub static TABLE: &[Binding] = &[
     row("a", Surfaces::URL_LINE, Intent::Open { key: ENTER, seat: OpenSeat::After }, CountRule::Ignore),
     row("I", Surfaces::URL_LINE, Intent::Open { key: ENTER, seat: OpenSeat::FirstNonBlank }, CountRule::Ignore),
     row("A", Surfaces::URL_LINE, Intent::Open { key: ENTER, seat: OpenSeat::End }, CountRule::Ignore),
-    // Key list §7: the response's own search keys go on as typed.
-    row("/", Surfaces::RESPONSE, Intent::Pass, CountRule::Ignore),
-    row("n", Surfaces::RESPONSE, Intent::Pass, CountRule::Ignore),
-    row("N", Surfaces::RESPONSE, Intent::Pass, CountRule::Ignore),
+    // Key list §7 and spec §4.5 (plan M4a Deviation 11): the response's
+    // letters, the same in both profiles; arrows' `c` copies a header.
+    both("/", Surfaces::RESPONSE, Intent::Act(response_search)),
+    both("n", Surfaces::RESPONSE, Intent::Act(next_match)),
+    both("N", Surfaces::RESPONSE, Intent::Act(prev_match)),
+    arrows("c", Surfaces::RESPONSE, Intent::Act(copy_header)),
     // Key list §6, Out (parked by the user): a list has no search yet.
     row("/", Surfaces::SEARCHLESS, Intent::Note("No search in this list yet"), CountRule::Ignore),
     // Key list §6 and §9: the app's undo, redo and command palette.
@@ -706,7 +721,7 @@ mod tests {
             }
             if matches!(
                 b.intent,
-                Intent::Pass | Intent::Note(_) | Intent::Swallow | Intent::Open { .. } | Intent::Reopen(_)
+                Intent::Note(_) | Intent::Swallow | Intent::Open { .. } | Intent::Reopen(_)
             ) {
                 assert_eq!(b.count, CountRule::Ignore, "{}", b.keys);
             }

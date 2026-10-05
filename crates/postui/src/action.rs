@@ -683,6 +683,12 @@ pub enum Action {
     /// dispatchable form of the `Find` button / `/` key, so the footer's
     /// Response-pane search chip and the palette can reach it too.
     OpenResponseSearch,
+    /// The response search's next (`1`) or previous (`-1`) match: `n` and
+    /// `N` in both profiles (piece 4 spec §4.5), as the ▼/▲ buttons do.
+    StepResponseSearch(i8),
+    /// Arrows' `c` on the response's Headers view: copies the header under
+    /// the cursor. Nothing on any other row (spec §4.5).
+    CopyResponseHeader,
     /// Click on a JSON-tree body row: moves the cursor there, and — when
     /// `toggle` is set — collapses/expands the container it opens.
     JsonRowClicked {
