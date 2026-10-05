@@ -4232,6 +4232,25 @@ fn entering_a_space_never_clears_the_cursor() {
     );
 }
 
+/// A landing that reopens a saved POST with its unsaved GET buffer: the
+/// buffer's method decides the tab, so the disabled Body tab never shows.
+#[test]
+fn a_reopened_buffer_that_sends_no_body_leaves_the_body_tab() {
+    use crate::undo::Open;
+    let (mut app, dir) = spaced_app();
+    let post = postui_core::model::HttpRequest::from_toml_str("method = \"POST\"\nurl = \"https://x/1\"").unwrap();
+    postui_core::fixtures::save_request(dir.path(), "main/alpha", &post).unwrap();
+    app.editor.preferred_tab = EditorTab::Body;
+    let buffer = Box::new(req("https://x/2"));
+    assert!(!buffer.method.sends_body());
+    app.land(Landing {
+        open: Some(Open::Request { slug: "main/alpha".into(), buffer: Some(buffer) }),
+        ..Landing::default()
+    });
+    assert_eq!(app.editor.url.text(), "https://x/2", "the buffer is what shows");
+    assert_ne!(app.editor.active_tab, EditorTab::Body, "Body is disabled on a GET");
+}
+
 #[test]
 fn force_open_request_selects_its_sidebar_row() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();

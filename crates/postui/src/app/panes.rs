@@ -183,7 +183,7 @@ impl App {
 }
 
 /// Where a tab key goes on a strip (see [`App::tab_target`]).
-fn strip_target((strip, showing): (Vec<Option<Action>>, usize), to: TabTo) -> Option<Action> {
+pub(super) fn strip_target((strip, showing): (Vec<Option<Action>>, usize), to: TabTo) -> Option<Action> {
     let target = match to {
         TabTo::Nth(n) => n.checked_sub(1).filter(|i| strip.get(*i).is_some_and(Option::is_some))?,
         TabTo::By(delta) => {
@@ -191,7 +191,14 @@ fn strip_target((strip, showing): (Vec<Option<Action>>, usize), to: TabTo) -> Op
             if enabled.is_empty() {
                 return None;
             }
-            let at = enabled.iter().position(|i| *i == showing).unwrap_or(0) as i64;
+            // A disabled tab showing (never expected: `App::sync_active_tab`
+            // hops off one) steps from where it sits between its enabled
+            // neighbours, so one step lands on the next of them.
+            let at = match enabled.binary_search(&showing) {
+                Ok(i) => i as i64,
+                Err(i) if delta > 0 => i as i64 - 1,
+                Err(i) => i as i64,
+            };
             enabled[(at + delta.rem_euclid(enabled.len() as i64)).rem_euclid(enabled.len() as i64) as usize]
         }
     };

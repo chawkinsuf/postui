@@ -404,11 +404,13 @@ impl App {
                             p.close_request(prev);
                         }
                         self.editor.load(Some(slug.clone()), req);
-                        self.sync_active_tab();
                         if let Some(buf) = buffer {
                             self.editor.apply_snapshot(&buf);
                             self.shadow = Some((Some(slug.clone()), *buf));
                         }
+                        // After the buffer: its method, not the saved
+                        // one's, says whether Body can show.
+                        self.sync_active_tab();
                     }
                     Err(e) => {
                         // Seat nothing: the editor stays exactly where it
@@ -431,6 +433,7 @@ impl App {
                     self.editor.apply_snapshot(&buf);
                     self.shadow = Some((None, *buf));
                 }
+                self.sync_active_tab();
             }
             None => {}
         }

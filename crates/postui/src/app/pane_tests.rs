@@ -490,6 +490,17 @@ fn a_multi_step_cycle_skips_the_disabled_body_tab() {
     assert_eq!(app.editor.active_tab, EditorTab::Headers, "Vars back five over three enabled tabs");
 }
 
+/// Code review: a disabled tab left showing steps from where it sits, so
+/// one step lands on its next enabled neighbour either way.
+#[test]
+fn a_step_from_a_disabled_tab_lands_on_its_neighbour() {
+    use crate::action::TabTo;
+    let strip = || (vec![Some(Action::EditorTabSelect(0)), Some(Action::EditorTabSelect(1)), None, Some(Action::EditorTabSelect(3))], 2);
+    assert_eq!(super::panes::strip_target(strip(), TabTo::By(1)), Some(Action::EditorTabSelect(3)));
+    assert_eq!(super::panes::strip_target(strip(), TabTo::By(-1)), Some(Action::EditorTabSelect(1)));
+    assert_eq!(super::panes::strip_target(strip(), TabTo::By(2)), Some(Action::EditorTabSelect(0)), "wraps");
+}
+
 /// Review Focus 5: a focus change made without ctrl+w is learned.
 #[test]
 fn ctrl_w_l_returns_to_the_right_pane_last_used() {

@@ -952,12 +952,17 @@ impl ReadyView {
     /// the view and the cursor move half a page together, so the cursor
     /// keeps its screen row. Where the view cannot scroll further the
     /// cursor still moves, clamped to the first or last line (plan M4a
-    /// Deviation 10).
+    /// Deviation 10). A cursor the wheel or the scrollbar left off screen
+    /// is first brought to the view's nearest edge, as Vim keeps it, so the
+    /// step starts from what shows.
     fn half_page(&mut self, down: bool) {
         let height = self.height.max(1);
         let half = (height / 2).max(1);
         let last = self.visible_len().saturating_sub(1);
         let max_scroll = self.visible_len().saturating_sub(height);
+        self.cursor = self
+            .cursor
+            .clamp(self.scroll.min(last), (self.scroll + height - 1).min(last));
         if down {
             // A view already past the end (the pane grew, or a fold shrank
             // what shows) stays put rather than jump back up.
@@ -5036,6 +5041,33 @@ mod tests {
         r.handle_key(down());
         let v = r.view().unwrap();
         assert_eq!((v.cursor, v.scroll), (past + half, past), "ctrl+d never moves the view up");
+    }
+
+    /// The wheel and the scrollbar move the view and leave the cursor off
+    /// screen; `ctrl+d` and `ctrl+u` then step from the view, never back
+    /// toward the cursor it left behind.
+    #[test]
+    fn ctrl_d_and_ctrl_u_step_from_a_view_the_wheel_moved() {
+        let body = (0..200).map(|i| i.to_string()).collect::<Vec<_>>().join("\n");
+        let mut r = ready(&body);
+        render(&mut r);
+        let height = r.view().unwrap().height;
+        let half = (height / 2).max(1);
+        let down = || KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL);
+        let up = || KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL);
+        r.handle_scroll(50);
+        assert_eq!(r.view().unwrap().cursor, 0, "the wheel leaves the cursor behind");
+        r.handle_key(down());
+        let v = r.view().unwrap();
+        assert_eq!(v.scroll, 50 + half, "ctrl+d moves the view down, not back to the cursor");
+        assert_eq!(v.cursor, 50 + half, "the cursor lands on the view's top row");
+        let bottom = 120;
+        r.view.as_mut().unwrap().cursor = bottom + height + 10;
+        r.set_scroll(bottom);
+        r.handle_key(up());
+        let v = r.view().unwrap();
+        assert_eq!(v.scroll, bottom - half, "ctrl+u moves the view up, not down to the cursor");
+        assert_eq!(v.cursor, bottom + height - 1 - half, "the cursor keeps the view's bottom row");
     }
 
     /// Piece 4 spec §5.7 (`R.fold`): `zo` `zc` `za` on the tree view only.
