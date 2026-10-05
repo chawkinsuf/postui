@@ -1449,9 +1449,9 @@ impl Response {
         self.jq.menu = None;
     }
 
-    /// Whether plain Right or End would accept the jq bar's offered
-    /// completion (`ready_key`'s offer arm): those keys are the bar's
-    /// before the vim engine's (plan M3b Deviation 5).
+    /// Whether plain Right or End accepts the jq bar's offered completion:
+    /// `ready_key`'s offer arm, and in vim the claim that puts those keys
+    /// before the engine (plan M3b Deviation 5).
     pub(crate) fn jq_accepts_completion(&self) -> bool {
         self.jq.focused
             && (self.jq.ghost().is_some() || self.jq.menu_row().is_some())
@@ -1962,15 +1962,15 @@ impl Response {
 
     /// The bar's ctrl/alt+backspace: a path segment when the caret is in
     /// a path token and nothing is selected, else the input's own rule.
-    fn jq_segment_backspace(&mut self, ev: KeyEvent) {
+    /// Both are calls, not keys: the vim profile forwards this key with
+    /// the input quiet (plan M3b Deviation 6).
+    fn jq_segment_backspace(&mut self) {
         self.jq.menu = None;
         match self.jq.segment_delete_target() {
             Some(target) if self.jq.input.selection().is_none() => {
                 self.jq.input.delete_back_to(target);
             }
-            _ => {
-                self.jq.input.handle_key(ev);
-            }
+            _ => self.jq.input.delete_word_back(),
         }
         self.jq.edited = true;
     }
@@ -2437,7 +2437,8 @@ impl Response {
                     }
                     // Right/End accept a ghost. Menu mode has one only
                     // for a closer, so there they accept exactly that.
-                    KeyCode::Right | KeyCode::End if plain && (cycle || self.jq.completion.closer) => {
+                    // The vim profile asks the same before its engine.
+                    KeyCode::Right | KeyCode::End if plain && self.jq_accepts_completion() => {
                         self.accept_jq_completion();
                         return Some(Action::Render);
                     }
@@ -2459,10 +2460,10 @@ impl Response {
                         .modifiers
                         .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
                 {
-                    self.jq_segment_backspace(ev);
+                    self.jq_segment_backspace();
                 }
                 KeyCode::Char('h') if ev.modifiers.contains(KeyModifiers::CONTROL) => {
-                    self.jq_segment_backspace(ev);
+                    self.jq_segment_backspace();
                 }
                 KeyCode::Esc => {
                     if self.jq.ai_pending {

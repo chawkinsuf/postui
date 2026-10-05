@@ -158,14 +158,20 @@ impl App {
                 self.glue.set_session(FieldSession::None);
             }
             // The dialog session goes the same way, and its engine gives
-            // the registers back (plan M3b Deviation 1).
-            if let Some((_, id)) = self.modal_session.take() {
-                let caret = self.session_parts(id).1.map(|buf| buf.caret());
-                self.close_session(id);
-                if let Some(at) = caret {
-                    self.put_caret(id, at);
+            // the registers back (plan M3b Deviation 1). A dialog no longer
+            // on top is left through the ghost, as `sync_modal_session`
+            // leaves it: its field index would name the top's field.
+            if let Some((dialog, id)) = self.modal_session.take() {
+                if Some(dialog) == self.modals.top_serial() {
+                    let caret = self.session_parts(id).1.map(|buf| buf.caret());
+                    self.close_session(id);
+                    if let Some(at) = caret {
+                        self.put_caret(id, at);
+                    }
+                    self.unpaint(id, true);
+                } else {
+                    self.modal_glue.leave_ghost();
                 }
-                self.unpaint(id, true);
                 self.glue.swap_registers(&mut self.modal_glue);
                 self.modal_glue.set_session(FieldSession::None);
             }
@@ -248,12 +254,19 @@ impl App {
         let default = if fresh || mouse || switched_in { Start::Insert } else { Start::Normal };
         match (was, now) {
             (None, None) => {}
+            // A field reseeded in place (`alt+d`'s fresh `LineInput`) has
+            // lost its mark: the close step starts from the new text, as
+            // arrows' first snapshot does (Deviation 11). A `set_text`
+            // reseed kept the first mark, and keeps it.
             (Some(a), Some(b)) if a == b => {
                 let (glue, buf) = self.session_parts(b.1);
                 if let Some(mut buf) = buf
                     && glue.differs(&buf)
                 {
                     glue.rebase(&mut buf);
+                    if let FieldBuf::Line(input) = &mut buf {
+                        input.mark_open();
+                    }
                 }
             }
             // Tab in a form: the same dialog, the mode carries (spec §3.3).

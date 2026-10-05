@@ -462,6 +462,21 @@ fn the_jq_bar_types_through_the_engine_as_one_app_step() {
     assert_eq!(app.session.response.jq_text(), "", "one undo takes the whole edit back");
 }
 
+/// Plan M3b Deviation 5 (the user's decision): ctrl+backspace off a path
+/// token falls back to the input's word delete in vim as in arrows.
+#[test]
+fn ctrl_backspace_off_a_path_deletes_a_word_in_both_profiles() {
+    for profile in [KeyProfile::Vim, KeyProfile::Arrows] {
+        let mut app = app_in(Fixture::ResponseLines, profile);
+        app.update(Action::OpenJqBar);
+        app.capture_undo();
+        draw(&mut app);
+        feed(&mut app, ". | length");
+        feed_key(&mut app, KeyEvent::new(KeyCode::Backspace, KeyModifiers::CONTROL));
+        assert_eq!(app.session.response.jq_text(), ". | ", "{profile:?}");
+    }
+}
+
 /// Plan M3b Deviation 13: a paste into the file picker keeps its jump.
 #[test]
 fn a_pasted_folder_jumps_the_file_picker() {

@@ -422,6 +422,37 @@ impl LineInput {
         self.anchor = None;
     }
 
+    /// ctrl+backspace as a call, not a key, so it runs under
+    /// [`quiet`]: the selection, else the word behind the caret. For the
+    /// jq bar's fallback when there is no path segment to delete (plan
+    /// M3b Deviation 5).
+    pub fn delete_word_back(&mut self) {
+        if self.selection().is_some() {
+            self.record(EditKind::Whole);
+            self.delete_selection();
+            return;
+        }
+        self.delete_back_from(self.word_target(false));
+    }
+
+    /// Backspace's delete without a selection: the chars from `target` up
+    /// to the caret, one `DeleteBack` step that a burst extends.
+    fn delete_back_from(&mut self, target: usize) {
+        // A click plants the anchor on the caret and leaves it there; the
+        // caret moving off it would read as a selection. Not
+        // `clear_selection`: that breaks the run, and a burst of
+        // backspaces is one step.
+        self.anchor = None;
+        self.word_anchor = None;
+        if self.cursor > target {
+            self.record(EditKind::DeleteBack);
+            let start = self.byte_offset(target);
+            let end = self.byte_offset(self.cursor);
+            self.text.replace_range(start..end, "");
+            self.cursor = target;
+        }
+    }
+
     /// Inserts `s` at the cursor and advances the cursor by `s`'s char
     /// count. Used to splice in multi-character text (e.g. a picked
     /// variable token) in one shot, rather than one `handle_key` per char.
@@ -569,12 +600,6 @@ impl LineInput {
                     self.delete_selection();
                     return true;
                 }
-                // A click plants the anchor on the caret and leaves it
-                // there; the caret moving off it would read as a selection.
-                // Not `clear_selection`: that breaks the run, and a burst
-                // of backspaces is one step.
-                self.anchor = None;
-                self.word_anchor = None;
                 // ctrl/alt+backspace removes the whole word behind the
                 // caret, the same hop word-left would make.
                 let target = if word {
@@ -582,13 +607,7 @@ impl LineInput {
                 } else {
                     self.cursor.saturating_sub(1)
                 };
-                if self.cursor > target {
-                    self.record(EditKind::DeleteBack);
-                    let start = self.byte_offset(target);
-                    let end = self.byte_offset(self.cursor);
-                    self.text.replace_range(start..end, "");
-                    self.cursor = target;
-                }
+                self.delete_back_from(target);
                 true
             }
             KeyCode::Delete => {

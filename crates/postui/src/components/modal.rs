@@ -666,6 +666,12 @@ fn config_startup_choices() -> [(char, &'static str, ConfigStartupChoice); 4] {
     ]
 }
 
+/// `Modal::ConfigEditInvalid`'s answer letters: Keep editing (answered
+/// in `App::handle_key_routed`, which stashes the temp path) and Discard
+/// (answered by the modal itself).
+pub(crate) const CONFIG_EDIT_KEEP: char = 'k';
+pub(crate) const CONFIG_EDIT_DISCARD: char = 'd';
+
 /// `Modal::KeymapChoice`'s two answers: the key, the painted label, the
 /// profile. Both paint as Secondary: neither is the default.
 fn keymap_choices() -> [(char, &'static str, crate::config::KeyProfile); 2] {
@@ -858,7 +864,7 @@ impl ModalStack {
         match self.top() {
             Some(Modal::Confirm { choices, .. }) => choices.iter().map(|(c, ..)| *c).collect(),
             Some(Modal::ConfigStartup { .. }) => config_startup_choices().iter().map(|(c, ..)| *c).collect(),
-            Some(Modal::ConfigEditInvalid { .. }) => vec!['k', 'd'],
+            Some(Modal::ConfigEditInvalid { .. }) => vec![CONFIG_EDIT_KEEP, CONFIG_EDIT_DISCARD],
             Some(Modal::KeymapChoice { .. }) => keymap_choices().iter().map(|(c, ..)| *c).collect(),
             _ => Vec::new(),
         }
@@ -1766,7 +1772,10 @@ impl ModalStack {
             Modal::ConfigStartup { .. } => unreachable!("ConfigStartup returned early"),
             // No "esc/cancel" chip either: see the variant's doc comment.
             Modal::ConfigEditInvalid { .. } => {
-                vec![(Key::Answer('k'), "keep editing", None), (Key::Answer('d'), "discard", None)]
+                vec![
+                    (Key::Answer(CONFIG_EDIT_KEEP), "keep editing", None),
+                    (Key::Answer(CONFIG_EDIT_DISCARD), "discard", None),
+                ]
             }
             Modal::KeymapChoice { aimed } => {
                 let mut chips = vec![
@@ -1936,7 +1945,7 @@ impl ModalStack {
             // `resumed_config_edit`; only `d` (Discard) is answerable from
             // here, since `Action::ConfigEditDiscard` needs nothing else.
             Modal::ConfigEditInvalid { path, .. } => match key.code {
-                KeyCode::Char(c) if c.eq_ignore_ascii_case(&'d') => Some(ModalResult {
+                KeyCode::Char(c) if c.eq_ignore_ascii_case(&CONFIG_EDIT_DISCARD) => Some(ModalResult {
                     actions: vec![Action::ConfigEditDiscard { path: path.clone() }],
                     close: false, // the action's own arm pops
                     ..Default::default()

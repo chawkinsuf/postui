@@ -10397,7 +10397,7 @@ impl App {
             // above — it can't live in the modal's own key handler.
             // Discard needs nothing extra and is handled there instead.
             if let KeyCode::Char(c) = ev.code
-                && c.eq_ignore_ascii_case(&'k')
+                && c.eq_ignore_ascii_case(&crate::components::modal::CONFIG_EDIT_KEEP)
                 && let Some(crate::components::modal::Modal::ConfigEditInvalid {
                     file, path, ..
                 }) = self.modals.top()

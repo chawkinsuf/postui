@@ -13452,6 +13452,29 @@ fn the_value_popup_alt_d_removes_the_chosen_scopes_value() {
     assert_eq!(scope.input.text(), "This request", "nothing was removed");
 }
 
+/// Plan M3b Deviation 11: `alt+d` reseeds the open value field in place,
+/// and the vim close after it still records its step from the reseeded
+/// text, as arrows does.
+#[test]
+fn a_vim_edit_after_alt_d_is_one_undo_step() {
+    let (mut app, _dir) = token_popup_app();
+    app.use_profile(crate::config::KeyProfile::Vim);
+    app.update(Action::OpenVarTokenPopup("base_url".into()));
+    render_once(&mut app);
+    app.handle_key(alt('d'));
+    render_once(&mut app);
+    super::key_matrix_tests::feed(&mut app, "<Esc>ccfoo<Esc>j");
+    let value = |app: &App| {
+        let Some(Modal::MultiPrompt { fields, .. }) = app.modals.top() else {
+            panic!("the popup stays open")
+        };
+        fields.iter().find(|f| f.key == "value").unwrap().input.text().to_string()
+    };
+    assert_eq!(value(&app), "foo");
+    super::key_matrix_tests::feed(&mut app, "u");
+    assert_eq!(value(&app), "http://localhost:8080", "the edit is one dialog undo step");
+}
+
 /// The value popup's footer chips teach its keys and name the scope the
 /// remove chord would hit — and the remove chip only shows where the 󰅖
 /// itself would (the chosen scope stores something).
