@@ -10429,10 +10429,12 @@ impl App {
         // field holding the caret, on the main and Manage screens, the
         // chord does nothing, rather than reaching the focused list as a
         // plain arrow below (the user's decision, 2026-10-05; final review
-        // M-3). A `keys.toml` binding still wins; a field's keys are its
-        // engine's.
+        // M-3). So does any chord with alt held (alt+shift+→, or the meta
+        // bit some terminals add), since the list arms below ignore the
+        // modifiers. A `keys.toml` binding still wins; a field's keys are
+        // its engine's.
         if self.profile() == crate::config::KeyProfile::Vim
-            && ev.modifiers == KeyModifiers::ALT
+            && ev.modifiers.contains(KeyModifiers::ALT)
             && matches!(ev.code, KeyCode::Left | KeyCode::Right)
             && global.is_none()
             && matches!(self.screen, Screen::Main | Screen::Manage)

@@ -312,10 +312,14 @@ fn vim_alt_arrows_do_nothing_on_the_sidebar_and_manage() {
         draw(&mut app);
         assert_eq!((rows(&app), app.sidebar.selected, app.editor.active_tab), before, "{code:?}");
     }
-    let mut app = app_in(Fixture::VarList, KeyProfile::Vim);
-    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
-    assert_eq!(app.varmanager.focus, VmFocus::List, "the list keeps the keyboard");
-    assert_eq!(app.manage.tab, crate::components::manage::ManageTab::Variables);
+    // Any chord with alt held: a terminal that adds shift (or meta) to
+    // alt+→ is still not a plain arrow.
+    for mods in [KeyModifiers::ALT, KeyModifiers::ALT | KeyModifiers::SHIFT, KeyModifiers::ALT | KeyModifiers::META] {
+        let mut app = app_in(Fixture::VarList, KeyProfile::Vim);
+        app.handle_key(KeyEvent::new(KeyCode::Right, mods));
+        assert_eq!(app.varmanager.focus, VmFocus::List, "the list keeps the keyboard: {mods:?}");
+        assert_eq!(app.manage.tab, crate::components::manage::ManageTab::Variables, "{mods:?}");
+    }
 }
 
 /// Spec §5.8: `{N}gt` on the response's strip as drawn, and on the Manage

@@ -942,6 +942,15 @@ impl ReadyView {
         }
     }
 
+    /// After a fold opens or closes (a click, `zo` `zc` `za`): the change
+    /// renumbers the visible lines a selection is addressed in, and may
+    /// leave the cursor past the end or out of view.
+    fn after_fold(&mut self) {
+        self.clear_sel();
+        self.clamp_cursor();
+        self.follow_cursor();
+    }
+
     fn move_cursor(&mut self, delta: i32) {
         let max = self.visible_len().saturating_sub(1) as i32;
         self.cursor = (self.cursor as i32 + delta).clamp(0, max) as usize;
@@ -2259,11 +2268,7 @@ impl Response {
             && let Some(tree) = view.active_tree_mut()
         {
             tree.toggle(cursor);
-            // Collapsing/expanding renumbers the visible lines a selection
-            // is addressed in.
-            view.clear_sel();
-            view.clamp_cursor();
-            view.follow_cursor();
+            view.after_fold();
         }
     }
 
@@ -2281,11 +2286,8 @@ impl Response {
         let Some(at) = view.active_tree_mut().and_then(|tree| tree.fold(cursor, op)) else {
             return false;
         };
-        // Folding renumbers the visible lines a selection is addressed in.
         view.cursor = at;
-        view.clear_sel();
-        view.clamp_cursor();
-        view.follow_cursor();
+        view.after_fold();
         true
     }
 
