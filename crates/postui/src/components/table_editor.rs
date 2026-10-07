@@ -400,8 +400,11 @@ impl TableEditorState {
     }
 
     fn handle_nav_key(&mut self, ev: KeyEvent, map: &mut IndexMap<String, Entry>) -> TableOutcome {
+        // A named key acts bare only: any other chord is unconsumed rather
+        // than acting as the bare key (piece 4 spec §5.1).
+        let plain = ev.modifiers.is_empty();
         match ev.code {
-            KeyCode::Down => {
+            KeyCode::Down if plain => {
                 // The cursor's range is the data rows plus one: index
                 // `map.len()` is the ghost row, so the keyboard can reach it
                 // the same way the mouse can (and an empty table still has
@@ -412,7 +415,7 @@ impl TableEditorState {
                 });
                 TableOutcome::consumed()
             }
-            KeyCode::Up => {
+            KeyCode::Up if plain => {
                 // Row 0 and no selection leave Up unconsumed so the caller
                 // (Editor) can fall back to climbing out to the tab strip
                 // instead of leaving the user stuck with no way back.
@@ -428,14 +431,14 @@ impl TableEditorState {
             // clamp and stay consumed so nothing leaks to the pane. With
             // no row selected there is no cell to move between, so they
             // stay unconsumed like Up does.
-            KeyCode::Left => {
+            KeyCode::Left if plain => {
                 if self.selected.is_none() {
                     return TableOutcome::not_consumed();
                 }
                 self.col = Col::Key;
                 TableOutcome::consumed()
             }
-            KeyCode::Right => {
+            KeyCode::Right if plain => {
                 if self.selected.is_none() {
                     return TableOutcome::not_consumed();
                 }
@@ -452,14 +455,14 @@ impl TableEditorState {
                     TableOutcome::not_consumed()
                 }
             }
-            KeyCode::Enter => {
+            KeyCode::Enter if plain => {
                 if self.selected.is_none() {
                     return TableOutcome::not_consumed();
                 }
                 self.begin_edit_selected(map);
                 TableOutcome::consumed()
             }
-            KeyCode::Char(' ') if ev.modifiers.is_empty() => {
+            KeyCode::Char(' ') if plain => {
                 if self.ghost_selected(map) {
                     return TableOutcome::not_consumed();
                 }
@@ -478,11 +481,11 @@ impl TableEditorState {
             KeyCode::Char('b') if ev.modifiers == KeyModifiers::CONTROL => {
                 self.handle_nav_key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE), map)
             }
-            KeyCode::Home | KeyCode::PageUp => {
+            KeyCode::Home | KeyCode::PageUp if plain => {
                 self.selected = Some(0);
                 TableOutcome::consumed()
             }
-            KeyCode::End | KeyCode::PageDown => {
+            KeyCode::End | KeyCode::PageDown if plain => {
                 self.selected = Some(map.len());
                 TableOutcome::consumed()
             }
@@ -496,7 +499,7 @@ impl TableEditorState {
                 self.selected = Some(self.selected.unwrap_or(0).saturating_sub(half));
                 TableOutcome::consumed()
             }
-            KeyCode::Delete if ev.modifiers.is_empty() => {
+            KeyCode::Delete if plain => {
                 if self.ghost_selected(map) || self.selected.is_none_or(|s| s >= map.len()) {
                     return TableOutcome::not_consumed();
                 }

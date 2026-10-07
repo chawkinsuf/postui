@@ -10364,24 +10364,6 @@ impl App {
             return changed;
         }
 
-        // 2b. Vim binds no alt+←/→ (its tab keys are `gt` and `gT`): with no
-        // field holding the caret, on the main and Manage screens, the
-        // chord does nothing, rather than reaching the focused list as a
-        // plain arrow below (the user's decision, 2026-10-05; final review
-        // M-3). So does any chord with alt held (alt+shift+→, or the meta
-        // bit some terminals add), since the list arms below ignore the
-        // modifiers. A `keys.toml` binding still wins; a field's keys are
-        // its engine's.
-        if self.profile() == crate::config::KeyProfile::Vim
-            && ev.modifiers.contains(KeyModifiers::ALT)
-            && matches!(ev.code, KeyCode::Left | KeyCode::Right)
-            && global.is_none()
-            && matches!(self.screen, Screen::Main | Screen::Manage)
-            && !self.field_caret().is_live()
-        {
-            return false;
-        }
-
         // 3. A non-Main screen captures all remaining input, like a modal —
         // except the small whitelist of global actions that legitimately
         // work "on top of" any screen still gets first refusal.
@@ -10547,25 +10529,28 @@ impl App {
                 }
             });
         }
+        // A named key acts bare only: any other chord does nothing rather
+        // than act as the bare key (piece 4 spec §5.1).
+        let plain = ev.modifiers.is_empty();
         Some(match ev.code {
             KeyCode::Esc => self.update(Action::CloseScreen),
             KeyCode::Char('q') => self.update(Action::Quit),
-            KeyCode::Up => {
+            KeyCode::Up if plain => {
                 self.settings
                     .move_cursor(-1, self.ui_settings_are_editable());
                 true
             }
-            KeyCode::Down => {
+            KeyCode::Down if plain => {
                 self.settings
                     .move_cursor(1, self.ui_settings_are_editable());
                 true
             }
-            KeyCode::Home => {
+            KeyCode::Home if plain => {
                 self.settings
                     .move_cursor(i32::MIN / 2, self.ui_settings_are_editable());
                 true
             }
-            KeyCode::End => {
+            KeyCode::End if plain => {
                 self.settings
                     .move_cursor(i32::MAX / 2, self.ui_settings_are_editable());
                 true
@@ -10573,12 +10558,12 @@ impl App {
             // Only a Files row has two buttons to choose between; on a
             // settings row the arrows have nothing to aim at.
             KeyCode::Left | KeyCode::Right
-                if matches!(self.settings.row(), SettingsRow::File(_)) =>
+                if plain && matches!(self.settings.row(), SettingsRow::File(_)) =>
             {
                 self.settings.file_button = usize::from(ev.code == KeyCode::Right);
                 true
             }
-            KeyCode::Enter | KeyCode::Char(' ') => self.activate_settings_row(),
+            KeyCode::Enter | KeyCode::Char(' ') if plain => self.activate_settings_row(),
             // `u` / `:` (undo, palette) are not named here: they reach the
             // router's whitelist from the keymap, like on every screen.
             _ => return None,

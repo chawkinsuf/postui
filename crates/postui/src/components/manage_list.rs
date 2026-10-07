@@ -519,7 +519,7 @@ impl ManageList {
                 set_row(self, 0);
                 Some(None)
             }
-            KeyCode::End => {
+            KeyCode::End if plain => {
                 set_row(self, rows.len() - 1);
                 Some(None)
             }
@@ -552,7 +552,11 @@ impl ManageList {
         ctx: &Project,
     ) -> Option<Action> {
         let len = Self::items(tab, ctx).len();
-        let alt = ev.modifiers.contains(KeyModifiers::ALT);
+        // Each arm takes exactly the chord it names: a bare named key,
+        // alt+↑/↓ (move the row), or ctrl+d/u/f/b. Any other chord does
+        // nothing rather than act as the bare key (piece 4 spec §5.1).
+        let plain = ev.modifiers.is_empty();
+        let alt = ev.modifiers == KeyModifiers::ALT;
         if self.focus == ListFocus::Detail {
             if self.selected(tab, ctx).is_none() {
                 // The pane emptied under the aim (its row was deleted):
@@ -567,35 +571,33 @@ impl ManageList {
             KeyCode::Char('q') => Some(Action::Quit),
             // Into the detail pane's controls (the Variable Manager's
             // Right/Tab exactly).
-            KeyCode::Right | KeyCode::Tab
-                if ev.modifiers.is_empty() && self.focus == ListFocus::List =>
-            {
+            KeyCode::Right | KeyCode::Tab if plain && self.focus == ListFocus::List => {
                 self.enter_detail(tab, ctx);
                 None
             }
             KeyCode::Up if alt => Some(Self::move_action(tab, self.selected(tab, ctx)?, -1)),
             KeyCode::Down if alt => Some(Self::move_action(tab, self.selected(tab, ctx)?, 1)),
-            KeyCode::Down => {
+            KeyCode::Down if plain => {
                 self.step(1, len);
                 None
             }
-            KeyCode::Up => {
+            KeyCode::Up if plain => {
                 self.step(-1, len);
                 None
             }
-            KeyCode::Home => {
+            KeyCode::Home if plain => {
                 self.step(i32::MIN / 2, len);
                 None
             }
-            KeyCode::End => {
+            KeyCode::End if plain => {
                 self.step(i32::MAX / 2, len);
                 None
             }
-            KeyCode::PageDown => {
+            KeyCode::PageDown if plain => {
                 self.step(self.page(), len);
                 None
             }
-            KeyCode::PageUp => {
+            KeyCode::PageUp if plain => {
                 self.step(-self.page(), len);
                 None
             }
@@ -615,7 +617,7 @@ impl ManageList {
                 self.step(-self.page(), len);
                 None
             }
-            KeyCode::Delete if ev.modifiers.is_empty() => {
+            KeyCode::Delete if plain => {
                 Some(Self::delete_action(tab, self.selected(tab, ctx)?))
             }
             // `u` / `:` (undo, palette) are deliberately not named: an

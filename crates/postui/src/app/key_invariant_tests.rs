@@ -4,7 +4,7 @@
 //! spec §5.8's rules: a key moves whole or not at all, never strands a
 //! live edit behind another pane or tab, and clears the footer's echo.
 
-use super::key_matrix_tests::{Fixture, build, draw, feed};
+use super::key_matrix_tests::{Fixture, build, draw, feed, snapshot};
 use super::*;
 use crate::components::settings::SettingsField;
 use crate::config::KeyProfile;
@@ -259,4 +259,105 @@ fn field_open_and_the_open_text_field_agree_with_screen_field() {
             agree(&mut app, &format!("{} {:?} after {input:?}", start.name, start.profile));
         }
     }
+}
+
+/// Plan Decision 4: on every surface (no field live), in both profiles, a
+/// chord that no keymap binds and no component names does nothing: it no
+/// longer acts as the bare key. alt+↑/↓ are named on purpose (they move a
+/// row in the sidebar and the Manage lists). The response also names
+/// shift+↑/↓ (extend a line selection) and ctrl+Home/End (document jumps)
+/// on purpose, spec'd by its own tests, so those are exempt there only.
+#[test]
+fn an_unbound_chord_on_a_list_does_nothing() {
+    use KeyCode::*;
+    let named = [(Up, KeyModifiers::ALT), (Down, KeyModifiers::ALT)];
+    let response_named = [
+        (Up, KeyModifiers::SHIFT),
+        (Down, KeyModifiers::SHIFT),
+        (Home, KeyModifiers::CONTROL),
+        (End, KeyModifiers::CONTROL),
+    ];
+    let codes = [Up, Down, Left, Right, Home, End, PageUp, PageDown, Enter];
+    let mods = [
+        KeyModifiers::SHIFT,
+        KeyModifiers::ALT,
+        KeyModifiers::CONTROL,
+        KeyModifiers::ALT | KeyModifiers::SHIFT,
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        KeyModifiers::CONTROL | KeyModifiers::ALT,
+    ];
+    let state = |app: &App| {
+        format!(
+            "{} | {:?} {:?} {:?} {:?} {} {:?} {:?} {} {:?} {:?} {} {} {:?} {:?} {}",
+            place(app),
+            app.sidebar.selected_key(),
+            app.sidebar.rows.iter().map(|r| format!("{r:?}")).collect::<Vec<_>>(),
+            app.editor.sub_focus,
+            app.editor.table.selected,
+            app.manage.list.cursor,
+            app.manage.list.detail_row,
+            app.manage.list.detail_col,
+            app.varmanager.left_cursor,
+            app.varmanager.grid.cursor,
+            app.varmanager.form_cursor,
+            app.settings.cursor,
+            app.settings.file_button,
+            app.session.response.view().map(|v| (v.cursor, v.scroll)),
+            app.field_caret(),
+            app.modals.is_empty()
+        )
+    };
+    let mut failures = Vec::new();
+    for start in starts().into_iter().filter(|s| !s.live) {
+        for code in codes {
+            for m in mods {
+                if named.contains(&(code, m)) || (start.name == "response" && response_named.contains(&(code, m))) {
+                    continue;
+                }
+                let ev = KeyEvent::new(code, m);
+                let mut app = begin(&start);
+                if app.keymap.lookup(&crate::keys::KeyCombo::from_event(&ev)).is_some() {
+                    continue;
+                }
+                let before = (state(&app), app.project().is_some().then(|| snapshot(&app)));
+                app.handle_key(ev);
+                app.capture_undo();
+                draw(&mut app);
+                let after = (state(&app), app.project().is_some().then(|| snapshot(&app)));
+                if after != before {
+                    failures.push(format!("{} {:?} {m:?}+{code:?}:\n  before {}\n  after  {}", start.name, start.profile, before.0, after.0));
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{} chord(s) acted as the bare key:\n{}", failures.len(), failures.join("\n"));
+}
+
+/// Review Focus 3: the router replays vim's motion letters as bare named
+/// keys, so the guard leaves them working.
+#[test]
+fn vim_motions_still_move_the_sidebar_after_the_guard() {
+    let start = Start { name: "sidebar", fixture: Fixture::SidebarThree, profile: KeyProfile::Vim, setup: Setup::Keys(""), live: false };
+    let mut app = begin(&start);
+    feed(&mut app, "G");
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/gamma"));
+    feed(&mut app, "k");
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/beta"));
+    feed(&mut app, "gg");
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/alpha"));
+}
+
+/// Review Focus 4: the paging chords name CONTROL exactly and keep working.
+#[test]
+fn paging_chords_survive_the_guard() {
+    let start = Start { name: "response", fixture: Fixture::ResponseLines, profile: KeyProfile::Arrows, setup: Setup::Keys(""), live: false };
+    let mut app = begin(&start);
+    app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL));
+    draw(&mut app);
+    assert!(app.session.response.view().is_some_and(|v| v.cursor > 0), "ctrl+d moved the response cursor");
+    let start = Start { name: "sidebar", fixture: Fixture::SidebarThree, profile: KeyProfile::Arrows, setup: Setup::Keys(""), live: false };
+    let mut app = begin(&start);
+    app.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+    draw(&mut app);
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/alpha"), "ctrl+u paged the sidebar up");
 }

@@ -795,7 +795,11 @@ impl Sidebar {
 
 impl Component for Sidebar {
     fn handle_key(&mut self, ev: KeyEvent) -> Option<Action> {
-        if ev.modifiers.contains(KeyModifiers::ALT)
+        // Each arm takes exactly the chord it names: a bare named key, or
+        // alt+↑/↓ (move the row), or ctrl+d/u/f/b. Any other chord does
+        // nothing rather than act as the bare key (piece 4 spec §5.1).
+        let plain = ev.modifiers.is_empty();
+        if ev.modifiers == KeyModifiers::ALT
             && let Some(delta) = match ev.code {
                 KeyCode::Up => Some(-1),
                 KeyCode::Down => Some(1),
@@ -807,15 +811,15 @@ impl Component for Sidebar {
                 .map(|slug| Action::MoveRequest { slug, delta });
         }
         match ev.code {
-            KeyCode::Down => {
+            KeyCode::Down if plain => {
                 self.move_selection(1);
                 Some(Action::Render)
             }
-            KeyCode::Up => {
+            KeyCode::Up if plain => {
                 self.move_selection(-1);
                 Some(Action::Render)
             }
-            KeyCode::Enter => match self.selected_row()? {
+            KeyCode::Enter if plain => match self.selected_row()? {
                 Row::Request {
                     slug, broken: None, ..
                 } => Some(Action::OpenRequest(slug.clone())),
@@ -842,23 +846,23 @@ impl Component for Sidebar {
             KeyCode::Char('b') if ev.modifiers == KeyModifiers::CONTROL => {
                 self.handle_key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE))
             }
-            KeyCode::Home => {
+            KeyCode::Home if plain => {
                 self.move_selection(i32::MIN / 2);
                 Some(Action::Render)
             }
-            KeyCode::End => {
+            KeyCode::End if plain => {
                 self.move_selection(i32::MAX / 2);
                 Some(Action::Render)
             }
-            KeyCode::PageDown => {
+            KeyCode::PageDown if plain => {
                 self.move_selection(self.page());
                 Some(Action::Render)
             }
-            KeyCode::PageUp => {
+            KeyCode::PageUp if plain => {
                 self.move_selection(-self.page());
                 Some(Action::Render)
             }
-            KeyCode::Right => matches!(
+            KeyCode::Right if plain => matches!(
                 self.selected_row()?,
                 Row::Folder {
                     expanded: false,
@@ -866,7 +870,7 @@ impl Component for Sidebar {
                 }
             )
             .then_some(Action::ToggleSelectedFolder),
-            KeyCode::Left => match self.selected_row()? {
+            KeyCode::Left if plain => match self.selected_row()? {
                 Row::Folder { expanded: true, .. } => Some(Action::ToggleSelectedFolder),
                 _ => {
                     self.jump_to_parent();

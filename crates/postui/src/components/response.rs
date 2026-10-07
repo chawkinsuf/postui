@@ -2560,6 +2560,11 @@ impl Response {
             return Some(Action::Render);
         }
 
+        // Each arm takes exactly the chord it names: a bare named key,
+        // shift+↑/↓ (extend the selection), ctrl+Home/End (document jumps)
+        // or ctrl+d/u/f/b. Any other chord does nothing rather than act as
+        // the bare key (piece 4 spec §5.1).
+        let plain = ev.modifiers.is_empty();
         match ev.code {
             // No pane-local view key: the strip is walked by the tab chord
             // every pane shares (alt+←/→ → `Action::CycleTabs`, resolved
@@ -2582,61 +2587,60 @@ impl Response {
                 view.move_cursor(-(view.height.max(1) as i32));
                 Some(Action::Render)
             }
-            KeyCode::Down if ev.modifiers.contains(KeyModifiers::SHIFT) => {
+            KeyCode::Down if ev.modifiers == KeyModifiers::SHIFT => {
                 view.select_line_extend(1);
                 Some(Action::Render)
             }
-            KeyCode::Up if ev.modifiers.contains(KeyModifiers::SHIFT) => {
+            KeyCode::Up if ev.modifiers == KeyModifiers::SHIFT => {
                 view.select_line_extend(-1);
                 Some(Action::Render)
             }
-            KeyCode::Down => {
+            KeyCode::Down if plain => {
                 view.clear_sel();
                 view.move_cursor(1);
                 Some(Action::Render)
             }
-            KeyCode::Up => {
+            KeyCode::Up if plain => {
                 view.clear_sel();
                 view.move_cursor(-1);
                 Some(Action::Render)
             }
-            KeyCode::PageDown => {
+            KeyCode::PageDown if plain => {
                 view.move_cursor(view.height.max(1) as i32);
                 Some(Action::Render)
             }
-            KeyCode::PageUp => {
+            KeyCode::PageUp if plain => {
                 view.move_cursor(-(view.height.max(1) as i32));
                 Some(Action::Render)
             }
-            KeyCode::Right => {
+            KeyCode::Right if plain => {
                 view.scroll_h(H_SCROLL_STEP.into());
                 Some(Action::Render)
             }
-            KeyCode::Left => {
+            KeyCode::Left if plain => {
                 view.scroll_h((-H_SCROLL_STEP).into());
                 Some(Action::Render)
             }
-            // Document jumps come before the line jumps so the plain
-            // Home/End arms (which don't check modifiers) can't shadow them.
-            KeyCode::Home if ev.modifiers.contains(KeyModifiers::CONTROL) => {
+            // Document jumps: ctrl+Home/End.
+            KeyCode::Home if ev.modifiers == KeyModifiers::CONTROL => {
                 view.cursor = 0;
                 view.follow_cursor();
                 Some(Action::Render)
             }
-            KeyCode::End if ev.modifiers.contains(KeyModifiers::CONTROL) => {
+            KeyCode::End if ev.modifiers == KeyModifiers::CONTROL => {
                 view.cursor = view.visible_len().saturating_sub(1);
                 view.follow_cursor();
                 Some(Action::Render)
             }
-            KeyCode::Home => {
+            KeyCode::Home if plain => {
                 view.h_scroll = 0;
                 Some(Action::Render)
             }
-            KeyCode::End => {
+            KeyCode::End if plain => {
                 view.scroll_h(i32::MAX);
                 Some(Action::Render)
             }
-            KeyCode::Char(' ') | KeyCode::Enter => {
+            KeyCode::Char(' ') | KeyCode::Enter if plain => {
                 let cursor = view.cursor;
                 if view.mode == ViewMode::Pretty
                     && let Some(tree) = view.active_tree_mut()

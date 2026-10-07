@@ -1089,29 +1089,37 @@ impl VarManager {
             .unwrap_or(0);
         self.form_cursor = fields[at];
         // Vim's motion letters reach these arms as the named keys: the
-        // router replays them (piece 4 spec §4.5).
+        // router replays them (piece 4 spec §4.5). A named key acts bare
+        // only; any other chord does nothing (piece 4 spec §5.1). Esc and
+        // BackTab stay unguarded: a terminal sends shift+Tab as BackTab
+        // with SHIFT.
+        let plain = ev.modifiers.is_empty();
         match ev.code {
-            KeyCode::Esc | KeyCode::BackTab | KeyCode::Left => {
+            KeyCode::Esc | KeyCode::BackTab => {
                 self.focus = VmFocus::List;
                 None
             }
-            KeyCode::Up => {
+            KeyCode::Left if plain => {
+                self.focus = VmFocus::List;
+                None
+            }
+            KeyCode::Up if plain => {
                 self.form_cursor = fields[at.saturating_sub(1)];
                 None
             }
-            KeyCode::Down => {
+            KeyCode::Down if plain => {
                 self.form_cursor = fields[(at + 1).min(fields.len() - 1)];
                 None
             }
-            KeyCode::Home => {
+            KeyCode::Home if plain => {
                 self.form_cursor = fields[0];
                 None
             }
-            KeyCode::End => {
+            KeyCode::End if plain => {
                 self.form_cursor = fields[fields.len() - 1];
                 None
             }
-            KeyCode::Enter | KeyCode::Char(' ') => {
+            KeyCode::Enter | KeyCode::Char(' ') if plain => {
                 match self.form_cursor {
                     FormStop::Field(field) => {
                         self.start_field_edit(ctx, field);
@@ -1300,36 +1308,37 @@ impl VarManager {
             }
             self.focus = VmFocus::List;
         }
+        // A named key acts bare only; any other chord does nothing rather
+        // than act as the bare key (piece 4 spec §5.1).
+        let plain = ev.modifiers.is_empty();
         match ev.code {
             KeyCode::Esc => return Some(Action::CloseScreen),
             // `q` is free as a command letter in every focus stop, so the
             // manager keeps the app-wide quit (the footer's quit chip
             // advertises it); live edits never reach here.
             KeyCode::Char('q') => return Some(Action::Quit),
-            KeyCode::Up => {
+            KeyCode::Up if plain => {
                 self.move_cursor(-1);
                 return None;
             }
-            KeyCode::Down => {
+            KeyCode::Down if plain => {
                 self.move_cursor(1);
                 return None;
             }
-            // Home/End jump to the first/last selectable row. `Home` keeps
-            // the plain guard so a modified combo (there is none today, but
-            // the intent is "plain jump") never falls through here silently.
-            KeyCode::Home if ev.modifiers.is_empty() => {
+            // Home/End jump to the first/last selectable row.
+            KeyCode::Home if plain => {
                 self.jump_to_edge(false);
                 return None;
             }
-            KeyCode::End => {
+            KeyCode::End if plain => {
                 self.jump_to_edge(true);
                 return None;
             }
-            KeyCode::PageDown => {
+            KeyCode::PageDown if plain => {
                 self.move_cursor_n(1, self.page());
                 return None;
             }
-            KeyCode::PageUp => {
+            KeyCode::PageUp if plain => {
                 self.move_cursor_n(-1, self.page());
                 return None;
             }
@@ -1350,7 +1359,11 @@ impl VarManager {
                 return None;
             }
             // Into the grid or the form, whichever the detail pane shows.
-            KeyCode::Right | KeyCode::Tab => {
+            KeyCode::Tab => {
+                self.enter_detail(ctx);
+                return None;
+            }
+            KeyCode::Right if plain => {
                 self.enter_detail(ctx);
                 return None;
             }
@@ -1404,20 +1417,23 @@ impl VarManager {
         let (row, col) = &mut self.grid.cursor;
         *row = (*row).min(last_row);
         *col = (*col).min(last_col);
+        // A named key acts bare only; any other chord does nothing (piece
+        // 4 spec §5.1). Esc, BackTab and Tab stay unguarded.
+        let plain = ev.modifiers.is_empty();
         match ev.code {
             KeyCode::Esc | KeyCode::BackTab => {
                 self.focus = VmFocus::List;
                 None
             }
-            KeyCode::Up => {
+            KeyCode::Up if plain => {
                 *row = row.saturating_sub(1);
                 None
             }
-            KeyCode::Down => {
+            KeyCode::Down if plain => {
                 *row = (*row + 1).min(last_row);
                 None
             }
-            KeyCode::Left => {
+            KeyCode::Left if plain => {
                 if *col == 0 {
                     self.focus = VmFocus::List;
                 } else {
@@ -1425,24 +1441,28 @@ impl VarManager {
                 }
                 None
             }
-            KeyCode::Right | KeyCode::Tab => {
+            KeyCode::Tab => {
                 *col = (*col + 1).min(last_col);
                 None
             }
-            KeyCode::Home => {
+            KeyCode::Right if plain => {
+                *col = (*col + 1).min(last_col);
+                None
+            }
+            KeyCode::Home if plain => {
                 *row = 0;
                 None
             }
-            KeyCode::End => {
+            KeyCode::End if plain => {
                 *row = last_row;
                 None
             }
-            KeyCode::Enter => {
+            KeyCode::Enter if plain => {
                 let (row, col) = self.grid.cursor;
                 self.start_cell_edit(ctx, row, col);
                 None
             }
-            KeyCode::Char(' ') => self.select_entry_action(ctx, selector),
+            KeyCode::Char(' ') if plain => self.select_entry_action(ctx, selector),
             // The option verbs (edit, copy, paste, rename, add) are the
             // router's rows through `grid_verb`; `F2` stays the inline
             // name-cell rename, and `Enter` on the name cell does the same.
