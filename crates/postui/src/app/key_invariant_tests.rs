@@ -252,10 +252,8 @@ fn field_open_and_the_open_text_field_agree_with_screen_field() {
         assert!(app.modals.is_empty(), "{at}: no start opens a modal");
         let id = app.screen_field();
         assert_eq!(app.field_open(), id.is_some_and(|id| id != FieldId::Body), "{at}: field_open vs {id:?}");
-        let has_input = matches!(
-            id,
-            Some(FieldId::Url | FieldId::TableCell { .. } | FieldId::VmForm(_) | FieldId::VmGrid { .. } | FieldId::Jq | FieldId::Search)
-        );
+        // Every screen field but the body is a `LineInput`.
+        let has_input = id.is_some_and(|id| id != FieldId::Body);
         assert_eq!(app.open_text_field_mut().is_some(), has_input, "{at}: open_text_field_mut vs {id:?}");
     };
     for start in starts() {

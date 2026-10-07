@@ -65,8 +65,10 @@ pub(crate) fn mode_word(mode: Mode) -> &'static str {
 
 /// `id`'s one-line buffer, or none when that field is not open (or is the
 /// body). Takes the parts of `App` that hold one, which leave the body
-/// free, so a carry out of the body can hold both (amendment C3).
-fn line_buf<'a>(
+/// free, so a carry out of the body can hold both (amendment C3). The one
+/// map from a screen field to its `LineInput`: `App::open_text_field_mut`
+/// reads it too.
+pub(super) fn line_buf<'a>(
     id: FieldId,
     url: &'a mut LineInput,
     table: &'a mut crate::components::table_editor::TableEditorState,

@@ -452,6 +452,24 @@ fn a_variables_edit_behind_another_tab_is_not_its_open_field() {
     assert!(app.varmanager.form.editing.is_some(), "the edit is untouched");
 }
 
+/// The same rule for a paste (second M4a review): a Variables edit left
+/// behind another tab takes no clipboard from that tab, in either
+/// profile. In vim the engine declines it first (the edit has no caret),
+/// so this guards today's routing underneath.
+#[test]
+fn a_paste_on_another_tab_never_reaches_a_variables_edit_behind_it() {
+    use crate::components::manage::ManageTab;
+    for (profile, open) in [(KeyProfile::Arrows, "<CR>"), (KeyProfile::Vim, "i<Esc>")] {
+        let mut app = app_in(Fixture::VarForm, profile);
+        feed(&mut app, open);
+        let before = app.varmanager.form.editing.as_ref().expect("the edit is live").input.text().to_string();
+        app.manage.tab = ManageTab::Settings;
+        assert!(!app.paste_text("pasted"), "{profile:?}: nothing on the Settings tab takes it");
+        let edit = app.varmanager.form.editing.as_ref().expect("the edit stays live");
+        assert_eq!(edit.input.text(), before, "{profile:?}: the edit behind the tab is untouched");
+    }
+}
+
 /// Review Focus 1: `g` is a field prefix now, and `gg` still reaches the
 /// body's engine.
 #[test]

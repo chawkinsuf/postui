@@ -963,8 +963,10 @@ impl ReadyView {
     /// cursor still moves, clamped to the first or last line (plan M4a
     /// Deviation 10). A cursor the wheel or the scrollbar left off screen
     /// is first brought to the view's nearest edge, as Vim keeps it, so the
-    /// step starts from what shows.
+    /// step starts from what shows. A line selection drops, as on any
+    /// cursor move but shift+↑/↓.
     fn half_page(&mut self, down: bool) {
+        self.clear_sel();
         let height = self.height.max(1);
         let half = (height / 2).max(1);
         let last = self.visible_len().saturating_sub(1);
@@ -2579,11 +2581,15 @@ impl Response {
                 view.half_page(false);
                 Some(Action::Render)
             }
+            // Every cursor move but shift+↑/↓ drops a line selection, or the
+            // next shift+↓ would grow it from the anchor the jump left behind.
             KeyCode::Char('f') if ev.modifiers == KeyModifiers::CONTROL => {
+                view.clear_sel();
                 view.move_cursor(view.height.max(1) as i32);
                 Some(Action::Render)
             }
             KeyCode::Char('b') if ev.modifiers == KeyModifiers::CONTROL => {
+                view.clear_sel();
                 view.move_cursor(-(view.height.max(1) as i32));
                 Some(Action::Render)
             }
@@ -2606,10 +2612,12 @@ impl Response {
                 Some(Action::Render)
             }
             KeyCode::PageDown if plain => {
+                view.clear_sel();
                 view.move_cursor(view.height.max(1) as i32);
                 Some(Action::Render)
             }
             KeyCode::PageUp if plain => {
+                view.clear_sel();
                 view.move_cursor(-(view.height.max(1) as i32));
                 Some(Action::Render)
             }
@@ -2623,11 +2631,13 @@ impl Response {
             }
             // Document jumps: ctrl+Home/End.
             KeyCode::Home if ev.modifiers == KeyModifiers::CONTROL => {
+                view.clear_sel();
                 view.cursor = 0;
                 view.follow_cursor();
                 Some(Action::Render)
             }
             KeyCode::End if ev.modifiers == KeyModifiers::CONTROL => {
+                view.clear_sel();
                 view.cursor = view.visible_len().saturating_sub(1);
                 view.follow_cursor();
                 Some(Action::Render)
@@ -4332,6 +4342,39 @@ mod tests {
         // Esc clears the selection before anything else.
         r.handle_key(key(KeyCode::Esc));
         assert_eq!(r.selected_text(), None);
+    }
+
+    /// Every cursor move but shift+↑/↓ drops a line selection, the half
+    /// and whole page steps and the document jumps included, so the next
+    /// shift+↓ grows from the cursor and not from a stale anchor the jump
+    /// left behind.
+    #[test]
+    fn a_cursor_jump_drops_the_line_selection() {
+        let body = (0..100).map(|i| i.to_string()).collect::<Vec<_>>().join("\n");
+        let shift_down = KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT);
+        let jumps = [
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL),
+            key(KeyCode::PageDown),
+            key(KeyCode::PageUp),
+            KeyEvent::new(KeyCode::Home, KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::End, KeyModifiers::CONTROL),
+        ];
+        for jump in jumps {
+            let mut r = ready(&body);
+            render(&mut r);
+            r.handle_key(shift_down);
+            r.handle_key(shift_down);
+            assert_eq!(r.selected_text().as_deref(), Some("0\n1\n2"), "{jump:?}: the selection to drop");
+            r.handle_key(jump);
+            assert_eq!(r.selected_text(), None, "{jump:?}: the jump drops it");
+            let cursor = r.view().unwrap().cursor;
+            r.handle_key(shift_down);
+            let sel = r.view().unwrap().sel.expect("shift+down selects again");
+            assert_eq!(sel.0.0, cursor, "{jump:?}: the new selection starts at the cursor the jump left");
+        }
     }
 
     #[test]

@@ -2013,15 +2013,15 @@ fn the_close_field_action_closes_whichever_field_is_open() {
     assert!(!app.update(Action::CloseField), "nothing open: a no-op");
 }
 
-/// `App::field_open` is the immutable twin of `open_text_field_mut` (plus
-/// the Settings tab's private edit): the two must agree everywhere.
+/// `App::field_open` is the immutable twin of `open_text_field_mut`: the
+/// two must agree everywhere.
 #[test]
 fn field_open_agrees_with_the_open_text_field() {
     use crate::components::manage::ManageTab;
     use crate::components::settings::SettingsField;
     use crate::components::varmanager::VmField;
     fn agree(app: &mut App, expected: bool, what: &str) {
-        let open = app.open_text_field_mut().is_some() || app.settings_edit_live();
+        let open = app.open_text_field_mut().is_some();
         assert_eq!(app.field_open(), open, "{what}: the two disagree");
         assert_eq!(app.field_open(), expected, "{what}");
     }

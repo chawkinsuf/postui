@@ -2467,30 +2467,30 @@ impl App {
 
     /// The text field that currently owns the caret, if any: a modal's
     /// focused input, or the `LineInput` behind the field
-    /// [`Self::screen_field`] names. Two fields have none to hand out: the
-    /// Settings tab's live edit (its input is private, see
-    /// [`SettingsTab::field_undo`](crate::components::settings::SettingsTab::field_undo))
-    /// and the body (not a `LineInput`). A picker's filter box is a
-    /// modal's, private behind `undo_filter`. [`Self::field_open`] answers
-    /// the same question as a `bool`.
+    /// [`Self::screen_field`] names, through the same `line_buf` map the
+    /// engine uses. The body has none to hand out (not a `LineInput`). A
+    /// picker's filter box is a modal's, private behind `undo_filter`.
+    /// [`Self::field_open`] answers the same question as a `bool`.
     pub(crate) fn open_text_field_mut(&mut self) -> Option<&mut LineInput> {
         use crate::keyroute::FieldId;
+        use crate::keyroute::engine_glue::FieldBuf;
         if !self.modals.is_empty() {
             return self.modals.focused_input_mut();
         }
         match self.screen_field()? {
-            FieldId::Url => Some(&mut self.editor.url),
-            FieldId::TableCell { .. } => self.editor.table.editing.as_mut().map(|e| &mut e.input),
-            FieldId::VmForm(_) => self.varmanager.form.editing.as_mut().map(|e| &mut e.input),
-            FieldId::VmGrid { .. } => self.varmanager.grid.editing.as_mut().map(|e| &mut e.input),
             FieldId::Jq | FieldId::Search => self.session.response.open_text_field_mut(),
-            FieldId::Settings(_) | FieldId::Body => None,
-            // A modal's fields, handled above.
-            FieldId::ModalInput(_)
-            | FieldId::FilePicker
-            | FieldId::Palette
-            | FieldId::ChooserFilter
-            | FieldId::VarPickerFilter => None,
+            // A modal's fields are handled above; the body is no line.
+            id if id.is_modal() || id == FieldId::Body => None,
+            id => match fields::line_buf(
+                id,
+                &mut self.editor.url,
+                &mut self.editor.table,
+                &mut self.varmanager,
+                &mut self.settings,
+            )? {
+                FieldBuf::Line(input) => Some(input),
+                FieldBuf::Body(..) => None,
+            },
         }
     }
 
@@ -2542,17 +2542,7 @@ impl App {
         if !self.modals.is_empty() {
             return self.modals.field_edited();
         }
-        if self.settings_edit_live() {
-            return self.settings.field_edited();
-        }
         self.open_text_field_mut().is_some_and(|f| f.edited())
-    }
-
-    /// Whether the Settings tab's live edit is the field on screen.
-    fn settings_edit_live(&self) -> bool {
-        self.screen == Screen::Manage
-            && self.manage.tab == crate::components::manage::ManageTab::Settings
-            && self.settings.editing.is_some()
     }
 
     /// Routes an undo/redo key into the open text field. `true` when a
@@ -2568,9 +2558,6 @@ impl App {
         // edit owns the caret, and the key must step the field it gated on.
         if !self.modals.is_empty() {
             return self.modals.field_undo(redo);
-        }
-        if self.settings_edit_live() {
-            return self.settings.field_edited() && self.settings.field_undo(redo);
         }
         // The response pane's fields go through the pane, not the raw
         // accessor: stepping the jq bar has to mark the edit or `sync_jq`
@@ -9522,21 +9509,27 @@ impl App {
             return false;
         }
         if self.screen == Screen::Manage {
-            // Tab-gated as well as edit-gated: a stale edit must never be
-            // able to take the caret from the tab that is actually up.
-            if self.manage.tab == crate::components::manage::ManageTab::Settings
-                && self.settings.editing.is_some()
-            {
-                self.settings.paste(text);
-                return self.update(Action::Render);
-            }
-            if let Some(edit) = self.varmanager.form.editing.as_mut() {
-                edit.input.paste(text);
-                return self.update(Action::Render);
-            }
-            if let Some(edit) = self.varmanager.grid.editing.as_mut() {
-                edit.input.paste(text);
-                return self.update(Action::Render);
+            // Tab-gated as well as edit-gated, as `screen_field` is: a stale
+            // edit (a Variables edit a failed click-away commit left behind
+            // another tab) must never take the clipboard from the tab that
+            // is actually up.
+            use crate::components::manage::ManageTab;
+            match self.manage.tab {
+                ManageTab::Settings if self.settings.editing.is_some() => {
+                    self.settings.paste(text);
+                    return self.update(Action::Render);
+                }
+                ManageTab::Variables => {
+                    if let Some(edit) = self.varmanager.form.editing.as_mut() {
+                        edit.input.paste(text);
+                        return self.update(Action::Render);
+                    }
+                    if let Some(edit) = self.varmanager.grid.editing.as_mut() {
+                        edit.input.paste(text);
+                        return self.update(Action::Render);
+                    }
+                }
+                _ => {}
             }
             return false;
         }

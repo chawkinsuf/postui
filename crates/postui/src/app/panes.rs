@@ -90,15 +90,14 @@ impl App {
     /// focused, the caret lands in that tab's content, so `gt a` adds a
     /// row. It never moves panes; the sidebar and the response step the
     /// strip from where they stand. Arrows' tab chord does not run it (plan
-    /// M4a Deviation 7).
+    /// M4a Deviation 7). Only a key that changed the tab gets here
+    /// (`strip_target` names no already-showing tab), so a `{N}gt` onto
+    /// the body's own tab never lands: the body's session stays whole, its
+    /// engine history with it (final review M-1). Every landing that does
+    /// run starts outside the tab it lands on, a table tab's included,
+    /// and so flushes the field it leaves like any other.
     fn land_editor_caret(&mut self) {
         if self.screen != Screen::Main || self.focus != PaneId::Editor {
-            return;
-        }
-        // Already in the body: nothing to land, and the body's session
-        // stays whole, its engine history with it (final review M-1). A
-        // tab switch clears the table's row, so a table tab always lands.
-        if self.editor.sub_focus == SubFocus::Content && self.editor.active_tab == EditorTab::Body {
             return;
         }
         // The field it leaves closes as its own history step first.
