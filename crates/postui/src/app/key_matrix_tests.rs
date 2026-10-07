@@ -17,6 +17,9 @@ use crate::keyroute::keylist::{self, Status};
 pub(super) enum Fixture {
     /// Requests alpha, beta and gamma; the cursor on beta.
     SidebarThree,
+    /// `SidebarThree` plus the request `main/f/inner`, the cursor on its
+    /// folder `f`, collapsed.
+    SidebarFolder,
     /// `SidebarThree` with beta (under the cursor) open in the editor.
     SidebarThreeBetaOpen,
     /// `SidebarThree` with a y/n confirm on top; `y` toasts "yes".
@@ -31,6 +34,10 @@ pub(super) enum Fixture {
     UrlLine,
     /// A 200-element JSON array response, focused, the cursor on line 0.
     ResponseLines,
+    /// `ResponseLines` whose first element is a 300-character string, far
+    /// wider than the pane: the cursor a page down and the view scrolled
+    /// sideways, so every direction can move.
+    ResponseWide,
     /// The Environments list with three environments, cursor on row 0.
     ManageEnvs,
     /// `ManageEnvs` with the keyboard in the detail pane, on its first
@@ -38,6 +45,9 @@ pub(super) enum Fixture {
     ManageEnvDetail,
     /// The Settings tab, cursor on row 0.
     Settings,
+    /// The Settings tab, cursor on the first Files row (config.toml),
+    /// aimed at its Edit… button.
+    SettingsFiles,
     /// The Variables list (variables alpha and beta, the selector `user`
     /// with options alice and bob in qa, the active environment), the
     /// cursor on alpha.
@@ -113,6 +123,16 @@ enum Expect {
     Yanked(&'static str),
     /// A selector's fields editor is the top modal.
     FieldsEditor,
+    /// The main pane with the keyboard.
+    FocusIs(PaneId),
+    EditorTabIs(EditorTab),
+    ResponseModeIs(crate::components::response::ViewMode),
+    ManageTabIs(ManageTab),
+    /// How many lines the response view shows.
+    ResponseVisible(usize),
+    /// The response cursor is on the view's top line, and the view has
+    /// scrolled (a half page down from the top, `R.ctrl-d`).
+    ResponsePaged,
 }
 
 struct Case {
@@ -206,6 +226,48 @@ const CASES: &[Case] = &[
     arrows("R.move", ResponseLines, "<Down>", &[ResponseLine(1)]),
     vim("R.search", ResponseLines, "/", &[FieldLive(true)]),
     arrows("R.search", ResponseLines, "/", &[FieldLive(true)]),
+    // Key list §7, M4a: half a page of view and cursor together, both
+    // profiles; the tree's folds (ResponseLines' root is one array).
+    vim("R.ctrl-d", ResponseLines, "<C-d>", &[ResponsePaged]),
+    vim("R.ctrl-d", ResponseLines, "<C-d><C-u>", &[ResponseLine(0)]),
+    arrows("R.ctrl-d", ResponseLines, "<C-d>", &[ResponsePaged]),
+    vim("R.fold", ResponseLines, "jzc", &[ResponseVisible(1), ResponseLine(0)]),
+    vim("R.fold", ResponseLines, "jzczo", &[ResponseVisible(202)]),
+    vim("R.fold", ResponseLines, "za", &[ResponseVisible(1)]),
+    vim("R.fold", ResponseLines, "zaj", &[ResponseVisible(1), ResponseLine(0), NoToast]),
+    // Key list §8, M4a: panes by geometry (spec §5.8).
+    vim("P.ctrlw", ResponseLines, "<C-w>k", &[FocusIs(PaneId::Editor)]),
+    vim("P.ctrlw", ResponseLines, "<C-w>h", &[FocusIs(PaneId::Sidebar)]),
+    vim("P.ctrlw", ResponseLines, "<C-w>h<C-w>l", &[FocusIs(PaneId::Response)]),
+    vim("P.ctrlw", ResponseLines, "<C-w>k<C-w>j", &[FocusIs(PaneId::Response)]),
+    vim("P.ctrlw", ResponseLines, "<C-w>w", &[FocusIs(PaneId::Sidebar)]),
+    vim("P.ctrlw", ResponseLines, "<C-w>W", &[FocusIs(PaneId::Editor)]),
+    vim("P.ctrlw", ResponseLines, "<C-w>k<C-w>p", &[FocusIs(PaneId::Response)]),
+    vim("P.ctrlw", ResponseLines, "<C-w>xj", &[FocusIs(PaneId::Response), ResponseLine(1), NoToast]),
+    vim("P.ctrlw", UrlLine, "i<Esc><C-w>j", &[FocusIs(PaneId::Response), FieldLive(false)]),
+    vim("P.ctrlw", VarList, "<C-w>l", &[VmFocusIs(VmFocus::Form)]),
+    vim("P.ctrlw", VarForm, "<C-w>h", &[VmFocusIs(VmFocus::List)]),
+    vim("P.ctrlw", ManageEnvs, "<C-w>l", &[ManageFocus(ListFocus::Detail)]),
+    vim("P.ctrlw", ManageEnvDetail, "<C-w>h", &[ManageFocus(ListFocus::List)]),
+    arrows("P.ctrlw", ResponseLines, "<Tab>", &[FocusIs(PaneId::Sidebar)]),
+    // Key list §8, M4a: tab strips (spec §5.8). The fixture is a GET, so
+    // the editor's Body tab is disabled; the strip is Headers, Params, Vars.
+    vim("P.gt", TableThreeHeaders, "gt", &[EditorTabIs(EditorTab::Params), Sub(SubFocus::Content)]),
+    vim("P.gt", TableThreeHeaders, "gT", &[EditorTabIs(EditorTab::Vars)]),
+    vim("P.gt", TableThreeHeaders, "3gt", &[EditorTabIs(EditorTab::Vars)]),
+    vim("P.gt", TableThreeHeaders, "2gT", &[EditorTabIs(EditorTab::Params)]),
+    vim("P.gt", UrlLine, "gt", &[EditorTabIs(EditorTab::Params), Sub(SubFocus::Content)]),
+    vim("P.gt", UrlLine, "i<Esc>gt", &[EditorTabIs(EditorTab::Params), Sub(SubFocus::Content), FieldLive(false)]),
+    vim("P.gt", ResponseLines, "gt", &[ResponseModeIs(crate::components::response::ViewMode::Raw), FocusIs(PaneId::Response)]),
+    vim("P.gt", ManageEnvs, "gt", &[ManageTabIs(ManageTab::Spaces)]),
+    arrows("P.gt", TableThreeHeaders, "<A-Right>", &[EditorTabIs(EditorTab::Params)]),
+    arrows("P.gt", UrlLine, "<A-Right>", &[EditorTabIs(EditorTab::Params), Sub(SubFocus::Url)]),
+    // Final review M-3 (the user's decision): vim's alt+←/→ do nothing on
+    // the main and Manage screens, never a plain arrow to the list.
+    vim("P.gt", TableThreeHeaders, "<A-Right>", &[EditorTabIs(EditorTab::Headers), TableRow(1), TableCol(0)]),
+    vim("P.gt", UrlLine, "<A-Left>", &[EditorTabIs(EditorTab::Headers), Sub(SubFocus::Url)]),
+    vim("P.gt", VarList, "<A-Right>", &[ManageTabIs(ManageTab::Variables), VmFocusIs(VmFocus::List)]),
+    vim("G.echo", ResponseLines, "<C-w>", &[Echo("^W")]),
     vim("G.unsupported", SidebarThree, "xj", &[SidebarSel("main/gamma"), NoModal, NoToast]),
     vim("G.echo", SidebarThree, "3", &[Echo("3")]),
     vim("G.echo", SidebarThree, "2g", &[Echo("2g")]),
@@ -339,9 +401,12 @@ pub(super) fn build(f: Fixture) -> App {
         _ => App::new_for_test(),
     };
     match f {
-        SidebarThree | SidebarThreeBetaOpen | ConfirmYesNo => {
+        SidebarThree | SidebarFolder | SidebarThreeBetaOpen | ConfirmYesNo => {
             for slug in ["main/alpha", "main/beta", "main/gamma"] {
                 postui_core::fixtures::save_request(app.proj().root(), slug, &req("https://x/1")).unwrap();
+            }
+            if matches!(f, SidebarFolder) {
+                postui_core::fixtures::save_request(app.proj().root(), "main/f/inner", &req("https://x/1")).unwrap();
             }
             app.update(Action::RefreshSidebar);
             if matches!(f, SidebarThreeBetaOpen) {
@@ -362,6 +427,22 @@ pub(super) fn build(f: Fixture) -> App {
                 .position(|r| matches!(r, Row::Request { slug, .. } if slug == "main/beta"))
                 .expect("beta is listed");
             app.sidebar.selected = Some(beta);
+            if matches!(f, SidebarFolder) {
+                let folder = app
+                    .sidebar
+                    .rows
+                    .iter()
+                    .position(|r| matches!(r, Row::Folder { .. }))
+                    .expect("the folder is listed");
+                app.sidebar.selected = Some(folder);
+                if matches!(app.sidebar.rows[folder], Row::Folder { expanded: true, .. }) {
+                    app.update(Action::ToggleSelectedFolder);
+                }
+                assert!(matches!(
+                    app.sidebar.selected.and_then(|i| app.sidebar.rows.get(i)),
+                    Some(Row::Folder { expanded: false, .. })
+                ));
+            }
             if matches!(f, ConfirmYesNo) {
                 app.push_modal(Modal::Confirm {
                     title: "Sure?".into(),
@@ -396,8 +477,12 @@ pub(super) fn build(f: Fixture) -> App {
                 _ => {}
             }
         }
-        ResponseLines => {
-            let body = format!("[{}]", (0..200).map(|i| i.to_string()).collect::<Vec<_>>().join(","));
+        ResponseLines | ResponseWide => {
+            let mut items: Vec<String> = (0..200).map(|i| i.to_string()).collect();
+            if matches!(f, ResponseWide) {
+                items[0] = format!("\"{}\"", "x".repeat(300));
+            }
+            let body = format!("[{}]", items.join(","));
             app.session.response.set_state(
                 ResponseState::Ready(Box::new(crate::http::ResponseData {
                     status: 200,
@@ -413,6 +498,16 @@ pub(super) fn build(f: Fixture) -> App {
                 app.session.send_generation,
             );
             app.focus = PaneId::Response;
+            if matches!(f, ResponseWide) {
+                // By the pane's own keys, after a draw has measured the
+                // viewport they page and scroll.
+                draw(&mut app);
+                app.handle_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
+                app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+                draw(&mut app);
+                let v = app.session.response.view().expect("the response is ready");
+                assert!(v.cursor > 0 && v.h_scroll > 0, "the cursor {} and the scroll {}", v.cursor, v.h_scroll);
+            }
         }
         ManageEnvs | ManageEnvDetail => {
             for name in ["prod", "qa", "dev"] {
@@ -434,6 +529,15 @@ pub(super) fn build(f: Fixture) -> App {
         Settings => {
             app.update(Action::OpenManage { tab: Some(ManageTab::Settings) });
             app.settings.set_cursor(0);
+        }
+        SettingsFiles => {
+            use crate::components::settings::{SettingsRow, SettingsTab};
+            app.update(Action::OpenManage { tab: Some(ManageTab::Settings) });
+            let files = SettingsTab::rows()
+                .iter()
+                .position(|r| matches!(r, SettingsRow::File(_)))
+                .expect("the tab lists its files");
+            app.settings.set_cursor(files);
         }
         VarList => select_var_row(&mut app, VmRow::Var("alpha".into())),
         VarGrid => {
@@ -483,6 +587,12 @@ fn check(app: &App, e: Expect) -> Result<(), String> {
         TableLen(n) => app.editor.headers.len() == n,
         ResponseLine(n) => app.session.response.view().is_some_and(|v| v.cursor == n),
         ResponseLast => app.session.response.view().is_some_and(|v| v.cursor + 1 == v.visible_len()),
+        FocusIs(p) => app.focus == p,
+        EditorTabIs(t) => app.editor.active_tab == t,
+        ResponseModeIs(m) => app.session.response.view().is_some_and(|v| v.mode == m),
+        ManageTabIs(t) => app.manage.tab == t,
+        ResponseVisible(n) => app.session.response.view().is_some_and(|v| v.visible_len() == n),
+        ResponsePaged => app.session.response.view().is_some_and(|v| v.scroll > 0 && v.cursor == v.scroll),
         ManageCursor(n) => app.manage.list.cursor == n,
         ManageFocus(f) => app.manage.list.focus == f,
         DetailAim(row, col) => {
@@ -863,7 +973,12 @@ fn every_action_is_keyboard_reachable_in_both_profiles() {
         }
         let reached = vim.combo_for(name).is_some()
             || table::TABLE.iter().any(|b| {
-                b.profile.has(KeyProfile::Vim) && matches!(b.intent, Intent::Act(f) if f() == action)
+                b.profile.has(KeyProfile::Vim)
+                    && match b.intent {
+                        Intent::Act(f) => f() == action,
+                        Intent::Tab { delta, leave: false } => action == Action::CycleTabs(delta),
+                        _ => false,
+                    }
             })
             || vim_verb_actions.contains(&action)
             || palette.contains(&action);

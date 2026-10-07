@@ -1,4 +1,4 @@
-use crate::action::{Action, CopyTarget, ExtractSource};
+use crate::action::{Action, CopyTarget, ExtractSource, TabTo};
 use crate::anim::{AnimKey, Anims, Easing, ListId, StripId};
 use crate::components::editor::{Editor, EditorTab, SubFocus};
 use crate::components::line_input::LineInput;
@@ -221,6 +221,8 @@ pub struct App {
     pub keymap: crate::keys::Keymap,
     /// The key router's pending keys (piece 4 spec §3.4).
     pub router: crate::keyroute::Router,
+    /// What `ctrl+w l` and `ctrl+w p` remember (piece 4 spec §5.8).
+    pub(crate) panes: crate::keyroute::panes::PaneMemory,
     /// The vim profile's text engine and its field session (spec §3.7):
     /// the one door to the engine (`keyroute::engine_glue`).
     pub(crate) glue: crate::keyroute::engine_glue::Glue,
@@ -1709,6 +1711,7 @@ impl App {
             animating_last_tick: false,
             keymap: crate::keys::Keymap::default_bindings(),
             router: crate::keyroute::Router::default(),
+            panes: Default::default(),
             glue: Default::default(),
             modal_glue: Default::default(),
             modal_session: None,
@@ -2462,81 +2465,39 @@ impl App {
         self.capture_undo();
     }
 
-    /// The text field that currently owns the caret, if any — the one
-    /// place the field rule's routing lives (spec 2026-09-15). Two fields
-    /// are not reachable here and are special-cased by their neighbours
-    /// below: the Settings tab's live edit (its input is private, see
-    /// [`SettingsTab::field_undo`](crate::components::settings::SettingsTab::field_undo))
-    /// and a picker's filter box (private behind `undo_filter`, because
-    /// stepping it has to re-run the filter too). [`Self::field_open`] is
-    /// the immutable twin of this routing and must agree with it.
+    /// The text field that currently owns the caret, if any: a modal's
+    /// focused input, or the `LineInput` behind the field
+    /// [`Self::screen_field`] names, through the same `line_buf` map the
+    /// engine uses. The body has none to hand out (not a `LineInput`). A
+    /// picker's filter box is a modal's, private behind `undo_filter`.
+    /// [`Self::field_open`] answers the same question as a `bool`.
     pub(crate) fn open_text_field_mut(&mut self) -> Option<&mut LineInput> {
+        use crate::keyroute::FieldId;
         if !self.modals.is_empty() {
             return self.modals.focused_input_mut();
         }
-        match self.screen {
-            Screen::Manage => {
-                if let Some(edit) = self.varmanager.form.editing.as_mut() {
-                    return Some(&mut edit.input);
-                }
-                if let Some(edit) = self.varmanager.grid.editing.as_mut() {
-                    return Some(&mut edit.input);
-                }
-                None
-            }
-            // The caret is with the focused pane: a cell edit that survived
-            // a jump to the response pane is live but has no caret, so it
-            // is not the open field there (spec 2026-09-15, "open" = has
-            // the caret).
-            Screen::Main => match self.focus {
-                PaneId::Editor => {
-                    if self.editor.table.editing.is_some() {
-                        return self.editor.table.editing.as_mut().map(|e| &mut e.input);
-                    }
-                    if self.editor.url_open() {
-                        return Some(&mut self.editor.url);
-                    }
-                    None
-                }
-                PaneId::Response => self.session.response.open_text_field_mut(),
-                PaneId::Sidebar => None,
-            },
-            Screen::Testbed => None,
+        match self.screen_field()? {
+            FieldId::Jq | FieldId::Search => self.session.response.open_text_field_mut(),
+            // A modal's fields are handled above; the body is no line, and
+            // `line_buf` names neither.
+            id => fields::line_buf(id, &mut self.editor.url, &mut self.editor.table, &mut self.varmanager, &mut self.settings),
         }
     }
 
-    /// Whether a text field owns the caret right now — the immutable twin
-    /// of [`Self::open_text_field_mut`], for callers that only need the
-    /// question answered (`Action::CloseField`; the footer asks the
-    /// pane-local [`Self::pane_field_open`] instead).
-    /// The two must agree: this is `open_text_field_mut().is_some()` plus
-    /// the Settings tab's edit, which that one special-cases away because
-    /// its input is private.
+    /// Whether a text field owns the caret right now: a modal's focused
+    /// input, or the screen's field as [`Self::screen_field`] names it,
+    /// the one place that knows which tab's edit is live (plan
+    /// 2026-10-05-vim-profile-m4a-consolidation). The body is a pane's
+    /// content, not a field that opens and closes. A form modal's field
+    /// merely *selected* (spec 2026-09-16, no caret painted) still counts
+    /// as open here: it's still the field paste/`Action::CloseField`
+    /// target; only `ModalStack`'s own `field_open` cares about the caret
+    /// specifically.
     pub(crate) fn field_open(&self) -> bool {
-        // Modals first, in the same order as `open_text_field_mut`: a
-        // modal over the Settings tab captures the keyboard, and with a
-        // form modal's focus on its button row no field is open at all.
-        // A form modal's field merely *selected* (spec 2026-09-16, no
-        // caret painted) still counts as open here — it's still the
-        // field paste/`Action::CloseField` target; only `ModalStack`'s
-        // own `field_open` cares about the caret specifically.
         if !self.modals.is_empty() {
             return self.modals.focused_input().is_some();
         }
-        if self.settings_edit_live() {
-            return true;
-        }
-        match self.screen {
-            Screen::Manage => {
-                self.varmanager.form.editing.is_some() || self.varmanager.grid.editing.is_some()
-            }
-            Screen::Main => match self.focus {
-                PaneId::Editor => self.editor.table.editing.is_some() || self.editor.url_open(),
-                PaneId::Response => self.session.response.field_open(),
-                PaneId::Sidebar => false,
-            },
-            Screen::Testbed => false,
-        }
+        self.screen_field().is_some_and(|id| id != crate::keyroute::FieldId::Body)
     }
 
     /// Whether the field that owns the caret is *`pane`'s own* — what the
@@ -2571,17 +2532,7 @@ impl App {
         if !self.modals.is_empty() {
             return self.modals.field_edited();
         }
-        if self.settings_edit_live() {
-            return self.settings.field_edited();
-        }
         self.open_text_field_mut().is_some_and(|f| f.edited())
-    }
-
-    /// Whether the Settings tab's live edit is the field on screen.
-    fn settings_edit_live(&self) -> bool {
-        self.screen == Screen::Manage
-            && self.manage.tab == crate::components::manage::ManageTab::Settings
-            && self.settings.editing.is_some()
     }
 
     /// Routes an undo/redo key into the open text field. `true` when a
@@ -2597,9 +2548,6 @@ impl App {
         // edit owns the caret, and the key must step the field it gated on.
         if !self.modals.is_empty() {
             return self.modals.field_undo(redo);
-        }
-        if self.settings_edit_live() {
-            return self.settings.field_edited() && self.settings.field_undo(redo);
         }
         // The response pane's fields go through the pane, not the raw
         // accessor: stepping the jq bar has to mark the edit or `sync_jq`
@@ -3041,6 +2989,7 @@ impl App {
                 self.focus = pane;
                 true
             }
+            Action::PaneMove { dir, leave } => self.pane_move(dir, leave),
             Action::ScrollPane(pane, delta) => {
                 // While the Manager screen is up its left list owns the
                 // sidebar's pane slot (see `App::scrollbar_spec`), so a
@@ -3121,47 +3070,30 @@ impl App {
                 self.retarget_response_tab_underline(prev_mode);
                 true
             }
-            Action::CycleResponseView(delta) => {
-                if let Some(next) = self.session.response.cycle_view_mode(delta) {
-                    self.update(Action::ResponseViewMode(next))
-                } else {
-                    false
-                }
-            }
+            // Every tab key takes one path (`App::go_tab`): the target
+            // first, then the field it leaves, then the move. Arrows' chord
+            // leaves the field on the Manage screen only, and never lands
+            // the caret.
             Action::CycleTabs(delta) => {
-                // The one tab chord, resolved against what has focus: the
-                // Manage screen's strip when that screen is up (it belongs
-                // to the shell, above every tab body's own keys), otherwise
-                // the focused pane's strip — the sidebar has none, so it
-                // falls back to the editor's, the only other strip on the
-                // request screen.
-                if self.screen == Screen::Manage {
-                    return self.update(Action::SelectManageTab(
-                        self.manage.tab.cycle(delta.into()),
-                    ));
-                }
-                // On the any-screen whitelist for the Manage strip's sake;
-                // any other non-Main screen (the testbed) draws no strip,
-                // so the chord must not move the undrawn editor's tabs.
-                if self.screen != Screen::Main {
-                    return false;
-                }
-                match self.focus {
-                    PaneId::Response => self.update(Action::CycleResponseView(delta)),
-                    PaneId::Editor | PaneId::Sidebar => {
-                        self.update(Action::EditorTabCycle(delta))
-                    }
-                }
+                let leave = self.tab_chord_leaves();
+                self.go_tab(TabTo::By(i64::from(delta)), leave, false)
             }
+            Action::GoTab { to, leave } => self.go_tab(to, leave, true),
             Action::OpenResponseSearch => {
                 self.update(Action::FocusPane(PaneId::Response));
                 self.session.response.open_search();
                 true
             }
+            Action::StepResponseSearch(delta) => self.session.response.step_search(delta.into()),
+            Action::CopyResponseHeader => match self.session.response.copyable_header_row() {
+                Some(row) => self.update(Action::CopyToClipboard(CopyTarget::ResponseHeader(row))),
+                None => false,
+            },
             Action::JsonRowClicked { row, toggle } => {
                 self.session.response.click_row(row, toggle);
                 true
             }
+            Action::TreeFold(op) => self.session.response.fold(op),
             Action::CopySelection(surface) => {
                 if let Some(text) = self.selection_text_of(surface) {
                     self.copy_text_with_toast(&text, "Copied selection".to_string());
@@ -3345,7 +3277,7 @@ impl App {
             }
             Action::EditorTabSelect(i) => {
                 let target = EditorTab::from_index(i);
-                if target == EditorTab::Body && self.editor.body_tab_disabled() {
+                if !self.editor.tab_enabled(target) {
                     return false;
                 }
                 // Leaving a tab commits whatever cell was being typed — the
@@ -3358,24 +3290,14 @@ impl App {
                 self.retarget_editor_tab_underline(prev);
                 true
             }
-            Action::EditorTabCycle(delta) => {
-                // Cycles the on-screen order (Params → Headers → Vars →
-                // Body), not `EditorTab::index()`'s tab slot numbers
-                // (bindable as `editor_tab_N`).
-                self.commit_table_edit();
-                let prev = self.editor.active_tab;
-                let mut next = (prev.draw_position() as i8 + delta).rem_euclid(4);
-                if EditorTab::from_draw_position(next as usize) == EditorTab::Body
-                    && self.editor.body_tab_disabled()
-                {
-                    next = (next + delta.signum()).rem_euclid(4);
-                }
-                self.editor.active_tab = EditorTab::from_draw_position(next as usize);
-                self.editor.preferred_tab = self.editor.active_tab;
-                self.editor.table.reset();
-                self.retarget_editor_tab_underline(prev);
-                true
-            }
+            // Cycles the on-screen order over the enabled tabs (the Body tab
+            // is disabled on a GET). A step round to the tab already showing
+            // changes nothing, as in vim: the table keeps its row (final
+            // review M-1).
+            Action::EditorTabCycle(delta) => match self.editor_tab_step(delta) {
+                Some(select) => self.update(select),
+                None => false,
+            },
             Action::CycleMethod => {
                 self.no_coalesce = true;
                 self.editor.method = self.editor.method.cycle();
@@ -9527,9 +9449,10 @@ impl App {
     /// whatever text surface owns the caret, mirroring `handle_key`'s
     /// capture order: the top modal's text surface first (a filter-query
     /// modal's query — palette/chooser/var picker — or the focused
-    /// `LineInput`), then a live Variable-Manager field or grid edit, then
-    /// the response pane's live search input, then the editor's cell edit /
-    /// URL bar / body. A live selection is replaced (GUI semantics);
+    /// `LineInput`), then the response pane's jq bar or live search input,
+    /// then the `LineInput` behind the screen field (the editor's cell edit
+    /// or URL bar, a Settings or Variables edit), then the body. A live
+    /// selection is replaced (GUI semantics);
     /// single-line surfaces flatten line breaks (`LineInput::paste`),
     /// the body takes them verbatim. Returns `false` when nothing
     /// focused accepts text.
@@ -9576,53 +9499,29 @@ impl App {
             }
             return false;
         }
-        if self.screen == Screen::Manage {
-            // Tab-gated as well as edit-gated: a stale edit must never be
-            // able to take the caret from the tab that is actually up.
-            if self.manage.tab == crate::components::manage::ManageTab::Settings
-                && self.settings.editing.is_some()
-            {
-                self.settings.paste(text);
-                return self.update(Action::Render);
-            }
-            if let Some(edit) = self.varmanager.form.editing.as_mut() {
-                edit.input.paste(text);
-                return self.update(Action::Render);
-            }
-            if let Some(edit) = self.varmanager.grid.editing.as_mut() {
-                edit.input.paste(text);
-                return self.update(Action::Render);
-            }
-            return false;
-        }
-        if self.screen != Screen::Main {
-            return false;
-        }
         // The response pane's text surfaces: the jq bar while focused, else
-        // its search input while live.
-        if self.focus == PaneId::Response {
+        // its search input while live. The pane marks the edit itself.
+        if self.screen == Screen::Main && self.focus == PaneId::Response {
             if self.session.response.paste_into_jq(text) {
                 return self.update(Action::Render);
             }
             return self.session.response.paste_into_search(text) && self.update(Action::Render);
         }
-        if self.focus != PaneId::Editor {
-            return false;
-        }
-        if let Some(edit) = self.editor.table.editing.as_mut() {
-            edit.input.paste(text);
+        // Every other field is the `LineInput` `screen_field` names, through
+        // the one map `open_text_field_mut` reads: the editor's cell edit or
+        // URL bar, a Settings or Variables edit. The map is tab-gated on
+        // Manage, so a stale edit (a Variables edit a failed click-away
+        // commit left behind another tab) never takes the clipboard from
+        // the tab that is actually up.
+        if let Some(field) = self.open_text_field_mut() {
+            field.paste(text);
             return self.update(Action::Render);
         }
-        match self.editor.sub_focus {
-            SubFocus::Url if self.editor.url_open() => {
-                self.editor.url.paste(text);
-                self.update(Action::Render)
-            }
-            SubFocus::Content if self.editor.active_tab == EditorTab::Body => {
-                self.editor.paste_body(text) && self.update(Action::Render)
-            }
-            _ => false,
+        // The body is the one screen field that is no `LineInput`.
+        if self.screen_field() == Some(crate::keyroute::FieldId::Body) {
+            return self.editor.paste_body(text) && self.update(Action::Render);
         }
+        false
     }
 
     /// Copies `text` to the clipboard and toasts the outcome:
@@ -10193,13 +10092,18 @@ impl App {
     /// `self.update(..)` call's result along the branch taken, plus any
     /// modal state change (close/typing) that bypasses `update`.
     pub fn handle_key(&mut self, ev: KeyEvent) -> bool {
+        // Where the keyboard is before this key (plan M4a Deviation 6).
+        self.note_pane();
         // The field session catches up first with whatever moved the caret
         // since the last event (an async result, a reload), then with what
         // this key did (spec §3.1).
         self.sync_session(None, fields::Cause::Before);
+        let echo = self.key_echo();
         let ran = self.route_key(ev);
         self.sync_session(ran.open_as, fields::Cause::Key { routed: ran.routed });
-        let changed = ran.changed;
+        // A key that does nothing may still drop the pending keys the
+        // footer echoes (a refused `<C-w>h`, `5gt` past the strip).
+        let changed = ran.changed || self.key_echo() != echo;
         // The op safety net at the event boundary, as `dispatch` has one
         // per action: a key handled without an action (a var-form or
         // grid commit) can bail between `begin_op` and its record.
@@ -10579,25 +10483,32 @@ impl App {
                 }
             });
         }
+        // A named key acts bare only (ctrl+Home/End also jump): any other
+        // chord does nothing rather than act as the bare key (piece 4 spec
+        // §5.1).
+        let plain = ev.modifiers.is_empty();
+        let ctrl = ev.modifiers == KeyModifiers::CONTROL;
         Some(match ev.code {
             KeyCode::Esc => self.update(Action::CloseScreen),
             KeyCode::Char('q') => self.update(Action::Quit),
-            KeyCode::Up => {
+            KeyCode::Up if plain => {
                 self.settings
                     .move_cursor(-1, self.ui_settings_are_editable());
                 true
             }
-            KeyCode::Down => {
+            KeyCode::Down if plain => {
                 self.settings
                     .move_cursor(1, self.ui_settings_are_editable());
                 true
             }
-            KeyCode::Home => {
+            // ctrl+Home/End are a second spelling of Home/End, and what
+            // macOS's cmd+↑/↓ fold to (`keys::normalize_super_keys`).
+            KeyCode::Home if plain || ctrl => {
                 self.settings
                     .move_cursor(i32::MIN / 2, self.ui_settings_are_editable());
                 true
             }
-            KeyCode::End => {
+            KeyCode::End if plain || ctrl => {
                 self.settings
                     .move_cursor(i32::MAX / 2, self.ui_settings_are_editable());
                 true
@@ -10605,12 +10516,12 @@ impl App {
             // Only a Files row has two buttons to choose between; on a
             // settings row the arrows have nothing to aim at.
             KeyCode::Left | KeyCode::Right
-                if matches!(self.settings.row(), SettingsRow::File(_)) =>
+                if plain && matches!(self.settings.row(), SettingsRow::File(_)) =>
             {
                 self.settings.file_button = usize::from(ev.code == KeyCode::Right);
                 true
             }
-            KeyCode::Enter | KeyCode::Char(' ') => self.activate_settings_row(),
+            KeyCode::Enter | KeyCode::Char(' ') if plain => self.activate_settings_row(),
             // `u` / `:` (undo, palette) are not named here: they reach the
             // router's whitelist from the keymap, like on every screen.
             _ => return None,
@@ -10983,7 +10894,7 @@ impl App {
     /// place (`Editor::preferred_tab`).
     fn sync_active_tab(&mut self) {
         let preferred = self.editor.preferred_tab;
-        let target = if preferred == EditorTab::Body && self.editor.body_tab_disabled() {
+        let target = if !self.editor.tab_enabled(preferred) {
             EditorTab::from_draw_position(0)
         } else {
             preferred
@@ -11603,9 +11514,14 @@ mod landing;
 mod mouse;
 mod router;
 mod fields;
+mod panes;
 mod verbs;
 #[cfg(test)]
 mod dialog_tests;
+#[cfg(test)]
+mod pane_tests;
+#[cfg(test)]
+mod key_invariant_tests;
 #[cfg(test)]
 mod field_tests;
 #[cfg(test)]

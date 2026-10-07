@@ -340,12 +340,13 @@ fn parse_overrides(toml_str: &str) -> anyhow::Result<Vec<(String, Vec<String>)>>
 impl Keymap {
     /// The bindings `profile` ships with (piece 4 spec §4.4, plan M1
     /// Deviation 4). Vim gives up `q` (its macro prefix; `:q` quits),
-    /// `ctrl+r` (redo, a router row) and `alt+a` (`a` adds a table row,
-    /// plan M2 Deviation 5). A user's `keys.toml` layers on top.
+    /// `ctrl+r` (redo, a router row), `alt+a` (`a` adds a table row, plan
+    /// M2 Deviation 5) and `alt+←/→` (`gT`/`gt`, plan M4a). A user's
+    /// `keys.toml` layers on top.
     pub fn default_bindings_for(profile: crate::config::KeyProfile) -> Self {
         let mut map = Self::default_bindings();
         if profile == crate::config::KeyProfile::Vim {
-            for combo in ["q", "ctrl+r", "alt+a"] {
+            for combo in ["q", "ctrl+r", "alt+a", "alt+left", "alt+right"] {
                 map.bindings
                     .remove(&KeyCombo::parse(combo).expect("a valid default combo"));
             }
@@ -1453,10 +1454,10 @@ mod tests {
         assert!(!opens_field(&key(KeyCode::Esc, KeyModifiers::NONE)));
     }
 
-    /// Plan M1 Deviation 4 and M2 Deviation 5: vim gives up `q` (its macro
-    /// prefix; `:q` quits), `ctrl+r` (redo, a router row) and `alt+a` (`a`
-    /// adds a row). Every other chord stays shared until the milestone
-    /// that gives vim its own key for it.
+    /// Plan M1 Deviation 4, M2 Deviation 5 and M4a Deviation 12: vim gives
+    /// up `q` (its macro prefix; `:q` quits), `ctrl+r` (redo, a router row),
+    /// `alt+a` (`a` adds a row) and `alt+←/→` (`gT`/`gt`). Every other chord
+    /// stays shared until the milestone that gives vim its own key for it.
     #[test]
     fn the_vim_profile_drops_q_and_gives_ctrl_r_to_the_router() {
         use crate::config::KeyProfile::{Arrows, Vim};
@@ -1468,8 +1469,11 @@ mod tests {
         assert_eq!(get(Vim, "ctrl+enter"), Some(Action::Send));
         assert_eq!(get(Arrows, "alt+a"), Some(Action::TableAddRow));
         assert_eq!(get(Vim, "alt+a"), None, "vim adds a row with `a` (plan M2 Deviation 5)");
+        assert_eq!(get(Vim, "alt+right"), None, "gt steps the tabs in vim (plan M4a)");
+        assert_eq!(get(Vim, "alt+left"), None);
+        assert_eq!(get(Arrows, "alt+right"), Some(Action::CycleTabs(1)));
         for combo in [
-            "ctrl+c", "ctrl+v", "ctrl+o", "ctrl+p", "ctrl+z", "ctrl+s", "alt+w", "alt+right", "alt+t",
+            "ctrl+c", "ctrl+v", "ctrl+o", "ctrl+p", "ctrl+z", "ctrl+s", "alt+w", "alt+t",
             "ctrl+1",
         ] {
             assert_eq!(get(Vim, combo), get(Arrows, combo), "{combo} is shared until its vim key lands");

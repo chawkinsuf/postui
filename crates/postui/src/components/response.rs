@@ -1,7 +1,7 @@
 use super::json_tree::{JsonTree, TokenKind};
 use super::line_input::LineInput;
 use super::{Component, DrawCtx, pane_surface};
-use crate::action::{Action, CopyTarget};
+use crate::action::Action;
 use crate::config::JqTab;
 use crate::hit::ScrollbarSpec;
 use crate::layout::PaneId;
@@ -776,18 +776,13 @@ impl ReadyView {
         self.parsing && self.generation == generation
     }
 
-    /// The view `delta` tabs away along the strip's on-screen order
-    /// (Pretty, Raw, Headers), wrapping at either end, with Pretty
-    /// skipped when there is no tree to show.
-    fn cycle_view_mode(&self, delta: i8) -> ViewMode {
-        const ORDER: [ViewMode; 3] = [ViewMode::Pretty, ViewMode::Raw, ViewMode::Headers];
-        let order: Vec<ViewMode> = ORDER
+    /// The views on the tab strip, in on-screen order: Pretty (when there
+    /// is a tree to show), Raw, Headers. `response_tab_defs` draws them.
+    fn tab_modes(&self) -> Vec<ViewMode> {
+        [ViewMode::Pretty, ViewMode::Raw, ViewMode::Headers]
             .into_iter()
             .filter(|m| *m != ViewMode::Pretty || self.has_tree_view())
-            .collect();
-        let at = order.iter().position(|m| *m == self.mode).unwrap_or(0);
-        let len = order.len() as i8;
-        order[(at as i8 + delta).rem_euclid(len) as usize]
+            .collect()
     }
 
     /// The tree the `Pretty` view actually shows: the filtered tree while a
@@ -947,10 +942,61 @@ impl ReadyView {
         }
     }
 
+    /// After a fold opens or closes (a click, `zo` `zc` `za`): the change
+    /// renumbers the visible lines a selection is addressed in, and may
+    /// leave the cursor past the end or out of view.
+    fn after_fold(&mut self) {
+        self.clear_sel();
+        self.clamp_cursor();
+        self.follow_cursor();
+    }
+
+    /// The one place a key moves the cursor: `delta` lines, clamped, the
+    /// view following. Every cursor move but shift+↑/↓ drops a line
+    /// selection, or the next shift+↓ would grow it from the anchor the
+    /// move left behind; the rule lives here, not in the key arms, so a
+    /// mover cannot miss it. [`Self::select_line_extend`] is the one
+    /// exception and steps the cursor itself.
     fn move_cursor(&mut self, delta: i32) {
         let max = self.visible_len().saturating_sub(1) as i32;
-        self.cursor = (self.cursor as i32 + delta).clamp(0, max) as usize;
+        self.jump_cursor((self.cursor as i32 + delta).clamp(0, max) as usize);
+    }
+
+    /// The one place a key lands the cursor on a given line (a document
+    /// jump, a search match, a half page): clamped, the view following,
+    /// a line selection dropped as [`Self::move_cursor`] drops it.
+    fn jump_cursor(&mut self, at: usize) {
+        self.clear_sel();
+        self.cursor = at;
+        self.clamp_cursor();
         self.follow_cursor();
+    }
+
+    /// `ctrl+d` (`down`) or `ctrl+u` (piece 4 spec §5.7, both profiles):
+    /// the view and the cursor move half a page together, so the cursor
+    /// keeps its screen row. Where the view cannot scroll further the
+    /// cursor still moves, clamped to the first or last line (plan M4a
+    /// Deviation 10). A cursor the wheel or the scrollbar left off screen
+    /// is first brought to the view's nearest edge, as Vim keeps it, so the
+    /// step starts from what shows.
+    fn half_page(&mut self, down: bool) {
+        let height = self.height.max(1);
+        let half = (height / 2).max(1);
+        let last = self.visible_len().saturating_sub(1);
+        let max_scroll = self.visible_len().saturating_sub(height);
+        let shown = self
+            .cursor
+            .clamp(self.scroll.min(last), (self.scroll + height - 1).min(last));
+        let at = if down {
+            // A view already past the end (the pane grew, or a fold shrank
+            // what shows) stays put rather than jump back up.
+            self.scroll = (self.scroll + half).min(max_scroll).max(self.scroll);
+            (shown + half).min(last)
+        } else {
+            self.scroll = self.scroll.saturating_sub(half);
+            shown.saturating_sub(half)
+        };
+        self.jump_cursor(at);
     }
 
     fn set_mode(&mut self, mode: ViewMode) {
@@ -994,21 +1040,20 @@ impl ReadyView {
     }
 
     /// Moves the cursor onto match `current`, expanding whatever containers
-    /// hide it.
+    /// hide it. A jump like any other: a line selection drops with it.
     fn jump_to_match(&mut self) {
         let Some(search) = &self.search else { return };
         let Some(&(line, _)) = search.matches.get(search.current) else {
             return;
         };
-        match (self.mode, self.active_tree_mut()) {
+        let at = match (self.mode, self.active_tree_mut()) {
             (ViewMode::Pretty, Some(tree)) => {
                 tree.expand_ancestors(line);
-                self.cursor = tree.visible_index_of(line).unwrap_or(0);
+                tree.visible_index_of(line).unwrap_or(0)
             }
-            _ => self.cursor = line,
-        }
-        self.clamp_cursor();
-        self.follow_cursor();
+            _ => line,
+        };
+        self.jump_cursor(at);
     }
 
     fn step_match(&mut self, delta: i32) {
@@ -1143,11 +1188,15 @@ impl ReadyView {
 
     /// Extends a line-wise selection by `delta` lines (shift+Up/Down): the
     /// anchor line is fixed, the cursor line moves, and every line between
-    /// them is covered in full.
+    /// them is covered in full. The one cursor move that keeps a selection,
+    /// so it steps the cursor itself rather than through
+    /// [`Self::move_cursor`], which drops one.
     fn select_line_extend(&mut self, delta: i32) {
         let anchor_line = self.sel_anchor.map(|(l, _)| l).unwrap_or(self.cursor);
         self.sel_anchor = Some((anchor_line, 0));
-        self.move_cursor(delta);
+        let max = self.visible_len().saturating_sub(1) as i32;
+        self.cursor = (self.cursor as i32 + delta).clamp(0, max) as usize;
+        self.follow_cursor();
         let cl = self.cursor;
         let len = |v: &Self, l: usize| v.display_line_text(l).map_or(0, |t| t.chars().count());
         self.sel = Some(if cl >= anchor_line {
@@ -1317,11 +1366,10 @@ impl Response {
         self.view.as_ref()
     }
 
-    /// The view `delta` tabs away (alt+←/→ with the pane focused), or
-    /// `None` when there is no ready view (the chord is a no-op then). See
-    /// `ReadyView::cycle_view_mode`.
-    pub fn cycle_view_mode(&self, delta: i8) -> Option<ViewMode> {
-        self.view.as_ref().map(|v| v.cycle_view_mode(delta))
+    /// The response's tab strip, in on-screen order (the tab keys, through
+    /// `App::tab_target`), or `None` with no ready view.
+    pub fn tab_modes(&self) -> Option<Vec<ViewMode>> {
+        self.view.as_ref().map(ReadyView::tab_modes)
     }
 
     /// The jq bar's current text.
@@ -2214,6 +2262,16 @@ impl Response {
         true
     }
 
+    /// The cursor's row on the Headers view when it is a header with a
+    /// value to copy (a received or sent header, not the divider or a
+    /// note): what arrows' `c` copies (`Action::CopyResponseHeader`).
+    pub fn copyable_header_row(&self) -> Option<usize> {
+        let view = self.view.as_ref()?;
+        (view.mode == ViewMode::Headers
+            && matches!(view.header_row(view.cursor), Some(HeaderRow::Received(_) | HeaderRow::Sent(_))))
+        .then_some(view.cursor)
+    }
+
     /// Clicking a body row: moves the cursor there, and — when `toggle` is
     /// set and the view is `Pretty` — collapses/expands the container it
     /// opens (a no-op on a scalar row).
@@ -2228,12 +2286,27 @@ impl Response {
             && let Some(tree) = view.active_tree_mut()
         {
             tree.toggle(cursor);
-            // Collapsing/expanding renumbers the visible lines a selection
-            // is addressed in.
-            view.clear_sel();
-            view.clamp_cursor();
-            view.follow_cursor();
+            view.after_fold();
         }
+    }
+
+    /// `zo` `zc` `za` (piece 4 spec §5.7): the fold under the cursor on
+    /// the tree view, the cursor landing on the fold's opening line.
+    /// Whether anything changed; Raw and Headers have no folds.
+    pub fn fold(&mut self, op: crate::action::FoldOp) -> bool {
+        let Some(view) = self.view.as_mut() else {
+            return false;
+        };
+        if view.mode != ViewMode::Pretty {
+            return false;
+        }
+        let cursor = view.cursor;
+        let Some(at) = view.active_tree_mut().and_then(|tree| tree.fold(cursor, op)) else {
+            return false;
+        };
+        view.cursor = at;
+        view.after_fold();
+        true
     }
 
     /// Plants a selection anchor at the screen position of a left click in
@@ -2505,31 +2578,27 @@ impl Response {
             return Some(Action::Render);
         }
 
+        // Each navigation arm takes exactly the chord it names: a bare named
+        // key, shift+↑/↓ (extend the selection), ctrl+Home/End (document
+        // jumps) or ctrl+d/u/f/b. Any other chord does nothing rather than
+        // act as the bare key (piece 4 spec §5.1).
+        let plain = ev.modifiers.is_empty();
         match ev.code {
             // No pane-local view key: the strip is walked by the tab chord
             // every pane shares (alt+←/→ → `Action::CycleTabs`, resolved
             // against the focused pane in `app.rs`).
-            // Only a header row has a value to copy: on the divider or a
-            // note the key dispatches nothing.
-            KeyCode::Char('c')
-                if view.mode == ViewMode::Headers
-                    && matches!(
-                        view.header_row(view.cursor),
-                        Some(HeaderRow::Received(_) | HeaderRow::Sent(_))
-                    ) =>
-            {
-                Some(Action::CopyToClipboard(CopyTarget::ResponseHeader(
-                    view.cursor,
-                )))
-            }
+            // The pane's letters (`c`, `/`, `n`, `N`) are the router's table
+            // rows (piece 4 spec §4.5): the component keeps named keys only.
             KeyCode::Char('d') if ev.modifiers == KeyModifiers::CONTROL => {
-                view.move_cursor((view.height / 2).max(1) as i32);
+                view.half_page(true);
                 Some(Action::Render)
             }
             KeyCode::Char('u') if ev.modifiers == KeyModifiers::CONTROL => {
-                view.move_cursor(-((view.height / 2).max(1) as i32));
+                view.half_page(false);
                 Some(Action::Render)
             }
+            // Every cursor move but shift+↑/↓ drops a line selection:
+            // `move_cursor` and `jump_cursor` do it, not the arms.
             KeyCode::Char('f') if ev.modifiers == KeyModifiers::CONTROL => {
                 view.move_cursor(view.height.max(1) as i32);
                 Some(Action::Render)
@@ -2538,61 +2607,56 @@ impl Response {
                 view.move_cursor(-(view.height.max(1) as i32));
                 Some(Action::Render)
             }
-            KeyCode::Down if ev.modifiers.contains(KeyModifiers::SHIFT) => {
+            KeyCode::Down if ev.modifiers == KeyModifiers::SHIFT => {
                 view.select_line_extend(1);
                 Some(Action::Render)
             }
-            KeyCode::Up if ev.modifiers.contains(KeyModifiers::SHIFT) => {
+            KeyCode::Up if ev.modifiers == KeyModifiers::SHIFT => {
                 view.select_line_extend(-1);
                 Some(Action::Render)
             }
-            KeyCode::Down => {
-                view.clear_sel();
+            KeyCode::Down if plain => {
                 view.move_cursor(1);
                 Some(Action::Render)
             }
-            KeyCode::Up => {
-                view.clear_sel();
+            KeyCode::Up if plain => {
                 view.move_cursor(-1);
                 Some(Action::Render)
             }
-            KeyCode::PageDown => {
+            KeyCode::PageDown if plain => {
                 view.move_cursor(view.height.max(1) as i32);
                 Some(Action::Render)
             }
-            KeyCode::PageUp => {
+            KeyCode::PageUp if plain => {
                 view.move_cursor(-(view.height.max(1) as i32));
                 Some(Action::Render)
             }
-            KeyCode::Right => {
+            KeyCode::Right if plain => {
                 view.scroll_h(H_SCROLL_STEP.into());
                 Some(Action::Render)
             }
-            KeyCode::Left => {
+            KeyCode::Left if plain => {
                 view.scroll_h((-H_SCROLL_STEP).into());
                 Some(Action::Render)
             }
-            // Document jumps come before the line jumps so the plain
-            // Home/End arms (which don't check modifiers) can't shadow them.
-            KeyCode::Home if ev.modifiers.contains(KeyModifiers::CONTROL) => {
-                view.cursor = 0;
-                view.follow_cursor();
+            // Document jumps: ctrl+Home/End.
+            KeyCode::Home if ev.modifiers == KeyModifiers::CONTROL => {
+                view.jump_cursor(0);
                 Some(Action::Render)
             }
-            KeyCode::End if ev.modifiers.contains(KeyModifiers::CONTROL) => {
-                view.cursor = view.visible_len().saturating_sub(1);
-                view.follow_cursor();
+            KeyCode::End if ev.modifiers == KeyModifiers::CONTROL => {
+                view.jump_cursor(usize::MAX);
                 Some(Action::Render)
             }
-            KeyCode::Home => {
+            KeyCode::Home if plain => {
                 view.h_scroll = 0;
                 Some(Action::Render)
             }
-            KeyCode::End => {
+            KeyCode::End if plain => {
                 view.scroll_h(i32::MAX);
                 Some(Action::Render)
             }
-            KeyCode::Char(' ') | KeyCode::Enter => {
+            KeyCode::Char(' ') | KeyCode::Enter if plain => {
                 let cursor = view.cursor;
                 if view.mode == ViewMode::Pretty
                     && let Some(tree) = view.active_tree_mut()
@@ -2602,18 +2666,6 @@ impl Response {
                     view.clamp_cursor();
                     view.follow_cursor();
                 }
-                Some(Action::Render)
-            }
-            KeyCode::Char('/') => {
-                view.open_search();
-                Some(Action::Render)
-            }
-            KeyCode::Char('n') => {
-                view.step_match(1);
-                Some(Action::Render)
-            }
-            KeyCode::Char('N') => {
-                view.step_match(-1);
                 Some(Action::Render)
             }
             KeyCode::Esc if view.sel.is_some() => {
@@ -3105,20 +3157,23 @@ pub fn response_tab_defs(
     bar: &JqBar,
     theme: &Theme,
 ) -> (TabLabels, Vec<ViewMode>) {
-    let mut tabs: TabLabels = Vec::new();
-    let mut modes: Vec<ViewMode> = Vec::new();
-    if view.has_tree_view() {
-        let badge = view.jq_tree.is_some().then_some((
-            crate::glyph::FILTER,
-            if bar.stale { theme.error } else { theme.accent },
-        ));
-        tabs.push(("Tree".to_string(), badge));
-        modes.push(ViewMode::Pretty);
-    }
-    tabs.push(("Raw".to_string(), None));
-    modes.push(ViewMode::Raw);
-    tabs.push(("Headers".to_string(), None));
-    modes.push(ViewMode::Headers);
+    // The strip's order lives in `ReadyView::tab_modes` alone, so `{N}gt`
+    // and the tab chord can never disagree with what is drawn.
+    let modes = view.tab_modes();
+    let tabs: TabLabels = modes
+        .iter()
+        .map(|mode| match mode {
+            ViewMode::Pretty => {
+                let badge = view.jq_tree.is_some().then_some((
+                    crate::glyph::FILTER,
+                    if bar.stale { theme.error } else { theme.accent },
+                ));
+                ("Tree".to_string(), badge)
+            }
+            ViewMode::Raw => ("Raw".to_string(), None),
+            ViewMode::Headers => ("Headers".to_string(), None),
+        })
+        .collect();
     (tabs, modes)
 }
 
@@ -4050,12 +4105,12 @@ mod tests {
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
-    /// Steps the view forward the way `app.rs`'s `CycleResponseView(1)`
-    /// arm does (alt+→ with the pane focused).
+    /// Steps the view one tab forward along the strip, wrapping, as alt+→
+    /// with the pane focused does (`App::tab_target`).
     fn cycle(r: &mut Response) {
-        if let Some(next) = r.cycle_view_mode(1) {
-            r.set_view_mode(next);
-        }
+        let Some(modes) = r.tab_modes() else { return };
+        let at = modes.iter().position(|m| Some(*m) == r.view().map(|v| v.mode)).unwrap_or(0);
+        r.set_view_mode(modes[(at + 1) % modes.len()]);
     }
 
     fn ch(c: char) -> KeyEvent {
@@ -4295,6 +4350,92 @@ mod tests {
         assert_eq!(r.selected_text(), None);
     }
 
+    /// Every cursor move but shift+↑/↓ drops a line selection, the half
+    /// and whole page steps and the document jumps included, so the next
+    /// shift+↓ grows from the cursor and not from a stale anchor the jump
+    /// left behind.
+    #[test]
+    fn a_cursor_jump_drops_the_line_selection() {
+        let body = (0..100).map(|i| i.to_string()).collect::<Vec<_>>().join("\n");
+        let shift_down = KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT);
+        let jumps = [
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL),
+            key(KeyCode::PageDown),
+            key(KeyCode::PageUp),
+            KeyEvent::new(KeyCode::Home, KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::End, KeyModifiers::CONTROL),
+        ];
+        for jump in jumps {
+            let mut r = ready(&body);
+            render(&mut r);
+            r.handle_key(shift_down);
+            r.handle_key(shift_down);
+            assert_eq!(r.selected_text().as_deref(), Some("0\n1\n2"), "{jump:?}: the selection to drop");
+            r.handle_key(jump);
+            assert_eq!(r.selected_text(), None, "{jump:?}: the jump drops it");
+            let cursor = r.view().unwrap().cursor;
+            r.handle_key(shift_down);
+            let sel = r.view().unwrap().sel.expect("shift+down selects again");
+            assert_eq!(sel.0.0, cursor, "{jump:?}: the new selection starts at the cursor the jump left");
+        }
+    }
+
+    /// The same for the search jumps (fourth M4a review): the commit of a
+    /// typed query (Enter, or the `▼` button while the input is live) and
+    /// each `n`/`N` step land the cursor on a match and drop the selection
+    /// with it.
+    #[test]
+    fn a_search_jump_drops_the_line_selection() {
+        let body = (0..100).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let shift_down = KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT);
+        let select = |r: &mut Response| {
+            r.handle_key(shift_down);
+            r.handle_key(shift_down);
+            assert_eq!(r.selected_text().as_deref(), Some("line 0\nline 1\nline 2"), "the selection to drop");
+        };
+        let selects_from_cursor = |r: &mut Response, what: &str| {
+            assert_eq!(r.selected_text(), None, "{what}: the jump drops it");
+            let cursor = r.view().unwrap().cursor;
+            r.handle_key(shift_down);
+            let sel = r.view().unwrap().sel.expect("shift+down selects again");
+            assert_eq!(sel.0.0, cursor, "{what}: the new selection starts at the cursor the jump left");
+        };
+        // Enter commits the query and jumps to the first match.
+        let mut r = ready(&body);
+        render(&mut r);
+        select(&mut r);
+        assert!(r.open_search());
+        for c in "line 5".chars() {
+            r.handle_key(ch(c));
+        }
+        r.handle_key(key(KeyCode::Enter));
+        assert_eq!(r.view().unwrap().cursor, 5, "jumped to the first match");
+        selects_from_cursor(&mut r, "Enter");
+        // `n` and `N` step the matches (the router's rows, so the pane's
+        // `step_search` as they call it).
+        for (delta, what) in [(1, "n"), (-1, "N")] {
+            r.handle_key(KeyEvent::new(KeyCode::Home, KeyModifiers::CONTROL));
+            select(&mut r);
+            assert!(r.step_search(delta));
+            selects_from_cursor(&mut r, what);
+        }
+        // The `▼` button while the input is still live commits it, and
+        // that commit is the jump.
+        let mut r = ready(&body);
+        render(&mut r);
+        select(&mut r);
+        assert!(r.open_search());
+        for c in "line 7".chars() {
+            r.handle_key(ch(c));
+        }
+        assert!(r.step_search(1));
+        assert_eq!(r.view().unwrap().cursor, 7, "jumped to the first match");
+        selects_from_cursor(&mut r, "button commit");
+    }
+
     #[test]
     fn pretty_mode_selection_copies_the_on_screen_text() {
         let mut r = ready(r#"{"a": 1}"#);
@@ -4397,21 +4538,34 @@ mod tests {
         assert!(!out.contains("s3cret"), "the secret never renders: {out}");
     }
 
-    /// `c` copies the header under the cursor; on the divider there is no
-    /// header, so it dispatches nothing at all.
+    /// `c` (the router's row) copies the header under the cursor; on the
+    /// divider there is no header, so there is nothing to copy.
     #[test]
     fn c_on_the_sent_divider_copies_nothing() {
         let mut r = ready(r#"{"a": 1}"#);
         r.set_view_mode(ViewMode::Headers);
-        let key = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
-        assert_eq!(
-            r.handle_key(key('c')),
-            Some(Action::CopyToClipboard(CopyTarget::ResponseHeader(0))),
-            "row 0 is a response header"
-        );
+        assert_eq!(r.copyable_header_row(), Some(0), "row 0 is a response header");
         r.view.as_mut().unwrap().cursor = 1;
         assert_eq!(r.view().unwrap().header_row(1), Some(HeaderRow::Divider));
-        assert_eq!(r.handle_key(key('c')), None, "the divider has nothing to copy");
+        assert_eq!(r.copyable_header_row(), None, "the divider has nothing to copy");
+    }
+
+    /// Plan M4a Deviation 11: `c` copies only a header row on the Headers
+    /// view; the response no longer reads its letters itself.
+    #[test]
+    fn only_a_header_row_is_copyable_and_the_letters_are_not_the_panes() {
+        let mut r = ready(r#"{"a": 1}"#);
+        render(&mut r);
+        assert_eq!(r.copyable_header_row(), None, "not the Headers view");
+        assert_eq!(r.handle_key(ch('/')), None, "the router's row opens the search now");
+        assert_eq!(r.handle_key(ch('n')), None);
+        r.set_view_mode(ViewMode::Headers);
+        render(&mut r);
+        assert_eq!(r.handle_key(ch('c')), None);
+        let row = (0..20).find(|&i| matches!(r.view().unwrap().header_row(i), Some(HeaderRow::Received(_))));
+        let row = row.expect("the fixture has a received header");
+        r.view.as_mut().unwrap().cursor = row;
+        assert_eq!(r.copyable_header_row(), Some(row));
     }
 
     /// The timing chip pairs time-to-first-byte with the total as one
@@ -4956,6 +5110,92 @@ mod tests {
         );
     }
 
+    /// Piece 4 spec §5.7 (`R.ctrl-d`) and plan M4a Deviation 10: half a page
+    /// of view and cursor together; at the ends the cursor still moves.
+    #[test]
+    fn ctrl_d_and_ctrl_u_scroll_with_the_cursor_and_stop_at_the_ends() {
+        let body = (0..100).map(|i| i.to_string()).collect::<Vec<_>>().join("\n");
+        let mut r = ready(&body);
+        render(&mut r);
+        let height = r.view().unwrap().height;
+        let half = (height / 2).max(1);
+        let down = || KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL);
+        let up = || KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL);
+        r.handle_key(down());
+        let v = r.view().unwrap();
+        assert_eq!((v.cursor, v.scroll), (half, half), "the view scrolls with the cursor");
+        r.handle_key(up());
+        let v = r.view().unwrap();
+        assert_eq!((v.cursor, v.scroll), (0, 0));
+        for _ in 0..100 {
+            r.handle_key(down());
+        }
+        let v = r.view().unwrap();
+        assert_eq!(v.cursor, 99, "the cursor reaches the last line");
+        assert_eq!(v.scroll, 100 - height, "the view never scrolls past the end");
+        r.handle_key(up());
+        let v = r.view().unwrap();
+        assert_eq!(v.cursor, 99 - half);
+        r.view.as_mut().unwrap().cursor = 3;
+        r.view.as_mut().unwrap().scroll = 0;
+        r.handle_key(up());
+        let v = r.view().unwrap();
+        assert_eq!((v.cursor, v.scroll), (0, 0), "at the top the cursor still moves");
+        // A view left past the end (the pane grew, or a fold shrank what
+        // shows) never scrolls back up on ctrl+d.
+        let past = 100 - height + 3;
+        r.view.as_mut().unwrap().scroll = past;
+        r.view.as_mut().unwrap().cursor = past;
+        r.handle_key(down());
+        let v = r.view().unwrap();
+        assert_eq!((v.cursor, v.scroll), (past + half, past), "ctrl+d never moves the view up");
+    }
+
+    /// The wheel and the scrollbar move the view and leave the cursor off
+    /// screen; `ctrl+d` and `ctrl+u` then step from the view, never back
+    /// toward the cursor it left behind.
+    #[test]
+    fn ctrl_d_and_ctrl_u_step_from_a_view_the_wheel_moved() {
+        let body = (0..200).map(|i| i.to_string()).collect::<Vec<_>>().join("\n");
+        let mut r = ready(&body);
+        render(&mut r);
+        let height = r.view().unwrap().height;
+        let half = (height / 2).max(1);
+        let down = || KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL);
+        let up = || KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL);
+        r.handle_scroll(50);
+        assert_eq!(r.view().unwrap().cursor, 0, "the wheel leaves the cursor behind");
+        r.handle_key(down());
+        let v = r.view().unwrap();
+        assert_eq!(v.scroll, 50 + half, "ctrl+d moves the view down, not back to the cursor");
+        assert_eq!(v.cursor, 50 + half, "the cursor lands on the view's top row");
+        let bottom = 120;
+        r.view.as_mut().unwrap().cursor = bottom + height + 10;
+        r.set_scroll(bottom);
+        r.handle_key(up());
+        let v = r.view().unwrap();
+        assert_eq!(v.scroll, bottom - half, "ctrl+u moves the view up, not down to the cursor");
+        assert_eq!(v.cursor, bottom + height - 1 - half, "the cursor keeps the view's bottom row");
+    }
+
+    /// Piece 4 spec §5.7 (`R.fold`): `zo` `zc` `za` on the tree view only.
+    #[test]
+    fn fold_works_on_the_tree_view_only() {
+        use crate::action::FoldOp;
+        let mut r = ready(r#"{"a": {"b": 1}, "c": 2}"#);
+        render(&mut r);
+        assert_eq!(r.view().unwrap().mode, ViewMode::Pretty);
+        r.view.as_mut().unwrap().cursor = 2;
+        assert!(r.fold(FoldOp::Close));
+        assert_eq!(r.view().unwrap().cursor, 1, "on the fold's opening line");
+        assert_eq!(r.view().unwrap().visible_len(), 4);
+        assert!(r.fold(FoldOp::Close), "zc again climbs to the root");
+        assert_eq!((r.view().unwrap().cursor, r.view().unwrap().visible_len()), (0, 1));
+        assert!(!r.fold(FoldOp::Close), "nothing changed");
+        r.set_view_mode(ViewMode::Raw);
+        assert!(!r.fold(FoldOp::Toggle), "Raw has no folds");
+    }
+
     #[test]
     fn the_arrows_scroll_and_the_ctrl_keys_page() {
         let body = (0..100).map(|i| format!("{:>200}", i)).collect::<Vec<_>>().join("\n");
@@ -5168,7 +5408,7 @@ mod tests {
     #[test]
     fn search_commits_counts_matches_and_wraps() {
         let mut r = ready(r#"{"aa": "zz", "bb": "zz"}"#);
-        assert_eq!(r.handle_key(ch('/')), Some(Action::Render));
+        assert!(r.open_search());
         for c in "zz".chars() {
             assert_eq!(r.handle_key(ch(c)), Some(Action::Render));
         }
@@ -5182,11 +5422,11 @@ mod tests {
         let out = render(&mut r);
         assert!(out.contains("1/2"), "match counter: {out}");
         assert_eq!(r.view().unwrap().cursor, 1, "jumped to the first match");
-        r.handle_key(ch('n'));
+        r.step_search(1);
         assert!(render(&mut r).contains("2/2"));
-        r.handle_key(ch('n'));
+        r.step_search(1);
         assert!(render(&mut r).contains("1/2"), "n wraps around");
-        r.handle_key(ch('N'));
+        r.step_search(-1);
         assert!(render(&mut r).contains("2/2"), "N wraps backwards");
         r.handle_key(key(KeyCode::Esc));
         assert!(r.view().unwrap().search.is_none(), "esc closes search");
@@ -5224,7 +5464,7 @@ mod tests {
     #[test]
     fn typing_while_search_is_active_does_not_move_the_cursor() {
         let mut r = ready(r#"{"a": 1, "b": 2}"#);
-        r.handle_key(ch('/'));
+        r.open_search();
         for c in "jjG".chars() {
             assert_eq!(r.handle_key(ch(c)), Some(Action::Render));
         }
@@ -5241,7 +5481,7 @@ mod tests {
         r.handle_key(ch('j'));
         r.handle_key(key(KeyCode::Char(' '))); // collapse "a"
         assert!(!render(&mut r).contains("needle"), "hidden while collapsed");
-        r.handle_key(ch('/'));
+        r.open_search();
         for c in "needle".chars() {
             r.handle_key(ch(c));
         }
@@ -5257,30 +5497,26 @@ mod tests {
     #[test]
     fn search_is_case_insensitive_and_finds_nothing_gracefully() {
         let mut r = ready(r#"{"Needle": 1}"#);
-        r.handle_key(ch('/'));
+        r.open_search();
         for c in "NEEDLE".chars() {
             r.handle_key(ch(c));
         }
         r.handle_key(key(KeyCode::Enter));
         assert!(render(&mut r).contains("1/1"));
-        r.handle_key(ch('/'));
+        r.open_search();
         for c in "absent".chars() {
             r.handle_key(ch(c));
         }
         r.handle_key(key(KeyCode::Enter));
         let out = render(&mut r);
         assert!(out.contains("no matches"), "{out}");
-        assert_eq!(
-            r.handle_key(ch('n')),
-            Some(Action::Render),
-            "n with no matches is inert"
-        );
+        assert!(r.step_search(1), "n with no matches is inert");
     }
 
     #[test]
     fn search_works_in_raw_view_too() {
         let mut r = ready("plain text with a needle inside");
-        r.handle_key(ch('/'));
+        r.open_search();
         for c in "needle".chars() {
             r.handle_key(ch(c));
         }
@@ -5372,26 +5608,16 @@ mod tests {
         assert_eq!(r.view().unwrap().mode, ViewMode::Pretty);
     }
 
-    /// `cycle_view_mode` walks Pretty → Raw → Headers and wraps in both
-    /// directions, skipping Pretty when there is no tree to show.
+    /// The strip `App::tab_target` walks: Pretty, Raw, Headers, with no
+    /// Pretty when there is no tree to show, and no strip at all with no
+    /// ready view.
     #[test]
-    fn cycle_view_mode_walks_both_ways_and_skips_pretty_without_a_tree() {
+    fn tab_modes_skip_pretty_without_a_tree() {
         let r = ready(r#"{"a": 1}"#);
-        assert_eq!(r.cycle_view_mode(1), Some(ViewMode::Raw));
-        assert_eq!(r.cycle_view_mode(-1), Some(ViewMode::Headers), "wraps backward");
-        let mut r = ready(r#"{"a": 1}"#);
-        r.set_view_mode(ViewMode::Headers);
-        assert_eq!(r.cycle_view_mode(1), Some(ViewMode::Pretty), "wraps forward");
-        assert_eq!(r.cycle_view_mode(-1), Some(ViewMode::Raw));
-
-        let mut r = ready("not json");
-        assert_eq!(r.view().unwrap().mode, ViewMode::Raw);
-        assert_eq!(r.cycle_view_mode(-1), Some(ViewMode::Headers), "no Pretty to land on");
-        r.set_view_mode(ViewMode::Headers);
-        assert_eq!(r.cycle_view_mode(1), Some(ViewMode::Raw));
-
-        let r = Response::default();
-        assert_eq!(r.cycle_view_mode(1), None, "no ready view: nothing to cycle");
+        assert_eq!(r.tab_modes(), Some(vec![ViewMode::Pretty, ViewMode::Raw, ViewMode::Headers]));
+        let r = ready("not json");
+        assert_eq!(r.tab_modes(), Some(vec![ViewMode::Raw, ViewMode::Headers]));
+        assert_eq!(Response::default().tab_modes(), None);
     }
 
     #[test]
@@ -7487,7 +7713,7 @@ mod tests {
     fn a_raw_search_match_far_into_a_windowed_line_still_highlights() {
         let body = format!("{}needle{}", "x".repeat(300), "y".repeat(300));
         let mut r = ready(&body);
-        r.handle_key(ch('/'));
+        r.open_search();
         for c in "needle".chars() {
             r.handle_key(ch(c));
         }

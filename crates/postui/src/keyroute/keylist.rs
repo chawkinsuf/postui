@@ -25,72 +25,86 @@ pub enum Status {
     Engine,
 }
 
+/// The piece 4 milestone that ships a row (plan M4a Deviation 13): M4 is
+/// split into M4a (panes, tabs, the response) and M4b (the command line
+/// and the globals).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Milestone {
+    M1,
+    M2,
+    M3,
+    M4a,
+    M4b,
+    M5,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Row {
     pub id: &'static str,
     pub tier: Tier,
     pub status: Status,
-    /// The piece 4 milestone that ships it (3 for an engine row).
-    pub milestone: u8,
+    /// The piece 4 milestone that ships it (`M3` for an engine row).
+    pub milestone: Milestone,
     /// The verb also exists in the arrows profile.
     pub arrows: bool,
 }
 
 /// The milestone this build ships through: the coverage test checks the
 /// rows up to it.
-pub const MILESTONE: u8 = 3;
+pub const MILESTONE: Milestone = Milestone::M4a;
 
-const fn row(id: &'static str, tier: Tier, status: Status, milestone: u8, arrows: bool) -> Row {
+const fn row(id: &'static str, tier: Tier, status: Status, milestone: Milestone, arrows: bool) -> Row {
     Row { id, tier, status, milestone, arrows }
 }
 
+use Milestone::*;
 use Status::{Engine, Out as OutRow, Ship};
 use Tier::{One, Out, Two};
 
 pub static KEY_LIST: &[Row] = &[
-    row("L.move", One, Ship, 1, true),
-    row("L.hl", One, Ship, 1, true),
-    row("L.open", One, Ship, 1, true),
-    row("L.verbs", One, Ship, 2, true),
-    row("L.dd", One, Ship, 2, true),
-    row("L.Ndd", Two, Ship, 2, false),
-    row("L.yank", One, Ship, 2, true),
-    row("L.undo", One, Ship, 1, true),
-    row("L.search", Out, OutRow, 1, false),
-    row("L.fold", Two, Ship, 5, false),
-    row("L.dot", Two, Ship, 5, false),
-    row("L.hml", Out, OutRow, 1, false),
-    row("R.move", One, Ship, 1, true),
-    row("R.ctrl-d", One, Ship, 4, true),
-    row("R.page", Two, Ship, 5, false),
-    row("R.fold", One, Ship, 4, false),
-    row("R.foldall", Two, Ship, 5, false),
-    row("R.search", One, Ship, 1, true),
-    row("R.star", Two, Ship, 5, false),
-    row("R.yy", Two, Ship, 5, false),
-    row("R.visual", Two, Ship, 5, false),
-    row("P.ctrlw", One, Ship, 4, true),
-    row("P.ctrlw-arrows", Two, Ship, 5, false),
-    row("P.gt", One, Ship, 4, true),
-    row("X.wq", One, Ship, 4, false),
-    row("X.e", Two, Ship, 5, false),
-    row("X.verbs", One, Ship, 4, false),
-    row("X.edit", One, Ship, 4, false),
-    row("X.history", Two, Ship, 5, false),
-    row("X.unsupported", Out, OutRow, 4, false),
-    row("X.noh", Two, Ship, 4, false),
-    row("D.prompt", One, Ship, 3, true),
-    row("D.picker", One, Ship, 3, true),
-    row("D.confirm", One, Ship, 3, true),
-    row("G.ZZ", One, Ship, 4, false),
-    row("G.qa", Out, OutRow, 4, false),
-    row("G.marks", Out, OutRow, 4, false),
-    row("G.reg0", Two, Engine, 3, false),
-    row("G.regs", Out, OutRow, 4, false),
-    row("G.jumps", Out, OutRow, 4, false),
-    row("G.unsupported", One, Ship, 1, false),
-    row("G.echo", One, Ship, 1, false),
-    row("G.mode", One, Ship, 1, false),
+    row("L.move", One, Ship, M1, true),
+    row("L.hl", One, Ship, M1, true),
+    row("L.open", One, Ship, M1, true),
+    row("L.verbs", One, Ship, M2, true),
+    row("L.dd", One, Ship, M2, true),
+    row("L.Ndd", Two, Ship, M2, false),
+    row("L.yank", One, Ship, M2, true),
+    row("L.undo", One, Ship, M1, true),
+    row("L.search", Out, OutRow, M1, false),
+    row("L.fold", Two, Ship, M5, false),
+    row("L.dot", Two, Ship, M5, false),
+    row("L.hml", Out, OutRow, M1, false),
+    row("R.move", One, Ship, M1, true),
+    row("R.ctrl-d", One, Ship, M4a, true),
+    row("R.page", Two, Ship, M5, false),
+    row("R.fold", One, Ship, M4a, false),
+    row("R.foldall", Two, Ship, M5, false),
+    row("R.search", One, Ship, M1, true),
+    row("R.star", Two, Ship, M5, false),
+    row("R.yy", Two, Ship, M5, false),
+    row("R.visual", Two, Ship, M5, false),
+    row("P.ctrlw", One, Ship, M4a, true),
+    row("P.ctrlw-arrows", Two, Ship, M5, false),
+    row("P.gt", One, Ship, M4a, true),
+    row("X.wq", One, Ship, M4b, false),
+    row("X.e", Two, Ship, M5, false),
+    row("X.verbs", One, Ship, M4b, false),
+    row("X.edit", One, Ship, M4b, false),
+    row("X.history", Two, Ship, M5, false),
+    row("X.unsupported", Out, OutRow, M4b, false),
+    row("X.noh", Two, Ship, M4b, false),
+    row("D.prompt", One, Ship, M3, true),
+    row("D.picker", One, Ship, M3, true),
+    row("D.confirm", One, Ship, M3, true),
+    row("G.ZZ", One, Ship, M4b, false),
+    row("G.qa", Out, OutRow, M4b, false),
+    row("G.marks", Out, OutRow, M4b, false),
+    row("G.reg0", Two, Engine, M3, false),
+    row("G.regs", Out, OutRow, M4b, false),
+    row("G.jumps", Out, OutRow, M4b, false),
+    row("G.unsupported", One, Ship, M1, false),
+    row("G.echo", One, Ship, M1, false),
+    row("G.mode", One, Ship, M1, false),
 ];
 
 #[cfg(test)]

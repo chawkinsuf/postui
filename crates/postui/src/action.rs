@@ -112,6 +112,12 @@ pub enum Action {
     FocusNext,
     FocusPrev,
     FocusPane(PaneId),
+    /// A vim window key (piece 4 spec §5.8): resolved against the screen,
+    /// the focused pane and what `App` remembers. A direction with no pane
+    /// does nothing. `leave`: typed in an open field, which closes first,
+    /// but only when there is a pane to move to: a refused move leaves the
+    /// field open (the user's decision, 2026-10-05, as for `GoTab`).
+    PaneMove { dir: PaneDir, leave: bool },
     ScrollPane(PaneId, i16),
     OpenPalette,
     Close,
@@ -173,11 +179,19 @@ pub enum Action {
     /// The one tab chord every pane shares (alt+←/→ by default): steps
     /// the tab strip of whatever has focus — the request editor's tabs,
     /// the response pane's views, or the Manage screen's strip — by
-    /// `delta`, wrapping. Resolved in `App::update` to `EditorTabCycle`,
-    /// `CycleResponseView` or `SelectManageTab`; with the sidebar focused
-    /// it falls back to the editor's strip, the only one on screen with
-    /// no pane of its own.
+    /// `delta` enabled tabs, wrapping. Resolved by `App::tab_target`, as
+    /// `GoTab` is, to `EditorTabSelect`, `ResponseViewMode` or
+    /// `SelectManageTab`; with the sidebar focused it falls back to the
+    /// editor's strip, the only one on screen with no pane of its own.
     CycleTabs(i8),
+    /// A vim tab key (piece 4 spec §5.8), on the strip `CycleTabs` steps.
+    /// A disabled or out-of-range tab, or the tab already showing, does
+    /// nothing. With the editor focused, a tab it selects lands the caret
+    /// in that tab's content. `leave`: typed in an open field, which closes
+    /// first, but only when there is a tab to go to: a refused key leaves
+    /// the field open (the user's decision, plan M4a), and so does a close
+    /// the field itself refuses.
+    GoTab { to: TabTo, leave: bool },
     CycleMethod,
     FocusUrl,
     /// Toggles `App::table_collapsed` (params/headers table body vs. tab
@@ -673,22 +687,25 @@ pub enum Action {
     },
     /// Switch the response pane's view (the tabs row's click target).
     ResponseViewMode(crate::components::response::ViewMode),
-    /// Walks the response pane's views `delta` tabs along the strip:
-    /// Pretty, Raw, Headers, wrapping, or Raw ↔ Headers when there is no
-    /// tree to show. Reached through `CycleTabs` with the pane focused,
-    /// and dispatched as an action (not a direct view mutation) so the
-    /// tab underline retargets like a click.
-    CycleResponseView(i8),
     /// Opens the response pane's in-pane search (Task 17, spec §5): the
     /// dispatchable form of the `Find` button / `/` key, so the footer's
     /// Response-pane search chip and the palette can reach it too.
     OpenResponseSearch,
+    /// The response search's next (`1`) or previous (`-1`) match: `n` and
+    /// `N` in both profiles (piece 4 spec §4.5), as the ▼/▲ buttons do.
+    StepResponseSearch(i8),
+    /// Arrows' `c` on the response's Headers view: copies the header under
+    /// the cursor. Nothing on any other row (spec §4.5).
+    CopyResponseHeader,
     /// Click on a JSON-tree body row: moves the cursor there, and — when
     /// `toggle` is set — collapses/expands the container it opens.
     JsonRowClicked {
         row: usize,
         toggle: bool,
     },
+    /// `zo` `zc` `za` on the response's tree view (piece 4 spec §5.7): the
+    /// fold under the cursor. Nothing on Raw or Headers.
+    TreeFold(FoldOp),
     /// Copy `target`'s text to the clipboard through `App::clipboard`'s
     /// tiered copy. Toasts "nothing to copy — send a request first" when
     /// there's no ready response and `target` needs one.
@@ -1028,6 +1045,38 @@ pub enum Action {
     },
     /// Structural menu's "Collect into array": wraps the bar text in `[ … ]`.
     JqCollect,
+}
+
+/// Vim's fold keys on the response tree (piece 4 spec §5.7): `zo` opens,
+/// `zc` closes, `za` toggles the fold under the cursor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FoldOp {
+    Open,
+    Close,
+    Toggle,
+}
+
+/// Where `ctrl+w` moves the keyboard (piece 4 spec §5.8): `h` `j` `k` `l`
+/// by the layout's geometry, `w` `W` the next and previous pane, `p` the
+/// pane before this one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaneDir {
+    Left,
+    Down,
+    Up,
+    Right,
+    Next,
+    Prev,
+    Last,
+}
+
+/// Which tab a vim tab key goes to (piece 4 spec §5.8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TabTo {
+    /// `{N}gt`: tab N, 1-based in on-screen order.
+    Nth(usize),
+    /// `gt`, `gT` and `{N}gT`: this many enabled tabs along, wrapping.
+    By(i64),
 }
 
 /// What a list or table key does to the row under the cursor (piece 4

@@ -166,7 +166,9 @@ mod tests {
         assert_eq!(cap(Key::Of(Action::OpenPalette), at(Vim, Surface::Sidebar), &v).as_deref(), Some(":"));
         let tabs = Key::Pair(Action::CycleTabs(-1), Action::CycleTabs(1));
         let alt = crate::keys::alt_label();
-        assert_eq!(cap(tabs, at(Arrows, Surface::Sidebar), &a), Some(format!("{alt}+\u{2190}\u{2192}")));
+        assert_eq!(cap(tabs.clone(), at(Arrows, Surface::Sidebar), &a), Some(format!("{alt}+\u{2190}\u{2192}")));
+        assert_eq!(cap(tabs.clone(), at(Vim, Surface::Sidebar), &v).as_deref(), Some("gT/gt"), "plan M4a: the rows");
+        assert_eq!(cap(tabs, live, &v), None, "vim's keymap binds no alt+\u{2190}/\u{2192}: the chip drops in a field");
         let del = Key::Of(Action::OnSelection(crate::action::Verb::Delete { count: 1 }));
         assert_eq!(cap(del.clone(), at(Arrows, Surface::Sidebar), &a).as_deref(), Some("d"));
         assert_eq!(cap(del.clone(), at(Vim, Surface::Sidebar), &v).as_deref(), Some("dd"));

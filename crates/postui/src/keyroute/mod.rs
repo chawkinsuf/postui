@@ -7,13 +7,14 @@ pub mod engine_glue;
 #[cfg(test)]
 pub mod keylist;
 pub mod notation;
+pub mod panes;
 pub mod pending;
 pub mod spell;
 pub mod table;
 
 pub use ctx::{EngineKind, EngineView, FieldCaret, FieldId, KeyCtx, SpellCtx, Surface};
 
-use crate::action::Action;
+use crate::action::{Action, TabTo};
 use crate::config::KeyProfile;
 use notation::Tok;
 use pending::Pending;
@@ -189,7 +190,6 @@ impl Router {
                 let count = self.pending.count();
                 self.pending.clear();
                 match b.intent {
-                    Intent::Pass => Resolved::Declined,
                     Intent::Swallow => Resolved::Consumed,
                     _ => Resolved::Run(expand(b, count, ctx.cap)),
                 }
@@ -292,8 +292,23 @@ pub(crate) fn expand(b: &table::Binding, count: Option<usize>, cap: usize) -> Ve
             Step::OpenAs(seat.map_or(engine_glue::OpenAs::Normal, engine_glue::OpenAs::Insert)),
             Step::Action(Action::ReopenField),
         ],
+        // Spec §5.8 (plan M4a Deviations 7 and 8).
+        // A refused key, or one onto the tab already showing, leaves the
+        // field open, so the close rides in the action, which runs it only
+        // when there is a tab to go to (the user's decision, amendment C1).
+        Intent::Tab { delta, leave } => {
+            let to = match count {
+                Some(n) if delta > 0 => TabTo::Nth(n),
+                Some(n) => TabTo::By(-i64::try_from(n).unwrap_or(i64::MAX)),
+                None => TabTo::By(i64::from(delta)),
+            };
+            vec![Step::Action(Action::GoTab { to, leave })]
+        }
+        // As `{N}gt`: a refused move leaves the field open, so the close
+        // rides in the action, which runs it only when there is a pane to
+        // move to (the user's decision, 2026-10-05).
+        Intent::Pane { dir, leave } => vec![Step::Action(Action::PaneMove { dir, leave })],
         Intent::Swallow => Vec::new(),
-        Intent::Pass => unreachable!("Pass is declined before expand"),
     }
 }
 
@@ -466,6 +481,95 @@ mod tests {
         assert_eq!(feed(&mut Router::default(), &s, "G"), run(vec![key(KeyCode::End)]));
     }
 
+    /// Spec §5.7: the response's fold keys.
+    #[test]
+    fn the_response_folds() {
+        use crate::action::FoldOp;
+        let resp = cx(Vim, Surface::Response(crate::components::response::ViewMode::Pretty));
+        assert_eq!(feed(&mut Router::default(), &resp, "zc"), run(vec![Step::Action(Action::TreeFold(FoldOp::Close))]));
+        assert_eq!(feed(&mut Router::default(), &resp, "3za"), run(vec![Step::Action(Action::TreeFold(FoldOp::Toggle))]), "a count is ignored");
+        assert_eq!(feed(&mut Router::default(), &cx(Arrows, resp.surface), "z"), Resolved::Declined, "arrows has no fold keys");
+    }
+
+    /// Spec §5.8 (plan M4a Deviations 7 and 8): `gt` and `gT` step the strip;
+    /// `{N}gt` selects tab N; `{N}gT` steps back N. The app lands the caret.
+    #[test]
+    fn tab_keys_on_a_closed_surface() {
+        let s = cx(Vim, Surface::Sidebar);
+        let step = |d: i64| run(vec![Step::Action(Action::GoTab { to: TabTo::By(d), leave: false })]);
+        let select = |n: usize| run(vec![Step::Action(Action::GoTab { to: TabTo::Nth(n), leave: false })]);
+        assert_eq!(feed(&mut Router::default(), &s, "gt"), step(1));
+        assert_eq!(feed(&mut Router::default(), &s, "gT"), step(-1));
+        assert_eq!(feed(&mut Router::default(), &s, "3gt"), select(3));
+        assert_eq!(feed(&mut Router::default(), &s, "1gt"), select(1));
+        assert_eq!(feed(&mut Router::default(), &s, "2gT"), step(-2));
+        assert_eq!(feed(&mut Router::default(), &s, "14gT"), step(-14), "the strip wraps it");
+        assert_eq!(feed(&mut Router::default(), &cx(Arrows, Surface::Sidebar), "g"), Resolved::Declined);
+    }
+
+    /// Spec §3.7's field rows (plan M4a Deviation 2): in a screen field's idle
+    /// Normal the tab keys close the field first; `g` + anything else replays.
+    /// The close rides in the action, which closes the field only when there
+    /// is a tab to go to (amendment C1, the user's decision).
+    #[test]
+    fn tab_keys_in_a_screen_field() {
+        let s = in_url(Mode::Normal, false);
+        let go = |to| run(vec![Step::Action(Action::GoTab { to, leave: true })]);
+        assert_eq!(feed(&mut Router::default(), &s, "gt"), go(TabTo::By(1)), "no unconditional close");
+        assert_eq!(feed(&mut Router::default(), &s, "2gT"), go(TabTo::By(-2)));
+        assert_eq!(feed(&mut Router::default(), &s, "2gt"), go(TabTo::Nth(2)));
+        assert_eq!(feed(&mut Router::default(), &s, "gg"), run(eng("gg")), "gg is the engine's");
+        assert_eq!(feed(&mut Router::default(), &s, "3ge"), run(eng("3ge")));
+        let mut r = Router::default();
+        assert_eq!(feed(&mut r, &s, "g"), Resolved::Consumed);
+        assert_eq!(r.echo(), "g");
+        let prompt = KeyCtx {
+            field: FieldCaret::Live(FieldId::ModalInput(0)),
+            engine: Some(EngineView { mode: Mode::Normal, pending: false }),
+            ..cx(Vim, Surface::Prompt)
+        };
+        assert_eq!(feed(&mut Router::default(), &prompt, "g"), run(eng("g")), "a dialog field's g is the engine's");
+    }
+
+    /// Spec §5.8 (plan M4a Deviations 3 and 4): the window keys, their ctrl
+    /// spellings, a dropped count, and junk after `<C-w>`.
+    #[test]
+    fn window_keys_on_a_closed_surface() {
+        use crate::action::PaneDir;
+        let s = cx(Vim, Surface::Sidebar);
+        let mv = |dir| run(vec![Step::Action(Action::PaneMove { dir, leave: false })]);
+        assert_eq!(feed(&mut Router::default(), &s, "<C-w>l"), mv(PaneDir::Right));
+        assert_eq!(feed(&mut Router::default(), &s, "<C-w><C-l>"), mv(PaneDir::Right));
+        assert_eq!(feed(&mut Router::default(), &s, "<C-w>W"), mv(PaneDir::Prev));
+        assert_eq!(feed(&mut Router::default(), &s, "<C-w><C-w>"), mv(PaneDir::Next));
+        assert_eq!(feed(&mut Router::default(), &s, "<C-w>p"), mv(PaneDir::Last));
+        assert_eq!(feed(&mut Router::default(), &s, "3<C-w>j"), mv(PaneDir::Down), "the count is dropped");
+        let mut r = Router::default();
+        assert_eq!(feed(&mut r, &s, "<C-w>"), Resolved::Consumed);
+        assert_eq!(r.echo(), "^W");
+        assert_eq!(feed(&mut r, &s, "x"), Resolved::Consumed, "junk is swallowed");
+        assert_eq!(feed(&mut r, &s, "j"), run(vec![key(KeyCode::Down)]), "and the next key is fresh");
+        assert_eq!(feed(&mut Router::default(), &cx(Arrows, Surface::Sidebar), "<C-w>"), Resolved::Declined);
+    }
+
+    /// Spec §3.7 and §5.8 (plan M4a Deviations 2 and 4): from a screen
+    /// field's idle Normal the move carries the close, which the app runs
+    /// only when there is a pane to move to (the user's decision,
+    /// 2026-10-05); junk is swallowed; in Insert ctrl+w is the engine's.
+    #[test]
+    fn window_keys_in_a_screen_field() {
+        use crate::action::PaneDir;
+        let s = in_url(Mode::Normal, false);
+        assert_eq!(
+            feed(&mut Router::default(), &s, "<C-w>j"),
+            run(vec![Step::Action(Action::PaneMove { dir: PaneDir::Down, leave: true })]),
+            "no unconditional close: a refused move leaves the field open"
+        );
+        assert_eq!(feed(&mut Router::default(), &s, "<C-w>x"), Resolved::Consumed);
+        let insert = in_url(Mode::Insert, false);
+        assert_eq!(feed(&mut Router::default(), &insert, "<C-w>"), run(eng("<C-w>")), "Insert deletes a word");
+    }
+
     /// Plan M3a Deviation 9: the prefix keys never reach the engine.
     #[test]
     fn the_prefix_keys_are_notes_or_swallowed() {
@@ -523,7 +627,7 @@ mod tests {
     #[test]
     fn unknown_after_a_field_prefix_never_leaks() {
         let s = in_url(Mode::Normal, false);
-        for prefix in ["q", "@", "m", "'", "`", "Z"] {
+        for prefix in ["q", "@", "m", "'", "`", "Z", "g", "<C-w>"] {
             for c in (b'!'..=b'~').map(char::from) {
                 let mut r = Router::default();
                 feed(&mut r, &s, prefix);
@@ -818,15 +922,31 @@ mod tests {
         assert_eq!(feed(&mut Router::default(), &cx(Vim, Surface::Picker), "u"), Resolved::Declined, "a picker types it");
     }
 
+    /// Spec §4.5 (plan M4a Deviation 11): the response's letters are rows in
+    /// both profiles; a vim count on them is ignored. The lists' `/` is a note.
     #[test]
-    fn notes_and_passes() {
+    fn the_response_letters_are_rows() {
+        use crate::components::response::ViewMode;
         assert_eq!(
             feed(&mut Router::default(), &cx(Vim, Surface::Sidebar), "/"),
             run(vec![Step::Action(Action::ShowToast("No search in this list yet".into(), ToastKind::Info))])
         );
-        let resp = cx(Vim, Surface::Response(crate::components::response::ViewMode::Pretty));
-        assert_eq!(feed(&mut Router::default(), &resp, "/"), Resolved::Declined);
-        assert_eq!(feed(&mut Router::default(), &resp, "3n"), Resolved::Declined);
+        let search = run(vec![Step::Action(Action::OpenResponseSearch)]);
+        let next = run(vec![Step::Action(Action::StepResponseSearch(1))]);
+        let prev = run(vec![Step::Action(Action::StepResponseSearch(-1))]);
+        for profile in [Vim, Arrows] {
+            let resp = cx(profile, Surface::Response(ViewMode::Pretty));
+            assert_eq!(feed(&mut Router::default(), &resp, "/"), search, "{profile:?}");
+            assert_eq!(feed(&mut Router::default(), &resp, "n"), next, "{profile:?}");
+            assert_eq!(feed(&mut Router::default(), &resp, "N"), prev, "{profile:?}");
+        }
+        let resp = cx(Vim, Surface::Response(ViewMode::Headers));
+        assert_eq!(feed(&mut Router::default(), &resp, "3n"), next, "the count is ignored");
+        assert_eq!(feed(&mut Router::default(), &resp, "c"), Resolved::Consumed, "vim's c waits for M5's yy");
+        assert_eq!(
+            feed(&mut Router::default(), &cx(Arrows, Surface::Response(ViewMode::Headers)), "c"),
+            run(vec![Step::Action(Action::CopyResponseHeader)])
+        );
     }
 
     /// Review Focus 4.

@@ -7,7 +7,7 @@
 use super::ctx::Surface;
 use super::engine_glue::OpenSeat;
 use super::notation::{self, Tok};
-use crate::action::{Action, Verb};
+use crate::action::{Action, PaneDir, Verb};
 use crate::config::KeyProfile;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::sync::OnceLock;
@@ -68,9 +68,15 @@ pub enum Intent {
     /// Reopen a dialog's selected text field (plan M3b Deviation 3): in
     /// Insert at this seat, or in Normal (`None`).
     Reopen(Option<OpenSeat>),
-    /// The key goes on as typed: the surface's own arm already does what
-    /// the vim key means (plan M1 Deviation 8).
-    Pass,
+    /// `gt` (`delta` 1) and `gT` (-1) (spec §5.8), as `GoTab`: no count
+    /// steps the strip; `{N}gt` goes to tab N; `{N}gT` steps back N enabled
+    /// tabs, wrapping. A tab it selects lands the caret
+    /// (`App::land_editor_caret`). `leave`: typed in an open field, which
+    /// closes first, only when there is a tab to go to.
+    Tab { delta: i8, leave: bool },
+    /// A window key (spec §5.8): `PaneMove`. `leave`: typed in an open
+    /// field, which closes first, but only when there is a pane to move to.
+    Pane { dir: PaneDir, leave: bool },
 }
 
 /// How a count applies (spec §3.5).
@@ -139,6 +145,11 @@ impl Surfaces {
     /// A query box (spec §3.7 item 2): always Insert, so no field row ever
     /// applies; the class only keeps `FIELD_LINE`'s rows away.
     pub const FIELD_QUERY: Self = Self(1 << 20);
+    /// A screen field (plan M4a Deviation 2): the URL line, a table cell,
+    /// the body, the Variables form and grid, the Settings field. The pane
+    /// and tab rows apply in their idle Normal; never in a dialog's field,
+    /// which keeps `g` and `ctrl+w` for the engine.
+    pub const FIELD_SCREEN: Self = Self(1 << 21);
 
     /// Every surface whose rows or controls the keyboard walks: vim's
     /// motions bind here, and in vim a bare char with no row is
@@ -231,14 +242,15 @@ impl Surfaces {
 }
 
 /// The field class the router checks in idle Normal and after a key the
-/// engine hands back (spec §3.7; plan M3b).
+/// engine hands back (spec §3.7; plans M3b and M4a).
 pub fn field_class(id: super::ctx::FieldId, surface: Surface) -> Surfaces {
     use super::ctx::FieldId;
     match id {
         _ if id.insert_only() => Surfaces::FIELD_QUERY,
-        FieldId::Body => Surfaces::FIELD_BODY,
+        FieldId::Body => Surfaces::FIELD_BODY.or(Surfaces::FIELD_SCREEN),
         FieldId::ModalInput(_) if surface == Surface::Prompt => Surfaces::FIELD_LINE.or(Surfaces::FIELD_PROMPT),
-        _ => Surfaces::FIELD_LINE,
+        FieldId::ModalInput(_) => Surfaces::FIELD_LINE,
+        _ => Surfaces::FIELD_LINE.or(Surfaces::FIELD_SCREEN),
     }
 }
 
@@ -272,6 +284,12 @@ const fn arrows(keys: &'static str, on: Surfaces, intent: Intent) -> Binding {
 /// key in both profiles); a vim count is ignored.
 const fn both(keys: &'static str, on: Surfaces, intent: Intent) -> Binding {
     Binding { keys, profile: Profiles::BOTH, on, intent, count: CountRule::Ignore }
+}
+
+/// A vim window row: `<C-w>` and a target (spec §5.8), on a closed surface
+/// or from a screen field's idle Normal; a count is dropped.
+const fn pane(keys: &'static str, on: Surfaces, dir: PaneDir, leave: bool) -> Binding {
+    row(keys, on, Intent::Pane { dir, leave }, CountRule::Ignore)
 }
 
 pub const NO_COUNTED_DELETE: &str = "Counted delete works on requests and table rows";
@@ -311,6 +329,34 @@ fn cancel_top() -> Action {
     Action::CancelTopModal
 }
 
+fn fold_open() -> Action {
+    Action::TreeFold(crate::action::FoldOp::Open)
+}
+
+fn fold_close() -> Action {
+    Action::TreeFold(crate::action::FoldOp::Close)
+}
+
+fn fold_toggle() -> Action {
+    Action::TreeFold(crate::action::FoldOp::Toggle)
+}
+
+fn response_search() -> Action {
+    Action::OpenResponseSearch
+}
+
+fn next_match() -> Action {
+    Action::StepResponseSearch(1)
+}
+
+fn prev_match() -> Action {
+    Action::StepResponseSearch(-1)
+}
+
+fn copy_header() -> Action {
+    Action::CopyResponseHeader
+}
+
 /// Every row. Order does not matter: no complete row is a prefix of
 /// another on a shared surface (`no_two_rows_collide`).
 pub static TABLE: &[Binding] = &[
@@ -335,6 +381,46 @@ pub static TABLE: &[Binding] = &[
     ),
     row("0", Surfaces::RESPONSE, Intent::Key(HOME), CountRule::Ignore),
     row("$", Surfaces::RESPONSE, Intent::Key(Named::key(KeyCode::End)), CountRule::Ignore),
+    // Key list §7 (`R.fold`): the tree's folds. Nothing on Raw or Headers.
+    row("zo", Surfaces::RESPONSE, Intent::Act(fold_open), CountRule::Ignore),
+    row("zc", Surfaces::RESPONSE, Intent::Act(fold_close), CountRule::Ignore),
+    row("za", Surfaces::RESPONSE, Intent::Act(fold_toggle), CountRule::Ignore),
+    // Key list §8 (`P.gt`), spec §5.8: every tab strip, on a closed
+    // surface or from a screen field's idle Normal (§3.7).
+    row("gt", Surfaces::NAV, Intent::Tab { delta: 1, leave: false }, CountRule::Pass),
+    row("gT", Surfaces::NAV, Intent::Tab { delta: -1, leave: false }, CountRule::Pass),
+    row("gt", Surfaces::FIELD_SCREEN, Intent::Tab { delta: 1, leave: true }, CountRule::Pass),
+    row("gT", Surfaces::FIELD_SCREEN, Intent::Tab { delta: -1, leave: true }, CountRule::Pass),
+    // Key list §8 (`P.ctrlw`), spec §5.8: the window keys, with Vim's ctrl
+    // spellings of the targets (plan M4a Deviation 3). In a screen field a
+    // non-target is swallowed, never replayed as an edit (Deviation 4).
+    pane("<C-w>h", Surfaces::NAV, PaneDir::Left, false),
+    pane("<C-w>j", Surfaces::NAV, PaneDir::Down, false),
+    pane("<C-w>k", Surfaces::NAV, PaneDir::Up, false),
+    pane("<C-w>l", Surfaces::NAV, PaneDir::Right, false),
+    pane("<C-w>w", Surfaces::NAV, PaneDir::Next, false),
+    pane("<C-w>W", Surfaces::NAV, PaneDir::Prev, false),
+    pane("<C-w>p", Surfaces::NAV, PaneDir::Last, false),
+    pane("<C-w><C-h>", Surfaces::NAV, PaneDir::Left, false),
+    pane("<C-w><C-j>", Surfaces::NAV, PaneDir::Down, false),
+    pane("<C-w><C-k>", Surfaces::NAV, PaneDir::Up, false),
+    pane("<C-w><C-l>", Surfaces::NAV, PaneDir::Right, false),
+    pane("<C-w><C-w>", Surfaces::NAV, PaneDir::Next, false),
+    pane("<C-w><C-p>", Surfaces::NAV, PaneDir::Last, false),
+    pane("<C-w>h", Surfaces::FIELD_SCREEN, PaneDir::Left, true),
+    pane("<C-w>j", Surfaces::FIELD_SCREEN, PaneDir::Down, true),
+    pane("<C-w>k", Surfaces::FIELD_SCREEN, PaneDir::Up, true),
+    pane("<C-w>l", Surfaces::FIELD_SCREEN, PaneDir::Right, true),
+    pane("<C-w>w", Surfaces::FIELD_SCREEN, PaneDir::Next, true),
+    pane("<C-w>W", Surfaces::FIELD_SCREEN, PaneDir::Prev, true),
+    pane("<C-w>p", Surfaces::FIELD_SCREEN, PaneDir::Last, true),
+    pane("<C-w><C-h>", Surfaces::FIELD_SCREEN, PaneDir::Left, true),
+    pane("<C-w><C-j>", Surfaces::FIELD_SCREEN, PaneDir::Down, true),
+    pane("<C-w><C-k>", Surfaces::FIELD_SCREEN, PaneDir::Up, true),
+    pane("<C-w><C-l>", Surfaces::FIELD_SCREEN, PaneDir::Right, true),
+    pane("<C-w><C-w>", Surfaces::FIELD_SCREEN, PaneDir::Next, true),
+    pane("<C-w><C-p>", Surfaces::FIELD_SCREEN, PaneDir::Last, true),
+    row("<C-w><any>", Surfaces::FIELD_SCREEN, Intent::Swallow, CountRule::Ignore),
     // Key list §6: opening.
     row("o", Surfaces::OPENS_ROW, Intent::Key(Named::key(KeyCode::Enter)), CountRule::Ignore),
     row("i", Surfaces::OPENS_FIELD, Intent::Open { key: ENTER, seat: OpenSeat::Keep }, CountRule::Ignore),
@@ -342,10 +428,12 @@ pub static TABLE: &[Binding] = &[
     row("a", Surfaces::URL_LINE, Intent::Open { key: ENTER, seat: OpenSeat::After }, CountRule::Ignore),
     row("I", Surfaces::URL_LINE, Intent::Open { key: ENTER, seat: OpenSeat::FirstNonBlank }, CountRule::Ignore),
     row("A", Surfaces::URL_LINE, Intent::Open { key: ENTER, seat: OpenSeat::End }, CountRule::Ignore),
-    // Key list §7: the response's own search keys go on as typed.
-    row("/", Surfaces::RESPONSE, Intent::Pass, CountRule::Ignore),
-    row("n", Surfaces::RESPONSE, Intent::Pass, CountRule::Ignore),
-    row("N", Surfaces::RESPONSE, Intent::Pass, CountRule::Ignore),
+    // Key list §7 and spec §4.5 (plan M4a Deviation 11): the response's
+    // letters, the same in both profiles; arrows' `c` copies a header.
+    both("/", Surfaces::RESPONSE, Intent::Act(response_search)),
+    both("n", Surfaces::RESPONSE, Intent::Act(next_match)),
+    both("N", Surfaces::RESPONSE, Intent::Act(prev_match)),
+    arrows("c", Surfaces::RESPONSE, Intent::Act(copy_header)),
     // Key list §6, Out (parked by the user): a list has no search yet.
     row("/", Surfaces::SEARCHLESS, Intent::Note("No search in this list yet"), CountRule::Ignore),
     // Key list §6 and §9: the app's undo, redo and command palette.
@@ -460,7 +548,8 @@ pub fn lookup(buf: &[Tok], profile: KeyProfile, surface: Surface) -> Match {
 }
 
 /// [`lookup`] on a set of surface kinds: a `Surface`'s, or a field class
-/// (`FIELD_LINE`, `FIELD_BODY`, `FIELD_PROMPT`, `FIELD_QUERY`) that no
+/// (`FIELD_LINE`, `FIELD_BODY`, `FIELD_PROMPT`, `FIELD_QUERY`,
+/// `FIELD_SCREEN`) that no
 /// `Surface` names.
 pub fn lookup_class(buf: &[Tok], profile: KeyProfile, class: Surfaces) -> Match {
     let rows = TABLE
@@ -513,6 +602,7 @@ pub fn keys_for(profile: KeyProfile, surface: Surface, action: &Action) -> Optio
                 && match b.intent {
                     Intent::Act(f) => f() == *action,
                     Intent::Verb(v) => matches!(action, Action::OnSelection(w) if w.kind() == v.kind()),
+                    Intent::Tab { delta, leave: false } => *action == Action::CycleTabs(delta),
                     _ => false,
                 }
         })
@@ -584,7 +674,7 @@ mod tests {
         assert!(matches!(class_match("ZZ", line), Match::Complete(b) if matches!(b.intent, Intent::Swallow)));
         assert!(matches!(class_match(":", body), Match::Complete(b) if matches!(b.intent, Intent::Act(_))));
         assert!(matches!(class_match("x", line), Match::NoMatch), "the engine's");
-        assert!(matches!(class_match("g", line), Match::NoMatch), "gt is M4's; g goes to the engine");
+        assert!(matches!(class_match("g", line), Match::NoMatch), "a dialog field's g is the engine's");
     }
 
     /// Plan M3a Deviation 10: a specific row beats an `<any>` row of the
@@ -628,8 +718,10 @@ mod tests {
     #[test]
     fn field_classes() {
         use crate::keyroute::FieldId;
-        assert_eq!(field_class(FieldId::Url, Surface::UrlLine), Surfaces::FIELD_LINE);
-        assert_eq!(field_class(FieldId::Body, Surface::Body), Surfaces::FIELD_BODY);
+        let screen_line = Surfaces::FIELD_LINE.or(Surfaces::FIELD_SCREEN);
+        assert_eq!(field_class(FieldId::Url, Surface::UrlLine), screen_line);
+        assert_eq!(field_class(FieldId::TableCell { row: 0, col: 1 }, Surface::Table(crate::components::editor::EditorTab::Headers)), screen_line);
+        assert_eq!(field_class(FieldId::Body, Surface::Body), Surfaces::FIELD_BODY.or(Surfaces::FIELD_SCREEN));
         assert_eq!(field_class(FieldId::ModalInput(0), Surface::Prompt), Surfaces::FIELD_LINE.or(Surfaces::FIELD_PROMPT));
         assert_eq!(field_class(FieldId::ModalInput(1), Surface::Form), Surfaces::FIELD_LINE);
         for id in [FieldId::Palette, FieldId::Jq, FieldId::Search, FieldId::FilePicker] {
@@ -653,6 +745,8 @@ mod tests {
                 ("FIELD_BODY".to_string(), Surfaces::FIELD_BODY),
                 ("FIELD_PROMPT".to_string(), Surfaces::FIELD_LINE.or(Surfaces::FIELD_PROMPT)),
                 ("FIELD_QUERY".to_string(), Surfaces::FIELD_QUERY),
+                ("FIELD_SCREEN_LINE".to_string(), Surfaces::FIELD_LINE.or(Surfaces::FIELD_SCREEN)),
+                ("FIELD_SCREEN_BODY".to_string(), Surfaces::FIELD_BODY.or(Surfaces::FIELD_SCREEN)),
             ]);
         for profile in [KeyProfile::Arrows, KeyProfile::Vim] {
             for (name, class) in classes.clone() {
@@ -685,12 +779,13 @@ mod tests {
             if edge {
                 assert_eq!(b.count, CountRule::Pass, "{}: an Edge row reads its count", b.keys);
             }
+            let tab = matches!(b.intent, Intent::Tab { .. });
             if b.count == CountRule::Pass {
-                assert!(edge || counted_verb, "{}: Pass is for Edge rows, dd and p", b.keys);
+                assert!(edge || counted_verb || tab, "{}: Pass is for Edge rows, dd, p and the tab keys", b.keys);
             }
             if matches!(
                 b.intent,
-                Intent::Pass | Intent::Note(_) | Intent::Swallow | Intent::Open { .. } | Intent::Reopen(_)
+                Intent::Note(_) | Intent::Swallow | Intent::Open { .. } | Intent::Reopen(_) | Intent::Pane { .. }
             ) {
                 assert_eq!(b.count, CountRule::Ignore, "{}", b.keys);
             }
@@ -712,6 +807,9 @@ mod tests {
         assert_eq!(keys_for(Vim, Surface::VarGrid, &Action::OnSelection(Verb::Yank)), Some("yy"));
         assert_eq!(keys_for(Arrows, Surface::VarGrid, &Action::OnSelection(Verb::Yank)), Some("c"));
         assert_eq!(keys_for(Vim, Surface::VarForm, &Action::OnSelection(Verb::Reveal)), None, "M4's :reveal");
+        assert_eq!(keys_for(Vim, Surface::Sidebar, &Action::CycleTabs(1)), Some("gt"));
+        assert_eq!(keys_for(Vim, Surface::Sidebar, &Action::CycleTabs(-1)), Some("gT"));
+        assert_eq!(keys_for(Arrows, Surface::Sidebar, &Action::CycleTabs(1)), None, "arrows' tab keys are the keymap's");
         assert!(vim_first_chars().contains(&'d') && vim_first_chars().contains(&'y'));
     }
 

@@ -631,6 +631,8 @@ only"), so `table::takes_count` is derived from the table's `Repeat` and
 `Pass` rows on `Surfaces::NAV`. Elsewhere a digit goes on as it does today.
 A `0` with no count started is a key, not a count.
 
+A list's keys act only on the chord they name (plan 2026-10-05-vim-profile-m4a-consolidation, `mine`): a named key bare (`↓`, `Enter`, `Home`), or a chord spelled exactly (`alt+↑` moves the row, `ctrl+d` pages, `ctrl+Home`/`ctrl+End` jump to the first or last row, which is also cmd+↑/↓ on macOS, `you`, 2026-10-07). A chord no keymap binds and no list names (`shift+↓`, `alt+shift+→`, `ctrl+→`) does nothing, in both profiles, rather than act as the bare key. A generated test sends every such chord to every surface (`app/key_invariant_tests.rs`). On the response, whose bare `Home`/`End` scroll sideways, `ctrl+Home`/`ctrl+End` are its document jumps. The response pane also names `shift+↑/↓` (line-wise selection) on purpose and keeps them (`you`, 2026-10-07); the generated test exempts those two chords on the response only.
+
 ### 5.2 Sidebar
 
 | Keys (vim) | Arrows | Behaviour | Who |
@@ -716,6 +718,8 @@ ctrl+End here, because the response's bare Home/End scroll sideways
 | `yy` | 2 | copy the line (Raw), the node's value (Pretty) or the header value (Headers), with the same toast as `c`. Arrows keeps `c` | mine |
 | `V` then `j`/`k`, `y` | 2 | line selection (main's `select_line_extend`), then `y` copies and clears it. `v` shows the note "Only line selection (V) here" | mine |
 
+Amended by plan M4a: `ctrl+d`/`ctrl+u` move the view and the cursor by the same half page, and where the view cannot scroll further the cursor still moves, clamped to the first or last line; a view already past the end (the pane grew, or a fold shrank what shows) never scrolls back up on `ctrl+d` (`mine`). A fold is the container the line opens, or else the one it sits in, so `zc` or `za` on a value closes the object around it and puts the cursor on its opening line, as Vim does (`mine`). `/`, `n` and `N` are table rows in both profiles, their count ignored, and arrows' `c` is a row too: the response component keeps named keys only (§4.5; `mine` where the spec is silent).
+
 ### 5.8 Panes and tabs
 
 | Keys (vim) | Arrows | Behaviour | Who |
@@ -729,6 +733,22 @@ ctrl+End here, because the response's bare Home/End scroll sideways
 | `{N}gt` | — | `SelectTab(N)`; a disabled or out-of-range tab does nothing | earlier |
 | `{N}gT` | — | back N tabs (Repeat) | mine |
 | after a keyboard tab move with the editor focused | — | `FocusEditorContent`: the caret lands in the new tab's content, so `gt a` adds a row. Focus never moves panes | earlier (2026-09-21/22) |
+
+Amended by plan M4a (all `mine`): the window and tab rows apply on navigation surfaces and in a screen field's idle Normal (the URL line, a cell, the body, the Variables form and grid, the Settings field), never in a dialog's field or a query box. Vim's ctrl spellings of the targets (`<C-w><C-w>`, `<C-w><C-h>`, …) work too. In a screen field, `<C-w>` and a non-target are swallowed. On the Manage screens, `l` and `h` move between the list and the detail pane, `w` `W` `p` go to the other half, and Settings has one pane. Pane memory is learned at the start of each key or mouse event, so a click's focus change counts, even two clicks in a row. `{N}gT` steps back N enabled tabs, wrapping, and the editor's cycle steps over the enabled tabs only. A tab step that lands on the tab already showing (`1gt` on tab 1, `12gT`) changes nothing: the table keeps its row, and the body keeps its session and its engine history. Arrows' `alt+←/→` keep the caret where it is; vim's keymap no longer binds them, and in vim they do nothing (below).
+
+A refused `{N}gt` (a disabled or out-of-range tab) changes nothing, and typed in an open field it leaves the field open with the caret where it was (`you`, 2026-10-04, accepting my recommendation). In vim, `alt+←/→` do nothing on the main and Manage screens: they no longer reach the focused list as plain arrows (`you`, 2026-10-05, accepting my recommendation). A refused `<C-w>` direction (no pane there) typed in an open field leaves the field open with the caret where it was; a move closes the field first (`you`, 2026-10-05, accepting my recommendation).
+
+After the M4a code review (all `mine`, following the rulings above): a tab step onto the tab already showing, typed in an open field, leaves the field open too, and with the URL line selected it leaves the caret there; only a key that changes the tab lands the caret. A field that refuses to close (a Settings value that will not parse, a variable edit whose commit fails) keeps the keyboard: the window or tab key does nothing else, so a live edit is never stranded behind another pane or tab. One resolver (`App::tab_target`, the `GoTab` action that replaced `SelectTab`) serves every tab key and arrows' `CycleTabs`, so all of them see the same strip.
+
+After the second M4a code review (all `mine`): on the Manage screen arrows' `alt+←/→` close the tab's field first, as a click on the strip commits it, and a refused close keeps the tab; on the main screen they still keep the caret where it is. A Variables edit left live behind another Manage tab is not that tab's open field (`CloseField`, paste and undo do not reach it). `zc` on a fold already closed closes the one around it, as Vim does, so `zczc` climbs.
+
+**The order every window and tab key follows** (consolidated after the M4a reviews; plan 2026-10-05-vim-profile-m4a-consolidation, `mine`; it restates the rulings above, it does not change them):
+
+1. Where the key goes is settled first. A pane that is not there, a tab that is missing or disabled, or the tab already showing: the key does nothing, and a field it was typed in stays open, caret and all.
+2. Then the field it leaves closes, for a key that leaves one (a field row's `<C-w>` and `gt`; arrows' `alt+←/→` on the Manage screen only). A field that refuses to close keeps the keyboard, and the key does nothing else.
+3. Then it moves. Only a vim tab key that changed the tab lands the editor caret.
+
+Every `<C-w>` key, `gt`/`gT`/`{N}gt` and arrows' `alt+←/→` take this path (`App::leave_then_go`). After any of them, no edit is live anywhere but in the field with the caret, and the footer's echo is empty. A generated test runs every window and tab input from every start state in both profiles against these rules (`app/key_invariant_tests.rs`).
 
 ### 5.9 The `:` command line
 
@@ -1098,6 +1118,8 @@ milestone.
   - The ex table, the unsupported rows, `WriteQuit`, `ZZ`/`ZQ`, the
     macro, mark and register notes, and the recording flag.
   - Response tier 1: the ctrl+d/ctrl+u fix, `zo` `zc` `za`, `/` `n` `N`.
+  - **Split** (`you`, 2026-10-04, accepting my recommendation) into M4a (panes, tabs, the response's tier 1 and its letter rows, `alt+←/→` out of the vim keymap) and M4b (the `:` command line and the ex table, `ZZ`/`ZQ`, the notes and the recording flag, the Manage screens' `q`, `VIM_UNTIL_M4`, the spelling pass, and `ctrl+s`/`alt+w`/`shift+alt+w` out of the vim keymap).
+  - **Shipped (M4a)** by plan 2026-10-04-vim-profile-m4a. Decided by you (`you`, 2026-10-04, accepting my recommendation): a refused `{N}gt` in an open field leaves the field open. Decided by you (`you`, 2026-10-05, accepting my recommendation): in vim, `alt+←/→` do nothing on the main and Manage screens; a refused `<C-w>` direction in an open field leaves the field open. Decided by me, open for your review (`mine`): the plan's Deviations 2–14, recorded in §5.7 and §5.8 above. Key-list milestones are an enum with `M4a` and `M4b`. After five code-review rounds, plan 2026-10-05-vim-profile-m4a-consolidation replaced the case-by-case fixes with structure (all `mine`): generated invariants over every window/tab input and every unbound list chord; `screen_field` as the one owner of "which field is open"; one `leave_then_go` path for `PaneMove`, `GoTab` and `CycleTabs`; list arms that take only the chord they name. Step 2b removed.
 - **M5: tier 2 and acceptance.**
   - `.`; sidebar folds; `zR` `zM` `zz` `zt` `zb`; `ctrl+f` `ctrl+b` in
     the response; `*` `#`; `yy` and `V`+`y` in the response.

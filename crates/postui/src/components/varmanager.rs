@@ -761,6 +761,54 @@ fn is_unresolved(ctx: &Project, name: &str) -> bool {
 }
 
 impl VarManager {
+    /// The keyboard from the left list into the detail pane: the grid when
+    /// it shows a selector it can edit, the form when it shows a variable.
+    /// The list's Right and Tab, and vim's `<C-w>l` (piece 4 spec §5.8).
+    /// Whether it moved; never while an edit is live.
+    pub(crate) fn enter_detail(&mut self, ctx: &Project) -> bool {
+        if self.form.editing.is_some() || self.grid.editing.is_some() {
+            return false;
+        }
+        match self.detail_focus(ctx) {
+            Some(focus) => {
+                self.focus = focus;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Whether the detail pane has something for the keyboard: a
+    /// variable's form, or a selector's grid with an env to edit it in (or
+    /// one that is shared). A live edit aside, what [`Self::enter_detail`]
+    /// asks.
+    pub(crate) fn detail_takes_keyboard(&self, ctx: &Project) -> bool {
+        self.detail_focus(ctx).is_some()
+    }
+
+    fn detail_focus(&self, ctx: &Project) -> Option<VmFocus> {
+        match &self.detail {
+            VmDetail::Group(g)
+                if ctx.variables().selectors.contains_key(g) && (ctx.active_env().is_some() || is_shared(ctx, g)) =>
+            {
+                Some(VmFocus::Grid)
+            }
+            VmDetail::Var(_) => Some(VmFocus::Form),
+            _ => None,
+        }
+    }
+
+    /// The keyboard back to the left list from the grid or the form: vim's
+    /// `<C-w>h` (piece 4 spec §5.8). Whether it moved; never while an edit
+    /// is live.
+    pub(crate) fn leave_detail(&mut self) -> bool {
+        if self.form.editing.is_some() || self.grid.editing.is_some() || self.focus == VmFocus::List {
+            return false;
+        }
+        self.focus = VmFocus::List;
+        true
+    }
+
     /// Points the detail pane at `left_rows[i]` and moves the cursor there.
     /// A section header is a label, not a selection: the cursor still moves
     /// (a click landed there) but the detail pane keeps what it had.
@@ -1041,29 +1089,40 @@ impl VarManager {
             .unwrap_or(0);
         self.form_cursor = fields[at];
         // Vim's motion letters reach these arms as the named keys: the
-        // router replays them (piece 4 spec §4.5).
+        // router replays them (piece 4 spec §4.5). A named key acts bare
+        // only; any other chord does nothing (piece 4 spec §5.1). Esc and
+        // BackTab stay unguarded: a terminal sends shift+Tab as BackTab
+        // with SHIFT.
+        let plain = ev.modifiers.is_empty();
+        let ctrl = ev.modifiers == KeyModifiers::CONTROL;
         match ev.code {
-            KeyCode::Esc | KeyCode::BackTab | KeyCode::Left => {
+            KeyCode::Esc | KeyCode::BackTab => {
                 self.focus = VmFocus::List;
                 None
             }
-            KeyCode::Up => {
+            KeyCode::Left if plain => {
+                self.focus = VmFocus::List;
+                None
+            }
+            KeyCode::Up if plain => {
                 self.form_cursor = fields[at.saturating_sub(1)];
                 None
             }
-            KeyCode::Down => {
+            KeyCode::Down if plain => {
                 self.form_cursor = fields[(at + 1).min(fields.len() - 1)];
                 None
             }
-            KeyCode::Home => {
+            // ctrl+Home/End are a second spelling of Home/End, and what
+            // macOS's cmd+↑/↓ fold to (`keys::normalize_super_keys`).
+            KeyCode::Home if plain || ctrl => {
                 self.form_cursor = fields[0];
                 None
             }
-            KeyCode::End => {
+            KeyCode::End if plain || ctrl => {
                 self.form_cursor = fields[fields.len() - 1];
                 None
             }
-            KeyCode::Enter | KeyCode::Char(' ') => {
+            KeyCode::Enter | KeyCode::Char(' ') if plain => {
                 match self.form_cursor {
                     FormStop::Field(field) => {
                         self.start_field_edit(ctx, field);
@@ -1252,36 +1311,40 @@ impl VarManager {
             }
             self.focus = VmFocus::List;
         }
+        // A named key acts bare only; any other chord does nothing rather
+        // than act as the bare key (piece 4 spec §5.1).
+        let plain = ev.modifiers.is_empty();
+        let ctrl = ev.modifiers == KeyModifiers::CONTROL;
         match ev.code {
             KeyCode::Esc => return Some(Action::CloseScreen),
             // `q` is free as a command letter in every focus stop, so the
             // manager keeps the app-wide quit (the footer's quit chip
             // advertises it); live edits never reach here.
             KeyCode::Char('q') => return Some(Action::Quit),
-            KeyCode::Up => {
+            KeyCode::Up if plain => {
                 self.move_cursor(-1);
                 return None;
             }
-            KeyCode::Down => {
+            KeyCode::Down if plain => {
                 self.move_cursor(1);
                 return None;
             }
-            // Home/End jump to the first/last selectable row. `Home` keeps
-            // the plain guard so a modified combo (there is none today, but
-            // the intent is "plain jump") never falls through here silently.
-            KeyCode::Home if ev.modifiers.is_empty() => {
+            // Home/End jump to the first/last selectable row; ctrl+Home/End
+            // are a second spelling, and what macOS's cmd+↑/↓ fold to
+            // (`keys::normalize_super_keys`).
+            KeyCode::Home if plain || ctrl => {
                 self.jump_to_edge(false);
                 return None;
             }
-            KeyCode::End => {
+            KeyCode::End if plain || ctrl => {
                 self.jump_to_edge(true);
                 return None;
             }
-            KeyCode::PageDown => {
+            KeyCode::PageDown if plain => {
                 self.move_cursor_n(1, self.page());
                 return None;
             }
-            KeyCode::PageUp => {
+            KeyCode::PageUp if plain => {
                 self.move_cursor_n(-1, self.page());
                 return None;
             }
@@ -1302,19 +1365,12 @@ impl VarManager {
                 return None;
             }
             // Into the grid or the form, whichever the detail pane shows.
-            KeyCode::Right | KeyCode::Tab => {
-                if self.form.editing.is_none() && self.grid.editing.is_none() {
-                    match &self.detail {
-                        VmDetail::Group(g)
-                            if ctx.variables().selectors.contains_key(g)
-                                && (ctx.active_env().is_some() || is_shared(ctx, g)) =>
-                        {
-                            self.focus = VmFocus::Grid;
-                        }
-                        VmDetail::Var(_) => self.focus = VmFocus::Form,
-                        _ => {}
-                    }
-                }
+            KeyCode::Tab => {
+                self.enter_detail(ctx);
+                return None;
+            }
+            KeyCode::Right if plain => {
+                self.enter_detail(ctx);
                 return None;
             }
             _ => {}
@@ -1328,6 +1384,7 @@ impl VarManager {
         // would act on a different row than the grid the user is looking at.
         if let VmDetail::Group(selector) = self.detail.clone()
             && ev.code == KeyCode::Char(' ')
+            && plain
         {
             return self.select_entry_action(ctx, &selector);
         }
@@ -1335,9 +1392,7 @@ impl VarManager {
         // named keys stay here.
         match ev.code {
             KeyCode::F(2) => self.list_verb(ctx, Verb::Rename),
-            KeyCode::Delete if ev.modifiers.is_empty() => {
-                self.list_verb(ctx, Verb::Delete { count: 1 })
-            }
+            KeyCode::Delete if plain => self.list_verb(ctx, Verb::Delete { count: 1 }),
             _ => None,
         }
     }
@@ -1367,20 +1422,24 @@ impl VarManager {
         let (row, col) = &mut self.grid.cursor;
         *row = (*row).min(last_row);
         *col = (*col).min(last_col);
+        // A named key acts bare only; any other chord does nothing (piece
+        // 4 spec §5.1). Esc, BackTab and Tab stay unguarded.
+        let plain = ev.modifiers.is_empty();
+        let ctrl = ev.modifiers == KeyModifiers::CONTROL;
         match ev.code {
             KeyCode::Esc | KeyCode::BackTab => {
                 self.focus = VmFocus::List;
                 None
             }
-            KeyCode::Up => {
+            KeyCode::Up if plain => {
                 *row = row.saturating_sub(1);
                 None
             }
-            KeyCode::Down => {
+            KeyCode::Down if plain => {
                 *row = (*row + 1).min(last_row);
                 None
             }
-            KeyCode::Left => {
+            KeyCode::Left if plain => {
                 if *col == 0 {
                     self.focus = VmFocus::List;
                 } else {
@@ -1388,24 +1447,30 @@ impl VarManager {
                 }
                 None
             }
-            KeyCode::Right | KeyCode::Tab => {
+            KeyCode::Tab => {
                 *col = (*col + 1).min(last_col);
                 None
             }
-            KeyCode::Home => {
+            KeyCode::Right if plain => {
+                *col = (*col + 1).min(last_col);
+                None
+            }
+            // ctrl+Home/End are a second spelling of Home/End, and what
+            // macOS's cmd+↑/↓ fold to (`keys::normalize_super_keys`).
+            KeyCode::Home if plain || ctrl => {
                 *row = 0;
                 None
             }
-            KeyCode::End => {
+            KeyCode::End if plain || ctrl => {
                 *row = last_row;
                 None
             }
-            KeyCode::Enter => {
+            KeyCode::Enter if plain => {
                 let (row, col) = self.grid.cursor;
                 self.start_cell_edit(ctx, row, col);
                 None
             }
-            KeyCode::Char(' ') => self.select_entry_action(ctx, selector),
+            KeyCode::Char(' ') if plain => self.select_entry_action(ctx, selector),
             // The option verbs (edit, copy, paste, rename, add) are the
             // router's rows through `grid_verb`; `F2` stays the inline
             // name-cell rename, and `Enter` on the name cell does the same.
@@ -1415,9 +1480,7 @@ impl VarManager {
             }
             // Plain only: ctrl+d is the list's half-page motion one `h`
             // away, and must never delete here.
-            KeyCode::Delete if ev.modifiers.is_empty() => {
-                self.grid_verb(ctx, selector, Verb::Delete { count: 1 })
-            }
+            KeyCode::Delete if plain => self.grid_verb(ctx, selector, Verb::Delete { count: 1 }),
             KeyCode::Char('q') => Some(Action::Quit),
             _ => None,
         }

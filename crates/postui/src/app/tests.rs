@@ -2013,15 +2013,15 @@ fn the_close_field_action_closes_whichever_field_is_open() {
     assert!(!app.update(Action::CloseField), "nothing open: a no-op");
 }
 
-/// `App::field_open` is the immutable twin of `open_text_field_mut` (plus
-/// the Settings tab's private edit): the two must agree everywhere.
+/// `App::field_open` is the immutable twin of `open_text_field_mut`: the
+/// two must agree everywhere.
 #[test]
 fn field_open_agrees_with_the_open_text_field() {
     use crate::components::manage::ManageTab;
     use crate::components::settings::SettingsField;
     use crate::components::varmanager::VmField;
     fn agree(app: &mut App, expected: bool, what: &str) {
-        let open = app.open_text_field_mut().is_some() || app.settings_edit_live();
+        let open = app.open_text_field_mut().is_some();
         assert_eq!(app.field_open(), open, "{what}: the two disagree");
         assert_eq!(app.field_open(), expected, "{what}");
     }
@@ -4230,6 +4230,25 @@ fn entering_a_space_never_clears_the_cursor() {
         app.sidebar.selected.is_some(),
         "main has rows (alpha, beta); the cursor must be on one"
     );
+}
+
+/// A landing that reopens a saved POST with its unsaved GET buffer: the
+/// buffer's method decides the tab, so the disabled Body tab never shows.
+#[test]
+fn a_reopened_buffer_that_sends_no_body_leaves_the_body_tab() {
+    use crate::undo::Open;
+    let (mut app, dir) = spaced_app();
+    let post = postui_core::model::HttpRequest::from_toml_str("method = \"POST\"\nurl = \"https://x/1\"").unwrap();
+    postui_core::fixtures::save_request(dir.path(), "main/alpha", &post).unwrap();
+    app.editor.preferred_tab = EditorTab::Body;
+    let buffer = Box::new(req("https://x/2"));
+    assert!(!buffer.method.sends_body());
+    app.land(Landing {
+        open: Some(Open::Request { slug: "main/alpha".into(), buffer: Some(buffer) }),
+        ..Landing::default()
+    });
+    assert_eq!(app.editor.url.text(), "https://x/2", "the buffer is what shows");
+    assert_ne!(app.editor.active_tab, EditorTab::Body, "Body is disabled on a GET");
 }
 
 #[test]
@@ -10438,18 +10457,21 @@ fn header_copy_click_and_key_parity_both_copy_the_header() {
     );
     assert!(rendered_text(&mut app).contains("Copied content-type"));
 
-    // `c` key parity in Headers view produces the same action.
-    let action = app
-        .session
-        .response
-        .handle_key(ratatui::crossterm::event::KeyEvent::new(
-            KeyCode::Char('c'),
-            KeyModifiers::NONE,
-        ));
+    // `c` key parity in Headers view (arrows' row, through the router)
+    // copies the same header again (the file is cleared so only the key
+    // can have written it).
+    std::fs::remove_file(&out).unwrap();
+    app.update(Action::FocusPane(PaneId::Response));
+    app.handle_key(ratatui::crossterm::event::KeyEvent::new(
+        KeyCode::Char('c'),
+        KeyModifiers::NONE,
+    ));
     assert_eq!(
-        action,
-        Some(Action::CopyToClipboard(CopyTarget::ResponseHeader(0)))
+        std::fs::read_to_string(&out).unwrap(),
+        "application/json",
+        "the `c` key copies the header under the cursor"
     );
+    assert!(rendered_text(&mut app).contains("Copied content-type"));
 }
 
 /// The sent section's copy pill yields the header's real value — the row

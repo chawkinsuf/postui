@@ -536,6 +536,43 @@ impl JsonTree {
         }
     }
 
+    /// Vim's `zo` `zc` `za` at `visible_index` (piece 4 spec §5.7; plan M4a
+    /// Deviation 9). The line's fold is the container it opens, or else the
+    /// container it sits in, so `zc` on a value closes the object around
+    /// it, and `zc` on a fold already closed closes the one around it, as
+    /// Vim closes the deepest open fold, so `zczc` climbs. Returns where
+    /// the cursor goes: the fold's opening line. `None` when the line has
+    /// no fold (a top-level scalar, out of range) or the fold is already as
+    /// asked.
+    pub fn fold(&mut self, visible_index: usize, op: crate::action::FoldOp) -> Option<usize> {
+        use crate::action::FoldOp;
+        let full = self.full_index_of_visible(visible_index)?;
+        let rec = &self.lines[full];
+        // A visible line's enclosing folds are all open: only the one it
+        // opens can be closed.
+        let id = if rec.container != NONE && !(op == FoldOp::Close && rec.collapsed()) {
+            rec.container
+        } else {
+            rec.parent
+        };
+        if id == NONE {
+            return None;
+        }
+        let open = self.containers[id as usize].open_line as usize;
+        let collapsed = self.lines[open].collapsed();
+        let close = match op {
+            FoldOp::Open => false,
+            FoldOp::Close => true,
+            FoldOp::Toggle => !collapsed,
+        };
+        if close == collapsed {
+            return None;
+        }
+        self.lines[open].flags ^= COLLAPSED;
+        self.rebuild_visible();
+        self.visible_index_of(open)
+    }
+
     /// Expands every container that `full_index` lives inside, so that line
     /// becomes visible. Used when jumping to a search match.
     pub fn expand_ancestors(&mut self, full_index: usize) {
@@ -894,6 +931,35 @@ mod tests {
         t.toggle(1);
         t.toggle(99);
         assert_eq!(t.visible_lines().len(), before);
+    }
+
+    /// Piece 4 spec §5.7 (plan M4a Deviation 9): a line's fold is the
+    /// container it opens, or else the one it sits in; closing lands the
+    /// cursor on the fold's opening line.
+    #[test]
+    fn fold_follows_vims_fold_rules() {
+        use crate::action::FoldOp;
+        // visible: 0 {, 1 "a": {, 2 "b": 1, 3 }, 4 "c": 2, 5 }
+        let mut t = JsonTree::parse(r#"{"a": {"b": 1}, "c": 2}"#).unwrap();
+        assert_eq!(t.visible_len(), 6);
+        assert_eq!(t.fold(2, FoldOp::Close), Some(1), "zc on a value closes its object");
+        assert_eq!(t.visible_len(), 4);
+        assert_eq!(t.fold(1, FoldOp::Close), Some(0), "zc on a closed fold closes the one around it");
+        assert_eq!(t.visible_len(), 1);
+        assert_eq!(t.fold(0, FoldOp::Close), None, "no fold around the root");
+        assert_eq!(t.fold(0, FoldOp::Open), Some(0), "zo opens one level");
+        assert_eq!(t.visible_len(), 4, "\"a\" is still closed");
+        assert_eq!(t.fold(1, FoldOp::Open), Some(1), "zo on a closed opener opens it");
+        assert_eq!(t.visible_len(), 6);
+        assert_eq!(t.fold(2, FoldOp::Open), None, "zo inside an open fold does nothing");
+        assert_eq!(t.fold(4, FoldOp::Toggle), Some(0), "za on a value closes the root");
+        assert_eq!(t.visible_len(), 1);
+        assert_eq!(t.fold(0, FoldOp::Toggle), Some(0), "za on a closed opener opens it");
+        assert_eq!(t.visible_len(), 6);
+        assert_eq!(t.fold(3, FoldOp::Close), Some(1), "a closing line's fold is its own container");
+        let mut scalar = JsonTree::parse("1").unwrap();
+        assert_eq!(scalar.fold(0, FoldOp::Close), None, "a top-level scalar has no fold");
+        assert_eq!(t.fold(99, FoldOp::Close), None, "out of range");
     }
 
     #[test]

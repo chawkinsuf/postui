@@ -42,6 +42,9 @@ const DRAW_ORDER: [EditorTab; 4] = [
 ];
 
 impl EditorTab {
+    /// How many tabs the strip draws (`{N}gt`'s range; plan M4a).
+    pub const COUNT: usize = DRAW_ORDER.len();
+
     /// Slot number for the `editor_tab_N` shortcuts
     /// (`Action::EditorTabSelect`) — identical to [`EditorTab::draw_position`]
     /// so the bound numbers match the tab strip left to right.
@@ -380,6 +383,13 @@ impl Editor {
     /// names the field to type into.
     pub fn open_url_from_app(&mut self) {
         self.open_url();
+    }
+
+    /// `App::land_editor_caret`: the URL line closes if it was open, and
+    /// the caret goes into the active tab's content.
+    pub fn focus_content_from_app(&mut self) {
+        self.close_url();
+        self.enter_content();
     }
 
     fn select_url(&mut self) {
@@ -746,6 +756,13 @@ impl Editor {
     /// method finds it exactly as it was.
     pub fn body_tab_disabled(&self) -> bool {
         !self.method.sends_body()
+    }
+
+    /// Whether `t` can be selected: the one rule every tab switch asks
+    /// (a click, a cycle, `{N}gt`, a method change). Only the Body tab is
+    /// ever disabled.
+    pub fn tab_enabled(&self, t: EditorTab) -> bool {
+        t != EditorTab::Body || !self.body_tab_disabled()
     }
 
     /// Whether the Body tab carries its validity badge: only once there's
@@ -1535,6 +1552,11 @@ fn new_body_state(text: &str) -> EditorState {
 
 impl Component for Editor {
     fn handle_key(&mut self, ev: KeyEvent) -> Option<Action> {
+        // On the resting stops (the method badge, the selected URL line,
+        // the table, the blurred pane) a named key acts bare only: any
+        // other chord does nothing rather than act as the bare key (piece
+        // 4 spec §5.1). Open text fields and the body keep their chords.
+        let plain = ev.modifiers.is_empty();
         match self.sub_focus {
             // The method badge: a plain control, not a text input, so
             // Enter/Space activate it (opening the chooser) and arrows only
@@ -1542,12 +1564,12 @@ impl Component for Editor {
             // Vim's `l`/`j` reach here as Right/Down: the router replays
             // them (piece 4 spec §4.5).
             SubFocus::Method => match ev.code {
-                KeyCode::Enter | KeyCode::Char(' ') => Some(Action::OpenMethodDropdown),
-                KeyCode::Right => {
+                KeyCode::Enter | KeyCode::Char(' ') if plain => Some(Action::OpenMethodDropdown),
+                KeyCode::Right if plain => {
                     self.select_url();
                     Some(Action::Render)
                 }
-                KeyCode::Down => {
+                KeyCode::Down if plain => {
                     self.enter_content();
                     Some(Action::Render)
                 }
@@ -1561,15 +1583,15 @@ impl Component for Editor {
             // arrows navigate, and Enter/Space open the line so the
             // next key types into it (spec 2026-09-16).
             SubFocus::Url if !self.url_open => match ev.code {
-                _ if crate::keys::opens_field(&ev) => {
+                _ if plain && crate::keys::opens_field(&ev) => {
                     self.open_url();
                     Some(Action::Render)
                 }
-                KeyCode::Left => {
+                KeyCode::Left if plain => {
                     self.sub_focus = SubFocus::Method;
                     Some(Action::Render)
                 }
-                KeyCode::Down => {
+                KeyCode::Down if plain => {
                     self.close_url();
                     self.enter_content();
                     Some(Action::Render)
@@ -1654,7 +1676,7 @@ impl Component for Editor {
                     // selection — the mouse click-away path clears it, and
                     // a row that stays lit while keys land in the URL line
                     // misstates focus.
-                    if ev.code == KeyCode::Up {
+                    if plain && ev.code == KeyCode::Up {
                         self.table.selected = None;
                         self.select_url();
                         return Some(Action::Render);
@@ -1790,7 +1812,7 @@ impl Component for Editor {
             // line, mirroring the Url -> Down -> Content chain, so keyboard
             // users aren't stranded (alt+u and clicking work too).
             SubFocus::None => {
-                if ev.code == KeyCode::Down {
+                if plain && ev.code == KeyCode::Down {
                     self.select_url();
                     return Some(Action::Render);
                 }
