@@ -631,7 +631,7 @@ only"), so `table::takes_count` is derived from the table's `Repeat` and
 `Pass` rows on `Surfaces::NAV`. Elsewhere a digit goes on as it does today.
 A `0` with no count started is a key, not a count.
 
-A list's keys act only on the chord they name (plan 2026-10-05-vim-profile-m4a-consolidation, `mine`): a named key bare (`↓`, `Enter`, `Home`), or a chord spelled exactly (`alt+↑` moves the row, `ctrl+d` pages). A chord no keymap binds and no list names (`shift+↓`, `alt+shift+→`, `ctrl+→`) does nothing, in both profiles, rather than act as the bare key. A generated test sends every such chord to every surface (`app/key_invariant_tests.rs`). The response pane names `shift+↑/↓` (line-wise selection) and `ctrl+Home/End` (document jumps) on purpose and keeps them (`you`, 2026-10-07); the generated test exempts those four chords on the response only.
+A list's keys act only on the chord they name (plan 2026-10-05-vim-profile-m4a-consolidation, `mine`): a named key bare (`↓`, `Enter`, `Home`), or a chord spelled exactly (`alt+↑` moves the row, `ctrl+d` pages, `ctrl+Home`/`ctrl+End` jump to the first or last row, which is also cmd+↑/↓ on macOS, `you`, 2026-10-07). A chord no keymap binds and no list names (`shift+↓`, `alt+shift+→`, `ctrl+→`) does nothing, in both profiles, rather than act as the bare key. A generated test sends every such chord to every surface (`app/key_invariant_tests.rs`). On the response, whose bare `Home`/`End` scroll sideways, `ctrl+Home`/`ctrl+End` are its document jumps. The response pane also names `shift+↑/↓` (line-wise selection) on purpose and keeps them (`you`, 2026-10-07); the generated test exempts those two chords on the response only.
 
 ### 5.2 Sidebar
 
@@ -748,7 +748,7 @@ After the second M4a code review (all `mine`): on the Manage screen arrows' `alt
 2. Then the field it leaves closes, for a key that leaves one (a field row's `<C-w>` and `gt`; arrows' `alt+←/→` on the Manage screen only). A field that refuses to close keeps the keyboard, and the key does nothing else.
 3. Then it moves. Only a vim tab key that changed the tab lands the editor caret.
 
-Every key in this section takes this path (`App::leave_then_go`). After any of them, no edit is live anywhere but in the field with the caret, and the footer's echo is empty. A generated test runs every window and tab input from every start state in both profiles against these rules (`app/key_invariant_tests.rs`).
+Every `<C-w>` key, `gt`/`gT`/`{N}gt` and arrows' `alt+←/→` take this path (`App::leave_then_go`). After any of them, no edit is live anywhere but in the field with the caret, and the footer's echo is empty. A generated test runs every window and tab input from every start state in both profiles against these rules (`app/key_invariant_tests.rs`).
 
 ### 5.9 The `:` command line
 
