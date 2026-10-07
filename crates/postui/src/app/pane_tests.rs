@@ -452,13 +452,15 @@ fn a_variables_edit_behind_another_tab_is_not_its_open_field() {
     assert!(app.varmanager.form.editing.is_some(), "the edit is untouched");
 }
 
-/// The same rule for a paste (second M4a review): a Variables edit left
+/// The same rule for a paste (third M4a review): a Variables edit left
 /// behind another tab takes no clipboard from that tab, in either
 /// profile. In vim the engine declines it first (the edit has no caret),
-/// so this guards today's routing underneath.
+/// so this guards today's routing underneath. The tab's own live edit
+/// takes it as before.
 #[test]
 fn a_paste_on_another_tab_never_reaches_a_variables_edit_behind_it() {
     use crate::components::manage::ManageTab;
+    use crate::components::settings::SettingsField;
     for (profile, open) in [(KeyProfile::Arrows, "<CR>"), (KeyProfile::Vim, "i<Esc>")] {
         let mut app = app_in(Fixture::VarForm, profile);
         feed(&mut app, open);
@@ -467,7 +469,33 @@ fn a_paste_on_another_tab_never_reaches_a_variables_edit_behind_it() {
         assert!(!app.paste_text("pasted"), "{profile:?}: nothing on the Settings tab takes it");
         let edit = app.varmanager.form.editing.as_ref().expect("the edit stays live");
         assert_eq!(edit.input.text(), before, "{profile:?}: the edit behind the tab is untouched");
+        // A live Settings edit on its own tab is the field that is up.
+        app.settings.begin_edit(SettingsField::AiCmd, "");
+        assert!(app.paste_text("pasted"), "{profile:?}: the Settings edit takes it");
+        assert_eq!(app.settings.field_text(), "pasted", "{profile:?}");
+        let edit = app.varmanager.form.editing.as_ref().expect("the edit stays live");
+        assert_eq!(edit.input.text(), before, "{profile:?}: and the edit behind the tab is still untouched");
     }
+}
+
+/// A landing from a table tab onto the Body (fourth M4a review): the old
+/// "already in the body" guard, read after the switch, fired only here
+/// and skipped the landing. It runs as any other now; with no field open
+/// there is nothing to flush, so no app step is recorded, and the body's
+/// session opens on the caret the landing put there.
+#[test]
+fn a_gt_from_a_table_tab_lands_in_the_body_without_a_history_step() {
+    let mut app = app_in(Fixture::Body, KeyProfile::Vim);
+    // A POST: Headers, Params, Vars, Body.
+    feed(&mut app, "1gt");
+    assert_eq!(app.editor.active_tab, EditorTab::Headers);
+    assert_eq!(app.editor.sub_focus, SubFocus::Content);
+    let steps = app.history.undo_len();
+    feed(&mut app, "4gt");
+    assert_eq!(app.editor.active_tab, EditorTab::Body);
+    assert_eq!(app.editor.sub_focus, SubFocus::Content, "the caret lands in the body");
+    assert_eq!(app.glue.session(), FieldSession::Live(FieldId::Body));
+    assert_eq!(app.history.undo_len(), steps, "nothing to flush: no step");
 }
 
 /// Review Focus 1: `g` is a field prefix now, and `gg` still reaches the

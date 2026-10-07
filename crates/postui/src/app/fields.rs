@@ -63,30 +63,25 @@ pub(crate) fn mode_word(mode: Mode) -> &'static str {
     }
 }
 
-/// `id`'s one-line buffer, or none when that field is not open (or is the
-/// body). Takes the parts of `App` that hold one, which leave the body
-/// free, so a carry out of the body can hold both (amendment C3). The one
-/// map from a screen field to its `LineInput`: `App::open_text_field_mut`
-/// reads it too.
+/// `id`'s one-line buffer, or none when that field is not open, is the
+/// body, or is a modal's or the response pane's (those live elsewhere).
+/// Takes the parts of `App` that hold one, which leave the body free, so
+/// a carry out of the body can hold both (amendment C3). The one map from
+/// a screen field to its `LineInput`: `App::open_text_field_mut` reads it
+/// too.
 pub(super) fn line_buf<'a>(
     id: FieldId,
     url: &'a mut LineInput,
     table: &'a mut crate::components::table_editor::TableEditorState,
     varmanager: &'a mut VarManager,
     settings: &'a mut crate::components::settings::SettingsTab,
-) -> Option<FieldBuf<'a>> {
+) -> Option<&'a mut LineInput> {
     match id {
-        FieldId::Url => Some(FieldBuf::Line(url)),
-        FieldId::TableCell { .. } => table.editing.as_mut().map(|e| FieldBuf::Line(&mut e.input)),
-        FieldId::VmForm(_) => varmanager.form.editing.as_mut().map(|e| FieldBuf::Line(&mut e.input)),
-        FieldId::VmGrid { .. } => varmanager.grid.editing.as_mut().map(|e| FieldBuf::Line(&mut e.input)),
-        FieldId::Settings(_) => {
-            if settings.editing.is_some() {
-                Some(FieldBuf::Line(settings.input_mut()))
-            } else {
-                None
-            }
-        }
+        FieldId::Url => Some(url),
+        FieldId::TableCell { .. } => table.editing.as_mut().map(|e| &mut e.input),
+        FieldId::VmForm(_) => varmanager.form.editing.as_mut().map(|e| &mut e.input),
+        FieldId::VmGrid { .. } => varmanager.grid.editing.as_mut().map(|e| &mut e.input),
+        FieldId::Settings(_) => settings.editing.is_some().then(|| settings.input_mut()),
         _ => None,
     }
 }
@@ -108,7 +103,8 @@ impl App {
             FieldId::Search => (&mut self.glue, self.session.response.search_input_mut().map(FieldBuf::Line)),
             _ => (
                 &mut self.glue,
-                line_buf(id, &mut self.editor.url, &mut self.editor.table, &mut self.varmanager, &mut self.settings),
+                line_buf(id, &mut self.editor.url, &mut self.editor.table, &mut self.varmanager, &mut self.settings)
+                    .map(FieldBuf::Line),
             ),
         }
     }
@@ -117,7 +113,8 @@ impl App {
     /// body (amendment C3).
     fn body_and(&mut self, to: FieldId) -> (&mut Glue, FieldBuf<'_>, Option<FieldBuf<'_>>) {
         let body = FieldBuf::Body(&mut self.editor.body, &mut self.editor.body_visual);
-        let to = line_buf(to, &mut self.editor.url, &mut self.editor.table, &mut self.varmanager, &mut self.settings);
+        let to = line_buf(to, &mut self.editor.url, &mut self.editor.table, &mut self.varmanager, &mut self.settings)
+            .map(FieldBuf::Line);
         (&mut self.glue, body, to)
     }
 

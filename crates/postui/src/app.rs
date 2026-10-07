@@ -2473,24 +2473,14 @@ impl App {
     /// [`Self::field_open`] answers the same question as a `bool`.
     pub(crate) fn open_text_field_mut(&mut self) -> Option<&mut LineInput> {
         use crate::keyroute::FieldId;
-        use crate::keyroute::engine_glue::FieldBuf;
         if !self.modals.is_empty() {
             return self.modals.focused_input_mut();
         }
         match self.screen_field()? {
             FieldId::Jq | FieldId::Search => self.session.response.open_text_field_mut(),
-            // A modal's fields are handled above; the body is no line.
-            id if id.is_modal() || id == FieldId::Body => None,
-            id => match fields::line_buf(
-                id,
-                &mut self.editor.url,
-                &mut self.editor.table,
-                &mut self.varmanager,
-                &mut self.settings,
-            )? {
-                FieldBuf::Line(input) => Some(input),
-                FieldBuf::Body(..) => None,
-            },
+            // A modal's fields are handled above; the body is no line, and
+            // `line_buf` names neither.
+            id => fields::line_buf(id, &mut self.editor.url, &mut self.editor.table, &mut self.varmanager, &mut self.settings),
         }
     }
 
@@ -9459,9 +9449,10 @@ impl App {
     /// whatever text surface owns the caret, mirroring `handle_key`'s
     /// capture order: the top modal's text surface first (a filter-query
     /// modal's query — palette/chooser/var picker — or the focused
-    /// `LineInput`), then a live Variable-Manager field or grid edit, then
-    /// the response pane's live search input, then the editor's cell edit /
-    /// URL bar / body. A live selection is replaced (GUI semantics);
+    /// `LineInput`), then the response pane's jq bar or live search input,
+    /// then the `LineInput` behind the screen field (the editor's cell edit
+    /// or URL bar, a Settings or Variables edit), then the body. A live
+    /// selection is replaced (GUI semantics);
     /// single-line surfaces flatten line breaks (`LineInput::paste`),
     /// the body takes them verbatim. Returns `false` when nothing
     /// focused accepts text.
@@ -9508,59 +9499,29 @@ impl App {
             }
             return false;
         }
-        if self.screen == Screen::Manage {
-            // Tab-gated as well as edit-gated, as `screen_field` is: a stale
-            // edit (a Variables edit a failed click-away commit left behind
-            // another tab) must never take the clipboard from the tab that
-            // is actually up.
-            use crate::components::manage::ManageTab;
-            match self.manage.tab {
-                ManageTab::Settings if self.settings.editing.is_some() => {
-                    self.settings.paste(text);
-                    return self.update(Action::Render);
-                }
-                ManageTab::Variables => {
-                    if let Some(edit) = self.varmanager.form.editing.as_mut() {
-                        edit.input.paste(text);
-                        return self.update(Action::Render);
-                    }
-                    if let Some(edit) = self.varmanager.grid.editing.as_mut() {
-                        edit.input.paste(text);
-                        return self.update(Action::Render);
-                    }
-                }
-                _ => {}
-            }
-            return false;
-        }
-        if self.screen != Screen::Main {
-            return false;
-        }
         // The response pane's text surfaces: the jq bar while focused, else
-        // its search input while live.
-        if self.focus == PaneId::Response {
+        // its search input while live. The pane marks the edit itself.
+        if self.screen == Screen::Main && self.focus == PaneId::Response {
             if self.session.response.paste_into_jq(text) {
                 return self.update(Action::Render);
             }
             return self.session.response.paste_into_search(text) && self.update(Action::Render);
         }
-        if self.focus != PaneId::Editor {
-            return false;
-        }
-        if let Some(edit) = self.editor.table.editing.as_mut() {
-            edit.input.paste(text);
+        // Every other field is the `LineInput` `screen_field` names, through
+        // the one map `open_text_field_mut` reads: the editor's cell edit or
+        // URL bar, a Settings or Variables edit. The map is tab-gated on
+        // Manage, so a stale edit (a Variables edit a failed click-away
+        // commit left behind another tab) never takes the clipboard from
+        // the tab that is actually up.
+        if let Some(field) = self.open_text_field_mut() {
+            field.paste(text);
             return self.update(Action::Render);
         }
-        match self.editor.sub_focus {
-            SubFocus::Url if self.editor.url_open() => {
-                self.editor.url.paste(text);
-                self.update(Action::Render)
-            }
-            SubFocus::Content if self.editor.active_tab == EditorTab::Body => {
-                self.editor.paste_body(text) && self.update(Action::Render)
-            }
-            _ => false,
+        // The body is the one screen field that is no `LineInput`.
+        if self.screen_field() == Some(crate::keyroute::FieldId::Body) {
+            return self.editor.paste_body(text) && self.update(Action::Render);
         }
+        false
     }
 
     /// Copies `text` to the clipboard and toasts the outcome:

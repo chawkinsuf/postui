@@ -951,9 +951,24 @@ impl ReadyView {
         self.follow_cursor();
     }
 
+    /// The one place a key moves the cursor: `delta` lines, clamped, the
+    /// view following. Every cursor move but shift+↑/↓ drops a line
+    /// selection, or the next shift+↓ would grow it from the anchor the
+    /// move left behind; the rule lives here, not in the key arms, so a
+    /// mover cannot miss it. [`Self::select_line_extend`] is the one
+    /// exception and steps the cursor itself.
     fn move_cursor(&mut self, delta: i32) {
         let max = self.visible_len().saturating_sub(1) as i32;
-        self.cursor = (self.cursor as i32 + delta).clamp(0, max) as usize;
+        self.jump_cursor((self.cursor as i32 + delta).clamp(0, max) as usize);
+    }
+
+    /// The one place a key lands the cursor on a given line (a document
+    /// jump, a search match, a half page): clamped, the view following,
+    /// a line selection dropped as [`Self::move_cursor`] drops it.
+    fn jump_cursor(&mut self, at: usize) {
+        self.clear_sel();
+        self.cursor = at;
+        self.clamp_cursor();
         self.follow_cursor();
     }
 
@@ -963,27 +978,25 @@ impl ReadyView {
     /// cursor still moves, clamped to the first or last line (plan M4a
     /// Deviation 10). A cursor the wheel or the scrollbar left off screen
     /// is first brought to the view's nearest edge, as Vim keeps it, so the
-    /// step starts from what shows. A line selection drops, as on any
-    /// cursor move but shift+↑/↓.
+    /// step starts from what shows.
     fn half_page(&mut self, down: bool) {
-        self.clear_sel();
         let height = self.height.max(1);
         let half = (height / 2).max(1);
         let last = self.visible_len().saturating_sub(1);
         let max_scroll = self.visible_len().saturating_sub(height);
-        self.cursor = self
+        let shown = self
             .cursor
             .clamp(self.scroll.min(last), (self.scroll + height - 1).min(last));
-        if down {
+        let at = if down {
             // A view already past the end (the pane grew, or a fold shrank
             // what shows) stays put rather than jump back up.
             self.scroll = (self.scroll + half).min(max_scroll).max(self.scroll);
-            self.cursor = (self.cursor + half).min(last);
+            (shown + half).min(last)
         } else {
             self.scroll = self.scroll.saturating_sub(half);
-            self.cursor = self.cursor.saturating_sub(half);
-        }
-        self.follow_cursor();
+            shown.saturating_sub(half)
+        };
+        self.jump_cursor(at);
     }
 
     fn set_mode(&mut self, mode: ViewMode) {
@@ -1027,21 +1040,20 @@ impl ReadyView {
     }
 
     /// Moves the cursor onto match `current`, expanding whatever containers
-    /// hide it.
+    /// hide it. A jump like any other: a line selection drops with it.
     fn jump_to_match(&mut self) {
         let Some(search) = &self.search else { return };
         let Some(&(line, _)) = search.matches.get(search.current) else {
             return;
         };
-        match (self.mode, self.active_tree_mut()) {
+        let at = match (self.mode, self.active_tree_mut()) {
             (ViewMode::Pretty, Some(tree)) => {
                 tree.expand_ancestors(line);
-                self.cursor = tree.visible_index_of(line).unwrap_or(0);
+                tree.visible_index_of(line).unwrap_or(0)
             }
-            _ => self.cursor = line,
-        }
-        self.clamp_cursor();
-        self.follow_cursor();
+            _ => line,
+        };
+        self.jump_cursor(at);
     }
 
     fn step_match(&mut self, delta: i32) {
@@ -1176,11 +1188,15 @@ impl ReadyView {
 
     /// Extends a line-wise selection by `delta` lines (shift+Up/Down): the
     /// anchor line is fixed, the cursor line moves, and every line between
-    /// them is covered in full.
+    /// them is covered in full. The one cursor move that keeps a selection,
+    /// so it steps the cursor itself rather than through
+    /// [`Self::move_cursor`], which drops one.
     fn select_line_extend(&mut self, delta: i32) {
         let anchor_line = self.sel_anchor.map(|(l, _)| l).unwrap_or(self.cursor);
         self.sel_anchor = Some((anchor_line, 0));
-        self.move_cursor(delta);
+        let max = self.visible_len().saturating_sub(1) as i32;
+        self.cursor = (self.cursor as i32 + delta).clamp(0, max) as usize;
+        self.follow_cursor();
         let cl = self.cursor;
         let len = |v: &Self, l: usize| v.display_line_text(l).map_or(0, |t| t.chars().count());
         self.sel = Some(if cl >= anchor_line {
@@ -2581,15 +2597,13 @@ impl Response {
                 view.half_page(false);
                 Some(Action::Render)
             }
-            // Every cursor move but shift+↑/↓ drops a line selection, or the
-            // next shift+↓ would grow it from the anchor the jump left behind.
+            // Every cursor move but shift+↑/↓ drops a line selection:
+            // `move_cursor` and `jump_cursor` do it, not the arms.
             KeyCode::Char('f') if ev.modifiers == KeyModifiers::CONTROL => {
-                view.clear_sel();
                 view.move_cursor(view.height.max(1) as i32);
                 Some(Action::Render)
             }
             KeyCode::Char('b') if ev.modifiers == KeyModifiers::CONTROL => {
-                view.clear_sel();
                 view.move_cursor(-(view.height.max(1) as i32));
                 Some(Action::Render)
             }
@@ -2602,22 +2616,18 @@ impl Response {
                 Some(Action::Render)
             }
             KeyCode::Down if plain => {
-                view.clear_sel();
                 view.move_cursor(1);
                 Some(Action::Render)
             }
             KeyCode::Up if plain => {
-                view.clear_sel();
                 view.move_cursor(-1);
                 Some(Action::Render)
             }
             KeyCode::PageDown if plain => {
-                view.clear_sel();
                 view.move_cursor(view.height.max(1) as i32);
                 Some(Action::Render)
             }
             KeyCode::PageUp if plain => {
-                view.clear_sel();
                 view.move_cursor(-(view.height.max(1) as i32));
                 Some(Action::Render)
             }
@@ -2631,15 +2641,11 @@ impl Response {
             }
             // Document jumps: ctrl+Home/End.
             KeyCode::Home if ev.modifiers == KeyModifiers::CONTROL => {
-                view.clear_sel();
-                view.cursor = 0;
-                view.follow_cursor();
+                view.jump_cursor(0);
                 Some(Action::Render)
             }
             KeyCode::End if ev.modifiers == KeyModifiers::CONTROL => {
-                view.clear_sel();
-                view.cursor = view.visible_len().saturating_sub(1);
-                view.follow_cursor();
+                view.jump_cursor(usize::MAX);
                 Some(Action::Render)
             }
             KeyCode::Home if plain => {
@@ -4375,6 +4381,59 @@ mod tests {
             let sel = r.view().unwrap().sel.expect("shift+down selects again");
             assert_eq!(sel.0.0, cursor, "{jump:?}: the new selection starts at the cursor the jump left");
         }
+    }
+
+    /// The same for the search jumps (fourth M4a review): the commit of a
+    /// typed query (Enter, or the `▼` button while the input is live) and
+    /// each `n`/`N` step land the cursor on a match and drop the selection
+    /// with it.
+    #[test]
+    fn a_search_jump_drops_the_line_selection() {
+        let body = (0..100).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let shift_down = KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT);
+        let select = |r: &mut Response| {
+            r.handle_key(shift_down);
+            r.handle_key(shift_down);
+            assert_eq!(r.selected_text().as_deref(), Some("line 0\nline 1\nline 2"), "the selection to drop");
+        };
+        let selects_from_cursor = |r: &mut Response, what: &str| {
+            assert_eq!(r.selected_text(), None, "{what}: the jump drops it");
+            let cursor = r.view().unwrap().cursor;
+            r.handle_key(shift_down);
+            let sel = r.view().unwrap().sel.expect("shift+down selects again");
+            assert_eq!(sel.0.0, cursor, "{what}: the new selection starts at the cursor the jump left");
+        };
+        // Enter commits the query and jumps to the first match.
+        let mut r = ready(&body);
+        render(&mut r);
+        select(&mut r);
+        assert!(r.open_search());
+        for c in "line 5".chars() {
+            r.handle_key(ch(c));
+        }
+        r.handle_key(key(KeyCode::Enter));
+        assert_eq!(r.view().unwrap().cursor, 5, "jumped to the first match");
+        selects_from_cursor(&mut r, "Enter");
+        // `n` and `N` step the matches (the router's rows, so the pane's
+        // `step_search` as they call it).
+        for (delta, what) in [(1, "n"), (-1, "N")] {
+            r.handle_key(KeyEvent::new(KeyCode::Home, KeyModifiers::CONTROL));
+            select(&mut r);
+            assert!(r.step_search(delta));
+            selects_from_cursor(&mut r, what);
+        }
+        // The `▼` button while the input is still live commits it, and
+        // that commit is the jump.
+        let mut r = ready(&body);
+        render(&mut r);
+        select(&mut r);
+        assert!(r.open_search());
+        for c in "line 7".chars() {
+            r.handle_key(ch(c));
+        }
+        assert!(r.step_search(1));
+        assert_eq!(r.view().unwrap().cursor, 7, "jumped to the first match");
+        selects_from_cursor(&mut r, "button commit");
     }
 
     #[test]
