@@ -233,3 +233,30 @@ fn window_and_tab_keys_move_whole_or_not_at_all() {
     assert!(ran > 400, "the generator shrank: {ran} cases");
     assert!(failures.is_empty(), "{} of {ran} case(s) failed:\n{}", failures.len(), failures.join("\n"));
 }
+
+/// Plan Decision 2: `screen_field` owns which screen field has the caret,
+/// and `field_open` and `open_text_field_mut` agree with it, from every
+/// start and after every window and tab input. Modals are out of scope
+/// here: every start has none.
+#[test]
+fn field_open_and_the_open_text_field_agree_with_screen_field() {
+    let agree = |app: &mut App, at: &str| {
+        assert!(app.modals.is_empty(), "{at}: no start opens a modal");
+        let id = app.screen_field();
+        assert_eq!(app.field_open(), id.is_some_and(|id| id != FieldId::Body), "{at}: field_open vs {id:?}");
+        let has_input = matches!(
+            id,
+            Some(FieldId::Url | FieldId::TableCell { .. } | FieldId::VmForm(_) | FieldId::VmGrid { .. } | FieldId::Jq | FieldId::Search)
+        );
+        assert_eq!(app.open_text_field_mut().is_some(), has_input, "{at}: open_text_field_mut vs {id:?}");
+    };
+    for start in starts() {
+        let mut app = begin(&start);
+        agree(&mut app, &format!("{} {:?}", start.name, start.profile));
+        for input in inputs(start.profile) {
+            let mut app = begin(&start);
+            apply(&mut app, &input);
+            agree(&mut app, &format!("{} {:?} after {input:?}", start.name, start.profile));
+        }
+    }
+}

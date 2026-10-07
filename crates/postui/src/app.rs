@@ -2465,86 +2465,49 @@ impl App {
         self.capture_undo();
     }
 
-    /// The text field that currently owns the caret, if any — the one
-    /// place the field rule's routing lives (spec 2026-09-15). Two fields
-    /// are not reachable here and are special-cased by their neighbours
-    /// below: the Settings tab's live edit (its input is private, see
+    /// The text field that currently owns the caret, if any: a modal's
+    /// focused input, or the `LineInput` behind the field
+    /// [`Self::screen_field`] names. Two fields have none to hand out: the
+    /// Settings tab's live edit (its input is private, see
     /// [`SettingsTab::field_undo`](crate::components::settings::SettingsTab::field_undo))
-    /// and a picker's filter box (private behind `undo_filter`, because
-    /// stepping it has to re-run the filter too). [`Self::field_open`] is
-    /// the immutable twin of this routing and must agree with it.
+    /// and the body (not a `LineInput`). A picker's filter box is a
+    /// modal's, private behind `undo_filter`. [`Self::field_open`] answers
+    /// the same question as a `bool`.
     pub(crate) fn open_text_field_mut(&mut self) -> Option<&mut LineInput> {
+        use crate::keyroute::FieldId;
         if !self.modals.is_empty() {
             return self.modals.focused_input_mut();
         }
-        match self.screen {
-            // A Variables edit left live behind another tab (a failed
-            // click-away commit) is that tab's field, not this one's, as
-            // `screen_field` has it.
-            Screen::Manage if self.manage.tab != crate::components::manage::ManageTab::Variables => None,
-            Screen::Manage => {
-                if let Some(edit) = self.varmanager.form.editing.as_mut() {
-                    return Some(&mut edit.input);
-                }
-                if let Some(edit) = self.varmanager.grid.editing.as_mut() {
-                    return Some(&mut edit.input);
-                }
-                None
-            }
-            // The caret is with the focused pane: a cell edit that survived
-            // a jump to the response pane is live but has no caret, so it
-            // is not the open field there (spec 2026-09-15, "open" = has
-            // the caret).
-            Screen::Main => match self.focus {
-                PaneId::Editor => {
-                    if self.editor.table.editing.is_some() {
-                        return self.editor.table.editing.as_mut().map(|e| &mut e.input);
-                    }
-                    if self.editor.url_open() {
-                        return Some(&mut self.editor.url);
-                    }
-                    None
-                }
-                PaneId::Response => self.session.response.open_text_field_mut(),
-                PaneId::Sidebar => None,
-            },
-            Screen::Testbed => None,
+        match self.screen_field()? {
+            FieldId::Url => Some(&mut self.editor.url),
+            FieldId::TableCell { .. } => self.editor.table.editing.as_mut().map(|e| &mut e.input),
+            FieldId::VmForm(_) => self.varmanager.form.editing.as_mut().map(|e| &mut e.input),
+            FieldId::VmGrid { .. } => self.varmanager.grid.editing.as_mut().map(|e| &mut e.input),
+            FieldId::Jq | FieldId::Search => self.session.response.open_text_field_mut(),
+            FieldId::Settings(_) | FieldId::Body => None,
+            // A modal's fields, handled above.
+            FieldId::ModalInput(_)
+            | FieldId::FilePicker
+            | FieldId::Palette
+            | FieldId::ChooserFilter
+            | FieldId::VarPickerFilter => None,
         }
     }
 
-    /// Whether a text field owns the caret right now — the immutable twin
-    /// of [`Self::open_text_field_mut`], for callers that only need the
-    /// question answered (`Action::CloseField`; the footer asks the
-    /// pane-local [`Self::pane_field_open`] instead).
-    /// The two must agree: this is `open_text_field_mut().is_some()` plus
-    /// the Settings tab's edit, which that one special-cases away because
-    /// its input is private.
+    /// Whether a text field owns the caret right now: a modal's focused
+    /// input, or the screen's field as [`Self::screen_field`] names it,
+    /// the one place that knows which tab's edit is live (plan
+    /// 2026-10-05-vim-profile-m4a-consolidation). The body is a pane's
+    /// content, not a field that opens and closes. A form modal's field
+    /// merely *selected* (spec 2026-09-16, no caret painted) still counts
+    /// as open here: it's still the field paste/`Action::CloseField`
+    /// target; only `ModalStack`'s own `field_open` cares about the caret
+    /// specifically.
     pub(crate) fn field_open(&self) -> bool {
-        // Modals first, in the same order as `open_text_field_mut`: a
-        // modal over the Settings tab captures the keyboard, and with a
-        // form modal's focus on its button row no field is open at all.
-        // A form modal's field merely *selected* (spec 2026-09-16, no
-        // caret painted) still counts as open here — it's still the
-        // field paste/`Action::CloseField` target; only `ModalStack`'s
-        // own `field_open` cares about the caret specifically.
         if !self.modals.is_empty() {
             return self.modals.focused_input().is_some();
         }
-        if self.settings_edit_live() {
-            return true;
-        }
-        match self.screen {
-            Screen::Manage => {
-                self.manage.tab == crate::components::manage::ManageTab::Variables
-                    && (self.varmanager.form.editing.is_some() || self.varmanager.grid.editing.is_some())
-            }
-            Screen::Main => match self.focus {
-                PaneId::Editor => self.editor.table.editing.is_some() || self.editor.url_open(),
-                PaneId::Response => self.session.response.field_open(),
-                PaneId::Sidebar => false,
-            },
-            Screen::Testbed => false,
-        }
+        self.screen_field().is_some_and(|id| id != crate::keyroute::FieldId::Body)
     }
 
     /// Whether the field that owns the caret is *`pane`'s own* — what the

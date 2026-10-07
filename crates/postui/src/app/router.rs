@@ -284,7 +284,10 @@ impl App {
         }
     }
 
-    /// The screen's own field with the caret, modals aside.
+    /// The screen's own field with the caret, modals aside: the one place
+    /// that knows which edit is live where (a Variables edit left behind
+    /// another Manage tab is not that tab's field). `App::field_open` and
+    /// `App::open_text_field_mut` read it rather than repeat the rules.
     pub(super) fn screen_field(&self) -> Option<FieldId> {
         use crate::components::manage::ManageTab;
         use crate::components::table_editor::Col;
