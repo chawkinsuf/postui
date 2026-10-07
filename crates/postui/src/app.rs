@@ -3093,39 +3093,15 @@ impl App {
                 self.retarget_response_tab_underline(prev_mode);
                 true
             }
+            // Every tab key takes one path (`App::go_tab`): the target
+            // first, then the field it leaves, then the move. Arrows' chord
+            // leaves the field on the Manage screen only, and never lands
+            // the caret.
             Action::CycleTabs(delta) => {
-                let Some(select) = self.tab_target(TabTo::By(i64::from(delta))) else {
-                    return false;
-                };
-                // A Manage tab's field closes before its tab goes, as a
-                // click on the strip commits it first: a refused close (a
-                // Settings value that will not parse, a variable commit
-                // that fails) keeps the tab, so the edit is never stranded
-                // or dropped. On the main screen the caret stays put.
-                if self.screen == Screen::Manage && self.field_open() && !self.close_field_to_leave() {
-                    return false;
-                }
-                self.update(select)
+                let leave = self.tab_chord_leaves();
+                self.go_tab(TabTo::By(i64::from(delta)), leave, false)
             }
-            Action::GoTab { to, leave } => {
-                // Where the key goes is settled before anything moves: a tab
-                // that is not there or is disabled, or the one already
-                // showing, does nothing, and the field the key was typed in
-                // stays open (the user's decision). So does a field whose
-                // close is refused (a Settings value that will not parse):
-                // its live edit is never stranded behind another tab.
-                let Some(select) = self.tab_target(to) else { return false };
-                if leave && !self.close_field_to_leave() {
-                    return false;
-                }
-                // Only a key that changes the tab lands the caret; a field
-                // it closed still counts as a change.
-                if !self.update(select) {
-                    return leave;
-                }
-                self.land_editor_caret();
-                true
-            }
+            Action::GoTab { to, leave } => self.go_tab(to, leave, true),
             Action::OpenResponseSearch => {
                 self.update(Action::FocusPane(PaneId::Response));
                 self.session.response.open_search();

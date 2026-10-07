@@ -26,31 +26,64 @@ impl App {
                 let Some(to) = crate::keyroute::panes::toward(self.focus, dir, &self.panes) else {
                     return false;
                 };
-                if leave && !self.close_field_to_leave() {
-                    return false;
-                }
-                self.update(Action::FocusPane(to))
+                self.leave_then_go(leave, |app| app.update(Action::FocusPane(to)))
             }
             Screen::Manage => {
                 let Some(to_detail) = self.manage_pane_target(dir) else {
                     return false;
                 };
-                if leave && !self.close_field_to_leave() {
-                    return false;
-                }
-                self.manage_pane_move(to_detail)
+                self.leave_then_go(leave, |app| app.manage_pane_move(to_detail))
             }
             Screen::Testbed => false,
         }
     }
 
-    /// Closes the open field for a key that leaves it (a window or tab
-    /// key): whether it closed. A field may refuse (a Settings value that
-    /// will not parse keeps its edit live, and says so), and then the key
-    /// does nothing else.
-    pub(super) fn close_field_to_leave(&mut self) -> bool {
+    /// The order every window and tab key follows (spec §5.8): the caller
+    /// has already settled where the key goes, and a key with nowhere to
+    /// go never gets here. With `leave`, the open field closes first; a
+    /// field that refuses (a Settings value that will not parse, a
+    /// variable commit that fails) keeps the keyboard, and the key does
+    /// nothing else. Then `go` moves. Whether anything changed: a field it
+    /// closed counts.
+    fn leave_then_go(&mut self, leave: bool, go: impl FnOnce(&mut Self) -> bool) -> bool {
+        let closing = leave && self.field_open();
+        if closing && !self.close_field_to_leave() {
+            return false;
+        }
+        go(self) || closing
+    }
+
+    /// Closes the open field for a key that leaves it: whether it closed.
+    fn close_field_to_leave(&mut self) -> bool {
         self.update(Action::CloseField);
         !self.field_open()
+    }
+
+    /// A tab key: vim's `GoTab` (`land`), and arrows' `CycleTabs`, which
+    /// keeps the caret where it is (plan M4a Deviation 7). The strip's
+    /// target comes first (a missing, disabled or already-showing tab
+    /// does nothing), then [`Self::leave_then_go`]. Only a key that
+    /// changed the tab lands the caret.
+    pub(super) fn go_tab(&mut self, to: TabTo, leave: bool, land: bool) -> bool {
+        let Some(select) = self.tab_target(to) else {
+            return false;
+        };
+        self.leave_then_go(leave, |app| {
+            if !app.update(select) {
+                return false;
+            }
+            if land {
+                app.land_editor_caret();
+            }
+            true
+        })
+    }
+
+    /// Whether arrows' tab chord closes the open field before its tab
+    /// goes: on the Manage screen, as a click on the strip commits it; on
+    /// the main screen the caret stays where it is (spec §5.8).
+    pub(super) fn tab_chord_leaves(&self) -> bool {
+        self.screen == Screen::Manage
     }
 
     /// After a vim tab key selects a tab (spec §5.8): with the editor
@@ -58,7 +91,7 @@ impl App {
     /// row. It never moves panes; the sidebar and the response step the
     /// strip from where they stand. Arrows' tab chord does not run it (plan
     /// M4a Deviation 7).
-    pub(super) fn land_editor_caret(&mut self) {
+    fn land_editor_caret(&mut self) {
         if self.screen != Screen::Main || self.focus != PaneId::Editor {
             return;
         }
