@@ -17,6 +17,9 @@ use crate::keyroute::keylist::{self, Status};
 pub(super) enum Fixture {
     /// Requests alpha, beta and gamma; the cursor on beta.
     SidebarThree,
+    /// `SidebarThree` plus the request `main/f/inner`, the cursor on its
+    /// folder `f`, collapsed.
+    SidebarFolder,
     /// `SidebarThree` with beta (under the cursor) open in the editor.
     SidebarThreeBetaOpen,
     /// `SidebarThree` with a y/n confirm on top; `y` toasts "yes".
@@ -31,6 +34,10 @@ pub(super) enum Fixture {
     UrlLine,
     /// A 200-element JSON array response, focused, the cursor on line 0.
     ResponseLines,
+    /// `ResponseLines` whose first element is a 300-character string, far
+    /// wider than the pane: the cursor a page down and the view scrolled
+    /// sideways, so every direction can move.
+    ResponseWide,
     /// The Environments list with three environments, cursor on row 0.
     ManageEnvs,
     /// `ManageEnvs` with the keyboard in the detail pane, on its first
@@ -38,6 +45,9 @@ pub(super) enum Fixture {
     ManageEnvDetail,
     /// The Settings tab, cursor on row 0.
     Settings,
+    /// The Settings tab, cursor on the first Files row (config.toml),
+    /// aimed at its Edit… button.
+    SettingsFiles,
     /// The Variables list (variables alpha and beta, the selector `user`
     /// with options alice and bob in qa, the active environment), the
     /// cursor on alpha.
@@ -391,9 +401,12 @@ pub(super) fn build(f: Fixture) -> App {
         _ => App::new_for_test(),
     };
     match f {
-        SidebarThree | SidebarThreeBetaOpen | ConfirmYesNo => {
+        SidebarThree | SidebarFolder | SidebarThreeBetaOpen | ConfirmYesNo => {
             for slug in ["main/alpha", "main/beta", "main/gamma"] {
                 postui_core::fixtures::save_request(app.proj().root(), slug, &req("https://x/1")).unwrap();
+            }
+            if matches!(f, SidebarFolder) {
+                postui_core::fixtures::save_request(app.proj().root(), "main/f/inner", &req("https://x/1")).unwrap();
             }
             app.update(Action::RefreshSidebar);
             if matches!(f, SidebarThreeBetaOpen) {
@@ -414,6 +427,22 @@ pub(super) fn build(f: Fixture) -> App {
                 .position(|r| matches!(r, Row::Request { slug, .. } if slug == "main/beta"))
                 .expect("beta is listed");
             app.sidebar.selected = Some(beta);
+            if matches!(f, SidebarFolder) {
+                let folder = app
+                    .sidebar
+                    .rows
+                    .iter()
+                    .position(|r| matches!(r, Row::Folder { .. }))
+                    .expect("the folder is listed");
+                app.sidebar.selected = Some(folder);
+                if matches!(app.sidebar.rows[folder], Row::Folder { expanded: true, .. }) {
+                    app.update(Action::ToggleSelectedFolder);
+                }
+                assert!(matches!(
+                    app.sidebar.selected.and_then(|i| app.sidebar.rows.get(i)),
+                    Some(Row::Folder { expanded: false, .. })
+                ));
+            }
             if matches!(f, ConfirmYesNo) {
                 app.push_modal(Modal::Confirm {
                     title: "Sure?".into(),
@@ -448,8 +477,12 @@ pub(super) fn build(f: Fixture) -> App {
                 _ => {}
             }
         }
-        ResponseLines => {
-            let body = format!("[{}]", (0..200).map(|i| i.to_string()).collect::<Vec<_>>().join(","));
+        ResponseLines | ResponseWide => {
+            let mut items: Vec<String> = (0..200).map(|i| i.to_string()).collect();
+            if matches!(f, ResponseWide) {
+                items[0] = format!("\"{}\"", "x".repeat(300));
+            }
+            let body = format!("[{}]", items.join(","));
             app.session.response.set_state(
                 ResponseState::Ready(Box::new(crate::http::ResponseData {
                     status: 200,
@@ -465,6 +498,16 @@ pub(super) fn build(f: Fixture) -> App {
                 app.session.send_generation,
             );
             app.focus = PaneId::Response;
+            if matches!(f, ResponseWide) {
+                // By the pane's own keys, after a draw has measured the
+                // viewport they page and scroll.
+                draw(&mut app);
+                app.handle_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
+                app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+                draw(&mut app);
+                let v = app.session.response.view().expect("the response is ready");
+                assert!(v.cursor > 0 && v.h_scroll > 0, "the cursor {} and the scroll {}", v.cursor, v.h_scroll);
+            }
         }
         ManageEnvs | ManageEnvDetail => {
             for name in ["prod", "qa", "dev"] {
@@ -486,6 +529,15 @@ pub(super) fn build(f: Fixture) -> App {
         Settings => {
             app.update(Action::OpenManage { tab: Some(ManageTab::Settings) });
             app.settings.set_cursor(0);
+        }
+        SettingsFiles => {
+            use crate::components::settings::{SettingsRow, SettingsTab};
+            app.update(Action::OpenManage { tab: Some(ManageTab::Settings) });
+            let files = SettingsTab::rows()
+                .iter()
+                .position(|r| matches!(r, SettingsRow::File(_)))
+                .expect("the tab lists its files");
+            app.settings.set_cursor(files);
         }
         VarList => select_var_row(&mut app, VmRow::Var("alpha".into())),
         VarGrid => {

@@ -51,9 +51,17 @@ pub(super) fn starts() -> Vec<Start> {
             ("spaces", ManageSpaces),
             ("settings row", Settings),
             ("var list", VarList),
+            ("var form", VarForm),
+            ("var grid", VarGrid),
+            ("sidebar folder", SidebarFolder),
+            ("response wide", ResponseWide),
+            ("settings files", SettingsFiles),
         ] {
             out.push(s(name, fixture, profile, Keys(""), false));
         }
+        // Esc from the body blurs the editor in both profiles: no stop is
+        // selected (`SubFocus::None`).
+        out.push(s("blurred", Body, profile, Keys("<Esc>"), false));
         out.push(s("body", Body, profile, Keys(""), true));
         out.push(s("settings edit", Settings, profile, SettingsEdit("1000"), true));
         out.push(s("settings refused", Settings, profile, SettingsEdit("abc"), true));
@@ -261,22 +269,56 @@ fn field_open_and_the_open_text_field_agree_with_screen_field() {
     }
 }
 
+/// Everything a key on a surface (no field live) could change, short of
+/// the files on disk: where the keyboard is, every list's cursor and
+/// aim, the response's view, the table's column and the Settings values.
+fn observed(app: &App) -> String {
+    format!(
+        "{} | {:?} {:?} {:?} {:?} {:?} {} {:?} {:?} {} {:?} {:?} {} {} {:?} {:?} {:?} {}",
+        place(app),
+        app.sidebar.selected_key(),
+        app.sidebar.rows.iter().map(|r| format!("{r:?}")).collect::<Vec<_>>(),
+        app.editor.sub_focus,
+        app.editor.table.selected,
+        app.editor.table.col,
+        app.manage.list.cursor,
+        app.manage.list.detail_row,
+        app.manage.list.detail_col,
+        app.varmanager.left_cursor,
+        app.varmanager.grid.cursor,
+        app.varmanager.form_cursor,
+        app.settings.cursor,
+        app.settings.file_button,
+        app.session.response.view().map(|v| (v.cursor, v.scroll, v.h_scroll)),
+        app.ui_settings,
+        app.field_caret(),
+        app.modals.is_empty()
+    )
+}
+
+/// The response's starts, where shift+↑/↓ are named (see below).
+fn on_the_response(start: &Start) -> bool {
+    matches!(start.fixture, Fixture::ResponseLines | Fixture::ResponseWide)
+}
+
 /// Plan Decision 4: on every surface (no field live), in both profiles, a
 /// chord that no keymap binds and no component names does nothing: it no
 /// longer acts as the bare key. alt+↑/↓ are named on purpose (they move a
-/// row in the sidebar and the Manage lists). The response also names
-/// shift+↑/↓ (extend a line selection) and ctrl+Home/End (document jumps)
-/// on purpose, spec'd by its own tests, so those are exempt there only.
+/// row in the sidebar and the Manage lists), and so are ctrl+Home/End
+/// (first/last row on a list, document jumps on the response; the user's
+/// ruling 2026-10-07). The response also names shift+↑/↓ (extend a line
+/// selection) on purpose, spec'd by its own tests, so those are exempt
+/// there only.
 #[test]
 fn an_unbound_chord_on_a_list_does_nothing() {
     use KeyCode::*;
-    let named = [(Up, KeyModifiers::ALT), (Down, KeyModifiers::ALT)];
-    let response_named = [
-        (Up, KeyModifiers::SHIFT),
-        (Down, KeyModifiers::SHIFT),
+    let named = [
+        (Up, KeyModifiers::ALT),
+        (Down, KeyModifiers::ALT),
         (Home, KeyModifiers::CONTROL),
         (End, KeyModifiers::CONTROL),
     ];
+    let response_named = [(Up, KeyModifiers::SHIFT), (Down, KeyModifiers::SHIFT)];
     let codes = [Up, Down, Left, Right, Home, End, PageUp, PageDown, Enter];
     let mods = [
         KeyModifiers::SHIFT,
@@ -286,32 +328,11 @@ fn an_unbound_chord_on_a_list_does_nothing() {
         KeyModifiers::CONTROL | KeyModifiers::SHIFT,
         KeyModifiers::CONTROL | KeyModifiers::ALT,
     ];
-    let state = |app: &App| {
-        format!(
-            "{} | {:?} {:?} {:?} {:?} {} {:?} {:?} {} {:?} {:?} {} {} {:?} {:?} {}",
-            place(app),
-            app.sidebar.selected_key(),
-            app.sidebar.rows.iter().map(|r| format!("{r:?}")).collect::<Vec<_>>(),
-            app.editor.sub_focus,
-            app.editor.table.selected,
-            app.manage.list.cursor,
-            app.manage.list.detail_row,
-            app.manage.list.detail_col,
-            app.varmanager.left_cursor,
-            app.varmanager.grid.cursor,
-            app.varmanager.form_cursor,
-            app.settings.cursor,
-            app.settings.file_button,
-            app.session.response.view().map(|v| (v.cursor, v.scroll)),
-            app.field_caret(),
-            app.modals.is_empty()
-        )
-    };
     let mut failures = Vec::new();
     for start in starts().into_iter().filter(|s| !s.live) {
         for code in codes {
             for m in mods {
-                if named.contains(&(code, m)) || (start.name == "response" && response_named.contains(&(code, m))) {
+                if named.contains(&(code, m)) || (on_the_response(&start) && response_named.contains(&(code, m))) {
                     continue;
                 }
                 let ev = KeyEvent::new(code, m);
@@ -319,18 +340,26 @@ fn an_unbound_chord_on_a_list_does_nothing() {
                 if app.keymap.lookup(&crate::keys::KeyCombo::from_event(&ev)).is_some() {
                     continue;
                 }
-                let before = (state(&app), app.project().is_some().then(|| snapshot(&app)));
+                let before = (observed(&app), app.project().is_some().then(|| snapshot(&app)));
                 app.handle_key(ev);
                 app.capture_undo();
                 draw(&mut app);
-                let after = (state(&app), app.project().is_some().then(|| snapshot(&app)));
+                let after = (observed(&app), app.project().is_some().then(|| snapshot(&app)));
                 if after != before {
                     failures.push(format!("{} {:?} {m:?}+{code:?}:\n  before {}\n  after  {}", start.name, start.profile, before.0, after.0));
                 }
             }
         }
     }
-    assert!(failures.is_empty(), "{} chord(s) acted as the bare key:\n{}", failures.len(), failures.join("\n"));
+    // One line per case, then the first in full: the states are long.
+    let heads: Vec<&str> = failures.iter().filter_map(|f| f.lines().next()).collect();
+    assert!(
+        failures.is_empty(),
+        "{} chord(s) acted as the bare key:\n{}\n\nThe first in full:\n{}",
+        failures.len(),
+        heads.join("\n"),
+        failures.first().map_or("", String::as_str)
+    );
 }
 
 /// Review Focus 3: the router replays vim's motion letters as bare named
@@ -347,17 +376,123 @@ fn vim_motions_still_move_the_sidebar_after_the_guard() {
     assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/alpha"));
 }
 
-/// Review Focus 4: the paging chords name CONTROL exactly and keep working.
+/// The user's ruling 2026-10-07: on every list, ctrl+Home/End are a second
+/// spelling of Home/End (first and last row), as the response's document
+/// jumps are; macOS's cmd+↑/↓ fold to them. The response is left out:
+/// there bare Home/End scroll sideways, and the chords are spec'd by its
+/// own tests.
+#[test]
+fn ctrl_home_and_end_are_home_and_end_on_every_list() {
+    let mut moved = Vec::new();
+    let mut failures = Vec::new();
+    for start in starts().into_iter().filter(|s| !s.live && !on_the_response(s)) {
+        for code in [KeyCode::Home, KeyCode::End] {
+            let run = |m| {
+                let mut app = begin(&start);
+                let before = observed(&app);
+                app.handle_key(KeyEvent::new(code, m));
+                app.capture_undo();
+                draw(&mut app);
+                (before, observed(&app))
+            };
+            let (before, bare) = run(KeyModifiers::NONE);
+            let (_, chord) = run(KeyModifiers::CONTROL);
+            if bare != before {
+                moved.push((start.name, start.profile));
+            }
+            if chord != bare {
+                failures.push(format!("{} {:?} ctrl+{code:?}:\n  bare  {bare}\n  chord {chord}", start.name, start.profile));
+            }
+        }
+    }
+    let heads: Vec<&str> = failures.iter().filter_map(|f| f.lines().next()).collect();
+    assert!(
+        failures.is_empty(),
+        "{} chord(s) differ from the bare key:\n{}\n\nThe first in full:\n{}",
+        failures.len(),
+        heads.join("\n"),
+        failures.first().map_or("", String::as_str)
+    );
+    // Each list's Home or End moves it, so the check above can fail there.
+    for profile in [KeyProfile::Vim, KeyProfile::Arrows] {
+        for name in [
+            "sidebar",
+            "sidebar folder",
+            "table",
+            "env list",
+            "env detail",
+            "spaces",
+            "settings row",
+            "settings files",
+            "var list",
+            "var form",
+            "var grid",
+        ] {
+            assert!(moved.contains(&(name, profile)), "Home or End moves {name} {profile:?}");
+        }
+    }
+}
+
+/// Final review I-1: on macOS, cmd+↑/↓ (SUPER, from a kitty-protocol
+/// terminal) fold to ctrl+Home/End at the top of the app's key path
+/// (`keys::normalize_super_keys`), so they jump to the sidebar's first and
+/// last row.
+#[test]
+fn cmd_up_and_down_jump_to_the_sidebars_first_and_last_row() {
+    for profile in [KeyProfile::Vim, KeyProfile::Arrows] {
+        let start = Start { name: "sidebar", fixture: Fixture::SidebarThree, profile, setup: Setup::Keys(""), live: false };
+        let mut app = begin(&start);
+        app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::SUPER));
+        draw(&mut app);
+        assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/alpha"), "{profile:?}: cmd+↑");
+        let mut app = begin(&start);
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::SUPER));
+        draw(&mut app);
+        assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/gamma"), "{profile:?}: cmd+↓");
+    }
+}
+
+/// Review Focus 4: the paging chords name CONTROL exactly and keep
+/// working, on every list that pages, in both profiles. Each chord runs
+/// from the edge it pages away from (the first row for ctrl+d/f, the last
+/// for ctrl+u/b), so every one of them has somewhere to go. Left out, as
+/// they cannot page: the Settings rows and the Variables form name no
+/// paging keys, and the Manage detail pane and the Variables grid hold them
+/// inert on purpose.
 #[test]
 fn paging_chords_survive_the_guard() {
-    let start = Start { name: "response", fixture: Fixture::ResponseLines, profile: KeyProfile::Arrows, setup: Setup::Keys(""), live: false };
-    let mut app = begin(&start);
-    app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL));
-    draw(&mut app);
-    assert!(app.session.response.view().is_some_and(|v| v.cursor > 0), "ctrl+d moved the response cursor");
-    let start = Start { name: "sidebar", fixture: Fixture::SidebarThree, profile: KeyProfile::Arrows, setup: Setup::Keys(""), live: false };
-    let mut app = begin(&start);
-    app.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
-    draw(&mut app);
-    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/alpha"), "ctrl+u paged the sidebar up");
+    use Fixture::*;
+    let pages = |f: Fixture| matches!(f, SidebarThree | TableThreeHeaders | ResponseWide | ManageEnvs | ManageSpaces | VarList);
+    let cursor = |app: &App, f: Fixture| match f {
+        SidebarThree => app.sidebar.selected,
+        TableThreeHeaders => app.editor.table.selected,
+        ResponseWide => app.session.response.view().map(|v| v.cursor),
+        ManageEnvs | ManageSpaces => Some(app.manage.list.cursor),
+        VarList => Some(app.varmanager.left_cursor),
+        _ => unreachable!("{f:?} does not page"),
+    };
+    let mut ran = 0;
+    for start in starts().into_iter().filter(|s| !s.live && pages(s.fixture)) {
+        for (letter, down) in [('d', true), ('f', true), ('u', false), ('b', false)] {
+            ran += 1;
+            let mut app = begin(&start);
+            // The edge: the response's bare Home/End scroll sideways, so
+            // its document jumps are the chords.
+            let edge = if down { KeyCode::Home } else { KeyCode::End };
+            let mods = if on_the_response(&start) { KeyModifiers::CONTROL } else { KeyModifiers::NONE };
+            app.handle_key(KeyEvent::new(edge, mods));
+            draw(&mut app);
+            let at = cursor(&app, start.fixture).expect("a row is selected");
+            app.handle_key(KeyEvent::new(KeyCode::Char(letter), KeyModifiers::CONTROL));
+            draw(&mut app);
+            let now = cursor(&app, start.fixture).expect("a row is selected");
+            assert!(
+                if down { now > at } else { now < at },
+                "{} {:?}: ctrl+{letter} from {at} left the cursor at {now}",
+                start.name,
+                start.profile
+            );
+        }
+    }
+    assert_eq!(ran, 2 * 6 * 4, "every paging list, both profiles, four chords");
 }

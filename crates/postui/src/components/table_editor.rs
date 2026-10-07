@@ -481,6 +481,11 @@ impl TableEditorState {
             KeyCode::Char('b') if ev.modifiers == KeyModifiers::CONTROL => {
                 self.handle_nav_key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE), map)
             }
+            // ctrl+Home/End are a second spelling of Home/End, and what
+            // macOS's cmd+↑/↓ fold to (`keys::normalize_super_keys`).
+            KeyCode::Home | KeyCode::End if ev.modifiers == KeyModifiers::CONTROL => {
+                self.handle_nav_key(KeyEvent::new(ev.code, KeyModifiers::NONE), map)
+            }
             KeyCode::Home | KeyCode::PageUp if plain => {
                 self.selected = Some(0);
                 TableOutcome::consumed()

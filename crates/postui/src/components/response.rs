@@ -2560,10 +2560,10 @@ impl Response {
             return Some(Action::Render);
         }
 
-        // Each arm takes exactly the chord it names: a bare named key,
-        // shift+↑/↓ (extend the selection), ctrl+Home/End (document jumps)
-        // or ctrl+d/u/f/b. Any other chord does nothing rather than act as
-        // the bare key (piece 4 spec §5.1).
+        // Each navigation arm takes exactly the chord it names: a bare named
+        // key, shift+↑/↓ (extend the selection), ctrl+Home/End (document
+        // jumps) or ctrl+d/u/f/b. Any other chord does nothing rather than
+        // act as the bare key (piece 4 spec §5.1).
         let plain = ev.modifiers.is_empty();
         match ev.code {
             // No pane-local view key: the strip is walked by the tab chord

@@ -515,11 +515,13 @@ impl ManageList {
                 set_row(self, at + 1);
                 Some(None)
             }
-            KeyCode::Home if plain => {
+            // ctrl+Home/End are a second spelling of Home/End, and what
+            // macOS's cmd+↑/↓ fold to (`keys::normalize_super_keys`).
+            KeyCode::Home if plain || ctrl => {
                 set_row(self, 0);
                 Some(None)
             }
-            KeyCode::End if plain => {
+            KeyCode::End if plain || ctrl => {
                 set_row(self, rows.len() - 1);
                 Some(None)
             }
@@ -552,11 +554,13 @@ impl ManageList {
         ctx: &Project,
     ) -> Option<Action> {
         let len = Self::items(tab, ctx).len();
-        // Each arm takes exactly the chord it names: a bare named key,
-        // alt+↑/↓ (move the row), or ctrl+d/u/f/b. Any other chord does
-        // nothing rather than act as the bare key (piece 4 spec §5.1).
+        // Each navigation arm takes exactly the chord it names: a bare named
+        // key, alt+↑/↓ (move the row), ctrl+Home/End (first/last row) or
+        // ctrl+d/u/f/b. Any other chord does nothing rather than act as the
+        // bare key (piece 4 spec §5.1).
         let plain = ev.modifiers.is_empty();
         let alt = ev.modifiers == KeyModifiers::ALT;
+        let ctrl = ev.modifiers == KeyModifiers::CONTROL;
         if self.focus == ListFocus::Detail {
             if self.selected(tab, ctx).is_none() {
                 // The pane emptied under the aim (its row was deleted):
@@ -585,11 +589,11 @@ impl ManageList {
                 self.step(-1, len);
                 None
             }
-            KeyCode::Home if plain => {
+            KeyCode::Home if plain || ctrl => {
                 self.step(i32::MIN / 2, len);
                 None
             }
-            KeyCode::End if plain => {
+            KeyCode::End if plain || ctrl => {
                 self.step(i32::MAX / 2, len);
                 None
             }

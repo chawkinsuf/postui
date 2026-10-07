@@ -10529,9 +10529,11 @@ impl App {
                 }
             });
         }
-        // A named key acts bare only: any other chord does nothing rather
-        // than act as the bare key (piece 4 spec §5.1).
+        // A named key acts bare only (ctrl+Home/End also jump): any other
+        // chord does nothing rather than act as the bare key (piece 4 spec
+        // §5.1).
         let plain = ev.modifiers.is_empty();
+        let ctrl = ev.modifiers == KeyModifiers::CONTROL;
         Some(match ev.code {
             KeyCode::Esc => self.update(Action::CloseScreen),
             KeyCode::Char('q') => self.update(Action::Quit),
@@ -10545,12 +10547,14 @@ impl App {
                     .move_cursor(1, self.ui_settings_are_editable());
                 true
             }
-            KeyCode::Home if plain => {
+            // ctrl+Home/End are a second spelling of Home/End, and what
+            // macOS's cmd+↑/↓ fold to (`keys::normalize_super_keys`).
+            KeyCode::Home if plain || ctrl => {
                 self.settings
                     .move_cursor(i32::MIN / 2, self.ui_settings_are_editable());
                 true
             }
-            KeyCode::End if plain => {
+            KeyCode::End if plain || ctrl => {
                 self.settings
                     .move_cursor(i32::MAX / 2, self.ui_settings_are_editable());
                 true

@@ -795,10 +795,12 @@ impl Sidebar {
 
 impl Component for Sidebar {
     fn handle_key(&mut self, ev: KeyEvent) -> Option<Action> {
-        // Each arm takes exactly the chord it names: a bare named key, or
-        // alt+↑/↓ (move the row), or ctrl+d/u/f/b. Any other chord does
-        // nothing rather than act as the bare key (piece 4 spec §5.1).
+        // Each navigation arm takes exactly the chord it names: a bare named
+        // key, alt+↑/↓ (move the row), ctrl+Home/End (first/last row) or
+        // ctrl+d/u/f/b. Any other chord does nothing rather than act as the
+        // bare key (piece 4 spec §5.1).
         let plain = ev.modifiers.is_empty();
+        let ctrl = ev.modifiers == KeyModifiers::CONTROL;
         if ev.modifiers == KeyModifiers::ALT
             && let Some(delta) = match ev.code {
                 KeyCode::Up => Some(-1),
@@ -846,11 +848,13 @@ impl Component for Sidebar {
             KeyCode::Char('b') if ev.modifiers == KeyModifiers::CONTROL => {
                 self.handle_key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE))
             }
-            KeyCode::Home if plain => {
+            // ctrl+Home/End are a second spelling of Home/End, and what
+            // macOS's cmd+↑/↓ fold to (`keys::normalize_super_keys`).
+            KeyCode::Home if plain || ctrl => {
                 self.move_selection(i32::MIN / 2);
                 Some(Action::Render)
             }
-            KeyCode::End if plain => {
+            KeyCode::End if plain || ctrl => {
                 self.move_selection(i32::MAX / 2);
                 Some(Action::Render)
             }

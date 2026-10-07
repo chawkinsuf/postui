@@ -1094,6 +1094,7 @@ impl VarManager {
         // BackTab stay unguarded: a terminal sends shift+Tab as BackTab
         // with SHIFT.
         let plain = ev.modifiers.is_empty();
+        let ctrl = ev.modifiers == KeyModifiers::CONTROL;
         match ev.code {
             KeyCode::Esc | KeyCode::BackTab => {
                 self.focus = VmFocus::List;
@@ -1111,11 +1112,13 @@ impl VarManager {
                 self.form_cursor = fields[(at + 1).min(fields.len() - 1)];
                 None
             }
-            KeyCode::Home if plain => {
+            // ctrl+Home/End are a second spelling of Home/End, and what
+            // macOS's cmd+↑/↓ fold to (`keys::normalize_super_keys`).
+            KeyCode::Home if plain || ctrl => {
                 self.form_cursor = fields[0];
                 None
             }
-            KeyCode::End if plain => {
+            KeyCode::End if plain || ctrl => {
                 self.form_cursor = fields[fields.len() - 1];
                 None
             }
@@ -1311,6 +1314,7 @@ impl VarManager {
         // A named key acts bare only; any other chord does nothing rather
         // than act as the bare key (piece 4 spec §5.1).
         let plain = ev.modifiers.is_empty();
+        let ctrl = ev.modifiers == KeyModifiers::CONTROL;
         match ev.code {
             KeyCode::Esc => return Some(Action::CloseScreen),
             // `q` is free as a command letter in every focus stop, so the
@@ -1325,12 +1329,14 @@ impl VarManager {
                 self.move_cursor(1);
                 return None;
             }
-            // Home/End jump to the first/last selectable row.
-            KeyCode::Home if plain => {
+            // Home/End jump to the first/last selectable row; ctrl+Home/End
+            // are a second spelling, and what macOS's cmd+↑/↓ fold to
+            // (`keys::normalize_super_keys`).
+            KeyCode::Home if plain || ctrl => {
                 self.jump_to_edge(false);
                 return None;
             }
-            KeyCode::End if plain => {
+            KeyCode::End if plain || ctrl => {
                 self.jump_to_edge(true);
                 return None;
             }
@@ -1378,6 +1384,7 @@ impl VarManager {
         // would act on a different row than the grid the user is looking at.
         if let VmDetail::Group(selector) = self.detail.clone()
             && ev.code == KeyCode::Char(' ')
+            && plain
         {
             return self.select_entry_action(ctx, &selector);
         }
@@ -1385,9 +1392,7 @@ impl VarManager {
         // named keys stay here.
         match ev.code {
             KeyCode::F(2) => self.list_verb(ctx, Verb::Rename),
-            KeyCode::Delete if ev.modifiers.is_empty() => {
-                self.list_verb(ctx, Verb::Delete { count: 1 })
-            }
+            KeyCode::Delete if plain => self.list_verb(ctx, Verb::Delete { count: 1 }),
             _ => None,
         }
     }
@@ -1420,6 +1425,7 @@ impl VarManager {
         // A named key acts bare only; any other chord does nothing (piece
         // 4 spec §5.1). Esc, BackTab and Tab stay unguarded.
         let plain = ev.modifiers.is_empty();
+        let ctrl = ev.modifiers == KeyModifiers::CONTROL;
         match ev.code {
             KeyCode::Esc | KeyCode::BackTab => {
                 self.focus = VmFocus::List;
@@ -1449,11 +1455,13 @@ impl VarManager {
                 *col = (*col + 1).min(last_col);
                 None
             }
-            KeyCode::Home if plain => {
+            // ctrl+Home/End are a second spelling of Home/End, and what
+            // macOS's cmd+↑/↓ fold to (`keys::normalize_super_keys`).
+            KeyCode::Home if plain || ctrl => {
                 *row = 0;
                 None
             }
-            KeyCode::End if plain => {
+            KeyCode::End if plain || ctrl => {
                 *row = last_row;
                 None
             }
@@ -1472,9 +1480,7 @@ impl VarManager {
             }
             // Plain only: ctrl+d is the list's half-page motion one `h`
             // away, and must never delete here.
-            KeyCode::Delete if ev.modifiers.is_empty() => {
-                self.grid_verb(ctx, selector, Verb::Delete { count: 1 })
-            }
+            KeyCode::Delete if plain => self.grid_verb(ctx, selector, Verb::Delete { count: 1 }),
             KeyCode::Char('q') => Some(Action::Quit),
             _ => None,
         }
