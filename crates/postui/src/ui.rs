@@ -284,19 +284,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         }
     }
 
-    // The Manage screen swaps in its own chip set — the per-pane
-    // chips' actions target requests, which aren't on screen there. An
-    // open modal with chips of its own wins over both: while it captures
-    // the keyboard, its quick actions are the only ones that work.
-    let modal_chips = app.modals.footer_chips();
-    // A live row drag takes the footer over completely: it swallows every
-    // key but Escape (see `App::handle_key`), so the only chips that mean
-    // anything are the two ways to cancel it. The palette chip hides for
-    // the same reason it does under a modal — its key is dead — and the
-    // quit chip advertises the modified combo, the one key that still
-    // pre-empts the drag.
-    let drag_live = app.sidebar.drag.is_some() || app.manage.list.drag.is_some();
-    let globals_live = modal_chips.is_none() && !drag_live;
+    // The palette chip hides under a modal with chips of its own and
+    // during a live row drag, for the same reason: its key is dead. The
+    // quit chip then advertises the modified combo, the one key that
+    // still pre-empts both.
+    let drag_live = drag_live(app);
+    let globals_live = app.modals.footer_chips().is_none() && !drag_live;
     // A plain `q` reaches the quit binding only in the arrows profile (vim
     // gave `q` up, plan M1 Deviation 4) and only where nothing consumes it
     // first: no modal (they capture all input), the Main screen (other
@@ -324,91 +317,22 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                     }
                     _ => true,
                 });
-    let vm_chips = modal_chips.or_else(|| {
-        (app.screen == Screen::Manage).then(|| {
-            let mut chips: Vec<FooterChip> = manage_tab_chips(app);
-            // The tab strip belongs to the shell, not to any tab, and its
-            // chord runs above every tab body's keys (`handle_key_routed`),
-            // so it is the one chip every Manage tab shares -- last, so
-            // nothing shifts as the tab's own chips come and go.
-            chips.push((
-                crate::components::footer::tabs_key(),
-                "tabs".to_string(),
-                Some(crate::action::Action::CycleTabs(1)),
-            ));
-            chips
-        })
-    });
-    let vm_chips = if drag_live {
-        use crate::keyroute::spell::Key;
-        Some(vec![
-            (Key::Named("esc"), "cancel drag".to_string(), None),
-            (Key::Named("right-click"), "cancel drag".to_string(), None),
-        ])
-    } else {
-        vm_chips
-    };
-    // A selected data row (content focus, no cell edit — space/d would
-    // type into one) advertises its toggle/delete keys.
-    let table_row_selected = (focus == PaneId::Editor
-        && app.editor.sub_focus == crate::components::editor::SubFocus::Content
-        && app.editor.table.editing.is_none())
-    .then(|| {
-        app.editor
-            .table
-            .selected
-            .filter(|s| *s < app.editor.table_len())
-            .map(|i| (i, app.editor.table_row_enabled(i)))
-    })
-    .flatten();
+    let vm_chips = override_chips(app);
+    let pane = PaneChipArgs::of(app);
     let vim_status = app.vim_status();
     crate::components::footer::draw_footer(
         frame,
         layout.footer,
         &app.theme,
-        focus,
-        app.shift_enter_send,
-        app.editor.sending,
-        // No add chip while a new row is already mid-add (the ghost-row
-        // edit); editing an existing row keeps it.
-        (!app.editor.adding_row())
-            .then(|| app.editor.active_tab.add_row_label())
-            .flatten(),
-        matches!(
-            app.editor.sub_focus,
-            crate::components::editor::SubFocus::Method | crate::components::editor::SubFocus::Url
-        ),
-        // Precisely the URL line, selected (not open) — the "enter edit"
-        // chip's own gate. The `url_focused` arg above covers the whole
-        // address bar (method or URL), which is too broad for a chip that
-        // names `Action::FocusUrl`: the method badge's Enter opens the
-        // method dropdown, not the URL line.
-        app.editor.sub_focus == crate::components::editor::SubFocus::Url
-            && !app.editor.url_open(),
-        table_row_selected,
-        if app.session.response.jq_focused() {
-            if app.session.response.jq_bar().ai_pending {
-                crate::components::footer::JqBarState::Describing
-            } else if app.session.response.jq_menu_open() {
-                crate::components::footer::JqBarState::Menu
-            } else if app.session.response.jq_ghost_is_closer() {
-                crate::components::footer::JqBarState::Closer
-            } else if app.session.response.jq_ghost().is_some()
-                || app.session.response.jq_menu_offered()
-            {
-                crate::components::footer::JqBarState::Completing {
-                    cycle: app.session.response.jq_tab() == crate::config::JqTab::Cycle,
-                }
-            } else {
-                crate::components::footer::JqBarState::Focused
-            }
-        } else if app.session.response.jq_open() {
-            crate::components::footer::JqBarState::Open
-        } else {
-            crate::components::footer::JqBarState::Closed
-        },
-        // A text field of this pane's own owns Esc: it says `esc done`.
-        app.pane_field_open(focus),
+        pane.focus,
+        pane.shift_enter_send,
+        pane.sending,
+        pane.add_row_label,
+        pane.url_focused,
+        pane.url_selected,
+        pane.table_row_selected,
+        pane.jq_bar,
+        pane.field_open,
         vm_chips,
         globals_live,
         plain_q_quits,
@@ -777,6 +701,146 @@ fn draw_manage_without_a_project(
         theme.page,
         false,
     );
+}
+
+/// A row drag is live in the sidebar or a Manage list.
+fn drag_live(app: &App) -> bool {
+    app.sidebar.drag.is_some() || app.manage.list.drag.is_some()
+}
+
+/// The chips that replace the main panes' wholesale, or `None` for the
+/// panes' own ([`PaneChipArgs`]). The Manage screen swaps in its own chip
+/// set — the per-pane chips' actions target requests, which aren't on
+/// screen there. An open modal with chips of its own wins over both:
+/// while it captures the keyboard, its quick actions are the only ones
+/// that work. A live row drag takes the footer over completely: it
+/// swallows every key but Escape (see `App::handle_key`), so the only
+/// chips that mean anything are the two ways to cancel it.
+pub(crate) fn override_chips(app: &App) -> Option<Vec<FooterChip>> {
+    use crate::keyroute::spell::Key;
+    if drag_live(app) {
+        return Some(vec![
+            (Key::Named("esc"), "cancel drag".to_string(), None),
+            (Key::Named("right-click"), "cancel drag".to_string(), None),
+        ]);
+    }
+    app.modals.footer_chips().or_else(|| {
+        (app.screen == Screen::Manage).then(|| {
+            let mut chips: Vec<FooterChip> = manage_tab_chips(app);
+            // The tab strip belongs to the shell, not to any tab, and its
+            // chord runs above every tab body's keys (`handle_key_routed`),
+            // so it is the one chip every Manage tab shares -- last, so
+            // nothing shifts as the tab's own chips come and go.
+            chips.push((
+                crate::components::footer::tabs_key(),
+                "tabs".to_string(),
+                Some(crate::action::Action::CycleTabs(1)),
+            ));
+            chips
+        })
+    })
+}
+
+/// The footer's left-hand chips, unspelled, exactly as `draw` hands them
+/// to `draw_footer`: the override if any, else the panes' own.
+#[cfg(test)]
+pub(crate) fn footer_chips_of(app: &App) -> Vec<FooterChip> {
+    override_chips(app).unwrap_or_else(|| PaneChipArgs::of(app).chips())
+}
+
+/// What the main panes' footer chips are built from
+/// (`footer::footer_chips`), read off the app in one place: `draw` hands
+/// it to the footer, and the key matrix's spelling test builds the same
+/// chips from it, so the two cannot drift.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PaneChipArgs {
+    pub focus: PaneId,
+    pub shift_enter_send: bool,
+    pub sending: bool,
+    pub add_row_label: Option<&'static str>,
+    pub url_focused: bool,
+    pub url_selected: bool,
+    pub table_row_selected: Option<(usize, bool)>,
+    pub jq_bar: crate::components::footer::JqBarState,
+    pub field_open: bool,
+}
+
+impl PaneChipArgs {
+    pub(crate) fn of(app: &App) -> Self {
+        use crate::components::editor::SubFocus;
+        use crate::components::footer::JqBarState;
+        let focus = app.focus;
+        let response = &app.session.response;
+        Self {
+            focus,
+            shift_enter_send: app.shift_enter_send,
+            sending: app.editor.sending,
+            // No add chip while a new row is already mid-add (the ghost-row
+            // edit); editing an existing row keeps it.
+            add_row_label: (!app.editor.adding_row())
+                .then(|| app.editor.active_tab.add_row_label())
+                .flatten(),
+            url_focused: matches!(app.editor.sub_focus, SubFocus::Method | SubFocus::Url),
+            // Precisely the URL line, selected (not open) — the "enter edit"
+            // chip's own gate. `url_focused` covers the whole address bar
+            // (method or URL), which is too broad for a chip that names
+            // `Action::FocusUrl`: the method badge's Enter opens the method
+            // dropdown, not the URL line.
+            url_selected: app.editor.sub_focus == SubFocus::Url && !app.editor.url_open(),
+            // A selected data row (content focus, no cell edit — space/d
+            // would type into one) advertises its toggle/delete keys.
+            table_row_selected: (focus == PaneId::Editor
+                && app.editor.sub_focus == SubFocus::Content
+                && app.editor.table.editing.is_none())
+            .then(|| {
+                app.editor
+                    .table
+                    .selected
+                    .filter(|s| *s < app.editor.table_len())
+                    .map(|i| (i, app.editor.table_row_enabled(i)))
+            })
+            .flatten(),
+            jq_bar: if response.jq_focused() {
+                if response.jq_bar().ai_pending {
+                    JqBarState::Describing
+                } else if response.jq_menu_open() {
+                    JqBarState::Menu
+                } else if response.jq_ghost_is_closer() {
+                    JqBarState::Closer
+                } else if response.jq_ghost().is_some() || response.jq_menu_offered() {
+                    JqBarState::Completing { cycle: response.jq_tab() == crate::config::JqTab::Cycle }
+                } else {
+                    JqBarState::Focused
+                }
+            } else if response.jq_open() {
+                JqBarState::Open
+            } else {
+                JqBarState::Closed
+            },
+            // A text field of this pane's own owns Esc: it says `esc done`.
+            field_open: app.pane_field_open(focus),
+        }
+    }
+
+    /// The per-pane chips these arguments paint, unspelled: what
+    /// `draw_footer` builds before a modal's or a Manage tab's override.
+    #[cfg(test)]
+    pub(crate) fn chips(self) -> Vec<FooterChip> {
+        crate::components::footer::footer_chips(
+            self.focus,
+            self.shift_enter_send,
+            self.sending,
+            self.add_row_label,
+            self.url_focused,
+            self.url_selected,
+            self.table_row_selected,
+            self.jq_bar,
+            self.field_open,
+        )
+        .into_iter()
+        .map(|(k, l, a)| (k, l.to_string(), a))
+        .collect()
+    }
 }
 
 /// The Manage screen's per-tab chips: the tab body's own keys.

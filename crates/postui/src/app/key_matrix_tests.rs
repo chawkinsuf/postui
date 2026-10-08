@@ -981,28 +981,11 @@ fn every_action_is_keyboard_reachable_in_both_profiles() {
     }
 }
 
-/// The footer chips a fixture paints, unspelled: the Manage screens'
-/// own, or the main panes' as `ui` builds them (the address bar's flags,
-/// the active tab's add-row label and the pane's own field read off the
-/// app as `ui::draw` reads them).
-fn chips(app: &App, f: Fixture) -> Vec<crate::components::footer::FooterChip> {
-    use crate::components::footer::{JqBarState, footer_chips};
-    let main = |pane: PaneId, row: Option<(usize, bool)>| -> Vec<crate::components::footer::FooterChip> {
-        let url_focused = matches!(app.editor.sub_focus, SubFocus::Method | SubFocus::Url);
-        let url_selected = app.editor.sub_focus == SubFocus::Url && !app.editor.url_open();
-        let add_label = (!app.editor.adding_row()).then(|| app.editor.active_tab.add_row_label()).flatten();
-        footer_chips(pane, false, false, add_label, url_focused, url_selected, row, JqBarState::Closed, app.pane_field_open(pane))
-            .into_iter()
-            .map(|(k, l, a)| (k, l.to_string(), a))
-            .collect()
-    };
-    match f {
-        SidebarThree => main(PaneId::Sidebar, None),
-        TableThreeHeaders => main(PaneId::Editor, Some((1, true))),
-        UrlLine | Body => main(PaneId::Editor, None),
-        ResponseLines => main(PaneId::Response, None),
-        _ => crate::ui::manage_tab_chips(app),
-    }
+/// The footer chips the app paints now, unspelled: what `ui::draw` hands
+/// `draw_footer` (a modal's, the Manage screen's with the shell's tabs
+/// chip, or the main panes' from the app's own state), by the same code.
+fn chips(app: &App) -> Vec<crate::components::footer::FooterChip> {
+    crate::ui::footer_chips_of(app)
 }
 
 /// Spec §8.2's spelling test, for the verb chips (plan M2 Deviation 3):
@@ -1020,7 +1003,7 @@ fn every_verb_chip_resolves_to_its_chip() {
             app.use_profile(profile);
             draw(&mut app);
             let surface = app.surface();
-            for (key, label, action) in chips(&app, f) {
+            for (key, label, action) in chips(&app) {
                 let verb = match key {
                     Key::Of(Action::OnSelection(v)) | Key::OneOf(Action::OnSelection(v), _) => v,
                     _ => continue,
@@ -1067,11 +1050,21 @@ fn every_painted_keycap_resolves_to_its_chip() {
     let fixtures = [SidebarThree, TableThreeHeaders, UrlLine, Body, ResponseLines, ManageEnvs, ManageSpaces, VarList, VarGrid, VarForm, Settings];
     for profile in [KeyProfile::Vim, KeyProfile::Arrows] {
         let mut checked = 0;
-        for f in fixtures {
+        // Each fixture as built, and in vim the URL line opened and Esc'd
+        // back to its idle Normal (plan M4b Deviation 21), where the field
+        // rows and the engine's hand-on spell the keycaps.
+        let mut states: Vec<(Fixture, &str)> = fixtures.iter().map(|&f| (f, "")).collect();
+        if profile == KeyProfile::Vim {
+            states.push((UrlLine, "i<Esc>"));
+        }
+        let mut normal_seen = false;
+        for (f, prelude) in states {
             let mut app = build(f);
             app.use_profile(profile);
             draw(&mut app);
+            feed(&mut app, prelude);
             let at = app.spell_ctx();
+            normal_seen |= matches!(at.field, FieldSpell::Normal(_));
             let surface = app.surface();
             let scope = app.ex_scope();
             // One action's spelling is honest when it is reached one of the three ways.
@@ -1112,7 +1105,7 @@ fn every_painted_keycap_resolves_to_its_chip() {
                     _ => false,
                 }
             };
-            for (key, label, _) in chips(&app, f) {
+            for (key, label, _) in chips(&app) {
                 let Some(shown) = keycap(&key, at, &app.keymap) else { continue };
                 let ok = match &key {
                     Key::Of(a) => honest(&app, a, &spell(at, a, &app.keymap).unwrap()) && shown == glyphs(&spell(at, a, &app.keymap).unwrap()),
@@ -1141,9 +1134,13 @@ fn every_painted_keycap_resolves_to_its_chip() {
                     Key::OrRow(named, a) => shown == *named || honest(&app, a, &shown),
                     Key::Named(_) | Key::Nav(_) | Key::Answer(_) | Key::Pick => continue,
                 };
-                assert!(ok, "{profile:?} {f:?}: the {label} chip paints {shown:?}, which does not run its action");                checked += 1;
+                assert!(ok, "{profile:?} {f:?} {prelude:?}: the {label} chip paints {shown:?}, which does not run its action");
+                checked += 1;
             }
         }
         assert!(checked >= 15, "{profile:?}: only {checked} keycaps were checked");
+        if profile == KeyProfile::Vim {
+            assert!(normal_seen, "no vim state reached a field's idle Normal: FieldSpell::Normal went unchecked");
+        }
     }
 }
