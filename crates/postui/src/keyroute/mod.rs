@@ -58,10 +58,17 @@ pub struct Router {
 
 impl Router {
     /// Drops whatever is pending, the recording flag included: a profile
-    /// switch, a mouse press, a field's close.
+    /// switch, a mouse press.
     pub fn clear(&mut self) {
-        self.pending.clear();
+        self.clear_pending();
         self.recording = None;
+    }
+
+    /// Drops the pending keys and keeps the recording flag: a field's
+    /// close (amendment A4-1; the final review's ruling I-4, so recording
+    /// a field edit still ends at the next bare `q`).
+    pub fn clear_pending(&mut self) {
+        self.pending.clear();
     }
 
     /// The register `q` was typed with, while the fake recording is on.
@@ -1080,6 +1087,14 @@ mod tests {
         assert_eq!(r.recording(), None, "Enter is no register");
         feed(&mut r, &s, "q\"");
         assert_eq!(r.recording(), Some('"'));
+        // A field close drops the pending keys and keeps the flag (the
+        // final review's ruling, I-4); a mouse press or a profile switch
+        // drops both.
+        assert_eq!(feed(&mut r, &s, "g"), Resolved::Consumed);
+        assert_eq!(r.echo(), "g");
+        r.clear_pending();
+        assert_eq!(r.echo(), "", "the pending keys go");
+        assert_eq!(r.recording(), Some('"'), "the flag stays");
         r.clear();
         assert_eq!(r.recording(), None, "a clear drops the flag");
     }

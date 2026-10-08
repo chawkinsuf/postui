@@ -203,10 +203,11 @@ impl App {
             }
             Edge::Carry(from, to) => self.carry_session(from, to),
             // Spec §3.3: the close edge also drops the router's pending
-            // keys (amendment A4-1).
+            // keys (amendment A4-1), but not the recording flag (the final
+            // review's ruling I-4).
             Edge::Close(id) => {
                 self.close_session(id);
-                self.router.clear();
+                self.router.clear_pending();
             }
             Edge::Same(id) => {
                 let (glue, buf) = self.session_parts(id);
@@ -293,7 +294,7 @@ impl App {
                     self.modal_glue.leave_ghost();
                 }
                 self.glue.swap_registers(&mut self.modal_glue);
-                self.router.clear();
+                self.router.clear_pending();
             }
         }
         self.modal_session = now;

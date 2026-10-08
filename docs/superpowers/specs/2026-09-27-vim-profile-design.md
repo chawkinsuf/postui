@@ -846,7 +846,7 @@ modal field in either profile until M3.
 | `ctrl+v` | paste in both profiles; no block Visual | earlier |
 | `u` `ctrl+r` `:` | table rows on every surface except Cmdlines, pickers and dialogs (amended by plan M1, Deviation 26) | earlier; dialogs you |
 
-Amended by plan M4b (`mine`): `ZZ`/`ZQ` and the note rows apply on the navigation surfaces and in a screen field's idle Normal, never on a dialog, a prompt, a picker or a dialog's field. They bind on `Surfaces::NAV` and the screen-field classes; the body pane is reached through its field class (it is always a live field when focused), not through a `Surface::Body` row. `q` followed by a register char (`a`–`z`, `A`–`Z`, `0`–`9`, `"`) arms the recording flag; `q` followed by anything else shows the note only. A mouse press or a profile switch clears the flag along with the pending keys. `"x` on a list consumes only the register key, so a following `p` puts the row register (flagged for review). The quit chip reads `:q` where the line opens and `^C` elsewhere.
+Amended by plan M4b (`mine`): `ZZ`/`ZQ` and the note rows apply on the navigation surfaces and in a screen field's idle Normal, never on a dialog, a prompt, a picker or a dialog's field. They bind on `Surfaces::NAV` and the screen-field classes; the body pane is reached through its field class (it is always a live field when focused), not through a `Surface::Body` row. `q` followed by a register char (`a`–`z`, `A`–`Z`, `0`–`9`, `"`) arms the recording flag; `q` followed by anything else shows the note only. A mouse press or a profile switch clears the flag along with the pending keys; a field close drops the pending keys but keeps the flag (the final review's ruling, overriding the plan's Deviation 5). `"x` on a list consumes only the register key, so a following `p` puts the row register (flagged for review). The quit chip reads `:q` where the line opens and `^C` elsewhere.
 
 ### 5.12 `.` repeats a list change (tier 2)
 
@@ -1132,7 +1132,7 @@ milestone.
 - **M5: tier 2 and acceptance.**
   - `.`; sidebar folds; `zR` `zM` `zz` `zt` `zb`; `ctrl+f` `ctrl+b` in
     the response; `*` `#`; `yy` and `V`+`y` in the response.
-  - `:e` `:e!`; `ctrl+w` + arrows; command-line history.
+  - `ctrl+w` + arrows; command-line history.
   - Then the acceptance sweep (§8.4). Any tier-2 item that proves costly
     moves to a follow-up and its key-list row is marked Parked.
 

@@ -107,6 +107,45 @@ fn the_recording_flag_in_an_open_field() {
     assert_eq!(app.editor.url.text(), "a", "x is the engine's again");
 }
 
+/// The final review's I-4 ruling: a field close drops the pending keys but
+/// keeps the recording flag, so recording a cell edit and closing it with
+/// `j` still ends at the next bare `q`, and `@a` only notes.
+#[test]
+fn the_recording_flag_survives_a_field_close() {
+    let mut app = vim(Fixture::TableThreeHeaders);
+    let rows = app.editor.headers.len();
+    feed(&mut app, "qaix<Esc>");
+    assert!(app.field_caret().is_live(), "the cell is open");
+    feed(&mut app, "j");
+    assert!(!app.field_caret().is_live(), "j closed the cell");
+    assert_eq!(app.key_echo(), "recording @a — not supported", "the close kept the flag");
+    feed(&mut app, "q");
+    assert_eq!(app.key_echo(), "", "the closing q is swallowed and clears the flag");
+    app.toasts = Default::default();
+    feed(&mut app, "@a");
+    assert!(toasts(&app).iter().any(|m| m.contains(NO_MACROS)), "{:?}", toasts(&app));
+    assert_eq!(app.editor.headers.len(), rows, "nothing added");
+    assert!(!app.field_caret().is_live(), "nothing opened");
+    assert!(app.modals.is_empty());
+}
+
+/// Task 1's deferred case: the flag armed on one navigation surface holds
+/// on the next, where the bare `q` closes it.
+#[test]
+fn the_recording_flag_survives_a_move_to_another_surface() {
+    let mut app = vim(Fixture::SidebarThree);
+    feed(&mut app, "qa");
+    let from = app.surface();
+    feed(&mut app, "<Tab>");
+    assert_ne!(app.surface(), from, "Tab moved the keyboard");
+    assert!(!app.field_caret().is_live());
+    assert_eq!(app.key_echo(), "recording @a — not supported");
+    feed(&mut app, "q");
+    assert_eq!(app.key_echo(), "", "swallowed there, not a fresh prefix");
+    assert!(!app.should_quit);
+    assert!(app.modals.is_empty());
+}
+
 #[test]
 fn marks_and_registers_note_on_a_list_and_the_next_key_is_fresh() {
     for (keys, note) in [("'a", NO_MARKS), ("`a", NO_MARKS), ("\"a", NO_REGISTERS)] {
