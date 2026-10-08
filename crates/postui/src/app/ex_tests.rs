@@ -62,6 +62,28 @@ fn enter_on_the_pinned_row_runs_it() {
     assert!(app.should_quit, "a clean request quits at once");
 }
 
+/// The final review's I-1: `:q` meets the dirty gate from every state the
+/// line opens from, a dialog under it included; ctrl+c keeps its modal
+/// exemption, and `:q!` is the line's way out.
+#[test]
+fn colon_q_over_a_dialog_meets_the_dirty_gate() {
+    let mut app = vim(Fixture::DirtyScratch);
+    feed(&mut app, ":w<CR>");
+    assert!(matches!(app.modals.top(), Some(Modal::Prompt { .. })), "Save as");
+    feed(&mut app, "<Esc>:q<CR>");
+    assert!(!app.should_quit, "the gate, not a quit");
+    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })), "the dirty gate's confirm");
+    feed(&mut app, "<Esc>");
+    assert!(matches!(app.modals.top(), Some(Modal::Prompt { .. })), "cancelling the gate goes back to Save as");
+    assert!(!app.should_quit);
+    assert_eq!(app.mode_indicator(), Some("INSERT"), "its field back in Insert, as under any dialog that closes");
+    feed(&mut app, "<Esc>:q!<CR>");
+    assert!(app.should_quit, ":q! still leaves at once");
+    let mut app = vim(Fixture::DirtyScratch);
+    feed(&mut app, ":w<CR><C-c>");
+    assert!(app.should_quit, "ctrl+c over a dialog stays an immediate exit");
+}
+
 /// Review Focus 1.
 #[test]
 fn a_parked_field_is_committed_before_the_verb() {
@@ -71,6 +93,20 @@ fn a_parked_field_is_committed_before_the_verb() {
     assert!(!app.field_caret().is_live(), "closed");
     assert!(!app.editor.is_dirty(), "saved with the typed text");
     assert!(app.editor.url.text().starts_with('x'), "{:?}", app.editor.url.text());
+}
+
+/// The final review's I-2 ruling: a refused close halts the line's run,
+/// so no verb acts on the stale text.
+#[test]
+fn a_refused_close_runs_no_verb() {
+    for q in [":w<CR>", ":wq<CR>", ":x<CR>", ":q<CR>"] {
+        let mut app = super::global_tests::refused_settings_field();
+        feed(&mut app, q);
+        assert!(app.modals.is_empty(), "{q}: {:?}", app.modals.top().map(std::mem::discriminant));
+        assert_eq!(app.settings.editing, Some(crate::components::settings::SettingsField::Osc52Limit), "{q}: the field stays open");
+        assert!(app.editor.is_dirty(), "{q}: nothing saved");
+        assert!(!app.should_quit, "{q}");
+    }
 }
 
 /// Review Focus 1.

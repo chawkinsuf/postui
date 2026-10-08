@@ -33,7 +33,7 @@ const fn verb(names: &'static [&'static str], run: Run, caption: &'static str) -
 }
 
 fn save() -> Action { Action::SaveRequest }
-fn quit() -> Action { Action::Quit }
+fn quit() -> Action { Action::GatedQuit }
 fn force_quit() -> Action { Action::ForceQuit }
 fn write_quit() -> Action { Action::WriteQuit }
 fn reload() -> Action { Action::ReloadFromDisk }
@@ -214,8 +214,8 @@ mod tests {
         for q in ["w", "write", "up", "update", "wa"] {
             assert_eq!(pinned(q, &sidebar()).actions, vec![close.clone(), Action::SaveRequest], "{q}");
         }
-        assert_eq!(pinned("q", &sidebar()).actions, vec![close.clone(), Action::Quit]);
-        assert_eq!(pinned("qa", &sidebar()).actions, vec![close.clone(), Action::Quit]);
+        assert_eq!(pinned("q", &sidebar()).actions, vec![close.clone(), Action::GatedQuit]);
+        assert_eq!(pinned("qa", &sidebar()).actions, vec![close.clone(), Action::GatedQuit]);
         assert_eq!(pinned("q!", &sidebar()).actions, vec![close.clone(), Action::ForceQuit]);
         for q in ["wq", "x", "xit", "wqa", "xa"] {
             assert_eq!(pinned(q, &sidebar()).actions, vec![close.clone(), Action::WriteQuit], "{q}");
@@ -274,7 +274,8 @@ mod tests {
     #[test]
     fn spellings_and_reach() {
         assert_eq!(spelling(&Action::SaveRequest).as_deref(), Some(":w"));
-        assert_eq!(spelling(&Action::Quit).as_deref(), Some(":q"));
+        assert_eq!(spelling(&Action::GatedQuit).as_deref(), Some(":q"));
+        assert_eq!(spelling(&Action::Quit), None, "the quit chip spells `:q` itself (`spell::Key::Quit`)");
         assert_eq!(spelling(&Action::CycleSplit).as_deref(), Some(":split"));
         assert_eq!(spelling(&Action::CycleSplitBack).as_deref(), Some(":splitback"));
         assert_eq!(spelling(&Action::Send).as_deref(), Some(":send"));

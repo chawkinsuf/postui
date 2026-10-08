@@ -113,8 +113,9 @@ impl App {
     /// key into the live field, an open mode into the event's `Ran`. A run
     /// of replayed named keys stops once the surface changes under it (plan
     /// M1 Deviation 13): `3j` from the URL line enters the table and stops.
-    /// An engine run stops once its field closes. Actions run on whatever
-    /// the surface: `3u` undoes three. A counted undo or redo stops at the
+    /// An engine run stops once its field closes, and any run stops at a
+    /// `CloseField` the field refused. Actions run on whatever the
+    /// surface: `3u` undoes three. A counted undo or redo stops at the
     /// first repeat that stepped nothing, so `10u` with three steps undoes
     /// three and says "Nothing to undo" once (the final review's ruling,
     /// spec §9 M1). A counted list verb is never repeated here: `{N}dd` and
@@ -135,8 +136,18 @@ impl App {
                 Step::Key(ev) => ran = ran.and(Ran::routed(self.handle_key_routed(ev))),
                 Step::Action(a) => {
                     let history = matches!(a, Action::Undo | Action::Redo);
+                    let close = a == Action::CloseField;
+                    if close {
+                        self.last_action_failed = false;
+                    }
                     ran = ran.and(Ran::routed(self.update(a)));
                     if history && !self.history_stepped {
+                        break;
+                    }
+                    // A refused close leaves the field open, and nothing
+                    // after it runs: `ZZ` does not save or quit, `j` does
+                    // not move (the final review's ruling I-2).
+                    if close && self.last_action_failed {
                         break;
                     }
                 }

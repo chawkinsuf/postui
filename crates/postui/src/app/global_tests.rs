@@ -61,6 +61,35 @@ fn zz_in_an_open_url_line_saves_what_it_holds() {
     assert!(!app.field_caret().is_live(), "closed before the save");
 }
 
+/// A dirty request behind the Settings tab, whose `osc52_limit` field is
+/// open holding `abc`: a commit it refuses (the final review's I-2 trace).
+pub(super) fn refused_settings_field() -> App {
+    let mut app = vim(Fixture::TableThreeHeaders);
+    app.update(Action::OpenManage { tab: Some(crate::components::manage::ManageTab::Settings) });
+    app.settings.begin_edit(crate::components::settings::SettingsField::Osc52Limit, "abc");
+    draw(&mut app);
+    assert!(app.editor.is_dirty());
+    assert!(app.field_caret().is_live());
+    app
+}
+
+/// The final review's I-2 ruling: when the close `ZZ` starts with is
+/// refused, the field stays open and nothing after the close runs.
+#[test]
+fn zz_on_a_field_that_refuses_its_commit_keeps_running() {
+    let mut app = refused_settings_field();
+    feed(&mut app, "ZZ");
+    assert!(!app.should_quit, "the close was refused: no quit");
+    assert_eq!(app.settings.editing, Some(crate::components::settings::SettingsField::Osc52Limit), "the field stays open");
+    assert!(app.editor.is_dirty(), "nothing saved");
+    assert!(app.modals.is_empty());
+    // The leave rows halt the same way: `j` closes nothing and moves nothing.
+    let row = app.settings.cursor;
+    feed(&mut app, "j");
+    assert_eq!(app.settings.editing, Some(crate::components::settings::SettingsField::Osc52Limit));
+    assert_eq!(app.settings.cursor, row);
+}
+
 #[test]
 fn zx_is_swallowed_on_a_list() {
     let mut app = vim(Fixture::SidebarThree);

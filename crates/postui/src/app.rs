@@ -2640,6 +2640,12 @@ impl App {
                 self.dirty_gate("quit", Action::ForceQuit);
                 true
             }
+            // `:q` has no such exemption: typed over a dialog it still meets
+            // the gate, whose cancel goes back to that dialog.
+            Action::GatedQuit if self.editor_holds_unsaved() => {
+                self.dirty_gate("quit", Action::ForceQuit);
+                true
+            }
             Action::DiscardChanges => {
                 // An edit still open in the URL line is a step of its own
                 // before the discard becomes the next one — so the toast's
@@ -2918,7 +2924,7 @@ impl App {
                 }
                 redraw
             }
-            Action::Quit | Action::ForceQuit => {
+            Action::Quit | Action::ForceQuit | Action::GatedQuit => {
                 let slug = self.editor.slug.clone();
                 if let Some(p) = self.project_mut() {
                     p.set_open_request(slug.as_deref());
@@ -4274,6 +4280,12 @@ impl App {
                 // have taken. In vim it skips the engine, so the chip always
                 // closes the field, as on main; the end-of-event sync then
                 // leaves the session (amendment A4-2).
+                //
+                // A close the field refuses (a Settings number that does not
+                // parse) leaves it open and sets `last_action_failed`, so
+                // nothing after it in a row or on the `:` line runs on the
+                // stale text (the final review's ruling I-2).
+                // A dialog's field always closes.
                 if !self.modals.is_empty() {
                     if !self.modals.field_open() {
                         return false;
@@ -4284,7 +4296,12 @@ impl App {
                 if !self.field_open() {
                     return false;
                 }
-                self.handle_key_routed(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+                let changed = self.handle_key_routed(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+                // The screen's own field, whatever the refusal put on top.
+                if self.screen_field().is_some_and(|id| id != crate::keyroute::FieldId::Body) {
+                    self.last_action_failed = true;
+                }
+                changed
             }
             Action::ConfirmTopModal => {
                 // The button row's aim decides there (spec 2026-09-15); from
