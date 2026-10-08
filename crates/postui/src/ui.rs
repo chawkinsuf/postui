@@ -69,7 +69,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let hover_t = app.anims.value_or(crate::anim::AnimKey::Hover, now, 1.0);
     // Spelled as from a closed field, so the buttons always carry the key
     // that works once the field is left (plan M4b Deviation 20).
-    let bar_spell = crate::keyroute::SpellCtx { field_live: false, ..app.spell_ctx() };
+    let bar_spell = crate::keyroute::SpellCtx { field: crate::keyroute::FieldSpell::None, ..app.spell_ctx() };
     let save_key = crate::keyroute::spell::keycap(&crate::keyroute::spell::Key::Of(crate::action::Action::SaveRequest), bar_spell, &app.keymap).unwrap_or_default();
     let discard_key = crate::keyroute::spell::keycap(&crate::keyroute::spell::Key::Of(crate::action::Action::DiscardChanges), bar_spell, &app.keymap).unwrap_or_default();
     crate::components::header_bar::draw_header(

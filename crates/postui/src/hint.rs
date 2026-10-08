@@ -637,7 +637,7 @@ mod tests {
         for profile in [KeyProfile::Arrows, KeyProfile::Vim] {
             let keymap = Keymap::default_bindings_for(profile);
             let ctx = HintCtx {
-                spell: SpellCtx { profile, surface: Surface::UrlLine, field_live: false },
+                spell: SpellCtx { profile, surface: Surface::UrlLine, field: crate::keyroute::FieldSpell::None },
                 ..ctx()
             };
             assert_eq!(hint_for(&Hit::CopyUrl, &keymap, &ctx).as_deref(), Some(want.as_str()), "{profile:?}");

@@ -13,7 +13,7 @@ pub mod pending;
 pub mod spell;
 pub mod table;
 
-pub use ctx::{EngineKind, EngineView, FieldCaret, FieldId, KeyCtx, SpellCtx, Surface};
+pub use ctx::{EngineKind, EngineView, FieldCaret, FieldId, FieldSpell, KeyCtx, SpellCtx, Surface};
 
 use crate::action::{Action, TabTo};
 use crate::config::KeyProfile;

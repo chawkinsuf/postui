@@ -147,11 +147,22 @@ impl App {
 
     /// The spelling context of where the keyboard is now (spec §4.6).
     pub fn spell_ctx(&self) -> crate::keyroute::SpellCtx {
-        crate::keyroute::SpellCtx {
-            profile: self.profile(),
-            surface: self.surface(),
-            field_live: self.field_caret().is_live(),
-        }
+        use crate::keyroute::FieldSpell;
+        use crate::keyroute::engine_glue::Mode;
+        let surface = self.surface();
+        let field = match self.live_engine_field() {
+            Some(id) => {
+                let glue = self.glue_of(id);
+                if glue.mode() == Mode::Normal && !glue.view().pending {
+                    FieldSpell::Normal(crate::keyroute::table::field_class(id, surface))
+                } else {
+                    FieldSpell::Typing
+                }
+            }
+            None if self.field_caret().is_live() => FieldSpell::Typing,
+            None => FieldSpell::None,
+        };
+        crate::keyroute::SpellCtx { profile: self.profile(), surface, field }
     }
 
     /// The half-typed keys for the footer (spec §3.8): the router's, then

@@ -982,11 +982,16 @@ fn every_action_is_keyboard_reachable_in_both_profiles() {
 }
 
 /// The footer chips a fixture paints, unspelled: the Manage screens'
-/// own, or the main panes' as `ui` builds them.
+/// own, or the main panes' as `ui` builds them (the address bar's flags,
+/// the active tab's add-row label and the pane's own field read off the
+/// app as `ui::draw` reads them).
 fn chips(app: &App, f: Fixture) -> Vec<crate::components::footer::FooterChip> {
     use crate::components::footer::{JqBarState, footer_chips};
     let main = |pane: PaneId, row: Option<(usize, bool)>| -> Vec<crate::components::footer::FooterChip> {
-        footer_chips(pane, false, false, Some("add header"), false, false, row, JqBarState::Closed, false)
+        let url_focused = matches!(app.editor.sub_focus, SubFocus::Method | SubFocus::Url);
+        let url_selected = app.editor.sub_focus == SubFocus::Url && !app.editor.url_open();
+        let add_label = (!app.editor.adding_row()).then(|| app.editor.active_tab.add_row_label()).flatten();
+        footer_chips(pane, false, false, add_label, url_focused, url_selected, row, JqBarState::Closed, app.pane_field_open(pane))
             .into_iter()
             .map(|(k, l, a)| (k, l.to_string(), a))
             .collect()
@@ -994,6 +999,8 @@ fn chips(app: &App, f: Fixture) -> Vec<crate::components::footer::FooterChip> {
     match f {
         SidebarThree => main(PaneId::Sidebar, None),
         TableThreeHeaders => main(PaneId::Editor, Some((1, true))),
+        UrlLine | Body => main(PaneId::Editor, None),
+        ResponseLines => main(PaneId::Response, None),
         _ => crate::ui::manage_tab_chips(app),
     }
 }
@@ -1046,5 +1053,97 @@ fn every_verb_chip_resolves_to_its_chip() {
         }
         // A floor, so a `continue` that skips every chip cannot pass.
         assert!(checked >= 20, "{profile:?}: only {checked} verb chips were checked");
+    }
+}
+
+/// Spec §8.2's spelling test, the non-verb half (plan M2 Deviation 19,
+/// plan M4b Deviation 23): every painted keycap with an action behind it
+/// is a key that runs that action here: a table row whose run carries it,
+/// a keymap combo bound to it, or an ex verb that resolves to it.
+#[test]
+fn every_painted_keycap_resolves_to_its_chip() {
+    use crate::keyroute::spell::{Key, glyphs, keycap, pair, spell};
+    use crate::keyroute::{FieldSpell, KeyCtx, Resolved, Router, Step, ex};
+    let fixtures = [SidebarThree, TableThreeHeaders, UrlLine, Body, ResponseLines, ManageEnvs, ManageSpaces, VarList, VarGrid, VarForm, Settings];
+    for profile in [KeyProfile::Vim, KeyProfile::Arrows] {
+        let mut checked = 0;
+        for f in fixtures {
+            let mut app = build(f);
+            app.use_profile(profile);
+            draw(&mut app);
+            let at = app.spell_ctx();
+            let surface = app.surface();
+            let scope = app.ex_scope();
+            // One action's spelling is honest when it is reached one of the three ways.
+            let honest = |app: &App, action: &Action, spelled: &str| -> bool {
+                if let Some(keys) = match at.field {
+                    FieldSpell::Normal(class) => table::keys_for_class(profile, class, action).or(table::keys_for(profile, surface, action)),
+                    _ => table::keys_for(profile, surface, action),
+                } {
+                    assert_eq!(spelled, crate::keyroute::notation::display(keys));
+                    let ctx = KeyCtx {
+                        profile,
+                        surface,
+                        field: app.field_caret(),
+                        user_bare: None,
+                        cap: usize::MAX,
+                        engine: app.live_engine_field().map(|id| app.glue_of(id).view()),
+                        answers: Vec::new(),
+                    };
+                    let mut router = Router::default();
+                    let mut last = Resolved::Declined;
+                    for ev in crate::keyroute::notation::events(keys) {
+                        last = router.resolve(ev, &ctx);
+                    }
+                    let Resolved::Run(steps) = last else { return false };
+                    return steps.iter().any(|s| match (s, action) {
+                        (Step::Action(a), _) if a == action => true,
+                        (Step::Action(Action::GoTab { to: crate::action::TabTo::By(d), .. }), Action::CycleTabs(c)) => *d == i64::from(*c),
+                        // The engine hands `u`/ctrl+r on from idle Normal.
+                        (Step::Engine(_), Action::Undo | Action::Redo) => matches!(at.field, FieldSpell::Normal(_)),
+                        _ => false,
+                    });
+                }
+                if let Some(combo) = app.keymap.combo_for_action(action) {
+                    return spelled == combo;
+                }
+                match ex::resolve(spelled.strip_prefix(':').unwrap_or(""), &scope) {
+                    ex::Resolved::Pinned(row) => row.actions.contains(action),
+                    _ => false,
+                }
+            };
+            for (key, label, _) in chips(&app, f) {
+                let Some(shown) = keycap(&key, at, &app.keymap) else { continue };
+                let ok = match &key {
+                    Key::Of(a) => honest(&app, a, &spell(at, a, &app.keymap).unwrap()) && shown == glyphs(&spell(at, a, &app.keymap).unwrap()),
+                    Key::OneOf(a, b) => {
+                        let a_s = spell(at, a, &app.keymap);
+                        let (action, s) = match a_s {
+                            Some(s) => (a, s),
+                            None => (b, spell(at, b, &app.keymap).unwrap()),
+                        };
+                        honest(&app, action, &s) && shown == glyphs(&s)
+                    }
+                    Key::Pair(a, b) => {
+                        let (sa, sb) = (spell(at, a, &app.keymap).unwrap(), spell(at, b, &app.keymap).unwrap());
+                        honest(&app, a, &sa) && honest(&app, b, &sb) && shown == pair(&glyphs(&sa), &glyphs(&sb))
+                    }
+                    Key::Quit { .. } => {
+                        shown == "q" && profile == KeyProfile::Arrows
+                            || shown == ":q" && matches!(ex::resolve("q", &scope), ex::Resolved::Pinned(_))
+                            || Some(shown.as_str()) == spell(at, &Action::Quit, &app.keymap).as_deref().map(|_| "^C")
+                    }
+                    Key::Send { .. } => {
+                        shown == "\u{21e7}enter"
+                            || shown == "^R" && profile == KeyProfile::Arrows
+                            || honest(&app, &Action::Send, &spell(at, &Action::Send, &app.keymap).unwrap())
+                    }
+                    Key::OrRow(named, a) => shown == *named || honest(&app, a, &shown),
+                    Key::Named(_) | Key::Nav(_) | Key::Answer(_) | Key::Pick => continue,
+                };
+                assert!(ok, "{profile:?} {f:?}: the {label} chip paints {shown:?}, which does not run its action");                checked += 1;
+            }
+        }
+        assert!(checked >= 15, "{profile:?}: only {checked} keycaps were checked");
     }
 }

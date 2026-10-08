@@ -3,7 +3,7 @@
 //! table and the keymap, so it can never name a key the router does not
 //! bind (plan M1 Deviation 3).
 
-use super::ctx::SpellCtx;
+use super::ctx::{FieldSpell, SpellCtx};
 use super::{notation, table};
 use crate::action::Action;
 use crate::config::KeyProfile;
@@ -40,6 +40,11 @@ pub enum Key {
     /// A picker's highlight moves (spec §5.10): `↑↓` in arrows, `^N/^P` in
     /// vim, where the arrows still work too.
     Pick,
+    /// A named key the surface owns in arrows, unless a table row spells
+    /// `action` here: the selected prompt field's `enter edit` is vim's `o
+    /// edit`, its `⇧enter confirm` vim's `enter confirm` (plan M4b
+    /// Deviation 22).
+    OrRow(&'static str, Action),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,14 +53,28 @@ pub enum Nav {
     LeftRight,
 }
 
+/// The table row that runs `action` at `at`, if the router would look it
+/// up there: the surface's rows with no field, the field class's rows in a
+/// field's idle Normal (where `u` and `ctrl+r` are the surface's, handed
+/// on by the engine), none while typing.
+fn row_for(at: SpellCtx, action: &Action) -> Option<&'static str> {
+    match at.field {
+        FieldSpell::None => table::keys_for(at.profile, at.surface, action),
+        FieldSpell::Normal(class) => table::keys_for_class(at.profile, class, action).or_else(|| {
+            matches!(action, Action::Undo | Action::Redo)
+                .then(|| table::keys_for(at.profile, at.surface, action))
+                .flatten()
+        }),
+        FieldSpell::Typing => None,
+    }
+}
+
 /// The key that runs `action` at `at`: the table's row first (the router
 /// looks there before anything else), then the keymap's combo, then the
-/// ex verb where `:` applies (spec §4.6; plan M4b Deviation 20). `None`
-/// when nothing binds it.
+/// ex verb where `:` applies (spec §4.6; plan M4b Deviations 20 and 21).
+/// `None` when nothing binds it.
 pub fn spell(at: SpellCtx, action: &Action, keymap: &Keymap) -> Option<String> {
-    if !at.field_live
-        && let Some(keys) = table::keys_for(at.profile, at.surface, action)
-    {
+    if let Some(keys) = row_for(at, action) {
         return Some(notation::display(keys));
     }
     if let Some(combo) = keymap.combo_for_action(action) {
@@ -64,10 +83,9 @@ pub fn spell(at: SpellCtx, action: &Action, keymap: &Keymap) -> Option<String> {
     colon_applies(at).then(|| super::ex::spelling(action)).flatten()
 }
 
-/// Whether the `:` line opens from `at`: the `:` row applies, and no field
-/// is typing.
+/// Whether the `:` line opens from `at`: its row applies there.
 fn colon_applies(at: SpellCtx) -> bool {
-    !at.field_live && table::keys_for(at.profile, at.surface, &Action::OpenExPalette).is_some()
+    row_for(at, &Action::OpenExPalette).is_some()
 }
 
 /// The text `key` paints as at `at`, or `None` when the chip has no key
@@ -91,6 +109,7 @@ pub fn keycap(key: &Key, at: SpellCtx, keymap: &Keymap) -> Option<String> {
         Key::Quit { .. } if vim && colon_applies(at) => ":q".to_string(),
         Key::Quit { .. } => glyphs(&spell(at, &Action::Quit, keymap)?),
         Key::Pick => if vim { "^N/^P" } else { "\u{2191}\u{2193}" }.to_string(),
+        Key::OrRow(named, a) => row_for(at, a).map_or_else(|| (*named).to_string(), notation::display),
     })
 }
 
@@ -104,7 +123,7 @@ pub fn resolve<L>(chips: Vec<(Key, L, Option<Action>)>, at: SpellCtx, keymap: &K
 }
 
 /// A combo's arrow names as the footer draws them: `alt+left` is `alt+←`.
-fn glyphs(combo: &str) -> String {
+pub(crate) fn glyphs(combo: &str) -> String {
     let (head, last) = match combo.rsplit_once('+') {
         Some((h, l)) => (format!("{h}+"), l),
         None => (String::new(), combo),
@@ -121,7 +140,7 @@ fn glyphs(combo: &str) -> String {
 
 /// Two spellings on one chip: `alt+←` and `alt+→` merge to `alt+←→`;
 /// anything else reads `a/b`.
-fn pair(a: &str, b: &str) -> String {
+pub(crate) fn pair(a: &str, b: &str) -> String {
     let arrows = ['\u{2190}', '\u{2192}', '\u{2191}', '\u{2193}'];
     match (a.char_indices().last(), b.char_indices().last()) {
         (Some((ia, ca)), Some((ib, cb)))
@@ -151,17 +170,58 @@ pub fn spelled_on<L>(surface: crate::keyroute::Surface, chips: Vec<(Key, L, Opti
 mod tests {
     use super::*;
     use crate::keyroute::Surface;
+    use crate::keyroute::ctx::FieldSpell;
     use KeyProfile::{Arrows, Vim};
 
     fn at(profile: KeyProfile, surface: Surface) -> SpellCtx {
-        SpellCtx { profile, surface, field_live: false }
+        SpellCtx { profile, surface, field: FieldSpell::None }
+    }
+
+    /// Plan M4b Deviation 21: a screen field's idle Normal spells the field
+    /// rows (`gT/gt`, `^W`, `ZZ`, `:`) and hands `u`/`^R` on; typing spells
+    /// the keymap only.
+    #[test]
+    fn a_fields_idle_normal_spells_its_rows() {
+        use crate::keyroute::FieldId;
+        let v = Keymap::default_bindings_for(Vim);
+        let class = table::field_class(FieldId::Url, Surface::UrlLine);
+        let normal = SpellCtx { field: FieldSpell::Normal(class), ..at(Vim, Surface::UrlLine) };
+        let typing = SpellCtx { field: FieldSpell::Typing, ..at(Vim, Surface::UrlLine) };
+        let cap = |k: Key, s: SpellCtx| keycap(&k, s, &v);
+        let tabs = || Key::Pair(Action::CycleTabs(-1), Action::CycleTabs(1));
+        assert_eq!(cap(tabs(), normal).as_deref(), Some("gT/gt"));
+        assert_eq!(cap(tabs(), typing), None);
+        assert_eq!(cap(Key::Of(Action::Undo), normal).as_deref(), Some("u"), "the engine hands u on from idle Normal");
+        assert_eq!(cap(Key::Of(Action::Undo), typing).as_deref(), Some("^Z"));
+        assert_eq!(cap(Key::Of(Action::OpenExPalette), normal).as_deref(), Some(":"));
+        assert_eq!(cap(Key::Of(Action::WriteQuit), normal).as_deref(), Some("ZZ"));
+        assert_eq!(cap(Key::Of(Action::SaveRequest), normal).as_deref(), Some(":w"), "the line opens from idle Normal");
+        assert_eq!(cap(Key::Of(Action::SaveRequest), typing), None);
+        assert_eq!(cap(Key::Of(Action::OnSelection(crate::action::Verb::Delete { count: 1 })), normal), None, "no verb row in a field");
+        let prompt_class = table::field_class(FieldId::ModalInput(0), Surface::Prompt);
+        let prompt = SpellCtx { field: FieldSpell::Normal(prompt_class), ..at(Vim, Surface::Prompt) };
+        assert_eq!(cap(tabs(), prompt), None, "a dialog field has no tab rows");
+    }
+
+    /// Plan M4b Deviation 22: a named key in arrows, a row in vim.
+    #[test]
+    fn or_row_is_the_named_key_unless_a_row_spells_the_action() {
+        let v = Keymap::default_bindings_for(Vim);
+        let a = Keymap::default_bindings();
+        let edit = Key::OrRow("enter", Action::ReopenField);
+        let confirm = Key::OrRow("\u{21e7}enter", Action::ConfirmTopModal);
+        assert_eq!(keycap(&edit, at(Arrows, Surface::Prompt), &a).as_deref(), Some("enter"));
+        assert_eq!(keycap(&edit, at(Vim, Surface::Prompt), &v).as_deref(), Some("o"));
+        assert_eq!(keycap(&confirm, at(Arrows, Surface::Prompt), &a).as_deref(), Some("\u{21e7}enter"));
+        assert_eq!(keycap(&confirm, at(Vim, Surface::Prompt), &v).as_deref(), Some("enter"));
+        assert_eq!(keycap(&confirm, at(Vim, Surface::Form), &v).as_deref(), Some("\u{21e7}enter"), "a form keeps its ladder");
     }
 
     /// Spec §5.10: the footer advertises `^N/^P` on a picker in vim.
     #[test]
     fn a_pickers_move_keys_per_profile() {
         let keymap = Keymap::default_bindings();
-        let at = |profile| SpellCtx { profile, surface: Surface::Picker, field_live: true };
+        let at = |profile| SpellCtx { profile, surface: Surface::Picker, field: FieldSpell::Typing };
         assert_eq!(keycap(&Key::Pick, at(Arrows), &keymap).as_deref(), Some("\u{2191}\u{2193}"));
         assert_eq!(keycap(&Key::Pick, at(Vim), &keymap).as_deref(), Some("^N/^P"));
     }
@@ -173,7 +233,7 @@ mod tests {
         let cap = |k: Key, s: SpellCtx, m: &Keymap| keycap(&k, s, m);
         assert_eq!(cap(Key::Of(Action::Undo), at(Arrows, Surface::Sidebar), &a).as_deref(), Some("^Z"));
         assert_eq!(cap(Key::Of(Action::Undo), at(Vim, Surface::Sidebar), &v).as_deref(), Some("u"));
-        let live = SpellCtx { field_live: true, ..at(Vim, Surface::UrlLine) };
+        let live = SpellCtx { field: FieldSpell::Typing, ..at(Vim, Surface::UrlLine) };
         assert_eq!(cap(Key::Of(Action::Undo), live, &v).as_deref(), Some("^Z"), "a live field types u");
         assert_eq!(cap(Key::Of(Action::OpenPalette), at(Arrows, Surface::Sidebar), &a).as_deref(), Some("^P"));
         assert_eq!(cap(Key::Of(Action::OpenPalette), at(Vim, Surface::Sidebar), &v).as_deref(), Some("^P"));
@@ -223,7 +283,7 @@ mod tests {
         assert_eq!(cap(Key::Quit { plain_q: false }, at(Vim, Surface::Sidebar), &v).as_deref(), Some(":q"));
         assert_eq!(cap(Key::Quit { plain_q: false }, at(Vim, Surface::Picker), &v).as_deref(), Some("^C"));
         assert_eq!(cap(Key::Quit { plain_q: true }, at(Arrows, Surface::Sidebar), &a).as_deref(), Some("q"));
-        let live = SpellCtx { field_live: true, ..at(Vim, Surface::UrlLine) };
+        let live = SpellCtx { field: FieldSpell::Typing, ..at(Vim, Surface::UrlLine) };
         assert_eq!(cap(Key::Of(Action::SaveRequest), live, &v), None, "typing: the keymap only");
     }
 

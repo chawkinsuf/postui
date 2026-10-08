@@ -627,15 +627,23 @@ fn best<'a>(rows: impl IntoIterator<Item = (&'static Binding, &'a [Tok])>, buf: 
 
 /// The keys of the row that runs `action` here, for keycaps (spec §4.6).
 pub fn keys_for(profile: KeyProfile, surface: Surface, action: &Action) -> Option<&'static str> {
+    keys_for_class(profile, Surfaces::of(surface), action)
+}
+
+/// [`keys_for`] on a surface class: a field class in idle Normal (plan M4b
+/// Deviation 21). A tab row spells `CycleTabs` whether or not it leaves a
+/// field; the `o` reopen row spells `ReopenField`.
+pub fn keys_for_class(profile: KeyProfile, class: Surfaces, action: &Action) -> Option<&'static str> {
     TABLE
         .iter()
         .find(|b| {
             b.profile.has(profile)
-                && b.on.has(surface)
+                && b.on.overlaps(class)
                 && match b.intent {
                     Intent::Act(f) | Intent::CloseThen(f) => f() == *action,
                     Intent::Verb(v) => matches!(action, Action::OnSelection(w) if w.kind() == v.kind()),
-                    Intent::Tab { delta, leave: false } => *action == Action::CycleTabs(delta),
+                    Intent::Tab { delta, .. } => *action == Action::CycleTabs(delta),
+                    Intent::Reopen(None) => *action == Action::ReopenField,
                     _ => false,
                 }
         })
