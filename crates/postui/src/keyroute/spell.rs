@@ -49,7 +49,8 @@ pub enum Nav {
 }
 
 /// The key that runs `action` at `at`: the table's row first (the router
-/// looks there before anything else), then the keymap's combo. `None`
+/// looks there before anything else), then the keymap's combo, then the
+/// ex verb where `:` applies (spec §4.6; plan M4b Deviation 20). `None`
 /// when nothing binds it.
 pub fn spell(at: SpellCtx, action: &Action, keymap: &Keymap) -> Option<String> {
     if !at.field_live
@@ -57,7 +58,16 @@ pub fn spell(at: SpellCtx, action: &Action, keymap: &Keymap) -> Option<String> {
     {
         return Some(notation::display(keys));
     }
-    keymap.combo_for_action(action)
+    if let Some(combo) = keymap.combo_for_action(action) {
+        return Some(combo);
+    }
+    colon_applies(at).then(|| super::ex::spelling(action)).flatten()
+}
+
+/// Whether the `:` line opens from `at`: the `:` row applies, and no field
+/// is typing.
+fn colon_applies(at: SpellCtx) -> bool {
+    !at.field_live && table::keys_for(at.profile, at.surface, &Action::OpenExPalette).is_some()
 }
 
 /// The text `key` paints as at `at`, or `None` when the chip has no key
@@ -76,6 +86,9 @@ pub fn keycap(key: &Key, at: SpellCtx, keymap: &Keymap) -> Option<String> {
         Key::Send { shift_enter: false } if !vim => "^R".to_string(),
         Key::Send { .. } => glyphs(&spell(at, &Action::Send, keymap)?),
         Key::Quit { plain_q: true } if !vim => "q".to_string(),
+        // `:q quit` in vim where the line opens (spec §4.6); the keymap's
+        // `^C` on a picker or a dialog.
+        Key::Quit { .. } if vim && colon_applies(at) => ":q".to_string(),
         Key::Quit { .. } => glyphs(&spell(at, &Action::Quit, keymap)?),
         Key::Pick => if vim { "^N/^P" } else { "\u{2191}\u{2193}" }.to_string(),
     })
@@ -188,10 +201,30 @@ mod tests {
         assert_eq!(cap(add(), at(Vim, Surface::UrlLine), &v), None, "vim gave up alt+a (plan M2 Deviation 5)");
         assert_eq!(cap(Key::Nav(Nav::UpDown), at(Vim, Surface::Settings), &v).as_deref(), Some("j/k"));
         assert_eq!(cap(Key::Quit { plain_q: true }, at(Arrows, Surface::Sidebar), &a).as_deref(), Some("q"));
-        assert_eq!(cap(Key::Quit { plain_q: true }, at(Vim, Surface::Sidebar), &v).as_deref(), Some("^C"));
+        assert_eq!(cap(Key::Quit { plain_q: true }, at(Vim, Surface::Sidebar), &v).as_deref(), Some(":q"));
         assert_eq!(cap(Key::Send { shift_enter: false }, at(Arrows, Surface::UrlLine), &a).as_deref(), Some("^R"));
         assert_eq!(cap(Key::Send { shift_enter: false }, at(Vim, Surface::UrlLine), &v).as_deref(), Some("^Enter"));
         assert_eq!(cap(Key::Send { shift_enter: true }, at(Vim, Surface::UrlLine), &v).as_deref(), Some("\u{21e7}enter"));
+    }
+
+    /// Spec §4.6 (plan M4b Deviation 20): where no key binds an action in
+    /// vim, its ex verb spells it; the quit chip reads `:q` where `:`
+    /// applies and the keymap's `^C` elsewhere; typing spells the keymap only.
+    #[test]
+    fn ex_verbs_spell_what_no_key_binds() {
+        let v = Keymap::default_bindings_for(Vim);
+        let a = Keymap::default_bindings();
+        let cap = |k: Key, s: SpellCtx, m: &Keymap| keycap(&k, s, m);
+        assert_eq!(cap(Key::Of(Action::SaveRequest), at(Vim, Surface::Sidebar), &v).as_deref(), Some(":w"));
+        assert_eq!(cap(Key::Of(Action::SaveRequest), at(Arrows, Surface::Sidebar), &a).as_deref(), Some("^S"));
+        assert_eq!(cap(Key::Of(Action::CycleSplit), at(Vim, Surface::UrlLine), &v).as_deref(), Some(":split"));
+        assert_eq!(cap(Key::Of(Action::Send), at(Vim, Surface::UrlLine), &v).as_deref(), Some("^Enter"), "a bound chord beats the verb");
+        assert_eq!(cap(Key::Of(Action::SaveRequest), at(Vim, Surface::Picker), &v), None, "no : on a picker");
+        assert_eq!(cap(Key::Quit { plain_q: false }, at(Vim, Surface::Sidebar), &v).as_deref(), Some(":q"));
+        assert_eq!(cap(Key::Quit { plain_q: false }, at(Vim, Surface::Picker), &v).as_deref(), Some("^C"));
+        assert_eq!(cap(Key::Quit { plain_q: true }, at(Arrows, Surface::Sidebar), &a).as_deref(), Some("q"));
+        let live = SpellCtx { field_live: true, ..at(Vim, Surface::UrlLine) };
+        assert_eq!(cap(Key::Of(Action::SaveRequest), live, &v), None, "typing: the keymap only");
     }
 
     #[test]

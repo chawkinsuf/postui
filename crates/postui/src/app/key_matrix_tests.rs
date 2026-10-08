@@ -973,7 +973,10 @@ fn every_action_is_keyboard_reachable_in_both_profiles() {
                     }
             })
             || vim_verb_actions.contains(&action)
-            || palette.contains(&action);
+            || palette.contains(&action)
+            // An ex verb (`:w`, `:split`, `:splitback`) now carries what
+            // vim's keymap gave up (plan M4b Deviation 19).
+            || crate::keyroute::ex::spelling(&action).is_some();
         assert!(reached, "{name}: arrows binds a key to it, and vim reaches it no way at all");
     }
 }

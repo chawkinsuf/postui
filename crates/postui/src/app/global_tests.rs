@@ -123,3 +123,30 @@ fn marks_and_registers_note_on_a_list_and_the_next_key_is_fresh() {
     assert!(toasts(&app).iter().any(|m| m.contains(NO_MARKS)));
     assert_eq!(app.editor.url.text(), "ma", "nothing typed by the mark key");
 }
+
+/// Review Focus 5 (spec §4.5, plan M2 Deviation 2): the Manage and
+/// Settings components no longer answer `q`; arrows reaches Quit through
+/// the screen whitelist, and vim's `q` is the macro prefix there.
+#[test]
+fn q_quits_from_every_manage_surface_in_arrows_and_never_in_vim() {
+    for f in [
+        Fixture::ManageEnvs,
+        Fixture::ManageEnvDetail,
+        Fixture::ManageSpaces,
+        Fixture::VarList,
+        Fixture::VarGrid,
+        Fixture::VarForm,
+        Fixture::Settings,
+        Fixture::SettingsFiles,
+    ] {
+        let mut app = build(f);
+        draw(&mut app);
+        feed(&mut app, "q");
+        assert!(app.should_quit, "{f:?}: arrows q quits");
+        let mut app = vim(f);
+        feed(&mut app, "qa");
+        assert!(!app.should_quit, "{f:?}: vim q never quits");
+        assert!(toasts(&app).iter().any(|m| m.contains(NO_MACROS)), "{f:?}: {:?}", toasts(&app));
+        assert_eq!(app.screen, Screen::Manage, "{f:?}");
+    }
+}

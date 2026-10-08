@@ -67,6 +67,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // hovered keycap and chip on the bar and in the footer warms through
     // it, and it restarts whenever the pointer crosses onto another hit.
     let hover_t = app.anims.value_or(crate::anim::AnimKey::Hover, now, 1.0);
+    // Spelled as from a closed field, so the buttons always carry the key
+    // that works once the field is left (plan M4b Deviation 20).
+    let bar_spell = crate::keyroute::SpellCtx { field_live: false, ..app.spell_ctx() };
+    let save_key = crate::keyroute::spell::keycap(&crate::keyroute::spell::Key::Of(crate::action::Action::SaveRequest), bar_spell, &app.keymap).unwrap_or_default();
+    let discard_key = crate::keyroute::spell::keycap(&crate::keyroute::spell::Key::Of(crate::action::Action::DiscardChanges), bar_spell, &app.keymap).unwrap_or_default();
     crate::components::header_bar::draw_header(
         frame,
         layout.header,
@@ -88,6 +93,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         // the save/discard group above requires Screen::Main, so the two
         // never both show.
         screen == Screen::Manage,
+        &save_key,
+        &discard_key,
         &mut hits,
         app.hovered.as_ref(),
         hover_t,
@@ -302,9 +309,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         && (app.screen == Screen::Main
             && (matches!(focus, PaneId::Sidebar | PaneId::Response)
                 || focus == PaneId::Editor && !app.editor.plain_keys_type())
-            // The manager binds plain q to quit in every focus stop; only
-            // a live edit types it — the Variables tab's form and grid
-            // cells, and the Settings tab's field rows.
+            // On the Manage screens the keymap's `q` reaches Quit through
+            // the screen whitelist; only a live edit types it — the
+            // Variables tab's form and grid cells, and the Settings tab's
+            // field rows.
             || app.screen == Screen::Manage
                 && match app.manage.tab {
                     crate::components::manage::ManageTab::Variables => {

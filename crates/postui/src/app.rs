@@ -10487,7 +10487,9 @@ impl App {
     /// up/down walk the rows, left/right aim a Files row's two buttons,
     /// and enter/space activates whatever the cursor is on. `Some` is the
     /// redraw answer for a key the tab claimed; `None` hands an unclaimed
-    /// key to the router's [`Self::unclaimed_screen_key`].
+    /// key to the router's [`Self::unclaimed_screen_key`]. `q` is the
+    /// keymap's: arrows reaches Quit through the screen whitelist, vim's `q`
+    /// is the router's macro prefix (plan M4b Deviation 18).
     fn handle_settings_key(&mut self, ev: KeyEvent) -> Option<bool> {
         use crate::components::settings::SettingsRow;
         // A key on this tab is the keyboard asking for the cursor back:
@@ -10510,7 +10512,6 @@ impl App {
         let ctrl = ev.modifiers == KeyModifiers::CONTROL;
         Some(match ev.code {
             KeyCode::Esc => self.update(Action::CloseScreen),
-            KeyCode::Char('q') => self.update(Action::Quit),
             KeyCode::Up if plain => {
                 self.settings
                     .move_cursor(-1, self.ui_settings_are_editable());

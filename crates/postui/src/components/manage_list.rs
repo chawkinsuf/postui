@@ -546,7 +546,9 @@ impl ManageList {
         }
     }
 
-    /// The list's own keys.
+    /// The list's own keys. `q` is the keymap's: arrows reaches Quit through
+    /// the screen whitelist, vim's `q` is the router's macro prefix (plan
+    /// M4b Deviation 18).
     pub fn handle_key(
         &mut self,
         ev: KeyEvent,
@@ -572,7 +574,6 @@ impl ManageList {
         }
         match ev.code {
             KeyCode::Esc => Some(Action::CloseScreen),
-            KeyCode::Char('q') => Some(Action::Quit),
             // Into the detail pane's controls (the Variable Manager's
             // Right/Tab exactly).
             KeyCode::Right | KeyCode::Tab if plain && self.focus == ListFocus::List => {
