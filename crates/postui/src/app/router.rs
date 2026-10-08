@@ -234,27 +234,33 @@ impl App {
 
     /// The thing the keys go to right now (spec §3.3).
     pub fn surface(&self) -> Surface {
-        use crate::components::manage::ManageTab;
-        use crate::components::manage_list::ListFocus;
-        use crate::components::varmanager::VmFocus;
-        if let Some(top) = self.modals.top() {
-            return match top {
-                Modal::Prompt { .. } => Surface::Prompt,
-                Modal::NewProject { .. } | Modal::MultiPrompt { .. } | Modal::FieldsEditor(_) => {
-                    Surface::Form
-                }
+        match self.modals.top() {
+            Some(Modal::Prompt { .. }) => Surface::Prompt,
+            Some(Modal::NewProject { .. } | Modal::MultiPrompt { .. } | Modal::FieldsEditor(_)) => Surface::Form,
+            Some(
                 Modal::Palette(_)
                 | Modal::Chooser(_)
                 | Modal::FilePicker(_)
                 | Modal::VarPicker(_)
-                | Modal::Dropdown(_) => Surface::Picker,
+                | Modal::Dropdown(_),
+            ) => Surface::Picker,
+            Some(
                 Modal::Message { .. }
                 | Modal::Confirm { .. }
                 | Modal::ConfigStartup { .. }
                 | Modal::ConfigEditInvalid { .. }
-                | Modal::KeymapChoice { .. } => Surface::Dialog,
-            };
+                | Modal::KeymapChoice { .. },
+            ) => Surface::Dialog,
+            None => self.screen_surface(),
         }
+    }
+
+    /// The screen's own surface, under any modal: where the keys go once
+    /// the modals are answered.
+    pub(crate) fn screen_surface(&self) -> Surface {
+        use crate::components::manage::ManageTab;
+        use crate::components::manage_list::ListFocus;
+        use crate::components::varmanager::VmFocus;
         match self.screen {
             Screen::Testbed => Surface::Other,
             Screen::Manage => match self.manage.tab {

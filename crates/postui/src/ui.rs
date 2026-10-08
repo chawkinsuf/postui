@@ -67,11 +67,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // hovered keycap and chip on the bar and in the footer warms through
     // it, and it restarts whenever the pointer crosses onto another hit.
     let hover_t = app.anims.value_or(crate::anim::AnimKey::Hover, now, 1.0);
-    // Spelled as from a closed field, so the buttons always carry the key
-    // that works once the field is left (plan M4b Deviation 20).
-    let bar_spell = crate::keyroute::SpellCtx { field: crate::keyroute::FieldSpell::None, ..app.spell_ctx() };
-    let save_key = crate::keyroute::spell::keycap(&crate::keyroute::spell::Key::Of(crate::action::Action::SaveRequest), bar_spell, &app.keymap).unwrap_or_default();
-    let discard_key = crate::keyroute::spell::keycap(&crate::keyroute::spell::Key::Of(crate::action::Action::DiscardChanges), bar_spell, &app.keymap).unwrap_or_default();
+    let (save_key, discard_key) = header_keys(app);
     crate::components::header_bar::draw_header(
         frame,
         layout.header,
@@ -703,6 +699,23 @@ fn draw_manage_without_a_project(
     );
 }
 
+/// The header bar's save and discard keycaps (plan M4b Deviation 20),
+/// spelled on the screen's own surface with no field: the key that works
+/// once any field is left and any dialog answered, so a button never
+/// paints blank (`:w` in vim even while a dialog, where `:` does not
+/// apply, is up).
+pub(crate) fn header_keys(app: &App) -> (String, String) {
+    use crate::action::Action;
+    use crate::keyroute::spell::{Key, keycap};
+    let at = crate::keyroute::SpellCtx {
+        profile: app.profile(),
+        surface: app.screen_surface(),
+        field: crate::keyroute::FieldSpell::None,
+    };
+    let key = |a: Action| keycap(&Key::Of(a), at, &app.keymap).unwrap_or_default();
+    (key(Action::SaveRequest), key(Action::DiscardChanges))
+}
+
 /// A row drag is live in the sidebar or a Manage list.
 fn drag_live(app: &App) -> bool {
     app.sidebar.drag.is_some() || app.manage.list.drag.is_some()
@@ -888,6 +901,32 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|f| draw(f, app)).unwrap();
         format!("{:?}", terminal.backend().buffer())
+    }
+
+    /// The final review's D-1 (plan M4b Deviation 20): the header's
+    /// keycaps are spelled on the screen under any modal, so vim's save
+    /// reads `:w` with a prompt, a confirm or a picker up (where `:` does
+    /// not apply and vim binds no ctrl+s), never a blank keycap.
+    #[test]
+    fn the_header_keycaps_are_spelled_on_the_screen_under_any_modal() {
+        use crate::action::Action;
+        use crate::components::modal::Modal;
+        use crate::config::KeyProfile;
+        let alt_d = format!("{}+d", crate::keys::alt_label());
+        let mut app = App::new_for_test();
+        app.use_profile(KeyProfile::Vim);
+        assert_eq!(header_keys(&app), (":w".to_string(), alt_d.clone()));
+        app.update(Action::PromptNewRequest);
+        assert!(matches!(app.modals.top(), Some(Modal::Prompt { .. })));
+        assert_eq!(header_keys(&app), (":w".to_string(), alt_d.clone()), "under a prompt");
+        app.push_modal(Modal::Confirm { title: "t".into(), body: "b".into(), choices: Vec::new() });
+        assert_eq!(app.surface(), crate::keyroute::Surface::Dialog);
+        assert_eq!(header_keys(&app), (":w".to_string(), alt_d.clone()), "under a confirm");
+        app.update(Action::OpenPalette);
+        assert_eq!(app.surface(), crate::keyroute::Surface::Picker);
+        assert_eq!(header_keys(&app), (":w".to_string(), alt_d.clone()), "under a picker");
+        app.use_profile(KeyProfile::Arrows);
+        assert_eq!(header_keys(&app), ("^S".to_string(), alt_d), "arrows");
     }
 
     #[test]
