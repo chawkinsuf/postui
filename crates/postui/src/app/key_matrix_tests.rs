@@ -63,6 +63,9 @@ pub(super) enum Fixture {
     /// An open POST request whose body is `{`, `  "a": 1`, `}`, the body
     /// focused with the caret on row 0.
     Body,
+    /// A never-saved request with a URL typed, the URL line selected (not
+    /// open): `ZZ` and `:wq` must ask for a name.
+    DirtyScratch,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -565,6 +568,13 @@ pub(super) fn build(f: Fixture) -> App {
             app.focus = PaneId::Editor;
             app.editor.sub_focus = SubFocus::Content;
             app.capture_undo();
+        }
+        DirtyScratch => {
+            app.focus = PaneId::Editor;
+            app.editor.sub_focus = SubFocus::Url;
+            app.editor.url = LineInput::new("https://x.test/scratch");
+            app.capture_undo();
+            assert!(app.editor.is_scratch_dirty(), "the fixture is a dirty scratch");
         }
     }
     app.toasts = Default::default();

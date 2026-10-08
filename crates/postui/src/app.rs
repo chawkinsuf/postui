@@ -2923,6 +2923,15 @@ impl App {
                 self.should_quit = true;
                 true
             }
+            Action::WriteQuit => {
+                if !self.editor_holds_unsaved() {
+                    return self.apply(Action::ForceQuit);
+                }
+                if self.editor.slug.is_none() {
+                    return self.apply(Action::PromptSaveScratch(Box::new(Action::ForceQuit)));
+                }
+                self.apply(Action::SaveRequestThen(Box::new(Action::ForceQuit)))
+            }
             Action::Tick => {
                 // Only a pointer actually over the sidebar edge-scrolls it:
                 // the response pane shares the list's bottom row, and a
@@ -11526,5 +11535,7 @@ mod key_invariant_tests;
 mod field_tests;
 #[cfg(test)]
 mod key_matrix_tests;
+#[cfg(test)]
+mod global_tests;
 #[cfg(test)]
 mod tests;

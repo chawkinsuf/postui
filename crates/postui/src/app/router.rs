@@ -155,8 +155,9 @@ impl App {
     }
 
     /// The half-typed keys for the footer (spec §3.8): the router's, then
-    /// the engine's. Keys the router holds for a surface the keyboard has
-    /// since left with no key are not shown: the next key there drops them.
+    /// the engine's, then the recording note. Keys the router holds for a
+    /// surface the keyboard has since left with no key are not shown: the
+    /// next key there drops them.
     pub fn key_echo(&self) -> String {
         if self.router.typed_on() == Some(self.surface()) {
             let pending = self.router.echo();
@@ -164,10 +165,14 @@ impl App {
                 return pending;
             }
         }
-        match self.live_engine_field() {
-            Some(id) => self.glue_of(id).echo(),
-            None => String::new(),
+        if let Some(id) = self.live_engine_field() {
+            let echo = self.glue_of(id).echo();
+            if !echo.is_empty() {
+                return echo;
+            }
         }
+        // Third, the recording note (spec §3.8, §5.11).
+        self.router.recording().map_or_else(String::new, |reg| format!("recording @{reg} — not supported"))
     }
 
     /// The vim mode word (spec §3.8): what is taking the keys. A field with

@@ -107,6 +107,10 @@ pub enum Action {
     /// Quit without the unsaved-changes gate — what the gate's own choices
     /// dispatch once the user has decided.
     ForceQuit,
+    /// `ZZ`, `:wq`, `:x` (spec §5.9, §5.11): quit, saving first when the
+    /// request has unsaved edits. A never-saved request asks for a name;
+    /// a refused or cancelled save does not quit.
+    WriteQuit,
     Tick,
     Render,
     FocusNext,
