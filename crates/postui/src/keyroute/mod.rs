@@ -4,6 +4,7 @@
 
 pub mod ctx;
 pub mod engine_glue;
+pub mod ex;
 #[cfg(test)]
 pub mod keylist;
 pub mod notation;
@@ -614,7 +615,7 @@ mod tests {
         assert_eq!(feed(&mut Router::default(), &s, "ma"), marks);
         assert_eq!(feed(&mut Router::default(), &s, "`x"), marks);
         assert_eq!(feed(&mut Router::default(), &s, "Zx"), Resolved::Consumed);
-        assert_eq!(feed(&mut Router::default(), &s, ":"), run(vec![Step::Action(Action::OpenPalette)]));
+        assert_eq!(feed(&mut Router::default(), &s, ":"), run(vec![Step::Action(Action::OpenExPalette)]));
         let mut r = Router::default();
         feed(&mut r, &s, "q");
         assert_eq!(feed(&mut r, &s, "<Esc>"), Resolved::Consumed, "Esc cancels the pair silently");
@@ -948,7 +949,7 @@ mod tests {
         assert_eq!(feed(&mut Router::default(), &s, "u"), run(vec![Step::Action(Action::Undo)]));
         assert_eq!(feed(&mut Router::default(), &s, "3u"), run(vec![Step::Action(Action::Undo); 3]));
         assert_eq!(feed(&mut Router::default(), &s, "<C-r>"), run(vec![Step::Action(Action::Redo)]));
-        assert_eq!(feed(&mut Router::default(), &s, "3:"), run(vec![Step::Action(Action::OpenPalette)]));
+        assert_eq!(feed(&mut Router::default(), &s, "3:"), run(vec![Step::Action(Action::OpenExPalette)]));
         assert_eq!(feed(&mut Router::default(), &cx(Vim, Surface::Picker), "u"), Resolved::Declined, "a picker types it");
     }
 

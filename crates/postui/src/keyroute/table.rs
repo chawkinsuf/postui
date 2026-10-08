@@ -333,8 +333,10 @@ fn redo() -> Action {
     Action::Redo
 }
 
-fn palette() -> Action {
-    Action::OpenPalette
+/// Key list §8: `:` opens the command line, the palette in ex mode (spec
+/// §5.9).
+fn ex_palette() -> Action {
+    Action::OpenExPalette
 }
 
 fn confirm_top() -> Action {
@@ -455,7 +457,7 @@ pub static TABLE: &[Binding] = &[
     // Key list §6 and §9: the app's undo, redo and command palette.
     row("u", Surfaces::APP, Intent::Act(undo), CountRule::Repeat),
     row("<C-r>", Surfaces::APP, Intent::Act(redo), CountRule::Repeat),
-    row(":", Surfaces::APP, Intent::Act(palette), CountRule::Ignore),
+    row(":", Surfaces::APP, Intent::Act(ex_palette), CountRule::Ignore),
     // Key list §6, spec §5.1–§5.4 and §6.1: the list verbs. The shared
     // letters are one row for both profiles; vim doubles delete and yank
     // and takes counts, arrows uses one letter. Vim's other verbs on the
@@ -504,7 +506,7 @@ pub static TABLE: &[Binding] = &[
     // field (the user's decision 2), the rest are notes until M4 gives
     // them their own meaning (plan M3a Deviation 9), so no prefix key ever
     // reaches the engine as a wrong edit.
-    row(":", Surfaces::FIELDS, Intent::Act(palette), CountRule::Ignore),
+    row(":", Surfaces::FIELDS, Intent::Act(ex_palette), CountRule::Ignore),
     row("j", Surfaces::FIELD_LINE, Intent::Leave(DOWN), CountRule::Repeat),
     row("k", Surfaces::FIELD_LINE, Intent::Leave(UP), CountRule::Repeat),
     row("<Down>", Surfaces::FIELD_LINE, Intent::Leave(DOWN), CountRule::Repeat),

@@ -529,6 +529,13 @@ impl App {
                 KeyCode::Right | KeyCode::End => plain && self.session.response.jq_accepts_completion(),
                 _ => false,
             },
+            // The ex line's Backspace on an empty query closes it (spec
+            // §5.9, plan M4b Deviation 15).
+            FieldId::Palette => {
+                plain
+                    && ev.code == KeyCode::Backspace
+                    && matches!(self.modals.top(), Some(Modal::Palette(p)) if p.is_ex() && p.input().is_empty())
+            }
             _ => false,
         }
     }

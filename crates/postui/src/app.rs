@@ -3023,6 +3023,17 @@ impl App {
                 )));
                 true
             }
+            Action::OpenExPalette => {
+                use crate::components::modal::Modal;
+                use crate::components::palette::PaletteState;
+                let scope = self.ex_scope();
+                self.push_modal(Modal::Palette(PaletteState::new_ex(&self.usage, crate::usage::now(), scope)));
+                true
+            }
+            Action::NoHlSearch => {
+                self.glue.no_hlsearch();
+                true
+            }
             Action::Close => {
                 let popped_modal = self.modals.pop();
                 let popped = popped_modal.is_some();
@@ -11537,5 +11548,7 @@ mod field_tests;
 mod key_matrix_tests;
 #[cfg(test)]
 mod global_tests;
+#[cfg(test)]
+mod ex_tests;
 #[cfg(test)]
 mod tests;

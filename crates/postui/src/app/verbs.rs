@@ -9,6 +9,15 @@ use crate::action::Verb;
 use crate::keyroute::Surface;
 
 impl App {
+    /// What the `:` line can act on (spec §5.9; plan M4b Deviation 10):
+    /// the surface under it and the list verbs that resolve there now.
+    /// Read when `:` opens the line.
+    pub(crate) fn ex_scope(&self) -> crate::keyroute::ex::Scope {
+        let surface = self.surface();
+        let verbs = Verb::ALL.into_iter().filter(|v| self.selection_action(surface, *v).is_some()).collect();
+        crate::keyroute::ex::Scope { surface, verbs }
+    }
+
     /// The one table from (surface, verb) to an action (spec §6.1).
     /// `None` means the verb has no meaning there; nothing happens.
     pub(crate) fn selection_action(&self, surface: Surface, verb: Verb) -> Option<Action> {

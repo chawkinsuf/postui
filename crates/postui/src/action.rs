@@ -124,6 +124,12 @@ pub enum Action {
     PaneMove { dir: PaneDir, leave: bool },
     ScrollPane(PaneId, i16),
     OpenPalette,
+    /// Vim's `:` (spec §5.9): the palette in ex mode, its query read as a
+    /// verb against the surface under it (`App::ex_scope`).
+    OpenExPalette,
+    /// `:noh` (spec §5.9): the body's search highlight goes until the next
+    /// search.
+    NoHlSearch,
     Close,
     ShowToast(String, ToastKind),
     ShowAbout,
@@ -1118,6 +1124,25 @@ pub enum Verb {
 }
 
 impl Verb {
+    /// Every verb, once (a count does not change what a verb reaches): the
+    /// reachability test and the `:` line's scope walk it.
+    pub const ALL: [Verb; 14] = [
+        Verb::Add,
+        Verb::AddAlt,
+        Verb::Rename,
+        Verb::Move,
+        Verb::Delete { count: 1 },
+        Verb::Yank,
+        Verb::Put { above: false, count: 1 },
+        Verb::EditValue,
+        Verb::Promote,
+        Verb::Fields,
+        Verb::Secret,
+        Verb::ClearValue,
+        Verb::Reveal,
+        Verb::Tls,
+    ];
+
     /// The same verb whatever its count: `dd` and `3dd` spell alike.
     pub fn kind(self) -> Self {
         self.with_count(1)

@@ -163,7 +163,9 @@ mod tests {
         let live = SpellCtx { field_live: true, ..at(Vim, Surface::UrlLine) };
         assert_eq!(cap(Key::Of(Action::Undo), live, &v).as_deref(), Some("^Z"), "a live field types u");
         assert_eq!(cap(Key::Of(Action::OpenPalette), at(Arrows, Surface::Sidebar), &a).as_deref(), Some("^P"));
-        assert_eq!(cap(Key::Of(Action::OpenPalette), at(Vim, Surface::Sidebar), &v).as_deref(), Some(":"));
+        assert_eq!(cap(Key::Of(Action::OpenPalette), at(Vim, Surface::Sidebar), &v).as_deref(), Some("^P"));
+        assert_eq!(cap(Key::OneOf(Action::OpenExPalette, Action::OpenPalette), at(Vim, Surface::Sidebar), &v).as_deref(), Some(":"));
+        assert_eq!(cap(Key::OneOf(Action::OpenExPalette, Action::OpenPalette), at(Arrows, Surface::Sidebar), &a).as_deref(), Some("^P"));
         let tabs = Key::Pair(Action::CycleTabs(-1), Action::CycleTabs(1));
         let alt = crate::keys::alt_label();
         assert_eq!(cap(tabs.clone(), at(Arrows, Surface::Sidebar), &a), Some(format!("{alt}+\u{2190}\u{2192}")));

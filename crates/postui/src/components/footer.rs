@@ -398,7 +398,9 @@ pub fn draw_footer(
 
     let right_limit = if globals_live {
         // The palette chip sits right-aligned, one gap column left of quit.
-        let palette_key = keycap(&Key::Of(Action::OpenPalette), spell, keymap)
+        // `:` in vim (the ex line is a superset of the palette), `^P` in
+        // arrows (plan M4b Deviation 17).
+        let palette_key = keycap(&Key::OneOf(Action::OpenExPalette, Action::OpenPalette), spell, keymap)
             .unwrap_or_else(|| "^P".into());
         let palette_chip = (palette_key.as_str(), "commands", Some(Action::OpenPalette));
         let palette_w = chip_width(&palette_chip);

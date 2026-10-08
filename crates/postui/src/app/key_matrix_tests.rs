@@ -879,24 +879,6 @@ fn every_shipped_key_list_row_has_a_case() {
 use crate::action::Verb;
 use crate::keyroute::table::{self, Intent, Surfaces};
 
-/// Every verb, once (a count does not change what a verb reaches).
-const VERBS: [Verb; 14] = [
-    Verb::Add,
-    Verb::AddAlt,
-    Verb::Rename,
-    Verb::Move,
-    Verb::Delete { count: 1 },
-    Verb::Yank,
-    Verb::Put { above: false, count: 1 },
-    Verb::EditValue,
-    Verb::Promote,
-    Verb::Fields,
-    Verb::Secret,
-    Verb::ClearValue,
-    Verb::Reveal,
-    Verb::Tls,
-];
-
 /// Plan M2 Deviations 1 and 9: the verbs vim reaches only through M4's ex
 /// rows (`:tls`, `:secret`, `:fields`, `:promote`, `:clear`, `:reveal`,
 /// `:rename`, `:value`, `:delete` on a detail pane), or by mouse until
@@ -962,7 +944,7 @@ fn every_action_is_keyboard_reachable_in_both_profiles() {
     for f in SWEEP {
         let app = build(f);
         let surface = app.surface();
-        for verb in VERBS {
+        for verb in Verb::ALL {
             let Some(action) = app.selection_action(surface, verb) else { continue };
             assert!(verb_row(KeyProfile::Arrows, surface, verb), "{f:?}: arrows has no key for {verb:?}");
             let waits = VIM_UNTIL_M4.iter().any(|(on, v)| on.has(surface) && v.kind() == verb.kind());
