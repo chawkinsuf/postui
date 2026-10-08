@@ -299,19 +299,16 @@ pub(crate) fn expand(b: &table::Binding, count: Option<usize>, cap: usize) -> Ve
         // `{N}dd` and `{N}p` hand N to the verb, which runs it as one
         // undo step; a put's N is capped by the surface like a motion's
         // (plan M2 Deviation 10), so `9999p` can't write 9 999 files.
+        // An add verb opens what it makes in Insert (spec §5.6): the app's
+        // `OnSelection` arm says so, for this row and the `:` line alike.
         Intent::Verb(v) => {
-            let mut steps = if b.count == CountRule::Pass {
+            if b.count == CountRule::Pass {
                 let n = count.unwrap_or(1);
                 let n = if matches!(v, crate::action::Verb::Put { .. }) { n.min(cap) } else { n };
                 vec![Step::Action(Action::OnSelection(v.with_count(n)))]
             } else {
                 vec![Step::Action(Action::OnSelection(v)); times(cap)]
-            };
-            // An add verb opens what it makes in Insert (spec §5.6).
-            if matches!(v, crate::action::Verb::Add | crate::action::Verb::AddAlt) {
-                steps.insert(0, Step::OpenAs(engine_glue::OpenAs::Insert(engine_glue::OpenSeat::Keep)));
             }
-            steps
         }
         Intent::Open { key, seat } => vec![Step::OpenAs(engine_glue::OpenAs::Insert(seat)), Step::Key(key.event())],
         Intent::Note(text) => vec![note_step(text)],
@@ -654,8 +651,8 @@ mod tests {
         assert_eq!(feed(&mut Router::default(), &table, "i"), open(OpenSeat::Keep));
         assert_eq!(
             feed(&mut Router::default(), &table, "a"),
-            run(vec![Step::OpenAs(OpenAs::Insert(OpenSeat::Keep)), sel(crate::action::Verb::Add)]),
-            "an add verb opens what it makes in Insert"
+            run(vec![sel(crate::action::Verb::Add)]),
+            "an add verb's Insert is the app's `OnSelection` arm's (ex_tests' add-verb test)"
         );
         assert_eq!(feed(&mut Router::default(), &table, "o"), run(vec![enter]), "o opens in Normal");
     }
@@ -842,7 +839,7 @@ mod tests {
             run(vec![sel(Verb::Put { above: true, count: 4 })]),
             "a put's count is capped by the surface"
         );
-        assert_eq!(feed(&mut Router::default(), &s, "a"), run(vec![Step::OpenAs(OpenAs::Insert(OpenSeat::Keep)), sel(Verb::Add)]));
+        assert_eq!(feed(&mut Router::default(), &s, "a"), run(vec![sel(Verb::Add)]));
         assert_eq!(feed(&mut Router::default(), &s, "3r"), run(vec![sel(Verb::Rename)]), "a count is ignored");
         let mut r = Router::default();
         assert_eq!(feed(&mut r, &s, "d"), Resolved::Consumed);
@@ -877,7 +874,7 @@ mod tests {
         assert_eq!(feed(&mut Router::default(), &s, "d"), run(vec![sel(Verb::Delete { count: 1 })]));
         assert_eq!(feed(&mut Router::default(), &s, "y"), run(vec![sel(Verb::Yank)]));
         assert_eq!(feed(&mut Router::default(), &s, "P"), run(vec![sel(Verb::Put { above: true, count: 1 })]));
-        assert_eq!(feed(&mut Router::default(), &s, "a"), run(vec![Step::OpenAs(OpenAs::Insert(OpenSeat::Keep)), sel(Verb::Add)]));
+        assert_eq!(feed(&mut Router::default(), &s, "a"), run(vec![sel(Verb::Add)]));
         assert_eq!(feed(&mut Router::default(), &s, "n"), Resolved::Declined, "n is no longer new");
         let env = cx(Arrows, Surface::ManageDetail(ManageTab::Environments));
         assert_eq!(feed(&mut Router::default(), &env, "t"), run(vec![sel(Verb::Tls)]));

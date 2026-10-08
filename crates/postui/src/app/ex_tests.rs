@@ -151,6 +151,27 @@ fn verbs_resolve_against_the_surface_under_the_line() {
     assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/gamma"));
 }
 
+/// The final review's I-3: an add verb opens what it makes in Insert from
+/// the line as from its row (spec §5.6), on a table, the options grid and
+/// the Variables list.
+#[test]
+fn the_add_verbs_open_in_insert_from_the_line_as_from_the_row() {
+    for (f, row, line) in [
+        (Fixture::TableThreeHeaders, "a", ":new<CR>"),
+        (Fixture::VarGrid, "a", ":new<CR>"),
+        (Fixture::VarListGroup, "A", ":group<CR>"),
+    ] {
+        let mut by_row = vim(f);
+        feed(&mut by_row, row);
+        let mut by_line = vim(f);
+        feed(&mut by_line, line);
+        assert!(by_line.field_caret().is_live(), "{f:?} {line}: {:?}", by_line.field_caret());
+        assert_eq!(by_line.field_caret(), by_row.field_caret(), "{f:?}: {line} opens what {row} opens");
+        assert_eq!(by_line.mode_indicator(), Some("INSERT"), "{f:?} {line}");
+        assert_eq!(by_row.mode_indicator(), Some("INSERT"), "{f:?} {row}");
+    }
+}
+
 /// Review Focus 2.
 #[test]
 fn unsupported_queries_run_nothing_and_never_pin_a_verb() {
