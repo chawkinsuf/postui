@@ -482,6 +482,10 @@ pub struct PaletteState {
     /// A query that runs nothing (`Not supported: :s`): the one muted
     /// row's text; `filtered` is empty while it is `Some`.
     refused: Option<String>,
+    /// Whether a row was picked (moved to, or clicked) since the query last
+    /// changed: on the ex line, Enter with nothing typed runs only a
+    /// picked row, as Vim's `:<CR>` runs nothing.
+    picked: bool,
 }
 
 impl PaletteState {
@@ -506,6 +510,7 @@ impl PaletteState {
             ex: None,
             pinned: None,
             refused: None,
+            picked: false,
         }
     }
 
@@ -577,6 +582,7 @@ impl PaletteState {
         if i < self.len() {
             self.selected = i;
             self.ensure_visible = true;
+            self.picked = true;
         }
     }
 
@@ -632,6 +638,7 @@ impl PaletteState {
         let query = self.input.text();
         self.pinned = None;
         self.refused = None;
+        self.picked = false;
         if let Some(scope) = &self.ex {
             match ex::resolve(query, scope) {
                 ex::Resolved::Pinned(row) => self.pinned = Some(row),
@@ -675,26 +682,35 @@ impl PaletteState {
                     ..Default::default()
                 });
             }
+            // Vim's `:<CR>`: nothing typed and nothing picked runs nothing,
+            // though the frecency list shows under the line.
+            KeyCode::Enter if self.ex.is_some() && self.input.text().trim().is_empty() && !self.picked => {
+                return Some(super::modal::ModalResult { actions: vec![], close: true, usage: None });
+            }
             KeyCode::Enter => return self.confirm(),
             KeyCode::Up => {
                 self.selected = self.selected.saturating_sub(1);
                 self.ensure_visible = true;
+                self.picked = true;
             }
             KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.selected = self.selected.saturating_sub(1);
                 self.ensure_visible = true;
+                self.picked = true;
             }
             KeyCode::Down => {
                 if self.selected + 1 < self.len() {
                     self.selected += 1;
                 }
                 self.ensure_visible = true;
+                self.picked = true;
             }
             KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if self.selected + 1 < self.len() {
                     self.selected += 1;
                 }
                 self.ensure_visible = true;
+                self.picked = true;
             }
             _ => {
                 let before = self.input.text().to_string();
@@ -1405,6 +1421,36 @@ mod tests {
         assert!(p.is_empty());
         let res = p.confirm().unwrap();
         assert!(matches!(res.actions.as_slice(), [Action::ShowToast(t, _)] if t == "Not a command: :zzzz"));
+    }
+
+    /// Vim's `:<CR>` does nothing (the code review's third finding): with
+    /// nothing typed and no row picked, Enter closes the line and runs no
+    /// row, though the frecency list shows under it. A row picked from that
+    /// list still runs; ctrl+p's palette is unchanged.
+    #[test]
+    fn enter_on_an_empty_ex_line_runs_nothing_unless_a_row_was_picked() {
+        let mut p = ex();
+        assert!(!p.filtered().is_empty(), "the list shows");
+        let res = p.handle_key(key(KeyCode::Enter)).expect("closes");
+        assert!(res.close && res.actions.is_empty() && res.usage.is_none());
+        let mut p = ex();
+        type_in(&mut p, "  ");
+        let res = p.handle_key(key(KeyCode::Enter)).expect("closes");
+        assert!(res.actions.is_empty(), "spaces are nothing typed");
+        let mut p = ex();
+        p.handle_key(ctrl('n'));
+        p.handle_key(ctrl('p'));
+        let res = p.handle_key(key(KeyCode::Enter)).unwrap();
+        assert_eq!(res.actions, vec![p.filtered()[0].action.clone()], "a picked row runs");
+        let mut p = ex();
+        type_in(&mut p, "a");
+        p.handle_key(ctrl('n'));
+        p.handle_key(key(KeyCode::Backspace));
+        assert!(p.input().is_empty());
+        assert!(p.handle_key(key(KeyCode::Enter)).unwrap().actions.is_empty(), "an edit drops the pick");
+        let mut plain = PaletteState::new(&crate::usage::UsageStore::default(), 0);
+        let res = plain.handle_key(key(KeyCode::Enter)).unwrap();
+        assert_eq!(res.actions, vec![plain.filtered()[0].action.clone()], "ctrl+p's Enter runs row 0");
     }
 
     #[test]

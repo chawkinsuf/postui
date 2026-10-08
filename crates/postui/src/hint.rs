@@ -214,7 +214,10 @@ fn fallback_description(action: &Action) -> Option<String> {
     use crate::components::response::ViewMode;
     Some(match action {
         Action::Quit => "Quit postui".to_string(),
+        // Vim's quit chip (`:q`): the dirty gate asks first, over a dialog too.
+        Action::GatedQuit => "Quit postui, asking first about unsaved changes".to_string(),
         Action::OpenPalette => "Open the command palette".to_string(),
+        Action::OpenExPalette => "Open the : command line".to_string(),
         Action::CancelSend => "Cancel the request in flight".to_string(),
         Action::CloseField => "Close the field, keeping what you typed".to_string(),
         Action::FocusUrl => "Edit the URL".to_string(),
@@ -821,7 +824,9 @@ mod tests {
             Action::CycleSplit,
             Action::CycleSplitBack,
             Action::OpenPalette,
+            Action::OpenExPalette,
             Action::Quit,
+            Action::GatedQuit,
         ] {
             let h = hint_for(&Hit::FooterChip(action.clone()), &keymap, &ctx()).unwrap();
             assert_ne!(h, format!("{action:?}"), "{action:?} has no wording");

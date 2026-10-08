@@ -30055,10 +30055,10 @@ fn footer_keycaps_follow_the_profile() {
     assert_eq!(footer_chip_text(&mut app, Action::DeleteSelectedRequest).as_deref(), Some("d delete"));
     assert_eq!(footer_chip_text(&mut app, Action::Quit).as_deref(), Some("q quit"));
     app.use_profile(KeyProfile::Vim);
-    assert_eq!(footer_chip_text(&mut app, Action::OpenPalette).as_deref(), Some(": commands"));
+    assert_eq!(footer_chip_text(&mut app, Action::OpenExPalette).as_deref(), Some(": commands"), "a click opens the line it spells");
     assert_eq!(footer_chip_text(&mut app, Action::PromptNewRequest).as_deref(), Some("a new"), "a shared letter");
     assert_eq!(footer_chip_text(&mut app, Action::DeleteSelectedRequest).as_deref(), Some("dd delete"));
-    assert_eq!(footer_chip_text(&mut app, Action::Quit).as_deref(), Some(":q quit"), "vim gave up q: the ex verb spells it (plan M4b Deviation 20)");
+    assert_eq!(footer_chip_text(&mut app, Action::GatedQuit).as_deref(), Some(":q quit"), "vim gave up q: the ex verb spells it and a click runs it (plan M4b Deviation 20)");
 }
 
 /// Spec §4.6 and §5.4: the Variables list's chips spell the shared

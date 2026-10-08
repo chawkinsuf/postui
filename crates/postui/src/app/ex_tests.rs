@@ -231,3 +231,77 @@ fn ctrl_p_in_vim_opens_the_plain_palette() {
     assert!(!palette(&app).is_ex());
     assert!(palette(&app).pinned().is_none());
 }
+
+/// The code review's third finding: `:` then Enter runs nothing, as in
+/// Vim, though the line lists every command under it.
+#[test]
+fn colon_enter_runs_nothing() {
+    let mut app = vim(Fixture::TableThreeHeaders);
+    let before = snapshot(&app);
+    feed(&mut app, ":<CR>");
+    assert!(app.modals.is_empty());
+    assert_eq!(snapshot(&app), before);
+    assert!(toasts(&app).is_empty(), "{:?}", toasts(&app));
+    assert!(!app.should_quit);
+    assert!(app.editor.is_dirty(), "nothing saved or discarded");
+}
+
+/// The code review's first and second findings: `:u` is Vim's undo, not
+/// a prefix of `:up`, and a verb given an argument or a trailing space is
+/// never left to the fuzzy rows.
+#[test]
+fn undo_and_arguments_never_save_or_run_a_fuzzy_row() {
+    for q in [":u<CR>", ":undo<CR>", ":w file<CR>", ":e foo.json<CR>"] {
+        let mut app = vim(Fixture::TableThreeHeaders);
+        let before = snapshot(&app);
+        feed(&mut app, q);
+        assert!(app.modals.is_empty(), "{q}");
+        assert_eq!(snapshot(&app), before, "{q}");
+        assert!(app.editor.is_dirty(), "{q}: nothing saved");
+        assert!(toasts(&app).is_empty(), "{q}: {:?}", toasts(&app));
+    }
+    let mut app = vim(Fixture::TableThreeHeaders);
+    feed(&mut app, ":w <CR>");
+    assert!(!app.editor.is_dirty(), "a trailing space still saves");
+}
+
+fn click_chip(app: &mut App, action: Action) {
+    use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    draw(app);
+    let r = app.hits.rect_of(&crate::hit::Hit::FooterChip(action.clone())).unwrap_or_else(|| panic!("no {action:?} chip"));
+    app.handle_mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: r.x + 1, row: r.y, modifiers: KeyModifiers::NONE });
+}
+
+/// The code review's fifth finding: where the quit chip reads `:q`, a
+/// click runs `:q`'s gated quit, so over a dialog it meets the dirty
+/// gate rather than leaving at once with the edits lost.
+#[test]
+fn the_quit_chip_runs_what_it_spells() {
+    let mut app = vim(Fixture::DirtyScratch);
+    feed(&mut app, ":w<CR>");
+    assert!(matches!(app.modals.top(), Some(Modal::Prompt { .. })), "Save as");
+    draw(&mut app);
+    assert!(app.hits.rect_of(&crate::hit::Hit::FooterChip(Action::Quit)).is_some(), "typing in the dialog: `^C`, the emergency exit");
+    feed(&mut app, "<Esc>");
+    click_chip(&mut app, Action::GatedQuit);
+    assert!(!app.should_quit, "the gate, not a quit");
+    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })), "the dirty gate's confirm");
+    let mut app = build(Fixture::DirtyScratch);
+    draw(&mut app);
+    feed(&mut app, "<C-p>");
+    click_chip(&mut app, Action::Quit);
+    assert!(app.should_quit, "arrows' ^C chip stays the emergency exit over a dialog");
+}
+
+/// The code review's sixth finding: the commands chip reads `:` in vim,
+/// so a click opens the `:` line; in arrows it reads `^P` and opens the
+/// plain palette.
+#[test]
+fn the_commands_chip_opens_the_palette_it_spells() {
+    let mut app = vim(Fixture::SidebarThree);
+    click_chip(&mut app, Action::OpenExPalette);
+    assert!(palette(&app).is_ex());
+    let mut app = build(Fixture::SidebarThree);
+    click_chip(&mut app, Action::OpenPalette);
+    assert!(!palette(&app).is_ex());
+}

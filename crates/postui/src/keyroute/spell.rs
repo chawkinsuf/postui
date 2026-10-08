@@ -83,6 +83,14 @@ pub fn spell(at: SpellCtx, action: &Action, keymap: &Keymap) -> Option<String> {
     colon_applies(at).then(|| super::ex::spelling(action)).flatten()
 }
 
+/// What the quit chip runs at `at`: `:q`'s gated quit where its keycap
+/// reads `:q` (vim, where the line opens), so a click over a dialog meets
+/// the dirty gate as the typed `:q` does; else `Quit`, whose keys are
+/// arrows' `q` and the `^C` emergency exit.
+pub fn quit_action(at: SpellCtx) -> Action {
+    if at.profile == KeyProfile::Vim && colon_applies(at) { Action::GatedQuit } else { Action::Quit }
+}
+
 /// Whether the `:` line opens from `at`: its row applies there.
 fn colon_applies(at: SpellCtx) -> bool {
     row_for(at, &Action::OpenExPalette).is_some()
@@ -104,10 +112,13 @@ pub fn keycap(key: &Key, at: SpellCtx, keymap: &Keymap) -> Option<String> {
         Key::Send { shift_enter: false } if !vim => "^R".to_string(),
         Key::Send { .. } => glyphs(&spell(at, &Action::Send, keymap)?),
         Key::Quit { plain_q: true } if !vim => "q".to_string(),
-        // `:q quit` in vim where the line opens (spec §4.6); the keymap's
-        // `^C` on a picker or a dialog.
-        Key::Quit { .. } if vim && colon_applies(at) => ":q".to_string(),
-        Key::Quit { .. } => glyphs(&spell(at, &Action::Quit, keymap)?),
+        // `:q quit` in vim where the line opens (spec §4.6), spelled from
+        // the ex verb the chip then runs; the keymap's `^C` on a picker or
+        // a dialog.
+        Key::Quit { .. } => match quit_action(at) {
+            Action::GatedQuit => super::ex::spelling(&Action::GatedQuit)?,
+            quit => glyphs(&spell(at, &quit, keymap)?),
+        },
         Key::Pick => if vim { "^N/^P" } else { "\u{2191}\u{2193}" }.to_string(),
         Key::OrRow(named, a) => row_for(at, a).map_or_else(|| (*named).to_string(), notation::display),
     })

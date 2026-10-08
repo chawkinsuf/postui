@@ -78,8 +78,11 @@ pub static VERBS: &[ExVerb] = &[
 
 /// Vim commands we do not run (spec §5.9, key list X.unsupported): their
 /// exact spellings. A query that starts a range is refused the same way.
+/// `:u` and `:red` are Vim's undo and redo: listed so `:u` never reaches
+/// `:up` by prefix and saves instead.
 pub const UNSUPPORTED: &[&str] = &[
     "s", "substitute", "g", "global", "v", "vglobal", "se", "set", "sor", "sort", "norm", "normal", "r", "read", "!",
+    "u", "undo", "red", "redo",
 ];
 
 /// What the line can act on (Deviation 10): the surface under it, and the
@@ -137,11 +140,27 @@ fn shortest_start(v: &ExVerb, query: &str) -> Option<usize> {
     v.names.iter().filter(|n| n.starts_with(query)).map(|n| n.len()).min()
 }
 
+/// The verb `query` spells among those `keep` admits (Deviation 8): an
+/// exact spelling, else the shortest name the query starts, a tie going
+/// to the earlier row.
+fn find(query: &str, keep: impl Fn(&ExVerb) -> bool) -> Option<&'static ExVerb> {
+    let kept = || VERBS.iter().filter(|v| keep(v));
+    kept().find(|v| v.names.contains(&query)).or_else(|| {
+        kept()
+            .filter_map(|v| shortest_start(v, query).map(|len| (len, v)))
+            .min_by_key(|(len, _)| *len) // the first of equal minimums
+            .map(|(_, v)| v)
+    })
+}
+
 /// The verb `query` names (Deviation 8): refused spellings and ranges
 /// first; then an exact spelling; then the shortest name the query starts.
 /// Only verbs that run in `scope` count; a verb that would match but
-/// does not run here is refused with its own text (Deviation 9).
+/// does not run here is refused with its own text (Deviation 9). Spaces
+/// around the query are not part of it, and a verb given an argument
+/// (`:w file`, `:e path`) is refused: none of ours takes one.
 pub fn resolve(query: &str, scope: &Scope) -> Resolved {
+    let query = query.trim();
     if query.is_empty() {
         return Resolved::Nothing;
     }
@@ -151,24 +170,17 @@ pub fn resolve(query: &str, scope: &Scope) -> Resolved {
     if UNSUPPORTED.contains(&word) || query.starts_with(|c: char| c.is_ascii_digit() || "%.$'<!".contains(c)) {
         return Resolved::Refused(format!("Not supported: :{query}"));
     }
-    let exact = VERBS.iter().filter(|v| runs_in(v, scope)).find(|v| v.names.contains(&query));
-    let prefix = || {
-        VERBS
-            .iter()
-            .filter(|v| runs_in(v, scope))
-            .filter_map(|v| shortest_start(v, query).map(|len| (len, v)))
-            .min_by_key(|(len, _)| *len) // the first of equal minimums
-            .map(|(_, v)| v)
-    };
-    if let Some(v) = exact.or_else(prefix) {
+    if let Some((head, _)) = query.split_once(char::is_whitespace) {
+        return match find(head, |_| true) {
+            Some(_) => Resolved::Refused(format!("Not supported: :{query}")),
+            None => Resolved::Nothing,
+        };
+    }
+    if let Some(v) = find(query, |v| runs_in(v, scope)) {
         return Resolved::Pinned(row(v));
     }
     // A verb the query spells that runs elsewhere, not here.
-    let anywhere = VERBS
-        .iter()
-        .find(|v| v.names.contains(&query))
-        .or_else(|| VERBS.iter().filter_map(|v| shortest_start(v, query).map(|len| (len, v))).min_by_key(|(len, _)| *len).map(|(_, v)| v));
-    match anywhere {
+    match find(query, |_| true) {
         Some(v) => Resolved::Refused(format!("Nothing to :{} here", v.names[0])),
         None => Resolved::Nothing,
     }
@@ -253,6 +265,32 @@ mod tests {
         assert_eq!(pinned("sec", &Scope { surface: Surface::VarForm, verbs: vec![Verb::Secret] }).name, "secret");
         assert_eq!(pinned("gr", &Scope { surface: Surface::VarList, verbs: vec![Verb::AddAlt] }).name, "group");
         assert_eq!(pinned("va", &Scope { surface: Surface::VarGrid, verbs: vec![Verb::EditValue] }).name, "value");
+    }
+
+    /// Vim's `:u` is undo, so it never reaches `:up` by prefix and saves
+    /// (the code review's first finding); `:red` is refused alongside it.
+    #[test]
+    fn undo_and_redo_are_refused_not_prefixed() {
+        for q in ["u", "undo", "red", "redo"] {
+            assert!(matches!(resolve(q, &sidebar()), Resolved::Refused(t) if t == format!("Not supported: :{q}")), "{q}");
+        }
+        assert_eq!(pinned("up", &sidebar()).name, "write", ":up is still update");
+    }
+
+    /// Spaces around a verb are not part of it; a verb given an argument
+    /// is refused rather than left to the fuzzy rows (the code review's
+    /// second finding): `:w file` writes elsewhere in Vim, which we do not.
+    #[test]
+    fn spaces_trim_and_arguments_are_refused() {
+        for q in ["w ", " w", " w  "] {
+            assert_eq!(pinned(q, &sidebar()).name, "write", "{q:?}");
+        }
+        for (q, shown) in [("w file", "w file"), ("e foo.json ", "e foo.json"), ("wr x", "wr x"), ("delete 3", "delete 3"), ("q!  now", "q!  now")] {
+            assert!(matches!(resolve(q, &sidebar()), Resolved::Refused(t) if t == format!("Not supported: :{shown}")), "{q:?}");
+        }
+        assert!(matches!(resolve("fields x", &sidebar()), Resolved::Refused(t) if t == "Not supported: :fields x"), "a verb from elsewhere too");
+        assert!(matches!(resolve("ab cd", &sidebar()), Resolved::Nothing), "no verb: the fuzzy rows");
+        assert!(matches!(resolve("   ", &sidebar()), Resolved::Nothing));
     }
 
     /// Deviation 9: a verb with no meaning here is refused with its own
