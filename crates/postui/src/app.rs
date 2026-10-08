@@ -441,6 +441,9 @@ pub struct App {
     /// Owns (and, on drop, removes) the throwaway project directory made by
     /// `App::new_for_test()`. Always `None` outside of tests.
     _test_dir: Option<tempfile::TempDir>,
+    /// The throwaway config directory a test gave `config` (the key matrix
+    /// persists its profile there). Always `None` outside of tests.
+    _test_config_dir: Option<tempfile::TempDir>,
     /// The undo/redo stacks. Populated by `capture_undo` and by later
     /// tasks' Undo/Redo apply arms.
     pub history: crate::undo::History,
@@ -1759,6 +1762,7 @@ impl App {
             startup_config_gate: false,
             _test_rx: None,
             _test_dir: None,
+            _test_config_dir: None,
             history: crate::undo::History::new(),
             marked_entry: None,
             op_in_flight: false,
