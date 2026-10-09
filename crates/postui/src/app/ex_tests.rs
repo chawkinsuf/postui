@@ -265,6 +265,22 @@ fn undo_and_arguments_never_save_or_run_a_fuzzy_row() {
     assert!(!app.editor.is_dirty(), "a trailing space still saves");
 }
 
+/// The second code review's second finding: a typo no verb spells (`:W`)
+/// is Vim's E492, a note, not whichever fuzzy row ranked first.
+#[test]
+fn a_typo_is_not_a_command() {
+    for q in ["W", "Wq", "Qa", "QUIT"] {
+        let mut app = vim(Fixture::TableThreeHeaders);
+        let before = snapshot(&app);
+        feed(&mut app, &format!(":{q}<CR>"));
+        assert!(app.modals.is_empty(), "{q}: {:?}", app.modals.top().map(std::mem::discriminant));
+        assert_eq!(snapshot(&app), before, "{q}");
+        assert!(app.editor.is_dirty(), "{q}: nothing saved");
+        assert!(!app.should_quit, "{q}");
+        assert_eq!(toasts(&app), vec![format!("Not a command: :{q}")], "{q}");
+    }
+}
+
 fn click(app: &mut App, hit: crate::hit::Hit) {
     use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
     draw(app);

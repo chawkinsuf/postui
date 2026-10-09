@@ -602,7 +602,15 @@ impl PaletteState {
         {
             return Some(ModalResult { actions: row.actions.clone(), close: true, usage: None });
         }
-        match self.filtered.get(self.selected - self.offset()) {
+        // On the ex line a fuzzy row runs only when it was picked (moved
+        // to, or clicked), as Vim's wildmenu runs only the completion
+        // tabbed to: typed text no verb spells is Vim's E492, never
+        // whichever row the filter ranked first (`:W`).
+        let chosen = self
+            .filtered
+            .get(self.selected - self.offset())
+            .filter(|_| self.ex.is_none() || self.picked);
+        match chosen {
             Some(chosen) => Some(ModalResult {
                 actions: vec![chosen.action.clone()],
                 close: true,
@@ -610,6 +618,7 @@ impl PaletteState {
             }),
             // The ex line with nothing to run: a note (Deviation 16);
             // ctrl+p's palette swallows Enter on an empty list, as on main.
+            // The note's text is Vim's E492 without the number.
             None if self.ex.is_some() => Some(ModalResult {
                 actions: vec![Action::ShowToast(
                     format!("Not a command: :{}", self.input.text()),
@@ -1423,6 +1432,32 @@ mod tests {
         assert!(p.is_empty());
         let res = p.confirm().unwrap();
         assert!(matches!(res.actions.as_slice(), [Action::ShowToast(t, _)] if t == "Not a command: :zzzz"));
+    }
+
+    /// The second code review's second finding: typed text no verb spells
+    /// runs no fuzzy row on Enter, though the rows still show (Vim's E492
+    /// for `:W`); a row picked from them runs, by key or click.
+    #[test]
+    fn an_unspelled_query_runs_only_a_picked_row() {
+        let mut p = ex();
+        type_in(&mut p, "W");
+        assert!(p.pinned().is_none() && p.refused().is_none());
+        assert!(!p.filtered().is_empty(), "the fuzzy rows show");
+        let res = p.handle_key(key(KeyCode::Enter)).unwrap();
+        assert!(res.close && res.usage.is_none());
+        assert!(matches!(res.actions.as_slice(), [Action::ShowToast(t, _)] if t == "Not a command: :W"));
+        p.handle_key(ctrl('n'));
+        p.handle_key(ctrl('p'));
+        let res = p.handle_key(key(KeyCode::Enter)).unwrap();
+        assert_eq!(res.actions, vec![p.filtered()[0].action.clone()], "a picked row runs");
+        let mut p = ex();
+        type_in(&mut p, "W");
+        p.select(0);
+        assert_eq!(p.confirm().unwrap().actions, vec![p.filtered()[0].action.clone()], "a clicked row runs");
+        let mut plain = PaletteState::new(&crate::usage::UsageStore::default(), 0);
+        type_in(&mut plain, "W");
+        let res = plain.handle_key(key(KeyCode::Enter)).unwrap();
+        assert_eq!(res.actions, vec![plain.filtered()[0].action.clone()], "ctrl+p's Enter runs the top row");
     }
 
     /// Vim's `:<CR>` does nothing (the code review's third finding): with
