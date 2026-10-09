@@ -1139,7 +1139,6 @@ impl VarManager {
             }
             // The form's quick actions (secret, clear, promote, reveal) are
             // the router's rows through `form_verb`.
-            KeyCode::Char('q') => Some(Action::Quit),
             // `u` / `:` are not named here (nor in the list and grid): an
             // unclaimed plain key reaches the router's keymap whitelist.
             _ => None,
@@ -1262,8 +1261,10 @@ impl VarManager {
     /// routes every key here once an open modal and a modified global
     /// shortcut (e.g. ctrl+p for the palette) have had first refusal, and
     /// swallows anything this returns `None` for rather than falling
-    /// through to the global keymap — so, for instance, plain `q` does not
-    /// quit the app from this screen.
+    /// through to the global keymap, except what the screen whitelist
+    /// admits. `q` is the keymap's: arrows reaches Quit through the screen
+    /// whitelist, vim's `q` is the router's macro prefix (plan M4b
+    /// Deviation 18).
     ///
     /// The single-letter commands all target the left list's selection.
     /// They are ignored while a detail-pane cell edit owns the keyboard
@@ -1317,10 +1318,6 @@ impl VarManager {
         let ctrl = ev.modifiers == KeyModifiers::CONTROL;
         match ev.code {
             KeyCode::Esc => return Some(Action::CloseScreen),
-            // `q` is free as a command letter in every focus stop, so the
-            // manager keeps the app-wide quit (the footer's quit chip
-            // advertises it); live edits never reach here.
-            KeyCode::Char('q') => return Some(Action::Quit),
             KeyCode::Up if plain => {
                 self.move_cursor(-1);
                 return None;
@@ -1481,7 +1478,6 @@ impl VarManager {
             // Plain only: ctrl+d is the list's half-page motion one `h`
             // away, and must never delete here.
             KeyCode::Delete if plain => self.grid_verb(ctx, selector, Verb::Delete { count: 1 }),
-            KeyCode::Char('q') => Some(Action::Quit),
             _ => None,
         }
     }
@@ -3400,7 +3396,7 @@ fields = ["user_id", "customer_id"]
             vm.handle_key(key(KeyCode::Delete), &ctx),
             Some(Action::DeleteVar { .. })
         ));
-        assert_eq!(vm.handle_key(key(KeyCode::Char('q')), &ctx), Some(Action::Quit));
+        assert_eq!(vm.handle_key(key(KeyCode::Char('q')), &ctx), None);
 
         let mut vm = VarManager::default();
         select_var(&mut vm, &ctx, "base_url");
@@ -4445,27 +4441,21 @@ fields = ["user_id", "customer_id"]
         assert!(chips.iter().any(|(k, _, _)| *k == "esc"), "{chips:?}");
     }
 
-    /// `q` is unused as a command letter in every manager focus stop, so
-    /// it quits the app from all of them — but never while a live edit
-    /// owns the keyboard (there it must type).
+    /// `q` is the keymap's, not the manager's: arrows reaches Quit through
+    /// the screen whitelist and vim's `q` is the macro prefix (plan M4b
+    /// Deviation 18); the app-level test owns the quit.
     #[test]
-    fn q_quits_from_every_focus_stop_but_types_into_a_live_edit() {
+    fn q_is_not_the_managers_key() {
         let (_dir, ctx) = fixture();
         let mut vm = VarManager::default();
         // List focus.
         render(&mut vm, &ctx);
-        assert_eq!(
-            vm.handle_key(key(KeyCode::Char('q')), &ctx),
-            Some(Action::Quit)
-        );
+        assert_eq!(vm.handle_key(key(KeyCode::Char('q')), &ctx), None);
         // Grid focus.
         select_group(&mut vm, &ctx, "creds");
         vm.focus = VmFocus::Grid;
-        assert_eq!(
-            vm.handle_key(key(KeyCode::Char('q')), &ctx),
-            Some(Action::Quit)
-        );
-        // A live cell edit owns every key: no quit.
+        assert_eq!(vm.handle_key(key(KeyCode::Char('q')), &ctx), None);
+        // A live cell edit owns every key.
         vm.start_cell_edit(&ctx, 0, 1);
         assert_eq!(vm.handle_key(key(KeyCode::Char('q')), &ctx), None);
         vm.grid.editing = None;
@@ -4477,10 +4467,7 @@ fields = ["user_id", "customer_id"]
             .unwrap();
         vm.select_row(i);
         vm.focus = VmFocus::Form;
-        assert_eq!(
-            vm.handle_key(key(KeyCode::Char('q')), &ctx),
-            Some(Action::Quit)
-        );
+        assert_eq!(vm.handle_key(key(KeyCode::Char('q')), &ctx), None);
     }
 
     /// Enter opens the focused grid cell (spec 2026-09-16). Unlike the

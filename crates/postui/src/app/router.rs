@@ -113,8 +113,9 @@ impl App {
     /// key into the live field, an open mode into the event's `Ran`. A run
     /// of replayed named keys stops once the surface changes under it (plan
     /// M1 Deviation 13): `3j` from the URL line enters the table and stops.
-    /// An engine run stops once its field closes. Actions run on whatever
-    /// the surface: `3u` undoes three. A counted undo or redo stops at the
+    /// An engine run stops once its field closes, and any run stops at a
+    /// `CloseField` the field refused. Actions run on whatever the
+    /// surface: `3u` undoes three. A counted undo or redo stops at the
     /// first repeat that stepped nothing, so `10u` with three steps undoes
     /// three and says "Nothing to undo" once (the final review's ruling,
     /// spec §9 M1). A counted list verb is never repeated here: `{N}dd` and
@@ -135,8 +136,18 @@ impl App {
                 Step::Key(ev) => ran = ran.and(Ran::routed(self.handle_key_routed(ev))),
                 Step::Action(a) => {
                     let history = matches!(a, Action::Undo | Action::Redo);
+                    let close = a == Action::CloseField;
+                    if close {
+                        self.last_action_failed = false;
+                    }
                     ran = ran.and(Ran::routed(self.update(a)));
                     if history && !self.history_stepped {
+                        break;
+                    }
+                    // A refused close leaves the field open, and nothing
+                    // after it runs: `ZZ` does not save or quit, `j` does
+                    // not move (the final review's ruling I-2).
+                    if close && self.last_action_failed {
                         break;
                     }
                 }
@@ -147,16 +158,28 @@ impl App {
 
     /// The spelling context of where the keyboard is now (spec §4.6).
     pub fn spell_ctx(&self) -> crate::keyroute::SpellCtx {
-        crate::keyroute::SpellCtx {
-            profile: self.profile(),
-            surface: self.surface(),
-            field_live: self.field_caret().is_live(),
-        }
+        use crate::keyroute::FieldSpell;
+        use crate::keyroute::engine_glue::Mode;
+        let surface = self.surface();
+        let field = match self.live_engine_field() {
+            Some(id) => {
+                let glue = self.glue_of(id);
+                if glue.mode() == Mode::Normal && !glue.view().pending {
+                    FieldSpell::Normal(crate::keyroute::table::field_class(id, surface))
+                } else {
+                    FieldSpell::Typing
+                }
+            }
+            None if self.field_caret().is_live() => FieldSpell::Typing,
+            None => FieldSpell::None,
+        };
+        crate::keyroute::SpellCtx { profile: self.profile(), surface, field }
     }
 
     /// The half-typed keys for the footer (spec §3.8): the router's, then
-    /// the engine's. Keys the router holds for a surface the keyboard has
-    /// since left with no key are not shown: the next key there drops them.
+    /// the engine's, then the recording note. Keys the router holds for a
+    /// surface the keyboard has since left with no key are not shown: the
+    /// next key there drops them.
     pub fn key_echo(&self) -> String {
         if self.router.typed_on() == Some(self.surface()) {
             let pending = self.router.echo();
@@ -164,10 +187,14 @@ impl App {
                 return pending;
             }
         }
-        match self.live_engine_field() {
-            Some(id) => self.glue_of(id).echo(),
-            None => String::new(),
+        if let Some(id) = self.live_engine_field() {
+            let echo = self.glue_of(id).echo();
+            if !echo.is_empty() {
+                return echo;
+            }
         }
+        // Third, the recording note (spec §3.8, §5.11).
+        self.router.recording().map_or_else(String::new, |reg| format!("recording @{reg} — not supported"))
     }
 
     /// The vim mode word (spec §3.8): what is taking the keys. A field with
@@ -207,27 +234,33 @@ impl App {
 
     /// The thing the keys go to right now (spec §3.3).
     pub fn surface(&self) -> Surface {
-        use crate::components::manage::ManageTab;
-        use crate::components::manage_list::ListFocus;
-        use crate::components::varmanager::VmFocus;
-        if let Some(top) = self.modals.top() {
-            return match top {
-                Modal::Prompt { .. } => Surface::Prompt,
-                Modal::NewProject { .. } | Modal::MultiPrompt { .. } | Modal::FieldsEditor(_) => {
-                    Surface::Form
-                }
+        match self.modals.top() {
+            Some(Modal::Prompt { .. }) => Surface::Prompt,
+            Some(Modal::NewProject { .. } | Modal::MultiPrompt { .. } | Modal::FieldsEditor(_)) => Surface::Form,
+            Some(
                 Modal::Palette(_)
                 | Modal::Chooser(_)
                 | Modal::FilePicker(_)
                 | Modal::VarPicker(_)
-                | Modal::Dropdown(_) => Surface::Picker,
+                | Modal::Dropdown(_),
+            ) => Surface::Picker,
+            Some(
                 Modal::Message { .. }
                 | Modal::Confirm { .. }
                 | Modal::ConfigStartup { .. }
                 | Modal::ConfigEditInvalid { .. }
-                | Modal::KeymapChoice { .. } => Surface::Dialog,
-            };
+                | Modal::KeymapChoice { .. },
+            ) => Surface::Dialog,
+            None => self.screen_surface(),
         }
+    }
+
+    /// The screen's own surface, under any modal: where the keys go once
+    /// the modals are answered.
+    pub(crate) fn screen_surface(&self) -> Surface {
+        use crate::components::manage::ManageTab;
+        use crate::components::manage_list::ListFocus;
+        use crate::components::varmanager::VmFocus;
         match self.screen {
             Screen::Testbed => Surface::Other,
             Screen::Manage => match self.manage.tab {

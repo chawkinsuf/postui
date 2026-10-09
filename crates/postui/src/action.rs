@@ -107,6 +107,15 @@ pub enum Action {
     /// Quit without the unsaved-changes gate — what the gate's own choices
     /// dispatch once the user has decided.
     ForceQuit,
+    /// `:q` (spec §5.9): `Quit` behind the unsaved-changes gate whatever
+    /// is open under the line, a dialog included. `Quit` skips the gate
+    /// with a modal up so ctrl+c stays an emergency exit; the line's is
+    /// `:q!` (the final review's I-1).
+    GatedQuit,
+    /// `ZZ`, `:wq`, `:x` (spec §5.9, §5.11): quit, saving first when the
+    /// request has unsaved edits. A never-saved request asks for a name;
+    /// a refused or cancelled save does not quit.
+    WriteQuit,
     Tick,
     Render,
     FocusNext,
@@ -120,6 +129,12 @@ pub enum Action {
     PaneMove { dir: PaneDir, leave: bool },
     ScrollPane(PaneId, i16),
     OpenPalette,
+    /// Vim's `:` (spec §5.9): the palette in ex mode, its query read as a
+    /// verb against the surface under it (`App::ex_scope`).
+    OpenExPalette,
+    /// `:noh` (spec §5.9): the body's search highlight goes until the next
+    /// search.
+    NoHlSearch,
     Close,
     ShowToast(String, ToastKind),
     ShowAbout,
@@ -1114,6 +1129,25 @@ pub enum Verb {
 }
 
 impl Verb {
+    /// Every verb, once (a count does not change what a verb reaches): the
+    /// reachability test and the `:` line's scope walk it.
+    pub const ALL: [Verb; 14] = [
+        Verb::Add,
+        Verb::AddAlt,
+        Verb::Rename,
+        Verb::Move,
+        Verb::Delete { count: 1 },
+        Verb::Yank,
+        Verb::Put { above: false, count: 1 },
+        Verb::EditValue,
+        Verb::Promote,
+        Verb::Fields,
+        Verb::Secret,
+        Verb::ClearValue,
+        Verb::Reveal,
+        Verb::Tls,
+    ];
+
     /// The same verb whatever its count: `dd` and `3dd` spell alike.
     pub fn kind(self) -> Self {
         self.with_count(1)
@@ -1125,6 +1159,40 @@ impl Verb {
             Verb::Delete { .. } => Verb::Delete { count: n },
             Verb::Put { above, .. } => Verb::Put { above, count: n },
             v => v,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Verb;
+
+    /// `Verb::ALL` lists every verb once, in declaration order. `slot` has
+    /// no wildcard arm, so a new verb stops this compiling until it gets a
+    /// slot here and its place in `ALL`; the `:` line's scope and the
+    /// reachability test only see verbs `ALL` lists.
+    #[test]
+    fn verb_all_lists_every_verb() {
+        fn slot(v: Verb) -> usize {
+            match v {
+                Verb::Add => 0,
+                Verb::AddAlt => 1,
+                Verb::Rename => 2,
+                Verb::Move => 3,
+                Verb::Delete { .. } => 4,
+                Verb::Yank => 5,
+                Verb::Put { .. } => 6,
+                Verb::EditValue => 7,
+                Verb::Promote => 8,
+                Verb::Fields => 9,
+                Verb::Secret => 10,
+                Verb::ClearValue => 11,
+                Verb::Reveal => 12,
+                Verb::Tls => 13,
+            }
+        }
+        for (i, v) in Verb::ALL.into_iter().enumerate() {
+            assert_eq!(slot(v), i, "{v:?}");
         }
     }
 }

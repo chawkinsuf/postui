@@ -1696,8 +1696,10 @@ impl ModalStack {
                 ));
             }
             chips.extend([
-                (Key::Named("enter"), "edit".to_string(), None),
-                (Key::Named("⇧enter"), "confirm".to_string(), None),
+                // Vim reopens with `o` and confirms with Enter (spec §5.10,
+                // plan M4b Deviation 22); arrows reads the named keys.
+                (Key::OrRow("enter", Action::ReopenField), "edit".to_string(), None),
+                (Key::OrRow("\u{21e7}enter", Action::ConfirmTopModal), "confirm".to_string(), None),
                 (Key::Named("esc"), "buttons".to_string(), None),
             ]);
             if !self.steps.is_empty() {
@@ -4120,7 +4122,7 @@ mod tests {
         }
         let res = m.handle_key(key(KeyCode::Enter)).unwrap();
         assert!(res.close);
-        assert_eq!(res.actions, vec![Action::Quit]);
+        assert_eq!(res.actions, vec![Action::GatedQuit]);
         // note: the STACK does not pop itself — the caller pops on close.
         assert!(!m.is_empty());
     }
@@ -6536,5 +6538,24 @@ mod tests {
         m.handle_key(key(KeyCode::Up)); // back onto the removed row, selected
         let chips = labels(&m);
         assert!(chips.contains(&"alt+d restore field".to_string()), "{chips:?}");
+    }
+
+    /// Plan M4b Deviation 22: the selected prompt field's chips carry the
+    /// actions vim spells (`o edit`, `enter confirm`); arrows reads them as
+    /// before.
+    #[test]
+    fn a_selected_prompt_fields_chips_name_their_actions() {
+        use crate::keyroute::spell::Key;
+        let mut m = ModalStack::default();
+        m.push(Modal::Prompt {
+            title: "Rename".into(),
+            input: LineInput::new("x"),
+            kind: PromptKind::RenameRequest { from: "a".into() },
+            revealed: false,
+        });
+        m.close_top_field();
+        let chips = m.footer_chips().unwrap();
+        assert!(chips.iter().any(|(k, l, _)| *k == Key::OrRow("enter", Action::ReopenField) && l == "edit"), "{chips:?}");
+        assert!(chips.iter().any(|(k, l, _)| *k == Key::OrRow("\u{21e7}enter", Action::ConfirmTopModal) && l == "confirm"), "{chips:?}");
     }
 }

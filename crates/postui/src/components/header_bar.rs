@@ -90,6 +90,11 @@ pub fn draw_header(
     // Only ever true on the Manage screen, and `dirty` requires
     // `Screen::Main`, so the two can never both be true.
     show_reload: bool,
+    // The save and discard buttons' keycaps, spelled for the profile by
+    // the caller (`keyroute::spell`): `^S`/`alt+d` in arrows, `:w`/`alt+d`
+    // in vim (plan M4b Deviation 20).
+    save_key: &str,
+    discard_key: &str,
     hits: &mut HitMap,
     hovered: Option<&Hit>,
     // The shared hover fade's 0->1 progress (`DrawCtx::hover_t`). Each
@@ -382,8 +387,8 @@ pub fn draw_header(
         use crate::action::Action;
         let save_hit = Hit::FooterChip(Action::SaveRequest);
         let discard_hit = Hit::FooterChip(Action::DiscardChanges);
-        let save_w = SAVE_LABEL.chars().count() as u16 + " ^S ".chars().count() as u16;
-        let discard_w = DISCARD_LABEL.chars().count() as u16 + " alt+d ".chars().count() as u16;
+        let save_w = SAVE_LABEL.chars().count() as u16 + save_key.chars().count() as u16 + 2;
+        let discard_w = DISCARD_LABEL.chars().count() as u16 + discard_key.chars().count() as u16 + 2;
         let group_right = manage_x.saturating_sub(SAVE_GROUP_GAP);
         let save_x = group_right.saturating_sub(save_w);
         // Discard sits left of save so save keeps its anchored spot.
@@ -394,7 +399,7 @@ pub fn draw_header(
                 area,
                 save_x,
                 mid_y,
-                "^S",
+                save_key,
                 SAVE_LABEL,
                 hovered == Some(&save_hit),
                 hover_t,
@@ -407,7 +412,7 @@ pub fn draw_header(
                     area,
                     discard_x,
                     mid_y,
-                    "alt+d",
+                    discard_key,
                     DISCARD_LABEL,
                     hovered == Some(&discard_hit),
                     hover_t,
@@ -463,6 +468,8 @@ mod tests {
                     manage_active,
                     false,
                     false,
+                    "^S",
+                    "alt+d",
                     &mut hits,
                     hovered,
                     1.0,
@@ -473,6 +480,15 @@ mod tests {
     }
 
     fn render_dirty(theme: &Theme, width: u16) -> (Terminal<TestBackend>, HitMap) {
+        render_dirty_with_keys(theme, width, "^S", "alt+d")
+    }
+
+    fn render_dirty_with_keys(
+        theme: &Theme,
+        width: u16,
+        save_key: &str,
+        discard_key: &str,
+    ) -> (Terminal<TestBackend>, HitMap) {
         let backend = TestBackend::new(width, HEADER_HEIGHT);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = HitMap::default();
@@ -488,6 +504,8 @@ mod tests {
                     false,
                     true,
                     false,
+                    save_key,
+                    discard_key,
                     &mut hits,
                     None,
                     1.0,
@@ -521,6 +539,8 @@ mod tests {
                     manage_active,
                     false,
                     show_reload,
+                    "^S",
+                    "alt+d",
                     &mut hits,
                     None,
                     1.0,
@@ -570,6 +590,8 @@ mod tests {
                     false,
                     false,
                     false,
+                    "^S",
+                    "alt+d",
                     &mut hits,
                     Some(hovered),
                     hover_t,
@@ -812,6 +834,8 @@ mod tests {
                     false,
                     true,
                     false,
+                    "^S",
+                    "alt+d",
                     &mut hits,
                     Some(&hovered),
                     0.5,
@@ -902,6 +926,8 @@ mod tests {
                     false,
                     false,
                     false,
+                    "^S",
+                    "alt+d",
                     &mut hits,
                     None,
                     1.0,
@@ -1339,6 +1365,17 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_save_keycap_is_what_the_caller_spells() {
+        // Same geometry as `^S`: the chip's hit does not move between profiles.
+        let theme = Theme::dark();
+        let (_t, hits_a) = render_dirty_with_keys(&theme, 180, "^S", "alt+d");
+        let (term_v, hits_v) = render_dirty_with_keys(&theme, 180, ":w", "alt+d");
+        let save = Hit::FooterChip(crate::action::Action::SaveRequest);
+        assert_eq!(hits_a.rect_of(&save), hits_v.rect_of(&save));
+        assert_eq!(row_text(&term_v, &hits_v.rect_of(&save).unwrap()), " :w  Save ");
+    }
+
     /// The save/discard group appears beside the Manage chip only while
     /// the request is dirty — a clean request needs neither button, so
     /// the bar carries none.
@@ -1446,6 +1483,8 @@ mod tests {
                     false,
                     false,
                     false,
+                    "^S",
+                    "alt+d",
                     &mut hits,
                     None,
                     1.0,

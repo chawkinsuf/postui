@@ -327,6 +327,11 @@ pub struct App {
     /// settle — the backdrop un-dimming and re-dimming behind a
     /// momentarily blank panel, which reads as a flash.
     modal_handoff: bool,
+    /// An add verb ran during this event (`OnSelection(Add | AddAlt)`):
+    /// what it opened opens in Insert (spec §5.6), whether the verb came
+    /// from its row, the `:` line, or a click on the line's pinned row. The
+    /// next `sync_session` consumes it, so a key and a click read it alike.
+    add_opens_insert: bool,
     /// The terminal pointer shape last emitted (Kitty OSC 22, task 8d).
     /// Starts at `Default` — the terminal's own cursor is already that, so
     /// startup emits nothing until the pointer first moves onto something
@@ -441,6 +446,9 @@ pub struct App {
     /// Owns (and, on drop, removes) the throwaway project directory made by
     /// `App::new_for_test()`. Always `None` outside of tests.
     _test_dir: Option<tempfile::TempDir>,
+    /// The throwaway config directory a test gave `config` (the key matrix
+    /// persists its profile there). Always `None` outside of tests.
+    _test_config_dir: Option<tempfile::TempDir>,
     /// The undo/redo stacks. Populated by `capture_undo` and by later
     /// tasks' Undo/Redo apply arms.
     pub history: crate::undo::History,
@@ -1733,6 +1741,7 @@ impl App {
             tip_held: false,
             sidebar_menu_revert: None,
             modal_handoff: false,
+            add_opens_insert: false,
             last_pointer_shape: PointerShape::Default,
             pointer: None,
             url_well_hovered: false,
@@ -1759,6 +1768,7 @@ impl App {
             startup_config_gate: false,
             _test_rx: None,
             _test_dir: None,
+            _test_config_dir: None,
             history: crate::undo::History::new(),
             marked_entry: None,
             op_in_flight: false,
@@ -2497,6 +2507,12 @@ impl App {
         if !self.modals.is_empty() {
             return self.modals.focused_input().is_some();
         }
+        self.screen_field_open()
+    }
+
+    /// [`Self::field_open`]'s screen half, whatever modal is on top: the
+    /// screen has a field open that closes (the body never does).
+    fn screen_field_open(&self) -> bool {
         self.screen_field().is_some_and(|id| id != crate::keyroute::FieldId::Body)
     }
 
@@ -2633,6 +2649,12 @@ impl App {
             // ctrl+c stays a reliable, immediate exit, so pressing it
             // twice always leaves without saving.
             Action::Quit if self.editor_holds_unsaved() && self.modals.is_empty() => {
+                self.dirty_gate("quit", Action::ForceQuit);
+                true
+            }
+            // `:q` has no such exemption: typed over a dialog it still meets
+            // the gate, whose cancel goes back to that dialog.
+            Action::GatedQuit if self.editor_holds_unsaved() => {
                 self.dirty_gate("quit", Action::ForceQuit);
                 true
             }
@@ -2914,7 +2936,7 @@ impl App {
                 }
                 redraw
             }
-            Action::Quit | Action::ForceQuit => {
+            Action::Quit | Action::ForceQuit | Action::GatedQuit => {
                 let slug = self.editor.slug.clone();
                 if let Some(p) = self.project_mut() {
                     p.set_open_request(slug.as_deref());
@@ -2922,6 +2944,15 @@ impl App {
                 let _ = self.config.save_usage(&self.usage);
                 self.should_quit = true;
                 true
+            }
+            Action::WriteQuit => {
+                if !self.editor_holds_unsaved() {
+                    return self.apply(Action::ForceQuit);
+                }
+                if self.editor.slug.is_none() {
+                    return self.apply(Action::PromptSaveScratch(Box::new(Action::ForceQuit)));
+                }
+                self.apply(Action::SaveRequestThen(Box::new(Action::ForceQuit)))
             }
             Action::Tick => {
                 // Only a pointer actually over the sidebar edge-scrolls it:
@@ -3012,6 +3043,17 @@ impl App {
                     &self.usage,
                     crate::usage::now(),
                 )));
+                true
+            }
+            Action::OpenExPalette => {
+                use crate::components::modal::Modal;
+                use crate::components::palette::PaletteState;
+                let scope = self.ex_scope();
+                self.push_modal(Modal::Palette(PaletteState::new_ex(&self.usage, crate::usage::now(), scope)));
+                true
+            }
+            Action::NoHlSearch => {
+                self.glue.no_hlsearch();
                 true
             }
             Action::Close => {
@@ -3829,7 +3871,12 @@ impl App {
                 true
             }
             Action::OnSelection(verb) => match self.selection_action(self.surface(), verb) {
-                Some(a) => self.apply(a),
+                Some(a) => {
+                    if matches!(verb, crate::action::Verb::Add | crate::action::Verb::AddAlt) {
+                        self.add_opens_insert = true;
+                    }
+                    self.apply(a)
+                }
                 None => false,
             },
             Action::PromptMoveSelectedRequestToSpace => {
@@ -4250,6 +4297,12 @@ impl App {
                 // have taken. In vim it skips the engine, so the chip always
                 // closes the field, as on main; the end-of-event sync then
                 // leaves the session (amendment A4-2).
+                //
+                // A close the field refuses (a Settings number that does not
+                // parse) leaves it open and sets `last_action_failed`, so
+                // nothing after it in a row or on the `:` line runs on the
+                // stale text (the final review's ruling I-2).
+                // A dialog's field always closes.
                 if !self.modals.is_empty() {
                     if !self.modals.field_open() {
                         return false;
@@ -4260,7 +4313,12 @@ impl App {
                 if !self.field_open() {
                     return false;
                 }
-                self.handle_key_routed(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+                let changed = self.handle_key_routed(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+                // The screen's own field, whatever the refusal put on top.
+                if self.screen_field_open() {
+                    self.last_action_failed = true;
+                }
+                changed
             }
             Action::ConfirmTopModal => {
                 // The button row's aim decides there (spec 2026-09-15); from
@@ -10467,7 +10525,9 @@ impl App {
     /// up/down walk the rows, left/right aim a Files row's two buttons,
     /// and enter/space activates whatever the cursor is on. `Some` is the
     /// redraw answer for a key the tab claimed; `None` hands an unclaimed
-    /// key to the router's [`Self::unclaimed_screen_key`].
+    /// key to the router's [`Self::unclaimed_screen_key`]. `q` is the
+    /// keymap's: arrows reaches Quit through the screen whitelist, vim's `q`
+    /// is the router's macro prefix (plan M4b Deviation 18).
     fn handle_settings_key(&mut self, ev: KeyEvent) -> Option<bool> {
         use crate::components::settings::SettingsRow;
         // A key on this tab is the keyboard asking for the cursor back:
@@ -10490,7 +10550,6 @@ impl App {
         let ctrl = ev.modifiers == KeyModifiers::CONTROL;
         Some(match ev.code {
             KeyCode::Esc => self.update(Action::CloseScreen),
-            KeyCode::Char('q') => self.update(Action::Quit),
             KeyCode::Up if plain => {
                 self.settings
                     .move_cursor(-1, self.ui_settings_are_editable());
@@ -11526,5 +11585,9 @@ mod key_invariant_tests;
 mod field_tests;
 #[cfg(test)]
 mod key_matrix_tests;
+#[cfg(test)]
+mod global_tests;
+#[cfg(test)]
+mod ex_tests;
 #[cfg(test)]
 mod tests;

@@ -51,7 +51,7 @@ pub struct Row {
 
 /// The milestone this build ships through: the coverage test checks the
 /// rows up to it.
-pub const MILESTONE: Milestone = Milestone::M4a;
+pub const MILESTONE: Milestone = Milestone::M4b;
 
 const fn row(id: &'static str, tier: Tier, status: Status, milestone: Milestone, arrows: bool) -> Row {
     Row { id, tier, status, milestone, arrows }
@@ -87,7 +87,7 @@ pub static KEY_LIST: &[Row] = &[
     row("P.ctrlw-arrows", Two, Ship, M5, false),
     row("P.gt", One, Ship, M4a, true),
     row("X.wq", One, Ship, M4b, false),
-    row("X.e", Two, Ship, M5, false),
+    row("X.e", Two, Ship, M4b, false),
     row("X.verbs", One, Ship, M4b, false),
     row("X.edit", One, Ship, M4b, false),
     row("X.history", Two, Ship, M5, false),

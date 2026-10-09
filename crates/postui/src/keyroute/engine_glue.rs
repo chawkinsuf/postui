@@ -307,6 +307,17 @@ impl Glue {
         }
     }
 
+    /// `:noh` (spec §5.9): the body's search highlight goes until the next
+    /// search.
+    pub fn no_hlsearch(&mut self) {
+        self.engine.no_hlsearch();
+    }
+
+    /// Whether the body paints the last pattern's matches.
+    pub fn hlsearch(&self) -> bool {
+        self.engine.hlsearch()
+    }
+
     /// Whether the engine is in idle Normal, but for a count (and a
     /// register, which undo ignores): a `u` or ctrl+r it hands back from
     /// here found nothing to step in the field, so it is the app history's

@@ -340,11 +340,13 @@ pub fn all_commands() -> Vec<Command> {
             description: "Redo the last undone change",
             action: Action::Redo,
         },
+        // A picked row, not the ctrl+c emergency exit: it meets the dirty
+        // gate even when vim's `:` line opened over a dialog.
         Command {
             id: "quit",
             name: "Quit",
             description: "Exit postui",
-            action: Action::Quit,
+            action: Action::GatedQuit,
         },
     ]
 }
@@ -471,6 +473,21 @@ pub struct PaletteState {
     /// `ensure_visible` contract this mirrors.
     scroll: usize,
     ensure_visible: bool,
+    /// `Some` when vim's `:` opened this palette (`Action::OpenExPalette`):
+    /// the scope its verbs resolve in (spec §5.9). `None` (`ctrl+p`) never
+    /// pins a row, so a query of `q` there is only a fuzzy query.
+    ex: Option<crate::keyroute::ex::Scope>,
+    /// The verb the query resolves to, shown as row 0 above `filtered`.
+    /// Row indices everywhere (`selected`, `select`, `Hit::PaletteRow`)
+    /// count it first: `filtered[i]` is row `i + self.offset()`.
+    pinned: Option<crate::keyroute::ex::ExRow>,
+    /// A query that runs nothing (`Not supported: :s`): the one muted
+    /// row's text; `filtered` is empty while it is `Some`.
+    refused: Option<String>,
+    /// Whether a row was picked (moved to, or clicked) since the query last
+    /// changed: on the ex line, Enter with nothing typed runs only a
+    /// picked row, as Vim's `:<CR>` runs nothing.
+    picked: bool,
 }
 
 impl PaletteState {
@@ -492,7 +509,43 @@ impl PaletteState {
             base,
             scroll: 0,
             ensure_visible: true,
+            ex: None,
+            pinned: None,
+            refused: None,
+            picked: false,
         }
+    }
+
+    /// The same palette opened by vim's `:` (spec §5.9), reading its query
+    /// as a verb in `scope`.
+    pub fn new_ex(usage: &crate::usage::UsageStore, now_secs: i64, scope: crate::keyroute::ex::Scope) -> Self {
+        Self { ex: Some(scope), ..Self::new(usage, now_secs) }
+    }
+
+    pub fn is_ex(&self) -> bool {
+        self.ex.is_some()
+    }
+
+    pub fn pinned(&self) -> Option<&crate::keyroute::ex::ExRow> {
+        self.pinned.as_ref()
+    }
+
+    pub fn refused(&self) -> Option<&str> {
+        self.refused.as_deref()
+    }
+
+    /// How many rows the pinned row shifts `filtered` down by: 1 or 0.
+    fn offset(&self) -> usize {
+        usize::from(self.pinned.is_some())
+    }
+
+    /// Rows shown: the pinned row, if any, and `filtered`.
+    pub fn len(&self) -> usize {
+        self.offset() + self.filtered.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     pub fn input(&self) -> &str {
@@ -528,38 +581,89 @@ impl PaletteState {
     /// Moves the cursor to filtered row `i` (clamped in range) and asks the
     /// next draw to scroll it into view.
     pub fn select(&mut self, i: usize) {
-        if i < self.filtered.len() {
+        if i < self.len() {
             self.selected = i;
             self.ensure_visible = true;
+            self.picked = true;
         }
     }
 
     /// The `ModalResult` an `Enter` (or a confirming click) on the current
     /// selection produces — `None` when nothing is selected.
     pub fn confirm(&self) -> Option<super::modal::ModalResult> {
-        let chosen = self.filtered.get(self.selected)?;
-        Some(super::modal::ModalResult {
-            actions: vec![chosen.action.clone()],
-            close: true,
-            usage: Some(chosen.id.to_string()),
-        })
+        use super::modal::ModalResult;
+        // A refused query: the line closes and runs nothing (spec §5.9).
+        if self.refused.is_some() {
+            return Some(ModalResult { actions: vec![], close: true, usage: None });
+        }
+        // The pinned verb: typed, not picked, so no frecency record.
+        if let Some(row) = &self.pinned
+            && self.selected == 0
+        {
+            return Some(ModalResult { actions: row.actions.clone(), close: true, usage: None });
+        }
+        // On the ex line a fuzzy row runs only when it was picked (moved
+        // to, or clicked), as Vim's wildmenu runs only the completion
+        // tabbed to: typed text no verb spells is Vim's E492, never
+        // whichever row the filter ranked first (`:W`).
+        let chosen = self
+            .filtered
+            .get(self.selected - self.offset())
+            .filter(|_| self.ex.is_none() || self.picked);
+        match chosen {
+            Some(chosen) => Some(ModalResult {
+                actions: vec![chosen.action.clone()],
+                close: true,
+                usage: Some(chosen.id.to_string()),
+            }),
+            // The ex line with nothing to run: a note (Deviation 16);
+            // ctrl+p's palette swallows Enter on an empty list, as on main.
+            // The note's text is Vim's E492 without the number.
+            None if self.ex.is_some() => Some(ModalResult {
+                actions: vec![Action::ShowToast(
+                    format!("Not a command: :{}", self.input.text()),
+                    super::toast::ToastKind::Info,
+                )],
+                close: true,
+                usage: None,
+            }),
+            None => None,
+        }
     }
 
     /// Adjusts `scroll` by `delta` lines, clamped, without moving
     /// `selected`. A no-op on an empty list.
     pub fn scroll_by(&mut self, delta: i16) {
-        if self.filtered.is_empty() {
+        if self.is_empty() {
             return;
         }
-        let max = self.filtered.len().saturating_sub(1);
+        let max = self.len().saturating_sub(1);
         self.scroll = (self.scroll as i32 + delta as i32).clamp(0, max as i32) as usize;
         self.ensure_visible = false;
     }
 
     /// Re-runs the fuzzy filter and ranks the survivors by match quality
-    /// ([`match_rank`]).
+    /// ([`match_rank`]). The ex line first resolves the query as a verb.
     fn refilter(&mut self) {
+        use crate::keyroute::ex;
         let query = self.input.text();
+        self.pinned = None;
+        self.refused = None;
+        self.picked = false;
+        if let Some(scope) = &self.ex {
+            match ex::resolve(query, scope) {
+                ex::Resolved::Pinned(row) => self.pinned = Some(row),
+                ex::Resolved::Refused(text) => {
+                    self.refused = Some(text);
+                    self.filtered.clear();
+                    self.selected = 0;
+                    self.scroll = 0;
+                    self.ensure_visible = true;
+                    return;
+                }
+                ex::Resolved::Nothing => {}
+            }
+        }
         let mut ranked: Vec<((u8, usize, usize), &Command)> = self
             .base
             .iter()
@@ -576,6 +680,12 @@ impl PaletteState {
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<super::modal::ModalResult> {
         match key.code {
+            // The ex line closes on Backspace with nothing typed (spec
+            // §5.9, Deviation 15); `App::box_claims` hands the key here
+            // ahead of the engine. ctrl+p's palette keeps it inert.
+            KeyCode::Backspace if self.ex.is_some() && self.input.text().is_empty() => {
+                return Some(super::modal::ModalResult { actions: vec![], close: true, usage: None });
+            }
             KeyCode::Esc => {
                 return Some(super::modal::ModalResult {
                     actions: vec![],
@@ -583,26 +693,35 @@ impl PaletteState {
                     ..Default::default()
                 });
             }
+            // Vim's `:<CR>`: nothing typed and nothing picked runs nothing,
+            // though the frecency list shows under the line.
+            KeyCode::Enter if self.ex.is_some() && self.input.text().trim().is_empty() && !self.picked => {
+                return Some(super::modal::ModalResult { actions: vec![], close: true, usage: None });
+            }
             KeyCode::Enter => return self.confirm(),
             KeyCode::Up => {
                 self.selected = self.selected.saturating_sub(1);
                 self.ensure_visible = true;
+                self.picked = true;
             }
             KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.selected = self.selected.saturating_sub(1);
                 self.ensure_visible = true;
+                self.picked = true;
             }
             KeyCode::Down => {
-                if self.selected + 1 < self.filtered.len() {
+                if self.selected + 1 < self.len() {
                     self.selected += 1;
                 }
                 self.ensure_visible = true;
+                self.picked = true;
             }
             KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if self.selected + 1 < self.filtered.len() {
+                if self.selected + 1 < self.len() {
                     self.selected += 1;
                 }
                 self.ensure_visible = true;
+                self.picked = true;
             }
             _ => {
                 let before = self.input.text().to_string();
@@ -654,7 +773,7 @@ impl PaletteState {
     ) {
         let width = 50.min(screen.width);
         const CHROME: u16 = 10;
-        let content_rows = (self.filtered.len() as u16).clamp(1, 10) * 2;
+        let content_rows = (self.len() as u16).clamp(1, 10) * 2;
         let height = (CHROME + content_rows).clamp(13, 26).min(screen.height);
         let area = super::modal::centered_rect(screen, width, height);
         hits.register(area, crate::hit::Hit::ModalBody);
@@ -703,7 +822,7 @@ impl PaletteState {
                 } else if self.selected >= self.scroll + list_h {
                     self.scroll = self.selected + 1 - list_h;
                 }
-                let max_scroll = self.filtered.len().saturating_sub(list_h);
+                let max_scroll = self.len().saturating_sub(list_h);
                 self.scroll = self.scroll.min(max_scroll);
             }
             self.ensure_visible = false;
@@ -714,13 +833,27 @@ impl PaletteState {
         // hover fill immediately, same convention as `DrawCtx::hover_t`'s
         // own documented default when no fade is in flight.
         let hover_t = 1.0;
-        for (i, c) in self
-            .filtered
-            .iter()
-            .enumerate()
-            .skip(self.scroll)
-            .take(list_h.max(1))
-        {
+        if let Some(text) = &self.refused {
+            paint::text(
+                frame.buffer_mut(),
+                list_area.x + 1,
+                list_area.y,
+                clip(text, list_area.width.saturating_sub(2)),
+                theme.text_muted,
+                theme.panel,
+                false,
+            );
+            return;
+        }
+        let rows = self.len();
+        for i in self.scroll..rows.min(self.scroll + list_h.max(1)) {
+            let (name, description, combo): (&str, &str, Option<String>) = match (i, &self.pinned) {
+                (0, Some(row)) => (row.caption, "Ex command", Some(format!(":{}", row.name))),
+                _ => {
+                    let c = &self.filtered[i - self.offset()];
+                    (c.name, c.description, keymap_action_name(c.id).and_then(|n| keymap.combo_for(n)))
+                }
+            };
             let title_row = list_area.y + ((i - self.scroll) as u16) * 2;
             let desc_row = title_row + 1;
             let selected = i == self.selected;
@@ -751,7 +884,6 @@ impl PaletteState {
 
             let right = list_area.x + list_area.width;
             let x = list_area.x + 1;
-            let combo = keymap_action_name(c.id).and_then(|name| keymap.combo_for(name));
             let combo_w = combo
                 .as_ref()
                 .map(|s| s.chars().count() as u16 + 1)
@@ -761,7 +893,7 @@ impl PaletteState {
                 frame.buffer_mut(),
                 x,
                 title_row,
-                clip(c.name, title_right.saturating_sub(x)),
+                clip(name, title_right.saturating_sub(x)),
                 theme.text,
                 row_fill,
                 true,
@@ -782,7 +914,7 @@ impl PaletteState {
                 frame.buffer_mut(),
                 x,
                 desc_row,
-                clip(c.description, right.saturating_sub(x)),
+                clip(description, right.saturating_sub(x)),
                 theme.text_muted,
                 row_fill,
                 false,
@@ -928,7 +1060,7 @@ mod tests {
         select_id(&mut p, "quit");
         let res = p.handle_key(key(KeyCode::Enter)).unwrap();
         assert!(res.close);
-        assert_eq!(res.actions, vec![Action::Quit]);
+        assert_eq!(res.actions, vec![Action::GatedQuit]);
         assert_eq!(res.usage.as_deref(), Some("quit"));
     }
 
@@ -1249,6 +1381,124 @@ mod tests {
                 assert!(names.contains(&name), "{}: no action named {name:?}", c.id);
             }
         }
+    }
+
+    fn ex_scope() -> crate::keyroute::ex::Scope {
+        crate::keyroute::ex::Scope { surface: crate::keyroute::Surface::Sidebar, verbs: vec![crate::action::Verb::Add] }
+    }
+
+    fn ex() -> PaletteState {
+        PaletteState::new_ex(&crate::usage::UsageStore::default(), 0, ex_scope())
+    }
+
+    fn type_in(p: &mut PaletteState, s: &str) {
+        for c in s.chars() {
+            p.handle_key(key(KeyCode::Char(c)));
+        }
+    }
+
+    /// Spec §5.9: the verb the query resolves to is row 0, selected, and
+    /// Enter runs it; the fuzzy rows follow and stay real.
+    #[test]
+    fn the_ex_line_pins_the_verb_it_will_run() {
+        let mut p = ex();
+        assert!(p.pinned().is_none(), ": alone pins nothing");
+        type_in(&mut p, "q");
+        assert_eq!(p.pinned().map(|r| r.name), Some("quit"));
+        assert_eq!(p.selected(), 0);
+        assert_eq!(p.len(), 1 + p.filtered().len());
+        let res = p.confirm().unwrap();
+        assert_eq!(res.actions, vec![Action::CloseField, Action::GatedQuit]);
+        assert!(res.close && res.usage.is_none());
+        p.handle_key(ctrl('n'));
+        assert_eq!(p.selected(), 1);
+        let res = p.confirm().unwrap();
+        assert_eq!(res.actions, vec![p.filtered()[0].action.clone()], "a fuzzy row runs itself");
+        let mut plain = PaletteState::new(&crate::usage::UsageStore::default(), 0);
+        type_in(&mut plain, "q");
+        assert!(plain.pinned().is_none(), "ctrl+p never pins");
+    }
+
+    #[test]
+    fn a_refused_query_shows_one_row_and_runs_nothing() {
+        let mut p = ex();
+        type_in(&mut p, "s");
+        assert_eq!(p.refused(), Some("Not supported: :s"));
+        assert!(p.filtered().is_empty() && p.pinned().is_none());
+        let res = p.confirm().unwrap();
+        assert!(res.actions.is_empty() && res.close);
+        let mut p = ex();
+        type_in(&mut p, "zzzz");
+        assert!(p.is_empty());
+        let res = p.confirm().unwrap();
+        assert!(matches!(res.actions.as_slice(), [Action::ShowToast(t, _)] if t == "Not a command: :zzzz"));
+    }
+
+    /// The second code review's second finding: typed text no verb spells
+    /// runs no fuzzy row on Enter, though the rows still show (Vim's E492
+    /// for `:W`); a row picked from them runs, by key or click.
+    #[test]
+    fn an_unspelled_query_runs_only_a_picked_row() {
+        let mut p = ex();
+        type_in(&mut p, "W");
+        assert!(p.pinned().is_none() && p.refused().is_none());
+        assert!(!p.filtered().is_empty(), "the fuzzy rows show");
+        let res = p.handle_key(key(KeyCode::Enter)).unwrap();
+        assert!(res.close && res.usage.is_none());
+        assert!(matches!(res.actions.as_slice(), [Action::ShowToast(t, _)] if t == "Not a command: :W"));
+        p.handle_key(ctrl('n'));
+        p.handle_key(ctrl('p'));
+        let res = p.handle_key(key(KeyCode::Enter)).unwrap();
+        assert_eq!(res.actions, vec![p.filtered()[0].action.clone()], "a picked row runs");
+        let mut p = ex();
+        type_in(&mut p, "W");
+        p.select(0);
+        assert_eq!(p.confirm().unwrap().actions, vec![p.filtered()[0].action.clone()], "a clicked row runs");
+        let mut plain = PaletteState::new(&crate::usage::UsageStore::default(), 0);
+        type_in(&mut plain, "W");
+        let res = plain.handle_key(key(KeyCode::Enter)).unwrap();
+        assert_eq!(res.actions, vec![plain.filtered()[0].action.clone()], "ctrl+p's Enter runs the top row");
+    }
+
+    /// Vim's `:<CR>` does nothing (the code review's third finding): with
+    /// nothing typed and no row picked, Enter closes the line and runs no
+    /// row, though the frecency list shows under it. A row picked from that
+    /// list still runs; ctrl+p's palette is unchanged.
+    #[test]
+    fn enter_on_an_empty_ex_line_runs_nothing_unless_a_row_was_picked() {
+        let mut p = ex();
+        assert!(!p.filtered().is_empty(), "the list shows");
+        let res = p.handle_key(key(KeyCode::Enter)).expect("closes");
+        assert!(res.close && res.actions.is_empty() && res.usage.is_none());
+        let mut p = ex();
+        type_in(&mut p, "  ");
+        let res = p.handle_key(key(KeyCode::Enter)).expect("closes");
+        assert!(res.actions.is_empty(), "spaces are nothing typed");
+        let mut p = ex();
+        p.handle_key(ctrl('n'));
+        p.handle_key(ctrl('p'));
+        let res = p.handle_key(key(KeyCode::Enter)).unwrap();
+        assert_eq!(res.actions, vec![p.filtered()[0].action.clone()], "a picked row runs");
+        let mut p = ex();
+        type_in(&mut p, "a");
+        p.handle_key(ctrl('n'));
+        p.handle_key(key(KeyCode::Backspace));
+        assert!(p.input().is_empty());
+        assert!(p.handle_key(key(KeyCode::Enter)).unwrap().actions.is_empty(), "an edit drops the pick");
+        let mut plain = PaletteState::new(&crate::usage::UsageStore::default(), 0);
+        let res = plain.handle_key(key(KeyCode::Enter)).unwrap();
+        assert_eq!(res.actions, vec![plain.filtered()[0].action.clone()], "ctrl+p's Enter runs row 0");
+    }
+
+    #[test]
+    fn backspace_on_an_empty_ex_line_closes_it() {
+        let mut p = ex();
+        type_in(&mut p, "a");
+        assert!(p.handle_key(key(KeyCode::Backspace)).is_none(), "a char to delete");
+        let res = p.handle_key(key(KeyCode::Backspace)).expect("closes");
+        assert!(res.close && res.actions.is_empty());
+        let mut plain = PaletteState::new(&crate::usage::UsageStore::default(), 0);
+        assert!(plain.handle_key(key(KeyCode::Backspace)).is_none(), "ctrl+p's palette keeps it inert");
     }
 }
 

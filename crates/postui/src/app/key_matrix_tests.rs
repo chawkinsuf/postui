@@ -63,6 +63,9 @@ pub(super) enum Fixture {
     /// An open POST request whose body is `{`, `  "a": 1`, `}`, the body
     /// focused with the caret on row 0.
     Body,
+    /// A never-saved request with a URL typed, the URL line selected (not
+    /// open): `ZZ` and `:wq` must ask for a name.
+    DirtyScratch,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -133,6 +136,20 @@ enum Expect {
     /// The response cursor is on the view's top line, and the view has
     /// scrolled (a half page down from the top, `R.ctrl-d`).
     ResponsePaged,
+    /// The app is quitting.
+    Quit,
+    /// Whether the open request has unsaved edits.
+    Dirty(bool),
+    UrlText(&'static str),
+    /// The ex line pins this verb (its full name).
+    PalettePinned(&'static str),
+    /// The ex line shows this refused row.
+    PaletteRefused(&'static str),
+    /// Some modal is on top.
+    ModalOpen,
+    ScreenIs(Screen),
+    /// The body paints its search matches.
+    BodyHl(bool),
 }
 
 struct Case {
@@ -275,9 +292,65 @@ const CASES: &[Case] = &[
     vim("G.mode", SidebarThree, "", &[Mode("NORMAL")]),
     vim("G.mode", TableThreeHeaders, "i", &[Mode("INSERT"), FieldLive(true)]),
     arrows("G.mode", SidebarThree, "", &[NoMode]),
-    // `:` is X.verbs' (M4); M1's row opens the plain palette (Deviation 20).
-    vim("X.verbs", SidebarThree, ":", &[Palette]),
+    // Key list §8: the command line (spec §5.9).
+    vim("X.wq", TableThreeHeaders, ":w<CR>", &[NoModal, Dirty(false)]),
+    vim("X.wq", TableThreeHeaders, ":q<CR>", &[Dialog]),
+    vim("X.wq", SidebarThreeBetaOpen, ":q<CR>", &[Quit]),
+    vim("X.wq", TableThreeHeaders, ":q!<CR>", &[Quit, Dirty(true)]),
+    vim("X.wq", TableThreeHeaders, ":wq<CR>", &[Quit, Dirty(false)]),
+    vim("X.wq", TableThreeHeaders, ":x<CR>", &[Quit, Dirty(false)]),
+    vim("X.wq", TableThreeHeaders, ":wa<CR>", &[NoModal, Dirty(false)]),
+    vim("X.wq", DirtyScratch, ":wq<CR>", &[PromptOpen]),
+    vim("X.wq", UrlLine, "ix<Esc>:w<CR>", &[NoModal, Dirty(false), FieldLive(false)]),
+    vim("X.e", TableThreeHeaders, ":e<CR>", &[NoModal, Dirty(true)]),
+    vim("X.e", TableThreeHeaders, ":e!<CR>", &[NoModal, Dirty(false)]),
+    vim("X.verbs", SidebarThree, ":", &[Palette, Mode("INSERT")]),
     arrows("X.verbs", SidebarThree, ":", &[NoModal]),
+    vim("X.verbs", SidebarThree, ":q", &[PalettePinned("quit"), PaletteRow(0)]),
+    vim("X.verbs", SidebarThree, ":man", &[PalettePinned("manage")]),
+    vim("X.verbs", SidebarThree, ":man<CR>", &[NoModal, ScreenIs(Screen::Manage)]),
+    vim("X.verbs", SidebarThree, ":new<CR>", &[PromptOpen]),
+    vim("X.verbs", TableThreeHeaders, ":new<CR>", &[TableRow(3), FieldLive(true), Mode("INSERT")]),
+    vim("X.verbs", VarGrid, ":new<CR>", &[FieldLive(true), Mode("INSERT")]),
+    vim("X.verbs", SidebarThree, ":rename<CR>", &[PromptOpen]),
+    vim_u("X.verbs", TableThreeHeaders, ":delete<CR>", &[TableLen(2), NoModal]),
+    vim("X.verbs", ManageEnvs, ":rename<CR>", &[ModalOpen]),
+    vim("X.verbs", ManageEnvDetail, ":delete<CR>", &[EnvNames(&["qa", "dev"])]),
+    vim("X.verbs", VarListGroup, ":fields<CR>", &[FieldsEditor]),
+    vim("X.verbs", VarGrid, ":value<CR>", &[ModalOpen]),
+    vim("X.verbs", VarForm, ":promote", &[PaletteRefused("Nothing to :promote here")]),
+    vim("X.verbs", VarList, ":group<CR>", &[ModalOpen]),
+    vim("X.verbs", SidebarThree, ":fields", &[PaletteRefused("Nothing to :fields here")]),
+    vim("X.verbs", SidebarThree, ":q<C-n>", &[PaletteRow(1)]),
+    vim("X.edit", SidebarThree, ":ab cd<C-w>", &[PaletteQuery("ab ")]),
+    vim("X.edit", SidebarThree, ":abc<C-u>", &[PaletteQuery("")]),
+    vim("X.edit", SidebarThree, ":abc<BS>", &[PaletteQuery("ab")]),
+    vim("X.edit", SidebarThree, ":<BS>", &[NoModal]),
+    vim("X.edit", SidebarThree, ":abc<Esc>j", &[NoModal, SidebarSel("main/gamma")]),
+    vim("X.unsupported", SidebarThree, ":s", &[PaletteRefused("Not supported: :s")]),
+    vim("X.unsupported", SidebarThree, ":s<CR>j", &[NoModal, NoToast, SidebarSel("main/gamma")]),
+    vim("X.unsupported", SidebarThree, ":%s/a/b/<CR>j", &[NoModal, NoToast, SidebarSel("main/gamma")]),
+    vim("X.unsupported", SidebarThree, ":set nu<CR>j", &[NoModal, NoToast, SidebarSel("main/gamma")]),
+    vim("X.unsupported", SidebarThree, ":zzzz<CR>", &[NoModal, Toast("Not a command: :zzzz")]),
+    vim("X.noh", Body, "/a<CR>", &[BodyHl(true)]),
+    vim("X.noh", Body, "/a<CR>:noh<CR>", &[BodyHl(false), NoModal, FieldLive(true)]),
+    // Key list §9: the globals (spec §5.11).
+    vim("G.ZZ", TableThreeHeaders, "ZZ", &[Quit, Dirty(false)]),
+    vim("G.ZZ", TableThreeHeaders, "ZQ", &[Quit, Dirty(true)]),
+    vim("G.ZZ", DirtyScratch, "ZZ", &[PromptOpen]),
+    vim("G.ZZ", UrlLine, "ix<Esc>ZZ", &[Quit, Dirty(false)]),
+    vim("G.ZZ", SidebarThree, "Zxj", &[NoToast, SidebarSel("main/gamma")]),
+    vim("G.qa", SidebarThree, "qa", &[Toast("Macros are not supported"), Echo("recording @a — not supported")]),
+    vim("G.qa", SidebarThree, "qaxq@aj", &[Echo(""), NoModal, SidebarSel("main/gamma")]),
+    vim("G.qa", SidebarThree, "@aj", &[Toast("Macros are not supported"), SidebarSel("main/gamma")]),
+    vim("G.qa", UrlLine, "iab<Esc>qa", &[Toast("Macros are not supported"), FieldLive(true), UrlText("ab")]),
+    vim("G.qa", UrlLine, "iab<Esc>qaqx", &[Echo(""), UrlText("a")]),
+    vim("G.marks", SidebarThree, "'aj", &[Toast("Marks are not supported"), SidebarSel("main/gamma")]),
+    vim("G.marks", SidebarThree, "`aj", &[Toast("Marks are not supported"), SidebarSel("main/gamma")]),
+    vim("G.marks", UrlLine, "ima<Esc>ma", &[Toast("Marks are not supported"), UrlText("ma")]),
+    vim("G.regs", SidebarThree, "\"aj", &[Toast("Registers are not supported here"), SidebarSel("main/gamma")]),
+    vim("G.jumps", SidebarThree, "<C-o><Esc>j", &[NoModal, SidebarSel("main/gamma")]),
+    vim("G.jumps", SidebarThree, "<Tab>", &[FocusIs(PaneId::Editor)]),
     // Key list §6, M2: the list verbs (spec §5.1–§5.4). The shared letters
     // are the same in both profiles (the user's rule).
     vim("L.verbs", SidebarThree, "a", &[PromptOpen]),
@@ -566,6 +639,13 @@ pub(super) fn build(f: Fixture) -> App {
             app.editor.sub_focus = SubFocus::Content;
             app.capture_undo();
         }
+        DirtyScratch => {
+            app.focus = PaneId::Editor;
+            app.editor.sub_focus = SubFocus::Url;
+            app.editor.url = LineInput::new("https://x.test/scratch");
+            app.capture_undo();
+            assert!(app.editor.is_scratch_dirty(), "the fixture is a dirty scratch");
+        }
     }
     app.toasts = Default::default();
     app
@@ -646,6 +726,14 @@ fn check(app: &App, e: Expect) -> Result<(), String> {
         Picker => matches!(app.modals.top(), Some(Modal::Chooser(_))),
         Yanked(slug) => app.yank == crate::yank::Register::Request(slug.into()),
         FieldsEditor => matches!(app.modals.top(), Some(Modal::FieldsEditor(_))),
+        Quit => app.should_quit,
+        Dirty(d) => app.editor.is_dirty() == d,
+        UrlText(t) => app.editor.url.text() == t,
+        PalettePinned(name) => matches!(app.modals.top(), Some(Modal::Palette(p)) if p.pinned().map(|r| r.name) == Some(name)),
+        PaletteRefused(t) => matches!(app.modals.top(), Some(Modal::Palette(p)) if p.refused() == Some(t)),
+        ModalOpen => !app.modals.is_empty(),
+        ScreenIs(s) => app.screen == s,
+        BodyHl(on) => app.glue.hlsearch() == on,
     };
     ok.then_some(()).ok_or_else(|| {
         format!(
@@ -722,9 +810,25 @@ pub(super) fn snapshot(app: &App) -> Snapshot {
     }
 }
 
+/// `use_profile`, and the choice written to the test's `config.toml` as the
+/// keymap dialog does for a user, so a `ReloadFromDisk` (`:e`) keeps the
+/// profile instead of raising the first-launch question. A test app's
+/// `Config` has no disk behind it (`Config::none`), so it is first pointed
+/// at a throwaway directory; the write goes through the app's config owner.
+pub(super) fn use_persisted_profile(app: &mut App, profile: KeyProfile) {
+    if app._test_config_dir.is_none() {
+        let dir = tempfile::tempdir().expect("a temp dir for the test config");
+        app.config = crate::config::Config::at(dir.path().to_path_buf());
+        app._test_config_dir = Some(dir);
+    }
+    app.use_profile(profile);
+    app.write_config_file("config.toml", &format!("keymap = \"{}\"\n", profile.spelling()))
+        .expect("the test config dir takes config.toml");
+}
+
 fn run(case: &Case) -> Result<(), String> {
     let mut app = build(case.fixture);
-    app.use_profile(case.profile);
+    use_persisted_profile(&mut app, case.profile);
     draw(&mut app);
     let before = case.undo.then(|| {
         assert!(
@@ -867,62 +971,7 @@ fn every_shipped_key_list_row_has_a_case() {
 }
 
 use crate::action::Verb;
-use crate::keyroute::table::{self, Intent, Surfaces};
-
-/// Every verb, once (a count does not change what a verb reaches).
-const VERBS: [Verb; 14] = [
-    Verb::Add,
-    Verb::AddAlt,
-    Verb::Rename,
-    Verb::Move,
-    Verb::Delete { count: 1 },
-    Verb::Yank,
-    Verb::Put { above: false, count: 1 },
-    Verb::EditValue,
-    Verb::Promote,
-    Verb::Fields,
-    Verb::Secret,
-    Verb::ClearValue,
-    Verb::Reveal,
-    Verb::Tls,
-];
-
-/// Plan M2 Deviations 1 and 9: the verbs vim reaches only through M4's ex
-/// rows (`:tls`, `:secret`, `:fields`, `:promote`, `:clear`, `:reveal`,
-/// `:rename`, `:value`, `:delete` on a detail pane), or by mouse until
-/// then. M4 empties this list; nothing else may join it.
-const VIM_UNTIL_M4: &[(Surfaces, Verb)] = &[
-    (Surfaces::MANAGE_LIST, Verb::Tls),
-    (Surfaces::MANAGE_DETAIL, Verb::Add),
-    (Surfaces::MANAGE_DETAIL, Verb::Rename),
-    (Surfaces::MANAGE_DETAIL, Verb::Delete { count: 1 }),
-    (Surfaces::MANAGE_DETAIL, Verb::Move),
-    (Surfaces::MANAGE_DETAIL, Verb::Tls),
-    (Surfaces::VAR_LIST, Verb::Secret),
-    (Surfaces::VAR_LIST, Verb::Fields),
-    (Surfaces::VAR_GRID, Verb::Rename),
-    (Surfaces::VAR_GRID, Verb::EditValue),
-    (Surfaces::VAR_GRID, Verb::Fields),
-    (Surfaces::VAR_FORM, Verb::Secret),
-    (Surfaces::VAR_FORM, Verb::ClearValue),
-    (Surfaces::VAR_FORM, Verb::Promote),
-    (Surfaces::VAR_FORM, Verb::Reveal),
-];
-
-/// No `VIM_UNTIL_M4` entry may have a vim row: that is the signal to take
-/// it off the list, and it needs no fixture (some entries no fixture
-/// offers).
-#[test]
-fn vim_until_m4_names_only_verbs_vim_cannot_reach() {
-    for (on, verb) in VIM_UNTIL_M4 {
-        let stale = table::TABLE.iter().find(|b| {
-            b.profile.has(KeyProfile::Vim)
-                && b.on.minus(*on) != b.on // the row's surfaces overlap the entry's
-                && matches!(b.intent, Intent::Verb(v) if v.kind() == verb.kind())
-        });
-        assert!(stale.is_none(), "{verb:?} has a vim row on {on:?} now; take it off VIM_UNTIL_M4");
-    }
-}
+use crate::keyroute::table::{self, Intent};
 
 const SWEEP: [Fixture; 9] = [
     SidebarThree,
@@ -943,24 +992,24 @@ fn verb_row(profile: KeyProfile, surface: crate::keyroute::Surface, verb: Verb) 
 }
 
 /// Spec §8.2, as plan M2 Deviation 9 reads it: (1) every list verb a
-/// fixture offers has a row in each profile, but for `VIM_UNTIL_M4`;
+/// fixture offers has a row in each profile, or in vim an ex verb;
 /// (2) every action an arrows default key reaches, vim reaches too — by
-/// its keymap, a table row, a verb row, or the palette (`:` opens it).
+/// its keymap, a table row, a verb row, an ex verb, or the palette.
 #[test]
 fn every_action_is_keyboard_reachable_in_both_profiles() {
     let mut vim_verb_actions: Vec<Action> = Vec::new();
     for f in SWEEP {
         let app = build(f);
         let surface = app.surface();
-        for verb in VERBS {
+        for verb in Verb::ALL {
             let Some(action) = app.selection_action(surface, verb) else { continue };
             assert!(verb_row(KeyProfile::Arrows, surface, verb), "{f:?}: arrows has no key for {verb:?}");
-            let waits = VIM_UNTIL_M4.iter().any(|(on, v)| on.has(surface) && v.kind() == verb.kind());
             if verb_row(KeyProfile::Vim, surface, verb) {
-                assert!(!waits, "{f:?}: {verb:?} has a vim row now; take it off VIM_UNTIL_M4");
                 vim_verb_actions.push(action);
             } else {
-                assert!(waits, "{f:?}: vim has no key for {verb:?}");
+                // Spec §5.4: the other verbs are ex verbs in vim (plan M2 Deviation 9's list is empty now).
+                assert!(crate::keyroute::ex::reaches(verb), "{f:?}: vim reaches {verb:?} neither by a row nor by an ex verb");
+                vim_verb_actions.push(action);
             }
         }
     }
@@ -981,26 +1030,19 @@ fn every_action_is_keyboard_reachable_in_both_profiles() {
                     }
             })
             || vim_verb_actions.contains(&action)
-            || palette.contains(&action);
+            || palette.contains(&action)
+            // An ex verb (`:w`, `:split`, `:splitback`) now carries what
+            // vim's keymap gave up (plan M4b Deviation 19).
+            || crate::keyroute::ex::spelling(&action).is_some();
         assert!(reached, "{name}: arrows binds a key to it, and vim reaches it no way at all");
     }
 }
 
-/// The footer chips a fixture paints, unspelled: the Manage screens'
-/// own, or the main panes' as `ui` builds them.
-fn chips(app: &App, f: Fixture) -> Vec<crate::components::footer::FooterChip> {
-    use crate::components::footer::{JqBarState, footer_chips};
-    let main = |pane: PaneId, row: Option<(usize, bool)>| -> Vec<crate::components::footer::FooterChip> {
-        footer_chips(pane, false, false, Some("add header"), false, false, row, JqBarState::Closed, false)
-            .into_iter()
-            .map(|(k, l, a)| (k, l.to_string(), a))
-            .collect()
-    };
-    match f {
-        SidebarThree => main(PaneId::Sidebar, None),
-        TableThreeHeaders => main(PaneId::Editor, Some((1, true))),
-        _ => crate::ui::manage_tab_chips(app),
-    }
+/// The footer chips the app paints now, unspelled: what `ui::draw` hands
+/// `draw_footer` (a modal's, the Manage screen's with the shell's tabs
+/// chip, or the main panes' from the app's own state), by the same code.
+fn chips(app: &App) -> Vec<crate::components::footer::FooterChip> {
+    crate::ui::footer_chips_of(app)
 }
 
 /// Spec §8.2's spelling test, for the verb chips (plan M2 Deviation 3):
@@ -1018,7 +1060,7 @@ fn every_verb_chip_resolves_to_its_chip() {
             app.use_profile(profile);
             draw(&mut app);
             let surface = app.surface();
-            for (key, label, action) in chips(&app, f) {
+            for (key, label, action) in chips(&app) {
                 let verb = match key {
                     Key::Of(Action::OnSelection(v)) | Key::OneOf(Action::OnSelection(v), _) => v,
                     _ => continue,
@@ -1051,5 +1093,111 @@ fn every_verb_chip_resolves_to_its_chip() {
         }
         // A floor, so a `continue` that skips every chip cannot pass.
         assert!(checked >= 20, "{profile:?}: only {checked} verb chips were checked");
+    }
+}
+
+/// Spec §8.2's spelling test, the non-verb half (plan M2 Deviation 19,
+/// plan M4b Deviation 23): every painted keycap with an action behind it
+/// is a key that runs that action here: a table row whose run carries it,
+/// a keymap combo bound to it, or an ex verb that resolves to it.
+#[test]
+fn every_painted_keycap_resolves_to_its_chip() {
+    use crate::keyroute::spell::{Key, glyphs, keycap, pair, spell};
+    use crate::keyroute::{FieldSpell, KeyCtx, Resolved, Router, Step, ex};
+    let fixtures = [SidebarThree, TableThreeHeaders, UrlLine, Body, ResponseLines, ManageEnvs, ManageSpaces, VarList, VarGrid, VarForm, Settings];
+    for profile in [KeyProfile::Vim, KeyProfile::Arrows] {
+        let mut checked = 0;
+        // Each fixture as built, and in vim the URL line opened and Esc'd
+        // back to its idle Normal (plan M4b Deviation 21), where the field
+        // rows and the engine's hand-on spell the keycaps.
+        let mut states: Vec<(Fixture, &str)> = fixtures.iter().map(|&f| (f, "")).collect();
+        if profile == KeyProfile::Vim {
+            states.push((UrlLine, "i<Esc>"));
+        }
+        let mut normal_seen = false;
+        for (f, prelude) in states {
+            let mut app = build(f);
+            app.use_profile(profile);
+            draw(&mut app);
+            feed(&mut app, prelude);
+            let at = app.spell_ctx();
+            normal_seen |= matches!(at.field, FieldSpell::Normal(_));
+            let surface = app.surface();
+            let scope = app.ex_scope();
+            // One action's spelling is honest when it is reached one of the three ways.
+            let honest = |app: &App, action: &Action, spelled: &str| -> bool {
+                if let Some(keys) = match at.field {
+                    FieldSpell::Normal(class) => table::keys_for_class(profile, class, action).or(table::keys_for(profile, surface, action)),
+                    _ => table::keys_for(profile, surface, action),
+                } {
+                    assert_eq!(spelled, crate::keyroute::notation::display(keys));
+                    let ctx = KeyCtx {
+                        profile,
+                        surface,
+                        field: app.field_caret(),
+                        user_bare: None,
+                        cap: usize::MAX,
+                        engine: app.live_engine_field().map(|id| app.glue_of(id).view()),
+                        answers: Vec::new(),
+                    };
+                    let mut router = Router::default();
+                    let mut last = Resolved::Declined;
+                    for ev in crate::keyroute::notation::events(keys) {
+                        last = router.resolve(ev, &ctx);
+                    }
+                    let Resolved::Run(steps) = last else { return false };
+                    return steps.iter().any(|s| match (s, action) {
+                        (Step::Action(a), _) if a == action => true,
+                        (Step::Action(Action::GoTab { to: crate::action::TabTo::By(d), .. }), Action::CycleTabs(c)) => *d == i64::from(*c),
+                        // The engine hands `u`/ctrl+r on from idle Normal.
+                        (Step::Engine(_), Action::Undo | Action::Redo) => matches!(at.field, FieldSpell::Normal(_)),
+                        _ => false,
+                    });
+                }
+                if let Some(combo) = app.keymap.combo_for_action(action) {
+                    return spelled == combo;
+                }
+                match ex::resolve(spelled.strip_prefix(':').unwrap_or(""), &scope) {
+                    ex::Resolved::Pinned(row) => row.actions.contains(action),
+                    _ => false,
+                }
+            };
+            for (key, label, _) in chips(&app) {
+                let Some(shown) = keycap(&key, at, &app.keymap) else { continue };
+                let ok = match &key {
+                    Key::Of(a) => honest(&app, a, &spell(at, a, &app.keymap).unwrap()) && shown == glyphs(&spell(at, a, &app.keymap).unwrap()),
+                    Key::OneOf(a, b) => {
+                        let a_s = spell(at, a, &app.keymap);
+                        let (action, s) = match a_s {
+                            Some(s) => (a, s),
+                            None => (b, spell(at, b, &app.keymap).unwrap()),
+                        };
+                        honest(&app, action, &s) && shown == glyphs(&s)
+                    }
+                    Key::Pair(a, b) => {
+                        let (sa, sb) = (spell(at, a, &app.keymap).unwrap(), spell(at, b, &app.keymap).unwrap());
+                        honest(&app, a, &sa) && honest(&app, b, &sb) && shown == pair(&glyphs(&sa), &glyphs(&sb))
+                    }
+                    Key::Quit { .. } => {
+                        shown == "q" && profile == KeyProfile::Arrows
+                            || shown == ":q" && matches!(ex::resolve("q", &scope), ex::Resolved::Pinned(_))
+                            || Some(shown.as_str()) == spell(at, &Action::Quit, &app.keymap).as_deref().map(|_| "^C")
+                    }
+                    Key::Send { .. } => {
+                        shown == "\u{21e7}enter"
+                            || shown == "^R" && profile == KeyProfile::Arrows
+                            || honest(&app, &Action::Send, &spell(at, &Action::Send, &app.keymap).unwrap())
+                    }
+                    Key::OrRow(named, a) => shown == *named || honest(&app, a, &shown),
+                    Key::Named(_) | Key::Nav(_) | Key::Answer(_) | Key::Pick => continue,
+                };
+                assert!(ok, "{profile:?} {f:?} {prelude:?}: the {label} chip paints {shown:?}, which does not run its action");
+                checked += 1;
+            }
+        }
+        assert!(checked >= 15, "{profile:?}: only {checked} keycaps were checked");
+        if profile == KeyProfile::Vim {
+            assert!(normal_seen, "no vim state reached a field's idle Normal: FieldSpell::Normal went unchecked");
+        }
     }
 }

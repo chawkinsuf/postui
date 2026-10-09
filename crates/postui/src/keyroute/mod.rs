@@ -4,6 +4,7 @@
 
 pub mod ctx;
 pub mod engine_glue;
+pub mod ex;
 #[cfg(test)]
 pub mod keylist;
 pub mod notation;
@@ -12,7 +13,7 @@ pub mod pending;
 pub mod spell;
 pub mod table;
 
-pub use ctx::{EngineKind, EngineView, FieldCaret, FieldId, KeyCtx, SpellCtx, Surface};
+pub use ctx::{EngineKind, EngineView, FieldCaret, FieldId, FieldSpell, KeyCtx, SpellCtx, Surface};
 
 use crate::action::{Action, TabTo};
 use crate::config::KeyProfile;
@@ -50,12 +51,55 @@ pub struct Router {
     pending: Pending,
     /// The surface the pending keys were typed on.
     surface: Option<Surface>,
+    /// `q{reg}` was typed (spec §5.11): the footer says so until the next
+    /// bare `q` in Normal, which is swallowed and clears it.
+    recording: Option<char>,
 }
 
 impl Router {
-    /// Drops whatever is pending: a profile switch, a mouse press.
+    /// Drops whatever is pending, the recording flag included: a profile
+    /// switch, a mouse press.
     pub fn clear(&mut self) {
+        self.clear_pending();
+        self.recording = None;
+    }
+
+    /// Drops the pending keys and keeps the recording flag: a field's
+    /// close (amendment A4-1; the final review's ruling I-4, so recording
+    /// a field edit still ends at the next bare `q`).
+    pub fn clear_pending(&mut self) {
         self.pending.clear();
+    }
+
+    /// The register `q` was typed with, while the fake recording is on.
+    pub fn recording(&self) -> Option<char> {
+        self.recording
+    }
+
+    /// The closing `q` of `q{reg}…q` (spec §5.11): a bare `q` with nothing
+    /// pending while the flag is on is swallowed and clears it.
+    fn stops_recording(&mut self, tok: Tok) -> bool {
+        if self.recording.is_some() && self.pending.is_idle() && tok == Tok::Char('q') {
+            self.recording = None;
+            return true;
+        }
+        false
+    }
+
+    /// A complete row: arms the recording flag for `q{reg}`, then expands.
+    fn run_row(&mut self, b: &'static table::Binding, buf: &[Tok], cap: usize) -> Resolved {
+        let count = self.pending.count();
+        if matches!(b.intent, Intent::Recording)
+            && let Some(Tok::Char(c)) = buf.last()
+            && (c.is_ascii_alphanumeric() || *c == '"')
+        {
+            self.recording = Some(*c);
+        }
+        self.pending.clear();
+        match b.intent {
+            Intent::Swallow => Resolved::Consumed,
+            _ => Resolved::Run(expand(b, count, cap)),
+        }
     }
 
     /// The footer's echo of what is pending (spec §3.8).
@@ -116,6 +160,9 @@ impl Router {
             self.pending.clear();
             return Resolved::Consumed;
         }
+        if self.stops_recording(tok) {
+            return Resolved::Consumed;
+        }
         if let Tok::Char(c) = tok
             && self.pending.digit(c)
         {
@@ -124,14 +171,7 @@ impl Router {
         let mut buf = self.pending.keys().to_vec();
         buf.push(tok);
         match table::lookup_class(&buf, ctx.profile, class) {
-            Match::Complete(b) => {
-                let count = self.pending.count();
-                self.pending.clear();
-                match b.intent {
-                    Intent::Swallow => Resolved::Consumed,
-                    _ => Resolved::Run(expand(b, count, ctx.cap)),
-                }
-            }
+            Match::Complete(b) => self.run_row(b, &buf, ctx.cap),
             Match::Prefix => {
                 self.pending.push(tok);
                 Resolved::Consumed
@@ -163,6 +203,9 @@ impl Router {
             self.pending.clear();
             return Resolved::Consumed;
         }
+        if self.stops_recording(tok) {
+            return Resolved::Consumed;
+        }
         if ctx.profile == KeyProfile::Vim {
             // 2. Digits build the count, where some row takes one (plan M1
             // Deviation 22). `takes_count` reads the vim rows, so it is
@@ -186,14 +229,7 @@ impl Router {
         let mut buf = self.pending.keys().to_vec();
         buf.push(tok);
         match table::lookup(&buf, ctx.profile, ctx.surface) {
-            Match::Complete(b) => {
-                let count = self.pending.count();
-                self.pending.clear();
-                match b.intent {
-                    Intent::Swallow => Resolved::Consumed,
-                    _ => Resolved::Run(expand(b, count, ctx.cap)),
-                }
-            }
+            Match::Complete(b) => self.run_row(b, &buf, ctx.cap),
             Match::Prefix => {
                 self.pending.push(tok);
                 Resolved::Consumed
@@ -263,19 +299,16 @@ pub(crate) fn expand(b: &table::Binding, count: Option<usize>, cap: usize) -> Ve
         // `{N}dd` and `{N}p` hand N to the verb, which runs it as one
         // undo step; a put's N is capped by the surface like a motion's
         // (plan M2 Deviation 10), so `9999p` can't write 9 999 files.
+        // An add verb opens what it makes in Insert (spec §5.6): the app's
+        // `OnSelection` arm says so, for this row and the `:` line alike.
         Intent::Verb(v) => {
-            let mut steps = if b.count == CountRule::Pass {
+            if b.count == CountRule::Pass {
                 let n = count.unwrap_or(1);
                 let n = if matches!(v, crate::action::Verb::Put { .. }) { n.min(cap) } else { n };
                 vec![Step::Action(Action::OnSelection(v.with_count(n)))]
             } else {
                 vec![Step::Action(Action::OnSelection(v)); times(cap)]
-            };
-            // An add verb opens what it makes in Insert (spec §5.6).
-            if matches!(v, crate::action::Verb::Add | crate::action::Verb::AddAlt) {
-                steps.insert(0, Step::OpenAs(engine_glue::OpenAs::Insert(engine_glue::OpenSeat::Keep)));
             }
-            steps
         }
         Intent::Open { key, seat } => vec![Step::OpenAs(engine_glue::OpenAs::Insert(seat)), Step::Key(key.event())],
         Intent::Note(text) => vec![note_step(text)],
@@ -308,6 +341,8 @@ pub(crate) fn expand(b: &table::Binding, count: Option<usize>, cap: usize) -> Ve
         // rides in the action, which runs it only when there is a pane to
         // move to (the user's decision, 2026-10-05).
         Intent::Pane { dir, leave } => vec![Step::Action(Action::PaneMove { dir, leave })],
+        Intent::Recording => vec![note_step(table::NO_MACROS)],
+        Intent::CloseThen(f) => vec![Step::Action(Action::CloseField), Step::Action(f())],
         Intent::Swallow => Vec::new(),
     }
 }
@@ -584,7 +619,7 @@ mod tests {
         assert_eq!(feed(&mut Router::default(), &s, "ma"), marks);
         assert_eq!(feed(&mut Router::default(), &s, "`x"), marks);
         assert_eq!(feed(&mut Router::default(), &s, "Zx"), Resolved::Consumed);
-        assert_eq!(feed(&mut Router::default(), &s, ":"), run(vec![Step::Action(Action::OpenPalette)]));
+        assert_eq!(feed(&mut Router::default(), &s, ":"), run(vec![Step::Action(Action::OpenExPalette)]));
         let mut r = Router::default();
         feed(&mut r, &s, "q");
         assert_eq!(feed(&mut r, &s, "<Esc>"), Resolved::Consumed, "Esc cancels the pair silently");
@@ -616,8 +651,8 @@ mod tests {
         assert_eq!(feed(&mut Router::default(), &table, "i"), open(OpenSeat::Keep));
         assert_eq!(
             feed(&mut Router::default(), &table, "a"),
-            run(vec![Step::OpenAs(OpenAs::Insert(OpenSeat::Keep)), sel(crate::action::Verb::Add)]),
-            "an add verb opens what it makes in Insert"
+            run(vec![sel(crate::action::Verb::Add)]),
+            "an add verb's Insert is the app's `OnSelection` arm's (ex_tests' add-verb test)"
         );
         assert_eq!(feed(&mut Router::default(), &table, "o"), run(vec![enter]), "o opens in Normal");
     }
@@ -804,7 +839,7 @@ mod tests {
             run(vec![sel(Verb::Put { above: true, count: 4 })]),
             "a put's count is capped by the surface"
         );
-        assert_eq!(feed(&mut Router::default(), &s, "a"), run(vec![Step::OpenAs(OpenAs::Insert(OpenSeat::Keep)), sel(Verb::Add)]));
+        assert_eq!(feed(&mut Router::default(), &s, "a"), run(vec![sel(Verb::Add)]));
         assert_eq!(feed(&mut Router::default(), &s, "3r"), run(vec![sel(Verb::Rename)]), "a count is ignored");
         let mut r = Router::default();
         assert_eq!(feed(&mut r, &s, "d"), Resolved::Consumed);
@@ -839,7 +874,7 @@ mod tests {
         assert_eq!(feed(&mut Router::default(), &s, "d"), run(vec![sel(Verb::Delete { count: 1 })]));
         assert_eq!(feed(&mut Router::default(), &s, "y"), run(vec![sel(Verb::Yank)]));
         assert_eq!(feed(&mut Router::default(), &s, "P"), run(vec![sel(Verb::Put { above: true, count: 1 })]));
-        assert_eq!(feed(&mut Router::default(), &s, "a"), run(vec![Step::OpenAs(OpenAs::Insert(OpenSeat::Keep)), sel(Verb::Add)]));
+        assert_eq!(feed(&mut Router::default(), &s, "a"), run(vec![sel(Verb::Add)]));
         assert_eq!(feed(&mut Router::default(), &s, "n"), Resolved::Declined, "n is no longer new");
         let env = cx(Arrows, Surface::ManageDetail(ManageTab::Environments));
         assert_eq!(feed(&mut Router::default(), &env, "t"), run(vec![sel(Verb::Tls)]));
@@ -918,7 +953,7 @@ mod tests {
         assert_eq!(feed(&mut Router::default(), &s, "u"), run(vec![Step::Action(Action::Undo)]));
         assert_eq!(feed(&mut Router::default(), &s, "3u"), run(vec![Step::Action(Action::Undo); 3]));
         assert_eq!(feed(&mut Router::default(), &s, "<C-r>"), run(vec![Step::Action(Action::Redo)]));
-        assert_eq!(feed(&mut Router::default(), &s, "3:"), run(vec![Step::Action(Action::OpenPalette)]));
+        assert_eq!(feed(&mut Router::default(), &s, "3:"), run(vec![Step::Action(Action::OpenExPalette)]));
         assert_eq!(feed(&mut Router::default(), &cx(Vim, Surface::Picker), "u"), Resolved::Declined, "a picker types it");
     }
 
@@ -995,5 +1030,87 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Spec §5.11, key list G.ZZ: `ZZ` writes and quits, `ZQ` quits; in a
+    /// screen field's idle Normal `ZZ` closes the field first (Deviation 2);
+    /// a dialog's field keeps swallowing `Z<any>`.
+    #[test]
+    fn zz_and_zq_quit() {
+        let s = cx(Vim, Surface::Sidebar);
+        assert_eq!(feed(&mut Router::default(), &s, "ZZ"), run(vec![Step::Action(Action::WriteQuit)]));
+        assert_eq!(feed(&mut Router::default(), &s, "ZQ"), run(vec![Step::Action(Action::ForceQuit)]));
+        assert_eq!(feed(&mut Router::default(), &s, "3ZZ"), run(vec![Step::Action(Action::WriteQuit)]), "a count is dropped");
+        let mut r = Router::default();
+        assert_eq!(feed(&mut r, &s, "Zx"), Resolved::Consumed, "vim's beep");
+        assert_eq!(feed(&mut r, &s, "j"), run(vec![key(KeyCode::Down)]));
+        let url = in_url(Mode::Normal, false);
+        assert_eq!(
+            feed(&mut Router::default(), &url, "ZZ"),
+            run(vec![Step::Action(Action::CloseField), Step::Action(Action::WriteQuit)])
+        );
+        assert_eq!(feed(&mut Router::default(), &url, "ZQ"), run(vec![Step::Action(Action::ForceQuit)]));
+        assert_eq!(feed(&mut Router::default(), &url, "Zx"), Resolved::Consumed);
+        let prompt = KeyCtx {
+            field: FieldCaret::Live(FieldId::ModalInput(0)),
+            engine: Some(EngineView { mode: Mode::Normal, pending: false }),
+            ..cx(Vim, Surface::Prompt)
+        };
+        assert_eq!(feed(&mut Router::default(), &prompt, "ZZ"), Resolved::Consumed, "a dialog field swallows Z<any>");
+        assert_eq!(feed(&mut Router::default(), &cx(Vim, Surface::Dialog), "Z"), Resolved::Declined, "no row on a dialog");
+        assert_eq!(feed(&mut Router::default(), &cx(Arrows, Surface::Sidebar), "Z"), Resolved::Declined);
+    }
+
+    /// Spec §5.11, key list G.qa/G.marks/G.regs: the notes on a list, and
+    /// the recording flag (Deviations 4 and 5).
+    #[test]
+    fn the_notes_and_the_recording_flag_on_a_list() {
+        let s = cx(Vim, Surface::Sidebar);
+        let note = |t: &str| run(vec![Step::Action(Action::ShowToast(t.into(), ToastKind::Info))]);
+        assert_eq!(feed(&mut Router::default(), &s, "@a"), note(table::NO_MACROS));
+        assert_eq!(feed(&mut Router::default(), &s, "'a"), note(table::NO_MARKS));
+        assert_eq!(feed(&mut Router::default(), &s, "`a"), note(table::NO_MARKS));
+        assert_eq!(feed(&mut Router::default(), &s, "\"a"), note(table::NO_REGISTERS));
+        assert_eq!(feed(&mut Router::default(), &s, "m"), run(vec![sel(crate::action::Verb::Move)]), "m stays move on a list");
+        let mut r = Router::default();
+        assert_eq!(feed(&mut r, &s, "qa"), note(table::NO_MACROS));
+        assert_eq!(r.recording(), Some('a'));
+        assert_eq!(feed(&mut r, &s, "x"), Resolved::Consumed, "x is vim's beep on a list");
+        assert_eq!(feed(&mut r, &s, "q"), Resolved::Consumed, "the closing q is swallowed");
+        assert_eq!(r.recording(), None);
+        assert_eq!(feed(&mut r, &s, "q"), Resolved::Consumed, "and the next q is a fresh prefix");
+        assert_eq!(r.echo(), "q");
+        assert_eq!(feed(&mut r, &s, "<CR>"), note(table::NO_MACROS), "q<CR>: the note only");
+        assert_eq!(r.recording(), None, "Enter is no register");
+        feed(&mut r, &s, "q\"");
+        assert_eq!(r.recording(), Some('"'));
+        // A field close drops the pending keys and keeps the flag (the
+        // final review's ruling, I-4); a mouse press or a profile switch
+        // drops both.
+        assert_eq!(feed(&mut r, &s, "g"), Resolved::Consumed);
+        assert_eq!(r.echo(), "g");
+        r.clear_pending();
+        assert_eq!(r.echo(), "", "the pending keys go");
+        assert_eq!(r.recording(), Some('"'), "the flag stays");
+        r.clear();
+        assert_eq!(r.recording(), None, "a clear drops the flag");
+    }
+
+    /// The recording flag in a field's idle Normal: the closing `q` is
+    /// swallowed there too, and in Insert `q` is the engine's.
+    #[test]
+    fn the_recording_flag_in_a_field() {
+        let s = in_url(Mode::Normal, false);
+        let mut r = Router::default();
+        feed(&mut r, &s, "qa");
+        assert_eq!(r.recording(), Some('a'));
+        assert_eq!(feed(&mut r, &s, "q"), Resolved::Consumed);
+        assert_eq!(r.recording(), None);
+        assert_eq!(feed(&mut r, &s, "x"), run(eng("x")), "x is fresh");
+        let mut r = Router::default();
+        feed(&mut r, &s, "qa");
+        let insert = in_url(Mode::Insert, false);
+        assert_eq!(feed(&mut r, &insert, "q"), run(eng("q")), "Insert types q");
+        assert_eq!(r.recording(), Some('a'), "and the flag stays");
     }
 }

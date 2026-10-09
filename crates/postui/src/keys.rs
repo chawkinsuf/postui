@@ -341,12 +341,13 @@ impl Keymap {
     /// The bindings `profile` ships with (piece 4 spec §4.4, plan M1
     /// Deviation 4). Vim gives up `q` (its macro prefix; `:q` quits),
     /// `ctrl+r` (redo, a router row), `alt+a` (`a` adds a table row, plan
-    /// M2 Deviation 5) and `alt+←/→` (`gT`/`gt`, plan M4a). A user's
-    /// `keys.toml` layers on top.
+    /// M2 Deviation 5), `alt+←/→` (`gT`/`gt`, plan M4a), and `ctrl+s`,
+    /// `alt+w` and `shift+alt+w` (`:w`, `:split`, `:splitback`, plan M4b).
+    /// A user's `keys.toml` layers on top.
     pub fn default_bindings_for(profile: crate::config::KeyProfile) -> Self {
         let mut map = Self::default_bindings();
         if profile == crate::config::KeyProfile::Vim {
-            for combo in ["q", "ctrl+r", "alt+a", "alt+left", "alt+right"] {
+            for combo in ["q", "ctrl+r", "alt+a", "alt+left", "alt+right", "ctrl+s", "alt+w", "shift+alt+w"] {
                 map.bindings
                     .remove(&KeyCombo::parse(combo).expect("a valid default combo"));
             }
@@ -1473,10 +1474,14 @@ mod tests {
         assert_eq!(get(Vim, "alt+left"), None);
         assert_eq!(get(Arrows, "alt+right"), Some(Action::CycleTabs(1)));
         for combo in [
-            "ctrl+c", "ctrl+v", "ctrl+o", "ctrl+p", "ctrl+z", "ctrl+s", "alt+w", "alt+t",
+            "ctrl+c", "ctrl+v", "ctrl+o", "ctrl+p", "ctrl+z", "alt+t",
             "ctrl+1",
         ] {
             assert_eq!(get(Vim, combo), get(Arrows, combo), "{combo} is shared until its vim key lands");
+        }
+        for combo in ["ctrl+s", "alt+w", "shift+alt+w"] {
+            assert_eq!(get(Vim, combo), None, "{combo}: an ex verb in vim (plan M4b)");
+            assert!(get(Arrows, combo).is_some(), "{combo}");
         }
         assert_eq!(Keymap::default_bindings_for(Arrows), Keymap::default_bindings());
     }

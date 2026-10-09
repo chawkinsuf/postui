@@ -138,6 +138,12 @@ impl App {
     /// or a key the router ran itself. Runs at the start and the end of
     /// every key and mouse button event (plan M3a Deviation 2).
     pub(crate) fn sync_session(&mut self, open_as: Option<OpenAs>, cause: Cause) {
+        // An add verb's row, its `:` verb and a click on that verb's pinned
+        // row open what they make alike, in Insert (spec §5.6; the final
+        // review's I-3). Taken on every sync, so it never outlives the
+        // event that set it.
+        let add = std::mem::take(&mut self.add_opens_insert);
+        let open_as = open_as.or(add.then_some(OpenAs::Insert(OpenSeat::Keep)));
         let profile = self.profile();
         let was = self.glue.profile();
         let switched_in = profile == KeyProfile::Vim && was == Some(KeyProfile::Arrows);
@@ -203,10 +209,11 @@ impl App {
             }
             Edge::Carry(from, to) => self.carry_session(from, to),
             // Spec §3.3: the close edge also drops the router's pending
-            // keys (amendment A4-1).
+            // keys (amendment A4-1), but not the recording flag (the final
+            // review's ruling I-4).
             Edge::Close(id) => {
                 self.close_session(id);
-                self.router.clear();
+                self.router.clear_pending();
             }
             Edge::Same(id) => {
                 let (glue, buf) = self.session_parts(id);
@@ -293,7 +300,7 @@ impl App {
                     self.modal_glue.leave_ghost();
                 }
                 self.glue.swap_registers(&mut self.modal_glue);
-                self.router.clear();
+                self.router.clear_pending();
             }
         }
         self.modal_session = now;
@@ -529,6 +536,13 @@ impl App {
                 KeyCode::Right | KeyCode::End => plain && self.session.response.jq_accepts_completion(),
                 _ => false,
             },
+            // The ex line's Backspace on an empty query closes it (spec
+            // §5.9, plan M4b Deviation 15).
+            FieldId::Palette => {
+                plain
+                    && ev.code == KeyCode::Backspace
+                    && matches!(self.modals.top(), Some(Modal::Palette(p)) if p.is_ex() && p.input().is_empty())
+            }
             _ => false,
         }
     }

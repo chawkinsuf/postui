@@ -33,14 +33,29 @@ pub struct KeyCtx {
 }
 
 /// What a keycap's spelling depends on (spec §4.6): the profile, the
-/// surface, and whether a field has the caret (a live field takes every
+/// surface, and whether a field has the caret (a typing field takes every
 /// key the table would otherwise bind there). The `Copy` part of the
 /// context, for the footer and the hover hints.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct SpellCtx {
     pub profile: KeyProfile,
     pub surface: Surface,
-    pub field_live: bool,
+    /// Whether a field has the caret, and how (plan M4b Deviation 21).
+    pub field: FieldSpell,
+}
+
+/// How a field with the caret takes keys, for spellings (spec §4.6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FieldSpell {
+    /// No field has the caret: the surface's rows and the keymap.
+    #[default]
+    None,
+    /// A field's idle Normal: these field rows apply before the engine
+    /// (`table::field_class`), and the engine hands `u`/`ctrl+r` on.
+    Normal(super::table::Surfaces),
+    /// Insert, Visual, a pending command, a query box, or arrows' modeless
+    /// field: every key types, so only the keymap spells.
+    Typing,
 }
 
 /// The thing the keys go to. It never names a stale pane: `App::surface`

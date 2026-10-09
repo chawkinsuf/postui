@@ -377,10 +377,12 @@ pub fn draw_footer(
     }
     let mid_y = area.y + area.height / 2;
 
-    use crate::keyroute::spell::{keycap, resolve};
+    use crate::keyroute::spell::{keycap, quit_action, resolve};
+    // Each chip's click runs the action its keycap is spelled from (the
+    // code review's fifth and sixth findings).
     let quit_key = keycap(&Key::Quit { plain_q: plain_q_quits }, spell, keymap)
         .unwrap_or_else(|| "^C".into());
-    let quit_chip = (quit_key.as_str(), "quit", Some(Action::Quit));
+    let quit_chip = (quit_key.as_str(), "quit", Some(quit_action(spell)));
     let quit_w = chip_width(&quit_chip);
     let quit_x = (area.x + area.width).saturating_sub(quit_w + 1);
     paint_chip_row(
@@ -398,9 +400,12 @@ pub fn draw_footer(
 
     let right_limit = if globals_live {
         // The palette chip sits right-aligned, one gap column left of quit.
-        let palette_key = keycap(&Key::Of(Action::OpenPalette), spell, keymap)
-            .unwrap_or_else(|| "^P".into());
-        let palette_chip = (palette_key.as_str(), "commands", Some(Action::OpenPalette));
+        // `:` in vim (the ex line is a superset of the palette), `^P` in
+        // arrows (plan M4b Deviation 17).
+        let (ex, plain) = (Action::OpenExPalette, Action::OpenPalette);
+        let palette_key = keycap(&Key::OneOf(ex.clone(), plain.clone()), spell, keymap).unwrap_or_else(|| "^P".into());
+        let palette_action = crate::keyroute::spell::one_of(spell, &ex, &plain, keymap).clone();
+        let palette_chip = (palette_key.as_str(), "commands", Some(palette_action));
         let palette_w = chip_width(&palette_chip);
         let palette_x = quit_x.saturating_sub(palette_w + 1);
         paint_chip_row(

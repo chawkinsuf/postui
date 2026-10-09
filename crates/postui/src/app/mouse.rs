@@ -319,7 +319,9 @@ impl App {
                 // a click open the palette, a project/env chooser, or the
                 // Variable Manager from underneath the showcase, with no way
                 // back short of quitting.
-                if self.screen == Screen::Testbed && hit != Hit::FooterChip(Action::Quit) {
+                if self.screen == Screen::Testbed
+                    && !matches!(hit, Hit::FooterChip(Action::Quit | Action::GatedQuit))
+                {
                     return false;
                 }
                 let now = std::time::Instant::now();

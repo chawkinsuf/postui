@@ -77,6 +77,13 @@ pub enum Intent {
     /// A window key (spec §5.8): `PaneMove`. `leave`: typed in an open
     /// field, which closes first, but only when there is a pane to move to.
     Pane { dir: PaneDir, leave: bool },
+    /// `q{reg}` (spec §5.11): the macro note, and the recording flag armed
+    /// with the register, which the next bare `q` in Normal clears
+    /// (`Router::recording`).
+    Recording,
+    /// Close the open field (committing it), then this action: `ZZ` in a
+    /// screen field saves what the field holds (plan M4b Deviation 2).
+    CloseThen(fn() -> Action),
 }
 
 /// How a count applies (spec §3.5).
@@ -296,6 +303,15 @@ pub const NO_COUNTED_DELETE: &str = "Counted delete works on requests and table 
 pub const NO_COUNTED_YANK: &str = "Counted yank is not supported";
 pub const NO_MACROS: &str = "Macros are not supported";
 pub const NO_MARKS: &str = "Marks are not supported";
+pub const NO_REGISTERS: &str = "Registers are not supported here";
+
+fn write_quit() -> Action {
+    Action::WriteQuit
+}
+
+fn force_quit() -> Action {
+    Action::ForceQuit
+}
 
 fn new_option() -> Action {
     Action::StartNewOptionEdit
@@ -317,8 +333,10 @@ fn redo() -> Action {
     Action::Redo
 }
 
-fn palette() -> Action {
-    Action::OpenPalette
+/// Key list §8: `:` opens the command line, the palette in ex mode (spec
+/// §5.9).
+fn ex_palette() -> Action {
+    Action::OpenExPalette
 }
 
 fn confirm_top() -> Action {
@@ -439,7 +457,7 @@ pub static TABLE: &[Binding] = &[
     // Key list §6 and §9: the app's undo, redo and command palette.
     row("u", Surfaces::APP, Intent::Act(undo), CountRule::Repeat),
     row("<C-r>", Surfaces::APP, Intent::Act(redo), CountRule::Repeat),
-    row(":", Surfaces::APP, Intent::Act(palette), CountRule::Ignore),
+    row(":", Surfaces::APP, Intent::Act(ex_palette), CountRule::Ignore),
     // Key list §6, spec §5.1–§5.4 and §6.1: the list verbs. The shared
     // letters are one row for both profiles; vim doubles delete and yank
     // and takes counts, arrows uses one letter. Vim's other verbs on the
@@ -488,7 +506,7 @@ pub static TABLE: &[Binding] = &[
     // field (the user's decision 2), the rest are notes until M4 gives
     // them their own meaning (plan M3a Deviation 9), so no prefix key ever
     // reaches the engine as a wrong edit.
-    row(":", Surfaces::FIELDS, Intent::Act(palette), CountRule::Ignore),
+    row(":", Surfaces::FIELDS, Intent::Act(ex_palette), CountRule::Ignore),
     row("j", Surfaces::FIELD_LINE, Intent::Leave(DOWN), CountRule::Repeat),
     row("k", Surfaces::FIELD_LINE, Intent::Leave(UP), CountRule::Repeat),
     row("<Down>", Surfaces::FIELD_LINE, Intent::Leave(DOWN), CountRule::Repeat),
@@ -497,12 +515,27 @@ pub static TABLE: &[Binding] = &[
     row("<C-u>", Surfaces::FIELD_LINE, Intent::Leave(Named::ctrl(KeyCode::Char('u'))), CountRule::Ignore),
     row("<C-f>", Surfaces::FIELD_LINE, Intent::Leave(Named::ctrl(KeyCode::Char('f'))), CountRule::Ignore),
     row("<C-b>", Surfaces::FIELD_LINE, Intent::Leave(Named::ctrl(KeyCode::Char('b'))), CountRule::Ignore),
-    row("q<any>", Surfaces::FIELDS, Intent::Note(NO_MACROS), CountRule::Ignore),
+    row("q<any>", Surfaces::FIELDS, Intent::Recording, CountRule::Ignore),
     row("@<any>", Surfaces::FIELDS, Intent::Note(NO_MACROS), CountRule::Ignore),
     row("m<any>", Surfaces::FIELDS, Intent::Note(NO_MARKS), CountRule::Ignore),
     row("'<any>", Surfaces::FIELDS, Intent::Note(NO_MARKS), CountRule::Ignore),
     row("`<any>", Surfaces::FIELDS, Intent::Note(NO_MARKS), CountRule::Ignore),
     row("Z<any>", Surfaces::FIELDS, Intent::Swallow, CountRule::Ignore),
+    // Key list §9 (G.ZZ, G.qa, G.marks, G.regs), spec §5.11: the globals
+    // on the navigation surfaces and in a screen field's idle Normal, never
+    // on a dialog, a prompt, a picker or a dialog's field (plan M4b
+    // Deviation 2). `ZZ` from a field closes it first; `Z<any>` above
+    // still swallows anything else after `Z` in a field.
+    row("ZZ", Surfaces::NAV, Intent::Act(write_quit), CountRule::Ignore),
+    row("ZQ", Surfaces::NAV, Intent::Act(force_quit), CountRule::Ignore),
+    row("ZZ", Surfaces::FIELD_SCREEN, Intent::CloseThen(write_quit), CountRule::Ignore),
+    row("ZQ", Surfaces::FIELD_SCREEN, Intent::Act(force_quit), CountRule::Ignore),
+    // The notes on a closed surface (Deviation 4): `m` stays move there.
+    row("q<any>", Surfaces::NAV, Intent::Recording, CountRule::Ignore),
+    row("@<any>", Surfaces::NAV, Intent::Note(NO_MACROS), CountRule::Ignore),
+    row("'<any>", Surfaces::NAV, Intent::Note(NO_MARKS), CountRule::Ignore),
+    row("`<any>", Surfaces::NAV, Intent::Note(NO_MARKS), CountRule::Ignore),
+    row("\"<any>", Surfaces::NAV, Intent::Note(NO_REGISTERS), CountRule::Ignore),
     // Spec §5.10, key list D.prompt (plan M3b Deviations 7 and 8): a
     // one-field prompt confirms on Enter from anywhere, field or not; its
     // field's Esc in idle Normal cancels (Insert's Esc is the engine's).
@@ -594,15 +627,23 @@ fn best<'a>(rows: impl IntoIterator<Item = (&'static Binding, &'a [Tok])>, buf: 
 
 /// The keys of the row that runs `action` here, for keycaps (spec §4.6).
 pub fn keys_for(profile: KeyProfile, surface: Surface, action: &Action) -> Option<&'static str> {
+    keys_for_class(profile, Surfaces::of(surface), action)
+}
+
+/// [`keys_for`] on a surface class: a field class in idle Normal (plan M4b
+/// Deviation 21). A tab row spells `CycleTabs` whether or not it leaves a
+/// field; the `o` reopen row spells `ReopenField`.
+pub fn keys_for_class(profile: KeyProfile, class: Surfaces, action: &Action) -> Option<&'static str> {
     TABLE
         .iter()
         .find(|b| {
             b.profile.has(profile)
-                && b.on.has(surface)
+                && b.on.overlaps(class)
                 && match b.intent {
-                    Intent::Act(f) => f() == *action,
+                    Intent::Act(f) | Intent::CloseThen(f) => f() == *action,
                     Intent::Verb(v) => matches!(action, Action::OnSelection(w) if w.kind() == v.kind()),
-                    Intent::Tab { delta, leave: false } => *action == Action::CycleTabs(delta),
+                    Intent::Tab { delta, .. } => *action == Action::CycleTabs(delta),
+                    Intent::Reopen(None) => *action == Action::ReopenField,
                     _ => false,
                 }
         })
@@ -662,7 +703,10 @@ mod tests {
         assert!(matches!(class_match("<C-d>", line), Match::Complete(b) if b.count == CountRule::Ignore));
         assert!(matches!(class_match("j", body), Match::NoMatch), "j is a motion in the body");
         assert!(matches!(class_match("q", line), Match::Prefix));
-        for keys in ["qa", "q<CR>", "q<C-c>", "@a", "@<Esc>"] {
+        for keys in ["qa", "q<CR>", "q<C-c>"] {
+            assert!(matches!(class_match(keys, line), Match::Complete(b) if matches!(b.intent, Intent::Recording)), "{keys}");
+        }
+        for keys in ["@a", "@<Esc>"] {
             assert!(
                 matches!(class_match(keys, line), Match::Complete(b) if matches!(b.intent, Intent::Note(NO_MACROS))),
                 "{keys}"
@@ -671,7 +715,11 @@ mod tests {
         for keys in ["ma", "'a", "`a"] {
             assert!(matches!(class_match(keys, body), Match::Complete(b) if matches!(b.intent, Intent::Note(NO_MARKS))), "{keys}");
         }
-        assert!(matches!(class_match("ZZ", line), Match::Complete(b) if matches!(b.intent, Intent::Swallow)));
+        assert!(matches!(class_match("ZZ", line), Match::Complete(b) if matches!(b.intent, Intent::Swallow)), "a dialog field");
+        let screen_line = line.or(Surfaces::FIELD_SCREEN);
+        assert!(matches!(class_match("ZZ", screen_line), Match::Complete(b) if matches!(b.intent, Intent::CloseThen(_))));
+        assert!(matches!(class_match("ZQ", screen_line), Match::Complete(b) if matches!(b.intent, Intent::Act(_))));
+        assert!(matches!(class_match("Zx", screen_line), Match::Complete(b) if matches!(b.intent, Intent::Swallow)));
         assert!(matches!(class_match(":", body), Match::Complete(b) if matches!(b.intent, Intent::Act(_))));
         assert!(matches!(class_match("x", line), Match::NoMatch), "the engine's");
         assert!(matches!(class_match("g", line), Match::NoMatch), "a dialog field's g is the engine's");
@@ -699,10 +747,10 @@ mod tests {
     #[test]
     fn shadow_chars_come_from_navigation_rows_only() {
         let chars = vim_first_chars();
-        for c in ['q', '@', '\'', '`', 'Z'] {
-            assert!(!chars.contains(&c), "{c} starts only a field row");
+        for c in ['q', '@', '\'', '`', '"', 'Z', 'j', 'd'] {
+            assert!(chars.contains(&c), "{c} starts a navigation row now (plan M4b)");
         }
-        assert!(chars.contains(&'j'), "j is a list motion too");
+        assert!(!chars.contains(&'x'), "x starts no row");
     }
 
     /// Spec §3.4: in the arrows profile the machine never leaves Idle.
@@ -785,7 +833,13 @@ mod tests {
             }
             if matches!(
                 b.intent,
-                Intent::Note(_) | Intent::Swallow | Intent::Open { .. } | Intent::Reopen(_) | Intent::Pane { .. }
+                Intent::Note(_)
+                    | Intent::Swallow
+                    | Intent::Open { .. }
+                    | Intent::Reopen(_)
+                    | Intent::Pane { .. }
+                    | Intent::Recording
+                    | Intent::CloseThen(_)
             ) {
                 assert_eq!(b.count, CountRule::Ignore, "{}", b.keys);
             }

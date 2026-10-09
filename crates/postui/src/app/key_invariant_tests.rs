@@ -360,6 +360,41 @@ fn an_unbound_chord_on_a_list_does_nothing() {
     );
 }
 
+/// Spec §4.4 (plan M4b Deviation 19): vim's keymap gives up ctrl+s, alt+w
+/// and shift+alt+w; with no component naming them, they do nothing in vim
+/// on every start (the disk included), while arrows keeps them.
+#[test]
+fn vim_gives_up_ctrl_s_and_the_split_chords_without_a_leak() {
+    let chords = [
+        KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+        KeyEvent::new(KeyCode::Char('w'), KeyModifiers::ALT),
+        KeyEvent::new(KeyCode::Char('W'), KeyModifiers::ALT | KeyModifiers::SHIFT),
+        KeyEvent::new(KeyCode::Char('w'), KeyModifiers::ALT | KeyModifiers::SHIFT),
+    ];
+    let mut failures = Vec::new();
+    let mut ran = 0;
+    for start in starts().into_iter().filter(|s| s.profile == KeyProfile::Vim) {
+        for ev in chords {
+            ran += 1;
+            let mut app = begin(&start);
+            assert!(app.keymap.lookup(&crate::keys::KeyCombo::from_event(&ev)).is_none(), "{}: vim binds {ev:?}", start.name);
+            let before = (observed(&app), app.project().is_some().then(|| snapshot(&app)), app.split_state().stop());
+            app.handle_key(ev);
+            app.capture_undo();
+            draw(&mut app);
+            let after = (observed(&app), app.project().is_some().then(|| snapshot(&app)), app.split_state().stop());
+            if after != before {
+                failures.push(format!("{} {:?}:\n  before {}\n  after  {}", start.name, ev, before.0, after.0));
+            }
+        }
+    }
+    assert!(ran >= 40, "the generator shrank: {ran}");
+    assert!(failures.is_empty(), "{} chord(s) acted in vim:\n{}", failures.len(), failures.join("\n"));
+    let arrows = crate::keys::Keymap::default_bindings_for(KeyProfile::Arrows);
+    assert_eq!(arrows.lookup(&crate::keys::KeyCombo::from_event(&chords[0])), Some(Action::SaveRequest));
+    assert_eq!(arrows.lookup(&crate::keys::KeyCombo::from_event(&chords[1])), Some(Action::CycleSplit));
+}
+
 /// Review Focus 3: the router replays vim's motion letters as bare named
 /// keys, so the guard leaves them working.
 #[test]

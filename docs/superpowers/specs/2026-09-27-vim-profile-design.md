@@ -421,6 +421,8 @@ Amended by the M3a final review (2026-10-03):
 
 Amended by plan M3b: every query box, the response search included (piece 3 §4.2's list), runs with `Start::InsertOnly`. The palette, choosers, the variable picker and the file picker share the dialog engine with prompts and forms; the jq bar and the response search run on the screen's. A query box's Backspace on an empty filter (the file picker) and Right/End on an offered completion (the jq bar) are the box's before the engine's (`you`, 2026-10-04). The jq bar also claims plain Tab and BackTab, its completion menu, before the engine (`mine`).
 
+Amended by plan M4b: the field rows that waited for M4 are live. `ZZ` in a screen field's idle Normal closes (commits) the field, then writes and quits; `ZQ` quits; `Z` and any other key stay swallowed in every field. `q{reg}` in a field shows the macro note and arms the recording flag, as on a list (§5.11). `:` opens the command line over the field, which is parked and committed before the verb runs (§5.9). A dialog's field keeps `Z<any>` swallowed and has no `ZZ` (`mine`).
+
 ### 3.8 Echo and mode indicator: one function
 
 `Router::echo(&self, ctx: &KeyCtx, engine: &EngineView) -> Echo` is the
@@ -552,6 +554,8 @@ Amended by plan M1 (Deviations 19, 21, 23, 4):
   (they are not `<C-x>`).
 - **M2** (`mine`, plan M2 Deviation 5): vim gives up `alt+a`; `a` on a table adds a row.
 - **M2 letter reach in arrows** (`you`, plan M2 Deviation 18): a keys.toml bare letter wins in arrows too, on the same navigation (NAV) surfaces as vim, under M1 Deviation 21's conditions. In arrows only a keys.toml override counts, not a default binding, because the components beat the arrows defaults on these surfaces today.
+
+Amended by plan M4b: vim's keymap drops `ctrl+s`, `alt+w` and `shift+alt+w` (`:w`, `:split`, `:splitback`), so the table above holds in full. In vim the three chords do nothing: no component names them, and a generated test proves it from every start state (`mine`).
 
 ### 4.5 Letters leave the components
 
@@ -803,6 +807,8 @@ review).
 | `:group` `:fields` `:promote` `:secret` `:clear` `:reveal` `:tls` | the Variable Manager and Manage verbs (§5.4) | earlier |
 | `:value` | the options grid's "Edit…" prompt. vim-mode called it `:edit`, which is Vim's reload | mine, accepted 2026-09-27 |
 
+Amended by plan M4b (all `mine` unless marked): the verb table (`keyroute/ex.rs`) carries every spelling per row, the full name first; the pinned row shows the full name and keycaps use the shortest. A query is refused first (an unsupported spelling, or one starting a range), then matched exactly, then by the shortest name it starts among the verbs that run here; a tie goes to the earlier row (`:re` rename). The refusal is decided by the query's command word (its leading letters), not the whole query, so `:set nu` and `:s/a/b/` are refused; `!` starts a range too, so `:!ls` is refused. `:wq!` and `:x!` are not spellings (deferred). A verb that runs elsewhere but not here (`:fields` on the sidebar) is refused with "Nothing to :fields here", one muted row and no fuzzy rows, exactly as an unsupported one. The scope (the surface and the verbs that resolve there) is read when `:` opens the line. Every pinned row's actions begin with `CloseField`. `:e` and `:e!` ship with the table; `:noh` clears the body's highlight now that body search has shipped. Backspace on an empty line closes it, the box's own key before the engine. `:value` is the grid's edit verb (`you`, 2026-09-27). After the final review (its rulings): `:q` runs `GatedQuit`, which meets the dirty gate even with a dialog under the line (ctrl+c keeps its modal exemption, `:q!` is the line's way out); a `CloseField` the field refuses (a Settings number that does not parse) stops the row or the line there, so `ZZ`, `:w`, `:wq` and `:x` never act on the stale text; `:new` and `:group` open what they make in Insert, as `a` does (§5.6). After the pre-merge code review (`mine`, open for review): `:u`, `:undo`, `:red` and `:redo` are refused, so `:u` never reaches `:up` by prefix and saves; spaces around the query are dropped (`:w ` saves); a verb given an argument (`:w file`, `:e path`) is refused, since none of ours takes one, rather than left to the fuzzy rows; Enter on the line with nothing typed runs nothing, as Vim's `:<CR>` does, unless a row was picked from the list; the footer's `:q` and `:` chips run what they spell on a click (`GatedQuit`, `OpenExPalette`). After the second pre-merge code review (`mine`, open for review): the palette's own Quit row runs `GatedQuit` in both palettes, so picking it on the line over a dialog meets the dirty gate as `:q` does (with no dialog under the palette, the row already met the gate); a click on the pinned `:new`/`:group` row opens what it makes in Insert, as Enter on it does. On the line, Enter runs a fuzzy row only when it was picked (moved to with ctrl+n/ctrl+p, or clicked); typed text no verb spells (`:W`) closes the line with "Not a command: :W", as Vim's E492 does, rather than running whichever row ranked first (`you`, 2026-10-09: "assuming that is what vim would do"; verified against vim 9.1). This narrows "Enter runs the highlighted row" above to the ex line's picked rows; ctrl+p's palette is unchanged.
+
 ### 5.10 Prompts, pickers and dialogs
 
 | Surface | Vim | Arrows | Who |
@@ -839,6 +845,8 @@ modal field in either profile until M3.
 | `ctrl+o` `ctrl+i` | ctrl+o stays the project chooser; ctrl+i is Tab | earlier |
 | `ctrl+v` | paste in both profiles; no block Visual | earlier |
 | `u` `ctrl+r` `:` | table rows on every surface except Cmdlines, pickers and dialogs (amended by plan M1, Deviation 26) | earlier; dialogs you |
+
+Amended by plan M4b (`mine`): `ZZ`/`ZQ` and the note rows apply on the navigation surfaces and in a screen field's idle Normal, never on a dialog, a prompt, a picker or a dialog's field. They bind on `Surfaces::NAV` and the screen-field classes; the body pane is reached through its field class (it is always a live field when focused), not through a `Surface::Body` row. `q` followed by a register char (`a`–`z`, `A`–`Z`, `0`–`9`, `"`) arms the recording flag; `q` followed by anything else shows the note only. A mouse press or a profile switch clears the flag along with the pending keys; a field close drops the pending keys but keeps the flag (`mine`; it overrides plan M4b Deviation 5). `"x` on a list consumes only the register key, so a following `p` puts the row register (flagged for review). The quit chip reads `:q` where the line opens and `^C` elsewhere.
 
 ### 5.12 `.` repeats a list change (tier 2)
 
@@ -1120,10 +1128,11 @@ milestone.
   - Response tier 1: the ctrl+d/ctrl+u fix, `zo` `zc` `za`, `/` `n` `N`.
   - **Split** (`you`, 2026-10-04, accepting my recommendation) into M4a (panes, tabs, the response's tier 1 and its letter rows, `alt+←/→` out of the vim keymap) and M4b (the `:` command line and the ex table, `ZZ`/`ZQ`, the notes and the recording flag, the Manage screens' `q`, `VIM_UNTIL_M4`, the spelling pass, and `ctrl+s`/`alt+w`/`shift+alt+w` out of the vim keymap).
   - **Shipped (M4a)** by plan 2026-10-04-vim-profile-m4a. Decided by you (`you`, 2026-10-04, accepting my recommendation): a refused `{N}gt` in an open field leaves the field open. Decided by you (`you`, 2026-10-05, accepting my recommendation): in vim, `alt+←/→` do nothing on the main and Manage screens; a refused `<C-w>` direction in an open field leaves the field open. Decided by me, open for your review (`mine`): the plan's Deviations 2–14, recorded in §5.7 and §5.8 above. Key-list milestones are an enum with `M4a` and `M4b`. After five code-review rounds, plan 2026-10-05-vim-profile-m4a-consolidation replaced the case-by-case fixes with structure (all `mine`): generated invariants over every window/tab input and every unbound list chord; `screen_field` as the one owner of "which field is open"; one `leave_then_go` path for `PaneMove`, `GoTab` and `CycleTabs`; list arms that take only the chord they name. Step 2b removed.
+  - **Shipped (M4b)** by plan 2026-10-07-vim-profile-m4b. Decided by me, open for your review (`mine`): the plan's Deviations 2–25, recorded in §3.7, §4.4, §5.9 and §5.11 above; notably the ex table's shape and resolution order, the "Nothing to … here" refusal, `:e`/`:e!` and `:noh` shipping now, the recording flag's register rule, `"x` consuming only the register key, the Manage screens' `q` reaching Quit through the whitelist (the testbed keeps its own), the computed header-bar keycaps, `SpellCtx`'s field states, and `Key::OrRow` for the prompt's chips. `VIM_UNTIL_M4` is gone: every list verb vim reaches by a row or an ex verb. The key list's `MILESTONE` is `M4b` and `X.e` moved into it. The matrix persists the profile it applies to the test config.toml so `:e` keeps the profile (a fixture concern), and `:promote`'s matrix case is the refused row because the fixture's request overrides nothing. M4 is done.
 - **M5: tier 2 and acceptance.**
   - `.`; sidebar folds; `zR` `zM` `zz` `zt` `zb`; `ctrl+f` `ctrl+b` in
     the response; `*` `#`; `yy` and `V`+`y` in the response.
-  - `:e` `:e!`; `ctrl+w` + arrows; command-line history.
+  - `ctrl+w` + arrows; command-line history.
   - Then the acceptance sweep (§8.4). Any tier-2 item that proves costly
     moves to a follow-up and its key-list row is marked Parked.
 
