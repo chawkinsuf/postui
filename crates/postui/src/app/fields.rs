@@ -138,6 +138,12 @@ impl App {
     /// or a key the router ran itself. Runs at the start and the end of
     /// every key and mouse button event (plan M3a Deviation 2).
     pub(crate) fn sync_session(&mut self, open_as: Option<OpenAs>, cause: Cause) {
+        // An add verb's row, its `:` verb and a click on that verb's pinned
+        // row open what they make alike, in Insert (spec §5.6; the final
+        // review's I-3). Taken on every sync, so it never outlives the
+        // event that set it.
+        let add = std::mem::take(&mut self.add_opens_insert);
+        let open_as = open_as.or(add.then_some(OpenAs::Insert(OpenSeat::Keep)));
         let profile = self.profile();
         let was = self.glue.profile();
         let switched_in = profile == KeyProfile::Vim && was == Some(KeyProfile::Arrows);

@@ -327,9 +327,10 @@ pub struct App {
     /// settle — the backdrop un-dimming and re-dimming behind a
     /// momentarily blank panel, which reads as a flash.
     modal_handoff: bool,
-    /// An add verb ran during this key (`OnSelection(Add | AddAlt)`): what
-    /// it opened opens in Insert (spec §5.6), whether the verb came from
-    /// its row or the `:` line. The key's closing sync reads it.
+    /// An add verb ran during this event (`OnSelection(Add | AddAlt)`):
+    /// what it opened opens in Insert (spec §5.6), whether the verb came
+    /// from its row, the `:` line, or a click on the line's pinned row. The
+    /// next `sync_session` consumes it, so a key and a click read it alike.
     add_opens_insert: bool,
     /// The terminal pointer shape last emitted (Kitty OSC 22, task 8d).
     /// Starts at `Default` — the terminal's own cursor is already that, so
@@ -2506,6 +2507,12 @@ impl App {
         if !self.modals.is_empty() {
             return self.modals.focused_input().is_some();
         }
+        self.screen_field_open()
+    }
+
+    /// [`Self::field_open`]'s screen half, whatever modal is on top: the
+    /// screen has a field open that closes (the body never does).
+    fn screen_field_open(&self) -> bool {
         self.screen_field().is_some_and(|id| id != crate::keyroute::FieldId::Body)
     }
 
@@ -4308,7 +4315,7 @@ impl App {
                 }
                 let changed = self.handle_key_routed(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
                 // The screen's own field, whatever the refusal put on top.
-                if self.screen_field().is_some_and(|id| id != crate::keyroute::FieldId::Body) {
+                if self.screen_field_open() {
                     self.last_action_failed = true;
                 }
                 changed
@@ -10150,16 +10157,8 @@ impl App {
         // this key did (spec §3.1).
         self.sync_session(None, fields::Cause::Before);
         let echo = self.key_echo();
-        self.add_opens_insert = false;
         let ran = self.route_key(ev);
-        // An add verb's row and its `:` verb open what they make alike, in
-        // Insert (spec §5.6; the final review's I-3).
-        let open_as = ran.open_as.or_else(|| {
-            std::mem::take(&mut self.add_opens_insert).then_some(crate::keyroute::engine_glue::OpenAs::Insert(
-                crate::keyroute::engine_glue::OpenSeat::Keep,
-            ))
-        });
-        self.sync_session(open_as, fields::Cause::Key { routed: ran.routed });
+        self.sync_session(ran.open_as, fields::Cause::Key { routed: ran.routed });
         // A key that does nothing may still drop the pending keys the
         // footer echoes (a refused `<C-w>h`, `5gt` past the strip).
         let changed = ran.changed || self.key_echo() != echo;

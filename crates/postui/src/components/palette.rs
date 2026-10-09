@@ -340,11 +340,13 @@ pub fn all_commands() -> Vec<Command> {
             description: "Redo the last undone change",
             action: Action::Redo,
         },
+        // A picked row, not the ctrl+c emergency exit: it meets the dirty
+        // gate even when vim's `:` line opened over a dialog.
         Command {
             id: "quit",
             name: "Quit",
             description: "Exit postui",
-            action: Action::Quit,
+            action: Action::GatedQuit,
         },
     ]
 }
@@ -1049,7 +1051,7 @@ mod tests {
         select_id(&mut p, "quit");
         let res = p.handle_key(key(KeyCode::Enter)).unwrap();
         assert!(res.close);
-        assert_eq!(res.actions, vec![Action::Quit]);
+        assert_eq!(res.actions, vec![Action::GatedQuit]);
         assert_eq!(res.usage.as_deref(), Some("quit"));
     }
 

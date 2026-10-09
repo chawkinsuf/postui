@@ -1162,3 +1162,37 @@ impl Verb {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Verb;
+
+    /// `Verb::ALL` lists every verb once, in declaration order. `slot` has
+    /// no wildcard arm, so a new verb stops this compiling until it gets a
+    /// slot here and its place in `ALL`; the `:` line's scope and the
+    /// reachability test only see verbs `ALL` lists.
+    #[test]
+    fn verb_all_lists_every_verb() {
+        fn slot(v: Verb) -> usize {
+            match v {
+                Verb::Add => 0,
+                Verb::AddAlt => 1,
+                Verb::Rename => 2,
+                Verb::Move => 3,
+                Verb::Delete { .. } => 4,
+                Verb::Yank => 5,
+                Verb::Put { .. } => 6,
+                Verb::EditValue => 7,
+                Verb::Promote => 8,
+                Verb::Fields => 9,
+                Verb::Secret => 10,
+                Verb::ClearValue => 11,
+                Verb::Reveal => 12,
+                Verb::Tls => 13,
+            }
+        }
+        for (i, v) in Verb::ALL.into_iter().enumerate() {
+            assert_eq!(slot(v), i, "{v:?}");
+        }
+    }
+}

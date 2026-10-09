@@ -91,6 +91,12 @@ pub fn quit_action(at: SpellCtx) -> Action {
     if at.profile == KeyProfile::Vim && colon_applies(at) { Action::GatedQuit } else { Action::Quit }
 }
 
+/// Which of a `Key::OneOf` pair its keycap is spelled from at `at`: `a`
+/// where it spells, else `b`. A chip's click runs the same one.
+pub fn one_of<'a>(at: SpellCtx, a: &'a Action, b: &'a Action, keymap: &Keymap) -> &'a Action {
+    if spell(at, a, keymap).is_some() { a } else { b }
+}
+
 /// Whether the `:` line opens from `at`: its row applies there.
 fn colon_applies(at: SpellCtx) -> bool {
     row_for(at, &Action::OpenExPalette).is_some()
@@ -106,7 +112,7 @@ pub fn keycap(key: &Key, at: SpellCtx, keymap: &Keymap) -> Option<String> {
         Key::Named(s) => (*s).to_string(),
         Key::Nav(Nav::UpDown) => if vim { "j/k" } else { "\u{2191}\u{2193}" }.to_string(),
         Key::Nav(Nav::LeftRight) => if vim { "h/l" } else { "\u{2190}\u{2192}" }.to_string(),
-        Key::OneOf(a, b) => glyphs(&spell(at, a, keymap).or_else(|| spell(at, b, keymap))?),
+        Key::OneOf(a, b) => glyphs(&spell(at, one_of(at, a, b, keymap), keymap)?),
         Key::Answer(c) => c.to_string(),
         Key::Send { shift_enter: true } => "\u{21e7}enter".to_string(),
         Key::Send { shift_enter: false } if !vim => "^R".to_string(),

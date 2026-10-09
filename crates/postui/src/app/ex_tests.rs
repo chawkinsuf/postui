@@ -265,11 +265,47 @@ fn undo_and_arguments_never_save_or_run_a_fuzzy_row() {
     assert!(!app.editor.is_dirty(), "a trailing space still saves");
 }
 
-fn click_chip(app: &mut App, action: Action) {
+fn click(app: &mut App, hit: crate::hit::Hit) {
     use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
     draw(app);
-    let r = app.hits.rect_of(&crate::hit::Hit::FooterChip(action.clone())).unwrap_or_else(|| panic!("no {action:?} chip"));
+    let r = app.hits.rect_of(&hit).unwrap_or_else(|| panic!("no {hit:?}"));
     app.handle_mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: r.x + 1, row: r.y, modifiers: KeyModifiers::NONE });
+}
+
+fn click_chip(app: &mut App, action: Action) {
+    click(app, crate::hit::Hit::FooterChip(action));
+}
+
+/// The second code review's first finding: the palette's own Quit row,
+/// picked on the line over a dialog, meets the dirty gate as `:q` does,
+/// rather than leaving at once with the edits lost.
+#[test]
+fn the_palette_quit_row_meets_the_dirty_gate_over_a_dialog() {
+    let mut app = vim(Fixture::DirtyScratch);
+    feed(&mut app, ":w<CR>");
+    assert!(matches!(app.modals.top(), Some(Modal::Prompt { .. })), "Save as");
+    feed(&mut app, "<Esc>:quit<C-n>");
+    assert_eq!(palette(&app).selected(), 1);
+    assert_eq!(palette(&app).filtered()[0].id, "quit", "the fuzzy Quit row, under the pinned verb");
+    feed(&mut app, "<CR>");
+    assert!(!app.should_quit, "the gate, not a quit");
+    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })), "the dirty gate's confirm");
+}
+
+/// The second code review's fourth finding: a click on the pinned add
+/// verb opens what it makes in Insert, as Enter on it does.
+#[test]
+fn a_clicked_add_verb_opens_in_insert_as_enter_does() {
+    for (f, line) in [(Fixture::TableThreeHeaders, ":new"), (Fixture::VarGrid, ":new"), (Fixture::VarListGroup, ":group")] {
+        let mut by_enter = vim(f);
+        feed(&mut by_enter, &format!("{line}<CR>"));
+        let mut by_click = vim(f);
+        feed(&mut by_click, line);
+        click(&mut by_click, crate::hit::Hit::PaletteRow(0));
+        assert!(by_click.modals.top().is_none_or(|m| !matches!(m, Modal::Palette(_))), "{f:?}: the line closed");
+        assert_eq!(by_click.field_caret(), by_enter.field_caret(), "{f:?}: {line} opens the same field clicked");
+        assert_eq!(by_click.mode_indicator(), Some("INSERT"), "{f:?} {line}");
+    }
 }
 
 /// The code review's fifth finding: where the quit chip reads `:q`, a

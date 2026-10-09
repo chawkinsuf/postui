@@ -402,13 +402,9 @@ pub fn draw_footer(
         // The palette chip sits right-aligned, one gap column left of quit.
         // `:` in vim (the ex line is a superset of the palette), `^P` in
         // arrows (plan M4b Deviation 17).
-        let palette_key = keycap(&Key::OneOf(Action::OpenExPalette, Action::OpenPalette), spell, keymap)
-            .unwrap_or_else(|| "^P".into());
-        let palette_action = if crate::keyroute::spell::spell(spell, &Action::OpenExPalette, keymap).is_some() {
-            Action::OpenExPalette
-        } else {
-            Action::OpenPalette
-        };
+        let (ex, plain) = (Action::OpenExPalette, Action::OpenPalette);
+        let palette_key = keycap(&Key::OneOf(ex.clone(), plain.clone()), spell, keymap).unwrap_or_else(|| "^P".into());
+        let palette_action = crate::keyroute::spell::one_of(spell, &ex, &plain, keymap).clone();
         let palette_chip = (palette_key.as_str(), "commands", Some(palette_action));
         let palette_w = chip_width(&palette_chip);
         let palette_x = quit_x.saturating_sub(palette_w + 1);
