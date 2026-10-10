@@ -87,6 +87,9 @@ pub enum Intent {
     /// A response motion built from the count, `None` when none was typed
     /// (plan M5a Deviation 15): `{N}G`, `{N}zt`, `{N}<C-d>`.
     Motion(fn(Option<usize>) -> crate::action::ResponseMotion),
+    /// Any action built from the count, `None` when none was typed (plan
+    /// M5a Deviation 15): `{N}zo`.
+    Counted(fn(Option<usize>) -> Action),
 }
 
 /// How a count applies (spec §3.5).
@@ -355,16 +358,28 @@ fn cancel_top() -> Action {
     Action::CancelTopModal
 }
 
-fn fold_open() -> Action {
-    Action::TreeFold(crate::action::FoldOp::Open)
+fn fold_of(op: crate::action::FoldOp, n: Option<usize>) -> Action {
+    Action::TreeFold { op, count: n.unwrap_or(1).max(1) }
 }
 
-fn fold_close() -> Action {
-    Action::TreeFold(crate::action::FoldOp::Close)
+fn fold_open(n: Option<usize>) -> Action {
+    fold_of(crate::action::FoldOp::Open, n)
 }
 
-fn fold_toggle() -> Action {
-    Action::TreeFold(crate::action::FoldOp::Toggle)
+fn fold_close(n: Option<usize>) -> Action {
+    fold_of(crate::action::FoldOp::Close, n)
+}
+
+fn fold_toggle(n: Option<usize>) -> Action {
+    fold_of(crate::action::FoldOp::Toggle, n)
+}
+
+fn fold_open_all() -> Action {
+    fold_of(crate::action::FoldOp::OpenAll, None)
+}
+
+fn fold_close_all() -> Action {
+    fold_of(crate::action::FoldOp::CloseAll, None)
 }
 
 fn response_search() -> Action {
@@ -461,10 +476,13 @@ pub static TABLE: &[Binding] = &[
     row("zt", Surfaces::RESPONSE, Intent::Motion(m_top), CountRule::Pass),
     row("zz", Surfaces::RESPONSE, Intent::Motion(m_middle), CountRule::Pass),
     row("zb", Surfaces::RESPONSE, Intent::Motion(m_bottom), CountRule::Pass),
-    // Key list §7 (`R.fold`): the tree's folds. Nothing on Raw or Headers.
-    row("zo", Surfaces::RESPONSE, Intent::Act(fold_open), CountRule::Ignore),
-    row("zc", Surfaces::RESPONSE, Intent::Act(fold_close), CountRule::Ignore),
-    row("za", Surfaces::RESPONSE, Intent::Act(fold_toggle), CountRule::Ignore),
+    // Key list §7 (`R.fold`, `R.foldall`): the tree's folds, counted (plan
+    // M5a Deviation 9). Nothing on Raw or Headers.
+    row("zo", Surfaces::RESPONSE, Intent::Counted(fold_open), CountRule::Pass),
+    row("zc", Surfaces::RESPONSE, Intent::Counted(fold_close), CountRule::Pass),
+    row("za", Surfaces::RESPONSE, Intent::Counted(fold_toggle), CountRule::Pass),
+    row("zR", Surfaces::RESPONSE, Intent::Act(fold_open_all), CountRule::Ignore),
+    row("zM", Surfaces::RESPONSE, Intent::Act(fold_close_all), CountRule::Ignore),
     // Key list §8 (`P.gt`), spec §5.8: every tab strip, on a closed
     // surface or from a screen field's idle Normal (§3.7).
     row("gt", Surfaces::WINDOWS, Intent::Tab { delta: 1 }, CountRule::Pass),
@@ -891,8 +909,8 @@ mod tests {
             let tab = matches!(b.intent, Intent::Tab { .. });
             if b.count == CountRule::Pass {
                 assert!(
-                    edge || counted_verb || tab || matches!(b.intent, Intent::Motion(_)),
-                    "{}: Pass is for Edge rows, dd, p, the tab keys and the response's motions",
+                    edge || counted_verb || tab || matches!(b.intent, Intent::Motion(_) | Intent::Counted(_)),
+                    "{}: Pass is for Edge rows, dd, p, the tab keys and the response's motions and counted actions",
                     b.keys
                 );
             }

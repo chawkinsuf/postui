@@ -601,6 +601,12 @@ pub struct ReadyView {
     /// and ctrl+u move, set by a counted one, reset when the viewport's
     /// height changes, as Vim's `win_comp_scroll()` does (Deviation 19).
     scroll_opt: Option<usize>,
+    /// The full tree line the cursor is really on while a closed fold hides
+    /// it (plan M5a Deviation 8): the cursor shows on the fold's line, and
+    /// opening the fold, a search or `*` go from this one. Any cursor move
+    /// forgets it ([`ReadyView::cursor_moved`]), and so does a new tree or
+    /// view.
+    fold_line: Option<usize>,
     /// Width of the body viewport as of the last draw — the horizontal
     /// counterpart of `height`, used to clamp `h_scroll`.
     width: usize,
@@ -752,6 +758,7 @@ impl ReadyView {
             search: None,
             height: 10,
             scroll_opt: None,
+            fold_line: None,
             width: 40,
             content_width: None,
             last_area: None,
@@ -800,6 +807,7 @@ impl ReadyView {
     /// the tree on screen actually changes — clearing an already-absent
     /// filter tree leaves the body tree, and its width measure, as it was.
     fn set_jq_tree(&mut self, tree: Option<JsonTree>) {
+        self.fold_line = None;
         if tree.is_some() || self.jq_tree.is_some() {
             self.tree_epoch += 1;
         }
@@ -954,10 +962,54 @@ impl ReadyView {
         self.window().update_topline(self);
     }
 
-    /// After a fold opens or closes (a click, `zo` `zc` `za`): the change
+    /// The line the cursor is really on: on the tree view, the full line,
+    /// which a closed fold may hide (Deviation 8); elsewhere, the cursor.
+    pub fn real_line(&self) -> Option<usize> {
+        match self.mode {
+            ViewMode::Pretty => self.fold_line.or_else(|| self.active_tree()?.full_index_of_visible(self.cursor)),
+            _ => (self.cursor < self.visible_len()).then_some(self.cursor),
+        }
+    }
+
+    /// `zo` `zc` `za` `zR` `zM` (spec §5.7; plan M5a Deviations 8 and 9):
+    /// on the tree view only. The cursor shows on the line that now holds
+    /// its real line and remembers that line while it is hidden. Whether
+    /// anything changed.
+    fn fold(&mut self, op: crate::action::FoldOp, count: usize) -> bool {
+        if self.mode != ViewMode::Pretty {
+            return false;
+        }
+        let Some(real) = self.real_line() else {
+            return false;
+        };
+        let Some(tree) = self.active_tree_mut() else {
+            return false;
+        };
+        if !tree.fold_at(real, op, count) {
+            return false;
+        }
+        let shown = tree.holder(real).unwrap_or(0);
+        let hidden = tree.visible_index_of(real).is_none();
+        self.clear_sel();
+        self.cursor = shown;
+        self.fold_line = hidden.then_some(real);
+        self.follow_cursor();
+        true
+    }
+
+    /// The cursor moved by a write outside [`Rows::set_cur_row`]'s guard (a
+    /// click, a pull to the view's edge): it is no longer on the hidden line
+    /// a closed fold remembered (plan M5a Deviation 8).
+    fn cursor_moved(&mut self) {
+        self.fold_line = None;
+    }
+
+    /// After a fold opens or closes (a click, Space, Enter): the change
     /// renumbers the visible lines a selection is addressed in, and may
-    /// leave the cursor past the end or out of view.
+    /// leave the cursor past the end or out of view. They act on the visible
+    /// opener, so its line is the cursor's.
     fn after_fold(&mut self) {
+        self.cursor_moved();
         self.clear_sel();
         self.clamp_cursor();
         self.follow_cursor();
@@ -969,6 +1021,7 @@ impl ReadyView {
     /// follow here; [`Self::jump_cursor`] does.
     fn land(&mut self, at: usize) {
         self.clear_sel();
+        self.cursor_moved();
         self.cursor = at;
         self.clamp_cursor();
     }
@@ -993,6 +1046,15 @@ impl ReadyView {
         let height = self.height.max(1);
         let last = self.visible_len().saturating_sub(1);
         self.cursor.clamp(self.scroll.min(last), (self.scroll + height - 1).min(last))
+    }
+
+    /// Puts the cursor on `row`, the view's edge a window command pulled an
+    /// off-screen cursor to: a cursor that moves forgets its hidden line.
+    fn pull_cursor(&mut self, row: usize) {
+        if row != self.cursor {
+            self.cursor = row;
+            self.cursor_moved();
+        }
     }
 
     /// A vim motion or window command (plan M5a Task 3), as Vim 9.1 runs
@@ -1024,19 +1086,20 @@ impl ReadyView {
                     return;
                 }
                 self.clear_sel();
-                self.cursor = shown;
+                self.pull_cursor(shown);
                 let mut scroll = self.scroll_opt;
                 w.halfpage(self, down, count.unwrap_or(0), &mut scroll);
                 self.scroll_opt = scroll;
             }
             ResponseMotion::Page { down, count } => {
-                let before = self.cursor;
-                self.cursor = self.shown_cursor();
+                let (before, remembered) = (self.cursor, self.fold_line);
+                self.pull_cursor(self.shown_cursor());
                 let shown = (self.scroll, self.cursor);
                 let moved = w.onepage(self, down, count.max(1));
                 if !moved && (self.scroll, self.cursor) == shown {
                     // Beeped at once: nothing changed, the selection stays.
                     self.cursor = before;
+                    self.fold_line = remembered;
                 } else {
                     self.clear_sel();
                 }
@@ -1044,7 +1107,7 @@ impl ReadyView {
             ResponseMotion::Place { at, line } => {
                 match line {
                     Some(n) => self.land(n.saturating_sub(1)),
-                    None => self.cursor = self.shown_cursor(),
+                    None => self.pull_cursor(self.shown_cursor()),
                 }
                 match at {
                     Place::Top => w.scroll_cursor_top(self, 0, true),
@@ -1065,6 +1128,7 @@ impl ReadyView {
         if mode != ViewMode::Headers {
             self.body_mode = mode;
         }
+        self.cursor_moved();
         self.cursor = 0;
         self.scroll = 0;
         self.h_scroll = 0;
@@ -1251,6 +1315,7 @@ impl ReadyView {
         let anchor_line = self.sel_anchor.map(|(l, _)| l).unwrap_or(self.cursor);
         self.sel_anchor = Some((anchor_line, 0));
         let max = self.visible_len().saturating_sub(1) as i32;
+        self.cursor_moved();
         self.cursor = (self.cursor as i32 + delta).clamp(0, max) as usize;
         self.follow_cursor();
         let cl = self.cursor;
@@ -1286,6 +1351,9 @@ impl crate::vim::engine::Rows for ReadyView {
         self.cursor
     }
     fn set_cur_row(&mut self, row: usize, _col0: bool) {
+        if row != self.cursor {
+            self.cursor_moved();
+        }
         self.cursor = row;
     }
 }
@@ -1403,6 +1471,7 @@ impl Response {
         match tree {
             Some(tree) => {
                 view.tree = Some(tree);
+                view.fold_line = None;
                 view.tree_epoch += 1;
                 // A switched-on filter is about to run against this tree
                 // (see the `jq_applied` reset below): keep the spinner up
@@ -2359,6 +2428,7 @@ impl Response {
         let Some(view) = self.view.as_mut() else {
             return;
         };
+        view.cursor_moved();
         view.cursor = row.min(view.visible_len().saturating_sub(1));
         let cursor = view.cursor;
         if toggle
@@ -2370,23 +2440,10 @@ impl Response {
         }
     }
 
-    /// `zo` `zc` `za` (piece 4 spec §5.7): the fold under the cursor on
-    /// the tree view, the cursor landing on the fold's opening line.
-    /// Whether anything changed; Raw and Headers have no folds.
-    pub fn fold(&mut self, op: crate::action::FoldOp) -> bool {
-        let Some(view) = self.view.as_mut() else {
-            return false;
-        };
-        if view.mode != ViewMode::Pretty {
-            return false;
-        }
-        let cursor = view.cursor;
-        let Some(at) = view.active_tree_mut().and_then(|tree| tree.fold(cursor, op)) else {
-            return false;
-        };
-        view.cursor = at;
-        view.after_fold();
-        true
+    /// `zo` `zc` `za` `zR` `zM` (piece 4 spec §5.7): the tree view's folds,
+    /// `count` levels. Whether anything changed; Raw and Headers have none.
+    pub fn fold(&mut self, op: crate::action::FoldOp, count: usize) -> bool {
+        self.view.as_mut().is_some_and(|view| view.fold(op, count))
     }
 
     /// A vim motion or window command (plan M5a Task 3).
@@ -2751,9 +2808,7 @@ impl Response {
                     && let Some(tree) = view.active_tree_mut()
                 {
                     tree.toggle(cursor);
-                    view.clear_sel();
-                    view.clamp_cursor();
-                    view.follow_cursor();
+                    view.after_fold();
                 }
                 Some(Action::Render)
             }
@@ -5397,22 +5452,50 @@ mod tests {
         assert_eq!(v.cursor, bottom + height - 1 - half, "the cursor keeps the view's bottom row");
     }
 
-    /// Piece 4 spec §5.7 (`R.fold`): `zo` `zc` `za` on the tree view only.
+    /// Plan M5a Deviation 8 (probes F2, F3, F4, F7): the cursor shows on
+    /// the fold's line but keeps the line it is really on until it moves.
     #[test]
-    fn fold_works_on_the_tree_view_only() {
+    fn folds_keep_the_cursors_line() {
         use crate::action::FoldOp;
         let mut r = ready(r#"{"a": {"b": 1}, "c": 2}"#);
         render(&mut r);
-        assert_eq!(r.view().unwrap().mode, ViewMode::Pretty);
         r.view.as_mut().unwrap().cursor = 2;
-        assert!(r.fold(FoldOp::Close));
-        assert_eq!(r.view().unwrap().cursor, 1, "on the fold's opening line");
-        assert_eq!(r.view().unwrap().visible_len(), 4);
-        assert!(r.fold(FoldOp::Close), "zc again climbs to the root");
-        assert_eq!((r.view().unwrap().cursor, r.view().unwrap().visible_len()), (0, 1));
-        assert!(!r.fold(FoldOp::Close), "nothing changed");
+        assert!(r.fold(FoldOp::Close, 1));
+        assert_eq!((r.view().unwrap().cursor, r.view().unwrap().real_line()), (1, Some(2)), "F2");
+        assert!(r.fold(FoldOp::Open, 1));
+        assert_eq!(r.view().unwrap().cursor, 2, "F3: back on its line");
+        r.fold(FoldOp::Close, 1);
+        r.motion(crate::action::ResponseMotion::Lines(1));
+        assert_eq!((r.view().unwrap().cursor, r.view().unwrap().real_line()), (2, Some(4)), "F4: j leaves the fold");
+        let mut r = ready(r#"{"a": {"b": 1}, "c": 2}"#);
+        render(&mut r);
+        r.view.as_mut().unwrap().cursor = 2;
+        assert!(r.fold(FoldOp::CloseAll, 1));
+        assert_eq!(r.view().unwrap().cursor, 0, "F0");
+        assert!(r.fold(FoldOp::Open, 1));
+        assert_eq!((r.view().unwrap().cursor, r.view().unwrap().real_line()), (1, Some(2)), "F7");
+        assert!(r.fold(FoldOp::OpenAll, 1));
+        assert_eq!(r.view().unwrap().cursor, 2, "F1");
         r.set_view_mode(ViewMode::Raw);
-        assert!(!r.fold(FoldOp::Toggle), "Raw has no folds");
+        assert!(!r.fold(FoldOp::Toggle, 1), "Raw has no folds");
+    }
+
+    /// Amendment A4.1 (Deviation 8, "any cursor move forgets it"): a click,
+    /// which writes the cursor outside `set_cur_row`, forgets the hidden
+    /// line too, so a later `zo` goes from the clicked row.
+    #[test]
+    fn a_click_forgets_the_line_a_fold_hides() {
+        use crate::action::FoldOp;
+        let mut r = ready(r#"{"a": {"b": 1}, "c": 2}"#);
+        render(&mut r);
+        r.view.as_mut().unwrap().cursor = 2;
+        assert!(r.fold(FoldOp::Close, 1));
+        assert_eq!(r.view().unwrap().real_line(), Some(2), "hidden inside \"a\"");
+        // visible: 0 {, 1 "a": {..}, 2 "c": 2, 3 }
+        r.click_row(2, false);
+        assert_eq!((r.view().unwrap().cursor, r.view().unwrap().real_line()), (2, Some(4)));
+        assert!(!r.fold(FoldOp::Open, 1), "nothing closed holds the clicked line");
+        assert_eq!((r.view().unwrap().cursor, r.view().unwrap().real_line()), (2, Some(4)), "not back on the old hidden line");
     }
 
     #[test]

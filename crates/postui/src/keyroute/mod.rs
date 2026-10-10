@@ -343,6 +343,7 @@ pub(crate) fn expand(b: &table::Binding, count: Option<usize>, cap: usize) -> Ve
         Intent::CloseThen(f) => vec![Step::Action(Action::CloseField), Step::Action(f())],
         // Plan M5a Task 3: the motion reads the count itself.
         Intent::Motion(f) => vec![Step::Action(Action::ResponseMove(f(count)))],
+        Intent::Counted(f) => vec![Step::Action(f(count))],
         Intent::Swallow => Vec::new(),
     }
 }
@@ -516,13 +517,17 @@ mod tests {
         assert_eq!(feed(&mut Router::default(), &s, "G"), run(vec![key(KeyCode::End)]));
     }
 
-    /// Spec §5.7: the response's fold keys.
+    /// Spec §5.7 and plan M5a Deviation 9: the fold keys take a count.
     #[test]
     fn the_response_folds() {
         use crate::action::FoldOp;
         let resp = cx(Vim, Surface::Response(crate::components::response::ViewMode::Pretty));
-        assert_eq!(feed(&mut Router::default(), &resp, "zc"), run(vec![Step::Action(Action::TreeFold(FoldOp::Close))]));
-        assert_eq!(feed(&mut Router::default(), &resp, "3za"), run(vec![Step::Action(Action::TreeFold(FoldOp::Toggle))]), "a count is ignored");
+        let fold = |op, count| run(vec![Step::Action(Action::TreeFold { op, count })]);
+        assert_eq!(feed(&mut Router::default(), &resp, "zc"), fold(FoldOp::Close, 1));
+        assert_eq!(feed(&mut Router::default(), &resp, "3za"), fold(FoldOp::Toggle, 3));
+        assert_eq!(feed(&mut Router::default(), &resp, "2zo"), fold(FoldOp::Open, 2));
+        assert_eq!(feed(&mut Router::default(), &resp, "zR"), fold(FoldOp::OpenAll, 1));
+        assert_eq!(feed(&mut Router::default(), &resp, "zM"), fold(FoldOp::CloseAll, 1));
         assert_eq!(feed(&mut Router::default(), &cx(Arrows, resp.surface), "z"), Resolved::Declined, "arrows has no fold keys");
     }
 

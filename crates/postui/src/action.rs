@@ -719,9 +719,10 @@ pub enum Action {
         row: usize,
         toggle: bool,
     },
-    /// `zo` `zc` `za` on the response's tree view (piece 4 spec §5.7): the
-    /// fold under the cursor. Nothing on Raw or Headers.
-    TreeFold(FoldOp),
+    /// `zo` `zc` `za` `zR` `zM` on the response's tree view (piece 4 spec
+    /// §5.7): `count` levels, as Vim's counted fold keys. Nothing on Raw or
+    /// Headers.
+    TreeFold { op: FoldOp, count: usize },
     /// A vim cursor or window key on the response (piece 4 spec §5.7; plan
     /// M5a Task 3).
     ResponseMove(ResponseMotion),
@@ -1095,13 +1096,16 @@ pub enum ResponseMotion {
     Place { at: Place, line: Option<usize> },
 }
 
-/// Vim's fold keys on the response tree (piece 4 spec §5.7): `zo` opens,
-/// `zc` closes, `za` toggles the fold under the cursor.
+/// Vim's fold keys on the response tree (piece 4 spec §5.7; plan M5a
+/// Deviation 9): `zo` opens, `zc` closes, `za` toggles the folds at the
+/// cursor's line; `zR` and `zM` open and close every one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FoldOp {
     Open,
     Close,
     Toggle,
+    OpenAll,
+    CloseAll,
 }
 
 /// Where `ctrl+w` moves the keyboard (piece 4 spec §5.8): `h` `j` `k` `l`

@@ -3135,7 +3135,7 @@ impl App {
                 self.session.response.click_row(row, toggle);
                 true
             }
-            Action::TreeFold(op) => self.session.response.fold(op),
+            Action::TreeFold { op, count } => self.session.response.fold(op, count),
             Action::ResponseMove(m) => self.session.response.motion(m),
             Action::CopySelection(surface) => {
                 if let Some(text) = self.selection_text_of(surface) {
