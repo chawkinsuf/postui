@@ -66,15 +66,36 @@ pub enum ViewMode {
     Headers,
 }
 
+/// How the search box's text reads (plan M5a Deviation 3): Vim's pattern
+/// in the vim profile, plain text in arrows. Both match case.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchSyntax {
+    Literal,
+    Vim,
+}
+
+impl SearchSyntax {
+    pub fn of(profile: crate::config::KeyProfile) -> Self {
+        match profile {
+            crate::config::KeyProfile::Vim => SearchSyntax::Vim,
+            crate::config::KeyProfile::Arrows => SearchSyntax::Literal,
+        }
+    }
+}
+
 /// The in-pane search: a live input while `active`, then a committed query
-/// with its match list. Matches are `(full line index, char column)` into the
-/// current view's *fully expanded* text, so a hit inside a collapsed
-/// container is still found (and jumped to).
+/// with its match list. Matches are `(full line, start, end)`, chars, end
+/// exclusive, in the current view's *fully expanded* text, so a hit inside a
+/// collapsed container is still found (and jumped to).
 pub struct SearchState {
     pub input: LineInput,
     pub active: bool,
     pub query: String,
-    pub matches: Vec<(usize, usize)>,
+    pub syntax: SearchSyntax,
+    /// `?` and `#` search backward: Vim's `n` follows it, `N` goes the
+    /// other way.
+    pub backward: bool,
+    pub matches: Vec<(usize, usize, usize)>,
     pub current: usize,
 }
 
@@ -607,6 +628,15 @@ pub struct ReadyView {
     /// forgets it ([`ReadyView::cursor_moved`]), and so does a new tree or
     /// view.
     fold_line: Option<usize>,
+    /// The column Vim's cursor would have (plan M5a Deviation 7): a search
+    /// that lands sets `(line, column)` of its match, in search-corpus
+    /// lines; any cursor move forgets it ([`ReadyView::cursor_moved`]).
+    at_col: Option<(usize, usize)>,
+    /// The last query committed, for an empty `/` Enter, which Vim takes as
+    /// "the last pattern".
+    last_query: Option<String>,
+    /// A note for the app to toast (Vim's message line): a wrap, a miss.
+    note: Option<String>,
     /// Width of the body viewport as of the last draw — the horizontal
     /// counterpart of `height`, used to clamp `h_scroll`.
     width: usize,
@@ -759,6 +789,9 @@ impl ReadyView {
             height: 10,
             scroll_opt: None,
             fold_line: None,
+            at_col: None,
+            last_query: None,
+            note: None,
             width: 40,
             content_width: None,
             last_area: None,
@@ -807,7 +840,7 @@ impl ReadyView {
     /// the tree on screen actually changes — clearing an already-absent
     /// filter tree leaves the body tree, and its width measure, as it was.
     fn set_jq_tree(&mut self, tree: Option<JsonTree>) {
-        self.fold_line = None;
+        self.cursor_moved();
         if tree.is_some() || self.jq_tree.is_some() {
             self.tree_epoch += 1;
         }
@@ -822,14 +855,29 @@ impl ReadyView {
         }
     }
 
-    fn open_search(&mut self) {
+    fn open_search(&mut self, syntax: SearchSyntax, backward: bool) {
         self.search = Some(SearchState {
             input: LineInput::new(""),
             active: true,
             query: String::new(),
+            syntax,
+            backward,
             matches: Vec::new(),
             current: 0,
         });
+    }
+
+    /// The text of search-corpus line `line` (the expanded tree line on
+    /// Pretty), without building the whole corpus.
+    fn buffer_line(&self, line: usize) -> Option<String> {
+        match self.mode {
+            ViewMode::Pretty => {
+                let tree = self.active_tree()?;
+                (line < tree.line_count()).then(|| tree.line(line).expanded_text())
+            }
+            ViewMode::Raw => self.raw_lines.get(line).cloned(),
+            ViewMode::Headers => self.header_lines.get(line).cloned(),
+        }
     }
 
     /// How many lines the current view shows right now (collapse included).
@@ -997,11 +1045,13 @@ impl ReadyView {
         true
     }
 
-    /// The cursor moved by a write outside [`Rows::set_cur_row`]'s guard (a
-    /// click, a pull to the view's edge): it is no longer on the hidden line
-    /// a closed fold remembered (plan M5a Deviation 8).
+    /// The cursor moved (a key, a click, a pull to the view's edge, a new
+    /// tree or view): it is no longer on the hidden line a closed fold
+    /// remembered (plan M5a Deviation 8), nor on the column a search landed
+    /// on (Deviation 7).
     fn cursor_moved(&mut self) {
         self.fold_line = None;
+        self.at_col = None;
     }
 
     /// After a fold opens or closes (a click, Space, Enter): the change
@@ -1137,33 +1187,70 @@ impl ReadyView {
         self.recompute_matches();
     }
 
-    fn recompute_matches(&mut self) {
-        let Some(search) = &self.search else { return };
-        if search.query.is_empty() {
-            return;
-        }
-        let needle = search.query.to_lowercase();
+    /// Every match of the query, in corpus order. `Some(note)` for a Vim
+    /// pattern outside the engine's subset: no matches then.
+    fn recompute_matches(&mut self) -> Option<String> {
+        use crate::vim::engine::{Dir, as_stored, compile, not_supported_note};
+        let search = self.search.as_ref()?;
+        let query = search.query.clone();
+        let (syntax, backward) = (search.syntax, search.backward);
         let mut matches = Vec::new();
-        for (i, line) in self.search_corpus().iter().enumerate() {
-            let hay = line.to_lowercase();
-            // Column is a char offset so it lines up with rendered spans.
-            let mut from = 0;
-            while let Some(at) = hay[from..].find(&needle) {
-                let byte = from + at;
-                matches.push((i, hay[..byte].chars().count()));
-                from = byte + needle.len();
+        if !query.is_empty() {
+            let corpus = self.search_corpus();
+            match syntax {
+                SearchSyntax::Literal => {
+                    let needle: Vec<char> = query.chars().collect();
+                    for (i, line) in corpus.iter().enumerate() {
+                        let hay: Vec<char> = line.chars().collect();
+                        let mut from = 0;
+                        while from + needle.len() <= hay.len() {
+                            if hay[from..from + needle.len()] == needle[..] {
+                                matches.push((i, from, from + needle.len()));
+                                from += needle.len();
+                            } else {
+                                from += 1;
+                            }
+                        }
+                    }
+                }
+                SearchSyntax::Vim => {
+                    let dir = if backward { Dir::Backward } else { Dir::Forward };
+                    let pat = match compile(&as_stored(&query, dir)) {
+                        Ok(p) => p,
+                        Err(atom) => {
+                            let search = self.search.as_mut().expect("checked above");
+                            search.matches.clear();
+                            search.current = 0;
+                            return Some(not_supported_note(&atom));
+                        }
+                    };
+                    for (i, line) in corpus.iter().enumerate() {
+                        let chars: Vec<char> = line.chars().collect();
+                        matches.extend(pat.chain(&chars).into_iter().map(|(s, e)| (i, s, e)));
+                    }
+                }
             }
         }
         let search = self.search.as_mut().expect("checked above");
         search.matches = matches;
         search.current = 0;
+        None
     }
 
-    /// Moves the cursor onto match `current`, expanding whatever containers
-    /// hide it. A jump like any other: a line selection drops with it.
+    /// Where a search starts (plan M5a Deviation 7): the cursor's real line
+    /// in corpus lines, and the column of the match last landed on there,
+    /// else 0.
+    fn search_pos(&self) -> (usize, usize) {
+        let line = self.real_line().unwrap_or(0);
+        let col = self.at_col.filter(|(l, _)| *l == line).map_or(0, |(_, c)| c);
+        (line, col)
+    }
+
+    /// Lands on match `current`, expanding whatever containers hide it, and
+    /// remembers its column. A jump like any other: a line selection drops.
     fn jump_to_match(&mut self) {
         let Some(search) = &self.search else { return };
-        let Some(&(line, _)) = search.matches.get(search.current) else {
+        let Some(&(line, start, _)) = search.matches.get(search.current) else {
             return;
         };
         let at = match (self.mode, self.active_tree_mut()) {
@@ -1174,18 +1261,103 @@ impl ReadyView {
             _ => line,
         };
         self.jump_cursor(at);
+        self.at_col = Some((line, start));
     }
 
-    fn step_match(&mut self, delta: i32) {
-        let Some(search) = self.search.as_mut() else {
-            return;
-        };
-        let len = search.matches.len();
-        if len == 0 {
-            return;
+    /// Vim's `searchit()` from the cursor, `count` hits, wrapping (plan M5a
+    /// Deviation 4): forward, the first match starting after the cursor (one
+    /// starting on its line's end counts one column back, as the engine's
+    /// `search` has it: amendment A5.3); backward, the last one starting
+    /// before it. The note says a wrap or a miss, as Vim's message line
+    /// does.
+    fn land_match(&mut self, backward: bool, count: usize) -> Option<String> {
+        use crate::vim::engine::{Dir, not_found_note, wrap_note};
+        let (line, col) = self.search_pos();
+        let search = self.search.as_ref()?;
+        let matches = &search.matches;
+        if matches.is_empty() {
+            return Some(not_found_note(&search.query));
         }
-        search.current = (search.current as i32 + delta).rem_euclid(len as i32) as usize;
+        // The first hit, then every match in turn, cyclically: hit k is the
+        // first one stepped k − 1 times, so a 9 999 count costs nothing.
+        let n = matches.len();
+        let steps = count.max(1) - 1;
+        let (idx, wrapped) = if backward {
+            let before = matches.partition_point(|m| (m.0, m.1) < (line, col));
+            let start = before.checked_sub(1);
+            let from = start.unwrap_or(n - 1);
+            ((from + n - steps % n) % n, start.is_none() || steps > from)
+        } else {
+            let at_end = |m: &(usize, usize, usize)| {
+                m.1 > 0 && m.1 == m.2 && self.buffer_line(m.0).is_some_and(|t| t.chars().count() == m.1)
+            };
+            let after = matches.partition_point(|m| (m.0, if at_end(m) { m.1 - 1 } else { m.1 }) <= (line, col));
+            let start = (after < n).then_some(after);
+            let from = start.unwrap_or(0);
+            ((from + steps) % n, start.is_none() || from + steps >= n)
+        };
+        self.search.as_mut()?.current = idx;
         self.jump_to_match();
+        wrapped.then(|| wrap_note(if backward { Dir::Backward } else { Dir::Forward }).to_string())
+    }
+
+    /// Commits the box (Enter, Esc, the ▼/▲ click): an empty box takes the
+    /// last query, as Vim's `/` Enter does; then lands from the cursor in
+    /// the box's direction. A Vim box left empty with no last query says
+    /// Vim's E35 (probe E1); arrows' finds nothing, as on main.
+    fn commit_search(&mut self) {
+        let Some(search) = self.search.as_mut() else { return };
+        search.active = false;
+        search.input.end_edit();
+        let typed = search.input.text().to_string();
+        search.query = if typed.is_empty() { self.last_query.clone().unwrap_or_default() } else { typed };
+        let (query, backward, syntax) = (search.query.clone(), search.backward, search.syntax);
+        if !query.is_empty() {
+            self.last_query = Some(query.clone());
+        }
+        self.note = match self.recompute_matches() {
+            Some(note) => Some(note),
+            None if query.is_empty() => {
+                (syntax == SearchSyntax::Vim).then(|| crate::vim::engine::NO_PREVIOUS_PATTERN.to_string())
+            }
+            None => self.land_match(backward, 1),
+        };
+    }
+
+    /// Vim's `*` and `#` (plan M5a Task 5): the keyword under or after the
+    /// cursor's column, else the non-blank string there, searched as a Vim
+    /// pattern whatever the profile. Whether a search ran.
+    fn star(&mut self, backward: bool, count: usize) -> bool {
+        use crate::vim::engine::{Dir, NO_STRING_UNDER_CURSOR, as_stored, find_ident, ident_pattern};
+        let (line, col) = self.search_pos();
+        let Some(text) = self.buffer_line(line) else {
+            return false;
+        };
+        let chars: Vec<char> = text.chars().collect();
+        let Some((start, end)) = find_ident(&chars, col) else {
+            self.note = Some(NO_STRING_UNDER_CURSOR.into());
+            return false;
+        };
+        let dir = if backward { Dir::Backward } else { Dir::Forward };
+        let pat = as_stored(&ident_pattern(&chars, start, end, backward), dir);
+        self.search = Some(SearchState {
+            input: LineInput::new(&pat),
+            active: false,
+            query: pat.clone(),
+            syntax: SearchSyntax::Vim,
+            backward,
+            matches: Vec::new(),
+            current: 0,
+        });
+        self.last_query = Some(pat);
+        if let Some(note) = self.recompute_matches() {
+            self.note = Some(note);
+            return false;
+        }
+        // Vim searches from the word's start, so the word itself is skipped.
+        self.at_col = Some((line, start));
+        self.note = self.land_match(backward, count);
+        true
     }
 
     /// Char ranges of every match on `line`, plus the current one.
@@ -1200,18 +1372,17 @@ impl ReadyView {
         if search.active || search.query.is_empty() {
             return none;
         }
-        let width = search.query.chars().count();
         let ranges = search
             .matches
             .iter()
-            .filter(|(l, _)| *l == line)
-            .map(|(_, c)| (*c, c + width))
+            .filter(|(l, _, _)| *l == line)
+            .map(|(_, s, e)| (*s, *e))
             .collect();
         let current = search
             .matches
             .get(search.current)
-            .filter(|(l, _)| *l == line)
-            .map(|(_, c)| (*c, c + width));
+            .filter(|(l, _, _)| *l == line)
+            .map(|(_, s, e)| (*s, *e));
         LineMatches { ranges, current }
     }
 
@@ -1471,7 +1642,7 @@ impl Response {
         match tree {
             Some(tree) => {
                 view.tree = Some(tree);
-                view.fold_line = None;
+                view.cursor_moved();
                 view.tree_epoch += 1;
                 // A switched-on filter is about to run against this tree
                 // (see the `jq_applied` reset below): keep the spinner up
@@ -2375,40 +2546,65 @@ impl Response {
         }
     }
 
-    /// Opens the in-pane search, exactly as `/` does (the search button).
-    pub fn open_search(&mut self) -> bool {
+    /// Opens the in-pane search (`/`, `?`, the search button): Vim's
+    /// pattern or plain text (plan M5a Deviation 3), forward or backward.
+    pub fn open_search(&mut self, syntax: SearchSyntax, backward: bool) -> bool {
         let Some(view) = self.view.as_mut() else {
             return false;
         };
-        view.open_search();
+        view.open_search(syntax, backward);
         true
     }
 
-    /// Steps to the next (`1`) or previous (`-1`) match, exactly as `n`/`N`
-    /// do (the `▼`/`▲` buttons).
-    ///
-    /// A still-live input is committed first, exactly as `Enter` does, and
-    /// that commit *is* the step: matches only highlight once the query is
-    /// committed, so a click on `▼` straight after typing must land on the
-    /// first match rather than silently skipping it. Without this the whole
-    /// mouse route into search dead-ended — nothing highlighted, and the
-    /// buttons looked broken (found by the stage-7 tmux sweep).
+    /// Arrows' `n`/`N` and the ▼/▲ buttons: the next match down (`1`) or
+    /// up (`-1`) from the cursor. A still-live input is committed first, as
+    /// Enter does, and that commit *is* the step: the mouse route types a
+    /// query and clicks ▼ (found by the stage-7 tmux sweep). With no search,
+    /// or an empty one, nothing happens, as on main (amendment A5.4, the
+    /// user's decision): vim's `n` is [`Response::find_next`].
     pub fn step_search(&mut self, delta: i32) -> bool {
         let Some(view) = self.view.as_mut() else {
             return false;
         };
-        let Some(search) = view.search.as_mut() else {
+        match view.search.as_ref() {
+            None => false,
+            Some(s) if s.active => {
+                view.commit_search();
+                true
+            }
+            Some(s) if s.query.is_empty() => false,
+            Some(_) => {
+                view.note = view.land_match(delta < 0, 1);
+                true
+            }
+        }
+    }
+
+    /// Vim's `n` and `N` (plan M5a Deviation 10): `count` hits in the last
+    /// search's direction, `N` against it. With no search, or an empty one,
+    /// Vim's E35 (Deviation 13; probe E6).
+    pub fn find_next(&mut self, reverse: bool, count: usize) -> bool {
+        let Some(view) = self.view.as_mut() else {
             return false;
         };
-        if search.active {
-            search.active = false;
-            search.query = search.input.text().to_string();
-            view.recompute_matches();
-            view.jump_to_match();
-            return true;
-        }
-        view.step_match(delta);
+        let Some(backward) =
+            view.search.as_ref().filter(|s| !s.active && !s.query.is_empty()).map(|s| s.backward ^ reverse)
+        else {
+            view.note = Some(crate::vim::engine::NO_PREVIOUS_PATTERN.into());
+            return false;
+        };
+        view.note = view.land_match(backward, count);
         true
+    }
+
+    /// Vim's `*` and `#` (plan M5a Task 5).
+    pub fn find_word(&mut self, backward: bool, count: usize) -> bool {
+        self.view.as_mut().is_some_and(|view| view.star(backward, count))
+    }
+
+    /// The note a search left for the app to toast, once.
+    pub fn take_note(&mut self) -> Option<String> {
+        self.view.as_mut()?.note.take()
     }
 
     /// The cursor's row on the Headers view when it is a header with a
@@ -2708,14 +2904,7 @@ impl Response {
         // what clears it.
         if view.search.as_ref().is_some_and(|s| s.active) {
             match ev.code {
-                KeyCode::Enter | KeyCode::Esc => {
-                    let search = view.search.as_mut().expect("checked above");
-                    search.active = false;
-                    search.query = search.input.text().to_string();
-                    search.input.end_edit();
-                    view.recompute_matches();
-                    view.jump_to_match();
-                }
+                KeyCode::Enter | KeyCode::Esc => view.commit_search(),
                 _ => {
                     let search = view.search.as_mut().expect("checked above");
                     search.input.handle_key(ev);
@@ -4217,9 +4406,9 @@ fn search_footer(view: &ReadyView, t: &Theme, width: u16) -> Line<'static> {
         return Line::raw("");
     };
     let accent = Style::default().fg(t.accent);
-    let mut spans = vec![Span::styled("/", accent)];
+    let mut spans = vec![Span::styled(if search.backward { "?" } else { "/" }, accent)];
     if search.active {
-        // The leading "/" already claims one column of `width`.
+        // The leading "/" (or "?") already claims one column of `width`.
         let input_width = width.saturating_sub(1);
         spans.extend(search.input.draw_line_windowed(true, t, input_width).spans);
         return Line::from(spans);
@@ -4558,7 +4747,7 @@ mod tests {
         let mut r = ready(&body);
         render(&mut r);
         select(&mut r);
-        assert!(r.open_search());
+        assert!(r.open_search(SearchSyntax::Literal, false));
         for c in "line 5".chars() {
             r.handle_key(ch(c));
         }
@@ -4578,7 +4767,7 @@ mod tests {
         let mut r = ready(&body);
         render(&mut r);
         select(&mut r);
-        assert!(r.open_search());
+        assert!(r.open_search(SearchSyntax::Literal, false));
         for c in "line 7".chars() {
             r.handle_key(ch(c));
         }
@@ -5712,7 +5901,7 @@ mod tests {
     #[test]
     fn search_commits_counts_matches_and_wraps() {
         let mut r = ready(r#"{"aa": "zz", "bb": "zz"}"#);
-        assert!(r.open_search());
+        assert!(r.open_search(SearchSyntax::Literal, false));
         for c in "zz".chars() {
             assert_eq!(r.handle_key(ch(c)), Some(Action::Render));
         }
@@ -5743,7 +5932,7 @@ mod tests {
     #[test]
     fn the_next_match_button_commits_a_live_query_and_lands_on_the_first_match() {
         let mut r = ready(r#"{"aa": "zz", "bb": "zz"}"#);
-        r.open_search();
+        r.open_search(SearchSyntax::Literal, false);
         for c in "zz".chars() {
             r.handle_key(ch(c));
         }
@@ -5768,7 +5957,7 @@ mod tests {
     #[test]
     fn typing_while_search_is_active_does_not_move_the_cursor() {
         let mut r = ready(r#"{"a": 1, "b": 2}"#);
-        r.open_search();
+        r.open_search(SearchSyntax::Literal, false);
         for c in "jjG".chars() {
             assert_eq!(r.handle_key(ch(c)), Some(Action::Render));
         }
@@ -5785,7 +5974,7 @@ mod tests {
         r.handle_key(ch('j'));
         r.handle_key(key(KeyCode::Char(' '))); // collapse "a"
         assert!(!render(&mut r).contains("needle"), "hidden while collapsed");
-        r.open_search();
+        r.open_search(SearchSyntax::Literal, false);
         for c in "needle".chars() {
             r.handle_key(ch(c));
         }
@@ -5799,28 +5988,225 @@ mod tests {
     }
 
     #[test]
-    fn search_is_case_insensitive_and_finds_nothing_gracefully() {
+    fn search_matches_case_and_finds_nothing_gracefully() {
         let mut r = ready(r#"{"Needle": 1}"#);
-        r.open_search();
-        for c in "NEEDLE".chars() {
-            r.handle_key(ch(c));
-        }
-        r.handle_key(key(KeyCode::Enter));
-        assert!(render(&mut r).contains("1/1"));
-        r.open_search();
-        for c in "absent".chars() {
-            r.handle_key(ch(c));
-        }
-        r.handle_key(key(KeyCode::Enter));
+        r.open_search(SearchSyntax::Literal, false);
+        typed(&mut r, "NEEDLE");
         let out = render(&mut r);
         assert!(out.contains("no matches"), "{out}");
-        assert!(r.step_search(1), "n with no matches is inert");
+        assert_eq!(r.take_note().as_deref(), Some("Pattern not found: NEEDLE"));
+        r.open_search(SearchSyntax::Literal, false);
+        typed(&mut r, "Needle");
+        assert!(render(&mut r).contains("1/1"));
+        assert!(r.step_search(1), "n on the one match stays on it");
+    }
+
+    /// The probe record's search JSON (lines 0–11), pretty-printed by the
+    /// tree exactly as Vim's buffer held it.
+    const PROBE_JSON: &str = r#"{"user-id": 5, "user_id": 6, "Name": "alice", "name": "bob", "items": [1, 2], "id": "x1"}"#;
+
+    fn typed(r: &mut Response, text: &str) {
+        for c in text.chars() {
+            r.handle_key(ch(c));
+        }
+        r.handle_key(key(KeyCode::Enter));
+    }
+
+    /// Where the cursor and the search are: (cursor line, current match's
+    /// line and start, the stored query).
+    fn landed(r: &Response) -> (usize, Option<(usize, usize)>, String) {
+        let v = r.view().unwrap();
+        let s = v.search.as_ref().unwrap();
+        (v.cursor, s.matches.get(s.current).map(|m| (m.0, m.1)), s.query.clone())
+    }
+
+    /// Probes S1–S3, S6–S12, S19 and the blank-line rule (Review Focus 2).
+    /// The tree's lines: 0 `{`, 1 `"user-id": 5,`, 2 `"user_id": 6,`,
+    /// 3 `"Name": "alice",`, 4 `"name": "bob",`, 5 `"items": [`, 6 `1,`,
+    /// 7 `2`, 8 `],`, 9 `"id": "x1"`, 10 `}`, each indented as printed.
+    #[test]
+    fn star_takes_vims_word_or_string() {
+        let at = |line: usize| {
+            let mut r = ready(PROBE_JSON);
+            r.view.as_mut().unwrap().height = 23;
+            r.view.as_mut().unwrap().cursor = line;
+            r
+        };
+        let lines = at(0).view().unwrap().search_corpus();
+        assert_eq!(
+            lines,
+            [
+                "{", r#"  "user-id": 5,"#, r#"  "user_id": 6,"#, r#"  "Name": "alice","#, r#"  "name": "bob","#,
+                r#"  "items": ["#, "    1,", "    2", "  ],", r#"  "id": "x1""#, "}",
+            ],
+            "the probe's lines, less its blank line 9"
+        );
+        let mut r = at(1);
+        assert!(r.find_word(false, 1));
+        assert_eq!(landed(&r), (1, Some((1, 3)), r"\<user\>".into()), "S1");
+        assert_eq!(r.take_note().as_deref(), Some("search hit BOTTOM, continuing at TOP"));
+        let mut r = at(2);
+        r.find_word(false, 2);
+        assert_eq!(landed(&r), (2, Some((2, 3)), r"\<user_id\>".into()), "S9");
+        let mut r = at(0);
+        r.find_word(false, 1);
+        assert_eq!(landed(&r).2, "{", "S3: no keyword, the non-blank string, unescaped");
+        let mut r = at(8);
+        r.find_word(false, 1);
+        assert_eq!(landed(&r), (8, Some((8, 2)), "],".into()), "S10");
+        let mut r = at(4);
+        r.find_word(true, 1);
+        assert_eq!(landed(&r), (4, Some((4, 3)), r"\<name\>".into()), "S6: Name is another word");
+        assert_eq!(r.take_note().as_deref(), Some("search hit TOP, continuing at BOTTOM"));
+        assert!(r.find_next(false, 1));
+        assert_eq!(landed(&r).0, 4, "S7: n keeps #'s direction");
+        let mut r = at(9);
+        r.find_word(false, 1);
+        assert_eq!(landed(&r), (1, Some((1, 8)), r"\<id\>".into()), "S12: user-id's id");
+        let mut r = ready("a\n\nb");
+        r.view.as_mut().unwrap().cursor = 1;
+        assert!(!r.find_word(false, 1));
+        assert_eq!(r.take_note().as_deref(), Some("No string under cursor"), "S4");
+        assert_eq!(r.view().unwrap().cursor, 1);
+        // No keyword on the line: the string `.*`, escaped, so it matches
+        // only itself and never the whole line as a regex would.
+        let mut r = ready(".* .*\nabc");
+        r.find_word(false, 1);
+        let s = r.view().unwrap().search.as_ref().unwrap();
+        assert_eq!(s.query, r"\.\*");
+        assert_eq!(s.matches.len(), 2, "{:?}", s.matches);
+    }
+
+    /// Probes S13–S17, Deviation 4 and Review Focus 3.
+    #[test]
+    fn the_search_syntax_follows_the_profile() {
+        let open = |syntax| {
+            let mut r = ready(PROBE_JSON);
+            r.view.as_mut().unwrap().height = 23;
+            r.view.as_mut().unwrap().cursor = 4;
+            r.open_search(syntax, false);
+            r
+        };
+        let mut r = open(SearchSyntax::Vim);
+        typed(&mut r, "name");
+        assert_eq!(landed(&r).1, Some((4, 3)), "S13: a match later on the cursor's line");
+        let mut r = open(SearchSyntax::Vim);
+        typed(&mut r, "zzz");
+        assert_eq!(r.take_note().as_deref(), Some("Pattern not found: zzz"), "S15");
+        assert_eq!(r.view().unwrap().cursor, 4);
+        let mut r = ready(PROBE_JSON);
+        r.open_search(SearchSyntax::Vim, false);
+        typed(&mut r, "name");
+        assert_eq!(landed(&r).1, Some((4, 3)), "S17: Name on line 3 is another case");
+        let mut r = ready("a.c\nabc\na.c");
+        r.open_search(SearchSyntax::Vim, false);
+        typed(&mut r, "^a.c$");
+        assert_eq!(r.view().unwrap().search.as_ref().unwrap().matches.len(), 3, "vim: a pattern");
+        let mut r = ready("a.c\nabc\na.c");
+        r.open_search(SearchSyntax::Literal, false);
+        typed(&mut r, "a.c");
+        assert_eq!(r.view().unwrap().search.as_ref().unwrap().matches.len(), 2, "arrows: plain text");
+        let mut r = ready("abc");
+        r.open_search(SearchSyntax::Literal, false);
+        typed(&mut r, "ABC");
+        assert_eq!(r.take_note().as_deref(), Some("Pattern not found: ABC"), "arrows matches case too");
+        let mut r = ready("abc");
+        r.open_search(SearchSyntax::Vim, false);
+        typed(&mut r, r"a\{-}");
+        let note = r.take_note().unwrap_or_default();
+        assert!(note.starts_with("pattern not supported"), "an atom outside the subset: {note}");
+    }
+
+    /// Probe S16: `n` from the cursor, wrapping with Vim's note.
+    #[test]
+    fn n_steps_from_the_cursor_and_wraps() {
+        let mut r = ready(PROBE_JSON);
+        r.open_search(SearchSyntax::Vim, false);
+        typed(&mut r, "user");
+        assert_eq!(landed(&r).1, Some((1, 3)));
+        r.find_next(false, 1);
+        assert_eq!(landed(&r).1, Some((2, 3)));
+        assert_eq!(r.take_note(), None);
+        r.find_next(false, 1);
+        assert_eq!(landed(&r).1, Some((1, 3)));
+        assert_eq!(r.take_note().as_deref(), Some("search hit BOTTOM, continuing at TOP"));
+        r.find_next(true, 3);
+        assert_eq!(landed(&r).1, Some((2, 3)), "3N: back three, wrapping");
+        let mut r = ready(PROBE_JSON);
+        assert!(!r.find_next(false, 1));
+        assert_eq!(r.take_note().as_deref(), Some("No previous regular expression"), "Deviation 13");
+    }
+
+    /// Amendment A5.3 (probes E2–E5, E7): a match that starts on its line's
+    /// end counts one column back, as the engine's `searchit()` has it, so
+    /// `/$` on one-char lines steps a line at a time. And Vim's E35 for an
+    /// empty `/` with no last pattern (probes E1, E6), the vim syntax only.
+    #[test]
+    fn a_match_on_the_lines_end_counts_one_column_back() {
+        let mut r = ready("a\nb\nc");
+        r.open_search(SearchSyntax::Vim, false);
+        typed(&mut r, "$");
+        assert_eq!(r.view().unwrap().cursor, 1, "E2: not the end of the cursor's own line");
+        assert!(r.find_next(false, 1));
+        assert_eq!(r.view().unwrap().cursor, 2);
+        assert!(r.find_next(false, 1));
+        assert_eq!(r.view().unwrap().cursor, 0, "E3");
+        assert_eq!(r.take_note().as_deref(), Some("search hit BOTTOM, continuing at TOP"));
+        let mut r = ready("x\nab");
+        r.open_search(SearchSyntax::Vim, false);
+        typed(&mut r, r"b\|$");
+        assert_eq!(landed(&r).1, Some((1, 1)));
+        assert!(r.find_next(false, 1));
+        assert_eq!(landed(&r).1, Some((0, 1)), "E5: ab's end is b's column, skipped");
+        assert!(r.find_next(true, 1));
+        assert_eq!(landed(&r).1, Some((1, 1)), "E4: back from the first line's end, wrapping to b");
+        assert!(r.find_next(true, 1));
+        assert_eq!(landed(&r).1, Some((0, 1)), "E7: N from b skips b");
+        let mut r = ready("a\nb");
+        r.open_search(SearchSyntax::Vim, false);
+        typed(&mut r, "");
+        assert_eq!(r.take_note().as_deref(), Some("No previous regular expression"), "E1");
+        assert!(!r.find_next(false, 1));
+        assert_eq!(r.take_note().as_deref(), Some("No previous regular expression"), "E6");
+        let mut r = ready("a\nb");
+        r.open_search(SearchSyntax::Literal, false);
+        typed(&mut r, "");
+        assert_eq!(r.take_note(), None, "arrows: an empty box finds nothing, as on main");
+    }
+
+    /// Amendment A5.4 (the user's decision): arrows' `n`/`N` and the ▼/▲
+    /// buttons with no search do nothing, as on main; vim's `n` says E35.
+    #[test]
+    fn n_with_no_search_is_silent_in_arrows_and_e35_in_vim() {
+        let mut r = ready(PROBE_JSON);
+        assert!(!r.step_search(1));
+        assert!(!r.step_search(-1));
+        assert_eq!(r.take_note(), None, "arrows: nothing, no note");
+        assert_eq!(r.view().unwrap().cursor, 0);
+        assert!(!r.find_next(true, 2));
+        assert_eq!(r.take_note().as_deref(), Some("No previous regular expression"), "vim");
+    }
+
+    /// Review Focus 1 (probes X15, X16): from the line a closed fold hides.
+    #[test]
+    fn a_search_from_a_closed_fold_starts_on_the_hidden_line() {
+        use crate::action::FoldOp;
+        let mut r = ready(r#"[{"a": 1, "b": 2}, "b"]"#);
+        render(&mut r);
+        // full lines: 0 [, 1 {, 2 "a": 1, 3 "b": 2, 4 }, 5 "b", 6 ]
+        r.view.as_mut().unwrap().cursor = 3;
+        assert!(r.fold(FoldOp::Close, 1));
+        assert_eq!(r.view().unwrap().cursor, 1);
+        assert!(r.find_word(false, 1));
+        let s = r.view().unwrap().search.as_ref().unwrap();
+        assert_eq!(s.query, r"\<b\>", "the word on the hidden line, not on `{{`");
+        assert_eq!(s.matches[s.current].0, 5, "the next b after line 3");
     }
 
     #[test]
     fn search_works_in_raw_view_too() {
         let mut r = ready("plain text with a needle inside");
-        r.open_search();
+        r.open_search(SearchSyntax::Literal, false);
         for c in "needle".chars() {
             r.handle_key(ch(c));
         }
@@ -8017,7 +8403,7 @@ mod tests {
     fn a_raw_search_match_far_into_a_windowed_line_still_highlights() {
         let body = format!("{}needle{}", "x".repeat(300), "y".repeat(300));
         let mut r = ready(&body);
-        r.open_search();
+        r.open_search(SearchSyntax::Literal, false);
         for c in "needle".chars() {
             r.handle_key(ch(c));
         }

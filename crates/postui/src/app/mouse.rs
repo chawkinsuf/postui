@@ -63,13 +63,14 @@ impl App {
         // drag release commits without an action and can bail between
         // `begin_op` and its record.
         self.op_in_flight = false;
+        let noted = self.toast_response_note();
         self.arm_pending_toasts();
         // Same reason as `handle_key`: a click that only pops a modal
         // never reaches `update`, and an unanswered startup gate must
         // not be left down.
         let regated = self.reraise_startup_config_gate();
         let asked = self.raise_keymap_choice();
-        changed || regated || asked
+        changed || noted || regated || asked
     }
 
     fn handle_mouse_inner(&mut self, m: ratatui::crossterm::event::MouseEvent) -> bool {
@@ -1988,11 +1989,8 @@ impl App {
                     toggle: true,
                 })
             }
-            Hit::ResponseSearchButton => {
-                self.update(Action::FocusPane(PaneId::Response));
-                self.session.response.open_search();
-                self.update(Action::Render)
-            }
+            // As `/` does: the profile's syntax, forward (amendment A5.2).
+            Hit::ResponseSearchButton => self.update(Action::OpenResponseSearch),
             Hit::ResponseSearchNext => self.step_response_search(1),
             Hit::ResponseSearchPrev => self.step_response_search(-1),
             Hit::CopyUrl => {

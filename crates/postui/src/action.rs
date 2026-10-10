@@ -707,8 +707,14 @@ pub enum Action {
     /// dispatchable form of the `Find` button / `/` key, so the footer's
     /// Response-pane search chip and the palette can reach it too.
     OpenResponseSearch,
-    /// The response search's next (`1`) or previous (`-1`) match: `n` and
-    /// `N` in both profiles (piece 4 spec §4.5), as the ▼/▲ buttons do.
+    /// Vim's `?` on the response (plan M5a Deviation 10): the search box,
+    /// searching backward.
+    OpenResponseSearchBack,
+    /// A vim search key on the response (plan M5a Task 5).
+    ResponseFind(ResponseFind),
+    /// The response search's next (`1`) or previous (`-1`) match from the
+    /// cursor: arrows' `n` and `N` (piece 4 spec §4.5; plan M5a Deviation
+    /// 10), as the ▼/▲ buttons do.
     StepResponseSearch(i8),
     /// Arrows' `c` on the response's Headers view: copies the header under
     /// the cursor. Nothing on any other row (spec §4.5).
@@ -1094,6 +1100,16 @@ pub enum ResponseMotion {
     /// `zt` `zz` `zb`: line N when counted (the cursor goes there), then
     /// the window placed around the cursor's line.
     Place { at: Place, line: Option<usize> },
+}
+
+/// A vim search key on the response (piece 4 spec §5.7; plan M5a Task 5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResponseFind {
+    /// `n` (`reverse` false) and `N`, counted: Vim's repeat, `N` against
+    /// the last search's direction.
+    Next { reverse: bool, count: usize },
+    /// `*` (`backward` false) and `#`, counted: Vim's word under the cursor.
+    Word { backward: bool, count: usize },
 }
 
 /// Vim's fold keys on the response tree (piece 4 spec §5.7; plan M5a

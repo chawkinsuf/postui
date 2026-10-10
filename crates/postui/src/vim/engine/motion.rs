@@ -908,7 +908,7 @@ impl Engine {
                 let Some(last) = self.last_search.clone() else {
                     // `normal_search()` resets the wanted column before
                     // `do_search()` finds no pattern (probed: `jnj`).
-                    self.note = Some(Note::Message("No previous regular expression".into()));
+                    self.note = Some(Note::Message(search::NO_PREVIOUS_PATTERN.into()));
                     return Moved::search_failed(from);
                 };
                 let dir = match (last.dir, reverse) {
@@ -920,7 +920,7 @@ impl Engine {
             Motion::Ident { backward } => {
                 let line = buf.line(from.row);
                 let Some((start, end)) = search::find_ident(&line, from.col) else {
-                    self.note = Some(Note::Message("No string under cursor".into()));
+                    self.note = Some(Note::Message(search::NO_STRING_UNDER_CURSOR.into()));
                     return Moved::refused(from);
                 };
                 let dir = if backward { Dir::Backward } else { Dir::Forward };
@@ -934,7 +934,7 @@ impl Engine {
             // the prompt was empty and the last one stands.
             Motion::Search { dir } => {
                 let Some(last) = self.last_search.clone() else {
-                    self.note = Some(Note::Message("No previous regular expression".into()));
+                    self.note = Some(Note::Message(search::NO_PREVIOUS_PATTERN.into()));
                     return Moved::search_failed(from);
                 };
                 self.search_motion(buf, from, &last.text, dir, count)
@@ -951,20 +951,14 @@ impl Engine {
         let pat = match self.compiled(text) {
             Ok(p) => p,
             Err(atom) => {
-                self.note = Some(Note::Message(format!("pattern not supported: {atom}")));
+                self.note = Some(Note::Message(search::not_supported_note(&atom)));
                 return Moved::search_failed(from);
             }
         };
         match search::search(buf, from, dir, count, &pat) {
             Some((to, wrapped)) => {
                 if wrapped {
-                    self.note = Some(Note::Message(
-                        match dir {
-                            Dir::Forward => "search hit BOTTOM, continuing at TOP",
-                            Dir::Backward => "search hit TOP, continuing at BOTTOM",
-                        }
-                        .into(),
-                    ));
+                    self.note = Some(Note::Message(search::wrap_note(dir).into()));
                 }
                 // `normal_search()` ends with `check_cursor()`: a match on
                 // the line's end (`/$`) lands on the last char in Normal,
@@ -975,7 +969,7 @@ impl Engine {
                 Moved::to(self.clamped(buf, to), MKind::Exclusive, WantUpdate::Here)
             }
             None => {
-                self.note = Some(Note::Message(format!("Pattern not found: {text}")));
+                self.note = Some(Note::Message(search::not_found_note(text)));
                 Moved::search_failed(from)
             }
         }

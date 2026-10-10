@@ -359,7 +359,7 @@ fn cancel_top() -> Action {
 }
 
 fn fold_of(op: crate::action::FoldOp, n: Option<usize>) -> Action {
-    Action::TreeFold { op, count: n.unwrap_or(1).max(1) }
+    Action::TreeFold { op, count: count1(n) }
 }
 
 fn fold_open(n: Option<usize>) -> Action {
@@ -396,6 +396,30 @@ fn prev_match() -> Action {
 
 fn copy_header() -> Action {
     Action::CopyResponseHeader
+}
+
+fn count1(n: Option<usize>) -> usize {
+    n.unwrap_or(1).max(1)
+}
+
+fn find_n(n: Option<usize>) -> Action {
+    Action::ResponseFind(crate::action::ResponseFind::Next { reverse: false, count: count1(n) })
+}
+
+fn find_shift_n(n: Option<usize>) -> Action {
+    Action::ResponseFind(crate::action::ResponseFind::Next { reverse: true, count: count1(n) })
+}
+
+fn find_star(n: Option<usize>) -> Action {
+    Action::ResponseFind(crate::action::ResponseFind::Word { backward: false, count: count1(n) })
+}
+
+fn find_hash(n: Option<usize>) -> Action {
+    Action::ResponseFind(crate::action::ResponseFind::Word { backward: true, count: count1(n) })
+}
+
+fn response_search_back() -> Action {
+    Action::OpenResponseSearchBack
 }
 
 /// A count as a line distance: no count is one.
@@ -516,11 +540,18 @@ pub static TABLE: &[Binding] = &[
     row("a", Surfaces::URL_LINE, Intent::Open { key: ENTER, seat: OpenSeat::After }, CountRule::Ignore),
     row("I", Surfaces::URL_LINE, Intent::Open { key: ENTER, seat: OpenSeat::FirstNonBlank }, CountRule::Ignore),
     row("A", Surfaces::URL_LINE, Intent::Open { key: ENTER, seat: OpenSeat::End }, CountRule::Ignore),
-    // Key list §7 and spec §4.5 (plan M4a Deviation 11): the response's
-    // letters, the same in both profiles; arrows' `c` copies a header.
+    // Key list §7 and spec §4.5 (plan M4a Deviation 11): `/` is the same in
+    // both profiles. Vim's `n` `N` are counted and follow `?`/`#`'s
+    // direction; arrows' step down and up, as the ▼/▲ buttons do (plan M5a
+    // Deviation 10). `?`, `*` and `#` are vim's. Arrows' `c` copies a header.
     both("/", Surfaces::RESPONSE, Intent::Act(response_search)),
-    both("n", Surfaces::RESPONSE, Intent::Act(next_match)),
-    both("N", Surfaces::RESPONSE, Intent::Act(prev_match)),
+    arrows("n", Surfaces::RESPONSE, Intent::Act(next_match)),
+    arrows("N", Surfaces::RESPONSE, Intent::Act(prev_match)),
+    row("n", Surfaces::RESPONSE, Intent::Counted(find_n), CountRule::Pass),
+    row("N", Surfaces::RESPONSE, Intent::Counted(find_shift_n), CountRule::Pass),
+    row("*", Surfaces::RESPONSE, Intent::Counted(find_star), CountRule::Pass),
+    row("#", Surfaces::RESPONSE, Intent::Counted(find_hash), CountRule::Pass),
+    row("?", Surfaces::RESPONSE, Intent::Act(response_search_back), CountRule::Ignore),
     arrows("c", Surfaces::RESPONSE, Intent::Act(copy_header)),
     // Key list §6, Out (parked by the user): a list has no search yet.
     row("/", Surfaces::SEARCHLESS, Intent::Note("No search in this list yet"), CountRule::Ignore),

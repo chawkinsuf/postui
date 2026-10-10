@@ -22720,6 +22720,28 @@ fn esc_in_the_tree_dismisses_selection_and_search_but_never_the_filter() {
     assert_eq!(app.session.response.view().unwrap().view_text(), "2");
 }
 
+/// Amendment A5.4 (the user's decision, 2026-10-10): with no search,
+/// arrows' `n` and `N` do nothing, as on main, while vim's say Vim's E35.
+/// A search's miss toasts its note in both profiles, at the key's event
+/// boundary (plan M5a Deviation 4).
+#[test]
+fn the_response_search_notes_toast_by_profile() {
+    use crate::config::KeyProfile::{Arrows, Vim};
+    const E35: &str = "No previous regular expression";
+    for profile in [Arrows, Vim] {
+        let mut app = App::new_for_test();
+        app.use_profile(profile);
+        ready_response(&mut app, r#"{"a": 1}"#);
+        app.focus = PaneId::Response;
+        super::key_matrix_tests::feed(&mut app, "nN");
+        let e35 = app.toasts.messages().contains(&E35);
+        assert_eq!(e35, profile == Vim, "{profile:?}: {:?}", app.toasts.messages());
+        assert_eq!(app.session.response.view().unwrap().cursor, 0, "{profile:?}");
+        super::key_matrix_tests::feed(&mut app, "/zzz<CR>");
+        assert!(app.toasts.messages().contains(&"Pattern not found: zzz"), "{profile:?}: {:?}", app.toasts.messages());
+    }
+}
+
 #[test]
 fn esc_after_a_tee_up_keeps_it_and_ctrl_z_is_what_walks_it_back() {
     let mut app = App::new_for_test();

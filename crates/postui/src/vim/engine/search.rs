@@ -25,6 +25,32 @@ impl Dir {
     }
 }
 
+/// A search's messages, in Vim's words: the body's search and the
+/// response's say them alike (plan M5a amendment A5.3). Vim's E35: `n`, or
+/// an empty `/`, with no last pattern.
+pub(crate) const NO_PREVIOUS_PATTERN: &str = "No previous regular expression";
+/// `*` or `#` on a line with nothing to take.
+pub(crate) const NO_STRING_UNDER_CURSOR: &str = "No string under cursor";
+
+/// The note a search that wrapped leaves, by its direction.
+pub(crate) fn wrap_note(dir: Dir) -> &'static str {
+    match dir {
+        Dir::Forward => "search hit BOTTOM, continuing at TOP",
+        Dir::Backward => "search hit TOP, continuing at BOTTOM",
+    }
+}
+
+/// The note a search that found nothing leaves.
+pub(crate) fn not_found_note(pat: &str) -> String {
+    format!("Pattern not found: {pat}")
+}
+
+/// The note for a pattern with an atom outside the subset ([`compile`]'s
+/// `Err`).
+pub(crate) fn not_supported_note(atom: &str) -> String {
+    format!("pattern not supported: {atom}")
+}
+
 /// Word start (`\<`), word end (`\>`), both. Private-use chars that stand
 /// in the haystack before the position they describe.
 const BOW: char = '\u{E000}';

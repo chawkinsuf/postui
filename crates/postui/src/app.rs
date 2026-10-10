@@ -3122,9 +3122,20 @@ impl App {
             }
             Action::GoTab { to } => self.go_tab(to, true, true),
             Action::OpenResponseSearch => {
-                self.update(Action::FocusPane(PaneId::Response));
-                self.session.response.open_search();
-                true
+                let focused = self.update(Action::FocusPane(PaneId::Response));
+                let syntax = crate::components::response::SearchSyntax::of(self.profile());
+                self.session.response.open_search(syntax, false) || focused
+            }
+            Action::OpenResponseSearchBack => {
+                let focused = self.update(Action::FocusPane(PaneId::Response));
+                let syntax = crate::components::response::SearchSyntax::of(self.profile());
+                self.session.response.open_search(syntax, true) || focused
+            }
+            Action::ResponseFind(crate::action::ResponseFind::Next { reverse, count }) => {
+                self.session.response.find_next(reverse, count)
+            }
+            Action::ResponseFind(crate::action::ResponseFind::Word { backward, count }) => {
+                self.session.response.find_word(backward, count)
             }
             Action::StepResponseSearch(delta) => self.session.response.step_search(delta.into()),
             Action::CopyResponseHeader => match self.session.response.copyable_header_row() {
@@ -10117,6 +10128,17 @@ impl App {
         );
     }
 
+    /// The response search's note (a wrap, a miss), toasted once at the
+    /// event boundary, as Vim's message line shows it (plan M5a
+    /// Deviation 4). Whether one was toasted: a miss changes nothing else,
+    /// so the frame needs redrawing for the toast alone.
+    fn toast_response_note(&mut self) -> bool {
+        match self.session.response.take_note() {
+            Some(note) => self.update(Action::ShowToast(note, ToastKind::Info)),
+            None => false,
+        }
+    }
+
     /// Central key router. Order (each step tested):
     /// 1. A CTRL/ALT combo the keymap maps to Quit pre-empts everything,
     ///    including open modals — ctrl+c must always quit.
@@ -10167,12 +10189,13 @@ impl App {
         // per action: a key handled without an action (a var-form or
         // grid commit) can bail between `begin_op` and its record.
         self.op_in_flight = false;
+        let noted = self.toast_response_note();
         self.arm_pending_toasts();
         // Not every key reaches `update` -- Esc on a modal just pops it
         // -- so the gate is re-checked at the event boundary too.
         let regated = self.reraise_startup_config_gate();
         let asked = self.raise_keymap_choice();
-        changed || regated || asked
+        changed || noted || regated || asked
     }
 
     fn route_key(&mut self, ev: KeyEvent) -> fields::Ran {

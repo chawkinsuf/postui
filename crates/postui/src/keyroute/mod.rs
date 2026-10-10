@@ -993,7 +993,9 @@ mod tests {
     }
 
     /// Spec §4.5 (plan M4a Deviation 11): the response's letters are rows in
-    /// both profiles; a vim count on them is ignored. The lists' `/` is a note.
+    /// both profiles. Vim's `n` `N` `*` `#` take a count and `?` searches
+    /// backward (plan M5a Task 5); arrows' `n` `N` step. The lists' `/` is a
+    /// note.
     #[test]
     fn the_response_letters_are_rows() {
         use crate::components::response::ViewMode;
@@ -1004,15 +1006,22 @@ mod tests {
         let search = run(vec![Step::Action(Action::OpenResponseSearch)]);
         let next = run(vec![Step::Action(Action::StepResponseSearch(1))]);
         let prev = run(vec![Step::Action(Action::StepResponseSearch(-1))]);
+        use crate::action::ResponseFind;
         for profile in [Vim, Arrows] {
             let resp = cx(profile, Surface::Response(ViewMode::Pretty));
             assert_eq!(feed(&mut Router::default(), &resp, "/"), search, "{profile:?}");
-            assert_eq!(feed(&mut Router::default(), &resp, "n"), next, "{profile:?}");
-            assert_eq!(feed(&mut Router::default(), &resp, "N"), prev, "{profile:?}");
         }
+        let arrows = cx(Arrows, Surface::Response(ViewMode::Pretty));
+        assert_eq!(feed(&mut Router::default(), &arrows, "n"), next);
+        assert_eq!(feed(&mut Router::default(), &arrows, "N"), prev);
         let resp = cx(Vim, Surface::Response(ViewMode::Headers));
-        assert_eq!(feed(&mut Router::default(), &resp, "3n"), next, "the count is ignored");
-        assert_eq!(feed(&mut Router::default(), &resp, "c"), Resolved::Consumed, "vim's c waits for M5's yy");
+        let find = |f| run(vec![Step::Action(Action::ResponseFind(f))]);
+        assert_eq!(feed(&mut Router::default(), &resp, "n"), find(ResponseFind::Next { reverse: false, count: 1 }));
+        assert_eq!(feed(&mut Router::default(), &resp, "3N"), find(ResponseFind::Next { reverse: true, count: 3 }));
+        assert_eq!(feed(&mut Router::default(), &resp, "2*"), find(ResponseFind::Word { backward: false, count: 2 }));
+        assert_eq!(feed(&mut Router::default(), &resp, "#"), find(ResponseFind::Word { backward: true, count: 1 }));
+        assert_eq!(feed(&mut Router::default(), &resp, "?"), run(vec![Step::Action(Action::OpenResponseSearchBack)]));
+        assert_eq!(feed(&mut Router::default(), &resp, "c"), Resolved::Consumed, "vim has no c");
         assert_eq!(
             feed(&mut Router::default(), &cx(Arrows, Surface::Response(ViewMode::Headers)), "c"),
             run(vec![Step::Action(Action::CopyResponseHeader)])
