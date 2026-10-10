@@ -9257,6 +9257,50 @@ fn the_response_v_selection_ends_on_any_focus_move_in_vim_only() {
             assert_eq!(app.mode_indicator(), Some("NORMAL"), "back on the response, V is over");
         }
     }
+    // The jq bar taking the caret leaves the window too, though the focus
+    // stays on the response pane: a caret key there ends V.
+    let mut app = App::new_for_test();
+    app.use_profile(KeyProfile::Vim);
+    ready_response(&mut app, r#"{"a": 1, "b": 2}"#);
+    app.focus = PaneId::Response;
+    app.update(Action::Render);
+    app.handle_key(KeyEvent::new(KeyCode::Char('V'), KeyModifiers::SHIFT));
+    assert!(app.session.response.line_selection());
+    app.update(Action::OpenJqBar);
+    app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+    assert!(app.session.response.jq_focused());
+    assert!(!app.session.response.line_selection(), "the jq bar ended V");
+}
+
+/// Vim has one last search pattern for every window (the user's decision,
+/// 2026-10-10): `/` in the body is `n`'s in the response, a response search
+/// is the body's `n`, and it turns the body's highlight back on, as Vim's
+/// `hlsearch` shows the last pattern everywhere.
+#[test]
+fn the_body_and_the_response_share_vims_last_pattern() {
+    use super::key_matrix_tests::{Fixture, build, draw, feed};
+    let mut app = build(Fixture::Body);
+    app.editor.set_body_text("a b\nb a");
+    app.use_profile(crate::config::KeyProfile::Vim);
+    draw(&mut app);
+    feed(&mut app, "/a<CR>:noh<CR>");
+    assert_eq!(app.glue.last_pattern(), Some(("a", false)));
+    assert!(!app.glue.hlsearch());
+    ready_response(&mut app, "x\nb\na\nb");
+    app.focus = PaneId::Response;
+    feed(&mut app, "n");
+    assert_eq!(app.session.response.view().unwrap().cursor, 2, "the response's n finds the body's /a");
+    feed(&mut app, "?b<CR>");
+    assert_eq!(app.session.response.view().unwrap().cursor, 1);
+    assert_eq!(app.glue.last_pattern(), Some(("b", true)), "the response's ?b is the engine's");
+    assert!(app.glue.hlsearch(), "and the body's highlight is back on");
+    app.focus = PaneId::Editor;
+    feed(&mut app, "n");
+    assert_eq!(
+        (app.editor.body.cursor.row, app.editor.body.cursor.col),
+        (1, 0),
+        "the body's n follows the response's ?b: back from the a on row 1"
+    );
 }
 
 /// Task 6 fix round 1 (the controller's ruling; probe R6f): with vim's V up

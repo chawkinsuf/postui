@@ -10155,6 +10155,20 @@ impl App {
         }
     }
 
+    /// Vim has one last search pattern for every window, so the response's
+    /// and the text engine's are kept one at the event boundary: a search
+    /// the response ran goes to the engine that holds the pattern (a
+    /// dialog's while one has a session, as the registers go), otherwise
+    /// the response takes the engine's, which a field's search may have
+    /// changed (the user's decision, 2026-10-10).
+    pub(super) fn sync_last_pattern(&mut self) {
+        let glue = if self.modal_session.is_some() { &mut self.modal_glue } else { &mut self.glue };
+        match self.session.response.take_last_search() {
+            Some((query, backward)) => glue.set_last_pattern(query, backward),
+            None => self.session.response.adopt_last_search(glue.last_pattern()),
+        }
+    }
+
     /// Central key router. Order (each step tested):
     /// 1. A CTRL/ALT combo the keymap maps to Quit pre-empts everything,
     ///    including open modals — ctrl+c must always quit.
@@ -10206,6 +10220,7 @@ impl App {
         // grid commit) can bail between `begin_op` and its record.
         self.op_in_flight = false;
         let ended = self.end_visual_off_response();
+        self.sync_last_pattern();
         let noted = self.toast_response_note();
         self.arm_pending_toasts();
         // Not every key reaches `update` -- Esc on a modal just pops it

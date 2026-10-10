@@ -17,13 +17,17 @@ impl App {
 
     /// Vim leaves Visual whenever the window changes (plan M5a Task 6): in
     /// the vim profile, a V selection on the response ends once the
-    /// keyboard is anywhere else, by a window key, a click, the palette or
-    /// another screen. Run at the boundary of each input event, so every
-    /// way of leaving counts. A drag's character selection is not Visual,
-    /// and an arrows shift selection is a GUI one: both stay, as on main.
-    /// Whether it ended one.
+    /// keyboard is anywhere else, by a window key, a click, a palette
+    /// command that moves focus, another screen, or the jq bar taking the
+    /// caret. Run at the boundary of each input event, so every way of
+    /// leaving counts. A dialog or the palette over the response leaves it
+    /// up: their commands act on the selection (copy, extract). A drag's
+    /// character selection is not Visual, and an arrows shift selection is
+    /// a GUI one: both stay, as on main. Whether it ended one.
     pub(super) fn end_visual_off_response(&mut self) -> bool {
-        let away = self.screen != Screen::Main || self.focus != PaneId::Response;
+        let away = self.screen != Screen::Main
+            || self.focus != PaneId::Response
+            || self.session.response.jq_focused();
         if !(away && self.profile() == crate::config::KeyProfile::Vim && self.session.response.line_selection()) {
             return false;
         }

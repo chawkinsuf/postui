@@ -100,6 +100,26 @@ pub struct SearchState {
     pub backward: bool,
     pub matches: Vec<(usize, usize, usize)>,
     pub current: usize,
+    /// Why `query` found nothing to search with: a Vim pattern outside the
+    /// engine's subset. `n` says it again, as Vim's `n` repeats E54.
+    pub error: Option<String>,
+}
+
+impl SearchState {
+    /// The box, open for typing.
+    fn open(syntax: SearchSyntax, backward: bool) -> Self {
+        Self::with(LineInput::new(""), true, String::new(), syntax, backward)
+    }
+
+    /// A search for `query` that needs no typing (`*`, `n` after Esc),
+    /// its matches still to compute.
+    fn committed(query: String, syntax: SearchSyntax, backward: bool) -> Self {
+        Self::with(LineInput::new(&query), false, query, syntax, backward)
+    }
+
+    fn with(input: LineInput, active: bool, query: String, syntax: SearchSyntax, backward: bool) -> Self {
+        Self { input, active, query, syntax, backward, matches: Vec::new(), current: 0, error: None }
+    }
 }
 
 /// Menu mode's candidate row: the text the completion was applied to,
@@ -635,12 +655,6 @@ pub struct ReadyView {
     /// that lands sets `(line, column)` of its match, in search-corpus
     /// lines; any cursor move forgets it ([`ReadyView::cursor_moved`]).
     at_col: Option<(usize, usize)>,
-    /// Vim's last pattern (as stored, see [`SearchState::query`]) and
-    /// whether it went backward, set by vim's `/` `?` `*` `#`. An empty `/`
-    /// Enter searches it again, and so does `n` once Esc has cleared the
-    /// search: Esc never forgets it, as in Vim (the user's decision,
-    /// 2026-10-10).
-    last_search: Option<(String, bool)>,
     /// A note for the app to toast (Vim's message line): a wrap, a miss.
     note: Option<String>,
     /// Width of the body viewport as of the last draw — the horizontal
@@ -669,9 +683,11 @@ pub struct ReadyView {
     /// sweeps extend by whole words from this span instead of by cells.
     /// Cleared by any single click (`clear_sel`).
     sel_word_anchor: Option<((usize, usize), (usize, usize))>,
-    /// The selection is whole lines (vim's `V`, shift+↑/↓): the response's
-    /// V surface (plan M5a Deviation 11). A drag's character selection is not.
-    line_sel: bool,
+    /// While the selection is whole lines (vim's `V`, shift+↑/↓: the
+    /// response's V surface, plan M5a Deviation 11), the buffer line it
+    /// started on, so a fold a motion opens above it never moves it. A
+    /// drag's character selection has none.
+    line_anchor: Option<usize>,
     /// The cached parse of the response body for jq to run filters
     /// against — built lazily (a sync run parses it the first time it's
     /// needed) or handed back from a background run.
@@ -799,7 +815,6 @@ impl ReadyView {
             scroll_opt: None,
             fold_line: None,
             at_col: None,
-            last_search: None,
             note: None,
             width: 40,
             content_width: None,
@@ -807,7 +822,7 @@ impl ReadyView {
             sel_anchor: None,
             sel: None,
             sel_word_anchor: None,
-            line_sel: false,
+            line_anchor: None,
             jq_doc: None,
             jq_tree: None,
             jq_applied: None,
@@ -866,15 +881,7 @@ impl ReadyView {
     }
 
     fn open_search(&mut self, syntax: SearchSyntax, backward: bool) {
-        self.search = Some(SearchState {
-            input: LineInput::new(""),
-            active: true,
-            query: String::new(),
-            syntax,
-            backward,
-            matches: Vec::new(),
-            current: 0,
-        });
+        self.search = Some(SearchState::open(syntax, backward));
     }
 
     /// The text of search-corpus line `line` (the expanded tree line on
@@ -1263,10 +1270,12 @@ impl ReadyView {
                     let pat = match compile(&query) {
                         Ok(p) => p,
                         Err(atom) => {
+                            let note = not_supported_note(&atom);
                             let search = self.search.as_mut().expect("checked above");
                             search.matches.clear();
                             search.current = 0;
-                            return Some(not_supported_note(&atom));
+                            search.error = Some(note.clone());
+                            return Some(note);
                         }
                     };
                     for (i, line) in corpus.iter().enumerate() {
@@ -1279,6 +1288,7 @@ impl ReadyView {
         let search = self.search.as_mut().expect("checked above");
         search.matches = matches;
         search.current = 0;
+        search.error = None;
         None
     }
 
@@ -1315,15 +1325,14 @@ impl ReadyView {
     /// Lands on match `current`, expanding whatever containers hide it, and
     /// remembers its column. A jump like any other: a line selection drops,
     /// except vim's V, which a search extends as Vim's Visual does (the
-    /// user's decision, 2026-10-10). Its anchor is held by buffer line, so
-    /// a fold the landing opens above it does not move it.
+    /// user's decision, 2026-10-10). Its anchor is a buffer line, so a fold
+    /// the landing opens above it does not move it.
     fn jump_to_match(&mut self) {
         let Some(search) = &self.search else { return };
         let Some(&(line, start, _)) = search.matches.get(search.current) else {
             return;
         };
-        let keep = self.line_sel && search.syntax == SearchSyntax::Vim;
-        let anchor = self.sel_anchor.filter(|_| keep).map(|(row, _)| self.row_to_line(row));
+        let anchor = self.line_anchor.filter(|_| search.syntax == SearchSyntax::Vim);
         let at = match (self.mode, self.active_tree_mut()) {
             (ViewMode::Pretty, Some(tree)) => {
                 tree.expand_ancestors(line);
@@ -1333,8 +1342,7 @@ impl ReadyView {
         };
         self.jump_cursor(at);
         if let Some(anchor) = anchor {
-            let row = self.line_to_row(anchor);
-            self.set_line_sel(row);
+            self.select_lines_from(anchor);
         }
         self.at_col = Some((line, start));
     }
@@ -1349,10 +1357,11 @@ impl ReadyView {
         }
     }
 
-    /// [`Self::row_to_line`] back: the row showing a line that is visible.
+    /// [`Self::row_to_line`] back: the row showing `line`, or the closed
+    /// fold's row that hides it.
     fn line_to_row(&self, line: usize) -> usize {
         match (self.mode, self.active_tree()) {
-            (ViewMode::Pretty, Some(tree)) => tree.visible_index_of(line).unwrap_or(0),
+            (ViewMode::Pretty, Some(tree)) => tree.holder(line).unwrap_or(0),
             _ => line,
         }
     }
@@ -1367,6 +1376,9 @@ impl ReadyView {
         use crate::vim::engine::{Dir, not_found_note, wrap_note};
         let (line, col) = self.search_from(backward);
         let search = self.search.as_ref()?;
+        if let Some(error) = &search.error {
+            return Some(error.clone());
+        }
         let matches = &search.matches;
         if matches.is_empty() {
             return Some(not_found_note(&search.query));
@@ -1399,8 +1411,11 @@ impl ReadyView {
     /// in both profiles: Vim's Esc cancels, and main ran nothing (the
     /// controller's ruling). Otherwise an empty Vim box takes the last
     /// query, as Vim's `/` Enter does, and says Vim's E35 when there is
-    /// none (probe E1); an empty arrows box finds nothing, as on main.
-    fn commit_search(&mut self, esc: bool) {
+    /// none (probe E1); an empty arrows box finds nothing, as on main. A
+    /// Vim pattern becomes the last one before it compiles, as Vim's
+    /// `do_search()` stores it, so one outside the engine's subset is kept
+    /// too and `n` says why again (probed: `/\(` then `n` repeats E54).
+    fn commit_search(&mut self, esc: bool, last: &mut LastPattern) {
         use crate::vim::engine::{Dir, as_stored};
         let Some(search) = self.search.as_mut() else { return };
         search.active = false;
@@ -1415,45 +1430,34 @@ impl ReadyView {
         let vim = search.syntax == SearchSyntax::Vim;
         let dir = if search.backward { Dir::Backward } else { Dir::Forward };
         search.query = match (vim, typed.is_empty()) {
-            (true, true) => self.last_search.as_ref().map(|(q, _)| q.clone()).unwrap_or_default(),
+            (true, true) => last.pattern.as_ref().map(|(q, _)| q.clone()).unwrap_or_default(),
             (true, false) => as_stored(&typed, dir),
             (false, _) => typed,
         };
         let (query, backward) = (search.query.clone(), search.backward);
+        if vim && !query.is_empty() {
+            last.set(query.clone(), backward);
+        }
         self.note = match self.recompute_matches() {
             Some(note) => Some(note),
             None if query.is_empty() => vim.then(|| crate::vim::engine::NO_PREVIOUS_PATTERN.to_string()),
-            None => {
-                // Only a pattern that compiled is kept for later.
-                if vim {
-                    self.last_search = Some((query, backward));
-                }
-                self.land_match(backward, 1)
-            }
+            None => self.land_match(backward, 1),
         };
     }
 
-    /// Puts vim's last pattern back as the search, in its direction, when
-    /// Esc has cleared it: `n` and `N` then go on as Vim's do.
-    fn restore_last_search(&mut self) {
-        let Some((query, backward)) = self.last_search.clone() else { return };
-        self.search = Some(SearchState {
-            input: LineInput::new(""),
-            active: false,
-            query,
-            syntax: SearchSyntax::Vim,
-            backward,
-            matches: Vec::new(),
-            current: 0,
-        });
-        // The pattern compiled when it was searched, so there is no note.
+    /// Makes vim's last pattern the search, in its direction: after Esc
+    /// cleared the search, or once a search elsewhere replaced the pattern.
+    /// `n` and `N` then go on as Vim's do.
+    fn restore_search(&mut self, query: String, backward: bool) {
+        self.search = Some(SearchState::committed(query, SearchSyntax::Vim, backward));
+        // A pattern that does not compile keeps its note for `n` to say.
         self.recompute_matches();
     }
 
     /// Vim's `*` and `#` (plan M5a Task 5): the keyword under or after the
     /// cursor's column, else the non-blank string there, searched as a Vim
     /// pattern whatever the profile. Whether a search ran.
-    fn star(&mut self, backward: bool, count: usize) -> bool {
+    fn star(&mut self, backward: bool, count: usize, last: &mut LastPattern) -> bool {
         use crate::vim::engine::{Dir, NO_STRING_UNDER_CURSOR, as_stored, find_ident, ident_pattern};
         let (line, col) = self.search_pos();
         let Some(text) = self.buffer_line(line) else {
@@ -1466,20 +1470,12 @@ impl ReadyView {
         };
         let dir = if backward { Dir::Backward } else { Dir::Forward };
         let pat = as_stored(&ident_pattern(&chars, start, end, backward), dir);
-        self.search = Some(SearchState {
-            input: LineInput::new(&pat),
-            active: false,
-            query: pat.clone(),
-            syntax: SearchSyntax::Vim,
-            backward,
-            matches: Vec::new(),
-            current: 0,
-        });
+        self.search = Some(SearchState::committed(pat.clone(), SearchSyntax::Vim, backward));
+        last.set(pat, backward);
         if let Some(note) = self.recompute_matches() {
             self.note = Some(note);
             return false;
         }
-        self.last_search = Some((pat, backward));
         // Vim searches from the word's start, so the word itself is skipped.
         self.at_col = Some((line, start));
         self.note = self.land_match(backward, count);
@@ -1591,7 +1587,12 @@ impl ReadyView {
         self.sel = None;
         self.sel_anchor = None;
         self.sel_word_anchor = None;
-        self.line_sel = false;
+        self.line_anchor = None;
+    }
+
+    /// The row the V anchor's buffer line shows on now.
+    fn line_anchor_row(&self) -> Option<usize> {
+        self.line_anchor.map(|line| self.line_to_row(line))
     }
 
     /// The inclusive cell span a double click at cell `(line, col)`
@@ -1604,18 +1605,24 @@ impl ReadyView {
         Some(((line, s), (line, e - 1)))
     }
 
-    /// A line selection from `anchor` to the cursor's line, every line
-    /// between covered in full.
+    /// A line selection from visible row `anchor` to the cursor's line.
     fn set_line_sel(&mut self, anchor: usize) {
-        self.sel_anchor = Some((anchor, 0));
+        self.select_lines_from(self.row_to_line(anchor));
+    }
+
+    /// A line selection from buffer line `anchor` (the row showing it now)
+    /// to the cursor's line, every line between covered in full.
+    fn select_lines_from(&mut self, anchor: usize) {
+        self.line_anchor = Some(anchor);
+        let row = self.line_to_row(anchor);
+        self.sel_anchor = Some((row, 0));
         let cl = self.cursor;
         let len = |v: &Self, l: usize| v.display_line_text(l).map_or(0, |t| t.chars().count());
-        self.sel = Some(if cl >= anchor {
-            ((anchor, 0), (cl, len(self, cl).saturating_sub(1)))
+        self.sel = Some(if cl >= row {
+            ((row, 0), (cl, len(self, cl).saturating_sub(1)))
         } else {
-            ((anchor, len(self, anchor).saturating_sub(1)), (cl, 0))
+            ((row, len(self, row).saturating_sub(1)), (cl, 0))
         });
-        self.line_sel = true;
     }
 
     /// A motion that keeps the selection's anchor (vim's V, shift+↑/↓):
@@ -1625,12 +1632,20 @@ impl ReadyView {
     /// started on, as on main (amendment A6.1, the user's decision); with
     /// no selection, the cursor's line. A window key that pulls an
     /// off-screen cursor to the view's edge takes the moving end with it
-    /// (amendment A6.5).
+    /// (amendment A6.5). The anchor is held by buffer line across the
+    /// motion, so a fold the motion opens or closes never moves it.
     fn extend(&mut self, m: ResponseMotion) {
-        let anchor = self.sel_anchor.map_or(self.cursor, |(l, _)| l);
+        let len = self.visible_len();
+        if len == 0 {
+            self.motion(m);
+            return;
+        }
+        let anchor = self
+            .line_anchor
+            .unwrap_or_else(|| self.row_to_line(self.sel_anchor.map_or(self.cursor, |(l, _)| l).min(len - 1)));
         self.motion(m);
         if self.visible_len() > 0 {
-            self.set_line_sel(anchor.min(self.visible_len() - 1));
+            self.select_lines_from(anchor);
         }
     }
 
@@ -1672,14 +1687,13 @@ impl ReadyView {
         if len == 0 {
             return None;
         }
-        let (lo, hi) = if self.line_sel {
-            let a = self.sel_anchor.map_or(self.cursor, |(l, _)| l);
-            (a.min(self.cursor), a.max(self.cursor))
-        } else {
-            (self.cursor, self.cursor.saturating_add(count.unwrap_or(1).max(1) - 1).min(len - 1))
+        let anchor = self.line_anchor_row();
+        let (lo, hi) = match anchor {
+            Some(a) => (a.min(self.cursor), a.max(self.cursor)),
+            None => (self.cursor, self.cursor.saturating_add(count.unwrap_or(1).max(1) - 1).min(len - 1)),
         };
         let lines = (lo..=hi).flat_map(|row| self.buffer_lines_of(row)).collect();
-        if !self.line_sel && lo == self.cursor && self.fold_line.is_none() {
+        if anchor.is_none() && lo == self.cursor && self.fold_line.is_none() {
             self.clear_sel();
         } else {
             self.jump_cursor(lo);
@@ -1690,7 +1704,7 @@ impl ReadyView {
     /// `o` in V: the cursor and the anchor trade ends. A cursor that moves
     /// forgets its hidden line and column (amendment A6.4).
     fn swap_ends(&mut self) {
-        let Some((anchor, _)) = self.sel_anchor.filter(|_| self.line_sel) else { return };
+        let Some(anchor) = self.line_anchor_row() else { return };
         let cursor = self.cursor;
         if anchor != cursor {
             self.cursor_moved();
@@ -1793,6 +1807,30 @@ pub struct Response {
     /// the panes have drawn and places the cursor only when no modal
     /// covers the bar.
     jq_caret: Option<Position>,
+    /// Vim's last pattern, which outlives a new response.
+    last_search: LastPattern,
+}
+
+/// Vim's last pattern as the response sees it: the pattern (as stored,
+/// see [`SearchState::query`]) and whether it went backward. Vim has one
+/// for every window, so the app keeps it equal to the text engine's
+/// ([`Response::take_last_search`], [`Response::adopt_last_search`] at
+/// each input event's end). An empty `/` Enter searches it again, and so
+/// does `n` once Esc has cleared the search: Esc never forgets it, as in
+/// Vim (the user's decision, 2026-10-10).
+#[derive(Default)]
+struct LastPattern {
+    pattern: Option<(String, bool)>,
+    /// A search here set `pattern`: the app gives it to the engine.
+    set: bool,
+}
+
+impl LastPattern {
+    /// A search here made `query` the last pattern.
+    fn set(&mut self, query: String, backward: bool) {
+        self.pattern = Some((query, backward));
+        self.set = true;
+    }
 }
 
 impl Response {
@@ -2768,7 +2806,7 @@ impl Response {
         match view.search.as_ref() {
             None => false,
             Some(s) if s.active => {
-                view.commit_search(false);
+                view.commit_search(false, &mut self.last_search);
                 true
             }
             Some(s) if s.query.is_empty() => false,
@@ -2779,28 +2817,65 @@ impl Response {
         }
     }
 
-    /// Vim's `n` and `N` (plan M5a Deviation 10): `count` hits in the last
-    /// search's direction, `N` against it. With the search cleared by Esc,
-    /// vim's last pattern comes back first; with none, Vim's E35 (probe E6).
+    /// Vim's `n` and `N` (plan M5a Deviation 10): `count` hits of vim's
+    /// last pattern in its direction, `N` against it. Unless the search on
+    /// screen is that pattern (Esc cleared it, or it is an arrows one),
+    /// the pattern comes back first; with none, Vim's E35 (probe E6). A box
+    /// still being typed in is committed instead, as [`Self::step_search`]
+    /// does, so what was typed is never lost.
     pub fn find_next(&mut self, reverse: bool, count: usize) -> bool {
         let Some(view) = self.view.as_mut() else {
             return false;
         };
-        let live = |v: &ReadyView| v.search.as_ref().is_some_and(|s| !s.active && !s.query.is_empty());
-        if !live(view) {
-            view.restore_last_search();
+        if view.search.as_ref().is_some_and(|s| s.active) {
+            view.commit_search(false, &mut self.last_search);
+            return true;
         }
-        let Some(backward) = view.search.as_ref().filter(|_| live(view)).map(|s| s.backward ^ reverse) else {
+        let Some((query, backward)) = self.last_search.pattern.clone() else {
             view.note = Some(crate::vim::engine::NO_PREVIOUS_PATTERN.into());
             return false;
         };
-        view.note = view.land_match(backward, count);
+        let shown = view
+            .search
+            .as_ref()
+            .is_some_and(|s| s.syntax == SearchSyntax::Vim && s.query == query && s.backward == backward);
+        if !shown {
+            view.restore_search(query, backward);
+        }
+        view.note = view.land_match(backward ^ reverse, count);
         true
     }
 
     /// Vim's `*` and `#` (plan M5a Task 5).
     pub fn find_word(&mut self, backward: bool, count: usize) -> bool {
-        self.view.as_mut().is_some_and(|view| view.star(backward, count))
+        self.view.as_mut().is_some_and(|view| view.star(backward, count, &mut self.last_search))
+    }
+
+    /// The last pattern a search here set since the app last asked, for
+    /// the text engine: Vim has one for every window.
+    pub fn take_last_search(&mut self) -> Option<(String, bool)> {
+        std::mem::take(&mut self.last_search.set).then(|| self.last_search.pattern.clone()).flatten()
+    }
+
+    /// The text engine's last pattern, at each input event's end: a search
+    /// in a field may have replaced it. A committed vim search on screen
+    /// becomes the new pattern, as Vim's highlight shows the last pattern
+    /// in every window; a box being typed in, an arrows search, or none
+    /// (after Esc) stay as they are, and `n` takes the pattern up.
+    pub fn adopt_last_search(&mut self, pattern: Option<(&str, bool)>) {
+        let Some((query, backward)) = pattern else { return };
+        if self.last_search.pattern.as_ref().is_some_and(|(q, b)| q == query && *b == backward) {
+            return;
+        }
+        self.last_search.pattern = Some((query.to_string(), backward));
+        if let Some(view) = self.view.as_mut()
+            && view
+                .search
+                .as_ref()
+                .is_some_and(|s| !s.active && s.syntax == SearchSyntax::Vim && !s.query.is_empty())
+        {
+            view.restore_search(query.to_string(), backward);
+        }
     }
 
     /// The note a search left for the app to toast, once.
@@ -2854,7 +2929,7 @@ impl Response {
 
     /// Whether a line selection is up: the response's V surface.
     pub fn line_selection(&self) -> bool {
-        self.view.as_ref().is_some_and(|v| v.line_sel)
+        self.view.as_ref().is_some_and(|v| v.line_anchor.is_some())
     }
 
     /// A motion in V (plan M5a Deviation 11).
@@ -3144,8 +3219,8 @@ impl Response {
         // what clears it.
         if view.search.as_ref().is_some_and(|s| s.active) {
             match ev.code {
-                KeyCode::Enter => view.commit_search(false),
-                KeyCode::Esc => view.commit_search(true),
+                KeyCode::Enter => view.commit_search(false, &mut self.last_search),
+                KeyCode::Esc => view.commit_search(true, &mut self.last_search),
                 _ => {
                     let search = view.search.as_mut().expect("checked above");
                     search.input.handle_key(ev);
@@ -6815,6 +6890,86 @@ mod tests {
         typed(&mut r, "");
         assert_eq!(landed(&r), (0, Some((0, 0)), "x".into()), "and so does an empty /");
         assert_eq!(r.take_note().as_deref(), Some("search hit BOTTOM, continuing at TOP"));
+    }
+
+    /// Vim's `do_search()` stores a pattern before it compiles it, so one
+    /// outside the engine's subset is the last pattern too, and `n` says
+    /// why again, before Esc and after (probed: `/\(` then `n` repeats
+    /// E54): never "Pattern not found", and never an older pattern.
+    #[test]
+    fn an_unsupported_pattern_is_the_last_one_and_n_says_so_again() {
+        let mut r = ready("abc\nxyz\nabc");
+        r.open_search(SearchSyntax::Vim, false);
+        typed(&mut r, "abc");
+        r.take_note();
+        r.open_search(SearchSyntax::Vim, false);
+        typed(&mut r, r"a\{-}");
+        let note = r.take_note().unwrap_or_default();
+        assert!(note.starts_with("pattern not supported"), "{note}");
+        let cursor = r.view().unwrap().cursor;
+        assert!(r.find_next(false, 1));
+        assert_eq!(r.take_note().as_deref(), Some(note.as_str()), "n before Esc");
+        r.handle_key(key(KeyCode::Esc));
+        assert!(r.find_next(false, 1));
+        assert_eq!(r.take_note().as_deref(), Some(note.as_str()), "n after Esc, not the older abc");
+        assert_eq!(r.view().unwrap().cursor, cursor, "nothing moves");
+        assert_eq!(r.take_last_search(), Some((r"a\{-}".to_string(), false)), "for the engine too");
+    }
+
+    /// Vim has one last pattern, not one per response: it outlives a new
+    /// response landing (a re-send, another request), so `n` finds it there.
+    #[test]
+    fn the_last_pattern_outlives_a_new_response() {
+        let mut r = ready("x\ny\nx");
+        r.open_search(SearchSyntax::Vim, true);
+        typed(&mut r, "y");
+        r.set_state(ResponseState::Ready(Box::new(data("a\ny\nb\ny"))), 1);
+        assert!(r.find_next(false, 1));
+        assert_eq!(landed(&r), (3, Some((3, 0)), "y".into()), "`n` follows the `?`: backward, wrapping");
+    }
+
+    /// The app keeps the response's last pattern and the text engine's one
+    /// (`App::sync_last_pattern`): a search here is handed over once, and
+    /// a pattern searched in a field replaces a committed vim search on
+    /// screen, as Vim's highlight shows the last pattern in every window.
+    /// A box being typed in, or a search Esc cleared, stay as they are.
+    #[test]
+    fn the_last_pattern_is_handed_over_and_taken_up() {
+        let mut r = ready("x\ny\nx");
+        r.open_search(SearchSyntax::Vim, false);
+        typed(&mut r, "x");
+        assert_eq!(r.take_last_search(), Some(("x".to_string(), false)));
+        assert_eq!(r.take_last_search(), None, "once");
+        r.adopt_last_search(Some(("y", true)));
+        assert_eq!(r.take_last_search(), None, "the engine's is not handed back");
+        let s = r.view().unwrap().search.as_ref().unwrap();
+        assert_eq!((s.query.as_str(), s.backward, s.matches.len()), ("y", true, 1), "the highlight shows y");
+        r.open_search(SearchSyntax::Vim, false);
+        r.handle_key(ch('x'));
+        r.adopt_last_search(Some(("x", false)));
+        let s = r.view().unwrap().search.as_ref().unwrap();
+        assert!(s.active && s.input.text() == "x", "the box being typed in stays");
+        r.handle_key(key(KeyCode::Esc));
+        r.handle_key(key(KeyCode::Esc));
+        r.adopt_last_search(Some(("y", false)));
+        assert!(r.view().unwrap().search.is_none(), "a search Esc cleared stays cleared");
+        assert!(r.find_next(false, 1));
+        assert_eq!(landed(&r).2, "y", "and `n` takes the pattern up");
+    }
+
+    /// A route that runs vim's `n` while the box is still being typed in
+    /// (a palette or footer action) commits what was typed, as the ▼ step
+    /// does, rather than throwing it away for the old pattern.
+    #[test]
+    fn n_with_the_box_open_commits_what_was_typed() {
+        let mut r = ready("x\ny\nx\ny");
+        r.open_search(SearchSyntax::Vim, false);
+        typed(&mut r, "x");
+        r.open_search(SearchSyntax::Vim, false);
+        r.handle_key(ch('y'));
+        assert!(r.find_next(false, 1));
+        assert_eq!(landed(&r), (3, Some((3, 0)), "y".into()));
+        assert!(!r.view().unwrap().search.as_ref().unwrap().active);
     }
 
     /// The user's decision (2026-10-10, replacing plan M5a Deviation 13):
