@@ -62,6 +62,68 @@ fn enter_on_the_pinned_row_runs_it() {
     assert!(app.should_quit, "a clean request quits at once");
 }
 
+/// Plan M5b Deviation 18: `!` writes over a file changed outside the app
+/// with no dialog, as Vim's `:w!` and `:wq!` do; without it the drift
+/// dialog asks, as before. The disk holds the app's content afterwards.
+#[test]
+fn bang_writes_over_a_file_changed_outside() {
+    let outside = |app: &App| {
+        let slug = app.editor.slug.clone().expect("the fixture's request is saved");
+        let theirs = postui_core::model::HttpRequest::from_toml_str(r#"url = "https://x/outside""#).unwrap();
+        postui_core::fixtures::save_request(app.proj().root(), &slug, &theirs).unwrap();
+    };
+    let on_disk = |app: &App| {
+        let slug = app.editor.slug.clone().unwrap();
+        postui_core::fixtures::load_request(app.proj().root(), &slug).unwrap()
+    };
+    let mut app = vim(Fixture::TableThreeHeaders);
+    outside(&app);
+    feed(&mut app, ":wq<CR>");
+    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })), "the drift dialog");
+    assert!(!app.should_quit);
+    assert_eq!(on_disk(&app).url, "https://x/outside", "nothing written yet");
+    for q in [":wq!<CR>", ":x!<CR>"] {
+        let mut app = vim(Fixture::TableThreeHeaders);
+        outside(&app);
+        feed(&mut app, q);
+        assert!(app.modals.is_empty(), "{q}: no dialog");
+        assert!(!app.editor.is_dirty(), "{q}: written");
+        assert!(app.should_quit, "{q}");
+        assert_ne!(on_disk(&app).url, "https://x/outside", "{q}: the app's content is on disk");
+    }
+    let mut app = vim(Fixture::TableThreeHeaders);
+    outside(&app);
+    feed(&mut app, ":w!<CR>");
+    assert!(app.modals.is_empty());
+    assert!(!app.editor.is_dirty(), "written");
+    assert!(!app.should_quit, ":w! does not quit");
+    assert_ne!(on_disk(&app).url, "https://x/outside", "the app's content is on disk");
+}
+
+/// Plan M5b Deviation 18: on a clean request `:x!` quits without writing
+/// (a file changed outside stays as it is); a never-saved one asks for a
+/// name, as without `!`.
+#[test]
+fn bang_on_a_clean_or_never_saved_request() {
+    let mut app = vim(Fixture::SidebarThreeBetaOpen);
+    let slug = app.editor.slug.clone().expect("the fixture's request is saved");
+    let theirs = postui_core::model::HttpRequest::from_toml_str(r#"url = "https://x/outside""#).unwrap();
+    postui_core::fixtures::save_request(app.proj().root(), &slug, &theirs).unwrap();
+    feed(&mut app, ":x!<CR>");
+    assert!(app.should_quit, "a clean request quits at once");
+    assert_eq!(
+        postui_core::fixtures::load_request(app.proj().root(), &slug).unwrap().url,
+        "https://x/outside",
+        "nothing was written"
+    );
+    for q in [":wq!<CR>", ":w!<CR>"] {
+        let mut app = vim(Fixture::DirtyScratch);
+        feed(&mut app, q);
+        assert!(matches!(app.modals.top(), Some(Modal::Prompt { .. })), "{q}: Save as");
+        assert!(!app.should_quit, "{q}");
+    }
+}
+
 /// The final review's I-1: `:q` meets the dirty gate from every state the
 /// line opens from, a dialog under it included; ctrl+c keeps its modal
 /// exemption, and `:q!` is the line's way out.

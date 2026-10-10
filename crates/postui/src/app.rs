@@ -2959,6 +2959,30 @@ impl App {
                 }
                 self.apply(Action::SaveRequestThen(Box::new(Action::ForceQuit)))
             }
+            Action::ForceWrite { quit } => {
+                if quit && !self.editor_holds_unsaved() {
+                    return self.apply(Action::ForceQuit);
+                }
+                if self.editor.slug.is_none() {
+                    // No file to write over: Save as, as `:w` and `:wq` ask.
+                    return if quit {
+                        self.apply(Action::PromptSaveScratch(Box::new(Action::ForceQuit)))
+                    } else {
+                        self.apply(Action::SaveRequest)
+                    };
+                }
+                if self.refuse_without_project() {
+                    return true;
+                }
+                // A cell still under the caret is part of what is written.
+                self.commit_table_edit();
+                // The write without the drift check, as the drift dialog's
+                // Overwrite runs it; a failed write keeps the app open.
+                if self.force_save_request() && quit {
+                    return self.apply(Action::ForceQuit);
+                }
+                true
+            }
             Action::Tick => {
                 // Only a pointer actually over the sidebar edge-scrolls it:
                 // the response pane shares the list's bottom row, and a

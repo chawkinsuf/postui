@@ -116,6 +116,12 @@ pub enum Action {
     /// request has unsaved edits. A never-saved request asks for a name;
     /// a refused or cancelled save does not quit.
     WriteQuit,
+    /// `:w!` (`quit` false), and `:wq!` and `:x!` (piece 4 spec §5.9; plan
+    /// M5b Deviation 18): `SaveRequest` and `WriteQuit`, but a file changed
+    /// outside the app is written over without the drift dialog, as Vim's
+    /// `!` writes. A never-saved request asks for a name; a write that
+    /// fails does not quit.
+    ForceWrite { quit: bool },
     Tick,
     Render,
     FocusNext,
