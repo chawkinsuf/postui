@@ -556,6 +556,12 @@ pub static TABLE: &[Binding] = &[
     // component's named keys, which run the same `onepage()`.
     row("<PageDown>", Surfaces::RESPONSE_LINES, Intent::Extend(m_page_down), CountRule::Pass),
     row("<PageUp>", Surfaces::RESPONSE_LINES, Intent::Extend(m_page_up), CountRule::Pass),
+    // Vim's Enter in V moves down a line, counted, extending (probe R6f in
+    // the Task 6 review); Space is swallowed rather than toggling a fold
+    // under the selection (the controller's ruling). Arrows keeps main's
+    // Space and Enter: these are vim rows.
+    row("<CR>", Surfaces::RESPONSE_LINES, Intent::Extend(m_down), CountRule::Pass),
+    row("<Space>", Surfaces::RESPONSE_LINES, Intent::Swallow, CountRule::Ignore),
     row("zt", Surfaces::RESPONSE_LINES, Intent::Extend(m_top), CountRule::Pass),
     row("zz", Surfaces::RESPONSE_LINES, Intent::Extend(m_middle), CountRule::Pass),
     row("zb", Surfaces::RESPONSE_LINES, Intent::Extend(m_bottom), CountRule::Pass),
@@ -831,10 +837,11 @@ pub fn vim_first_chars() -> Vec<char> {
 
 /// Whether a digit builds a count on `surface` in the vim profile: a
 /// navigation surface (lists and panes) or the response's V, where some
-/// row repeats or reads one (plan M1 Deviation 22). The app-wide `u` and `ctrl+r` rows repeat
-/// on every surface, so the navigation filter keeps prompts, forms, the
-/// body and the testbed out. Which navigation surfaces qualify is
-/// derived from [`TABLE`], so it cannot drift from the rows.
+/// row repeats or reads one (plan M1 Deviation 22). The app-wide `u` and
+/// `ctrl+r` rows repeat on every surface, so the navigation filter keeps
+/// prompts, forms, the body and the testbed out. Which navigation
+/// surfaces qualify is derived from [`TABLE`], so it cannot drift from
+/// the rows.
 pub fn takes_count(surface: Surface) -> bool {
     Surfaces::KEYED.has(surface)
         && TABLE.iter().any(|b| {

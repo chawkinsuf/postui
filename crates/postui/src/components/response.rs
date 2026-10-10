@@ -1568,9 +1568,11 @@ impl ReadyView {
     /// `yy` (`count` rows from the cursor, clamped) or a V `y` (the
     /// selected rows): the lines, as Vim's buffer holds them. The selection
     /// ends and the cursor goes to the first line yanked, as Vim leaves
-    /// Visual (probes V1–V13). A yank from the cursor's own line keeps its
-    /// column (probe Y5, in the Task 6 report); one from a closed fold the
-    /// cursor is hidden in puts it on the fold's first line (Y8, Y10).
+    /// Visual (probes V1–V13). Only a `yy` from the cursor's own line keeps
+    /// its column (probe Y5, in the Task 6 report); a V `y` puts it in
+    /// column 0 even on the cursor's line (R6a, R6d), and a yank from a
+    /// closed fold the cursor is hidden in puts it on the fold's first line
+    /// (Y8, Y10).
     fn yank_rows(&mut self, count: Option<usize>) -> Option<Vec<String>> {
         let len = self.visible_len();
         if len == 0 {
@@ -1583,7 +1585,7 @@ impl ReadyView {
             (self.cursor, self.cursor.saturating_add(count.unwrap_or(1).max(1) - 1).min(len - 1))
         };
         let lines = (lo..=hi).flat_map(|row| self.buffer_lines_of(row)).collect();
-        if lo == self.cursor && self.fold_line.is_none() {
+        if !self.line_sel && lo == self.cursor && self.fold_line.is_none() {
             self.clear_sel();
         } else {
             self.jump_cursor(lo);
@@ -4996,9 +4998,10 @@ mod tests {
     }
 
     /// Where Vim leaves its cursor after a yank (probes Y5, Y8, Y9, Y10
-    /// in the Task 6 report): a `yy` on the cursor's own line keeps its
-    /// column, so a following `n` starts there; a yank of a closed fold
-    /// puts the cursor on the fold's first line, so `zR` shows it there.
+    /// in the Task 6 report, R6a and R6d in its review): a `yy` on the
+    /// cursor's own line keeps its column, so a following `n` starts
+    /// there; a V `y` goes to column 0; a yank of a closed fold puts the
+    /// cursor on the fold's first line, so `zR` shows it there.
     #[test]
     fn a_yank_leaves_the_cursor_where_vim_does() {
         use crate::action::{FoldOp, LinesOp};
@@ -5008,6 +5011,20 @@ mod tests {
         v.at_col = Some((4, 3));
         r.lines(LinesOp::Yank { count: Some(3) });
         assert_eq!(r.view().unwrap().at_col, Some((4, 3)), "Y5: yy keeps the column");
+        // R6a, R6d: a V `y` puts the cursor in column 0, even with the
+        // cursor on the selection's first line, so `n` finds the same match.
+        let body = (1..=30).map(|i| format!("line {i} line {i}")).collect::<Vec<_>>().join("\n");
+        let mut r = ready(&body);
+        r.view.as_mut().unwrap().height = 23;
+        assert!(r.open_search(SearchSyntax::Vim, false));
+        r.handle_key(ch('5'));
+        r.handle_key(key(KeyCode::Enter));
+        assert_eq!((r.view().unwrap().cursor, r.view().unwrap().at_col), (4, Some((4, 5))), "/5 lands");
+        r.lines(LinesOp::Start);
+        r.lines(LinesOp::Yank { count: None });
+        assert_eq!(r.view().unwrap().at_col, None, "R6a: V y drops the column");
+        assert!(r.find_next(false, 1));
+        assert_eq!((r.view().unwrap().cursor, r.view().unwrap().at_col), (4, Some((4, 5))), "R6d: n finds the same match");
         for v_line in [false, true] {
             let mut r = ready(r#"{"a": {"b": 1}, "c": 2}"#);
             render(&mut r);

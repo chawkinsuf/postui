@@ -1071,6 +1071,25 @@ mod tests {
         assert_eq!(feed(&mut Router::default(), &resp, "<PageDown>"), Resolved::Declined);
     }
 
+    /// Task 6 fix round 1 (the controller's ruling; probe R6f): in vim's V,
+    /// Enter extends down a line, counted, and Space is swallowed; arrows'
+    /// shift selection keeps main's Space and Enter, the component's.
+    #[test]
+    fn v_line_enter_extends_and_space_is_swallowed() {
+        use crate::action::ResponseMotion as M;
+        use crate::components::response::ViewMode;
+        let vis = cx(Vim, Surface::ResponseLines(ViewMode::Pretty));
+        let ext = |m| run(vec![Step::Action(Action::ResponseExtend(m))]);
+        assert_eq!(feed(&mut Router::default(), &vis, "<CR>"), ext(M::Lines(1)));
+        assert_eq!(feed(&mut Router::default(), &vis, "3<CR>"), ext(M::Lines(3)));
+        assert_eq!(feed(&mut Router::default(), &vis, "<Space>"), Resolved::Consumed);
+        let arrows = cx(Arrows, Surface::ResponseLines(ViewMode::Pretty));
+        assert_eq!(feed(&mut Router::default(), &arrows, "<CR>"), Resolved::Declined);
+        assert_eq!(feed(&mut Router::default(), &arrows, "<Space>"), Resolved::Declined);
+        let resp = cx(Vim, Surface::Response(ViewMode::Pretty));
+        assert_eq!(feed(&mut Router::default(), &resp, "<Space>"), Resolved::Declined, "the plain response's own key");
+    }
+
     /// Review Focus 4.
     #[test]
     fn counts_saturate() {

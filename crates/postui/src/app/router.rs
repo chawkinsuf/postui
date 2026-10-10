@@ -49,7 +49,9 @@ impl App {
     /// and a screen's captured keys stay theirs. In vim any keymap binding
     /// counts; in arrows only a `keys.toml` override does, since an arrows
     /// default must not shadow the router's verb rows (plan M2 Deviation
-    /// 18).
+    /// 18). Arrows' override also wins with a shift+↑/↓ selection up, as on
+    /// main; vim's V swallows the letters it does not bind (plan M5a
+    /// Deviation 11).
     fn user_bare(
         &self,
         ev: &KeyEvent,
@@ -58,7 +60,8 @@ impl App {
     ) -> Option<Action> {
         let bare = matches!(ev.code, KeyCode::Char(_))
             && ev.modifiers.difference(KeyModifiers::SHIFT).is_empty();
-        if !bare || !self.modals.is_empty() || !Surfaces::NAV.has(surface) {
+        let on = if profile == crate::config::KeyProfile::Vim { Surfaces::NAV } else { Surfaces::KEYED };
+        if !bare || !self.modals.is_empty() || !on.has(surface) {
             return None;
         }
         let combo = KeyCombo::from_event(ev);

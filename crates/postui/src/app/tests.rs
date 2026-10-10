@@ -9176,6 +9176,75 @@ fn the_response_v_selection_yanks_and_ends_on_a_window_key() {
     assert!(!app.session.response.line_selection(), "and ended V");
 }
 
+/// Task 6 fix round 1 (the controller's ruling; probe R6f): with vim's V up
+/// on the tree, Space neither toggles a fold nor ends V, and Enter extends a
+/// line down; an arrows shift selection keeps main's Space, a fold toggle
+/// that drops the selection.
+#[test]
+fn space_and_enter_in_a_response_line_selection_follow_the_profile() {
+    use crate::config::KeyProfile;
+    let space = plain(' ');
+    let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+    let mut app = App::new_for_test();
+    app.use_profile(KeyProfile::Vim);
+    ready_response(&mut app, r#"{"a": {"b": 1}, "c": 2}"#);
+    app.focus = PaneId::Response;
+    let rows = app.session.response.view().unwrap().visible_len();
+    // The landing's reconcile (the jq sync) runs first, as a real one does.
+    app.update(Action::Render);
+    app.handle_key(KeyEvent::new(KeyCode::Char('V'), KeyModifiers::SHIFT));
+    assert_eq!(app.mode_indicator(), Some("V-LINE"));
+    app.handle_key(space);
+    assert_eq!(app.session.response.view().unwrap().visible_len(), rows, "vim: no fold toggled");
+    assert!(app.session.response.line_selection(), "vim: V stays up");
+    app.handle_key(enter);
+    assert!(app.session.response.line_selection(), "vim: Enter extends");
+    assert_eq!(app.session.response.view().unwrap().cursor, 1);
+    assert_eq!(app.mode_indicator(), Some("V-LINE"));
+
+    let mut app = App::new_for_test();
+    app.use_profile(KeyProfile::Arrows);
+    ready_response(&mut app, r#"{"a": {"b": 1}, "c": 2}"#);
+    app.focus = PaneId::Response;
+    app.update(Action::Render);
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT));
+    assert!(app.session.response.line_selection());
+    app.handle_key(space);
+    assert!(app.session.response.view().unwrap().visible_len() < rows, "arrows: Space folds `a`, as on main");
+    assert!(!app.session.response.line_selection(), "and the fold drops the selection");
+}
+
+/// Task 6 fix round 1 (the controller's ruling: arrows keeps main): an
+/// arrows `keys.toml` letter still beats the response's rows with a shift
+/// selection up; vim's V swallows its unbound letters (Deviation 11).
+#[test]
+fn an_arrows_keys_toml_letter_wins_over_a_response_line_selection() {
+    use crate::config::KeyProfile;
+    use crate::keyroute::Surface;
+    let mut app = App::new_for_test();
+    app.use_profile(KeyProfile::Arrows);
+    app.keymap.apply_overrides("quit = [\"ctrl+c\", \"n\"]\n").unwrap();
+    let body = (1..=30).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+    ready_response(&mut app, &body);
+    app.focus = PaneId::Response;
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT));
+    assert!(matches!(app.surface(), Surface::ResponseLines(_)));
+    assert_eq!(app.key_ctx(&plain('n')).user_bare, Some(Action::Quit));
+    app.handle_key(plain('n'));
+    assert!(app.should_quit, "the keys.toml binding won over arrows' n row");
+
+    let mut app = App::new_for_test();
+    app.use_profile(KeyProfile::Vim);
+    app.keymap.apply_overrides("quit = [\"ctrl+c\", \"x\"]\n").unwrap();
+    ready_response(&mut app, &body);
+    app.focus = PaneId::Response;
+    assert_eq!(app.key_ctx(&plain('x')).user_bare, Some(Action::Quit), "vim: a letter wins on the response");
+    app.handle_key(KeyEvent::new(KeyCode::Char('V'), KeyModifiers::SHIFT));
+    assert_eq!(app.key_ctx(&plain('x')).user_bare, None, "vim's V swallows it");
+    app.handle_key(plain('x'));
+    assert!(!app.should_quit);
+}
+
 fn ready_response(app: &mut App, body: &str) {
     app.session.response.set_state(
         ResponseState::Ready(Box::new(crate::http::ResponseData {
