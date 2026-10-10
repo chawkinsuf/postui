@@ -3020,7 +3020,7 @@ impl App {
                 self.focus = pane;
                 true
             }
-            Action::PaneMove { dir, leave } => self.pane_move(dir, leave),
+            Action::PaneMove(dir) => self.pane_move(dir),
             Action::ScrollPane(pane, delta) => {
                 // While the Manager screen is up its left list owns the
                 // sidebar's pane slot (see `App::scrollbar_spec`), so a
@@ -3120,7 +3120,7 @@ impl App {
                 let leave = self.tab_chord_leaves();
                 self.go_tab(TabTo::By(i64::from(delta)), leave, false)
             }
-            Action::GoTab { to, leave } => self.go_tab(to, leave, true),
+            Action::GoTab { to } => self.go_tab(to, true, true),
             Action::OpenResponseSearch => {
                 self.update(Action::FocusPane(PaneId::Response));
                 self.session.response.open_search();

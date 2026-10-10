@@ -325,22 +325,20 @@ pub(crate) fn expand(b: &table::Binding, count: Option<usize>, cap: usize) -> Ve
             Step::OpenAs(seat.map_or(engine_glue::OpenAs::Normal, engine_glue::OpenAs::Insert)),
             Step::Action(Action::ReopenField),
         ],
-        // Spec §5.8 (plan M4a Deviations 7 and 8).
-        // A refused key, or one onto the tab already showing, leaves the
-        // field open, so the close rides in the action, which runs it only
-        // when there is a tab to go to (the user's decision, amendment C1).
-        Intent::Tab { delta, leave } => {
+        // Spec §5.8 (plan M4a Deviations 7 and 8). A refused key, or one
+        // onto the tab already showing, leaves the field open: the app
+        // closes it only when there is a tab to go to (`App::go_tab`).
+        Intent::Tab { delta } => {
             let to = match count {
                 Some(n) if delta > 0 => TabTo::Nth(n),
                 Some(n) => TabTo::By(-i64::try_from(n).unwrap_or(i64::MAX)),
                 None => TabTo::By(i64::from(delta)),
             };
-            vec![Step::Action(Action::GoTab { to, leave })]
+            vec![Step::Action(Action::GoTab { to })]
         }
-        // As `{N}gt`: a refused move leaves the field open, so the close
-        // rides in the action, which runs it only when there is a pane to
-        // move to (the user's decision, 2026-10-05).
-        Intent::Pane { dir, leave } => vec![Step::Action(Action::PaneMove { dir, leave })],
+        // As `{N}gt`: the app closes an open field only when there is a pane
+        // to move to (the user's decision, 2026-10-05).
+        Intent::Pane(dir) => vec![Step::Action(Action::PaneMove(dir))],
         Intent::Recording => vec![note_step(table::NO_MACROS)],
         Intent::CloseThen(f) => vec![Step::Action(Action::CloseField), Step::Action(f())],
         Intent::Swallow => Vec::new(),
@@ -531,8 +529,8 @@ mod tests {
     #[test]
     fn tab_keys_on_a_closed_surface() {
         let s = cx(Vim, Surface::Sidebar);
-        let step = |d: i64| run(vec![Step::Action(Action::GoTab { to: TabTo::By(d), leave: false })]);
-        let select = |n: usize| run(vec![Step::Action(Action::GoTab { to: TabTo::Nth(n), leave: false })]);
+        let step = |d: i64| run(vec![Step::Action(Action::GoTab { to: TabTo::By(d) })]);
+        let select = |n: usize| run(vec![Step::Action(Action::GoTab { to: TabTo::Nth(n) })]);
         assert_eq!(feed(&mut Router::default(), &s, "gt"), step(1));
         assert_eq!(feed(&mut Router::default(), &s, "gT"), step(-1));
         assert_eq!(feed(&mut Router::default(), &s, "3gt"), select(3));
@@ -549,7 +547,7 @@ mod tests {
     #[test]
     fn tab_keys_in_a_screen_field() {
         let s = in_url(Mode::Normal, false);
-        let go = |to| run(vec![Step::Action(Action::GoTab { to, leave: true })]);
+        let go = |to| run(vec![Step::Action(Action::GoTab { to })]);
         assert_eq!(feed(&mut Router::default(), &s, "gt"), go(TabTo::By(1)), "no unconditional close");
         assert_eq!(feed(&mut Router::default(), &s, "2gT"), go(TabTo::By(-2)));
         assert_eq!(feed(&mut Router::default(), &s, "2gt"), go(TabTo::Nth(2)));
@@ -572,7 +570,7 @@ mod tests {
     fn window_keys_on_a_closed_surface() {
         use crate::action::PaneDir;
         let s = cx(Vim, Surface::Sidebar);
-        let mv = |dir| run(vec![Step::Action(Action::PaneMove { dir, leave: false })]);
+        let mv = |dir| run(vec![Step::Action(Action::PaneMove(dir))]);
         assert_eq!(feed(&mut Router::default(), &s, "<C-w>l"), mv(PaneDir::Right));
         assert_eq!(feed(&mut Router::default(), &s, "<C-w><C-l>"), mv(PaneDir::Right));
         assert_eq!(feed(&mut Router::default(), &s, "<C-w>W"), mv(PaneDir::Prev));
@@ -597,12 +595,32 @@ mod tests {
         let s = in_url(Mode::Normal, false);
         assert_eq!(
             feed(&mut Router::default(), &s, "<C-w>j"),
-            run(vec![Step::Action(Action::PaneMove { dir: PaneDir::Down, leave: true })]),
+            run(vec![Step::Action(Action::PaneMove(PaneDir::Down))]),
             "no unconditional close: a refused move leaves the field open"
         );
         assert_eq!(feed(&mut Router::default(), &s, "<C-w>x"), Resolved::Consumed);
         let insert = in_url(Mode::Insert, false);
         assert_eq!(feed(&mut Router::default(), &insert, "<C-w>"), run(eng("<C-w>")), "Insert deletes a word");
+    }
+
+    /// Key list §8 (`P.ctrlw-arrows`): the arrow keys are the direction
+    /// letters, on a closed surface and in a screen field's idle Normal.
+    #[test]
+    fn ctrl_w_arrows_are_the_direction_letters() {
+        use crate::action::PaneDir;
+        let mv = |dir| run(vec![Step::Action(Action::PaneMove(dir))]);
+        for s in [cx(Vim, Surface::Sidebar), in_url(Mode::Normal, false)] {
+            assert_eq!(feed(&mut Router::default(), &s, "<C-w><Left>"), mv(PaneDir::Left));
+            assert_eq!(feed(&mut Router::default(), &s, "<C-w><Down>"), mv(PaneDir::Down));
+            assert_eq!(feed(&mut Router::default(), &s, "<C-w><Up>"), mv(PaneDir::Up));
+            assert_eq!(feed(&mut Router::default(), &s, "<C-w><Right>"), mv(PaneDir::Right));
+        }
+        assert_eq!(
+            feed(&mut Router::default(), &cx(Vim, Surface::Sidebar), "<C-w><Home>"),
+            Resolved::Consumed,
+            "a named key that is no target is vim's beep"
+        );
+        assert_eq!(feed(&mut Router::default(), &in_url(Mode::Normal, false), "<C-w><Home>"), Resolved::Consumed, "swallowed in a field");
     }
 
     /// Plan M3a Deviation 9: the prefix keys never reach the engine.

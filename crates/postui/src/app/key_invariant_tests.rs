@@ -115,7 +115,8 @@ pub(super) fn inputs(profile: KeyProfile) -> Vec<Input> {
     let mut out: Vec<Input> = match profile {
         KeyProfile::Vim => [
             "gt", "gT", "1gt", "2gt", "3gt", "4gt", "5gt", "9gt", "3gT", "12gT", "<C-w>h", "<C-w>j", "<C-w>k",
-            "<C-w>l", "<C-w>w", "<C-w>W", "<C-w>p", "<C-w><C-w>", "<C-w>x",
+            "<C-w>l", "<C-w>w", "<C-w>W", "<C-w>p", "<C-w><Left>", "<C-w><Down>", "<C-w><Up>",
+            "<C-w><Right>", "<C-w><C-w>", "<C-w>x",
         ]
         .into_iter()
         .map(Input::Keys)

@@ -267,6 +267,11 @@ const CASES: &[Case] = &[
     vim("P.ctrlw", ManageEnvs, "<C-w>l", &[ManageFocus(ListFocus::Detail)]),
     vim("P.ctrlw", ManageEnvDetail, "<C-w>h", &[ManageFocus(ListFocus::List)]),
     arrows("P.ctrlw", ResponseLines, "<Tab>", &[FocusIs(PaneId::Sidebar)]),
+    // Key list §8, M5a: the arrow keys as `ctrl+w` targets.
+    vim("P.ctrlw-arrows", ResponseLines, "<C-w><Up>", &[FocusIs(PaneId::Editor)]),
+    vim("P.ctrlw-arrows", ResponseLines, "<C-w><Left>", &[FocusIs(PaneId::Sidebar)]),
+    vim("P.ctrlw-arrows", ResponseLines, "<C-w><Left><C-w><Right>", &[FocusIs(PaneId::Response)]),
+    vim("P.ctrlw-arrows", UrlLine, "i<Esc><C-w><Down>", &[FocusIs(PaneId::Response), FieldLive(false)]),
     // Key list §8, M4a: tab strips (spec §5.8). The fixture is a GET, so
     // the editor's Body tab is disabled; the strip is Headers, Params, Vars.
     vim("P.gt", TableThreeHeaders, "gt", &[EditorTabIs(EditorTab::Params), Sub(SubFocus::Content)]),
@@ -1025,7 +1030,7 @@ fn every_action_is_keyboard_reachable_in_both_profiles() {
                 b.profile.has(KeyProfile::Vim)
                     && match b.intent {
                         Intent::Act(f) => f() == action,
-                        Intent::Tab { delta, leave: false } => action == Action::CycleTabs(delta),
+                        Intent::Tab { delta } => action == Action::CycleTabs(delta),
                         _ => false,
                     }
             })

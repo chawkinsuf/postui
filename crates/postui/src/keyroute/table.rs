@@ -71,12 +71,12 @@ pub enum Intent {
     /// `gt` (`delta` 1) and `gT` (-1) (spec §5.8), as `GoTab`: no count
     /// steps the strip; `{N}gt` goes to tab N; `{N}gT` steps back N enabled
     /// tabs, wrapping. A tab it selects lands the caret
-    /// (`App::land_editor_caret`). `leave`: typed in an open field, which
-    /// closes first, only when there is a tab to go to.
-    Tab { delta: i8, leave: bool },
-    /// A window key (spec §5.8): `PaneMove`. `leave`: typed in an open
-    /// field, which closes first, but only when there is a pane to move to.
-    Pane { dir: PaneDir, leave: bool },
+    /// (`App::land_editor_caret`). Typed in an open screen field, the field
+    /// closes first, only when there is a tab to go to (`App::go_tab`).
+    Tab { delta: i8 },
+    /// A window key (spec §5.8): `PaneMove`. Typed in an open screen field,
+    /// the field closes first, only when there is a pane to move to.
+    Pane(PaneDir),
     /// `q{reg}` (spec §5.11): the macro note, and the recording flag armed
     /// with the register, which the next bare `q` in Normal clears
     /// (`Router::recording`).
@@ -206,6 +206,11 @@ impl Surfaces {
         .or(Self::OTHER);
     /// The dialogs with a field: a one-field prompt and a form.
     pub const FORMS: Self = Self::PROMPT.or(Self::FORM);
+    /// Where the window and tab keys apply (spec §5.8; plan M4a Deviation 2,
+    /// plan M5a Deviation 16): the navigation surfaces and a screen field's
+    /// idle Normal. One row serves both: a key typed in a field closes it
+    /// first, and on a closed surface no field is open.
+    pub const WINDOWS: Self = Self::NAV.or(Self::FIELD_SCREEN);
 
     pub const fn or(self, o: Self) -> Self {
         Self(self.0 | o.0)
@@ -295,8 +300,8 @@ const fn both(keys: &'static str, on: Surfaces, intent: Intent) -> Binding {
 
 /// A vim window row: `<C-w>` and a target (spec §5.8), on a closed surface
 /// or from a screen field's idle Normal; a count is dropped.
-const fn pane(keys: &'static str, on: Surfaces, dir: PaneDir, leave: bool) -> Binding {
-    row(keys, on, Intent::Pane { dir, leave }, CountRule::Ignore)
+const fn pane(keys: &'static str, dir: PaneDir) -> Binding {
+    row(keys, Surfaces::WINDOWS, Intent::Pane(dir), CountRule::Ignore)
 }
 
 pub const NO_COUNTED_DELETE: &str = "Counted delete works on requests and table rows";
@@ -405,39 +410,29 @@ pub static TABLE: &[Binding] = &[
     row("za", Surfaces::RESPONSE, Intent::Act(fold_toggle), CountRule::Ignore),
     // Key list §8 (`P.gt`), spec §5.8: every tab strip, on a closed
     // surface or from a screen field's idle Normal (§3.7).
-    row("gt", Surfaces::NAV, Intent::Tab { delta: 1, leave: false }, CountRule::Pass),
-    row("gT", Surfaces::NAV, Intent::Tab { delta: -1, leave: false }, CountRule::Pass),
-    row("gt", Surfaces::FIELD_SCREEN, Intent::Tab { delta: 1, leave: true }, CountRule::Pass),
-    row("gT", Surfaces::FIELD_SCREEN, Intent::Tab { delta: -1, leave: true }, CountRule::Pass),
+    row("gt", Surfaces::WINDOWS, Intent::Tab { delta: 1 }, CountRule::Pass),
+    row("gT", Surfaces::WINDOWS, Intent::Tab { delta: -1 }, CountRule::Pass),
     // Key list §8 (`P.ctrlw`), spec §5.8: the window keys, with Vim's ctrl
     // spellings of the targets (plan M4a Deviation 3). In a screen field a
     // non-target is swallowed, never replayed as an edit (Deviation 4).
-    pane("<C-w>h", Surfaces::NAV, PaneDir::Left, false),
-    pane("<C-w>j", Surfaces::NAV, PaneDir::Down, false),
-    pane("<C-w>k", Surfaces::NAV, PaneDir::Up, false),
-    pane("<C-w>l", Surfaces::NAV, PaneDir::Right, false),
-    pane("<C-w>w", Surfaces::NAV, PaneDir::Next, false),
-    pane("<C-w>W", Surfaces::NAV, PaneDir::Prev, false),
-    pane("<C-w>p", Surfaces::NAV, PaneDir::Last, false),
-    pane("<C-w><C-h>", Surfaces::NAV, PaneDir::Left, false),
-    pane("<C-w><C-j>", Surfaces::NAV, PaneDir::Down, false),
-    pane("<C-w><C-k>", Surfaces::NAV, PaneDir::Up, false),
-    pane("<C-w><C-l>", Surfaces::NAV, PaneDir::Right, false),
-    pane("<C-w><C-w>", Surfaces::NAV, PaneDir::Next, false),
-    pane("<C-w><C-p>", Surfaces::NAV, PaneDir::Last, false),
-    pane("<C-w>h", Surfaces::FIELD_SCREEN, PaneDir::Left, true),
-    pane("<C-w>j", Surfaces::FIELD_SCREEN, PaneDir::Down, true),
-    pane("<C-w>k", Surfaces::FIELD_SCREEN, PaneDir::Up, true),
-    pane("<C-w>l", Surfaces::FIELD_SCREEN, PaneDir::Right, true),
-    pane("<C-w>w", Surfaces::FIELD_SCREEN, PaneDir::Next, true),
-    pane("<C-w>W", Surfaces::FIELD_SCREEN, PaneDir::Prev, true),
-    pane("<C-w>p", Surfaces::FIELD_SCREEN, PaneDir::Last, true),
-    pane("<C-w><C-h>", Surfaces::FIELD_SCREEN, PaneDir::Left, true),
-    pane("<C-w><C-j>", Surfaces::FIELD_SCREEN, PaneDir::Down, true),
-    pane("<C-w><C-k>", Surfaces::FIELD_SCREEN, PaneDir::Up, true),
-    pane("<C-w><C-l>", Surfaces::FIELD_SCREEN, PaneDir::Right, true),
-    pane("<C-w><C-w>", Surfaces::FIELD_SCREEN, PaneDir::Next, true),
-    pane("<C-w><C-p>", Surfaces::FIELD_SCREEN, PaneDir::Last, true),
+    pane("<C-w>h", PaneDir::Left),
+    pane("<C-w>j", PaneDir::Down),
+    pane("<C-w>k", PaneDir::Up),
+    pane("<C-w>l", PaneDir::Right),
+    pane("<C-w>w", PaneDir::Next),
+    pane("<C-w>W", PaneDir::Prev),
+    pane("<C-w>p", PaneDir::Last),
+    pane("<C-w><C-h>", PaneDir::Left),
+    pane("<C-w><C-j>", PaneDir::Down),
+    pane("<C-w><C-k>", PaneDir::Up),
+    pane("<C-w><C-l>", PaneDir::Right),
+    pane("<C-w><C-w>", PaneDir::Next),
+    pane("<C-w><C-p>", PaneDir::Last),
+    // Key list §8 (`P.ctrlw-arrows`): the arrow keys, as Vim's `<C-w><Left>`.
+    pane("<C-w><Left>", PaneDir::Left),
+    pane("<C-w><Down>", PaneDir::Down),
+    pane("<C-w><Up>", PaneDir::Up),
+    pane("<C-w><Right>", PaneDir::Right),
     row("<C-w><any>", Surfaces::FIELD_SCREEN, Intent::Swallow, CountRule::Ignore),
     // Key list §6: opening.
     row("o", Surfaces::OPENS_ROW, Intent::Key(Named::key(KeyCode::Enter)), CountRule::Ignore),
@@ -642,7 +637,7 @@ pub fn keys_for_class(profile: KeyProfile, class: Surfaces, action: &Action) -> 
                 && match b.intent {
                     Intent::Act(f) | Intent::CloseThen(f) => f() == *action,
                     Intent::Verb(v) => matches!(action, Action::OnSelection(w) if w.kind() == v.kind()),
-                    Intent::Tab { delta, .. } => *action == Action::CycleTabs(delta),
+                    Intent::Tab { delta } => *action == Action::CycleTabs(delta),
                     Intent::Reopen(None) => *action == Action::ReopenField,
                     _ => false,
                 }
@@ -818,6 +813,15 @@ mod tests {
         }
     }
 
+    /// Plan M5a Task 1 (Deviation 16): each window and tab key is one row,
+    /// for the navigation surfaces and a screen field alike.
+    #[test]
+    fn window_and_tab_keys_are_one_row_each() {
+        for keys in ["gt", "gT", "<C-w>h", "<C-w><C-w>", "<C-w>p", "<C-w><Left>", "<C-w><Up>"] {
+            assert_eq!(TABLE.iter().filter(|b| b.keys == keys).count(), 1, "{keys}");
+        }
+    }
+
     #[test]
     fn counts_fit_their_intents() {
         use crate::action::Verb;
@@ -837,7 +841,7 @@ mod tests {
                     | Intent::Swallow
                     | Intent::Open { .. }
                     | Intent::Reopen(_)
-                    | Intent::Pane { .. }
+                    | Intent::Pane(_)
                     | Intent::Recording
                     | Intent::CloseThen(_)
             ) {

@@ -15,24 +15,24 @@ impl App {
         self.panes.note(self.focus);
     }
 
-    /// `Action::PaneMove`: whether the keyboard moved. With `leave`, the
-    /// open field closes first, but only when there is a pane to move to:
-    /// a refused move leaves it open, caret and all (the user's decision,
-    /// 2026-10-05, as amendment C1 rules for `{N}gt`), and so does a close
-    /// the field itself refuses.
-    pub(super) fn pane_move(&mut self, dir: PaneDir, leave: bool) -> bool {
+    /// `Action::PaneMove`: whether the keyboard moved. An open field closes
+    /// first, but only when there is a pane to move to: a refused move
+    /// leaves it open, caret and all (the user's decision, 2026-10-05, as
+    /// amendment C1 rules for `{N}gt`), and so does a close the field
+    /// itself refuses. A key on a closed surface has no open field to close.
+    pub(super) fn pane_move(&mut self, dir: PaneDir) -> bool {
         match self.screen {
             Screen::Main => {
                 let Some(to) = crate::keyroute::panes::toward(self.focus, dir, &self.panes) else {
                     return false;
                 };
-                self.leave_then_go(leave, |app| app.update(Action::FocusPane(to)))
+                self.leave_then_go(true, |app| app.update(Action::FocusPane(to)))
             }
             Screen::Manage => {
                 let Some(to_detail) = self.manage_pane_target(dir) else {
                     return false;
                 };
-                self.leave_then_go(leave, |app| app.manage_pane_move(to_detail))
+                self.leave_then_go(true, |app| app.manage_pane_move(to_detail))
             }
             Screen::Testbed => false,
         }

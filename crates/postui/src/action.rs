@@ -123,10 +123,11 @@ pub enum Action {
     FocusPane(PaneId),
     /// A vim window key (piece 4 spec §5.8): resolved against the screen,
     /// the focused pane and what `App` remembers. A direction with no pane
-    /// does nothing. `leave`: typed in an open field, which closes first,
+    /// does nothing. Typed in an open screen field, the field closes first,
     /// but only when there is a pane to move to: a refused move leaves the
-    /// field open (the user's decision, 2026-10-05, as for `GoTab`).
-    PaneMove { dir: PaneDir, leave: bool },
+    /// field open (the user's decision, 2026-10-05). On a closed surface
+    /// there is no field to close (plan M5a Deviation 16).
+    PaneMove(PaneDir),
     ScrollPane(PaneId, i16),
     OpenPalette,
     /// Vim's `:` (spec §5.9): the palette in ex mode, its query read as a
@@ -202,11 +203,11 @@ pub enum Action {
     /// A vim tab key (piece 4 spec §5.8), on the strip `CycleTabs` steps.
     /// A disabled or out-of-range tab, or the tab already showing, does
     /// nothing. With the editor focused, a tab it selects lands the caret
-    /// in that tab's content. `leave`: typed in an open field, which closes
-    /// first, but only when there is a tab to go to: a refused key leaves
-    /// the field open (the user's decision, plan M4a), and so does a close
-    /// the field itself refuses.
-    GoTab { to: TabTo, leave: bool },
+    /// in that tab's content. Typed in an open screen field, the field
+    /// closes first, but only when there is a tab to go to: a refused key
+    /// leaves the field open (the user's decision, plan M4a), and so does a
+    /// close the field itself refuses (plan M5a Deviation 16).
+    GoTab { to: TabTo },
     CycleMethod,
     FocusUrl,
     /// Toggles `App::table_collapsed` (params/headers table body vs. tab
