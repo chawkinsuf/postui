@@ -10160,7 +10160,7 @@ impl App {
     /// the response ran goes to the engine that holds the pattern (a
     /// dialog's while one has a session, as the registers go), otherwise
     /// the response takes the engine's, which a field's search may have
-    /// changed (the user's decision, 2026-10-10).
+    /// changed.
     pub(super) fn sync_last_pattern(&mut self) {
         let glue = if self.modal_session.is_some() { &mut self.modal_glue } else { &mut self.glue };
         match self.session.response.take_last_search() {

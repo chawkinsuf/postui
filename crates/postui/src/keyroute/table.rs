@@ -613,7 +613,7 @@ pub static TABLE: &[Binding] = &[
     arrows("n", Surfaces::RESPONSE.or(Surfaces::RESPONSE_LINES), Intent::Act(next_match)),
     arrows("N", Surfaces::RESPONSE.or(Surfaces::RESPONSE_LINES), Intent::Act(prev_match)),
     // In vim's V they are motions that extend the selection, as Vim's
-    // Visual takes them (the user's decision, 2026-10-10).
+    // Visual takes them (Vim 9.1, probed).
     row("n", Surfaces::RESPONSE.or(Surfaces::RESPONSE_LINES), Intent::Counted(find_n), CountRule::Pass),
     row("N", Surfaces::RESPONSE.or(Surfaces::RESPONSE_LINES), Intent::Counted(find_shift_n), CountRule::Pass),
     row("*", Surfaces::RESPONSE.or(Surfaces::RESPONSE_LINES), Intent::Counted(find_star), CountRule::Pass),

@@ -1324,8 +1324,8 @@ impl ReadyView {
 
     /// Lands on match `current`, expanding whatever containers hide it, and
     /// remembers its column. A jump like any other: a line selection drops,
-    /// except vim's V, which a search extends as Vim's Visual does (the
-    /// user's decision, 2026-10-10). Its anchor is a buffer line, so a fold
+    /// except vim's V, which a search extends as Vim 9.1's Visual does
+    /// (probed). Its anchor is a buffer line, so a fold
     /// the landing opens above it does not move it.
     fn jump_to_match(&mut self) {
         let Some(search) = &self.search else { return };
@@ -1817,7 +1817,7 @@ pub struct Response {
 /// ([`Response::take_last_search`], [`Response::adopt_last_search`] at
 /// each input event's end). An empty `/` Enter searches it again, and so
 /// does `n` once Esc has cleared the search: Esc never forgets it, as in
-/// Vim (the user's decision, 2026-10-10).
+/// Vim.
 #[derive(Default)]
 struct LastPattern {
     pattern: Option<(String, bool)>,
@@ -3322,8 +3322,8 @@ impl Response {
                 Some(Action::Render)
             }
             // The search and its highlight go; vim's last pattern stays
-            // for `n` and an empty `/`, as Vim's Esc never forgets it (the
-            // user's decision, 2026-10-10, replacing plan M5a Deviation 13).
+            // for `n` and an empty `/`, as Vim's Esc never forgets it
+            // (replacing plan M5a Deviation 13).
             KeyCode::Esc if view.search.is_some() => {
                 view.search = None;
                 Some(Action::Render)
@@ -5150,7 +5150,7 @@ mod tests {
         assert_eq!((r.view().unwrap().cursor, r.line_selection()), (5, false), "V10, V11");
     }
 
-    /// A vim search in V extends it (the user's decision, 2026-10-10), and
+    /// A vim search in V extends it, as Vim's Visual does, and
     /// a fold the landing opens above the anchor leaves the anchor on its
     /// own line, as Vim's Visual start is a buffer position.
     #[test]
@@ -6842,7 +6842,7 @@ mod tests {
     /// arrows' finds nothing, as on main. Esc on an empty box only closes
     /// it, in both profiles, while Esc on a typed box runs it (plan Q2).
     /// Esc in the view clears the search but keeps vim's last pattern, so
-    /// `n` and an empty `/` still find it (the user's decision, 2026-10-10).
+    /// `n` and an empty `/` still find it, as in Vim.
     #[test]
     fn an_empty_box_reruns_only_in_vim_and_esc_cancels_it() {
         use SearchSyntax::{Literal, Vim};
