@@ -145,7 +145,7 @@ The ID column names each row for the matrix tests (piece 4 spec §8.1, crates/po
 | `R.search` | `/` `?` `n` `N` search with a match counter, from the cursor; Vim patterns in vim, plain text in arrows, both matching case | 1 | S | you (2026-10-10); `?` mine |
 | `R.star` | `*` `#` search for the word under the cursor, counted | 2 | S | Vim's word rule |
 | `R.yy` | `yy`, `{N}yy` yank lines into the unnamed register (a closed fold: all its lines) | 2 | S | you (2026-10-10); the closed-fold rule follows Vim |
-| `R.visual` | `V` line selection: motions extend, `o`, `y`; `v` is a note | 2 | S | mine |
+| `R.visual` | `V` line selection: motions and searches (`/ ? n N * #`) extend, `o`, `y`; `v` is a note | 2 | S | mine; searches extend: you |
 
 ## 8. Panes, tabs, command line
 

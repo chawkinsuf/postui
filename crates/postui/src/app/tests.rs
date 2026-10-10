@@ -9176,6 +9176,60 @@ fn the_response_v_selection_yanks_and_ends_on_a_window_key() {
     assert!(!app.session.response.line_selection(), "and ended V");
 }
 
+/// The user's decision (2026-10-10, replacing plan M5a Deviation 11): in
+/// vim's V the searches are motions that extend the selection, as Vim 9.1
+/// does (probe: `V/` `V?` `V*` `V#` `Vn` `VN` all extend, a miss keeps V and
+/// the cursor). Arrows' `/` still drops a shift selection, as on main.
+#[test]
+fn vim_searches_extend_the_response_v_selection() {
+    use crate::config::KeyProfile;
+    let shifted = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::SHIFT);
+    let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+    // Rows 0..=29 read "line 1" .. "line 30".
+    let body = (1..=30).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+    let mut app = App::new_for_test();
+    app.use_profile(KeyProfile::Vim);
+    ready_response(&mut app, &body);
+    app.focus = PaneId::Response;
+    let cursor = |app: &App| app.session.response.view().unwrap().cursor;
+    let search = |app: &mut App, start: KeyEvent, text: &str| {
+        app.handle_key(start);
+        for c in text.chars() {
+            app.handle_key(plain(c));
+        }
+        app.handle_key(enter);
+    };
+    app.handle_key(shifted('V'));
+    search(&mut app, plain('/'), "line 2");
+    assert_eq!(cursor(&app), 1, "/");
+    assert_eq!(app.mode_indicator(), Some("V-LINE"), "/ extends");
+    app.handle_key(plain('n'));
+    assert_eq!(cursor(&app), 19, "n: line 20");
+    app.handle_key(shifted('N'));
+    assert_eq!(cursor(&app), 1, "N");
+    search(&mut app, shifted('?'), "line 3");
+    assert_eq!(cursor(&app), 29, "? wraps to line 30");
+    app.handle_key(shifted('*'));
+    assert_eq!(cursor(&app), 0, "* on `line`, wrapping");
+    app.handle_key(shifted('#'));
+    assert_eq!(cursor(&app), 29, "#");
+    search(&mut app, plain('/'), "zzz");
+    assert_eq!(cursor(&app), 29, "a miss stays");
+    assert!(app.toasts.messages().contains(&"Pattern not found: zzz"), "{:?}", app.toasts.messages());
+    assert_eq!(app.mode_indicator(), Some("V-LINE"), "and keeps V");
+    app.handle_key(plain('y'));
+    assert!(app.toasts.messages().contains(&"30 lines yanked"), "anchored at the first row: {:?}", app.toasts.messages());
+
+    let mut app = App::new_for_test();
+    app.use_profile(KeyProfile::Arrows);
+    ready_response(&mut app, &body);
+    app.focus = PaneId::Response;
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT));
+    search(&mut app, plain('/'), "line 5");
+    assert_eq!(cursor(&app), 4);
+    assert!(!app.session.response.line_selection(), "arrows: the jump drops it, as on main");
+}
+
 /// Vim ends Visual whenever the window changes, not only on a window key: a
 /// click on another pane (or any other focus move) ends vim's V as well. An
 /// arrows shift selection is a GUI selection and stays, as on main.

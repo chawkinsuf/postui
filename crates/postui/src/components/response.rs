@@ -1313,12 +1313,17 @@ impl ReadyView {
     }
 
     /// Lands on match `current`, expanding whatever containers hide it, and
-    /// remembers its column. A jump like any other: a line selection drops.
+    /// remembers its column. A jump like any other: a line selection drops,
+    /// except vim's V, which a search extends as Vim's Visual does (the
+    /// user's decision, 2026-10-10). Its anchor is held by buffer line, so
+    /// a fold the landing opens above it does not move it.
     fn jump_to_match(&mut self) {
         let Some(search) = &self.search else { return };
         let Some(&(line, start, _)) = search.matches.get(search.current) else {
             return;
         };
+        let keep = self.line_sel && search.syntax == SearchSyntax::Vim;
+        let anchor = self.sel_anchor.filter(|_| keep).map(|(row, _)| self.row_to_line(row));
         let at = match (self.mode, self.active_tree_mut()) {
             (ViewMode::Pretty, Some(tree)) => {
                 tree.expand_ancestors(line);
@@ -1327,7 +1332,29 @@ impl ReadyView {
             _ => line,
         };
         self.jump_cursor(at);
+        if let Some(anchor) = anchor {
+            let row = self.line_to_row(anchor);
+            self.set_line_sel(row);
+        }
         self.at_col = Some((line, start));
+    }
+
+    /// The buffer line shown on visible row `row`: on the tree, the line
+    /// the row is (a collapsed container's opening line); elsewhere a row is
+    /// a line.
+    fn row_to_line(&self, row: usize) -> usize {
+        match (self.mode, self.active_tree()) {
+            (ViewMode::Pretty, Some(tree)) => tree.full_index_of_visible(row).unwrap_or(row),
+            _ => row,
+        }
+    }
+
+    /// [`Self::row_to_line`] back: the row showing a line that is visible.
+    fn line_to_row(&self, line: usize) -> usize {
+        match (self.mode, self.active_tree()) {
+            (ViewMode::Pretty, Some(tree)) => tree.visible_index_of(line).unwrap_or(0),
+            _ => line,
+        }
     }
 
     /// Vim's `searchit()` from the cursor ([`Self::search_from`]), `count`
@@ -5046,6 +5073,29 @@ mod tests {
         r.extend(M::Lines(1));
         r.lines(LinesOp::End);
         assert_eq!((r.view().unwrap().cursor, r.line_selection()), (5, false), "V10, V11");
+    }
+
+    /// A vim search in V extends it (the user's decision, 2026-10-10), and
+    /// a fold the landing opens above the anchor leaves the anchor on its
+    /// own line, as Vim's Visual start is a buffer position.
+    #[test]
+    fn a_vim_search_in_v_keeps_the_anchor_line_when_it_opens_a_fold() {
+        use crate::action::{FoldOp, LinesOp};
+        // Lines: 0 `{`, 1 `"a": {`, 2 `"b": "hit"`, 3 `},`, 4 `"c": 1,`,
+        // 5 `"d": 2`, 6 `}`.
+        let mut r = ready(r#"{"a": {"b": "hit"}, "c": 1, "d": 2}"#);
+        render(&mut r);
+        r.view.as_mut().unwrap().cursor = 1;
+        r.fold(FoldOp::Close, 1);
+        r.view.as_mut().unwrap().cursor = 3;
+        r.lines(LinesOp::Start);
+        r.open_search(SearchSyntax::Vim, true);
+        typed(&mut r, "hit");
+        assert_eq!(r.view().unwrap().cursor, 2, "on `b`, the fold opened");
+        assert!(r.line_selection(), "V extended");
+        let lines = r.lines(LinesOp::Yank { count: None }).unwrap();
+        assert_eq!(lines.len(), 4, "from `b` to `d`: {lines:?}");
+        assert_eq!(lines[3].trim(), r#""d": 2"#);
     }
 
     /// Probes Y1, Y2 and Y4: a closed fold yanks all its lines.

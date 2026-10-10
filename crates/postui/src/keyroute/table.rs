@@ -612,11 +612,13 @@ pub static TABLE: &[Binding] = &[
     both("/", Surfaces::RESPONSE.or(Surfaces::RESPONSE_LINES), Intent::Act(response_search)),
     arrows("n", Surfaces::RESPONSE.or(Surfaces::RESPONSE_LINES), Intent::Act(next_match)),
     arrows("N", Surfaces::RESPONSE.or(Surfaces::RESPONSE_LINES), Intent::Act(prev_match)),
-    row("n", Surfaces::RESPONSE, Intent::Counted(find_n), CountRule::Pass),
-    row("N", Surfaces::RESPONSE, Intent::Counted(find_shift_n), CountRule::Pass),
-    row("*", Surfaces::RESPONSE, Intent::Counted(find_star), CountRule::Pass),
-    row("#", Surfaces::RESPONSE, Intent::Counted(find_hash), CountRule::Pass),
-    row("?", Surfaces::RESPONSE, Intent::Act(response_search_back), CountRule::Ignore),
+    // In vim's V they are motions that extend the selection, as Vim's
+    // Visual takes them (the user's decision, 2026-10-10).
+    row("n", Surfaces::RESPONSE.or(Surfaces::RESPONSE_LINES), Intent::Counted(find_n), CountRule::Pass),
+    row("N", Surfaces::RESPONSE.or(Surfaces::RESPONSE_LINES), Intent::Counted(find_shift_n), CountRule::Pass),
+    row("*", Surfaces::RESPONSE.or(Surfaces::RESPONSE_LINES), Intent::Counted(find_star), CountRule::Pass),
+    row("#", Surfaces::RESPONSE.or(Surfaces::RESPONSE_LINES), Intent::Counted(find_hash), CountRule::Pass),
+    row("?", Surfaces::RESPONSE.or(Surfaces::RESPONSE_LINES), Intent::Act(response_search_back), CountRule::Ignore),
     arrows("c", Surfaces::RESPONSE.or(Surfaces::RESPONSE_LINES), Intent::Act(copy_header)),
     // Key list §6, Out (parked by the user): a list has no search yet.
     row("/", Surfaces::SEARCHLESS, Intent::Note("No search in this list yet"), CountRule::Ignore),
