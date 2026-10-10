@@ -635,10 +635,12 @@ pub struct ReadyView {
     /// that lands sets `(line, column)` of its match, in search-corpus
     /// lines; any cursor move forgets it ([`ReadyView::cursor_moved`]).
     at_col: Option<(usize, usize)>,
-    /// The last query committed (a Vim pattern as stored, see
-    /// [`SearchState::query`]), for an empty `/` Enter, which Vim takes as
-    /// "the last pattern".
-    last_query: Option<String>,
+    /// Vim's last pattern (as stored, see [`SearchState::query`]) and
+    /// whether it went backward, set by vim's `/` `?` `*` `#`. An empty `/`
+    /// Enter searches it again, and so does `n` once Esc has cleared the
+    /// search: Esc never forgets it, as in Vim (the user's decision,
+    /// 2026-10-10).
+    last_search: Option<(String, bool)>,
     /// A note for the app to toast (Vim's message line): a wrap, a miss.
     note: Option<String>,
     /// Width of the body viewport as of the last draw — the horizontal
@@ -797,7 +799,7 @@ impl ReadyView {
             scroll_opt: None,
             fold_line: None,
             at_col: None,
-            last_query: None,
+            last_search: None,
             note: None,
             width: 40,
             content_width: None,
@@ -1386,19 +1388,39 @@ impl ReadyView {
         let vim = search.syntax == SearchSyntax::Vim;
         let dir = if search.backward { Dir::Backward } else { Dir::Forward };
         search.query = match (vim, typed.is_empty()) {
-            (true, true) => self.last_query.clone().unwrap_or_default(),
+            (true, true) => self.last_search.as_ref().map(|(q, _)| q.clone()).unwrap_or_default(),
             (true, false) => as_stored(&typed, dir),
             (false, _) => typed,
         };
         let (query, backward) = (search.query.clone(), search.backward);
-        if !query.is_empty() {
-            self.last_query = Some(query.clone());
-        }
         self.note = match self.recompute_matches() {
             Some(note) => Some(note),
             None if query.is_empty() => vim.then(|| crate::vim::engine::NO_PREVIOUS_PATTERN.to_string()),
-            None => self.land_match(backward, 1),
+            None => {
+                // Only a pattern that compiled is kept for later.
+                if vim {
+                    self.last_search = Some((query, backward));
+                }
+                self.land_match(backward, 1)
+            }
         };
+    }
+
+    /// Puts vim's last pattern back as the search, in its direction, when
+    /// Esc has cleared it: `n` and `N` then go on as Vim's do.
+    fn restore_last_search(&mut self) {
+        let Some((query, backward)) = self.last_search.clone() else { return };
+        self.search = Some(SearchState {
+            input: LineInput::new(""),
+            active: false,
+            query,
+            syntax: SearchSyntax::Vim,
+            backward,
+            matches: Vec::new(),
+            current: 0,
+        });
+        // The pattern compiled when it was searched, so there is no note.
+        self.recompute_matches();
     }
 
     /// Vim's `*` and `#` (plan M5a Task 5): the keyword under or after the
@@ -1426,11 +1448,11 @@ impl ReadyView {
             matches: Vec::new(),
             current: 0,
         });
-        self.last_query = Some(pat);
         if let Some(note) = self.recompute_matches() {
             self.note = Some(note);
             return false;
         }
+        self.last_search = Some((pat, backward));
         // Vim searches from the word's start, so the word itself is skipped.
         self.at_col = Some((line, start));
         self.note = self.land_match(backward, count);
@@ -2731,15 +2753,17 @@ impl Response {
     }
 
     /// Vim's `n` and `N` (plan M5a Deviation 10): `count` hits in the last
-    /// search's direction, `N` against it. With no search, or an empty one,
-    /// Vim's E35 (Deviation 13; probe E6).
+    /// search's direction, `N` against it. With the search cleared by Esc,
+    /// vim's last pattern comes back first; with none, Vim's E35 (probe E6).
     pub fn find_next(&mut self, reverse: bool, count: usize) -> bool {
         let Some(view) = self.view.as_mut() else {
             return false;
         };
-        let Some(backward) =
-            view.search.as_ref().filter(|s| !s.active && !s.query.is_empty()).map(|s| s.backward ^ reverse)
-        else {
+        let live = |v: &ReadyView| v.search.as_ref().is_some_and(|s| !s.active && !s.query.is_empty());
+        if !live(view) {
+            view.restore_last_search();
+        }
+        let Some(backward) = view.search.as_ref().filter(|_| live(view)).map(|s| s.backward ^ reverse) else {
             view.note = Some(crate::vim::engine::NO_PREVIOUS_PATTERN.into());
             return false;
         };
@@ -3195,11 +3219,11 @@ impl Response {
                 view.clear_sel();
                 Some(Action::Render)
             }
-            // The response's last search goes with it (plan M5a Deviation
-            // 13): `n` and an empty `/` both say E35 after it.
+            // The search and its highlight go; vim's last pattern stays
+            // for `n` and an empty `/`, as Vim's Esc never forgets it (the
+            // user's decision, 2026-10-10, replacing plan M5a Deviation 13).
             KeyCode::Esc if view.search.is_some() => {
                 view.search = None;
-                view.last_query = None;
                 Some(Action::Render)
             }
             // Esc from the tree stops at the selection and the search —
@@ -6648,7 +6672,7 @@ mod tests {
         assert_eq!(landed(&r).1, Some((2, 3)), "3N: back three, wrapping");
         let mut r = ready(PROBE_JSON);
         assert!(!r.find_next(false, 1));
-        assert_eq!(r.take_note().as_deref(), Some("No previous regular expression"), "Deviation 13");
+        assert_eq!(r.take_note().as_deref(), Some("No previous regular expression"), "no search yet");
     }
 
     /// Amendment A5.3 (probes E2–E5, E7): a match that starts on its line's
@@ -6688,12 +6712,12 @@ mod tests {
         assert_eq!(r.take_note(), None, "arrows: an empty box finds nothing, as on main");
     }
 
-    /// The controller's rulings on an empty box, and Deviation 13's Esc:
-    /// an empty Enter re-runs the last query in vim only (Vim's `/<CR>`);
+    /// The controller's rulings on an empty box, and the view's Esc: an
+    /// empty Enter re-runs the last query in vim only (Vim's `/<CR>`);
     /// arrows' finds nothing, as on main. Esc on an empty box only closes
     /// it, in both profiles, while Esc on a typed box runs it (plan Q2).
-    /// Esc in the view forgets the last query too, so an empty `/` then
-    /// says E35, as `n` does.
+    /// Esc in the view clears the search but keeps vim's last pattern, so
+    /// `n` and an empty `/` still find it (the user's decision, 2026-10-10).
     #[test]
     fn an_empty_box_reruns_only_in_vim_and_esc_cancels_it() {
         use SearchSyntax::{Literal, Vim};
@@ -6734,10 +6758,43 @@ mod tests {
         typed(&mut r, "x");
         r.handle_key(key(KeyCode::Esc));
         assert!(r.view().unwrap().search.is_none(), "Esc in the view clears the search");
+        assert!(r.find_next(false, 1), "vim's n still has the last pattern");
+        assert_eq!(landed(&r), (4, Some((4, 0)), "x".into()));
+        r.handle_key(key(KeyCode::Esc));
         r.open_search(Vim, false);
         typed(&mut r, "");
-        assert_eq!(r.take_note().as_deref(), Some("No previous regular expression"), "and the last query");
-        assert_eq!(cursor(&r), 2);
+        assert_eq!(landed(&r), (0, Some((0, 0)), "x".into()), "and so does an empty /");
+        assert_eq!(r.take_note().as_deref(), Some("search hit BOTTOM, continuing at TOP"));
+    }
+
+    /// The user's decision (2026-10-10, replacing plan M5a Deviation 13):
+    /// Esc on the response clears its search and highlight, but vim keeps
+    /// the last pattern and its direction, as Vim's Esc never forgets them.
+    /// Arrows' `n`/▼ after Esc do nothing, as on main.
+    #[test]
+    fn esc_keeps_the_last_pattern_and_its_direction_in_vim_only() {
+        const BODY: &str = "x\ny\nx\ny\nx";
+        let mut r = ready(BODY);
+        r.view.as_mut().unwrap().cursor = 4;
+        r.open_search(SearchSyntax::Vim, true);
+        typed(&mut r, "x");
+        assert_eq!(r.view().unwrap().cursor, 2);
+        r.handle_key(key(KeyCode::Esc));
+        assert!(r.find_next(false, 1));
+        assert_eq!(landed(&r), (0, Some((0, 0)), "x".into()), "n goes on backward, as `?` set it");
+        let mut r = ready(BODY);
+        r.view.as_mut().unwrap().cursor = 2;
+        r.find_word(true, 1);
+        assert_eq!(r.view().unwrap().cursor, 0);
+        r.handle_key(key(KeyCode::Esc));
+        assert!(r.find_next(true, 1));
+        assert_eq!(r.view().unwrap().cursor, 2, "`#` set backward, so N goes forward");
+        let mut r = ready(BODY);
+        r.open_search(SearchSyntax::Literal, false);
+        typed(&mut r, "x");
+        r.handle_key(key(KeyCode::Esc));
+        assert!(!r.step_search(1), "arrows: no search, nothing, as on main");
+        assert_eq!(r.view().unwrap().cursor, 2);
     }
 
     /// The last query is the pattern as Vim's `do_search()` stored it, so an
