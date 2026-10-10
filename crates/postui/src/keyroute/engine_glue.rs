@@ -386,6 +386,12 @@ impl Glue {
             .yank(None, crate::vim::engine::Register { text, kind: crate::vim::engine::RegKind::Line });
     }
 
+    /// The unnamed register's text, for the key matrix.
+    #[cfg(test)]
+    pub fn unnamed_text(&self) -> String {
+        self.engine.registers().unnamed().text.clone()
+    }
+
     /// A field got the caret (piece 3 §4.2 `enter`). A one-line field
     /// starts a fresh state; the body keeps its own (§3.11).
     pub fn enter(&mut self, buf: &mut FieldBuf<'_>, start: Start, seat: OpenSeat) {

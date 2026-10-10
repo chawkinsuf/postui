@@ -951,6 +951,11 @@ impl ReadyView {
         self.width
     }
 
+    /// The body viewport's height as of the last draw, in rows.
+    pub fn height(&self) -> usize {
+        self.height
+    }
+
     /// The widest visible line as the last draw measured it, or `None`
     /// when the view changed since (or never drew): a read that never pays
     /// for a measure, for the key router's repeat cap.

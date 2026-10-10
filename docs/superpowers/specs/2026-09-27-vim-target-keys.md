@@ -137,15 +137,15 @@ The ID column names each row for the matrix tests (piece 4 spec §8.1, crates/po
 
 | ID | Keys | Tier | Test | Notes |
 |---|---|---|---|---|
-| `R.move` | `j` `k` `gg` `G`, counts | 1 | S | |
-| `R.ctrl-d` | `ctrl+d` `ctrl+u` scroll the view AND move the cursor by half a page | 1 | S | sweep 7 found only the cursor moves today; the fix applies to the arrows profile too — you (accepted my recommendation) |
-| `R.page` | `ctrl+f` `ctrl+b`, `zz` `zt` `zb` | 2 | S | |
-| `R.fold` | `zo` `zc` `za` | 1 | S | |
+| `R.move` | `j` `k` `gg` `G`, counts; the view follows by Vim's rules, so a far jump centres its line | 1 | S | the window rules in both profiles — you (2026-10-10) |
+| `R.ctrl-d` | `ctrl+d` `ctrl+u` scroll the view AND move the cursor by half a page; a count sets `'scroll'` | 1 | S | sweep 7 found only the cursor moves today; the fix applies to the arrows profile too — you (accepted my recommendation); Vim's `halfpage()` — you (2026-10-10) |
+| `R.page` | `ctrl+f` `ctrl+b` and PageDown/PageUp (Vim's page, both profiles), `zz` `zt` `zb`, counted | 2 | S | you (2026-10-10) |
+| `R.fold` | `zo` `zc` `za`, counted; the cursor keeps its line inside a closed fold | 1 | S | counts and the kept line: mine, after Vim 9.1 |
 | `R.foldall` | `zR` `zM` (open/close all) | 2 | S | |
-| `R.search` | `/` `n` `N` search with a match counter | 1 | S | |
-| `R.star` | `*` `#` search for the word under the cursor | 2 | S | |
-| `R.yy` | `yy` copy the line / node value | 2 | S | mine |
-| `R.visual` | `v` `V` select + `y` in Raw | 2 | S | mine |
+| `R.search` | `/` `?` `n` `N` search with a match counter, from the cursor; Vim patterns in vim, plain text in arrows, both matching case | 1 | S | you (2026-10-10); `?` mine |
+| `R.star` | `*` `#` search for the word under the cursor, counted | 2 | S | Vim's word rule |
+| `R.yy` | `yy`, `{N}yy` yank lines into the unnamed register (a closed fold: all its lines) | 2 | S | you (2026-10-10) |
+| `R.visual` | `V` line selection: motions extend, `o`, `y`; `v` is a note | 2 | S | mine |
 
 ## 8. Panes, tabs, command line
 

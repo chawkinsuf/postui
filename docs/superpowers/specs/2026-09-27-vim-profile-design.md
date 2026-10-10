@@ -724,6 +724,24 @@ ctrl+End here, because the response's bare Home/End scroll sideways
 
 Amended by plan M4a: `ctrl+d`/`ctrl+u` move the view and the cursor by the same half page, and where the view cannot scroll further the cursor still moves, clamped to the first or last line; a view already past the end (the pane grew, or a fold shrank what shows) never scrolls back up on `ctrl+d` (`mine`). A fold is the container the line opens, or else the one it sits in, so `zc` or `za` on a value closes the object around it and puts the cursor on its opening line, as Vim does (`mine`). `/`, `n` and `N` are table rows in both profiles, their count ignored, and arrows' `c` is a row too: the response component keeps named keys only (§4.5; `mine` where the spec is silent).
 
+Amended by plan M5a (2026-10-10). The user decided, against Vim 9.1 probes: the response window follows Vim in both profiles. The view follows the cursor by `update_topline()`, so a far jump centres its line. ctrl+d/ctrl+u are `halfpage()`, and a count sets `'scroll'`. ctrl+f/ctrl+b and PageDown/PageUp are `onepage()`. Searches start from the cursor, and a wrap or a miss shows Vim's message as an Info toast (`you`). The response's `/` is Vim's pattern language in vim and plain text in arrows, both matching case (`you`). `yy` and V `y` fill the engine's unnamed register linewise, not the clipboard, and a closed fold yanks all its lines, as Vim's fold does (`you`; the fold rule follows Vim). This replaces the `yy` and V rows above. Decided by me, open for review (`mine`): the cursor's column is 0 except right after a search lands on a match; folds keep the cursor's real line (`zc` then `zo` returns), replacing M4a's "the cursor on the fold's opening line"; `{N}zo`/`{N}zc`/`{N}za` as Vim counts them; `?` and counted vim `n`/`N` that follow the last direction (arrows' `n`/`N` and the ▼/▲ buttons step down and up); only line Visual, where the window commands, `o`, `y`, `V`, Esc and `v` (a note) are bound and other vim keys are swallowed; the wheel keeps the cursor where it is, and the window commands start from the view's nearest edge; the response keeps its own last search. All of these share the engine's `move.c` port (`vim::engine::View` over `Rows`) and its search compiler. The probe record is in plan M5a.
+
+Decisions made while building M5a (`you` = the user ruled; `mine` = my ruling, open for review):
+- `you`: arrows' `n`/`N`/▼▲ with no search do nothing, as on main; vim shows Vim's E35 text.
+- `you`: a shift+↑/↓ after a drag anchors at the drag's anchor line, as on main, in both profiles.
+- `you`: an edge-beeping ctrl+u/ctrl+b/PageUp keeps the line selection in both profiles (main dropped it in arrows).
+- `mine`: the `"+yy` register is not real (the `"` note stays), Esc in the search box is unchanged, and Vim's hidden-line move on `j` from a closed fold (probe F5) is left.
+- `mine`: any cursor move (click, shown cursor, `o`, Space toggle) forgets the hidden fold line; the 13 Extend rows mirror the Motion rows on purpose.
+- `mine`: an edge beep on a page key changes nothing and keeps the selection, as Vim keeps Visual on a failed page key.
+- `mine`: in V, PageDown/PageUp extend like ctrl+f/ctrl+b; ctrl+Home/End are not table rows, so there they jump and end the selection where Vim extends (a known gap).
+- `mine`: `?` `*` `#` `V` `v` are vim-only, as `dd` and `zo` are.
+- `mine`: the empty-box re-run of the last query (`/<CR>`) is vim-only, and Esc on an empty box does nothing in both profiles.
+- `mine`: a search or `*` from a line hidden in a closed fold starts on the hidden line, in both profiles (Vim's rule; probes X15, X16), where the plan's Review Focus 1 had assumed the fold's first line.
+- `mine`: V `y` drops the search column (Vim); only `yy` keeps it.
+- `mine`: in vim's V, Enter extends one line down and Space is swallowed; arrows' V keeps main's Space and Enter.
+- `mine`: a keys.toml override of `n` `N` `c` `/` still wins in arrows while a shift selection is up.
+- `mine`: `o` in V forgets the hidden search column where Vim keeps the anchor's; the footer chips lose their vim keycap while V is up.
+
 ### 5.8 Panes and tabs
 
 | Keys (vim) | Arrows | Behaviour | Who |
@@ -753,6 +771,8 @@ After the second M4a code review (all `mine`): on the Manage screen arrows' `alt
 3. Then it moves. Only a vim tab key that changed the tab lands the editor caret.
 
 Every `<C-w>` key, `gt`/`gT`/`{N}gt` and arrows' `alt+←/→` take this path (`App::leave_then_go`). After any of them, no edit is live anywhere but in the field with the caret, and the footer's echo is empty. A generated test runs every window and tab input from every start state in both profiles against these rules (`app/key_invariant_tests.rs`).
+
+Amended by plan M5a: each window and tab key is one table row on the navigation surfaces, a screen field's idle Normal and the response's V; the rows carry no `leave` flag, because the app closes a field only when one is open, and on a closed surface none is (`mine`). `ctrl+w` takes the arrow keys as targets (`<C-w><Left>` is `<C-w>h`). A window key from the response's V ends the selection first, as Vim leaves Visual.
 
 ### 5.9 The `:` command line
 
@@ -1135,6 +1155,8 @@ milestone.
   - `ctrl+w` + arrows; command-line history.
   - Then the acceptance sweep (§8.4). Any tier-2 item that proves costly
     moves to a follow-up and its key-list row is marked Parked.
+  - **Split** (`you`, 2026-10-09, accepting my recommendation) into M5a (the row collapse, `ctrl+w` + arrows, the response's tier 2) and M5b (`.`, sidebar folds, command-line history, `:wq!`/`:x!`, `:new` from an open cell), with the §8.4 sweep on main after both. The user's rule for this milestone: everything follows what Vim would do (2026-10-09).
+  - **Shipped (M5a)** by plan 2026-10-10-vim-profile-m5a. Decided by you (2026-10-10): the response window follows Vim in both profiles; Vim patterns for the response's `/` in vim, plain text in arrows, both matching case; yanks into the unnamed register. Decided by me, open for your review (`mine`): the plan's Deviations 7–19 and the build-time rulings, recorded in §5.7 and §5.8 above. Key-list milestones are `M5a` and `M5b`.
 
 ## 10. Open questions (decided 2026-09-27)
 

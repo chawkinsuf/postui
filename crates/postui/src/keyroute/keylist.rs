@@ -27,7 +27,9 @@ pub enum Status {
 
 /// The piece 4 milestone that ships a row (plan M4a Deviation 13): M4 is
 /// split into M4a (panes, tabs, the response) and M4b (the command line
-/// and the globals).
+/// and the globals). M5 is split into M5a (the response viewer, `ctrl+w` +
+/// arrows) and M5b (`.`, sidebar folds, command-line history) (plan M5a
+/// Deviation 1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Milestone {
     M1,
@@ -35,7 +37,8 @@ pub enum Milestone {
     M3,
     M4a,
     M4b,
-    M5,
+    M5a,
+    M5b,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -51,7 +54,7 @@ pub struct Row {
 
 /// The milestone this build ships through: the coverage test checks the
 /// rows up to it.
-pub const MILESTONE: Milestone = Milestone::M4b;
+pub const MILESTONE: Milestone = Milestone::M5a;
 
 const fn row(id: &'static str, tier: Tier, status: Status, milestone: Milestone, arrows: bool) -> Row {
     Row { id, tier, status, milestone, arrows }
@@ -71,26 +74,26 @@ pub static KEY_LIST: &[Row] = &[
     row("L.yank", One, Ship, M2, true),
     row("L.undo", One, Ship, M1, true),
     row("L.search", Out, OutRow, M1, false),
-    row("L.fold", Two, Ship, M5, false),
-    row("L.dot", Two, Ship, M5, false),
+    row("L.fold", Two, Ship, M5b, false),
+    row("L.dot", Two, Ship, M5b, false),
     row("L.hml", Out, OutRow, M1, false),
     row("R.move", One, Ship, M1, true),
     row("R.ctrl-d", One, Ship, M4a, true),
-    row("R.page", Two, Ship, M5, false),
+    row("R.page", Two, Ship, M5a, true),
     row("R.fold", One, Ship, M4a, false),
-    row("R.foldall", Two, Ship, M5, false),
+    row("R.foldall", Two, Ship, M5a, false),
     row("R.search", One, Ship, M1, true),
-    row("R.star", Two, Ship, M5, false),
-    row("R.yy", Two, Ship, M5, false),
-    row("R.visual", Two, Ship, M5, false),
+    row("R.star", Two, Ship, M5a, false),
+    row("R.yy", Two, Ship, M5a, false),
+    row("R.visual", Two, Ship, M5a, false),
     row("P.ctrlw", One, Ship, M4a, true),
-    row("P.ctrlw-arrows", Two, Ship, M5, false),
+    row("P.ctrlw-arrows", Two, Ship, M5a, false),
     row("P.gt", One, Ship, M4a, true),
     row("X.wq", One, Ship, M4b, false),
     row("X.e", Two, Ship, M4b, false),
     row("X.verbs", One, Ship, M4b, false),
     row("X.edit", One, Ship, M4b, false),
-    row("X.history", Two, Ship, M5, false),
+    row("X.history", Two, Ship, M5b, false),
     row("X.unsupported", Out, OutRow, M4b, false),
     row("X.noh", Two, Ship, M4b, false),
     row("D.prompt", One, Ship, M3, true),
