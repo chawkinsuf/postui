@@ -1237,13 +1237,34 @@ impl ReadyView {
         None
     }
 
-    /// Where a search starts (plan M5a Deviation 7): the cursor's real line
+    /// Where Vim's cursor is (plan M5a Deviation 7): the cursor's real line
     /// in corpus lines, and the column of the match last landed on there,
-    /// else 0.
+    /// else 0. `*` takes its word here; a search starts from
+    /// [`Self::search_from`].
     fn search_pos(&self) -> (usize, usize) {
         let line = self.real_line().unwrap_or(0);
         let col = self.at_col.filter(|(l, _)| *l == line).map_or(0, |(_, c)| c);
         (line, col)
+    }
+
+    /// Where a search in `backward`'s direction starts: [`Self::search_pos`],
+    /// except when a closed fold holds the cursor's line (the cursor hidden
+    /// inside it, or on its own collapsed row). Then Vim's `do_search()`
+    /// starts outside the outermost closed one: a forward search after its
+    /// closing line, a backward one at its opening line's column 0, so the
+    /// matches it hides are skipped (probes R1–R10, the controller's ruling
+    /// over the plan's Review Focus 1).
+    fn search_from(&self, backward: bool) -> (usize, usize) {
+        let (line, col) = self.search_pos();
+        let fold = match self.mode {
+            ViewMode::Pretty => self.active_tree().and_then(|t| t.closed_fold(line)),
+            _ => None,
+        };
+        match fold {
+            Some((open, _)) if backward => (open, 0),
+            Some((_, close)) => (close, usize::MAX),
+            None => (line, col),
+        }
     }
 
     /// Lands on match `current`, expanding whatever containers hide it, and
@@ -1264,15 +1285,15 @@ impl ReadyView {
         self.at_col = Some((line, start));
     }
 
-    /// Vim's `searchit()` from the cursor, `count` hits, wrapping (plan M5a
-    /// Deviation 4): forward, the first match starting after the cursor (one
-    /// starting on its line's end counts one column back, as the engine's
-    /// `search` has it: amendment A5.3); backward, the last one starting
-    /// before it. The note says a wrap or a miss, as Vim's message line
-    /// does.
+    /// Vim's `searchit()` from the cursor ([`Self::search_from`]), `count`
+    /// hits, wrapping (plan M5a Deviation 4): forward, the first match
+    /// starting after the cursor (one starting on its line's end counts one
+    /// column back, as the engine's `search` has it: amendment A5.3);
+    /// backward, the last one starting before it. The note says a wrap or a
+    /// miss, as Vim's message line does.
     fn land_match(&mut self, backward: bool, count: usize) -> Option<String> {
         use crate::vim::engine::{Dir, not_found_note, wrap_note};
-        let (line, col) = self.search_pos();
+        let (line, col) = self.search_from(backward);
         let search = self.search.as_ref()?;
         let matches = &search.matches;
         if matches.is_empty() {
@@ -1301,25 +1322,32 @@ impl ReadyView {
         wrapped.then(|| wrap_note(if backward { Dir::Backward } else { Dir::Forward }).to_string())
     }
 
-    /// Commits the box (Enter, Esc, the ▼/▲ click): an empty box takes the
-    /// last query, as Vim's `/` Enter does; then lands from the cursor in
-    /// the box's direction. A Vim box left empty with no last query says
-    /// Vim's E35 (probe E1); arrows' finds nothing, as on main.
-    fn commit_search(&mut self) {
+    /// Commits the box (Enter, Esc, the ▼/▲ click), then lands from the
+    /// cursor in the box's direction. Esc on an empty box only closes it,
+    /// in both profiles: Vim's Esc cancels, and main ran nothing (the
+    /// controller's ruling). Otherwise an empty Vim box takes the last
+    /// query, as Vim's `/` Enter does, and says Vim's E35 when there is
+    /// none (probe E1); an empty arrows box finds nothing, as on main.
+    fn commit_search(&mut self, esc: bool) {
         let Some(search) = self.search.as_mut() else { return };
         search.active = false;
         search.input.end_edit();
         let typed = search.input.text().to_string();
-        search.query = if typed.is_empty() { self.last_query.clone().unwrap_or_default() } else { typed };
-        let (query, backward, syntax) = (search.query.clone(), search.backward, search.syntax);
+        if esc && typed.is_empty() {
+            search.query.clear();
+            search.matches.clear();
+            search.current = 0;
+            return;
+        }
+        let vim = search.syntax == SearchSyntax::Vim;
+        search.query = if typed.is_empty() && vim { self.last_query.clone().unwrap_or_default() } else { typed };
+        let (query, backward) = (search.query.clone(), search.backward);
         if !query.is_empty() {
             self.last_query = Some(query.clone());
         }
         self.note = match self.recompute_matches() {
             Some(note) => Some(note),
-            None if query.is_empty() => {
-                (syntax == SearchSyntax::Vim).then(|| crate::vim::engine::NO_PREVIOUS_PATTERN.to_string())
-            }
+            None if query.is_empty() => vim.then(|| crate::vim::engine::NO_PREVIOUS_PATTERN.to_string()),
             None => self.land_match(backward, 1),
         };
     }
@@ -2569,7 +2597,7 @@ impl Response {
         match view.search.as_ref() {
             None => false,
             Some(s) if s.active => {
-                view.commit_search();
+                view.commit_search(false);
                 true
             }
             Some(s) if s.query.is_empty() => false,
@@ -2904,7 +2932,8 @@ impl Response {
         // what clears it.
         if view.search.as_ref().is_some_and(|s| s.active) {
             match ev.code {
-                KeyCode::Enter | KeyCode::Esc => view.commit_search(),
+                KeyCode::Enter => view.commit_search(false),
+                KeyCode::Esc => view.commit_search(true),
                 _ => {
                     let search = view.search.as_mut().expect("checked above");
                     search.input.handle_key(ev);
@@ -3005,8 +3034,11 @@ impl Response {
                 view.clear_sel();
                 Some(Action::Render)
             }
+            // The response's last search goes with it (plan M5a Deviation
+            // 13): `n` and an empty `/` both say E35 after it.
             KeyCode::Esc if view.search.is_some() => {
                 view.search = None;
+                view.last_query = None;
                 Some(Action::Render)
             }
             // Esc from the tree stops at the selection and the search —
@@ -6020,7 +6052,7 @@ mod tests {
         (v.cursor, s.matches.get(s.current).map(|m| (m.0, m.1)), s.query.clone())
     }
 
-    /// Probes S1–S3, S6–S12, S19 and the blank-line rule (Review Focus 2).
+    /// Probes S1, S3–S12, S19 and the blank-line rule (Review Focus 2).
     /// The tree's lines: 0 `{`, 1 `"user-id": 5,`, 2 `"user_id": 6,`,
     /// 3 `"Name": "alice",`, 4 `"name": "bob",`, 5 `"items": [`, 6 `1,`,
     /// 7 `2`, 8 `],`, 9 `"id": "x1"`, 10 `}`, each indented as printed.
@@ -6058,8 +6090,32 @@ mod tests {
         r.find_word(true, 1);
         assert_eq!(landed(&r), (4, Some((4, 3)), r"\<name\>".into()), "S6: Name is another word");
         assert_eq!(r.take_note().as_deref(), Some("search hit TOP, continuing at BOTTOM"));
+        let mut r = at(3);
+        r.find_word(false, 1);
+        assert_eq!(landed(&r), (3, Some((3, 3)), r"\<Name\>".into()), "S5: case matters, so it wraps to itself");
+        let mut r = at(6);
+        r.find_word(false, 1);
+        assert_eq!(landed(&r), (6, Some((6, 4)), r"\<1\>".into()), "S11");
+        // S7, S8, S19 with matches on both sides (`name` on raw lines 0, 2,
+        // 4 and 6), so a wrong direction lands elsewhere.
+        let names = || {
+            let mut r = ready("name\nx\nname\nx\nname\nx\nname");
+            r.view.as_mut().unwrap().cursor = 4;
+            r.find_word(true, 1);
+            assert_eq!(landed(&r).0, 2, "# goes up");
+            r
+        };
+        let mut r = names();
         assert!(r.find_next(false, 1));
-        assert_eq!(landed(&r).0, 4, "S7: n keeps #'s direction");
+        assert_eq!(landed(&r).0, 0, "S7: n keeps #'s direction, up");
+        let mut r = names();
+        assert!(r.find_next(true, 1));
+        assert_eq!(landed(&r).0, 4, "S8: N after # goes down");
+        let mut r = names();
+        r.find_word(false, 1);
+        assert_eq!(landed(&r).0, 4, "* goes down");
+        assert!(r.find_next(false, 1));
+        assert_eq!(landed(&r).0, 6, "S19: * sets the direction forward again");
         let mut r = at(9);
         r.find_word(false, 1);
         assert_eq!(landed(&r), (1, Some((1, 8)), r"\<id\>".into()), "S12: user-id's id");
@@ -6098,10 +6154,11 @@ mod tests {
         r.open_search(SearchSyntax::Vim, false);
         typed(&mut r, "name");
         assert_eq!(landed(&r).1, Some((4, 3)), "S17: Name on line 3 is another case");
-        let mut r = ready("a.c\nabc\na.c");
+        let mut r = ready("a.c\nabc\na.c\nxa.c");
         r.open_search(SearchSyntax::Vim, false);
         typed(&mut r, "^a.c$");
-        assert_eq!(r.view().unwrap().search.as_ref().unwrap().matches.len(), 3, "vim: a pattern");
+        let s = r.view().unwrap().search.as_ref().unwrap();
+        assert_eq!(s.matches.iter().map(|m| m.0).collect::<Vec<_>>(), [0, 1, 2], "vim: a pattern, anchored");
         let mut r = ready("a.c\nabc\na.c");
         r.open_search(SearchSyntax::Literal, false);
         typed(&mut r, "a.c");
@@ -6110,11 +6167,13 @@ mod tests {
         r.open_search(SearchSyntax::Literal, false);
         typed(&mut r, "ABC");
         assert_eq!(r.take_note().as_deref(), Some("Pattern not found: ABC"), "arrows matches case too");
-        let mut r = ready("abc");
+        let mut r = ready("abc\nxyz\nabc");
+        r.view.as_mut().unwrap().cursor = 1;
         r.open_search(SearchSyntax::Vim, false);
         typed(&mut r, r"a\{-}");
         let note = r.take_note().unwrap_or_default();
         assert!(note.starts_with("pattern not supported"), "an atom outside the subset: {note}");
+        assert_eq!(r.view().unwrap().cursor, 1, "and nothing moves");
     }
 
     /// Probe S16: `n` from the cursor, wrapping with Vim's note.
@@ -6174,6 +6233,58 @@ mod tests {
         assert_eq!(r.take_note(), None, "arrows: an empty box finds nothing, as on main");
     }
 
+    /// The controller's rulings on an empty box, and Deviation 13's Esc:
+    /// an empty Enter re-runs the last query in vim only (Vim's `/<CR>`);
+    /// arrows' finds nothing, as on main. Esc on an empty box only closes
+    /// it, in both profiles, while Esc on a typed box runs it (plan Q2).
+    /// Esc in the view forgets the last query too, so an empty `/` then
+    /// says E35, as `n` does.
+    #[test]
+    fn an_empty_box_reruns_only_in_vim_and_esc_cancels_it() {
+        use SearchSyntax::{Literal, Vim};
+        // Raw lines: x on 0, 2 and 4.
+        const BODY: &str = "x\ny\nx\ny\nx";
+        let cursor = |r: &Response| r.view().unwrap().cursor;
+        let mut r = ready(BODY);
+        r.open_search(Vim, false);
+        typed(&mut r, "x");
+        assert_eq!(cursor(&r), 2);
+        r.open_search(Vim, false);
+        typed(&mut r, "");
+        assert_eq!((cursor(&r), landed(&r).2), (4, "x".into()), "vim: the last query again");
+        let mut r = ready(BODY);
+        r.open_search(Literal, false);
+        typed(&mut r, "x");
+        r.open_search(Literal, false);
+        typed(&mut r, "");
+        assert_eq!((cursor(&r), landed(&r)), (2, (2, None, String::new())), "arrows: nothing, as on main");
+        assert_eq!(r.take_note(), None);
+        for syntax in [Vim, Literal] {
+            let mut r = ready(BODY);
+            r.open_search(syntax, false);
+            typed(&mut r, "x");
+            r.take_note();
+            r.open_search(syntax, false);
+            r.handle_key(key(KeyCode::Esc));
+            assert_eq!(landed(&r), (2, None, String::new()), "{syntax:?}: Esc on an empty box runs nothing");
+            assert_eq!(r.take_note(), None, "{syntax:?}");
+            assert!(!r.view().unwrap().search.as_ref().unwrap().active, "{syntax:?}: the box closed");
+            r.open_search(syntax, false);
+            r.handle_key(ch('x'));
+            r.handle_key(key(KeyCode::Esc));
+            assert_eq!(cursor(&r), 4, "{syntax:?}: Esc on a typed box runs it");
+        }
+        let mut r = ready(BODY);
+        r.open_search(Vim, false);
+        typed(&mut r, "x");
+        r.handle_key(key(KeyCode::Esc));
+        assert!(r.view().unwrap().search.is_none(), "Esc in the view clears the search");
+        r.open_search(Vim, false);
+        typed(&mut r, "");
+        assert_eq!(r.take_note().as_deref(), Some("No previous regular expression"), "and the last query");
+        assert_eq!(cursor(&r), 2);
+    }
+
     /// Amendment A5.4 (the user's decision): arrows' `n`/`N` and the ▼/▲
     /// buttons with no search do nothing, as on main; vim's `n` says E35.
     #[test]
@@ -6187,20 +6298,65 @@ mod tests {
         assert_eq!(r.take_note().as_deref(), Some("No previous regular expression"), "vim");
     }
 
-    /// Review Focus 1 (probes X15, X16): from the line a closed fold hides.
+    /// Review Focus 1, as Vim 9.1 does it (probes X15, X16, R1–R4, R6–R8,
+    /// R10; the controller's ruling over the plan's premise): when a closed
+    /// fold holds the cursor's line, hidden in it or on its own collapsed
+    /// row, a forward search starts after the outermost closed fold's
+    /// closing line and a backward one at its opening line, so the matches
+    /// it hides are skipped and it stays closed. `*` and `#` still take
+    /// their word from the hidden line. Both profiles.
     #[test]
-    fn a_search_from_a_closed_fold_starts_on_the_hidden_line() {
+    fn a_search_from_a_closed_fold_starts_outside_it() {
         use crate::action::FoldOp;
-        let mut r = ready(r#"[{"a": 1, "b": 2}, "b"]"#);
-        render(&mut r);
-        // full lines: 0 [, 1 {, 2 "a": 1, 3 "b": 2, 4 }, 5 "b", 6 ]
-        r.view.as_mut().unwrap().cursor = 3;
-        assert!(r.fold(FoldOp::Close, 1));
+        // 0 {, 1 "a": {, 2 "b": 1, 3 }, 4 "c": 2, 5 }
+        const FOLD: &str = r#"{"a": {"b": 1}, "c": 2}"#;
+        // 0 {, 1 "a": [, 2 "b", 3 "b", 4 ], 5 "b": 3, 6 }
+        const ARR: &str = r#"{"a": ["b", "b"], "b": 3}"#;
+        // 0 {, 1 "b": 0, 2 "a": [, 3 "b", 4 "b", 5 ], 6 "c": 3, 7 }
+        const ARR2: &str = r#"{"b": 0, "a": ["b", "b"], "c": 3}"#;
+        let folded = |body: &str, line: usize| {
+            let mut r = ready(body);
+            render(&mut r);
+            r.view.as_mut().unwrap().cursor = line;
+            assert!(r.fold(FoldOp::Close, 1));
+            r
+        };
+        let closed = |r: &Response, line: usize| r.view().unwrap().active_tree().unwrap().closed_fold(line);
+        let searched = |mut r: Response, syntax, backward, text: &str| {
+            r.open_search(syntax, backward);
+            typed(&mut r, text);
+            r
+        };
+        let r = searched(folded(FOLD, 2), SearchSyntax::Vim, false, "}");
+        assert_eq!(landed(&r).1, Some((5, 0)), "R1: not the fold's own closing line");
+        assert_eq!(closed(&r, 2), Some((1, 3)), "R1: the fold stays closed");
+        let r = searched(folded(FOLD, 2), SearchSyntax::Literal, false, "}");
+        assert_eq!(landed(&r).1, Some((5, 0)), "R1 in arrows too");
+        let r = searched(folded(FOLD, 2), SearchSyntax::Vim, true, "{");
+        assert_eq!(landed(&r).1, Some((0, 0)), "R2: back from the fold's opening line's column 0");
+        let r = searched(folded(FOLD, 2), SearchSyntax::Vim, false, "c");
+        assert_eq!(landed(&r).1, Some((4, 3)), "R8 (X15)");
+        let mut r = folded(ARR, 2);
         assert_eq!(r.view().unwrap().cursor, 1);
         assert!(r.find_word(false, 1));
-        let s = r.view().unwrap().search.as_ref().unwrap();
-        assert_eq!(s.query, r"\<b\>", "the word on the hidden line, not on `{{`");
-        assert_eq!(s.matches[s.current].0, 5, "the next b after line 3");
+        assert_eq!(landed(&r), (2, Some((5, 3)), r"\<b\>".into()), "R3: the word from the hidden line, found past the fold");
+        assert_eq!(closed(&r, 2), Some((1, 4)));
+        let mut r = folded(ARR2, 4);
+        assert!(r.find_word(true, 1));
+        assert_eq!(landed(&r), (1, Some((1, 3)), r"\<b\>".into()), "R4: # from the fold's opening line");
+        let r = searched(folded(ARR, 1), SearchSyntax::Vim, false, "b");
+        assert_eq!(landed(&r).1, Some((5, 3)), "R7: on the fold's own collapsed row");
+        let mut r = searched(ready(ARR), SearchSyntax::Vim, false, "b");
+        assert_eq!(landed(&r).1, Some((2, 5)));
+        assert!(r.fold(FoldOp::Close, 1));
+        assert!(r.find_next(false, 1));
+        assert_eq!(landed(&r).1, Some((5, 3)), "R6: n skips the fold the match closed into");
+        let mut r = searched(ready(ARR2), SearchSyntax::Vim, false, "b");
+        r.find_next(false, 2);
+        assert_eq!(landed(&r).1, Some((4, 5)));
+        assert!(r.fold(FoldOp::Close, 1));
+        assert!(r.find_next(true, 1));
+        assert_eq!(landed(&r).1, Some((1, 3)), "R10: N skips the hidden b on line 3");
     }
 
     #[test]

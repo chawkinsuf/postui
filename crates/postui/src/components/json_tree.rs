@@ -622,6 +622,18 @@ impl JsonTree {
         self.visible_index_of(shown)
     }
 
+    /// The outermost closed fold at full line `full` (Vim's `hasFolding()`):
+    /// a closed container it sits in, or the one it opens, as its (opening,
+    /// closing) full lines. A search from inside it starts outside it.
+    /// `None` when nothing closed holds the line.
+    pub fn closed_fold(&self, full: usize) -> Option<(usize, usize)> {
+        self.folds_at(full)
+            .into_iter()
+            .map(|id| &self.containers[id])
+            .find(|c| self.lines[c.open_line as usize].collapsed())
+            .map(|c| (c.open_line as usize, c.end_line as usize))
+    }
+
     /// Expands every container that `full_index` lives inside, so that line
     /// becomes visible. Used when jumping to a search match.
     pub fn expand_ancestors(&mut self, full_index: usize) {
