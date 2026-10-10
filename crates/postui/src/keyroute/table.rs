@@ -186,8 +186,8 @@ impl Surfaces {
     /// Where vim builds counts and swallows a bare char no row names (spec
     /// §3.4): the navigation surfaces and the response's V.
     pub const KEYED: Self = Self::NAV.or(Self::RESPONSE_LINES);
-    /// The navigation surfaces but the response, whose `gg`/`G` are
-    /// ctrl+Home/ctrl+End (its bare Home/End scroll sideways).
+    /// The navigation surfaces but the response, whose motions are its own
+    /// `Motion` rows.
     pub const LISTS: Self = Self::NAV.minus(Self::RESPONSE);
     /// Where a row opens on Enter (`o`).
     pub const OPENS_ROW: Self = Self::SIDEBAR

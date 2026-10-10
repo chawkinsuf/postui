@@ -1085,6 +1085,27 @@ impl ReadyView {
         self.clamp_cursor();
     }
 
+    /// Lands on buffer line `line` (clamped to the last), as Vim's `{N}G`
+    /// counts lines (final review I1; probes G1–G8). On the tree view a
+    /// closed fold that hides it shows the cursor on its row and remembers
+    /// the line (Deviation 8); elsewhere a line is a row. The view does not
+    /// follow here.
+    fn land_line(&mut self, line: usize) {
+        let tree = match self.mode {
+            ViewMode::Pretty => self.active_tree().filter(|t| t.line_count() > 0),
+            _ => None,
+        };
+        let Some((real, shown, hidden)) = tree.map(|t| {
+            let real = line.min(t.line_count() - 1);
+            (real, t.holder(real).unwrap_or(0), t.visible_index_of(real).is_none())
+        }) else {
+            self.land(line);
+            return;
+        };
+        self.land(shown);
+        self.fold_line = hidden.then_some(real);
+    }
+
     /// `delta` lines, clamped, the view following (Vim's `j`/`k`).
     fn move_cursor(&mut self, delta: i32) {
         self.motion(ResponseMotion::Lines(i64::from(delta)));
@@ -1128,7 +1149,16 @@ impl ReadyView {
         match m {
             ResponseMotion::Lines(n) => {
                 let at = (self.cursor as i64).saturating_add(n).clamp(0, len as i64 - 1) as usize;
-                self.jump_cursor(at);
+                if at == self.cursor && self.fold_line.is_none() {
+                    // Vim's `j`/`k` beeps at the edge and the cursor keeps
+                    // its column (final review T5 m4). A selection still
+                    // drops, as on main; a cursor hidden in a fold still
+                    // moves to the row (its real line changes).
+                    self.clear_sel();
+                    self.follow_cursor();
+                } else {
+                    self.jump_cursor(at);
+                }
             }
             ResponseMotion::Goto { line, last } => {
                 let at = match line {
@@ -1136,7 +1166,8 @@ impl ReadyView {
                     None if last => usize::MAX,
                     None => 0,
                 };
-                self.jump_cursor(at);
+                self.land_line(at);
+                self.follow_cursor();
             }
             ResponseMotion::HalfPage { down, count } => {
                 let shown = self.shown_cursor();
@@ -1151,21 +1182,21 @@ impl ReadyView {
                 self.scroll_opt = scroll;
             }
             ResponseMotion::Page { down, count } => {
-                let (before, remembered) = (self.cursor, self.fold_line);
+                let before = (self.cursor, self.fold_line, self.at_col);
                 self.pull_cursor(self.shown_cursor());
                 let shown = (self.scroll, self.cursor);
                 let moved = w.onepage(self, down, count.max(1));
                 if !moved && (self.scroll, self.cursor) == shown {
-                    // Beeped at once: nothing changed, the selection stays.
-                    self.cursor = before;
-                    self.fold_line = remembered;
+                    // Beeped at once: nothing changed, the selection and
+                    // the search column included (final review m3).
+                    (self.cursor, self.fold_line, self.at_col) = before;
                 } else {
                     self.clear_sel();
                 }
             }
             ResponseMotion::Place { at, line } => {
                 match line {
-                    Some(n) => self.land(n.saturating_sub(1)),
+                    Some(n) => self.land_line(n.saturating_sub(1)),
                     None => self.pull_cursor(self.shown_cursor()),
                 }
                 match at {
@@ -6026,6 +6057,112 @@ mod tests {
         assert_eq!((r.view().unwrap().cursor, r.view().unwrap().real_line()), (2, Some(4)));
         assert!(!r.fold(FoldOp::Open, 1), "nothing closed holds the clicked line");
         assert_eq!((r.view().unwrap().cursor, r.view().unwrap().real_line()), (2, Some(4)), "not back on the old hidden line");
+    }
+
+    /// Final review I1 (probes G1–G8, Vim 9.1.697): on a folded tree,
+    /// `{N}G`, `{N}gg` and `{N}zt` count buffer lines, as Vim does, not
+    /// the rows shown. A line a closed fold hides shows on the fold's row,
+    /// which remembers it; bare `G` goes to the last line the same way.
+    #[test]
+    fn counted_jumps_count_buffer_lines_on_a_folded_tree() {
+        use crate::action::{FoldOp, Place, ResponseMotion as M};
+        let gg = |line| M::Goto { line, last: false };
+        let big_g = |line| M::Goto { line, last: true };
+        let zt = |line| M::Place { at: Place::Top, line };
+        // Full lines: 0 {, 1 "a": {, 2 "b": 1, 3 }, 4 "c": 2, 5 }. After
+        // `zc` on line 2 the rows are: 0 {, 1 "a": {..} (lines 1-3), 2
+        // "c": 2, 3 }. Each case: (id, zM instead of zc, motions, cursor
+        // row, real line, top row).
+        let cases = [
+            ("G1", false, vec![gg(None), big_g(Some(4))], 1, 3, None),
+            ("G2", false, vec![gg(None), big_g(Some(5))], 2, 4, None),
+            ("G3", false, vec![gg(None), zt(Some(5))], 2, 4, Some(2)),
+            ("G4", false, vec![big_g(None), gg(Some(3))], 1, 2, None),
+            ("G5", true, vec![big_g(None)], 0, 5, None),
+            ("G6", false, vec![gg(None), zt(Some(3))], 1, 2, Some(1)),
+            ("G7", false, vec![gg(None), big_g(Some(99))], 3, 5, None),
+        ];
+        for (id, all, motions, row, real, top) in cases {
+            let mut r = ready(r#"{"a": {"b": 1}, "c": 2}"#);
+            r.view.as_mut().unwrap().height = 23;
+            r.view.as_mut().unwrap().cursor = 2;
+            assert!(r.fold(if all { FoldOp::CloseAll } else { FoldOp::Close }, 1));
+            for m in motions {
+                r.motion(m);
+            }
+            let v = r.view().unwrap();
+            assert_eq!((v.cursor, v.real_line()), (row, Some(real)), "{id}");
+            if let Some(top) = top {
+                assert_eq!(v.scroll, top, "{id}: the line's row on top");
+            }
+        }
+        // G8: `zM G zR` shows the cursor on the last line it went to.
+        let mut r = ready(r#"{"a": {"b": 1}, "c": 2}"#);
+        r.view.as_mut().unwrap().height = 23;
+        r.fold(FoldOp::CloseAll, 1);
+        r.motion(big_g(None));
+        assert!(r.fold(FoldOp::OpenAll, 1));
+        assert_eq!((r.view().unwrap().cursor, r.view().unwrap().real_line()), (5, Some(5)), "G8");
+        // Task 4's review probe: `k`, `3k`, `gg` and `1G` from a line hidden
+        // under a fold on the top row land on the opener, forgetting it.
+        for m in [M::Lines(-1), M::Lines(-3), gg(None), big_g(Some(1))] {
+            let mut r = ready(r#"{"a": {"b": 1}, "c": 2}"#);
+            r.view.as_mut().unwrap().height = 23;
+            r.view.as_mut().unwrap().cursor = 2;
+            r.fold(FoldOp::CloseAll, 1);
+            r.motion(m);
+            assert_eq!((r.view().unwrap().cursor, r.view().unwrap().real_line()), (0, Some(0)), "{m:?}");
+        }
+    }
+
+    /// Final review m3: a page key that pulls an off-screen cursor to the
+    /// view's edge and then beeps changes nothing, the search column
+    /// included, so `n` still steps on from the match it landed on.
+    #[test]
+    fn a_page_key_that_beeps_keeps_the_search_column() {
+        use crate::action::ResponseMotion as M;
+        let body = (0..100).map(|i| if i == 50 { "a x x".to_string() } else { format!("line {i}") }).collect::<Vec<_>>().join("\n");
+        let mut r = ready(&body);
+        r.view.as_mut().unwrap().height = 23;
+        assert!(r.open_search(SearchSyntax::Vim, false));
+        r.handle_key(ch('x'));
+        r.handle_key(key(KeyCode::Enter));
+        assert_eq!((r.view().unwrap().cursor, r.view().unwrap().at_col), (50, Some((50, 2))), "/x lands");
+        r.set_scroll(0);
+        r.motion(M::Page { down: false, count: 1 });
+        let v = r.view().unwrap();
+        assert_eq!((v.scroll, v.cursor, v.at_col), (0, 50, Some((50, 2))), "ctrl+b at the top beeps");
+        assert!(r.find_next(false, 1));
+        assert_eq!((r.view().unwrap().cursor, r.view().unwrap().at_col), (50, Some((50, 4))), "n finds the next match");
+    }
+
+    /// Final review T5 m4 (probes J1–J3, Vim 9.1.697): a `j` or `k` that
+    /// beeps at the view's edge leaves the cursor where it is, its search
+    /// column included, so `n` finds the next match, not the same one.
+    #[test]
+    fn a_line_motion_that_beeps_keeps_the_search_column() {
+        use crate::action::ResponseMotion as M;
+        let mut r = ready("x\nb\nc x x");
+        r.view.as_mut().unwrap().height = 23;
+        r.view.as_mut().unwrap().cursor = 1;
+        assert!(r.open_search(SearchSyntax::Vim, false));
+        r.handle_key(ch('x'));
+        r.handle_key(key(KeyCode::Enter));
+        assert_eq!((r.view().unwrap().cursor, r.view().unwrap().at_col), (2, Some((2, 2))), "J2: /x lands");
+        r.motion(M::Lines(1));
+        assert_eq!((r.view().unwrap().cursor, r.view().unwrap().at_col), (2, Some((2, 2))), "J2: j beeps");
+        assert!(r.find_next(false, 1));
+        assert_eq!((r.view().unwrap().cursor, r.view().unwrap().at_col), (2, Some((2, 4))), "J1: n finds the next match");
+        let mut r = ready("c x x\nb\nx");
+        r.view.as_mut().unwrap().height = 23;
+        r.view.as_mut().unwrap().cursor = 1;
+        assert!(r.open_search(SearchSyntax::Vim, true));
+        r.handle_key(ch('x'));
+        r.handle_key(key(KeyCode::Enter));
+        assert_eq!((r.view().unwrap().cursor, r.view().unwrap().at_col), (0, Some((0, 4))), "?x lands");
+        r.motion(M::Lines(-1));
+        assert!(r.find_next(false, 1));
+        assert_eq!((r.view().unwrap().cursor, r.view().unwrap().at_col), (0, Some((0, 2))), "J3: n goes on backward");
     }
 
     #[test]
