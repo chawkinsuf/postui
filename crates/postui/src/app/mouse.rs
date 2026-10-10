@@ -63,6 +63,7 @@ impl App {
         // drag release commits without an action and can bail between
         // `begin_op` and its record.
         self.op_in_flight = false;
+        let ended = self.end_visual_off_response();
         let noted = self.toast_response_note();
         self.arm_pending_toasts();
         // Same reason as `handle_key`: a click that only pops a modal
@@ -70,7 +71,7 @@ impl App {
         // not be left down.
         let regated = self.reraise_startup_config_gate();
         let asked = self.raise_keymap_choice();
-        changed || noted || regated || asked
+        changed || ended || noted || regated || asked
     }
 
     fn handle_mouse_inner(&mut self, m: ratatui::crossterm::event::MouseEvent) -> bool {

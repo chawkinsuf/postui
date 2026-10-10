@@ -15,6 +15,22 @@ impl App {
         self.panes.note(self.focus);
     }
 
+    /// Vim leaves Visual whenever the window changes (plan M5a Task 6): in
+    /// the vim profile, a V selection on the response ends once the
+    /// keyboard is anywhere else, by a window key, a click, the palette or
+    /// another screen. Run at the boundary of each input event, so every
+    /// way of leaving counts. A drag's character selection is not Visual,
+    /// and an arrows shift selection is a GUI one: both stay, as on main.
+    /// Whether it ended one.
+    pub(super) fn end_visual_off_response(&mut self) -> bool {
+        let away = self.screen != Screen::Main || self.focus != PaneId::Response;
+        if !(away && self.profile() == crate::config::KeyProfile::Vim && self.session.response.line_selection()) {
+            return false;
+        }
+        self.session.response.lines(crate::action::LinesOp::End);
+        true
+    }
+
     /// `Action::PaneMove`: whether the keyboard moved. An open field closes
     /// first, but only when there is a pane to move to: a refused move
     /// leaves it open, caret and all (the user's decision, 2026-10-05, as
@@ -26,15 +42,9 @@ impl App {
                 let Some(to) = crate::keyroute::panes::toward(self.focus, dir, &self.panes) else {
                     return false;
                 };
-                // Vim leaves Visual on a window command: a V selection on the
-                // response ends as the key moves (plan M5a Task 6). A drag's
-                // character selection is not Visual, and stays.
-                self.leave_then_go(true, |app| {
-                    if app.session.response.line_selection() {
-                        app.session.response.lines(crate::action::LinesOp::End);
-                    }
-                    app.update(Action::FocusPane(to))
-                })
+                // A V selection the move leaves behind ends at the event's
+                // boundary (`end_visual_off_response`).
+                self.leave_then_go(true, |app| app.update(Action::FocusPane(to)))
             }
             Screen::Manage => {
                 let Some(to_detail) = self.manage_pane_target(dir) else {

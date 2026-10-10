@@ -9176,6 +9176,35 @@ fn the_response_v_selection_yanks_and_ends_on_a_window_key() {
     assert!(!app.session.response.line_selection(), "and ended V");
 }
 
+/// Vim ends Visual whenever the window changes, not only on a window key: a
+/// click on another pane (or any other focus move) ends vim's V as well. An
+/// arrows shift selection is a GUI selection and stays, as on main.
+#[test]
+fn the_response_v_selection_ends_on_any_focus_move_in_vim_only() {
+    use crate::config::KeyProfile;
+    let body = (1..=30).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+    for (profile, start, stays) in [
+        (KeyProfile::Vim, KeyEvent::new(KeyCode::Char('V'), KeyModifiers::SHIFT), false),
+        (KeyProfile::Arrows, KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT), true),
+    ] {
+        let mut app = App::new_for_test();
+        app.use_profile(profile);
+        ready_response(&mut app, &body);
+        app.focus = PaneId::Response;
+        app.handle_key(start);
+        assert!(app.session.response.line_selection(), "{profile:?}");
+        render_once(&mut app);
+        let r = app.hits.rect_of(&Hit::EditorTab(0)).unwrap();
+        app.handle_mouse(left_down(r.x, r.y));
+        assert_eq!(app.focus, PaneId::Editor, "{profile:?}");
+        assert_eq!(app.session.response.line_selection(), stays, "{profile:?}: a click away");
+        app.focus = PaneId::Response;
+        if !stays {
+            assert_eq!(app.mode_indicator(), Some("NORMAL"), "back on the response, V is over");
+        }
+    }
+}
+
 /// Task 6 fix round 1 (the controller's ruling; probe R6f): with vim's V up
 /// on the tree, Space neither toggles a fold nor ends V, and Enter extends a
 /// line down; an arrows shift selection keeps main's Space, a fold toggle

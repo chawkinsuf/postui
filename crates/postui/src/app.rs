@@ -10205,13 +10205,14 @@ impl App {
         // per action: a key handled without an action (a var-form or
         // grid commit) can bail between `begin_op` and its record.
         self.op_in_flight = false;
+        let ended = self.end_visual_off_response();
         let noted = self.toast_response_note();
         self.arm_pending_toasts();
         // Not every key reaches `update` -- Esc on a modal just pops it
         // -- so the gate is re-checked at the event boundary too.
         let regated = self.reraise_startup_config_gate();
         let asked = self.raise_keymap_choice();
-        changed || noted || regated || asked
+        changed || ended || noted || regated || asked
     }
 
     fn route_key(&mut self, ev: KeyEvent) -> fields::Ran {
