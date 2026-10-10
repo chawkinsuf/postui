@@ -109,6 +109,31 @@ fn a_change_elsewhere_makes_dot_stale() {
     let mut app = vim(Fixture::TableThreeHeaders);
     feed(&mut app, "ddix<Esc>:w<CR>.");
     assert_eq!(app.editor.headers.len(), 2, "the cell closed with the line: its edit may be the last change");
+    // The body never closes, but its engine session holds the Insert's
+    // edit until a palette command flushes it (`:e!` discards through
+    // `flush_field_session`): that edit is the last change too.
+    let mut app = build(Fixture::Body);
+    let get = postui_core::model::HttpRequest::from_toml_str(r#"url = "https://x/1""#).unwrap();
+    for slug in ["main/alpha", "main/beta"] {
+        postui_core::fixtures::save_request(app.proj().root(), slug, &get).unwrap();
+    }
+    app.update(Action::RefreshSidebar);
+    // Persisted, so `:e!`'s reload keeps the profile (no keymap question).
+    super::key_matrix_tests::use_persisted_profile(&mut app, KeyProfile::Vim);
+    app.focus = PaneId::Sidebar;
+    app.sidebar.selected = app.sidebar.rows.iter().position(|r| matches!(r, Row::Request { slug, .. } if slug == "main/alpha"));
+    draw(&mut app);
+    feed(&mut app, "dd");
+    assert_eq!(requests(&app), ["main/beta", "main/matrix"]);
+    feed(&mut app, "<C-w>l");
+    assert_eq!(app.surface(), crate::keyroute::Surface::Body, "back in the body");
+    feed(&mut app, "ix<Esc>");
+    assert!(app.field_gate(), "the body's session holds the edit");
+    feed(&mut app, ":e!<CR><C-w>h");
+    assert_eq!(app.surface(), crate::keyroute::Surface::Sidebar);
+    assert!(app.toasts.messages().contains(&"Changes discarded — ^Z undoes"), "the `:e!` ran: {:?}", app.toasts.messages());
+    feed(&mut app, ".");
+    assert_eq!(requests(&app), ["main/beta", "main/matrix"], "the body's edit was the last change");
 }
 
 /// Probe D0: nothing to repeat, nothing said.

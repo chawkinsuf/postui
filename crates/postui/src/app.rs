@@ -11357,9 +11357,11 @@ impl App {
         if res.close {
             popped = self.modals.pop();
             // Vim's command-line commands leave `.` alone (probes D9, D16),
-            // unless a field open under the line closes with it: its edit
-            // may be the last change (plan M5b Deviation 6).
-            if matches!(popped, Some(Modal::Palette(_))) && !self.screen_field_open() {
+            // unless a field open under the line closes with it, or a field
+            // session (the body's, which never closes) holds edits the
+            // line's command may flush: that edit may be the last change
+            // (plan M5b Deviation 6).
+            if matches!(popped, Some(Modal::Palette(_))) && !self.screen_field_open() && !self.field_gate() {
                 self.dot_pending = DotPending::Kept { before: changes_before };
             }
             // Overlay close is always instant.
