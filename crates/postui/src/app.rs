@@ -4514,6 +4514,26 @@ impl App {
                 }
                 true
             }
+            Action::SidebarFold { op, count } => {
+                use crate::components::sidebar::FoldChange;
+                let Some(real) = self.sidebar.fold_cursor() else { return false };
+                match self.sidebar.fold_change(op, count, &self.expanded(), &self.active_space()) {
+                    FoldChange::NoFold => {
+                        self.update(Action::ShowToast(crate::keyroute::table::NO_FOLD.into(), ToastKind::Info))
+                    }
+                    FoldChange::Same => false,
+                    FoldChange::Expanded(set) => {
+                        if let Some(p) = self.project_mut() {
+                            // The setter persists, as `h` and `l` do: a fold
+                            // is no undo step (plan M5b Deviation 12).
+                            p.set_expanded(set);
+                        }
+                        self.refresh_sidebar();
+                        self.sidebar.show_fold_cursor(real);
+                        true
+                    }
+                }
+            }
             Action::OpenProjectChooser => {
                 self.apply(Action::ReloadProjectFiles);
                 use crate::components::chooser::{ChooserItem, ChooserState};
@@ -11240,7 +11260,7 @@ impl App {
     /// cursor's own marker (a steady control fill) just moves on the next
     /// draw.
     fn set_sidebar_selected(&mut self, i: usize) {
-        self.sidebar.selected = Some(i);
+        self.sidebar.select_row(i);
     }
 
     /// Pops the top modal on `close` and dispatches each of `res`'s

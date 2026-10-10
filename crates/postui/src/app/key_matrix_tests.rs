@@ -74,6 +74,8 @@ pub(super) enum Fixture {
 enum Expect {
     /// The sidebar cursor's request slug.
     SidebarSel(&'static str),
+    /// The sidebar cursor is on this folder row.
+    SidebarFolderSel(&'static str),
     TableRow(usize),
     /// 0 the name cell, 1 the value cell.
     TableCol(usize),
@@ -243,6 +245,20 @@ const CASES: &[Case] = &[
     vim("L.search", SidebarThree, "/j", &[Toast("No search in this list yet"), SidebarSel("main/gamma")]),
     vim("L.hml", SidebarThree, "Hj", &[SidebarSel("main/gamma"), NoToast]),
     vim("L.hml", SidebarThree, "zzj", &[SidebarSel("main/gamma"), NoToast]),
+    // Key list §6 (`L.fold`), M5b: the sidebar's folders are Vim's folds
+    // (plan M5b Deviations 9–11); the other lists have none.
+    vim("L.fold", SidebarFolder, "zo", &[Requests(&["main/alpha", "main/beta", "main/gamma", "main/f/inner"]), SidebarFolderSel("main/f")]),
+    vim("L.fold", SidebarFolder, "zojzc", &[Requests(&["main/alpha", "main/beta", "main/gamma"]), SidebarFolderSel("main/f")]),
+    vim("L.fold", SidebarFolder, "zojzczo", &[SidebarSel("main/f/inner")]),
+    vim("L.fold", SidebarFolder, "zojzckzo", &[SidebarSel("main/gamma"), Toast("No fold found")]),
+    vim("L.fold", SidebarFolder, "za", &[Requests(&["main/alpha", "main/beta", "main/gamma", "main/f/inner"])]),
+    vim("L.fold", SidebarFolder, "zaza", &[Requests(&["main/alpha", "main/beta", "main/gamma"]), SidebarFolderSel("main/f")]),
+    vim("L.fold", SidebarFolder, "zR", &[Requests(&["main/alpha", "main/beta", "main/gamma", "main/f/inner"])]),
+    vim("L.fold", SidebarFolder, "zRjzM", &[Requests(&["main/alpha", "main/beta", "main/gamma"]), SidebarFolderSel("main/f")]),
+    vim("L.fold", SidebarFolder, "zc", &[Requests(&["main/alpha", "main/beta", "main/gamma"]), NoToast]),
+    vim("L.fold", SidebarThree, "zo", &[Toast("No fold found"), SidebarSel("main/beta")]),
+    vim("L.fold", TableThreeHeaders, "za", &[Toast("No fold found"), TableLen(3)]),
+    vim("L.fold", TableThreeHeaders, "zRj", &[NoToast, TableRow(2)]),
     vim("R.move", ResponseLines, "j", &[ResponseLine(1)]),
     vim("R.move", ResponseLines, "5j", &[ResponseLine(5)]),
     vim("R.move", ResponseLines, "G", &[ResponseLast]),
@@ -716,6 +732,9 @@ pub(super) fn draw(app: &mut App) {
 fn check(app: &App, e: Expect) -> Result<(), String> {
     let ok = match e {
         SidebarSel(slug) => app.sidebar.selected_slug().as_deref() == Some(slug),
+        SidebarFolderSel(path) => {
+            matches!(app.sidebar.selected_key(), Some(crate::components::sidebar::RowKey::Folder(p)) if p == path)
+        }
         TableRow(n) => app.editor.table.selected == Some(n),
         TableCol(n) => usize::from(app.editor.table.col == crate::components::table_editor::Col::Value) == n,
         TableLen(n) => app.editor.headers.len() == n,

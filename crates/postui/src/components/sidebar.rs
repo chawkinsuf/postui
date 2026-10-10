@@ -1,5 +1,5 @@
 use super::{Component, DrawCtx};
-use crate::action::{Action, Verb};
+use crate::action::{Action, FoldOp, Verb};
 use crate::anim::{AnimKey, ListId};
 use crate::hit::{self, Hit, HitMap, ScrollbarSpec};
 use crate::layout::PaneId;
@@ -48,6 +48,17 @@ pub enum Row {
 pub enum RowKey {
     Folder(String),
     Request(String),
+}
+
+/// What a fold key does to the sidebar's folders (plan M5b Deviation 9).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FoldChange {
+    /// No folder holds the cursor's row: Vim's E490, "No fold found".
+    NoFold,
+    /// Nothing to open or close.
+    Same,
+    /// The open folders after the key.
+    Expanded(BTreeSet<String>),
 }
 
 #[derive(Default)]
@@ -104,6 +115,12 @@ pub struct Sidebar {
     /// Screen row of the first list line as of the last draw — with
     /// `scroll`, maps a pointer row back to a row index (`row_at_y`).
     last_list_top: u16,
+    /// The row the cursor is really on while a closed folder hides it, and
+    /// the folder row it shows on (plan M5b Deviation 10): Vim's cursor
+    /// keeps its line inside a closed fold, so `zc` then `zo` comes back.
+    /// Any cursor move forgets it, and it counts only while the folder row
+    /// is still the selected one.
+    fold_row: Option<(RowKey, RowKey)>,
 }
 
 /// A live drag of one sidebar request row: the working order the pointer
@@ -273,21 +290,26 @@ impl Sidebar {
         })
     }
 
-    /// The first request of `space` as if every folder were expanded: the
-    /// switch fallback when no visible row is a request.
-    pub fn first_request_in_space(&self, space: &str, order: &[String]) -> Option<String> {
+    /// Every folder of `space`, open or not: the paths `zR` opens.
+    fn folders_in(&self, space: &str) -> BTreeSet<String> {
         let prefix = format!("{space}/");
-        let mut all_folders = BTreeSet::new();
+        let mut all = BTreeSet::new();
         for l in self.listing.iter().filter(|l| l.slug.starts_with(&prefix)) {
             let mut segs: Vec<&str> = l.slug[prefix.len()..].split('/').collect();
             segs.pop();
             let mut path = space.to_string();
             for seg in segs {
                 path = format!("{path}/{seg}");
-                all_folders.insert(path.clone());
+                all.insert(path.clone());
             }
         }
-        self.first_visible_request_in_space(space, order, &all_folders)
+        all
+    }
+
+    /// The first request of `space` as if every folder were expanded: the
+    /// switch fallback when no visible row is a request.
+    pub fn first_request_in_space(&self, space: &str, order: &[String]) -> Option<String> {
+        self.first_visible_request_in_space(space, order, &self.folders_in(space))
     }
 
     /// Builds the rows for one folder level (`prefix`, possibly empty for
@@ -375,6 +397,7 @@ impl Sidebar {
             Some(i) => {
                 self.selected = Some(i);
                 self.ensure_visible = true;
+                self.fold_row = None;
                 true
             }
             None => false,
@@ -383,6 +406,7 @@ impl Sidebar {
 
     /// The first request row, else the first row; nothing when empty.
     pub fn select_first(&mut self) {
+        self.fold_row = None;
         if self.rows.is_empty() {
             return;
         }
@@ -434,6 +458,7 @@ impl Sidebar {
     /// caller can open them before the next `refresh` (which is what
     /// actually makes the row visible when it wasn't already).
     pub fn select_slug(&mut self, slug: &str) {
+        self.fold_row = None;
         self.expand_to(slug);
 
         if let Some(i) = self
@@ -451,6 +476,7 @@ impl Sidebar {
     /// for after the row that was there disappeared. Leaves the selection
     /// alone when no request row remains.
     pub fn select_nearest_request(&mut self, from: usize) {
+        self.fold_row = None;
         let is_request = |r: &Row| matches!(r, Row::Request { .. });
         let below = self
             .rows
@@ -575,9 +601,91 @@ impl Sidebar {
     /// reselect the folder (which happens automatically, by identity, on
     /// the next `refresh`).
     pub fn toggle_selected_folder(&mut self) -> Option<(String, bool)> {
+        self.fold_row = None;
         match self.selected_row()? {
             Row::Folder { path, expanded, .. } => Some((path.clone(), !expanded)),
             Row::Request { .. } => None,
+        }
+    }
+
+    /// Selects row `i` (a click): the cursor moved, so a row a closed folder
+    /// hid is forgotten.
+    pub fn select_row(&mut self, i: usize) {
+        self.selected = Some(i);
+        self.fold_row = None;
+    }
+
+    /// The folders that hold `key`, outermost first. A folder row is the
+    /// first line of its own fold, as a Vim fold's first line is, so it sits
+    /// in itself too; a request sits in its folders. The space is no folder.
+    fn folds_of(key: &RowKey) -> Vec<String> {
+        let path = match key {
+            RowKey::Folder(path) => path.as_str(),
+            RowKey::Request(slug) => slug.rsplit_once('/').map_or("", |(dir, _)| dir),
+        };
+        let segs: Vec<&str> = path.split('/').collect();
+        (2..=segs.len()).map(|n| segs[..n].join("/")).collect()
+    }
+
+    /// The row the cursor is really on: the one a closed folder hides, while
+    /// the folder row that shows it is still selected (Deviation 10), else
+    /// the selected row.
+    pub fn fold_cursor(&self) -> Option<RowKey> {
+        let shown = self.selected_key()?;
+        match &self.fold_row {
+            Some((real, at)) if *at == shown => Some(real.clone()),
+            _ => Some(shown),
+        }
+    }
+
+    /// Vim's `zo` `zc` `za` with a count, and `zR` `zM`, on the folders of
+    /// `space` (plan M5b Deviations 9 and 11; probes F1–F38), from the open
+    /// set `expanded`. `zo` `zc` `za` pick by `FoldOp::pick`, the rule
+    /// `JsonTree::fold_at` uses, over the folders holding the cursor's row;
+    /// `zR` and `zM`: every folder of `space`.
+    pub fn fold_change(&self, op: FoldOp, count: usize, expanded: &BTreeSet<String>, space: &str) -> FoldChange {
+        let mut set = expanded.clone();
+        match op {
+            FoldOp::OpenAll => set.extend(self.folders_in(space)),
+            FoldOp::CloseAll => {
+                let prefix = format!("{space}/");
+                set.retain(|f| !f.starts_with(&prefix));
+            }
+            FoldOp::Open | FoldOp::Close | FoldOp::Toggle => {
+                let Some(real) = self.fold_cursor() else { return FoldChange::Same };
+                let ids = Self::folds_of(&real);
+                if ids.is_empty() {
+                    return FoldChange::NoFold;
+                }
+                let closed: Vec<bool> = ids.iter().map(|f| !expanded.contains(f)).collect();
+                if let Some((open, pick)) = op.pick(&closed, count) {
+                    for i in pick {
+                        if open {
+                            set.insert(ids[i].clone());
+                        } else {
+                            set.remove(&ids[i]);
+                        }
+                    }
+                }
+            }
+        }
+        if set == *expanded { FoldChange::Same } else { FoldChange::Expanded(set) }
+    }
+
+    /// Puts the cursor back on `real` after a fold key, the rows rebuilt: on
+    /// its own row when it shows, else on the row of the outermost closed
+    /// folder that hides it, remembering `real` (probes F2, F11, F33).
+    pub fn show_fold_cursor(&mut self, real: RowKey) {
+        if self.select_key(&real) {
+            return;
+        }
+        let holder = Self::folds_of(&real).into_iter().find(|f| {
+            self.rows.iter().any(|r| matches!(r, Row::Folder { path, expanded: false, .. } if path == f))
+        });
+        if let Some(path) = holder {
+            let at = RowKey::Folder(path);
+            self.select_key(&at);
+            self.fold_row = Some((real, at));
         }
     }
 
@@ -585,6 +693,7 @@ impl Sidebar {
     /// included), clamped to the first/last row. With nothing selected the
     /// first press lands on the top row rather than being a dead key.
     fn move_selection(&mut self, delta: i32) {
+        self.fold_row = None;
         if self.rows.is_empty() {
             return;
         }
@@ -614,6 +723,7 @@ impl Sidebar {
     /// selection, if it has one and that row is visible. A no-op (still
     /// redraws) when there's no parent, e.g. at the top level.
     fn jump_to_parent(&mut self) {
+        self.fold_row = None;
         let Some(row) = self.selected_row() else {
             return;
         };
@@ -2627,5 +2737,170 @@ mod tests {
             Some(Action::Render)
         );
         assert_eq!(s.selected, Some(0));
+    }
+
+    /// A key of the fold probes (plan M5b Task 3).
+    #[derive(Debug, Clone, Copy)]
+    enum FoldKey {
+        Z(crate::action::FoldOp, usize),
+        Down,
+        Up,
+    }
+
+    /// The fold probes' tree: `top`, then `api/` (`ping`, `pong`, `auth/`
+    /// (`login`)), then `zeta/` (`z1`), with `open` folders and the cursor
+    /// on `at`. Its rows are the probe buffer's lines, in order.
+    fn probe_tree(open: &[&str], at: &RowKey) -> (Sidebar, BTreeSet<String>) {
+        let mut s = Sidebar::default();
+        let open = expanded(open);
+        s.refresh(listing(&["top", "api/ping", "api/pong", "api/auth/login", "zeta/z1"]), "main", &open, &[]);
+        assert!(s.select_key(at), "{at:?} shows");
+        (s, open)
+    }
+
+    /// One key as the app runs it (`Action::SidebarFold`): the new folders
+    /// kept and the rows rebuilt, then the cursor put back. Whether it was
+    /// Vim's "No fold found".
+    fn press(s: &mut Sidebar, open: &mut BTreeSet<String>, key: FoldKey) -> bool {
+        let (op, count) = match key {
+            FoldKey::Down => {
+                s.move_selection(1);
+                return false;
+            }
+            FoldKey::Up => {
+                s.move_selection(-1);
+                return false;
+            }
+            FoldKey::Z(op, count) => (op, count),
+        };
+        let real = s.fold_cursor().expect("a cursor");
+        match s.fold_change(op, count, open, "main") {
+            FoldChange::NoFold => return true,
+            FoldChange::Same => {}
+            FoldChange::Expanded(set) => {
+                *open = set;
+                s.rebuild("main", open, &[]);
+                s.show_fold_cursor(real);
+            }
+        }
+        false
+    }
+
+    /// One fold probe: the folders open before, the cursor, the keys, the
+    /// folders shut after (a folder shut inside a shut one included), the
+    /// row the cursor is really on, the row it is drawn on, and whether a
+    /// key said "No fold found".
+    struct FoldCase<'a> {
+        id: &'a str,
+        open: &'a [&'a str],
+        at: RowKey,
+        keys: Vec<FoldKey>,
+        closed: &'a [&'a str],
+        real: RowKey,
+        shown: RowKey,
+        no_fold: bool,
+    }
+
+    /// Plan M5b Deviations 9–11: every fold key against Vim 9.1 (the probe
+    /// record's F1–F38, lines as rows). `closed` lists the folders shut
+    /// after the keys, a folder shut inside a shut one included; `real` is
+    /// the row the cursor is on, `shown` the row it is drawn on.
+    #[test]
+    fn the_sidebar_folds_as_vim_folds() {
+        use crate::action::FoldOp::{Close, CloseAll, Open, OpenAll, Toggle};
+        use FoldKey::{Down, Up, Z};
+        let req = |s: &str| RowKey::Request(format!("main/{s}"));
+        let dir = |s: &str| RowKey::Folder(format!("main/{s}"));
+        let all = ["api", "api/auth", "zeta"];
+        let zc = Z(Close, 1);
+        let zo = Z(Open, 1);
+        let za = Z(Toggle, 1);
+        let zm = Z(CloseAll, 1);
+        let zr = Z(OpenAll, 1);
+        let cases = vec![
+            FoldCase { id: "F1", open: &all, at: req("api/pong"), keys: vec![zc], closed: &["api"], real: req("api/pong"), shown: dir("api"), no_fold: false },
+            FoldCase { id: "F2", open: &all, at: req("api/auth/login"), keys: vec![zc], closed: &["api/auth"], real: req("api/auth/login"), shown: dir("api/auth"), no_fold: false },
+            FoldCase { id: "F3", open: &all, at: req("api/auth/login"), keys: vec![zc, zc], closed: &["api", "api/auth"], real: req("api/auth/login"), shown: dir("api"), no_fold: false },
+            FoldCase { id: "F4", open: &all, at: req("api/auth/login"), keys: vec![zc, zc, zc], closed: &["api", "api/auth"], real: req("api/auth/login"), shown: dir("api"), no_fold: false },
+            FoldCase { id: "F5", open: &all, at: dir("api"), keys: vec![zc], closed: &["api"], real: dir("api"), shown: dir("api"), no_fold: false },
+            FoldCase { id: "F6", open: &all, at: dir("api"), keys: vec![zc, zc], closed: &["api"], real: dir("api"), shown: dir("api"), no_fold: false },
+            FoldCase { id: "F7", open: &all, at: req("top"), keys: vec![zc], closed: &[], real: req("top"), shown: req("top"), no_fold: true },
+            FoldCase { id: "F8", open: &all, at: req("top"), keys: vec![zo], closed: &[], real: req("top"), shown: req("top"), no_fold: true },
+            FoldCase { id: "F9", open: &all, at: req("top"), keys: vec![za], closed: &[], real: req("top"), shown: req("top"), no_fold: true },
+            FoldCase { id: "F10", open: &all, at: req("api/ping"), keys: vec![zo], closed: &[], real: req("api/ping"), shown: req("api/ping"), no_fold: false },
+            FoldCase { id: "F11", open: &all, at: req("api/auth/login"), keys: vec![zm, zo], closed: &["api/auth", "zeta"], real: req("api/auth/login"), shown: dir("api/auth"), no_fold: false },
+            FoldCase { id: "F12", open: &all, at: req("api/auth/login"), keys: vec![zm, Z(Open, 2)], closed: &["zeta"], real: req("api/auth/login"), shown: req("api/auth/login"), no_fold: false },
+            FoldCase { id: "F13", open: &all, at: req("api/auth/login"), keys: vec![zm, zr], closed: &[], real: req("api/auth/login"), shown: req("api/auth/login"), no_fold: false },
+            FoldCase { id: "F14a", open: &all, at: req("api/auth/login"), keys: vec![za], closed: &["api/auth"], real: req("api/auth/login"), shown: dir("api/auth"), no_fold: false },
+            FoldCase { id: "F14b", open: &all, at: req("api/auth/login"), keys: vec![za, za], closed: &[], real: req("api/auth/login"), shown: req("api/auth/login"), no_fold: false },
+            FoldCase { id: "F15", open: &all, at: req("api/auth/login"), keys: vec![Z(Toggle, 2)], closed: &["api", "api/auth"], real: req("api/auth/login"), shown: dir("api"), no_fold: false },
+            FoldCase { id: "F16", open: &all, at: req("api/auth/login"), keys: vec![zm, za], closed: &["api/auth", "zeta"], real: req("api/auth/login"), shown: dir("api/auth"), no_fold: false },
+            FoldCase { id: "F17", open: &all, at: req("api/auth/login"), keys: vec![zm, Z(Toggle, 2)], closed: &["zeta"], real: req("api/auth/login"), shown: req("api/auth/login"), no_fold: false },
+            FoldCase { id: "F18", open: &all, at: req("api/pong"), keys: vec![zc, Down], closed: &["api"], real: dir("zeta"), shown: dir("zeta"), no_fold: false },
+            FoldCase { id: "F19", open: &all, at: req("api/pong"), keys: vec![zc, Up], closed: &["api"], real: req("top"), shown: req("top"), no_fold: false },
+            FoldCase { id: "F20", open: &all, at: dir("api/auth"), keys: vec![zc], closed: &["api/auth"], real: dir("api/auth"), shown: dir("api/auth"), no_fold: false },
+            FoldCase { id: "F21", open: &all, at: dir("api/auth"), keys: vec![zc, Down], closed: &["api/auth"], real: dir("zeta"), shown: dir("zeta"), no_fold: false },
+            FoldCase { id: "F22", open: &all, at: dir("api"), keys: vec![zc, Down], closed: &["api"], real: dir("zeta"), shown: dir("zeta"), no_fold: false },
+            FoldCase { id: "F23", open: &["api", "zeta"], at: req("api/ping"), keys: vec![zc, zo], closed: &["api/auth"], real: req("api/ping"), shown: req("api/ping"), no_fold: false },
+            FoldCase { id: "F24", open: &all, at: req("top"), keys: vec![zm], closed: &["api", "api/auth", "zeta"], real: req("top"), shown: req("top"), no_fold: false },
+            FoldCase { id: "F25", open: &all, at: req("zeta/z1"), keys: vec![zc, zo], closed: &[], real: req("zeta/z1"), shown: req("zeta/z1"), no_fold: false },
+            FoldCase { id: "F26", open: &all, at: req("api/auth/login"), keys: vec![Z(Close, 3)], closed: &["api", "api/auth"], real: req("api/auth/login"), shown: dir("api"), no_fold: false },
+            FoldCase { id: "F27", open: &all, at: req("api/auth/login"), keys: vec![zm, zc], closed: &["api", "api/auth", "zeta"], real: req("api/auth/login"), shown: dir("api"), no_fold: false },
+            FoldCase { id: "F28", open: &all, at: dir("api"), keys: vec![zm, zc], closed: &["api", "api/auth", "zeta"], real: dir("api"), shown: dir("api"), no_fold: false },
+            FoldCase { id: "F29", open: &all, at: req("top"), keys: vec![zr], closed: &[], real: req("top"), shown: req("top"), no_fold: false },
+            FoldCase { id: "F30", open: &all, at: req("api/auth/login"), keys: vec![zc, Down], closed: &["api/auth"], real: dir("zeta"), shown: dir("zeta"), no_fold: false },
+            FoldCase { id: "F31", open: &all, at: req("api/auth/login"), keys: vec![zc, zc, Up], closed: &["api", "api/auth"], real: req("top"), shown: req("top"), no_fold: false },
+            FoldCase { id: "F32", open: &all, at: req("api/pong"), keys: vec![zc, Down, zo], closed: &["api"], real: dir("zeta"), shown: dir("zeta"), no_fold: false },
+            FoldCase { id: "F33", open: &all, at: req("api/pong"), keys: vec![zc, zo], closed: &[], real: req("api/pong"), shown: req("api/pong"), no_fold: false },
+            FoldCase { id: "F34", open: &all, at: dir("api"), keys: vec![zm, zo], closed: &["api/auth", "zeta"], real: dir("api"), shown: dir("api"), no_fold: false },
+            FoldCase { id: "F35", open: &all, at: dir("api/auth"), keys: vec![zm, Z(Open, 2)], closed: &["zeta"], real: dir("api/auth"), shown: dir("api/auth"), no_fold: false },
+            FoldCase { id: "F36", open: &all, at: req("api/ping"), keys: vec![zm, zo, zc], closed: &["api", "api/auth", "zeta"], real: req("api/ping"), shown: dir("api"), no_fold: false },
+            FoldCase { id: "F37", open: &all, at: req("api/auth/login"), keys: vec![zm, zo, zo], closed: &["zeta"], real: req("api/auth/login"), shown: req("api/auth/login"), no_fold: false },
+            FoldCase { id: "F38", open: &all, at: req("api/pong"), keys: vec![zm, zr, zo], closed: &[], real: req("api/pong"), shown: req("api/pong"), no_fold: false },
+        ];
+        for FoldCase { id, open: open_before, at, keys, closed, real, shown, no_fold } in cases {
+            let (mut s, mut open) = probe_tree(open_before, &at);
+            let mut noted = false;
+            for key in keys {
+                noted |= press(&mut s, &mut open, key);
+            }
+            let shut: Vec<&str> = all.iter().copied().filter(|f| !open.contains(&format!("main/{f}"))).collect();
+            assert_eq!(shut, closed, "{id}: the folders shut");
+            assert_eq!(s.fold_cursor(), Some(real), "{id}: the cursor's row");
+            assert_eq!(s.selected_key(), Some(shown), "{id}: the row it shows on");
+            assert_eq!(noted, no_fold, "{id}: No fold found");
+        }
+    }
+
+    /// Review Focus 5: `zo` acts on the row the cursor is on now. A move, a
+    /// click or a folder toggle between `zc` and `zo` forgets the row `zc`
+    /// hid, as Vim's cursor leaves it.
+    #[test]
+    fn a_move_forgets_the_hidden_row() {
+        use crate::action::FoldOp::{Close, Open};
+        let login = RowKey::Request("main/api/auth/login".into());
+        let auth = RowKey::Folder("main/api/auth".into());
+        let all = ["api", "api/auth", "zeta"];
+        let zc = FoldKey::Z(Close, 1);
+        let zo = FoldKey::Z(Open, 1);
+        // `k` then `j` comes back to the folder row: the cursor is on it now.
+        let (mut s, mut open) = probe_tree(&all, &login);
+        press(&mut s, &mut open, zc);
+        press(&mut s, &mut open, FoldKey::Up);
+        press(&mut s, &mut open, FoldKey::Down);
+        assert_eq!(s.fold_cursor(), Some(auth.clone()));
+        press(&mut s, &mut open, zo);
+        assert_eq!(s.selected_key(), Some(auth.clone()), "zo opened the folder, the cursor stays on it");
+        // A click on the folder row is a move too.
+        let (mut s, mut open) = probe_tree(&all, &login);
+        press(&mut s, &mut open, zc);
+        let at = s.selected.expect("on the folder");
+        s.select_row(at);
+        assert_eq!(s.fold_cursor(), Some(auth.clone()), "a click forgets it");
+        // So is `l` or `h`'s fold toggle.
+        let (mut s, mut open) = probe_tree(&all, &login);
+        press(&mut s, &mut open, zc);
+        assert!(s.toggle_selected_folder().is_some());
+        assert_eq!(s.fold_cursor(), Some(auth), "a toggle forgets it");
     }
 }
