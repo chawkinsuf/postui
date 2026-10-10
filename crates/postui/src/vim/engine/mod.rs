@@ -38,6 +38,9 @@ mod visual;
 pub use buf::{BodyBuf, BodyVisual, GuiSel, OneLineBuf, Paint, Pos, TextBuf};
 pub use register::{RegKind, Register, Registers};
 pub use search::Dir;
+/// The window code the response viewer shares with the body (plan M5a
+/// Deviation 14).
+pub(crate) use view::{Rows, View};
 
 use insert::{InsertKey, RegPending};
 use keys::{Cmd, Motion, Op, ParseCx, Pending, Reach, Step, VisualOp};

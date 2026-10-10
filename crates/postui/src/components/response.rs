@@ -1,7 +1,7 @@
 use super::json_tree::{JsonTree, TokenKind};
 use super::line_input::LineInput;
 use super::{Component, DrawCtx, pane_surface};
-use crate::action::Action;
+use crate::action::{Action, Place, ResponseMotion};
 use crate::config::JqTab;
 use crate::hit::ScrollbarSpec;
 use crate::layout::PaneId;
@@ -597,6 +597,10 @@ pub struct ReadyView {
     /// Height of the body viewport as of the last draw, so key handling can
     /// keep the cursor on screen. A sane guess until the first frame.
     height: usize,
+    /// Vim's window option `'scroll'` (plan M5a Task 3): the lines ctrl+d
+    /// and ctrl+u move, set by a counted one, reset when the viewport's
+    /// height changes, as Vim's `win_comp_scroll()` does (Deviation 19).
+    scroll_opt: Option<usize>,
     /// Width of the body viewport as of the last draw — the horizontal
     /// counterpart of `height`, used to clamp `h_scroll`.
     width: usize,
@@ -747,6 +751,7 @@ impl ReadyView {
             h_scroll: 0,
             search: None,
             height: 10,
+            scroll_opt: None,
             width: 40,
             content_width: None,
             last_area: None,
@@ -932,14 +937,21 @@ impl ReadyView {
         self.cursor = self.cursor.min(self.visible_len().saturating_sub(1));
     }
 
-    /// Keeps the cursor inside the viewport after a move.
+    /// The window Vim's `move.c` port runs on (plan M5a Task 3).
+    fn window(&self) -> crate::vim::engine::View {
+        crate::vim::engine::View { height: self.height.max(1) }
+    }
+
+    /// Keeps the cursor inside the viewport after a move: Vim's
+    /// `update_topline()`, so a near move scrolls just enough and a far
+    /// jump (a search, `50G`) puts its line mid-window (plan M5a
+    /// Deviation 4).
     fn follow_cursor(&mut self) {
-        let h = self.height.max(1);
-        if self.cursor < self.scroll {
-            self.scroll = self.cursor;
-        } else if self.cursor >= self.scroll + h {
-            self.scroll = self.cursor + 1 - h;
+        if self.visible_len() == 0 {
+            self.scroll = 0;
+            return;
         }
+        self.window().update_topline(self);
     }
 
     /// After a fold opens or closes (a click, `zo` `zc` `za`): the change
@@ -951,52 +963,96 @@ impl ReadyView {
         self.follow_cursor();
     }
 
-    /// The one place a key moves the cursor: `delta` lines, clamped, the
-    /// view following. Every cursor move but shift+↑/↓ drops a line
-    /// selection, or the next shift+↓ would grow it from the anchor the
-    /// move left behind; the rule lives here, not in the key arms, so a
-    /// mover cannot miss it. [`Self::select_line_extend`] is the one
-    /// exception and steps the cursor itself.
-    fn move_cursor(&mut self, delta: i32) {
-        let max = self.visible_len().saturating_sub(1) as i32;
-        self.jump_cursor((self.cursor as i32 + delta).clamp(0, max) as usize);
-    }
-
-    /// The one place a key lands the cursor on a given line (a document
-    /// jump, a search match, a half page): clamped, the view following,
-    /// a line selection dropped as [`Self::move_cursor`] drops it.
-    fn jump_cursor(&mut self, at: usize) {
+    /// The one place a key puts the cursor on a line: clamped, a line
+    /// selection dropped (every cursor move but an extend drops one, or the
+    /// next shift+↓ would grow it from a stale anchor). The view does not
+    /// follow here; [`Self::jump_cursor`] does.
+    fn land(&mut self, at: usize) {
         self.clear_sel();
         self.cursor = at;
         self.clamp_cursor();
+    }
+
+    /// `delta` lines, clamped, the view following (Vim's `j`/`k`).
+    fn move_cursor(&mut self, delta: i32) {
+        self.motion(ResponseMotion::Lines(i64::from(delta)));
+    }
+
+    /// Lands the cursor on a line (a document jump, a search match), the
+    /// view following.
+    fn jump_cursor(&mut self, at: usize) {
+        self.land(at);
         self.follow_cursor();
     }
 
-    /// `ctrl+d` (`down`) or `ctrl+u` (piece 4 spec §5.7, both profiles):
-    /// the view and the cursor move half a page together, so the cursor
-    /// keeps its screen row. Where the view cannot scroll further the
-    /// cursor still moves, clamped to the first or last line (plan M4a
-    /// Deviation 10). A cursor the wheel or the scrollbar left off screen
-    /// is first brought to the view's nearest edge, as Vim keeps it, so the
-    /// step starts from what shows.
-    fn half_page(&mut self, down: bool) {
+    /// The cursor, or the nearest line the view shows when the wheel or the
+    /// scrollbar left it off screen: where a window command starts, as Vim's
+    /// cursor never leaves the window (plan M4a Deviation 10, plan M5a
+    /// Deviation 12).
+    fn shown_cursor(&self) -> usize {
         let height = self.height.max(1);
-        let half = (height / 2).max(1);
         let last = self.visible_len().saturating_sub(1);
-        let max_scroll = self.visible_len().saturating_sub(height);
-        let shown = self
-            .cursor
-            .clamp(self.scroll.min(last), (self.scroll + height - 1).min(last));
-        let at = if down {
-            // A view already past the end (the pane grew, or a fold shrank
-            // what shows) stays put rather than jump back up.
-            self.scroll = (self.scroll + half).min(max_scroll).max(self.scroll);
-            (shown + half).min(last)
-        } else {
-            self.scroll = self.scroll.saturating_sub(half);
-            shown.saturating_sub(half)
-        };
-        self.jump_cursor(at);
+        self.cursor.clamp(self.scroll.min(last), (self.scroll + height - 1).min(last))
+    }
+
+    /// A vim motion or window command (plan M5a Task 3), as Vim 9.1 runs
+    /// it on a window of the visible lines. A window key that beeps at an
+    /// edge changes nothing, a selection included (amendment A3.2).
+    fn motion(&mut self, m: ResponseMotion) {
+        let len = self.visible_len();
+        if len == 0 {
+            return;
+        }
+        let w = self.window();
+        match m {
+            ResponseMotion::Lines(n) => {
+                let at = (self.cursor as i64).saturating_add(n).clamp(0, len as i64 - 1) as usize;
+                self.jump_cursor(at);
+            }
+            ResponseMotion::Goto { line, last } => {
+                let at = match line {
+                    Some(n) => n.saturating_sub(1),
+                    None if last => usize::MAX,
+                    None => 0,
+                };
+                self.jump_cursor(at);
+            }
+            ResponseMotion::HalfPage { down, count } => {
+                let shown = self.shown_cursor();
+                // `nv_halfpage()`: at the edge it beeps before `'scroll'` is set.
+                if (down && shown + 1 >= len) || (!down && shown == 0) {
+                    return;
+                }
+                self.clear_sel();
+                self.cursor = shown;
+                let mut scroll = self.scroll_opt;
+                w.halfpage(self, down, count.unwrap_or(0), &mut scroll);
+                self.scroll_opt = scroll;
+            }
+            ResponseMotion::Page { down, count } => {
+                let before = self.cursor;
+                self.cursor = self.shown_cursor();
+                let shown = (self.scroll, self.cursor);
+                let moved = w.onepage(self, down, count.max(1));
+                if !moved && (self.scroll, self.cursor) == shown {
+                    // Beeped at once: nothing changed, the selection stays.
+                    self.cursor = before;
+                } else {
+                    self.clear_sel();
+                }
+            }
+            ResponseMotion::Place { at, line } => {
+                match line {
+                    Some(n) => self.land(n.saturating_sub(1)),
+                    None => self.cursor = self.shown_cursor(),
+                }
+                match at {
+                    Place::Top => w.scroll_cursor_top(self, 0, true),
+                    Place::Middle => w.scroll_cursor_halfway(self, true, false),
+                    Place::Bottom => w.scroll_cursor_bot(self, 0, true),
+                }
+            }
+        }
     }
 
     fn set_mode(&mut self, mode: ViewMode) {
@@ -1207,6 +1263,30 @@ impl ReadyView {
                 (cl, 0),
             )
         });
+    }
+}
+
+/// The response's lines as Vim's window code sees them (plan M5a Task 3):
+/// the visible lines, `scroll` the top, `cursor` the caret's row. There is
+/// no column (Deviation 7).
+impl crate::vim::engine::Rows for ReadyView {
+    fn lines(&self) -> usize {
+        self.visible_len().max(1)
+    }
+    fn blank(&self) -> bool {
+        self.visible_len() == 0
+    }
+    fn topline(&self) -> usize {
+        self.scroll
+    }
+    fn set_topline(&mut self, row: usize) {
+        self.scroll = row;
+    }
+    fn cur_row(&self) -> usize {
+        self.cursor
+    }
+    fn set_cur_row(&mut self, row: usize, _col0: bool) {
+        self.cursor = row;
     }
 }
 
@@ -2309,6 +2389,15 @@ impl Response {
         true
     }
 
+    /// A vim motion or window command (plan M5a Task 3).
+    pub fn motion(&mut self, m: ResponseMotion) -> bool {
+        let Some(view) = self.view.as_mut() else {
+            return false;
+        };
+        view.motion(m);
+        true
+    }
+
     /// Plants a selection anchor at the screen position of a left click in
     /// the body content (clearing any previous selection). Returns whether
     /// an anchor was planted — the caller arms the drag sweep on `true`.
@@ -2589,22 +2678,22 @@ impl Response {
             // against the focused pane in `app.rs`).
             // The pane's letters (`c`, `/`, `n`, `N`) are the router's table
             // rows (piece 4 spec §4.5): the component keeps named keys only.
+            // ctrl+d/u/f/b and PageDown/PageUp are Vim's window commands in
+            // both profiles (the user's decision, 2026-10-10).
             KeyCode::Char('d') if ev.modifiers == KeyModifiers::CONTROL => {
-                view.half_page(true);
+                view.motion(ResponseMotion::HalfPage { down: true, count: None });
                 Some(Action::Render)
             }
             KeyCode::Char('u') if ev.modifiers == KeyModifiers::CONTROL => {
-                view.half_page(false);
+                view.motion(ResponseMotion::HalfPage { down: false, count: None });
                 Some(Action::Render)
             }
-            // Every cursor move but shift+↑/↓ drops a line selection:
-            // `move_cursor` and `jump_cursor` do it, not the arms.
             KeyCode::Char('f') if ev.modifiers == KeyModifiers::CONTROL => {
-                view.move_cursor(view.height.max(1) as i32);
+                view.motion(ResponseMotion::Page { down: true, count: 1 });
                 Some(Action::Render)
             }
             KeyCode::Char('b') if ev.modifiers == KeyModifiers::CONTROL => {
-                view.move_cursor(-(view.height.max(1) as i32));
+                view.motion(ResponseMotion::Page { down: false, count: 1 });
                 Some(Action::Render)
             }
             KeyCode::Down if ev.modifiers == KeyModifiers::SHIFT => {
@@ -2624,11 +2713,11 @@ impl Response {
                 Some(Action::Render)
             }
             KeyCode::PageDown if plain => {
-                view.move_cursor(view.height.max(1) as i32);
+                view.motion(ResponseMotion::Page { down: true, count: 1 });
                 Some(Action::Render)
             }
             KeyCode::PageUp if plain => {
-                view.move_cursor(-(view.height.max(1) as i32));
+                view.motion(ResponseMotion::Page { down: false, count: 1 });
                 Some(Action::Render)
             }
             KeyCode::Right if plain => {
@@ -2868,6 +2957,9 @@ impl Component for Response {
             body_area.height -= 1;
         }
 
+        if view.height != body_area.height as usize {
+            view.scroll_opt = None;
+        }
         view.height = body_area.height as usize;
         let spec = ScrollbarSpec {
             pane: PaneId::Response,
@@ -4371,9 +4463,13 @@ mod tests {
         for jump in jumps {
             let mut r = ready(&body);
             render(&mut r);
+            // Mid-document, so no page key beeps at an edge: a beep changes
+            // nothing and keeps the selection (plan M5a amendment A3.2).
+            r.view.as_mut().unwrap().scroll = 50;
+            r.view.as_mut().unwrap().cursor = 50;
             r.handle_key(shift_down);
             r.handle_key(shift_down);
-            assert_eq!(r.selected_text().as_deref(), Some("0\n1\n2"), "{jump:?}: the selection to drop");
+            assert_eq!(r.selected_text().as_deref(), Some("50\n51\n52"), "{jump:?}: the selection to drop");
             r.handle_key(jump);
             assert_eq!(r.selected_text(), None, "{jump:?}: the jump drops it");
             let cursor = r.view().unwrap().cursor;
@@ -5060,26 +5156,149 @@ mod tests {
         hits
     }
 
-    #[test]
-    fn page_keys_move_the_cursor_by_a_viewport_page() {
-        let body = (0..100)
-            .map(|i| format!("line {i}"))
-            .collect::<Vec<_>>()
-            .join("\n");
+    /// "line 1" … "line 100" on Raw, a 23-row viewport as in the plan's Vim
+    /// 9.1 probes, the view's top on `top` and the cursor on `cursor`
+    /// (0-based).
+    fn hundred_at(top: usize, cursor: usize) -> Response {
+        let body = (1..=100).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
         let mut r = ready(&body);
-        render(&mut r); // records the viewport height
-        let height = {
+        let v = r.view.as_mut().unwrap();
+        v.height = 23;
+        v.scroll = top;
+        v.cursor = cursor;
+        r
+    }
+
+    /// Plan M5a Task 3: every window key gives Vim 9.1's top line and
+    /// cursor (the plan's probe record, IDs as there).
+    #[test]
+    fn the_window_keys_match_vim() {
+        use crate::action::{Place, ResponseMotion as M};
+        let f = |count| M::Page { down: true, count };
+        let b = M::Page { down: false, count: 1 };
+        let d = |count| M::HalfPage { down: true, count };
+        let u = M::HalfPage { down: false, count: None };
+        let at = |at, line| M::Place { at, line };
+        let goto = |line| M::Goto { line, last: true };
+        type Probe = (&'static str, usize, usize, Vec<M>, usize, usize);
+        let cases: Vec<Probe> = vec![
+            ("P1", 0, 0, vec![f(1)], 21, 21),
+            ("P2", 0, 0, vec![f(1), f(1)], 42, 42),
+            ("P3", 49, 59, vec![b], 28, 50),
+            ("P4", 77, 79, vec![f(1)], 99, 99),
+            ("P5", 77, 79, vec![f(1), f(1)], 99, 99),
+            ("P7", 0, 4, vec![b], 0, 4),
+            ("P8", 0, 0, vec![f(2)], 42, 42),
+            ("P9", 0, 9, vec![f(1)], 21, 21),
+            ("P10", 29, 39, vec![b], 8, 30),
+            ("X1", 0, 0, vec![f(1), b], 0, 22),
+            ("X5", 0, 0, vec![d(None), u], 0, 0),
+            ("Z1", 39, 49, vec![at(Place::Top, None)], 49, 49),
+            ("Z2", 39, 49, vec![at(Place::Middle, None)], 38, 49),
+            ("Z3", 39, 49, vec![at(Place::Bottom, None)], 27, 49),
+            ("Z4", 77, 99, vec![at(Place::Top, None)], 99, 99),
+            ("Z5", 77, 97, vec![at(Place::Middle, None)], 86, 97),
+            ("Z6", 0, 2, vec![at(Place::Bottom, None)], 0, 2),
+            ("Z7", 39, 49, vec![at(Place::Top, Some(10))], 9, 9),
+            ("Z8", 0, 1, vec![at(Place::Middle, None)], 0, 1),
+            ("D1", 0, 0, vec![d(None)], 11, 11),
+            ("D2", 77, 89, vec![d(None)], 77, 99),
+            ("D3", 77, 99, vec![d(None)], 77, 99),
+            ("D4", 0, 0, vec![d(Some(3)), d(None)], 6, 6),
+            ("J1", 0, 0, vec![goto(None)], 77, 99),
+            ("J2", 0, 0, vec![goto(Some(50))], 38, 49),
+            ("J3", 39, 39, vec![M::Lines(-1)], 38, 38),
+            ("J4", 39, 44, vec![goto(Some(30))], 18, 29),
+            ("J5", 39, 44, vec![goto(Some(10))], 0, 9),
+            ("J6", 0, 4, vec![goto(Some(75))], 63, 74),
+            ("J7", 0, 4, vec![goto(Some(40))], 28, 39),
+            ("X4", 0, 0, vec![goto(None), at(Place::Top, None), M::Lines(-1)], 98, 98),
+        ];
+        for (id, top, cursor, motions, want_top, want_cursor) in cases {
+            let mut r = hundred_at(top, cursor);
+            for m in motions {
+                r.motion(m);
+            }
             let v = r.view().unwrap();
-            assert_eq!(v.cursor, 0);
-            v.height
+            assert_eq!((v.scroll, v.cursor), (want_top, want_cursor), "{id}");
+        }
+    }
+
+    /// Review Focus 5: short, past-the-end and empty views.
+    #[test]
+    fn window_keys_on_short_and_empty_views() {
+        use crate::action::{Place, ResponseMotion as M};
+        let mut r = ready("line 1\nline 2\nline 3\nline 4\nline 5");
+        r.view.as_mut().unwrap().height = 23;
+        r.motion(M::Page { down: true, count: 1 });
+        assert_eq!((r.view().unwrap().scroll, r.view().unwrap().cursor), (4, 4), "X2: the last line on top");
+        let mut r = ready("line 1\nline 2\nline 3\nline 4\nline 5");
+        r.view.as_mut().unwrap().height = 23;
+        r.view.as_mut().unwrap().cursor = 2;
+        r.motion(M::Page { down: false, count: 1 });
+        assert_eq!((r.view().unwrap().scroll, r.view().unwrap().cursor), (0, 2), "X3: ctrl+b at the top beeps");
+        // A big body still parsing has no tree yet: an empty Pretty view.
+        let mut r = ready_gen(&big_json(), 1);
+        assert_eq!(r.view().unwrap().visible_len(), 0);
+        for m in [
+            M::Lines(3),
+            M::Goto { line: None, last: true },
+            M::HalfPage { down: true, count: None },
+            M::Page { down: false, count: 1 },
+            M::Place { at: Place::Middle, line: Some(4) },
+        ] {
+            r.motion(m);
+        }
+        assert_eq!((r.view().unwrap().scroll, r.view().unwrap().cursor), (0, 0));
+    }
+
+    /// Amendment A3.2: a window key that beeps at an edge changes nothing,
+    /// and a line selection stays up (Vim keeps Visual on a failed page key).
+    #[test]
+    fn a_window_key_that_beeps_keeps_the_selection() {
+        use crate::action::ResponseMotion as M;
+        let beeps = [
+            M::Page { down: false, count: 1 },
+            M::HalfPage { down: false, count: None },
+        ];
+        for m in beeps {
+            let mut r = hundred_at(0, 0);
+            r.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT));
+            let before = {
+                let v = r.view().unwrap();
+                assert!(v.sel.is_some(), "a line selection is up");
+                (v.scroll, v.cursor, v.sel)
+            };
+            r.motion(m);
+            let v = r.view().unwrap();
+            assert_eq!((v.scroll, v.cursor, v.sel), before, "{m:?} at the top changes nothing");
+        }
+        let mut r = hundred_at(99, 98);
+        r.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT));
+        let before = {
+            let v = r.view().unwrap();
+            (v.scroll, v.cursor, v.sel)
         };
+        r.motion(M::Page { down: true, count: 1 });
+        r.motion(M::HalfPage { down: true, count: None });
+        let v = r.view().unwrap();
+        assert_eq!((v.scroll, v.cursor, v.sel), before, "ctrl+f and ctrl+d at the end change nothing");
+        // A page key that does move ends the selection.
+        let mut r = hundred_at(0, 0);
+        r.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT));
+        r.motion(M::Page { down: true, count: 1 });
+        assert!(r.view().unwrap().sel.is_none(), "a page that moves drops the selection");
+    }
+
+    /// PageDown and PageUp are Vim's ctrl+f and ctrl+b in both profiles
+    /// (the user's decision, 2026-10-10).
+    #[test]
+    fn the_page_keys_are_vims_page() {
+        let mut r = hundred_at(0, 0);
         r.handle_key(key(KeyCode::PageDown));
-        let v = r.view().unwrap();
-        assert_eq!(v.cursor, height, "PageDown jumps a full viewport");
-        assert!(v.scroll > 0, "the viewport follows the cursor down");
+        assert_eq!((r.view().unwrap().scroll, r.view().unwrap().cursor), (21, 21));
         r.handle_key(key(KeyCode::PageUp));
-        let v = r.view().unwrap();
-        assert_eq!(v.cursor, 0, "PageUp comes back and clamps at the top");
+        assert_eq!((r.view().unwrap().scroll, r.view().unwrap().cursor), (0, 22));
     }
 
     #[test]
@@ -5207,17 +5426,19 @@ mod tests {
         assert_ne!(a.view().unwrap().h_scroll, 0, "Right scrolls sideways");
         a.handle_key(key(KeyCode::Left));
         assert_eq!(a.view().unwrap().h_scroll, 0, "Left scrolls back");
-        let height = a.view().unwrap().height;
+        a.view.as_mut().unwrap().height = 23;
+        b.view.as_mut().unwrap().height = 23;
         a.handle_key(key(KeyCode::PageDown));
         b.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL));
         assert_eq!(a.view().unwrap().cursor, b.view().unwrap().cursor);
-        assert_eq!(b.view().unwrap().cursor, height);
+        assert_eq!((b.view().unwrap().scroll, b.view().unwrap().cursor), (21, 21), "P1");
         b.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
-        assert_eq!(b.view().unwrap().cursor, height - (height / 2).max(1));
+        assert_eq!((b.view().unwrap().scroll, b.view().unwrap().cursor), (10, 10), "half a page back");
         b.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL));
-        assert_eq!(b.view().unwrap().cursor, height);
+        assert_eq!((b.view().unwrap().scroll, b.view().unwrap().cursor), (21, 21));
         a.handle_key(key(KeyCode::PageUp));
         b.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
+        assert_eq!((a.view().unwrap().scroll, a.view().unwrap().cursor), (0, 22), "X1");
         assert_eq!(a.view().unwrap().cursor, b.view().unwrap().cursor);
     }
 

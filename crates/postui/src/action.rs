@@ -722,6 +722,9 @@ pub enum Action {
     /// `zo` `zc` `za` on the response's tree view (piece 4 spec §5.7): the
     /// fold under the cursor. Nothing on Raw or Headers.
     TreeFold(FoldOp),
+    /// A vim cursor or window key on the response (piece 4 spec §5.7; plan
+    /// M5a Task 3).
+    ResponseMove(ResponseMotion),
     /// Copy `target`'s text to the clipboard through `App::clipboard`'s
     /// tiered copy. Toasts "nothing to copy — send a request first" when
     /// there's no ready response and `target` needs one.
@@ -1061,6 +1064,35 @@ pub enum Action {
     },
     /// Structural menu's "Collect into array": wraps the bar text in `[ … ]`.
     JqCollect,
+}
+
+/// Where `zt` `zz` `zb` put the cursor's line (piece 4 spec §5.7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Place {
+    Top,
+    Middle,
+    Bottom,
+}
+
+/// A cursor or window command on the response viewer (piece 4 spec §5.7;
+/// plan M5a Task 3): each is Vim's, on a window of the visible lines
+/// (`vim::engine::View`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResponseMotion {
+    /// `j` `k` `<Down>` `<Up>`: this many lines, down when positive.
+    Lines(i64),
+    /// `gg` (`last` false) and `G`: line N (1-based) when counted, else the
+    /// first or the last line.
+    Goto { line: Option<usize>, last: bool },
+    /// ctrl+d and ctrl+u: Vim's `halfpage()`; a count sets the view's
+    /// `'scroll'`.
+    HalfPage { down: bool, count: Option<usize> },
+    /// ctrl+f and ctrl+b, PageDown and PageUp: Vim's `onepage()`, `count`
+    /// pages.
+    Page { down: bool, count: usize },
+    /// `zt` `zz` `zb`: line N when counted (the cursor goes there), then
+    /// the window placed around the cursor's line.
+    Place { at: Place, line: Option<usize> },
 }
 
 /// Vim's fold keys on the response tree (piece 4 spec §5.7): `zo` opens,

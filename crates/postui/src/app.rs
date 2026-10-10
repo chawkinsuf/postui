@@ -3136,6 +3136,7 @@ impl App {
                 true
             }
             Action::TreeFold(op) => self.session.response.fold(op),
+            Action::ResponseMove(m) => self.session.response.motion(m),
             Action::CopySelection(surface) => {
                 if let Some(text) = self.selection_text_of(surface) {
                     self.copy_text_with_toast(&text, "Copied selection".to_string());

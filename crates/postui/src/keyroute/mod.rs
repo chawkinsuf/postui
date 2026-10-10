@@ -341,6 +341,8 @@ pub(crate) fn expand(b: &table::Binding, count: Option<usize>, cap: usize) -> Ve
         Intent::Pane(dir) => vec![Step::Action(Action::PaneMove(dir))],
         Intent::Recording => vec![note_step(table::NO_MACROS)],
         Intent::CloseThen(f) => vec![Step::Action(Action::CloseField), Step::Action(f())],
+        // Plan M5a Task 3: the motion reads the count itself.
+        Intent::Motion(f) => vec![Step::Action(Action::ResponseMove(f(count)))],
         Intent::Swallow => Vec::new(),
     }
 }
@@ -738,10 +740,20 @@ mod tests {
         assert_eq!(feed(&mut Router::default(), &s, "3G"), row3);
         assert_eq!(feed(&mut Router::default(), &s, "3gg"), row3);
         let resp = cx(Vim, Surface::Response(crate::components::response::ViewMode::Raw));
-        assert_eq!(feed(&mut Router::default(), &resp, "G"), run(vec![ctrl_key(KeyCode::End)]));
-        let mut ten = vec![ctrl_key(KeyCode::Home)];
-        ten.extend(vec![key(KeyCode::Down); 9]);
-        assert_eq!(feed(&mut Router::default(), &resp, "10G"), run(ten));
+        use crate::action::ResponseMotion as M;
+        let mv = |m| run(vec![Step::Action(Action::ResponseMove(m))]);
+        assert_eq!(feed(&mut Router::default(), &resp, "G"), mv(M::Goto { line: None, last: true }));
+        assert_eq!(feed(&mut Router::default(), &resp, "10G"), mv(M::Goto { line: Some(10), last: true }));
+        assert_eq!(feed(&mut Router::default(), &resp, "gg"), mv(M::Goto { line: None, last: false }));
+        assert_eq!(feed(&mut Router::default(), &resp, "5j"), mv(M::Lines(5)));
+        assert_eq!(feed(&mut Router::default(), &resp, "<Up>"), mv(M::Lines(-1)));
+        assert_eq!(feed(&mut Router::default(), &resp, "3<C-d>"), mv(M::HalfPage { down: true, count: Some(3) }));
+        assert_eq!(feed(&mut Router::default(), &resp, "2<C-f>"), mv(M::Page { down: true, count: 2 }));
+        assert_eq!(
+            feed(&mut Router::default(), &resp, "12zt"),
+            mv(M::Place { at: crate::action::Place::Top, line: Some(12) })
+        );
+        assert_eq!(feed(&mut Router::default(), &cx(Arrows, resp.surface), "j"), Resolved::Declined, "arrows' j is a letter");
     }
 
     #[test]

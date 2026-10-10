@@ -7,7 +7,7 @@
 use super::ctx::Surface;
 use super::engine_glue::OpenSeat;
 use super::notation::{self, Tok};
-use crate::action::{Action, PaneDir, Verb};
+use crate::action::{Action, PaneDir, Place, ResponseMotion, Verb};
 use crate::config::KeyProfile;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::sync::OnceLock;
@@ -84,6 +84,9 @@ pub enum Intent {
     /// Close the open field (committing it), then this action: `ZZ` in a
     /// screen field saves what the field holds (plan M4b Deviation 2).
     CloseThen(fn() -> Action),
+    /// A response motion built from the count, `None` when none was typed
+    /// (plan M5a Deviation 15): `{N}G`, `{N}zt`, `{N}<C-d>`.
+    Motion(fn(Option<usize>) -> crate::action::ResponseMotion),
 }
 
 /// How a count applies (spec §3.5).
@@ -380,30 +383,84 @@ fn copy_header() -> Action {
     Action::CopyResponseHeader
 }
 
+/// A count as a line distance: no count is one.
+fn lines_of(n: Option<usize>) -> i64 {
+    i64::try_from(n.unwrap_or(1)).unwrap_or(i64::MAX)
+}
+
+fn m_down(n: Option<usize>) -> ResponseMotion {
+    ResponseMotion::Lines(lines_of(n))
+}
+
+fn m_up(n: Option<usize>) -> ResponseMotion {
+    ResponseMotion::Lines(-lines_of(n))
+}
+
+fn m_first(n: Option<usize>) -> ResponseMotion {
+    ResponseMotion::Goto { line: n, last: false }
+}
+
+fn m_last(n: Option<usize>) -> ResponseMotion {
+    ResponseMotion::Goto { line: n, last: true }
+}
+
+fn m_half_down(n: Option<usize>) -> ResponseMotion {
+    ResponseMotion::HalfPage { down: true, count: n }
+}
+
+fn m_half_up(n: Option<usize>) -> ResponseMotion {
+    ResponseMotion::HalfPage { down: false, count: n }
+}
+
+fn m_page_down(n: Option<usize>) -> ResponseMotion {
+    ResponseMotion::Page { down: true, count: n.unwrap_or(1) }
+}
+
+fn m_page_up(n: Option<usize>) -> ResponseMotion {
+    ResponseMotion::Page { down: false, count: n.unwrap_or(1) }
+}
+
+fn m_top(n: Option<usize>) -> ResponseMotion {
+    ResponseMotion::Place { at: Place::Top, line: n }
+}
+
+fn m_middle(n: Option<usize>) -> ResponseMotion {
+    ResponseMotion::Place { at: Place::Middle, line: n }
+}
+
+fn m_bottom(n: Option<usize>) -> ResponseMotion {
+    ResponseMotion::Place { at: Place::Bottom, line: n }
+}
+
 /// Every row. Order does not matter: no complete row is a prefix of
 /// another on a shared surface (`no_two_rows_collide`).
 pub static TABLE: &[Binding] = &[
     // Key list §6 and §7: moving.
-    row("j", Surfaces::NAV, Intent::Key(DOWN), CountRule::Repeat),
-    row("k", Surfaces::NAV, Intent::Key(Named::key(KeyCode::Up)), CountRule::Repeat),
+    row("j", Surfaces::LISTS, Intent::Key(DOWN), CountRule::Repeat),
+    row("k", Surfaces::LISTS, Intent::Key(Named::key(KeyCode::Up)), CountRule::Repeat),
     row("h", Surfaces::NAV, Intent::Key(Named::key(KeyCode::Left)), CountRule::Repeat),
     row("l", Surfaces::NAV, Intent::Key(Named::key(KeyCode::Right)), CountRule::Repeat),
     row("gg", Surfaces::LISTS, Intent::Edge { bare: HOME, home: HOME }, CountRule::Pass),
     row("G", Surfaces::LISTS, Intent::Edge { bare: Named::key(KeyCode::End), home: HOME }, CountRule::Pass),
-    row(
-        "gg",
-        Surfaces::RESPONSE,
-        Intent::Edge { bare: Named::ctrl(KeyCode::Home), home: Named::ctrl(KeyCode::Home) },
-        CountRule::Pass,
-    ),
-    row(
-        "G",
-        Surfaces::RESPONSE,
-        Intent::Edge { bare: Named::ctrl(KeyCode::End), home: Named::ctrl(KeyCode::Home) },
-        CountRule::Pass,
-    ),
     row("0", Surfaces::RESPONSE, Intent::Key(HOME), CountRule::Ignore),
     row("$", Surfaces::RESPONSE, Intent::Key(Named::key(KeyCode::End)), CountRule::Ignore),
+    // Key list §7 (`R.move`, `R.ctrl-d`, `R.page`), plan M5a Task 3: the
+    // response's motions are Vim's on a window of its visible lines, each
+    // reading its own count (Deviation 4). Arrows' named keys stay the
+    // component's arms, which run the same window code.
+    row("j", Surfaces::RESPONSE, Intent::Motion(m_down), CountRule::Pass),
+    row("k", Surfaces::RESPONSE, Intent::Motion(m_up), CountRule::Pass),
+    row("<Down>", Surfaces::RESPONSE, Intent::Motion(m_down), CountRule::Pass),
+    row("<Up>", Surfaces::RESPONSE, Intent::Motion(m_up), CountRule::Pass),
+    row("gg", Surfaces::RESPONSE, Intent::Motion(m_first), CountRule::Pass),
+    row("G", Surfaces::RESPONSE, Intent::Motion(m_last), CountRule::Pass),
+    row("<C-d>", Surfaces::RESPONSE, Intent::Motion(m_half_down), CountRule::Pass),
+    row("<C-u>", Surfaces::RESPONSE, Intent::Motion(m_half_up), CountRule::Pass),
+    row("<C-f>", Surfaces::RESPONSE, Intent::Motion(m_page_down), CountRule::Pass),
+    row("<C-b>", Surfaces::RESPONSE, Intent::Motion(m_page_up), CountRule::Pass),
+    row("zt", Surfaces::RESPONSE, Intent::Motion(m_top), CountRule::Pass),
+    row("zz", Surfaces::RESPONSE, Intent::Motion(m_middle), CountRule::Pass),
+    row("zb", Surfaces::RESPONSE, Intent::Motion(m_bottom), CountRule::Pass),
     // Key list §7 (`R.fold`): the tree's folds. Nothing on Raw or Headers.
     row("zo", Surfaces::RESPONSE, Intent::Act(fold_open), CountRule::Ignore),
     row("zc", Surfaces::RESPONSE, Intent::Act(fold_close), CountRule::Ignore),
@@ -833,7 +890,11 @@ mod tests {
             }
             let tab = matches!(b.intent, Intent::Tab { .. });
             if b.count == CountRule::Pass {
-                assert!(edge || counted_verb || tab, "{}: Pass is for Edge rows, dd, p and the tab keys", b.keys);
+                assert!(
+                    edge || counted_verb || tab || matches!(b.intent, Intent::Motion(_)),
+                    "{}: Pass is for Edge rows, dd, p, the tab keys and the response's motions",
+                    b.keys
+                );
             }
             if matches!(
                 b.intent,
