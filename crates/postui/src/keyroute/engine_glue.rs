@@ -375,6 +375,17 @@ impl Glue {
         std::mem::swap(self.engine.registers_mut(), other.engine.registers_mut());
     }
 
+    /// A linewise yank from outside a field (plan M5a Deviation 5): the
+    /// response's `yy` and V `y` fill the unnamed register and `"0`, as
+    /// Vim's yank does, so a `p` in any field puts the lines.
+    pub fn yank_lines(&mut self, lines: &[String]) {
+        let mut text = lines.join("\n");
+        text.push('\n');
+        self.engine
+            .registers_mut()
+            .yank(None, crate::vim::engine::Register { text, kind: crate::vim::engine::RegKind::Line });
+    }
+
     /// A field got the caret (piece 3 §4.2 `enter`). A one-line field
     /// starts a fresh state; the body keeps its own (§3.11).
     pub fn enter(&mut self, buf: &mut FieldBuf<'_>, start: Start, seat: OpenSeat) {
@@ -652,6 +663,17 @@ mod tests {
         screen.swap_registers(&mut dialog);
         keys(&mut screen, &mut FieldBuf::Line(&mut url), "P");
         assert_eq!(url.text(), "xyzabc");
+    }
+
+    /// Plan M5a Deviation 5: the response's yank fills the unnamed register
+    /// and `"0`, linewise, as Vim's yank does (probes V1, V7).
+    #[test]
+    fn a_response_yank_fills_the_unnamed_register_and_0() {
+        let mut g = Glue::default();
+        g.yank_lines(&["line 5".to_string(), "line 6".to_string()]);
+        let want = crate::vim::engine::Register { text: "line 5\nline 6\n".into(), kind: crate::vim::engine::RegKind::Line };
+        assert_eq!(g.engine.registers().unnamed(), &want);
+        assert_eq!(g.engine.registers().zero(), &want);
     }
 
     #[test]

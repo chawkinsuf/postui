@@ -732,6 +732,11 @@ pub enum Action {
     /// A vim cursor or window key on the response (piece 4 spec §5.7; plan
     /// M5a Task 3).
     ResponseMove(ResponseMotion),
+    /// A motion in the response's V: the cursor moves and the selection
+    /// covers from its anchor to the cursor's line (plan M5a Deviation 11).
+    ResponseExtend(ResponseMotion),
+    /// Vim's line Visual and yank on the response (plan M5a Task 6).
+    ResponseLines(LinesOp),
     /// Copy `target`'s text to the clipboard through `App::clipboard`'s
     /// tiered copy. Toasts "nothing to copy — send a request first" when
     /// there's no ready response and `target` needs one.
@@ -1110,6 +1115,20 @@ pub enum ResponseFind {
     Next { reverse: bool, count: usize },
     /// `*` (`backward` false) and `#`, counted: Vim's word under the cursor.
     Word { backward: bool, count: usize },
+}
+
+/// Vim's line Visual and yank on the response (plan M5a Task 6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinesOp {
+    /// `V`: a line selection on the cursor's line.
+    Start,
+    /// `V` again, or Esc: the selection ends, the cursor where it is.
+    End,
+    /// `o`: the cursor goes to the other end.
+    Swap,
+    /// `yy` (`count` lines from the cursor) or a V `y` (the selection):
+    /// into the unnamed register, linewise.
+    Yank { count: Option<usize> },
 }
 
 /// Vim's fold keys on the response tree (piece 4 spec §5.7; plan M5a

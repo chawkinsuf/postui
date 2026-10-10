@@ -9143,6 +9143,39 @@ fn click_editor_tab_selects_it() {
     assert_eq!(app.focus, PaneId::Editor);
 }
 
+/// Plan M5a Task 6: vim's `V` puts the response on its own surface with the
+/// footer's `V-LINE`; `y` yanks and says so from three lines (Vim's
+/// `'report'`), and a window key ends the selection as it moves.
+#[test]
+fn the_response_v_selection_yanks_and_ends_on_a_window_key() {
+    use crate::components::response::ViewMode;
+    use crate::keyroute::Surface;
+    let shifted = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::SHIFT);
+    let mut app = App::new_for_test();
+    app.use_profile(crate::config::KeyProfile::Vim);
+    let body = (1..=30).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+    ready_response(&mut app, &body);
+    app.focus = PaneId::Response;
+    app.handle_key(shifted('V'));
+    assert_eq!(app.surface(), Surface::ResponseLines(ViewMode::Raw));
+    assert_eq!(app.mode_indicator(), Some("V-LINE"));
+    app.handle_key(plain('j'));
+    app.handle_key(plain('j'));
+    app.handle_key(plain('y'));
+    assert_eq!(app.surface(), Surface::Response(ViewMode::Raw), "the yank ends V");
+    assert_eq!(app.mode_indicator(), Some("NORMAL"));
+    assert!(app.toasts.messages().contains(&"3 lines yanked"), "{:?}", app.toasts.messages());
+    app.handle_key(plain('y'));
+    app.handle_key(plain('y'));
+    assert_eq!(app.toasts.messages().iter().filter(|m| **m == "3 lines yanked").count(), 1, "one line says nothing");
+    app.handle_key(shifted('V'));
+    app.handle_key(plain('j'));
+    app.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL));
+    app.handle_key(plain('k'));
+    assert_ne!(app.focus, PaneId::Response, "the window key moved");
+    assert!(!app.session.response.line_selection(), "and ended V");
+}
+
 fn ready_response(app: &mut App, body: &str) {
     app.session.response.set_state(
         ResponseState::Ready(Box::new(crate::http::ResponseData {

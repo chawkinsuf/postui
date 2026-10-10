@@ -663,6 +663,9 @@ pub struct ReadyView {
     /// sweeps extend by whole words from this span instead of by cells.
     /// Cleared by any single click (`clear_sel`).
     sel_word_anchor: Option<((usize, usize), (usize, usize))>,
+    /// The selection is whole lines (vim's `V`, shift+↑/↓): the response's
+    /// V surface (plan M5a Deviation 11). A drag's character selection is not.
+    line_sel: bool,
     /// The cached parse of the response body for jq to run filters
     /// against — built lazily (a sync run parses it the first time it's
     /// needed) or handed back from a background run.
@@ -798,6 +801,7 @@ impl ReadyView {
             sel_anchor: None,
             sel: None,
             sel_word_anchor: None,
+            line_sel: false,
             jq_doc: None,
             jq_tree: None,
             jq_applied: None,
@@ -1493,6 +1497,7 @@ impl ReadyView {
         self.sel = None;
         self.sel_anchor = None;
         self.sel_word_anchor = None;
+        self.line_sel = false;
     }
 
     /// The inclusive cell span a double click at cell `(line, col)`
@@ -1505,28 +1510,98 @@ impl ReadyView {
         Some(((line, s), (line, e - 1)))
     }
 
-    /// Extends a line-wise selection by `delta` lines (shift+Up/Down): the
-    /// anchor line is fixed, the cursor line moves, and every line between
-    /// them is covered in full. The one cursor move that keeps a selection,
-    /// so it steps the cursor itself rather than through
-    /// [`Self::move_cursor`], which drops one.
-    fn select_line_extend(&mut self, delta: i32) {
-        let anchor_line = self.sel_anchor.map(|(l, _)| l).unwrap_or(self.cursor);
-        self.sel_anchor = Some((anchor_line, 0));
-        let max = self.visible_len().saturating_sub(1) as i32;
-        self.cursor_moved();
-        self.cursor = (self.cursor as i32 + delta).clamp(0, max) as usize;
-        self.follow_cursor();
+    /// A line selection from `anchor` to the cursor's line, every line
+    /// between covered in full.
+    fn set_line_sel(&mut self, anchor: usize) {
+        self.sel_anchor = Some((anchor, 0));
         let cl = self.cursor;
         let len = |v: &Self, l: usize| v.display_line_text(l).map_or(0, |t| t.chars().count());
-        self.sel = Some(if cl >= anchor_line {
-            ((anchor_line, 0), (cl, len(self, cl).saturating_sub(1)))
+        self.sel = Some(if cl >= anchor {
+            ((anchor, 0), (cl, len(self, cl).saturating_sub(1)))
         } else {
-            (
-                (anchor_line, len(self, anchor_line).saturating_sub(1)),
-                (cl, 0),
-            )
+            ((anchor, len(self, anchor).saturating_sub(1)), (cl, 0))
         });
+        self.line_sel = true;
+    }
+
+    /// A motion that keeps the selection's anchor (vim's V, shift+↑/↓):
+    /// the cursor moves as `motion` moves it, then the lines from the
+    /// anchor to it are selected. The anchor is the selection's, a drag's
+    /// included, so shift+↑/↓ turns a drag into lines from the line it
+    /// started on, as on main (amendment A6.1, the user's decision); with
+    /// no selection, the cursor's line. A window key that pulls an
+    /// off-screen cursor to the view's edge takes the moving end with it
+    /// (amendment A6.5).
+    fn extend(&mut self, m: ResponseMotion) {
+        let anchor = self.sel_anchor.map_or(self.cursor, |(l, _)| l);
+        self.motion(m);
+        if self.visible_len() > 0 {
+            self.set_line_sel(anchor.min(self.visible_len() - 1));
+        }
+    }
+
+    /// shift+↑/↓: extend a line selection by `delta` lines.
+    fn select_line_extend(&mut self, delta: i32) {
+        self.extend(ResponseMotion::Lines(i64::from(delta)));
+    }
+
+    /// The buffer lines visible row `row` stands for: itself, or on the
+    /// tree a closed container's every line, as Vim's fold yanks (probes
+    /// Y1–Y4).
+    fn buffer_lines_of(&self, row: usize) -> Vec<String> {
+        match self.mode {
+            ViewMode::Pretty => {
+                let Some(tree) = self.active_tree() else { return Vec::new() };
+                let Some(full) = tree.full_index_of_visible(row) else { return Vec::new() };
+                let line = tree.line(full);
+                let end = match (&line.container, line.collapsed) {
+                    (Some(c), true) => c.end_line,
+                    _ => full,
+                };
+                (full..=end).map(|i| tree.line(i).expanded_text()).collect()
+            }
+            ViewMode::Raw => self.raw_lines.get(row).cloned().into_iter().collect(),
+            ViewMode::Headers => self.header_lines.get(row).cloned().into_iter().collect(),
+        }
+    }
+
+    /// `yy` (`count` rows from the cursor, clamped) or a V `y` (the
+    /// selected rows): the lines, as Vim's buffer holds them. The selection
+    /// ends and the cursor goes to the first line yanked, as Vim leaves
+    /// Visual (probes V1–V13). A yank from the cursor's own line keeps its
+    /// column (probe Y5, in the Task 6 report); one from a closed fold the
+    /// cursor is hidden in puts it on the fold's first line (Y8, Y10).
+    fn yank_rows(&mut self, count: Option<usize>) -> Option<Vec<String>> {
+        let len = self.visible_len();
+        if len == 0 {
+            return None;
+        }
+        let (lo, hi) = if self.line_sel {
+            let a = self.sel_anchor.map_or(self.cursor, |(l, _)| l);
+            (a.min(self.cursor), a.max(self.cursor))
+        } else {
+            (self.cursor, self.cursor.saturating_add(count.unwrap_or(1).max(1) - 1).min(len - 1))
+        };
+        let lines = (lo..=hi).flat_map(|row| self.buffer_lines_of(row)).collect();
+        if lo == self.cursor && self.fold_line.is_none() {
+            self.clear_sel();
+        } else {
+            self.jump_cursor(lo);
+        }
+        Some(lines)
+    }
+
+    /// `o` in V: the cursor and the anchor trade ends. A cursor that moves
+    /// forgets its hidden line and column (amendment A6.4).
+    fn swap_ends(&mut self) {
+        let Some((anchor, _)) = self.sel_anchor.filter(|_| self.line_sel) else { return };
+        let cursor = self.cursor;
+        if anchor != cursor {
+            self.cursor_moved();
+        }
+        self.cursor = anchor;
+        self.follow_cursor();
+        self.set_line_sel(cursor);
     }
 }
 
@@ -2677,6 +2752,45 @@ impl Response {
         };
         view.motion(m);
         true
+    }
+
+    /// Whether a line selection is up: the response's V surface.
+    pub fn line_selection(&self) -> bool {
+        self.view.as_ref().is_some_and(|v| v.line_sel)
+    }
+
+    /// A motion in V (plan M5a Deviation 11).
+    pub fn extend(&mut self, m: ResponseMotion) -> bool {
+        let Some(view) = self.view.as_mut() else {
+            return false;
+        };
+        view.extend(m);
+        true
+    }
+
+    /// `V`, Esc, `o` and the yanks (plan M5a Task 6): the yanked lines for
+    /// a yank, else `None`.
+    pub fn lines(&mut self, op: crate::action::LinesOp) -> Option<Vec<String>> {
+        use crate::action::LinesOp;
+        let view = self.view.as_mut()?;
+        match op {
+            LinesOp::Start => {
+                if view.visible_len() > 0 {
+                    let at = view.cursor;
+                    view.set_line_sel(at);
+                }
+                None
+            }
+            LinesOp::End => {
+                view.clear_sel();
+                None
+            }
+            LinesOp::Swap => {
+                view.swap_ends();
+                None
+            }
+            LinesOp::Yank { count } => view.yank_rows(count),
+        }
     }
 
     /// Plants a selection anchor at the screen position of a left click in
@@ -4806,6 +4920,179 @@ mod tests {
         assert!(r.step_search(1));
         assert_eq!(r.view().unwrap().cursor, 7, "jumped to the first match");
         selects_from_cursor(&mut r, "button commit");
+    }
+
+    fn thirty() -> Response {
+        let body = (1..=30).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let mut r = ready(&body);
+        r.view.as_mut().unwrap().height = 23;
+        r
+    }
+
+    fn lines_of(range: std::ops::RangeInclusive<usize>) -> Vec<String> {
+        range.map(|i| format!("line {i}")).collect()
+    }
+
+    /// The plan's probes V1–V13: the yanked lines and where the cursor ends.
+    #[test]
+    fn yank_and_v_match_vim() {
+        use crate::action::{LinesOp, ResponseMotion as M};
+        let yank = LinesOp::Yank { count: None };
+        let mut r = thirty();
+        r.view.as_mut().unwrap().cursor = 4;
+        r.lines(LinesOp::Start);
+        r.extend(M::Lines(2));
+        assert!(r.line_selection());
+        assert_eq!(r.lines(yank), Some(lines_of(5..=7)), "V1");
+        assert_eq!((r.view().unwrap().cursor, r.line_selection()), (4, false));
+        let mut r = thirty();
+        r.view.as_mut().unwrap().cursor = 4;
+        r.lines(LinesOp::Start);
+        r.extend(M::Lines(-2));
+        assert_eq!(r.lines(yank), Some(lines_of(3..=5)), "V2");
+        assert_eq!(r.view().unwrap().cursor, 2, "the cursor on the first line yanked");
+        let mut r = thirty();
+        r.view.as_mut().unwrap().cursor = 4;
+        r.lines(LinesOp::Start);
+        r.extend(M::Lines(1));
+        r.lines(LinesOp::Swap);
+        assert_eq!(r.view().unwrap().cursor, 4, "V12: o swaps the ends");
+        assert!(r.line_selection());
+        let mut r = thirty();
+        r.view.as_mut().unwrap().cursor = 24;
+        r.lines(LinesOp::Start);
+        r.extend(M::Goto { line: None, last: true });
+        assert_eq!(r.lines(yank), Some(lines_of(25..=30)), "V4");
+        let mut r = thirty();
+        r.view.as_mut().unwrap().cursor = 4;
+        assert_eq!(r.lines(LinesOp::Yank { count: Some(3) }), Some(lines_of(5..=7)), "V6");
+        let mut r = thirty();
+        r.view.as_mut().unwrap().cursor = 24;
+        assert_eq!(r.lines(LinesOp::Yank { count: Some(99) }), Some(lines_of(25..=30)), "V13: clamped");
+        let mut r = thirty();
+        r.view.as_mut().unwrap().cursor = 4;
+        r.lines(LinesOp::Start);
+        r.extend(M::Lines(1));
+        r.lines(LinesOp::End);
+        assert_eq!((r.view().unwrap().cursor, r.line_selection()), (5, false), "V10, V11");
+    }
+
+    /// Probes Y1, Y2 and Y4: a closed fold yanks all its lines.
+    #[test]
+    fn a_closed_fold_yanks_all_its_lines() {
+        use crate::action::{FoldOp, LinesOp};
+        let mut r = ready(r#"{"a": {"b": 1}, "c": 2}"#);
+        render(&mut r);
+        r.view.as_mut().unwrap().cursor = 1;
+        r.fold(FoldOp::Close, 1);
+        let lines = r.lines(LinesOp::Yank { count: None }).unwrap();
+        assert_eq!(lines.len(), 3, "Y1: {lines:?}");
+        assert_eq!(lines[0].trim(), r#""a": {"#);
+        let lines = r.lines(LinesOp::Yank { count: Some(2) }).unwrap();
+        assert_eq!(lines.len(), 4, "Y2");
+        r.fold(FoldOp::CloseAll, 1);
+        assert_eq!(r.lines(LinesOp::Yank { count: None }).unwrap().len(), 6, "Y4");
+        assert_eq!(r.view().unwrap().cursor, 0);
+    }
+
+    /// Where Vim leaves its cursor after a yank (probes Y5, Y8, Y9, Y10
+    /// in the Task 6 report): a `yy` on the cursor's own line keeps its
+    /// column, so a following `n` starts there; a yank of a closed fold
+    /// puts the cursor on the fold's first line, so `zR` shows it there.
+    #[test]
+    fn a_yank_leaves_the_cursor_where_vim_does() {
+        use crate::action::{FoldOp, LinesOp};
+        let mut r = thirty();
+        let v = r.view.as_mut().unwrap();
+        v.cursor = 4;
+        v.at_col = Some((4, 3));
+        r.lines(LinesOp::Yank { count: Some(3) });
+        assert_eq!(r.view().unwrap().at_col, Some((4, 3)), "Y5: yy keeps the column");
+        for v_line in [false, true] {
+            let mut r = ready(r#"{"a": {"b": 1}, "c": 2}"#);
+            render(&mut r);
+            r.view.as_mut().unwrap().cursor = 2;
+            r.fold(FoldOp::CloseAll, 1);
+            assert_eq!(r.view().unwrap().real_line(), Some(2), "hidden in the closed root");
+            if v_line {
+                r.lines(LinesOp::Start);
+            }
+            assert_eq!(r.lines(LinesOp::Yank { count: None }).unwrap().len(), 6);
+            r.fold(FoldOp::OpenAll, 1);
+            assert_eq!(r.view().unwrap().cursor, 0, "Y8/Y10 (V {v_line}): the fold's first line");
+        }
+    }
+
+    /// Review Focus 4: the selection ends when the view changes under it.
+    #[test]
+    fn v_line_ends_when_the_view_changes_under_it() {
+        use crate::action::{LinesOp, ResponseMotion as M};
+        let mut r = thirty();
+        r.lines(LinesOp::Start);
+        r.extend(M::Lines(1));
+        r.set_view_mode(ViewMode::Headers);
+        assert!(!r.line_selection(), "a view switch");
+        let mut r = thirty();
+        r.lines(LinesOp::Start);
+        r.motion(M::Lines(1));
+        assert!(!r.line_selection(), "a plain motion");
+        let mut r = thirty();
+        render(&mut r);
+        r.lines(LinesOp::Start);
+        let area = r.view().unwrap().last_area.unwrap();
+        r.begin_selection_at(area.x + 1, area.y + 1);
+        assert!(!r.line_selection(), "a click");
+    }
+
+    /// Amendment A6.1 (the user's decision): shift+↑/↓ after a drag turns
+    /// the drag's character selection into a line selection from the
+    /// drag's anchor line, as on main, wherever the cursor is.
+    #[test]
+    fn shift_arrows_after_a_drag_grow_lines_from_the_drags_anchor() {
+        for (key, cursor, want) in [
+            (KeyCode::Down, 0, "line 2\nline 3\nline 4"),
+            (KeyCode::Up, 8, "line 4\nline 5\nline 6\nline 7\nline 8"),
+        ] {
+            let mut r = thirty();
+            render(&mut r);
+            r.view.as_mut().unwrap().cursor = cursor;
+            let area = r.view().unwrap().last_area.unwrap();
+            assert!(r.begin_selection_at(area.x + 2, area.y + 3));
+            assert!(r.drag_selection_to(area.x + 1, area.y + 5));
+            assert!(!r.line_selection(), "a drag is a character selection");
+            r.handle_key(KeyEvent::new(key, KeyModifiers::SHIFT));
+            assert!(r.line_selection(), "{key:?}: now a line selection");
+            assert_eq!(r.selected_text().as_deref(), Some(want), "{key:?}: from the drag's line 4 to the cursor");
+        }
+    }
+
+    /// Amendment A6.5: in V, a window key that pulls an off-screen cursor
+    /// to the view's edge (Deviation 12) takes the selection's moving end
+    /// with it.
+    #[test]
+    fn v_line_follows_a_cursor_a_window_key_pulls() {
+        use crate::action::{Place, ResponseMotion as M};
+        for m in [
+            M::Place { at: Place::Top, line: None },
+            M::Place { at: Place::Middle, line: None },
+            M::Place { at: Place::Bottom, line: None },
+            M::HalfPage { down: true, count: None },
+            M::HalfPage { down: false, count: None },
+            M::Page { down: true, count: 1 },
+            M::Page { down: false, count: 1 },
+        ] {
+            let mut r = hundred_at(0, 5);
+            r.lines(crate::action::LinesOp::Start);
+            // The wheel leaves the cursor above the view.
+            r.view.as_mut().unwrap().scroll = 40;
+            r.extend(m);
+            let v = r.view().unwrap();
+            assert!(v.cursor >= v.scroll && v.cursor < v.scroll + 23, "{m:?}: the cursor is in the view");
+            assert_ne!(v.cursor, 5, "{m:?}: the cursor moved");
+            let sel = v.sel.expect("still a selection");
+            assert!(r.line_selection(), "{m:?}");
+            assert_eq!((sel.0.0, sel.1.0), (5, v.cursor), "{m:?}: from the anchor to the cursor");
+        }
     }
 
     #[test]

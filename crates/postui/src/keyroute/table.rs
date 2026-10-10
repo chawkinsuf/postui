@@ -87,6 +87,9 @@ pub enum Intent {
     /// A response motion built from the count, `None` when none was typed
     /// (plan M5a Deviation 15): `{N}G`, `{N}zt`, `{N}<C-d>`.
     Motion(fn(Option<usize>) -> crate::action::ResponseMotion),
+    /// A response motion in V, built from the count: it extends the line
+    /// selection (plan M5a Deviation 11).
+    Extend(fn(Option<usize>) -> crate::action::ResponseMotion),
     /// Any action built from the count, `None` when none was typed (plan
     /// M5a Deviation 15): `{N}zo`.
     Counted(fn(Option<usize>) -> Action),
@@ -163,6 +166,8 @@ impl Surfaces {
     /// and tab rows apply in their idle Normal; never in a dialog's field,
     /// which keeps `g` and `ctrl+w` for the engine.
     pub const FIELD_SCREEN: Self = Self(1 << 21);
+    /// The response with a line selection up (plan M5a Deviation 11).
+    pub const RESPONSE_LINES: Self = Self(1 << 22);
 
     /// Every surface whose rows or controls the keyboard walks: vim's
     /// motions bind here, and in vim a bare char with no row is
@@ -178,6 +183,9 @@ impl Surfaces {
         .or(Self::MANAGE_LIST)
         .or(Self::MANAGE_DETAIL)
         .or(Self::SETTINGS);
+    /// Where vim builds counts and swallows a bare char no row names (spec
+    /// §3.4): the navigation surfaces and the response's V.
+    pub const KEYED: Self = Self::NAV.or(Self::RESPONSE_LINES);
     /// The navigation surfaces but the response, whose `gg`/`G` are
     /// ctrl+Home/ctrl+End (its bare Home/End scroll sideways).
     pub const LISTS: Self = Self::NAV.minus(Self::RESPONSE);
@@ -213,10 +221,11 @@ impl Surfaces {
     /// The dialogs with a field: a one-field prompt and a form.
     pub const FORMS: Self = Self::PROMPT.or(Self::FORM);
     /// Where the window and tab keys apply (spec §5.8; plan M4a Deviation 2,
-    /// plan M5a Deviation 16): the navigation surfaces and a screen field's
-    /// idle Normal. One row serves both: a key typed in a field closes it
-    /// first, and on a closed surface no field is open.
-    pub const WINDOWS: Self = Self::NAV.or(Self::FIELD_SCREEN);
+    /// plan M5a Deviation 16): the navigation surfaces, a screen field's
+    /// idle Normal and the response's V. One row serves them all: a key
+    /// typed in a field closes it first, on a closed surface no field is
+    /// open, and a V selection ends as the key moves (`App::pane_move`).
+    pub const WINDOWS: Self = Self::NAV.or(Self::FIELD_SCREEN).or(Self::RESPONSE_LINES);
 
     pub const fn or(self, o: Self) -> Self {
         Self(self.0 | o.0)
@@ -234,6 +243,7 @@ impl Surfaces {
             Surface::Table(_) => Self::TABLE,
             Surface::Body => Self::BODY,
             Surface::Response(_) => Self::RESPONSE,
+            Surface::ResponseLines(_) => Self::RESPONSE_LINES,
             Surface::VarList => Self::VAR_LIST,
             Surface::VarGrid => Self::VAR_GRID,
             Surface::VarForm => Self::VAR_FORM,
@@ -422,6 +432,28 @@ fn response_search_back() -> Action {
     Action::OpenResponseSearchBack
 }
 
+pub const ONLY_LINES: &str = "Only line selection (V) here";
+
+fn lines_start() -> Action {
+    Action::ResponseLines(crate::action::LinesOp::Start)
+}
+
+fn lines_end() -> Action {
+    Action::ResponseLines(crate::action::LinesOp::End)
+}
+
+fn lines_swap() -> Action {
+    Action::ResponseLines(crate::action::LinesOp::Swap)
+}
+
+fn lines_yank() -> Action {
+    Action::ResponseLines(crate::action::LinesOp::Yank { count: None })
+}
+
+fn yank_rows(n: Option<usize>) -> Action {
+    Action::ResponseLines(crate::action::LinesOp::Yank { count: n })
+}
+
 /// A count as a line distance: no count is one.
 fn lines_of(n: Option<usize>) -> i64 {
     i64::try_from(n.unwrap_or(1)).unwrap_or(i64::MAX)
@@ -477,12 +509,12 @@ pub static TABLE: &[Binding] = &[
     // Key list §6 and §7: moving.
     row("j", Surfaces::LISTS, Intent::Key(DOWN), CountRule::Repeat),
     row("k", Surfaces::LISTS, Intent::Key(Named::key(KeyCode::Up)), CountRule::Repeat),
-    row("h", Surfaces::NAV, Intent::Key(Named::key(KeyCode::Left)), CountRule::Repeat),
-    row("l", Surfaces::NAV, Intent::Key(Named::key(KeyCode::Right)), CountRule::Repeat),
+    row("h", Surfaces::NAV.or(Surfaces::RESPONSE_LINES), Intent::Key(Named::key(KeyCode::Left)), CountRule::Repeat),
+    row("l", Surfaces::NAV.or(Surfaces::RESPONSE_LINES), Intent::Key(Named::key(KeyCode::Right)), CountRule::Repeat),
     row("gg", Surfaces::LISTS, Intent::Edge { bare: HOME, home: HOME }, CountRule::Pass),
     row("G", Surfaces::LISTS, Intent::Edge { bare: Named::key(KeyCode::End), home: HOME }, CountRule::Pass),
-    row("0", Surfaces::RESPONSE, Intent::Key(HOME), CountRule::Ignore),
-    row("$", Surfaces::RESPONSE, Intent::Key(Named::key(KeyCode::End)), CountRule::Ignore),
+    row("0", Surfaces::RESPONSE.or(Surfaces::RESPONSE_LINES), Intent::Key(HOME), CountRule::Ignore),
+    row("$", Surfaces::RESPONSE.or(Surfaces::RESPONSE_LINES), Intent::Key(Named::key(KeyCode::End)), CountRule::Ignore),
     // Key list §7 (`R.move`, `R.ctrl-d`, `R.page`), plan M5a Task 3: the
     // response's motions are Vim's on a window of its visible lines, each
     // reading its own count (Deviation 4). Arrows' named keys stay the
@@ -500,6 +532,33 @@ pub static TABLE: &[Binding] = &[
     row("zt", Surfaces::RESPONSE, Intent::Motion(m_top), CountRule::Pass),
     row("zz", Surfaces::RESPONSE, Intent::Motion(m_middle), CountRule::Pass),
     row("zb", Surfaces::RESPONSE, Intent::Motion(m_bottom), CountRule::Pass),
+    // Key list §7 (`R.yy`, `R.visual`), plan M5a Deviations 5 and 11: Vim's
+    // yank into the unnamed register, and its line Visual.
+    row("yy", Surfaces::RESPONSE, Intent::Counted(yank_rows), CountRule::Pass),
+    row("V", Surfaces::RESPONSE, Intent::Act(lines_start), CountRule::Ignore),
+    row("v", Surfaces::RESPONSE.or(Surfaces::RESPONSE_LINES), Intent::Note(ONLY_LINES), CountRule::Ignore),
+    row("V", Surfaces::RESPONSE_LINES, Intent::Act(lines_end), CountRule::Ignore),
+    row("<Esc>", Surfaces::RESPONSE_LINES, Intent::Act(lines_end), CountRule::Ignore),
+    row("o", Surfaces::RESPONSE_LINES, Intent::Act(lines_swap), CountRule::Ignore),
+    row("y", Surfaces::RESPONSE_LINES, Intent::Act(lines_yank), CountRule::Ignore),
+    row("j", Surfaces::RESPONSE_LINES, Intent::Extend(m_down), CountRule::Pass),
+    row("k", Surfaces::RESPONSE_LINES, Intent::Extend(m_up), CountRule::Pass),
+    row("<Down>", Surfaces::RESPONSE_LINES, Intent::Extend(m_down), CountRule::Pass),
+    row("<Up>", Surfaces::RESPONSE_LINES, Intent::Extend(m_up), CountRule::Pass),
+    row("gg", Surfaces::RESPONSE_LINES, Intent::Extend(m_first), CountRule::Pass),
+    row("G", Surfaces::RESPONSE_LINES, Intent::Extend(m_last), CountRule::Pass),
+    row("<C-d>", Surfaces::RESPONSE_LINES, Intent::Extend(m_half_down), CountRule::Pass),
+    row("<C-u>", Surfaces::RESPONSE_LINES, Intent::Extend(m_half_up), CountRule::Pass),
+    row("<C-f>", Surfaces::RESPONSE_LINES, Intent::Extend(m_page_down), CountRule::Pass),
+    row("<C-b>", Surfaces::RESPONSE_LINES, Intent::Extend(m_page_up), CountRule::Pass),
+    // Amendment A6.3: Vim's PageDown and PageUp extend Visual as ctrl+f and
+    // ctrl+b do (probe V14). On the plain response they stay the
+    // component's named keys, which run the same `onepage()`.
+    row("<PageDown>", Surfaces::RESPONSE_LINES, Intent::Extend(m_page_down), CountRule::Pass),
+    row("<PageUp>", Surfaces::RESPONSE_LINES, Intent::Extend(m_page_up), CountRule::Pass),
+    row("zt", Surfaces::RESPONSE_LINES, Intent::Extend(m_top), CountRule::Pass),
+    row("zz", Surfaces::RESPONSE_LINES, Intent::Extend(m_middle), CountRule::Pass),
+    row("zb", Surfaces::RESPONSE_LINES, Intent::Extend(m_bottom), CountRule::Pass),
     // Key list §7 (`R.fold`, `R.foldall`): the tree's folds, counted (plan
     // M5a Deviation 9). Nothing on Raw or Headers.
     row("zo", Surfaces::RESPONSE, Intent::Counted(fold_open), CountRule::Pass),
@@ -544,15 +603,15 @@ pub static TABLE: &[Binding] = &[
     // both profiles. Vim's `n` `N` are counted and follow `?`/`#`'s
     // direction; arrows' step down and up, as the ▼/▲ buttons do (plan M5a
     // Deviation 10). `?`, `*` and `#` are vim's. Arrows' `c` copies a header.
-    both("/", Surfaces::RESPONSE, Intent::Act(response_search)),
-    arrows("n", Surfaces::RESPONSE, Intent::Act(next_match)),
-    arrows("N", Surfaces::RESPONSE, Intent::Act(prev_match)),
+    both("/", Surfaces::RESPONSE.or(Surfaces::RESPONSE_LINES), Intent::Act(response_search)),
+    arrows("n", Surfaces::RESPONSE.or(Surfaces::RESPONSE_LINES), Intent::Act(next_match)),
+    arrows("N", Surfaces::RESPONSE.or(Surfaces::RESPONSE_LINES), Intent::Act(prev_match)),
     row("n", Surfaces::RESPONSE, Intent::Counted(find_n), CountRule::Pass),
     row("N", Surfaces::RESPONSE, Intent::Counted(find_shift_n), CountRule::Pass),
     row("*", Surfaces::RESPONSE, Intent::Counted(find_star), CountRule::Pass),
     row("#", Surfaces::RESPONSE, Intent::Counted(find_hash), CountRule::Pass),
     row("?", Surfaces::RESPONSE, Intent::Act(response_search_back), CountRule::Ignore),
-    arrows("c", Surfaces::RESPONSE, Intent::Act(copy_header)),
+    arrows("c", Surfaces::RESPONSE.or(Surfaces::RESPONSE_LINES), Intent::Act(copy_header)),
     // Key list §6, Out (parked by the user): a list has no search yet.
     row("/", Surfaces::SEARCHLESS, Intent::Note("No search in this list yet"), CountRule::Ignore),
     // Key list §6 and §9: the app's undo, redo and command palette.
@@ -771,13 +830,13 @@ pub fn vim_first_chars() -> Vec<char> {
 }
 
 /// Whether a digit builds a count on `surface` in the vim profile: a
-/// navigation surface (lists and panes) where some row repeats or reads
-/// one (plan M1 Deviation 22). The app-wide `u` and `ctrl+r` rows repeat
+/// navigation surface (lists and panes) or the response's V, where some
+/// row repeats or reads one (plan M1 Deviation 22). The app-wide `u` and `ctrl+r` rows repeat
 /// on every surface, so the navigation filter keeps prompts, forms, the
 /// body and the testbed out. Which navigation surfaces qualify is
 /// derived from [`TABLE`], so it cannot drift from the rows.
 pub fn takes_count(surface: Surface) -> bool {
-    Surfaces::NAV.has(surface)
+    Surfaces::KEYED.has(surface)
         && TABLE.iter().any(|b| {
             b.profile.has(KeyProfile::Vim)
                 && b.on.has(surface)
@@ -940,7 +999,7 @@ mod tests {
             let tab = matches!(b.intent, Intent::Tab { .. });
             if b.count == CountRule::Pass {
                 assert!(
-                    edge || counted_verb || tab || matches!(b.intent, Intent::Motion(_) | Intent::Counted(_)),
+                    edge || counted_verb || tab || matches!(b.intent, Intent::Motion(_) | Intent::Extend(_) | Intent::Counted(_)),
                     "{}: Pass is for Edge rows, dd, p, the tab keys and the response's motions and counted actions",
                     b.keys
                 );

@@ -3148,6 +3148,22 @@ impl App {
             }
             Action::TreeFold { op, count } => self.session.response.fold(op, count),
             Action::ResponseMove(m) => self.session.response.motion(m),
+            Action::ResponseExtend(m) => self.session.response.extend(m),
+            Action::ResponseLines(op) => {
+                let had = self.session.response.line_selection();
+                match self.session.response.lines(op) {
+                    Some(lines) => {
+                        let n = lines.len();
+                        self.glue.yank_lines(&lines);
+                        // Vim's `'report'` (2): three lines or more say so.
+                        if n >= 3 {
+                            self.update(Action::ShowToast(format!("{n} lines yanked"), ToastKind::Info));
+                        }
+                        true
+                    }
+                    None => had != self.session.response.line_selection() || op == crate::action::LinesOp::Swap,
+                }
+            }
             Action::CopySelection(surface) => {
                 if let Some(text) = self.selection_text_of(surface) {
                     self.copy_text_with_toast(&text, "Copied selection".to_string());

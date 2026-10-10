@@ -26,7 +26,15 @@ impl App {
                 let Some(to) = crate::keyroute::panes::toward(self.focus, dir, &self.panes) else {
                     return false;
                 };
-                self.leave_then_go(true, |app| app.update(Action::FocusPane(to)))
+                // Vim leaves Visual on a window command: a V selection on the
+                // response ends as the key moves (plan M5a Task 6). A drag's
+                // character selection is not Visual, and stays.
+                self.leave_then_go(true, |app| {
+                    if app.session.response.line_selection() {
+                        app.session.response.lines(crate::action::LinesOp::End);
+                    }
+                    app.update(Action::FocusPane(to))
+                })
             }
             Screen::Manage => {
                 let Some(to_detail) = self.manage_pane_target(dir) else {

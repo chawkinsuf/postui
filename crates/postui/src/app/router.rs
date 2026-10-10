@@ -92,7 +92,7 @@ impl App {
         let most = match surface {
             Surface::Sidebar => self.sidebar.rows.len().saturating_mul(2),
             Surface::Table(_) => (self.editor.table_len() + 1).max(2),
-            Surface::Response(_) => self.session.response.view().map_or(0, |v| {
+            Surface::Response(_) | Surface::ResponseLines(_) => self.session.response.view().map_or(0, |v| {
                 v.visible_len().max(v.measured_width().unwrap_or(MAX_COUNT))
             }),
             Surface::Settings => crate::components::settings::SettingsTab::rows().len(),
@@ -202,7 +202,8 @@ impl App {
     /// Deviation 1); a screen field not synced yet shows the screen
     /// engine's; any other field with the caret types (`INSERT`: a dialog
     /// field before its session opens, which opens it in Insert, and the
-    /// query boxes); everything else is `NORMAL`. `None` in the arrows
+    /// query boxes); the response's line selection is `V-LINE` (plan M5a
+    /// Deviation 18); everything else is `NORMAL`. `None` in the arrows
     /// profile.
     pub fn mode_indicator(&self) -> Option<&'static str> {
         if self.profile() != crate::config::KeyProfile::Vim {
@@ -217,6 +218,7 @@ impl App {
                 super::fields::mode_word(self.glue.mode())
             }
             (None, FieldCaret::Live(_)) => "INSERT",
+            (None, _) if matches!(self.surface(), Surface::ResponseLines(_)) => "V-LINE",
             (None, _) => "NORMAL",
         })
     }
@@ -277,12 +279,14 @@ impl App {
             },
             Screen::Main => match self.focus {
                 PaneId::Sidebar => Surface::Sidebar,
-                PaneId::Response => Surface::Response(
-                    self.session
-                        .response
-                        .view()
-                        .map_or(crate::components::response::ViewMode::Pretty, |v| v.mode),
-                ),
+                PaneId::Response => {
+                    let mode = self.session.response.view().map_or(crate::components::response::ViewMode::Pretty, |v| v.mode);
+                    if self.session.response.line_selection() {
+                        Surface::ResponseLines(mode)
+                    } else {
+                        Surface::Response(mode)
+                    }
+                }
                 PaneId::Editor => match self.editor.sub_focus {
                     SubFocus::Method => Surface::Method,
                     SubFocus::Url | SubFocus::None => Surface::UrlLine,

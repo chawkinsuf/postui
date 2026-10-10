@@ -241,12 +241,13 @@ impl Router {
     /// 4. Nothing on this surface starts with these keys.
     fn no_match(&mut self, ev: KeyEvent, tok: Tok, ctx: &KeyCtx, first: bool) -> Resolved {
         if self.pending.is_idle() {
-            // In vim a bare char on a navigation surface is vim's beep:
-            // no component letter is left to reach (spec §3.4, plan M1
-            // Deviation 1). Space is the surface's own key.
+            // In vim a bare char on a navigation surface, or in the
+            // response's V, is vim's beep: no component letter is left to
+            // reach (spec §3.4, plan M1 Deviation 1). Space is the
+            // surface's own key.
             let swallow = ctx.profile == KeyProfile::Vim
                 && matches!(tok, Tok::Char(c) if c != ' ')
-                && Surfaces::NAV.has(ctx.surface);
+                && Surfaces::KEYED.has(ctx.surface);
             return if swallow { Resolved::Consumed } else { Resolved::Declined };
         }
         if self.pending.keys().is_empty() {
@@ -343,6 +344,7 @@ pub(crate) fn expand(b: &table::Binding, count: Option<usize>, cap: usize) -> Ve
         Intent::CloseThen(f) => vec![Step::Action(Action::CloseField), Step::Action(f())],
         // Plan M5a Task 3: the motion reads the count itself.
         Intent::Motion(f) => vec![Step::Action(Action::ResponseMove(f(count)))],
+        Intent::Extend(f) => vec![Step::Action(Action::ResponseExtend(f(count)))],
         Intent::Counted(f) => vec![Step::Action(f(count))],
         Intent::Swallow => Vec::new(),
     }
@@ -1026,6 +1028,47 @@ mod tests {
             feed(&mut Router::default(), &cx(Arrows, Surface::Response(ViewMode::Headers)), "c"),
             run(vec![Step::Action(Action::CopyResponseHeader)])
         );
+    }
+
+    /// Plan M5a Deviation 11: the response's V surface.
+    #[test]
+    fn v_line_rows() {
+        use crate::action::{LinesOp, ResponseMotion as M};
+        use crate::components::response::ViewMode;
+        let resp = cx(Vim, Surface::Response(ViewMode::Raw));
+        let vis = cx(Vim, Surface::ResponseLines(ViewMode::Raw));
+        let act = |a| run(vec![Step::Action(a)]);
+        assert_eq!(feed(&mut Router::default(), &resp, "V"), act(Action::ResponseLines(LinesOp::Start)));
+        assert_eq!(feed(&mut Router::default(), &resp, "3yy"), act(Action::ResponseLines(LinesOp::Yank { count: Some(3) })));
+        assert_eq!(feed(&mut Router::default(), &vis, "3j"), act(Action::ResponseExtend(M::Lines(3))));
+        assert_eq!(feed(&mut Router::default(), &vis, "G"), act(Action::ResponseExtend(M::Goto { line: None, last: true })));
+        assert_eq!(feed(&mut Router::default(), &vis, "y"), act(Action::ResponseLines(LinesOp::Yank { count: None })));
+        assert_eq!(feed(&mut Router::default(), &vis, "o"), act(Action::ResponseLines(LinesOp::Swap)));
+        assert_eq!(feed(&mut Router::default(), &vis, "V"), act(Action::ResponseLines(LinesOp::End)));
+        assert_eq!(feed(&mut Router::default(), &vis, "<Esc>"), act(Action::ResponseLines(LinesOp::End)));
+        assert_eq!(
+            feed(&mut Router::default(), &vis, "v"),
+            run(vec![Step::Action(Action::ShowToast(table::ONLY_LINES.into(), ToastKind::Info))])
+        );
+        assert_eq!(feed(&mut Router::default(), &vis, "u"), Resolved::Consumed, "swallowed in V");
+        assert_eq!(feed(&mut Router::default(), &vis, "<C-w>k"), act(Action::PaneMove(crate::action::PaneDir::Up)));
+        assert_eq!(feed(&mut Router::default(), &cx(Arrows, vis.surface), "/"), act(Action::OpenResponseSearch), "arrows' / with a selection up");
+    }
+
+    /// Amendment A6.3 (probe V14 in the Task 6 report): in V, PageDown and
+    /// PageUp extend as ctrl+f and ctrl+b do, counted. On the plain
+    /// response they stay the component's named keys.
+    #[test]
+    fn v_line_page_keys_extend() {
+        use crate::action::ResponseMotion as M;
+        use crate::components::response::ViewMode;
+        let vis = cx(Vim, Surface::ResponseLines(ViewMode::Pretty));
+        let ext = |m| run(vec![Step::Action(Action::ResponseExtend(m))]);
+        assert_eq!(feed(&mut Router::default(), &vis, "<PageDown>"), ext(M::Page { down: true, count: 1 }));
+        assert_eq!(feed(&mut Router::default(), &vis, "3<PageUp>"), ext(M::Page { down: false, count: 3 }));
+        assert_eq!(feed(&mut Router::default(), &vis, "<C-f>"), ext(M::Page { down: true, count: 1 }));
+        let resp = cx(Vim, Surface::Response(ViewMode::Pretty));
+        assert_eq!(feed(&mut Router::default(), &resp, "<PageDown>"), Resolved::Declined);
     }
 
     /// Review Focus 4.
