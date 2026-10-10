@@ -547,6 +547,8 @@ pub struct Loaded {
     pub keymap: crate::keys::Keymap,
     pub themes: crate::theme::ThemeRegistry,
     pub usage: crate::usage::UsageStore,
+    /// The `:` line's history (plan M5b Task 5), from `ui.toml`.
+    pub cmdline: crate::cmdline::CmdlineHistory,
     /// `Some` when `config.toml` exists but will not parse. Startup
     /// blocks on this rather than running on defaults: `[projects]`
     /// lives in the same file, so defaulting loses the project list and
@@ -658,20 +660,22 @@ impl Config {
         // `ui.toml` is the app's own state file rather than a config file
         // the user edits, so it is read here and *not* by `read_all` —
         // a reload has no business re-reading it (see [`Self::reload`]).
-        let usage = match cfg.read(UI_TOML) {
+        let (usage, cmdline) = match cfg.read(UI_TOML) {
             Ok(Some(text)) => {
                 let (usage, error) = crate::usage::UsageStore::parse(&text);
                 if let Some(e) = error {
                     warnings.push(format!(
-                        "could not parse {UI_TOML}: {e}; palette usage stats will not be saved until it is fixed"
+                        "could not parse {UI_TOML}: {e}; palette usage stats and the command-line history will not be saved until it is fixed"
                     ));
                 }
-                usage
+                let (cmdline, warning) = crate::cmdline::CmdlineHistory::parse(&text);
+                warnings.extend(warning.map(|w| format!("{UI_TOML}: {w}")));
+                (usage, cmdline)
             }
-            Ok(None) => crate::usage::UsageStore::default(),
+            Ok(None) => (crate::usage::UsageStore::default(), crate::cmdline::CmdlineHistory::default()),
             Err(e) => {
                 warnings.push(e);
-                crate::usage::UsageStore::default()
+                (crate::usage::UsageStore::default(), crate::cmdline::CmdlineHistory::default())
             }
         };
 
@@ -683,6 +687,7 @@ impl Config {
                 keymap,
                 themes,
                 usage,
+                cmdline,
                 config_error,
             },
             warnings,
@@ -966,6 +971,15 @@ impl Config {
         self.edit(UI_TOML, |doc| usage.write_into(doc))
     }
 
+    /// Persists the `:` line's history to `ui.toml` (plan M5b Deviation 16).
+    /// A `[history]` that did not read at startup is left as it is.
+    pub fn save_cmdline_history(&mut self, history: &crate::cmdline::CmdlineHistory) -> Result<(), String> {
+        if !history.writable() {
+            return Ok(());
+        }
+        self.edit(UI_TOML, |doc| history.write_into(doc))
+    }
+
     /// Rescans `themes/` and rebuilds the registry, so a custom theme file
     /// added or edited since startup shows up without a restart. A missing
     /// directory is silently just the built-ins; a file that can't be read
@@ -1092,6 +1106,45 @@ mod tests {
         let (_cfg, loaded, _) = Config::load_from(Config::at(dir.path().to_path_buf()), false);
         assert!(loaded.config_error.is_none(), "valid is not broken");
         assert!(!loaded.ui.animations);
+    }
+
+    /// Plan M5b Deviations 3 and 16: the `:` history comes back from
+    /// `ui.toml` at startup and goes back at quit, beside the usage stats.
+    #[test]
+    fn the_cmdline_history_round_trips_through_ui_toml() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("ui.toml"), "[history]\ncmdline = [\"w\", \"send\"]\n").unwrap();
+        let disk = || Config { disk: Some(postui_core::disk::Disk::new(dir.path().to_path_buf())) };
+        let (mut cfg, loaded, warnings) = Config::load_from(disk(), false);
+        assert!(!warnings.iter().any(|w| w.contains("ui.toml")), "{warnings:?}");
+        assert_eq!(loaded.cmdline.lines(), ["w", "send"]);
+        let mut history = loaded.cmdline;
+        history.add("w");
+        cfg.save_cmdline_history(&history).unwrap();
+        cfg.save_usage(&crate::usage::UsageStore::default()).unwrap();
+        let (_, loaded, _) = Config::load_from(disk(), false);
+        assert_eq!(loaded.cmdline.lines(), ["send", "w"]);
+    }
+
+    /// Review Focus 4 (the user's rule: parse errors never default): a
+    /// `[history]` that does not read is reported at startup and never
+    /// written over; a `ui.toml` that does not parse names the history too.
+    #[test]
+    fn a_history_that_does_not_read_is_reported_and_never_overwritten() {
+        let dir = tempdir().unwrap();
+        let disk = || Config { disk: Some(postui_core::disk::Disk::new(dir.path().to_path_buf())) };
+        let text = "[history]\ncmdline = 5\n";
+        std::fs::write(dir.path().join("ui.toml"), text).unwrap();
+        let (mut cfg, loaded, warnings) = Config::load_from(disk(), false);
+        assert!(warnings.iter().any(|w| w.contains("command-line history will not be saved")), "{warnings:?}");
+        assert!(loaded.cmdline.lines().is_empty());
+        let mut history = loaded.cmdline;
+        history.add("w");
+        cfg.save_cmdline_history(&history).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.path().join("ui.toml")).unwrap(), text, "byte for byte");
+        std::fs::write(dir.path().join("ui.toml"), "not = [toml").unwrap();
+        let (_, _, warnings) = Config::load_from(disk(), false);
+        assert!(warnings.iter().any(|w| w.contains("command-line history")), "{warnings:?}");
     }
 
     #[test]

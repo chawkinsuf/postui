@@ -389,6 +389,12 @@ const CASES: &[Case] = &[
     vim("X.edit", SidebarThree, ":abc<BS>", &[PaletteQuery("ab")]),
     vim("X.edit", SidebarThree, ":<BS>", &[NoModal]),
     vim("X.edit", SidebarThree, ":abc<Esc>j", &[NoModal, SidebarSel("main/gamma")]),
+    // Key list §8 (`X.history`), M5b: ↑ and ↓ recall the line's history.
+    vim("X.history", SidebarThree, ":abc<Esc>:<Up>", &[PaletteQuery("abc")]),
+    vim("X.history", SidebarThree, ":abc<Esc>:xyz<Esc>:a<Up>", &[PaletteQuery("abc")]),
+    vim("X.history", SidebarThree, ":ab<Esc>:xy<Esc>:ac<Esc>:a<Up><Up>", &[PaletteQuery("ab")]),
+    vim("X.history", SidebarThree, ":abc<Esc>:<Up><Down>", &[PaletteQuery("")]),
+    vim("X.history", SidebarThree, ":<Up>", &[PaletteQuery(""), Palette]),
     vim("X.unsupported", SidebarThree, ":s", &[PaletteRefused("Not supported: :s")]),
     vim("X.unsupported", SidebarThree, ":s<CR>j", &[NoModal, NoToast, SidebarSel("main/gamma")]),
     vim("X.unsupported", SidebarThree, ":%s/a/b/<CR>j", &[NoModal, NoToast, SidebarSel("main/gamma")]),

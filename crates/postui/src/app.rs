@@ -242,6 +242,9 @@ pub struct App {
     /// Palette command frecency stats (recency + count per command id),
     /// loaded from `ui.toml` at startup and saved back on quit.
     pub usage: crate::usage::UsageStore,
+    /// The `:` line's history (plan M5b Task 5): read from `ui.toml` at
+    /// startup, written back at quit.
+    pub(crate) cmdline_history: crate::cmdline::CmdlineHistory,
     /// The HTTP clients used for every send (verifying + insecure, picked
     /// per request). Built eagerly and cheaply
     /// (`reqwest::Client::builder().build()` needs no running Tokio
@@ -622,6 +625,7 @@ impl App {
             keymap,
             themes,
             usage,
+            cmdline,
             config_error,
         } = loaded;
         let terminal_colors = {
@@ -658,6 +662,7 @@ impl App {
             app.terminal_colors = terminal_colors;
             app.apply_ui_settings(ui_settings, theme_name, theme);
             app.usage = usage;
+            app.cmdline_history = cmdline;
             app.keymap = keymap;
             app.config_error = config_error;
             for w in warnings {
@@ -682,6 +687,7 @@ impl App {
         app.terminal_colors = terminal_colors;
         app.apply_ui_settings(ui_settings, theme_name, theme);
         app.usage = usage;
+        app.cmdline_history = cmdline;
         app.keymap = keymap;
         app.config_error = config_error;
         for w in warnings {
@@ -1757,6 +1763,7 @@ impl App {
             modal_seen: None,
             history_stepped: false,
             usage: crate::usage::UsageStore::default(),
+            cmdline_history: Default::default(),
             clients: crate::http::Clients::new(),
             tx,
             ai_task: None,
@@ -2976,6 +2983,9 @@ impl App {
                     p.set_open_request(slug.as_deref());
                 }
                 let _ = self.config.save_usage(&self.usage);
+                // As `save_usage`: the app is exiting and ui.toml is app
+                // state, so a failed write has no one left to tell.
+                let _ = self.config.save_cmdline_history(&self.cmdline_history);
                 self.should_quit = true;
                 true
             }
@@ -3115,7 +3125,12 @@ impl App {
                 self.ex_over_visual |= self.profile() == crate::config::KeyProfile::Vim
                     && self.focus == PaneId::Response
                     && self.session.response.line_selection();
-                self.push_modal(Modal::Palette(PaletteState::new_ex(&self.usage, crate::usage::now(), scope)));
+                self.push_modal(Modal::Palette(PaletteState::new_ex(
+                    &self.usage,
+                    crate::usage::now(),
+                    scope,
+                    self.cmdline_history.lines(),
+                )));
                 true
             }
             Action::NoHlSearch => {
@@ -11363,6 +11378,13 @@ impl App {
             // (plan M5b Deviation 6).
             if matches!(popped, Some(Modal::Palette(_))) && !self.screen_field_open() && !self.field_gate() {
                 self.dot_pending = DotPending::Kept { before: changes_before };
+            }
+            // Vim keeps each line its `:` closed with, Enter or Esc (probes
+            // H1, H6; plan M5b Deviations 13 and 17).
+            if let Some(Modal::Palette(p)) = &popped
+                && p.is_ex()
+            {
+                self.cmdline_history.add(p.input());
             }
             // Overlay close is always instant.
             self.anims.snap(AnimKey::ModalOpen, 1.0);

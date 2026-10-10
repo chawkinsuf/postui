@@ -3,6 +3,7 @@ pub mod ai;
 pub mod anim;
 pub mod app;
 pub mod clipboard;
+pub mod cmdline;
 pub mod components;
 pub mod config;
 pub mod glyph;

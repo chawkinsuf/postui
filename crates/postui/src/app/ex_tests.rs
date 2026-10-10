@@ -438,3 +438,45 @@ fn the_commands_chip_opens_the_palette_it_spells() {
     click_chip(&mut app, Action::OpenPalette);
     assert!(!palette(&app).is_ex());
 }
+
+/// Plan M5b Deviations 13 and 17 (probes H1, H6, H7): the line keeps what
+/// it closed with, Enter or Esc, an equal line moved to the newest place;
+/// ↑ recalls them; Backspace on an empty line keeps nothing.
+#[test]
+fn the_line_keeps_its_history() {
+    let mut app = vim(Fixture::SidebarThree);
+    feed(&mut app, ":abc<Esc>:noh<CR>:abc<Esc>");
+    assert_eq!(app.cmdline_history.lines(), ["noh", "abc"]);
+    feed(&mut app, ":<Up>");
+    assert_eq!(palette(&app).input(), "abc");
+    assert_eq!(app.mode_indicator(), Some("INSERT"), "still typing");
+    feed(&mut app, "<Up>");
+    assert_eq!(palette(&app).input(), "noh");
+    feed(&mut app, "<Esc>:<BS>");
+    assert_eq!(app.cmdline_history.lines(), ["abc", "noh"]);
+}
+
+/// Review Focus 3: a recalled line runs what it spells, as typed: a verb
+/// pins, and text no verb spells is Vim's E492, never a fuzzy row.
+#[test]
+fn a_recalled_line_runs_what_it_spells() {
+    let mut app = vim(Fixture::SidebarThree);
+    feed(&mut app, ":noh<CR>:<Up>");
+    assert_eq!(palette(&app).pinned().map(|r| r.name), Some("nohlsearch"));
+    feed(&mut app, "<Esc>:W<CR>:<Up><CR>");
+    assert!(app.modals.is_empty());
+    let e492 = toasts(&app).iter().filter(|t| t.as_str() == "Not a command: :W").count();
+    assert_eq!(e492, 2, "{:?}", toasts(&app));
+}
+
+/// Plan M5b Deviation 16: the history is written at quit, with the usage.
+#[test]
+fn quitting_writes_the_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = vim(Fixture::SidebarThree);
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+    feed(&mut app, ":noh<CR>:q<CR>");
+    assert!(app.should_quit);
+    let (_, loaded, _) = crate::config::Config::load_from(crate::config::Config::at(dir.path().to_path_buf()), false);
+    assert_eq!(loaded.cmdline.lines(), ["noh", "q"]);
+}
