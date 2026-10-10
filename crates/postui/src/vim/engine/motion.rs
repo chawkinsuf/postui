@@ -950,8 +950,8 @@ impl Engine {
         self.hl = true;
         let pat = match self.compiled(text) {
             Ok(p) => p,
-            Err(atom) => {
-                self.note = Some(Note::Message(search::not_supported_note(&atom)));
+            Err(note) => {
+                self.note = Some(Note::Message(note));
                 return Moved::search_failed(from);
             }
         };

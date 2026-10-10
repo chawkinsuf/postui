@@ -3037,7 +3037,12 @@ impl App {
                 match pane {
                     PaneId::Sidebar => self.sidebar.handle_scroll(delta),
                     PaneId::Editor => self.editor.handle_scroll(delta),
-                    PaneId::Response => self.session.response.handle_scroll(delta),
+                    PaneId::Response => {
+                        self.session.response.handle_scroll(delta);
+                        if self.profile() == crate::config::KeyProfile::Vim {
+                            self.session.response.cursor_into_view();
+                        }
+                    }
                 }
                 true
             }
@@ -3061,7 +3066,10 @@ impl App {
                 true
             }
             Action::NoHlSearch => {
+                // Vim's `:noh` turns the highlight off in every window.
                 self.glue.no_hlsearch();
+                self.modal_glue.no_hlsearch();
+                self.session.response.no_hlsearch();
                 true
             }
             Action::Close => {
@@ -10168,7 +10176,7 @@ impl App {
         let glue = if self.modal_session.is_some() { &mut self.modal_glue } else { &mut self.glue };
         match self.session.response.take_last_search() {
             Some((query, backward)) => glue.set_last_pattern(query, backward),
-            None => self.session.response.adopt_last_search(glue.last_pattern()),
+            None => self.session.response.adopt_last_search(glue.last_pattern(), glue.hlsearch()),
         }
     }
 
@@ -11648,5 +11656,7 @@ mod key_matrix_tests;
 mod global_tests;
 #[cfg(test)]
 mod ex_tests;
+#[cfg(test)]
+mod response_conformance_tests;
 #[cfg(test)]
 mod tests;

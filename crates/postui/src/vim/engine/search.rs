@@ -51,6 +51,16 @@ pub(crate) fn not_supported_note(atom: &str) -> String {
     format!("pattern not supported: {atom}")
 }
 
+/// Vim's own messages for a malformed pattern (`regexp.c`), less their
+/// numbers: a pattern inside the subset that Vim refuses says what Vim
+/// says (probed with `search()`).
+const UNMATCHED_OPEN: &str = "Unmatched \\(";
+const UNMATCHED_CLOSE: &str = "Unmatched \\)";
+const MULTI_FOLLOWS_MULTI: &str = "(NFA regexp) Can't have a multi follow a multi";
+const BRACE_SYNTAX: &str = "Syntax error in \\{...}";
+/// `~` is the last substitute string, and nothing here substitutes.
+const NO_PREVIOUS_SUBSTITUTE: &str = "No previous substitute regular expression";
+
 /// Word start (`\<`), word end (`\>`), both. Private-use chars that stand
 /// in the haystack before the position they describe.
 const BOW: char = '\u{E000}';
@@ -85,15 +95,47 @@ enum Prev {
     Anchor,
     /// After an atom a multi may follow.
     Atom,
-    /// After a multi or a zero-width atom: another multi is refused.
+    /// After a multi: Vim refuses another.
     NoMulti,
+    /// After a zero-width atom (`\<` `\>`): Vim takes a multi there, the
+    /// subset does not.
+    Zero,
 }
 
 /// Translates Vim `magic` syntax (the subset in the plan's table) to the
-/// `regex` crate's. `Err` carries the atom outside the subset, as typed.
-/// `source` is the pattern as stored ([`as_stored`]), so it reads the same
-/// in either direction: `\?` is always the multi, `?` always literal.
+/// `regex` crate's. `Err` carries the note to show: Vim's message for a
+/// pattern Vim refuses too, else [`not_supported_note`] for the atom
+/// outside the subset, as typed. `source` is the pattern as stored
+/// ([`as_stored`]), so it reads the same in either direction: `\?` is
+/// always the multi, `?` always literal.
 pub(crate) fn compile(source: &str) -> Result<Pattern, String> {
+    compile_atoms(source).map_err(|e| match e {
+        PatternError::Vim(msg) => msg,
+        PatternError::Unsupported(atom) => not_supported_note(&atom),
+    })
+}
+
+/// Why [`compile_atoms`] refused a pattern.
+enum PatternError {
+    /// Vim refuses it too, with this message.
+    Vim(String),
+    /// The atom outside the subset.
+    Unsupported(String),
+}
+
+impl From<&str> for PatternError {
+    fn from(atom: &str) -> Self {
+        PatternError::Unsupported(atom.to_string())
+    }
+}
+
+impl From<String> for PatternError {
+    fn from(atom: String) -> Self {
+        PatternError::Unsupported(atom)
+    }
+}
+
+fn compile_atoms(source: &str) -> Result<Pattern, PatternError> {
     let src: Vec<char> = source.chars().collect();
     let mut out = String::new();
     let mut prev = Prev::Start;
@@ -126,7 +168,7 @@ pub(crate) fn compile(source: &str) -> Result<Pattern, String> {
             let (ob, oe) = run.unwrap_or((false, false));
             *run = Some((ob || b, oe || e));
             *boundaries = true;
-            *prev = Prev::NoMulti;
+            *prev = Prev::Zero;
         };
         if c != '\\' || !matches!(src.get(i + 1), Some('<' | '>')) {
             flush_run(&mut out, &mut run);
@@ -143,7 +185,12 @@ pub(crate) fn compile(source: &str) -> Result<Pattern, String> {
                 match n {
                     '<' => zero_width(true, false, &mut run, &mut boundaries, &mut prev),
                     '>' => zero_width(false, true, &mut run, &mut boundaries, &mut prev),
-                    '+' | '=' | '?' | '{' if prev != Prev::Atom => return Err(format!("\\{n}")),
+                    '+' | '=' | '?' | '{' if prev == Prev::NoMulti => return Err(PatternError::Vim(MULTI_FOLLOWS_MULTI.into())),
+                    '+' | '=' | '?' | '{' if prev == Prev::Start => {
+                        return Err(PatternError::Vim(format!("(NFA regexp) Misplaced {n}")));
+                    }
+                    // After `^` or `\<` Vim takes a multi; the subset does not.
+                    '+' | '=' | '?' | '{' if prev != Prev::Atom => return Err(format!("\\{n}").into()),
                     '+' => {
                         out.push('+');
                         prev = Prev::NoMulti;
@@ -157,7 +204,8 @@ pub(crate) fn compile(source: &str) -> Result<Pattern, String> {
                         prev = Prev::NoMulti;
                     }
                     '{' => {
-                        let close = src[i..].iter().position(|&c| c == '}').ok_or("\\{")?;
+                        let close =
+                            src[i..].iter().position(|&c| c == '}').ok_or(PatternError::Vim(BRACE_SYNTAX.into()))?;
                         let mut body: String = src[i..i + close].iter().collect();
                         if body.ends_with('\\') {
                             body.pop();
@@ -166,7 +214,7 @@ pub(crate) fn compile(source: &str) -> Result<Pattern, String> {
                             return Err("\\{-".into());
                         }
                         if !body.chars().all(|c| c.is_ascii_digit() || c == ',') || body.matches(',').count() > 1 {
-                            return Err("\\{".into());
+                            return Err(PatternError::Vim(BRACE_SYNTAX.into()));
                         }
                         // Vim's `read_limits()` swaps a backwards range:
                         // `\{3,1}` is `\{1,3}`, still as many as possible.
@@ -191,7 +239,7 @@ pub(crate) fn compile(source: &str) -> Result<Pattern, String> {
                     }
                     ')' => {
                         if depth == 0 {
-                            return Err("\\)".into());
+                            return Err(PatternError::Vim(UNMATCHED_CLOSE.into()));
                         }
                         depth -= 1;
                         out.push(')');
@@ -209,13 +257,13 @@ pub(crate) fn compile(source: &str) -> Result<Pattern, String> {
                     'W' => atom(&mut out, &format!("[^0-9A-Za-z_{NOT_SENTINEL}]"), &mut prev),
                     '/' | '.' | '*' | '[' | ']' | '^' | '$' | '~' | '\\' => atom(&mut out, &regex::escape(&n.to_string()), &mut prev),
                     // `\zs`, `\ze`, `\z(`: the atom is the two letters.
-                    'z' => return Err(src[i - 2..(i + 1).min(src.len())].iter().collect()),
+                    'z' => return Err(src[i - 2..(i + 1).min(src.len())].iter().collect::<String>().into()),
                     // Vim's `peekchr()`: a char with no `META_flags` entry
                     // and no abbreviation is itself (`\q` is `q`).
                     other if !META.contains(other) && !ABBR.contains(other) => {
                         atom(&mut out, &regex::escape(&text_char(other).to_string()), &mut prev)
                     }
-                    other => return Err(format!("\\{other}")),
+                    other => return Err(format!("\\{other}").into()),
                 }
             }
             '.' => {
@@ -230,7 +278,8 @@ pub(crate) fn compile(source: &str) -> Result<Pattern, String> {
                         out.push('*');
                         prev = Prev::NoMulti;
                     }
-                    Prev::NoMulti => return Err("*".into()),
+                    Prev::NoMulti => return Err(PatternError::Vim(MULTI_FOLLOWS_MULTI.into())),
+                    Prev::Zero => return Err("*".into()),
                 }
             }
             '^' if prev == Prev::Start => {
@@ -249,7 +298,7 @@ pub(crate) fn compile(source: &str) -> Result<Pattern, String> {
                 i += used;
                 atom(&mut out, &re, &mut prev);
             }
-            '~' => return Err("~".into()),
+            '~' => return Err(PatternError::Vim(NO_PREVIOUS_SUBSTITUTE.into())),
             c => {
                 i += 1;
                 atom(&mut out, &regex::escape(&text_char(c).to_string()), &mut prev);
@@ -258,9 +307,9 @@ pub(crate) fn compile(source: &str) -> Result<Pattern, String> {
     }
     flush_run(&mut out, &mut run);
     if depth > 0 {
-        return Err("\\(".into());
+        return Err(PatternError::Vim(UNMATCHED_OPEN.into()));
     }
-    let re = Regex::new(&out).map_err(|_| source.to_string())?;
+    let re = Regex::new(&out).map_err(|_| PatternError::Unsupported(source.to_string()))?;
     Ok(Pattern { re, boundaries })
 }
 
@@ -855,15 +904,22 @@ mod tests {
         }
         for (pat, atom) in [
             ("\\v foo", "\\v"), ("\\zsfoo", "\\zs"), ("\\bfoo", "\\b"), ("\\e", "\\e"), ("\\t", "\\t"),
-            ("a\\nb", "\\n"), ("~", "~"), ("\\_s", "\\_"), ("\\a", "\\a"), ("\\%d", "\\%"), ("\\V.", "\\V"), ("\\c", "\\c"),
-            ("\\u", "\\u"), ("b[[:upper:]]r", "[:upper:]"), ("b\\)", "\\)"), ("\\(b", "\\("), ("\\{2}b", "\\{"), ("\\+b", "\\+"),
-            ("^\\+b", "\\+"), ("b**r", "*"), ("o\\{", "\\{"), ("a\\{-1,}b", "\\{-"), ("\\<*", "*"), ("\\1", "\\1"),
-            ("[[:日本:]", "[:日本:]"), ("x[[:é:]]", "[:é:]"), ("b[\\n]r", "\\n"), ("[\\d65]", "\\d"), ("[\\x41]", "\\x"),
-            ("[[=a=]]x", "[=a=]"), ("[[.a.]]x", "[.a.]"), ("[b[=日=]]", "[=日=]"),
+            ("a\\nb", "\\n"), ("\\_s", "\\_"), ("\\a", "\\a"), ("\\%d", "\\%"), ("\\V.", "\\V"), ("\\c", "\\c"),
+            ("\\u", "\\u"), ("b[[:upper:]]r", "[:upper:]"), ("^\\+b", "\\+"), ("a\\{-1,}b", "\\{-"), ("\\<*", "*"),
+            ("\\1", "\\1"), ("[[:日本:]", "[:日本:]"), ("x[[:é:]]", "[:é:]"), ("b[\\n]r", "\\n"), ("[\\d65]", "\\d"),
+            ("[\\x41]", "\\x"), ("[[=a=]]x", "[=a=]"), ("[[.a.]]x", "[.a.]"), ("[b[=日=]]", "[=日=]"),
         ] {
-            assert_eq!(compile(pat).err().as_deref(), Some(atom), "{pat:?}");
+            assert_eq!(compile(pat).err(), Some(not_supported_note(atom)), "{pat:?}");
         }
-        assert!(compile("\\?").is_err(), "a multi with nothing before it");
+        // Patterns Vim refuses too say Vim's message (probed with
+        // `search()`, numbers dropped).
+        for (pat, msg) in [
+            ("~", NO_PREVIOUS_SUBSTITUTE), ("b\\)", UNMATCHED_CLOSE), ("\\(b", UNMATCHED_OPEN),
+            ("\\{2}b", "(NFA regexp) Misplaced {"), ("\\+b", "(NFA regexp) Misplaced +"), ("\\?", "(NFA regexp) Misplaced ?"),
+            ("b**r", MULTI_FOLLOWS_MULTI), ("a*\\+", MULTI_FOLLOWS_MULTI), ("o\\{", BRACE_SYNTAX), ("a\\{x}", BRACE_SYNTAX),
+        ] {
+            assert_eq!(compile(pat).err().as_deref(), Some(msg), "{pat:?}");
+        }
     }
 
     /// The sentinel haystack maps every position back, and a text char

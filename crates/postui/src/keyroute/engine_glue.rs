@@ -410,6 +410,12 @@ impl Glue {
         self.engine.registers().unnamed().text.clone()
     }
 
+    /// The unnamed register, kind and all, for the response's conformance.
+    #[cfg(test)]
+    pub fn unnamed(&self) -> crate::vim::engine::Register {
+        self.engine.registers().unnamed().clone()
+    }
+
     /// A field got the caret (piece 3 §4.2 `enter`). A one-line field
     /// starts a fresh state; the body keeps its own (§3.11).
     pub fn enter(&mut self, buf: &mut FieldBuf<'_>, start: Start, seat: OpenSeat) {

@@ -768,6 +768,71 @@ fn scroll_dispatches_without_changing_focus() {
     assert_eq!(app.focus, before, "scrolling must not steal focus");
 }
 
+/// A click on response text puts Vim's hidden column on the clicked char,
+/// as Vim's click does, so `*` takes the clicked word.
+#[test]
+fn a_click_puts_the_vim_column_on_the_clicked_char() {
+    use crate::config::KeyProfile;
+    let mut app = App::new_for_test();
+    app.use_profile(KeyProfile::Vim);
+    ready_response(&mut app, r#"{"alpha": "beta gamma"}"#);
+    render_once(&mut app);
+    let r = app.hits.rect_of(&Hit::JsonRow(1)).expect("row 1 drawn");
+    // `  "alpha": "beta gamma"`: the `g` of gamma is char 18.
+    app.handle_mouse(left_down(r.x + 18, r.y));
+    assert_eq!(app.focus, PaneId::Response);
+    app.handle_key(KeyEvent::new(KeyCode::Char('*'), KeyModifiers::SHIFT));
+    assert_eq!(app.glue.last_pattern(), Some(("\\<gamma\\>", false)));
+}
+
+/// The response search box's Esc chip says what Esc does there: vim's
+/// abandons the box (cancel), arrows' runs it and closes (done).
+#[test]
+fn the_search_box_esc_chip_follows_the_profile() {
+    use crate::config::KeyProfile;
+    for (profile, label) in [(KeyProfile::Vim, "cancel"), (KeyProfile::Arrows, "done")] {
+        let mut app = App::new_for_test();
+        app.use_profile(profile);
+        ready_response(&mut app, "a\nb");
+        app.focus = PaneId::Response;
+        app.update(Action::OpenResponseSearch { backward: false });
+        let text = footer_text(&mut app).split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(text.contains(&format!("esc {label}")), "{profile:?}: {text}");
+    }
+}
+
+/// The user's decision (2026-10-10): the vim profile's wheel drags the
+/// response's cursor into the window, as Vim's does; V extends to it, and
+/// the cursor keeps its wanted column. Arrows' wheel leaves the cursor
+/// where it is, as on main.
+#[test]
+fn the_vim_wheel_drags_the_response_cursor_along() {
+    use crate::config::KeyProfile;
+    let body = (1..=60).map(|i| format!("    line {i}")).collect::<Vec<_>>().join("\n");
+    for (profile, follows) in [(KeyProfile::Vim, true), (KeyProfile::Arrows, false)] {
+        let mut app = App::new_for_test();
+        app.use_profile(profile);
+        ready_response(&mut app, &body);
+        app.focus = PaneId::Response;
+        render_once(&mut app);
+        app.update(Action::ScrollPane(PaneId::Response, 20));
+        let v = app.session.response.view().unwrap();
+        assert_eq!(v.scroll, 20, "{profile:?}");
+        assert_eq!(v.cursor, if follows { 20 } else { 0 }, "{profile:?}: the cursor on the window's top line");
+    }
+    let mut app = App::new_for_test();
+    app.use_profile(KeyProfile::Vim);
+    ready_response(&mut app, &body);
+    app.focus = PaneId::Response;
+    render_once(&mut app);
+    app.update(Action::Render);
+    app.handle_key(KeyEvent::new(KeyCode::Char('V'), KeyModifiers::SHIFT));
+    app.update(Action::ScrollPane(PaneId::Response, 20));
+    assert!(app.session.response.line_selection(), "V stays up");
+    let lines = app.session.response.lines(crate::action::LinesOp::Yank { count: None }).unwrap();
+    assert_eq!(lines.len(), 21, "V reaches the line the wheel dragged the cursor to");
+}
+
 fn left_down(x: u16, y: u16) -> ratatui::crossterm::event::MouseEvent {
     ratatui::crossterm::event::MouseEvent {
         kind: ratatui::crossterm::event::MouseEventKind::Down(
@@ -9331,10 +9396,11 @@ fn the_body_and_the_response_share_vims_last_pattern() {
     );
 }
 
-/// Task 6 fix round 1 (the controller's ruling; probe R6f): with vim's V up
-/// on the tree, Space neither toggles a fold nor ends V, and Enter extends a
-/// line down; an arrows shift selection keeps main's Space, a fold toggle
-/// that drops the selection.
+/// With vim's V up on the tree, Space and Enter are Vim's (the user's
+/// decision, 2026-10-10): Space moves right, on to the next line from the
+/// `{` that is all of line 1, and Enter a line down, both extending V; an
+/// arrows shift selection keeps main's Space, a fold toggle that drops the
+/// selection.
 #[test]
 fn space_and_enter_in_a_response_line_selection_follow_the_profile() {
     use crate::config::KeyProfile;
@@ -9352,9 +9418,10 @@ fn space_and_enter_in_a_response_line_selection_follow_the_profile() {
     app.handle_key(space);
     assert_eq!(app.session.response.view().unwrap().visible_len(), rows, "vim: no fold toggled");
     assert!(app.session.response.line_selection(), "vim: V stays up");
+    assert_eq!(app.session.response.view().unwrap().cursor, 1, "vim: Space wraps to the next line");
     app.handle_key(enter);
     assert!(app.session.response.line_selection(), "vim: Enter extends");
-    assert_eq!(app.session.response.view().unwrap().cursor, 1);
+    assert_eq!(app.session.response.view().unwrap().cursor, 2);
     assert_eq!(app.mode_indicator(), Some("V-LINE"));
 
     let mut app = App::new_for_test();

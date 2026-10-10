@@ -13,6 +13,8 @@ pub enum Tok {
     Ctrl(char),
     /// An unmodified named key: `<CR>`, `<Esc>`, `<Down>`.
     Named(KeyCode),
+    /// A ctrl chord on a named key: `<C-Home>`, `<C-End>`.
+    CtrlNamed(KeyCode),
     /// `<any>` in a table row: any one key (spec §3.4 step 5: `q<any>`).
     /// A pattern, never typed: [`Tok::of`] makes none.
     Any,
@@ -66,6 +68,9 @@ impl Tok {
             code if ev.modifiers.is_empty() && NAMES.iter().any(|(_, k)| *k == code) => {
                 Some(Tok::Named(code))
             }
+            code if ev.modifiers == KeyModifiers::CONTROL && NAMES.iter().any(|(_, k)| *k == code) => {
+                Some(Tok::CtrlNamed(code))
+            }
             _ => None,
         }
     }
@@ -80,6 +85,7 @@ impl Tok {
             Tok::Ctrl(c) => KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL),
             Tok::Named(KeyCode::BackTab) => KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT),
             Tok::Named(code) => KeyEvent::new(code, KeyModifiers::NONE),
+            Tok::CtrlNamed(code) => KeyEvent::new(code, KeyModifiers::CONTROL),
             Tok::Any => unreachable!("<any> is a pattern in a row, never a typed key"),
         }
     }
@@ -103,6 +109,13 @@ pub fn parse(notation: &str) -> Vec<Tok> {
                 _ if name.len() == 3 && name.starts_with("C-") => {
                     Tok::Ctrl(name[2..].chars().next().expect("C-x").to_ascii_lowercase())
                 }
+                _ if let Some(key) = name.strip_prefix("C-") => Tok::CtrlNamed(
+                    NAMES
+                        .iter()
+                        .find(|(n, _)| *n == key)
+                        .unwrap_or_else(|| panic!("unknown key <{name}> in {notation:?}"))
+                        .1,
+                ),
                 _ => Tok::Named(
                     NAMES
                         .iter()
@@ -175,6 +188,7 @@ pub fn display(notation: &str) -> String {
                 out.push(c.to_ascii_uppercase());
             }
             Tok::Named(code) => out.push_str(&format!("{code:?}").to_lowercase()),
+            Tok::CtrlNamed(code) => out.push_str(&format!("ctrl+{code:?}").to_lowercase()),
             Tok::Any => out.push_str("<any>"),
         }
     }
@@ -187,7 +201,7 @@ mod tests {
 
     #[test]
     fn notation_round_trips_through_key_events() {
-        for n in ["j", "gg", "G", "<C-r>", "<CR>", "<Esc>", "3j", "<Down>", ":", "$", "<S-Tab>", "<Space>", "<lt>"] {
+        for n in ["j", "gg", "G", "<C-r>", "<CR>", "<Esc>", "3j", "<Down>", ":", "$", "<S-Tab>", "<Space>", "<lt>", "<C-Home>", "3<C-End>"] {
             let toks = parse(n);
             let back: Vec<Tok> = events(n).iter().map(|e| Tok::of(e).expect("nameable")).collect();
             assert_eq!(back, toks, "{n}");
@@ -199,7 +213,8 @@ mod tests {
     fn keys_no_row_can_name_are_none() {
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         assert_eq!(Tok::of(&KeyEvent::new(KeyCode::Char('d'), KeyModifiers::ALT)), None);
-        assert_eq!(Tok::of(&KeyEvent::new(KeyCode::Home, KeyModifiers::CONTROL)), None);
+        assert_eq!(Tok::of(&KeyEvent::new(KeyCode::Home, KeyModifiers::CONTROL)), Some(Tok::CtrlNamed(KeyCode::Home)));
+        assert_eq!(Tok::of(&KeyEvent::new(KeyCode::Home, KeyModifiers::CONTROL | KeyModifiers::SHIFT)), None);
         assert_eq!(Tok::of(&KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT)), None);
         let ctrl_shift = KeyModifiers::CONTROL | KeyModifiers::SHIFT;
         assert_eq!(Tok::of(&KeyEvent::new(KeyCode::Char('R'), KeyModifiers::CONTROL)), None, "uppercase form");

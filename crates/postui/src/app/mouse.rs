@@ -833,7 +833,13 @@ impl App {
                 self.sidebar.ensure_visible = false;
                 true
             }
-            PaneId::Response => self.session.response.set_scroll(offset),
+            PaneId::Response => {
+                let moved = self.session.response.set_scroll(offset);
+                if self.profile() == crate::config::KeyProfile::Vim {
+                    self.session.response.cursor_into_view();
+                }
+                moved
+            }
             PaneId::Editor => {
                 // edtui owns the body's viewport and only exposes moving it
                 // by one wheel notch at a time (which also keeps its cursor

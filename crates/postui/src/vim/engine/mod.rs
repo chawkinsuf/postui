@@ -45,7 +45,7 @@ pub(crate) use view::{Rows, View};
 /// (plan M5a Deviation 3, amendments A5.1 and A5.3).
 pub(crate) use search::{
     NO_PREVIOUS_PATTERN, NO_STRING_UNDER_CURSOR, as_stored, compile, find_ident, ident_pattern, not_found_note,
-    not_supported_note, wrap_note,
+    wrap_note,
 };
 
 use insert::{InsertKey, RegPending};

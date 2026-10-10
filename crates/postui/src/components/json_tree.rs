@@ -555,7 +555,8 @@ impl JsonTree {
     /// closed folds open. `zc`: the `count` innermost open folds outside
     /// the outermost closed one close, so `zc` on a fold already closed
     /// closes the one around it. `za`: on a closed fold as `zo`; on an open
-    /// one, one level closes. Whether anything changed.
+    /// one as `zc` (Vim 9.1: `2za` closes two levels). Whether anything
+    /// changed.
     pub fn fold_at(&mut self, full: usize, op: crate::action::FoldOp, count: usize) -> bool {
         use crate::action::FoldOp;
         let ids = self.folds_at(full);
@@ -564,7 +565,7 @@ impl JsonTree {
             FoldOp::Open => (true, count),
             FoldOp::Toggle if closed_at.is_some() => (true, count),
             FoldOp::Close => (false, count),
-            FoldOp::Toggle => (false, 1),
+            FoldOp::Toggle => (false, count),
             FoldOp::OpenAll => return self.fold_all(false),
             FoldOp::CloseAll => return self.fold_all(true),
         };
@@ -587,6 +588,36 @@ impl JsonTree {
         }
         self.rebuild_visible();
         true
+    }
+
+    /// Vim's `zo` (`open`) and `zc` in Visual (`opFoldRange()`): for each
+    /// full line from `first` to `last`, the fold `zo` or `zc` would pick
+    /// there opens or closes, one level, and the walk goes on after that
+    /// fold. Whether anything changed.
+    pub fn fold_range(&mut self, first: usize, last: usize, open: bool) -> bool {
+        let mut changed = false;
+        let mut line = first;
+        while line <= last.min(self.lines.len().saturating_sub(1)) {
+            let ids = self.folds_at(line);
+            let closed_at = ids.iter().position(|&id| self.lines[self.containers[id].open_line as usize].collapsed());
+            let pick = if open { closed_at.map(|k| ids[k]) } else { closed_at.unwrap_or(ids.len()).checked_sub(1).map(|k| ids[k]) };
+            let Some(id) = pick else {
+                line += 1;
+                continue;
+            };
+            let opener = &mut self.lines[self.containers[id].open_line as usize];
+            if open {
+                opener.flags &= !COLLAPSED;
+            } else {
+                opener.flags |= COLLAPSED;
+            }
+            changed = true;
+            line = self.containers[id].end_line as usize + 1;
+        }
+        if changed {
+            self.rebuild_visible();
+        }
+        changed
     }
 
     /// `zR` (`closed` false) and `zM`: every container open or closed.
@@ -632,6 +663,21 @@ impl JsonTree {
             .map(|id| &self.containers[id])
             .find(|c| self.lines[c.open_line as usize].collapsed())
             .map(|c| (c.open_line as usize, c.end_line as usize))
+    }
+
+    /// Vim's `foldOpenCursor()`: every closed fold at full line `full` opens,
+    /// the containers it sits in and the one it opens. Whether any did.
+    pub fn open_folds_at(&mut self, full: usize) -> bool {
+        let mut changed = false;
+        for id in self.folds_at(full) {
+            let opener = &mut self.lines[self.containers[id].open_line as usize];
+            changed |= opener.collapsed();
+            opener.flags &= !COLLAPSED;
+        }
+        if changed {
+            self.rebuild_visible();
+        }
+        changed
     }
 
     /// Expands every container that `full_index` lives inside, so that line

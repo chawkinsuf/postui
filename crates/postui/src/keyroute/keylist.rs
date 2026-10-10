@@ -78,6 +78,7 @@ pub static KEY_LIST: &[Row] = &[
     row("L.dot", Two, Ship, M5b, false),
     row("L.hml", Out, OutRow, M1, false),
     row("R.move", One, Ship, M1, true),
+    row("R.col", Two, Ship, M5a, false),
     row("R.ctrl-d", One, Ship, M4a, true),
     row("R.page", Two, Ship, M5a, true),
     row("R.fold", One, Ship, M4a, false),

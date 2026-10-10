@@ -1091,9 +1091,16 @@ pub enum Place {
 pub enum ResponseMotion {
     /// `j` `k` `<Down>` `<Up>`: this many lines, down when positive.
     Lines(i64),
-    /// `gg` (`last` false) and `G`: line N (1-based) when counted, else the
-    /// first or the last line.
+    /// `gg` (`last` false), `G` and ctrl+Home: line N (1-based) when
+    /// counted, else the first or the last line, on its first non-blank.
     Goto { line: Option<usize>, last: bool },
+    /// ctrl+End: line N when counted, else the last line, on its last char.
+    GotoEnd { line: Option<usize> },
+    /// Enter (Vim's `+`): this many lines down, on the first non-blank.
+    NextLine(usize),
+    /// A move along the line, of Vim's hidden column (the response draws no
+    /// caret): `h` `l` `0` `$` and their named keys, and Space.
+    Col(ColMove),
     /// ctrl+d and ctrl+u: Vim's `halfpage()`; a count sets the view's
     /// `'scroll'`.
     HalfPage { down: bool, count: Option<usize> },
@@ -1103,6 +1110,23 @@ pub enum ResponseMotion {
     /// `zt` `zz` `zb`: line N when counted (the cursor goes there), then
     /// the window placed around the cursor's line.
     Place { at: Place, line: Option<usize> },
+}
+
+/// A move along the response's line ([`ResponseMotion::Col`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColMove {
+    /// `h` `<Left>`: this many chars left.
+    Left(usize),
+    /// `l` `<Right>`: this many chars right, not past the line's end.
+    Right(usize),
+    /// Space: this many chars right, on to the next line's start at a
+    /// line's end (Vim's `whichwrap` `s`).
+    Space(usize),
+    /// `0` `<Home>`: the line's first char.
+    Start,
+    /// `$` `<End>`: the last char of the line this many lines down, less
+    /// one, wanted on every line after.
+    End(usize),
 }
 
 /// A vim search key on the response (piece 4 spec §5.7; plan M5a Task 5).
@@ -1127,6 +1151,9 @@ pub enum LinesOp {
     /// `yy` (`count` lines from the cursor) or a V `y` (the selection):
     /// into the unnamed register, linewise.
     Yank { count: Option<usize> },
+    /// `zo` (`open`) and `zc` in V: one level of folds over the selected
+    /// lines, then the selection ends, as Vim's Visual `zo` `zc` do.
+    Fold { open: bool },
 }
 
 /// Vim's fold keys on the response tree (piece 4 spec §5.7; plan M5a

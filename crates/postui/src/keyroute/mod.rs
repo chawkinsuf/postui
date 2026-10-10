@@ -980,7 +980,8 @@ mod tests {
     #[test]
     fn a_leading_zero_is_a_key() {
         let resp = cx(Vim, Surface::Response(crate::components::response::ViewMode::Pretty));
-        assert_eq!(feed(&mut Router::default(), &resp, "0"), run(vec![key(KeyCode::Home)]));
+        let start = crate::action::ResponseMotion::Col(crate::action::ColMove::Start);
+        assert_eq!(feed(&mut Router::default(), &resp, "0"), run(vec![Step::Action(Action::ResponseMove(start))]));
         assert_eq!(feed(&mut Router::default(), &cx(Vim, Surface::Sidebar), "0"), Resolved::Consumed);
     }
 
@@ -1052,6 +1053,8 @@ mod tests {
         );
         assert_eq!(feed(&mut Router::default(), &vis, "u"), Resolved::Consumed, "swallowed in V");
         assert_eq!(feed(&mut Router::default(), &vis, ":"), act(Action::OpenExPalette), "Vim's : in Visual");
+        let close_all = Action::TreeFold { op: crate::action::FoldOp::CloseAll, count: 1 };
+        assert_eq!(feed(&mut Router::default(), &vis, "zM"), act(close_all), "Vim's zM in Visual");
         assert_eq!(feed(&mut Router::default(), &vis, "<C-w>k"), act(Action::PaneMove(crate::action::PaneDir::Up)));
         let search = act(Action::OpenResponseSearch { backward: false });
         assert_eq!(feed(&mut Router::default(), &cx(Arrows, vis.surface), "/"), search, "arrows' / with a selection up");
@@ -1078,23 +1081,27 @@ mod tests {
         assert_eq!(feed(&mut Router::default(), &arrows, "<PageDown>"), Resolved::Declined);
     }
 
-    /// Task 6 fix round 1 (the controller's ruling; probe R6f): in vim's V,
-    /// Enter extends down a line, counted, and Space is swallowed; arrows'
-    /// shift selection keeps main's Space and Enter, the component's.
+    /// Vim's Enter (`+`) and Space (`l` that wraps) on the response, in V
+    /// and out (the user's decision, 2026-10-10: Vim's, in vim); arrows
+    /// keeps main's Space and Enter, the component's.
     #[test]
-    fn v_line_enter_extends_and_space_is_swallowed() {
-        use crate::action::ResponseMotion as M;
+    fn vims_enter_and_space_move_on_the_response() {
+        use crate::action::{ColMove, ResponseMotion as M};
         use crate::components::response::ViewMode;
         let vis = cx(Vim, Surface::ResponseLines(ViewMode::Pretty));
         let ext = |m| run(vec![Step::Action(Action::ResponseExtend(m))]);
-        assert_eq!(feed(&mut Router::default(), &vis, "<CR>"), ext(M::Lines(1)));
-        assert_eq!(feed(&mut Router::default(), &vis, "3<CR>"), ext(M::Lines(3)));
-        assert_eq!(feed(&mut Router::default(), &vis, "<Space>"), Resolved::Consumed);
-        let arrows = cx(Arrows, Surface::ResponseLines(ViewMode::Pretty));
-        assert_eq!(feed(&mut Router::default(), &arrows, "<CR>"), Resolved::Declined);
-        assert_eq!(feed(&mut Router::default(), &arrows, "<Space>"), Resolved::Declined);
+        assert_eq!(feed(&mut Router::default(), &vis, "<CR>"), ext(M::NextLine(1)));
+        assert_eq!(feed(&mut Router::default(), &vis, "3<CR>"), ext(M::NextLine(3)));
+        assert_eq!(feed(&mut Router::default(), &vis, "<Space>"), ext(M::Col(ColMove::Space(1))));
         let resp = cx(Vim, Surface::Response(ViewMode::Pretty));
-        assert_eq!(feed(&mut Router::default(), &resp, "<Space>"), Resolved::Declined, "the plain response's own key");
+        let mv = |m| run(vec![Step::Action(Action::ResponseMove(m))]);
+        assert_eq!(feed(&mut Router::default(), &resp, "2<Space>"), mv(M::Col(ColMove::Space(2))));
+        assert_eq!(feed(&mut Router::default(), &resp, "<CR>"), mv(M::NextLine(1)));
+        for surface in [Surface::ResponseLines(ViewMode::Pretty), Surface::Response(ViewMode::Pretty)] {
+            let arrows = cx(Arrows, surface);
+            assert_eq!(feed(&mut Router::default(), &arrows, "<CR>"), Resolved::Declined);
+            assert_eq!(feed(&mut Router::default(), &arrows, "<Space>"), Resolved::Declined);
+        }
     }
 
     /// Review Focus 4.

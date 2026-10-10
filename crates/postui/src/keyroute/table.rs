@@ -7,7 +7,7 @@
 use super::ctx::Surface;
 use super::engine_glue::OpenSeat;
 use super::notation::{self, Tok};
-use crate::action::{Action, PaneDir, Place, ResponseMotion, Verb};
+use crate::action::{Action, ColMove, PaneDir, Place, ResponseMotion, Verb};
 use crate::config::KeyProfile;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::sync::OnceLock;
@@ -446,6 +446,14 @@ fn lines_swap() -> Action {
     Action::ResponseLines(crate::action::LinesOp::Swap)
 }
 
+fn lines_fold_open() -> Action {
+    Action::ResponseLines(crate::action::LinesOp::Fold { open: true })
+}
+
+fn lines_fold_close() -> Action {
+    Action::ResponseLines(crate::action::LinesOp::Fold { open: false })
+}
+
 fn lines_yank() -> Action {
     Action::ResponseLines(crate::action::LinesOp::Yank { count: None })
 }
@@ -483,6 +491,34 @@ fn m_half_up(n: Option<usize>) -> ResponseMotion {
     ResponseMotion::HalfPage { down: false, count: n }
 }
 
+fn m_end_goto(n: Option<usize>) -> ResponseMotion {
+    ResponseMotion::GotoEnd { line: n }
+}
+
+fn m_next_line(n: Option<usize>) -> ResponseMotion {
+    ResponseMotion::NextLine(count1(n))
+}
+
+fn m_left(n: Option<usize>) -> ResponseMotion {
+    ResponseMotion::Col(ColMove::Left(count1(n)))
+}
+
+fn m_right(n: Option<usize>) -> ResponseMotion {
+    ResponseMotion::Col(ColMove::Right(count1(n)))
+}
+
+fn m_space(n: Option<usize>) -> ResponseMotion {
+    ResponseMotion::Col(ColMove::Space(count1(n)))
+}
+
+fn m_line_start(_: Option<usize>) -> ResponseMotion {
+    ResponseMotion::Col(ColMove::Start)
+}
+
+fn m_line_end(n: Option<usize>) -> ResponseMotion {
+    ResponseMotion::Col(ColMove::End(count1(n)))
+}
+
 fn m_page_down(n: Option<usize>) -> ResponseMotion {
     ResponseMotion::Page { down: true, count: n.unwrap_or(1) }
 }
@@ -509,12 +545,36 @@ pub static TABLE: &[Binding] = &[
     // Key list §6 and §7: moving.
     row("j", Surfaces::LISTS, Intent::Key(DOWN), CountRule::Repeat),
     row("k", Surfaces::LISTS, Intent::Key(Named::key(KeyCode::Up)), CountRule::Repeat),
-    row("h", Surfaces::NAV.or(Surfaces::RESPONSE_LINES), Intent::Key(Named::key(KeyCode::Left)), CountRule::Repeat),
-    row("l", Surfaces::NAV.or(Surfaces::RESPONSE_LINES), Intent::Key(Named::key(KeyCode::Right)), CountRule::Repeat),
+    row("h", Surfaces::LISTS, Intent::Key(Named::key(KeyCode::Left)), CountRule::Repeat),
+    row("l", Surfaces::LISTS, Intent::Key(Named::key(KeyCode::Right)), CountRule::Repeat),
     row("gg", Surfaces::LISTS, Intent::Edge { bare: HOME, home: HOME }, CountRule::Pass),
     row("G", Surfaces::LISTS, Intent::Edge { bare: Named::key(KeyCode::End), home: HOME }, CountRule::Pass),
-    row("0", Surfaces::RESPONSE.or(Surfaces::RESPONSE_LINES), Intent::Key(HOME), CountRule::Ignore),
-    row("$", Surfaces::RESPONSE.or(Surfaces::RESPONSE_LINES), Intent::Key(Named::key(KeyCode::End)), CountRule::Ignore),
+    // The response's moves along a line (the user's decision, 2026-10-10:
+    // Vim's hidden column): they move the column and still scroll the view
+    // sideways; Space is Vim's `l` that wraps (`'whichwrap'` `s`), Enter
+    // Vim's `+`, ctrl+Home `gg` and ctrl+End Vim's `G$`.
+    row("h", Surfaces::RESPONSE, Intent::Motion(m_left), CountRule::Pass),
+    row("l", Surfaces::RESPONSE, Intent::Motion(m_right), CountRule::Pass),
+    row("<Left>", Surfaces::RESPONSE, Intent::Motion(m_left), CountRule::Pass),
+    row("<Right>", Surfaces::RESPONSE, Intent::Motion(m_right), CountRule::Pass),
+    row("0", Surfaces::RESPONSE, Intent::Motion(m_line_start), CountRule::Ignore),
+    row("<Home>", Surfaces::RESPONSE, Intent::Motion(m_line_start), CountRule::Ignore),
+    row("$", Surfaces::RESPONSE, Intent::Motion(m_line_end), CountRule::Pass),
+    row("<End>", Surfaces::RESPONSE, Intent::Motion(m_line_end), CountRule::Pass),
+    row("<Space>", Surfaces::RESPONSE, Intent::Motion(m_space), CountRule::Pass),
+    row("<CR>", Surfaces::RESPONSE, Intent::Motion(m_next_line), CountRule::Pass),
+    row("<C-Home>", Surfaces::RESPONSE, Intent::Motion(m_first), CountRule::Pass),
+    row("<C-End>", Surfaces::RESPONSE, Intent::Motion(m_end_goto), CountRule::Pass),
+    row("h", Surfaces::RESPONSE_LINES, Intent::Extend(m_left), CountRule::Pass),
+    row("l", Surfaces::RESPONSE_LINES, Intent::Extend(m_right), CountRule::Pass),
+    row("<Left>", Surfaces::RESPONSE_LINES, Intent::Extend(m_left), CountRule::Pass),
+    row("<Right>", Surfaces::RESPONSE_LINES, Intent::Extend(m_right), CountRule::Pass),
+    row("0", Surfaces::RESPONSE_LINES, Intent::Extend(m_line_start), CountRule::Ignore),
+    row("<Home>", Surfaces::RESPONSE_LINES, Intent::Extend(m_line_start), CountRule::Ignore),
+    row("$", Surfaces::RESPONSE_LINES, Intent::Extend(m_line_end), CountRule::Pass),
+    row("<End>", Surfaces::RESPONSE_LINES, Intent::Extend(m_line_end), CountRule::Pass),
+    row("<C-Home>", Surfaces::RESPONSE_LINES, Intent::Extend(m_first), CountRule::Pass),
+    row("<C-End>", Surfaces::RESPONSE_LINES, Intent::Extend(m_end_goto), CountRule::Pass),
     // Key list §7 (`R.move`, `R.ctrl-d`, `R.page`), plan M5a Task 3: the
     // response's motions are Vim's on a window of its visible lines, each
     // reading its own count (Deviation 4). Arrows' named keys stay the
@@ -559,12 +619,10 @@ pub static TABLE: &[Binding] = &[
     // ctrl+b do (probe V14).
     row("<PageDown>", Surfaces::RESPONSE_LINES, Intent::Extend(m_page_down), CountRule::Pass),
     row("<PageUp>", Surfaces::RESPONSE_LINES, Intent::Extend(m_page_up), CountRule::Pass),
-    // Vim's Enter in V moves down a line, counted, extending (probe R6f in
-    // the Task 6 review); Space is swallowed rather than toggling a fold
-    // under the selection (the controller's ruling). Arrows keeps main's
-    // Space and Enter: these are vim rows.
-    row("<CR>", Surfaces::RESPONSE_LINES, Intent::Extend(m_down), CountRule::Pass),
-    row("<Space>", Surfaces::RESPONSE_LINES, Intent::Swallow, CountRule::Ignore),
+    // Vim's Enter (`+`) and Space in V move as they do outside it,
+    // extending. Arrows keeps main's Space and Enter: these are vim rows.
+    row("<CR>", Surfaces::RESPONSE_LINES, Intent::Extend(m_next_line), CountRule::Pass),
+    row("<Space>", Surfaces::RESPONSE_LINES, Intent::Extend(m_space), CountRule::Pass),
     row("zt", Surfaces::RESPONSE_LINES, Intent::Extend(m_top), CountRule::Pass),
     row("zz", Surfaces::RESPONSE_LINES, Intent::Extend(m_middle), CountRule::Pass),
     row("zb", Surfaces::RESPONSE_LINES, Intent::Extend(m_bottom), CountRule::Pass),
@@ -575,6 +633,13 @@ pub static TABLE: &[Binding] = &[
     row("za", Surfaces::RESPONSE, Intent::Counted(fold_toggle), CountRule::Pass),
     row("zR", Surfaces::RESPONSE, Intent::Act(fold_open_all), CountRule::Ignore),
     row("zM", Surfaces::RESPONSE, Intent::Act(fold_close_all), CountRule::Ignore),
+    // In V, as Vim's Visual has them: `zo` `zc` act on every selected line
+    // and end the selection; `za` `zR` `zM` act as outside it and keep it.
+    row("zo", Surfaces::RESPONSE_LINES, Intent::Act(lines_fold_open), CountRule::Ignore),
+    row("zc", Surfaces::RESPONSE_LINES, Intent::Act(lines_fold_close), CountRule::Ignore),
+    row("za", Surfaces::RESPONSE_LINES, Intent::Counted(fold_toggle), CountRule::Pass),
+    row("zR", Surfaces::RESPONSE_LINES, Intent::Act(fold_open_all), CountRule::Ignore),
+    row("zM", Surfaces::RESPONSE_LINES, Intent::Act(fold_close_all), CountRule::Ignore),
     // Key list §8 (`P.gt`), spec §5.8: every tab strip, on a closed
     // surface or from a screen field's idle Normal (§3.7).
     row("gt", Surfaces::WINDOWS, Intent::Tab { delta: 1 }, CountRule::Pass),
