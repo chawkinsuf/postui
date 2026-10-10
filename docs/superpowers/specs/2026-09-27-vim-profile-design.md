@@ -731,7 +731,7 @@ Decisions made while building M5a (`you` = the user ruled; `mine` = my ruling, o
 - `you`: a shift+↑/↓ after a drag anchors at the drag's anchor line, as on main, in both profiles.
 - `you`: an edge-beeping ctrl+u/ctrl+b/PageUp keeps the line selection in both profiles (main dropped it in arrows).
 - `mine`: the `"+yy` register is not real (the `"` note stays), Esc in the search box is unchanged, and Vim's hidden-line move on `j` from a closed fold (probe F5) is left.
-- `mine`: a click, a move of the shown cursor and `o` in V forget the hidden fold line, and so does a window key that pulls an off-screen cursor to the view's edge; a Space fold toggle goes through the fold path and keeps it. The 13 Extend rows mirror the Motion rows on purpose.
+- `mine`: any move of the shown cursor forgets the hidden fold line: motions, jumps, search landings, a click, `o` in V, a window key's edge pull, and a Space/Enter/click fold toggle (`after_fold`). Only the `z` fold keys (`zo` `zc` `za` `zR` `zM`) keep it. The 13 Extend rows mirror the Motion rows on purpose.
 - `mine`: the footer gets no new chips for V (the mode word reads `V-LINE`), and `'scroll'` resets when the response pane's height changes, as Vim's `win_comp_scroll()` does on a resize (plan Deviations 18, 19).
 - `mine`: the response's search shares the engine's note strings, and a match that starts at a line's end counts one column back (`land_match` follows the engine's rule, Vim's `/$`).
 - `mine`: an edge beep on a page key changes nothing and keeps the selection, as Vim keeps Visual on a failed page key.
