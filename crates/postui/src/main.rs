@@ -323,6 +323,10 @@ async fn run(
         // branch have had their chance to mutate it — the one place
         // keystroke- and mouse-path edits get captured as undo steps.
         redraw |= app.capture_undo();
+        // What this iteration did to `.`, settled now that its change is
+        // captured (plan M5b Deviation 8): a change a later event records
+        // is never credited to this one's key.
+        app.settle_dot();
     }
     Ok(())
 }

@@ -45,6 +45,14 @@ pub enum Resolved {
     Run(Vec<Step>),
 }
 
+/// A list change a vim key made (spec §5.12; plan M5b Deviation 7): the
+/// row's keys and the count typed with them, for `.` to replay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Change {
+    pub keys: &'static str,
+    pub count: Option<usize>,
+}
+
 /// The one pending machine (spec §3.4).
 #[derive(Debug, Default)]
 pub struct Router {
@@ -54,6 +62,9 @@ pub struct Router {
     /// `q{reg}` was typed (spec §5.11): the footer says so until the next
     /// bare `q` in Normal, which is swallowed and clears it.
     recording: Option<char>,
+    /// The list change the last key ran (`take_change`): the app keeps it
+    /// for `.` once the event shows it changed something.
+    change: Option<Change>,
 }
 
 impl Router {
@@ -76,6 +87,11 @@ impl Router {
         self.recording
     }
 
+    /// The list change the last key ran, once (plan M5b Deviation 7).
+    pub fn take_change(&mut self) -> Option<Change> {
+        self.change.take()
+    }
+
     /// The closing `q` of `q{reg}…q` (spec §5.11): a bare `q` with nothing
     /// pending while the flag is on is swallowed and clears it.
     fn stops_recording(&mut self, tok: Tok) -> bool {
@@ -94,6 +110,12 @@ impl Router {
             && (c.is_ascii_alphanumeric() || *c == '"')
         {
             self.recording = Some(*c);
+        }
+        // Spec §5.12: vim's `dd`, `p` and `P` are what `.` repeats.
+        if b.profile == table::Profiles::VIM
+            && matches!(b.intent, Intent::Verb(crate::action::Verb::Delete { .. } | crate::action::Verb::Put { .. }))
+        {
+            self.change = Some(Change { keys: b.keys, count });
         }
         self.pending.clear();
         match b.intent {
@@ -347,6 +369,17 @@ pub(crate) fn expand(b: &table::Binding, count: Option<usize>, cap: usize) -> Ve
         Intent::Extend(f) => vec![Step::Action(Action::ResponseExtend(f(count)))],
         Intent::Counted(f) => vec![Step::Action(f(count))],
         Intent::Swallow => Vec::new(),
+    }
+}
+
+/// `.` (spec §5.12; plan M5b Deviation 2): the steps `change`'s keys run on
+/// `surface` with its count, as if typed there, the surface's own count
+/// rule and cap included. `None` where no vim list-verb row takes them
+/// (the response, a Manage detail pane).
+pub(crate) fn replay(change: Change, surface: Surface, cap: usize) -> Option<Vec<Step>> {
+    match table::lookup(&notation::parse(change.keys), KeyProfile::Vim, surface) {
+        Match::Complete(b) if matches!(b.intent, Intent::Verb(_)) => Some(expand(b, change.count, cap)),
+        _ => None,
     }
 }
 
@@ -1232,5 +1265,50 @@ mod tests {
         let insert = in_url(Mode::Insert, false);
         assert_eq!(feed(&mut r, &insert, "q"), run(eng("q")), "Insert types q");
         assert_eq!(r.recording(), Some('a'), "and the flag stays");
+    }
+
+    /// Spec §5.12 (plan M5b Deviation 7): vim's `dd`, `p` and `P` note the
+    /// change they ran, count and all; a yank, a move, a fold or arrows'
+    /// `d` do not.
+    #[test]
+    fn the_list_changes_are_noted_for_dot() {
+        let mut r = Router::default();
+        let s = cx(Vim, Surface::Sidebar);
+        feed(&mut r, &s, "3dd");
+        assert_eq!(r.take_change(), Some(Change { keys: "dd", count: Some(3) }));
+        assert_eq!(r.take_change(), None, "once");
+        feed(&mut r, &s, "P");
+        assert_eq!(r.take_change(), Some(Change { keys: "P", count: None }));
+        for keys in ["yy", "j", "zo"] {
+            feed(&mut r, &s, keys);
+            assert_eq!(r.take_change(), None, "{keys}");
+        }
+        let mut r = Router::default();
+        feed(&mut r, &cx(Arrows, Surface::Sidebar), "d");
+        assert_eq!(r.take_change(), None, "arrows has no `.`");
+    }
+
+    /// `.` replays the change's keys where they run, by the surface's own
+    /// rules (plan M5b Deviation 2), and reads its own count.
+    #[test]
+    fn dot_replays_the_keys_where_they_run() {
+        use crate::action::Verb;
+        use crate::components::manage::ManageTab;
+        let dd = Change { keys: "dd", count: Some(2) };
+        assert_eq!(replay(dd, Surface::Sidebar, MAX_COUNT), Some(vec![Step::Action(Action::OnSelection(Verb::Delete { count: 2 }))]));
+        assert_eq!(
+            replay(dd, Surface::ManageList(ManageTab::Environments), MAX_COUNT),
+            Some(vec![note_step(table::NO_COUNTED_DELETE)]),
+            "the list's own refusal, as a typed `2dd`"
+        );
+        assert_eq!(replay(dd, Surface::ManageDetail(ManageTab::Environments), MAX_COUNT), None, "no `dd` there");
+        assert_eq!(replay(dd, Surface::Response(crate::components::response::ViewMode::Pretty), MAX_COUNT), None);
+        assert_eq!(
+            replay(Change { keys: "p", count: Some(9) }, Surface::Sidebar, 4),
+            Some(vec![Step::Action(Action::OnSelection(Verb::Put { above: false, count: 4 }))]),
+            "capped as a typed put"
+        );
+        assert_eq!(feed(&mut Router::default(), &cx(Vim, Surface::Sidebar), "3."), run(vec![Step::Action(Action::RepeatChange { count: Some(3) })]));
+        assert_eq!(feed(&mut Router::default(), &cx(Vim, Surface::Table(crate::components::editor::EditorTab::Headers)), "."), run(vec![Step::Action(Action::RepeatChange { count: None })]));
     }
 }

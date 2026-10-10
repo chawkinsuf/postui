@@ -470,6 +470,11 @@ const CASES: &[Case] = &[
     arrows_u("L.yank", TableThreeHeaders, "yP", &[Headers(&["a", "b-copy", "b", "c"]), TableRow(1)]),
     vim_u("L.yank", VarGrid, "yyp", &[OptionCount(3)]),
     arrows_u("L.yank", VarGrid, "cv", &[OptionCount(3)]),
+    // Key list §6 (`L.dot`), M5b: `.` repeats the last list change.
+    vim("L.dot", SidebarThree, "dd.", &[Requests(&["main/alpha"])]),
+    vim("L.dot", SidebarThree, ".", &[Requests(&["main/alpha", "main/beta", "main/gamma"]), NoToast]),
+    vim("L.dot", TableThreeHeaders, "kdd2.", &[Headers(&[])]),
+    vim("L.dot", ManageEnvs, "dd.", &[EnvNames(&["dev"])]),
     // Key list §9, M3: prompts, pickers and confirms (spec §5.10).
     vim("D.prompt", SidebarThree, "r", &[PromptOpen, Mode("INSERT")]),
     vim("D.prompt", SidebarThree, "r<Esc>", &[PromptOpen, Mode("NORMAL")]),
@@ -958,11 +963,12 @@ pub(super) fn snapshot_diff(before: &Snapshot, after: &Snapshot) -> String {
 }
 
 /// Keys through `App::handle_key`, each followed by the event loop's
-/// undo capture and a draw (spec §8.1).
+/// undo capture, its `.` settle and a draw (spec §8.1).
 pub(super) fn feed(app: &mut App, keys: &str) {
     for ev in crate::keyroute::notation::events(keys) {
         app.handle_key(ev);
         app.capture_undo();
+        app.settle_dot();
         draw(app);
     }
 }

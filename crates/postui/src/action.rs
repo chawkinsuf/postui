@@ -736,6 +736,10 @@ pub enum Action {
     /// Vim's `zo` `zc` `za` `zR` `zM` on the sidebar's folders (key list §6
     /// `L.fold`; plan M5b Deviation 9): `count` levels, as on the response.
     SidebarFold { op: FoldOp, count: usize },
+    /// `.` (key list §6 `L.dot`, spec §5.12; plan M5b Deviations 2 and 5):
+    /// the last list change again, where it runs, with this count in place
+    /// of its own when one was typed.
+    RepeatChange { count: Option<usize> },
     /// A vim cursor or window key on the response (piece 4 spec §5.7; plan
     /// M5a Task 3).
     ResponseMove(ResponseMotion),

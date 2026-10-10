@@ -350,6 +350,10 @@ fn undo() -> Action {
     Action::Undo
 }
 
+fn repeat_change(n: Option<usize>) -> Action {
+    Action::RepeatChange { count: n }
+}
+
 fn redo() -> Action {
     Action::Redo
 }
@@ -734,6 +738,10 @@ pub static TABLE: &[Binding] = &[
     row("u", Surfaces::APP, Intent::Act(undo), CountRule::Repeat),
     row("<C-r>", Surfaces::APP, Intent::Act(redo), CountRule::Repeat),
     row(":", Surfaces::APP, Intent::Act(ex_palette), CountRule::Ignore),
+    // Key list §6 (`L.dot`), spec §5.12 (plan M5b Deviations 2 and 5): `.`
+    // repeats the last list change where it runs, its count replaced by one
+    // typed here.
+    row(".", Surfaces::NAV, Intent::Counted(repeat_change), CountRule::Pass),
     // Vim's `:` in Visual opens the line over the selection (its `'<,'>`):
     // V stays up for the palette's commands and ends once it closes
     // (`App::end_visual_off_response`). Visual's `u` is not undo.
