@@ -229,6 +229,12 @@ pub struct App {
     /// The top dialog's field's engine (plan M3b Deviation 1): a second
     /// engine, so a screen field parked under a dialog keeps its state.
     pub(crate) modal_glue: crate::keyroute::engine_glue::Glue,
+    /// Vim's one last search pattern and its `'hlsearch'` state (plan M5b
+    /// Deviation 20, the user's review ruling: the app owns it). It lives
+    /// as long as the app, across request and project switches, which swap
+    /// the response; the response and each engine have it lent for the
+    /// call that needs it.
+    pub(crate) search_memory: crate::vim::engine::SearchMemory,
     /// The dialog field with a session, by its dialog's serial (plan M3b
     /// Deviation 2).
     pub(crate) modal_session: Option<(u64, crate::keyroute::FieldId)>,
@@ -1759,6 +1765,7 @@ impl App {
             panes: Default::default(),
             glue: Default::default(),
             modal_glue: Default::default(),
+            search_memory: Default::default(),
             modal_session: None,
             modal_seen: None,
             history_stepped: false,
@@ -3136,7 +3143,7 @@ impl App {
             Action::NoHlSearch => {
                 // Vim's `:noh` turns the highlight off in every window: the
                 // one memory every engine borrows (plan M5b Deviation 20).
-                self.session.response.no_hlsearch();
+                self.session.response.no_hlsearch(&mut self.search_memory);
                 true
             }
             Action::Close => {
@@ -3210,12 +3217,14 @@ impl App {
                 self.session.response.open_search(syntax, backward) || focused
             }
             Action::ResponseFind(crate::action::ResponseFind::Next { reverse, count }) => {
-                self.session.response.find_next(reverse, count)
+                self.session.response.find_next(reverse, count, &mut self.search_memory)
             }
             Action::ResponseFind(crate::action::ResponseFind::Word { backward, count }) => {
-                self.session.response.find_word(backward, count)
+                self.session.response.find_word(backward, count, &mut self.search_memory)
             }
-            Action::StepResponseSearch(delta) => self.session.response.step_search(delta.into()),
+            Action::StepResponseSearch(delta) => {
+                self.session.response.step_search(delta.into(), &mut self.search_memory)
+            }
             Action::CopyResponseHeader => match self.session.response.copyable_header_row() {
                 Some(row) => self.update(Action::CopyToClipboard(CopyTarget::ResponseHeader(row))),
                 None => false,
@@ -10342,9 +10351,10 @@ impl App {
         // grid commit) can bail between `begin_op` and its record.
         self.op_in_flight = false;
         let ended = self.end_visual_off_response();
-        // The response shows a pattern a field searched (plan M5b
-        // Deviation 20): the one memory, nothing copied.
-        self.session.response.follow_last_pattern();
+        // The response's view shows the app's last pattern (plan M5b
+        // Deviation 20): one a field searched, or the one a request switch
+        // put on screen a view too old for.
+        self.session.response.follow_last_pattern(&self.search_memory);
         let noted = self.toast_response_note();
         self.arm_pending_toasts();
         // Not every key reaches `update` -- Esc on a modal just pops it
@@ -11087,7 +11097,7 @@ impl App {
                 }
                 action
             }
-            PaneId::Response => self.session.response.handle_key(ev),
+            PaneId::Response => self.session.response.handle_key(ev, &mut self.search_memory),
         }
     }
 

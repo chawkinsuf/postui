@@ -188,7 +188,7 @@ impl App {
             }
             return;
         }
-        self.glue.own_body(self.editor.slug.as_deref(), self.session.response.search_memory_mut());
+        self.glue.own_body(self.editor.slug.as_deref(), &mut self.search_memory);
         let now = self.engine_field();
         let mouse = matches!(cause, Cause::Mouse(_));
         let edge = engine_glue::edge(self.glue.owned(), now.map(|(id, _)| id));
@@ -492,18 +492,10 @@ impl App {
         if self.box_claims(id, &ev) {
             return Some(Ran::routed(self.handle_key_routed(ev)));
         }
-        let view = self.view_ctx(id);
         // Read before the key: whether a `u` or ctrl+r it hands back means
         // the field had nothing to step (final review M-1).
         let idle = self.glue_of(id).undo_ready();
-        // The one last pattern goes with the key (plan M5b Deviation 20).
-        let mut memory = std::mem::take(self.session.response.search_memory_mut());
-        let out = {
-            let (glue, buf) = self.session_parts(id);
-            buf.map(|mut buf| glue.handle(ev, &mut buf, &view, &mut memory))
-        };
-        *self.session.response.search_memory_mut() = memory;
-        let out = out?;
+        let out = self.engine_handle(id, ev)?;
         Some(match out {
             Outcome::Consumed { changed, note, request } => {
                 self.engine_feedback(note, request);
@@ -520,6 +512,20 @@ impl App {
             }
             Outcome::Declined { count, keys } => self.route_declined(id, count, keys, idle),
         })
+    }
+
+    /// One key into `id`'s engine with the app's last pattern lent for it
+    /// (plan M5b Deviation 20). The pattern is back on the app before this
+    /// returns, also when `id`'s buffer is gone (`None`).
+    fn engine_handle(&mut self, id: FieldId, ev: KeyEvent) -> Option<Outcome> {
+        let view = self.view_ctx(id);
+        let mut memory = std::mem::take(&mut self.search_memory);
+        let out = {
+            let (glue, buf) = self.session_parts(id);
+            buf.map(|mut buf| glue.handle(ev, &mut buf, &view, &mut memory))
+        };
+        self.search_memory = memory;
+        out
     }
 
     /// Keys a query box owns before the engine (plan M3b Deviation 5, the
@@ -590,14 +596,7 @@ impl App {
         } else {
             KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE)
         };
-        let view = self.view_ctx(id);
-        let mut memory = std::mem::take(self.session.response.search_memory_mut());
-        let out = {
-            let (glue, buf) = self.session_parts(id);
-            buf.map(|mut buf| glue.handle(key, &mut buf, &view, &mut memory))
-        };
-        *self.session.response.search_memory_mut() = memory;
-        if let Outcome::Consumed { note, request, .. } = out? {
+        if let Outcome::Consumed { note, request, .. } = self.engine_handle(id, key)? {
             self.engine_feedback(note, request);
         }
         Some(true)
@@ -727,7 +726,7 @@ impl App {
             &mut self.editor.body,
             &mut self.editor.body_visual,
             rows,
-            self.session.response.search_memory_mut(),
+            &mut self.search_memory,
         );
         self.editor.body_search = found;
     }

@@ -289,8 +289,8 @@ pub(crate) struct LastSearch {
 }
 
 /// Vim's last search pattern (`spats[0]`) and its `'hlsearch'` state: one
-/// for the whole app (plan M5b Deviation 20). The response holds it, and
-/// each engine has it lent for the call that needs it
+/// for the whole app (plan M5b Deviation 20). The app holds it, and the
+/// response and each engine have it lent for the call that needs it
 /// ([`Engine::swap_memory`]); an engine's own serves it when none is lent
 /// (its tests, the conformance suite).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

@@ -298,10 +298,10 @@ fn the_line_edits_and_closes() {
 fn noh_clears_the_body_highlight() {
     let mut app = vim(Fixture::Body);
     feed(&mut app, "/a<CR>");
-    assert!(app.session.response.search_memory().hlsearch());
+    assert!(app.search_memory.hlsearch());
     feed(&mut app, ":noh<CR>");
     assert!(app.modals.is_empty());
-    assert!(!app.session.response.search_memory().hlsearch());
+    assert!(!app.search_memory.hlsearch());
     assert!(app.field_caret().is_live(), "the body is not a field CloseField closes");
 }
 

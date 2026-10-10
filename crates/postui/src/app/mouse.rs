@@ -64,9 +64,9 @@ impl App {
         // `begin_op` and its record.
         self.op_in_flight = false;
         let ended = self.end_visual_off_response();
-        // The response shows a pattern a field searched (plan M5b
-        // Deviation 20): the one memory, nothing copied.
-        self.session.response.follow_last_pattern();
+        // The response's view shows the app's last pattern (plan M5b
+        // Deviation 20), as in `handle_key`.
+        self.session.response.follow_last_pattern(&self.search_memory);
         let noted = self.toast_response_note();
         self.arm_pending_toasts();
         // Same reason as `handle_key`: a click that only pops a modal
@@ -1089,7 +1089,7 @@ impl App {
     /// match cycle, exactly as `n`/`N` do.
     fn step_response_search(&mut self, delta: i32) -> bool {
         self.update(Action::FocusPane(PaneId::Response));
-        self.session.response.step_search(delta);
+        self.session.response.step_search(delta, &mut self.search_memory);
         self.update(Action::Render)
     }
 
