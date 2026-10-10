@@ -12,6 +12,46 @@ use super::{BufState, Engine, ViewCtx, first_non_blank_fix};
 /// `scrolljump`.
 const SCROLLJUMP: usize = 1;
 
+/// What Vim's window code reads and moves (plan M5a Deviation 14): a text
+/// of one-row lines, the first row shown, and the caret's row. Every engine
+/// buffer is one (the blanket impl below); the response viewer is another,
+/// so the body and the response run the same `move.c` port. The names
+/// differ from `TextBuf`'s, so the two traits never clash where both are in
+/// scope.
+pub(crate) trait Rows {
+    /// At least 1.
+    fn lines(&self) -> usize;
+    /// The text is one empty line: Vim's `update_topline()` puts row 0 on top.
+    fn blank(&self) -> bool;
+    fn topline(&self) -> usize;
+    fn set_topline(&mut self, row: usize);
+    fn cur_row(&self) -> usize;
+    /// Moves the caret to `row`: its column kept, or column 0 with `col0`.
+    fn set_cur_row(&mut self, row: usize, col0: bool);
+}
+
+impl<B: TextBuf> Rows for B {
+    fn lines(&self) -> usize {
+        self.line_count()
+    }
+    fn blank(&self) -> bool {
+        self.line_count() == 1 && self.line_len(0) == 0
+    }
+    fn topline(&self) -> usize {
+        self.top()
+    }
+    fn set_topline(&mut self, row: usize) {
+        self.set_top(row);
+    }
+    fn cur_row(&self) -> usize {
+        self.cursor().row
+    }
+    fn set_cur_row(&mut self, row: usize, col0: bool) {
+        let col = if col0 { 0 } else { self.cursor().col };
+        self.set_cursor(Pos::new(row, col));
+    }
+}
+
 /// The body's window: `height` rows, `top` the first row shown (`buf.top()`).
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct View {
@@ -30,19 +70,19 @@ impl View {
 
     /// Vim's `w_botline` as a 0-based row: the first row below the window,
     /// at most the line count (`comp_botline()`).
-    pub(crate) fn botline<B: TextBuf>(self, buf: &B) -> usize {
-        (buf.top() + self.height).min(buf.line_count())
+    pub(crate) fn botline<R: Rows>(self, buf: &R) -> usize {
+        (buf.topline() + self.height).min(buf.lines())
     }
 
     /// Vim's `w_empty_rows`: rows below the last line.
-    pub(crate) fn empty_rows<B: TextBuf>(self, buf: &B) -> usize {
-        self.height - (self.botline(buf) - buf.top())
+    pub(crate) fn empty_rows<R: Rows>(self, buf: &R) -> usize {
+        self.height - (self.botline(buf) - buf.topline())
     }
 
-    fn clamp_top<B: TextBuf>(self, buf: &mut B) {
-        let last = buf.line_count() - 1;
-        if buf.top() > last {
-            buf.set_top(last);
+    fn clamp_top<R: Rows>(self, buf: &mut R) {
+        let last = buf.lines() - 1;
+        if buf.topline() > last {
+            buf.set_topline(last);
         }
     }
 
@@ -53,14 +93,14 @@ impl View {
     /// not clamped first: Vim keeps the stale `w_topline`, so the caret is
     /// above the window and the distance picks the rule (the golden file's
     /// `search/long` `d/line 50<CR>` from line 100: line 28 on top, halfway).
-    pub(crate) fn update_topline<B: TextBuf>(self, buf: &mut B) {
-        let lines = buf.line_count();
-        let cur = buf.cursor().row.min(lines - 1);
-        if lines == 1 && buf.line_len(0) == 0 {
-            buf.set_top(0);
+    pub(crate) fn update_topline<R: Rows>(self, buf: &mut R) {
+        let lines = buf.lines();
+        let cur = buf.cur_row().min(lines - 1);
+        if buf.blank() {
+            buf.set_topline(0);
             return;
         }
-        let top = buf.top();
+        let top = buf.topline();
         let mut check_botline = false;
         if top > 0 && cur < top {
             let halfheight = (self.height / 2).saturating_sub(1).max(2);
@@ -89,9 +129,9 @@ impl View {
 
     /// Vim's `scroll_cursor_top()`: put the caret's line at the top,
     /// scrolling at least `min_scroll`; `always` sets `top` even upward.
-    pub(crate) fn scroll_cursor_top<B: TextBuf>(self, buf: &mut B, min_scroll: usize, always: bool) {
-        let cur = buf.cursor().row;
-        let top = buf.top();
+    pub(crate) fn scroll_cursor_top<R: Rows>(self, buf: &mut R, min_scroll: usize, always: bool) {
+        let cur = buf.cur_row();
+        let top = buf.topline();
         let mut scrolled = usize::from(cur < top);
         let mut used = 1usize;
         let mut above = cur as isize - 1;
@@ -114,10 +154,10 @@ impl View {
             self.scroll_cursor_halfway(buf, false, false);
         } else {
             if new_top < top || always {
-                buf.set_top(new_top);
+                buf.set_topline(new_top);
             }
-            if buf.top() > cur {
-                buf.set_top(cur);
+            if buf.topline() > cur {
+                buf.set_topline(cur);
             }
         }
     }
@@ -125,13 +165,13 @@ impl View {
     /// Vim's `scroll_cursor_bot()`: put the caret's line at the bottom,
     /// scrolling at least `min_scroll`; `set_topbot` (`zb`) first sets the
     /// window so the caret's line is its last row.
-    pub(crate) fn scroll_cursor_bot<B: TextBuf>(self, buf: &mut B, min_scroll: usize, set_topbot: bool) {
-        let lines = buf.line_count();
-        let cur = buf.cursor().row;
+    pub(crate) fn scroll_cursor_bot<R: Rows>(self, buf: &mut R, min_scroll: usize, set_topbot: bool) {
+        let lines = buf.lines();
+        let cur = buf.cur_row();
         if set_topbot {
-            buf.set_top((cur + 1).saturating_sub(self.height));
+            buf.set_topline((cur + 1).saturating_sub(self.height));
         }
-        let top = buf.top();
+        let top = buf.topline();
         let bot = self.botline(buf);
         let empty = self.empty_rows(buf) as isize;
         let mut used = 1usize;
@@ -193,10 +233,10 @@ impl View {
             self.scroll_cursor_halfway(buf, false, true);
         } else if line_count > 0 {
             // `scrollup(line_count)`
-            buf.set_top((top + line_count).min(lines - 1));
-            if buf.cursor().row < buf.top() {
-                let t = buf.top();
-                buf.set_cursor(Pos::new(t, 0));
+            buf.set_topline((top + line_count).min(lines - 1));
+            if buf.cur_row() < buf.topline() {
+                let t = buf.topline();
+                buf.set_cur_row(t, true);
             }
         }
     }
@@ -204,9 +244,9 @@ impl View {
     /// Vim's `scroll_cursor_halfway()`: the caret's line in the middle.
     /// `atend` counts `~` rows past the end as used (`zz`); `prefer_above`
     /// adds a line above before one below.
-    pub(crate) fn scroll_cursor_halfway<B: TextBuf>(self, buf: &mut B, atend: bool, prefer_above: bool) {
-        let lines = buf.line_count();
-        let cur = buf.cursor().row;
+    pub(crate) fn scroll_cursor_halfway<R: Rows>(self, buf: &mut R, atend: bool, prefer_above: bool) {
+        let lines = buf.lines();
+        let cur = buf.cur_row();
         let (mut above, mut below, mut used) = (0usize, 0usize, 1usize);
         let mut topline = cur;
         let (mut loff, mut boff) = (cur as isize, cur);
@@ -250,24 +290,24 @@ impl View {
                 break;
             }
         }
-        buf.set_top(topline);
+        buf.set_topline(topline);
     }
 
     /// Vim's `cursor_correct()` with `scrolloff=0`: the caret is pulled
     /// into the window when it sits outside it.
-    pub(crate) fn cursor_correct<B: TextBuf>(self, buf: &mut B) {
-        let cur = buf.cursor();
-        let row = self.corrected_row(buf, cur.row);
-        if row != cur.row {
-            buf.set_cursor(Pos::new(row, cur.col));
+    pub(crate) fn cursor_correct<R: Rows>(self, buf: &mut R) {
+        let cur = buf.cur_row();
+        let row = self.corrected_row(buf, cur);
+        if row != cur {
+            buf.set_cur_row(row, false);
         }
     }
 
     /// Vim's `nv_scroll()` target row for `H` (`count` from the top), `M`
     /// (the middle of the lines shown) and `L` (`count` from the bottom).
-    pub(crate) fn screen_line<B: TextBuf>(self, buf: &B, place: Screen, count: usize) -> usize {
-        let lines = buf.line_count();
-        let top = buf.top();
+    pub(crate) fn screen_line<R: Rows>(self, buf: &R, place: Screen, count: usize) -> usize {
+        let lines = buf.lines();
+        let top = buf.topline();
         let bot = self.botline(buf);
         let count1 = count.max(1);
         match place {
@@ -291,13 +331,13 @@ impl View {
     }
 
     /// `cursor_correct()` for a row the caret is about to take.
-    pub(crate) fn corrected_row<B: TextBuf>(self, buf: &B, row: usize) -> usize {
-        let top = buf.top();
+    pub(crate) fn corrected_row<R: Rows>(self, buf: &R, row: usize) -> usize {
+        let top = buf.topline();
         let bot = self.botline(buf);
         if row < top && top > 0 {
             return top;
         }
-        if row >= bot && bot < buf.line_count() {
+        if row >= bot && bot < buf.lines() {
             return bot - 1;
         }
         row
@@ -307,7 +347,7 @@ impl View {
     /// at the height) and move the caret as many; when the text's end (or
     /// start) is reached the caret moves the rest. Ends with
     /// `cursor_correct()`; the caller lands on the first non-blank.
-    pub(crate) fn halfpage<B: TextBuf>(self, buf: &mut B, down: bool, count: usize, scroll: &mut Option<usize>) {
+    pub(crate) fn halfpage<R: Rows>(self, buf: &mut R, down: bool, count: usize, scroll: &mut Option<usize>) {
         if count > 0 {
             *scroll = Some(count.min(self.height));
         }
@@ -315,9 +355,9 @@ impl View {
         let mut n = scroll.unwrap_or((self.height / 2).max(1)).min(self.height);
         // Clamps `top` too, before the window helpers read it.
         self.update_topline(buf);
-        let lines = buf.line_count();
-        let mut top = buf.top();
-        let mut cur = buf.cursor().row;
+        let lines = buf.lines();
+        let mut top = buf.topline();
+        let mut cur = buf.cur_row();
         if down {
             while n > 0 && top + self.height < lines {
                 n -= 1;
@@ -339,9 +379,8 @@ impl View {
                 cur = cur.saturating_sub(n);
             }
         }
-        buf.set_top(top);
-        let col = buf.cursor().col;
-        buf.set_cursor(Pos::new(cur, col));
+        buf.set_topline(top);
+        buf.set_cur_row(cur, false);
         self.cursor_correct(buf);
     }
 
@@ -350,8 +389,8 @@ impl View {
     /// makes the line above the window (plus the overlap) the bottom line,
     /// scrolling at least one. `false` when it beeped: a one-line text, or
     /// no further page (the caller then skips the first-non-blank landing).
-    pub(crate) fn onepage<B: TextBuf>(self, buf: &mut B, down: bool, count: usize) -> bool {
-        let lines = buf.line_count();
+    pub(crate) fn onepage<R: Rows>(self, buf: &mut R, down: bool, count: usize) -> bool {
+        let lines = buf.lines();
         if lines == 1 {
             return false;
         }
@@ -359,7 +398,7 @@ impl View {
         self.clamp_top(buf);
         let mut ok = true;
         for _ in 0..count {
-            let top = buf.top();
+            let top = buf.topline();
             let bot = self.botline(buf);
             if down {
                 if top >= lines - 1 && bot >= lines {
@@ -367,13 +406,12 @@ impl View {
                     break;
                 }
                 if bot >= lines {
-                    buf.set_top(lines - 1);
+                    buf.set_topline(lines - 1);
                 } else {
                     // `get_scroll_overlap(loff = botline, -1)`.
                     let new_top = self.overlap_up(bot);
-                    buf.set_top(new_top);
-                    let col = buf.cursor().col;
-                    buf.set_cursor(Pos::new(new_top, col));
+                    buf.set_topline(new_top);
+                    buf.set_cur_row(new_top, false);
                 }
             } else {
                 if top == 0 {
@@ -382,19 +420,18 @@ impl View {
                 }
                 // `get_scroll_overlap(loff = topline - 1, +1)`.
                 let lp = self.overlap_down(top - 1, lines).min(lines - 1);
-                let col = buf.cursor().col;
-                buf.set_cursor(Pos::new(lp, col));
+                buf.set_cur_row(lp, false);
                 // The line just above the new topline: `height + 1` rows up,
                 // then two forward again; past the start, the top is row 0.
                 match lp.checked_sub(self.height + 1) {
-                    None => buf.set_top(0),
+                    None => buf.set_topline(0),
                     Some(above) if above + 2 >= top => {
                         // Always scroll at least one line.
-                        buf.set_top(top - 1);
+                        buf.set_topline(top - 1);
                         let bot = self.botline(buf);
-                        buf.set_cursor(Pos::new(bot - 1, col));
+                        buf.set_cur_row(bot - 1, false);
                     }
-                    Some(above) => buf.set_top(above + 2),
+                    Some(above) => buf.set_topline(above + 2),
                 }
             }
         }
@@ -495,5 +532,55 @@ impl Engine {
             Screen::Middle => view.scroll_cursor_halfway(buf, true, false),
             Screen::Bottom => view.scroll_cursor_bot(buf, 0, true),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A window with no text behind it: what the response viewer is (plan
+    /// M5a Task 2). Rows and lines are 0-based.
+    struct Win {
+        lines: usize,
+        top: usize,
+        row: usize,
+    }
+
+    impl Rows for Win {
+        fn lines(&self) -> usize {
+            self.lines
+        }
+        fn blank(&self) -> bool {
+            false
+        }
+        fn topline(&self) -> usize {
+            self.top
+        }
+        fn set_topline(&mut self, row: usize) {
+            self.top = row;
+        }
+        fn cur_row(&self) -> usize {
+            self.row
+        }
+        fn set_cur_row(&mut self, row: usize, _col0: bool) {
+            self.row = row;
+        }
+    }
+
+    /// The plan's probe record (Vim 9.1, a 23-row window, 100 lines).
+    #[test]
+    fn the_window_code_runs_on_bare_rows() {
+        let v = View { height: 23 };
+        let mut w = Win { lines: 100, top: 0, row: 0 };
+        assert!(v.onepage(&mut w, true, 1));
+        assert_eq!((w.top, w.row), (21, 21), "P1: ctrl+f from the top");
+        let mut w = Win { lines: 100, top: 39, row: 49 };
+        v.scroll_cursor_halfway(&mut w, true, false);
+        assert_eq!((w.top, w.row), (38, 49), "Z2: zz");
+        let mut w = Win { lines: 100, top: 0, row: 0 };
+        let mut scroll = None;
+        v.halfpage(&mut w, true, 0, &mut scroll);
+        assert_eq!((w.top, w.row), (11, 11), "D1: ctrl+d");
     }
 }
