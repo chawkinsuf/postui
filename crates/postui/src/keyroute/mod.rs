@@ -241,12 +241,13 @@ impl Router {
     /// 4. Nothing on this surface starts with these keys.
     fn no_match(&mut self, ev: KeyEvent, tok: Tok, ctx: &KeyCtx, first: bool) -> Resolved {
         if self.pending.is_idle() {
-            // In vim a bare char on a navigation surface is vim's beep:
-            // no component letter is left to reach (spec §3.4, plan M1
-            // Deviation 1). Space is the surface's own key.
+            // In vim a bare char on a navigation surface, or in the
+            // response's V, is vim's beep: no component letter is left to
+            // reach (spec §3.4, plan M1 Deviation 1). Space is the
+            // surface's own key.
             let swallow = ctx.profile == KeyProfile::Vim
                 && matches!(tok, Tok::Char(c) if c != ' ')
-                && Surfaces::NAV.has(ctx.surface);
+                && Surfaces::KEYED.has(ctx.surface);
             return if swallow { Resolved::Consumed } else { Resolved::Declined };
         }
         if self.pending.keys().is_empty() {
@@ -325,24 +326,26 @@ pub(crate) fn expand(b: &table::Binding, count: Option<usize>, cap: usize) -> Ve
             Step::OpenAs(seat.map_or(engine_glue::OpenAs::Normal, engine_glue::OpenAs::Insert)),
             Step::Action(Action::ReopenField),
         ],
-        // Spec §5.8 (plan M4a Deviations 7 and 8).
-        // A refused key, or one onto the tab already showing, leaves the
-        // field open, so the close rides in the action, which runs it only
-        // when there is a tab to go to (the user's decision, amendment C1).
-        Intent::Tab { delta, leave } => {
+        // Spec §5.8 (plan M4a Deviations 7 and 8). A refused key, or one
+        // onto the tab already showing, leaves the field open: the app
+        // closes it only when there is a tab to go to (`App::go_tab`).
+        Intent::Tab { delta } => {
             let to = match count {
                 Some(n) if delta > 0 => TabTo::Nth(n),
                 Some(n) => TabTo::By(-i64::try_from(n).unwrap_or(i64::MAX)),
                 None => TabTo::By(i64::from(delta)),
             };
-            vec![Step::Action(Action::GoTab { to, leave })]
+            vec![Step::Action(Action::GoTab { to })]
         }
-        // As `{N}gt`: a refused move leaves the field open, so the close
-        // rides in the action, which runs it only when there is a pane to
-        // move to (the user's decision, 2026-10-05).
-        Intent::Pane { dir, leave } => vec![Step::Action(Action::PaneMove { dir, leave })],
+        // As `{N}gt`: the app closes an open field only when there is a pane
+        // to move to (the user's decision, 2026-10-05).
+        Intent::Pane(dir) => vec![Step::Action(Action::PaneMove(dir))],
         Intent::Recording => vec![note_step(table::NO_MACROS)],
         Intent::CloseThen(f) => vec![Step::Action(Action::CloseField), Step::Action(f())],
+        // Plan M5a Task 3: the motion reads the count itself.
+        Intent::Motion(f) => vec![Step::Action(Action::ResponseMove(f(count)))],
+        Intent::Extend(f) => vec![Step::Action(Action::ResponseExtend(f(count)))],
+        Intent::Counted(f) => vec![Step::Action(f(count))],
         Intent::Swallow => Vec::new(),
     }
 }
@@ -516,13 +519,17 @@ mod tests {
         assert_eq!(feed(&mut Router::default(), &s, "G"), run(vec![key(KeyCode::End)]));
     }
 
-    /// Spec §5.7: the response's fold keys.
+    /// Spec §5.7 and plan M5a Deviation 9: the fold keys take a count.
     #[test]
     fn the_response_folds() {
         use crate::action::FoldOp;
         let resp = cx(Vim, Surface::Response(crate::components::response::ViewMode::Pretty));
-        assert_eq!(feed(&mut Router::default(), &resp, "zc"), run(vec![Step::Action(Action::TreeFold(FoldOp::Close))]));
-        assert_eq!(feed(&mut Router::default(), &resp, "3za"), run(vec![Step::Action(Action::TreeFold(FoldOp::Toggle))]), "a count is ignored");
+        let fold = |op, count| run(vec![Step::Action(Action::TreeFold { op, count })]);
+        assert_eq!(feed(&mut Router::default(), &resp, "zc"), fold(FoldOp::Close, 1));
+        assert_eq!(feed(&mut Router::default(), &resp, "3za"), fold(FoldOp::Toggle, 3));
+        assert_eq!(feed(&mut Router::default(), &resp, "2zo"), fold(FoldOp::Open, 2));
+        assert_eq!(feed(&mut Router::default(), &resp, "zR"), fold(FoldOp::OpenAll, 1));
+        assert_eq!(feed(&mut Router::default(), &resp, "zM"), fold(FoldOp::CloseAll, 1));
         assert_eq!(feed(&mut Router::default(), &cx(Arrows, resp.surface), "z"), Resolved::Declined, "arrows has no fold keys");
     }
 
@@ -531,8 +538,8 @@ mod tests {
     #[test]
     fn tab_keys_on_a_closed_surface() {
         let s = cx(Vim, Surface::Sidebar);
-        let step = |d: i64| run(vec![Step::Action(Action::GoTab { to: TabTo::By(d), leave: false })]);
-        let select = |n: usize| run(vec![Step::Action(Action::GoTab { to: TabTo::Nth(n), leave: false })]);
+        let step = |d: i64| run(vec![Step::Action(Action::GoTab { to: TabTo::By(d) })]);
+        let select = |n: usize| run(vec![Step::Action(Action::GoTab { to: TabTo::Nth(n) })]);
         assert_eq!(feed(&mut Router::default(), &s, "gt"), step(1));
         assert_eq!(feed(&mut Router::default(), &s, "gT"), step(-1));
         assert_eq!(feed(&mut Router::default(), &s, "3gt"), select(3));
@@ -549,7 +556,7 @@ mod tests {
     #[test]
     fn tab_keys_in_a_screen_field() {
         let s = in_url(Mode::Normal, false);
-        let go = |to| run(vec![Step::Action(Action::GoTab { to, leave: true })]);
+        let go = |to| run(vec![Step::Action(Action::GoTab { to })]);
         assert_eq!(feed(&mut Router::default(), &s, "gt"), go(TabTo::By(1)), "no unconditional close");
         assert_eq!(feed(&mut Router::default(), &s, "2gT"), go(TabTo::By(-2)));
         assert_eq!(feed(&mut Router::default(), &s, "2gt"), go(TabTo::Nth(2)));
@@ -572,7 +579,7 @@ mod tests {
     fn window_keys_on_a_closed_surface() {
         use crate::action::PaneDir;
         let s = cx(Vim, Surface::Sidebar);
-        let mv = |dir| run(vec![Step::Action(Action::PaneMove { dir, leave: false })]);
+        let mv = |dir| run(vec![Step::Action(Action::PaneMove(dir))]);
         assert_eq!(feed(&mut Router::default(), &s, "<C-w>l"), mv(PaneDir::Right));
         assert_eq!(feed(&mut Router::default(), &s, "<C-w><C-l>"), mv(PaneDir::Right));
         assert_eq!(feed(&mut Router::default(), &s, "<C-w>W"), mv(PaneDir::Prev));
@@ -597,12 +604,32 @@ mod tests {
         let s = in_url(Mode::Normal, false);
         assert_eq!(
             feed(&mut Router::default(), &s, "<C-w>j"),
-            run(vec![Step::Action(Action::PaneMove { dir: PaneDir::Down, leave: true })]),
+            run(vec![Step::Action(Action::PaneMove(PaneDir::Down))]),
             "no unconditional close: a refused move leaves the field open"
         );
         assert_eq!(feed(&mut Router::default(), &s, "<C-w>x"), Resolved::Consumed);
         let insert = in_url(Mode::Insert, false);
         assert_eq!(feed(&mut Router::default(), &insert, "<C-w>"), run(eng("<C-w>")), "Insert deletes a word");
+    }
+
+    /// Key list §8 (`P.ctrlw-arrows`): the arrow keys are the direction
+    /// letters, on a closed surface and in a screen field's idle Normal.
+    #[test]
+    fn ctrl_w_arrows_are_the_direction_letters() {
+        use crate::action::PaneDir;
+        let mv = |dir| run(vec![Step::Action(Action::PaneMove(dir))]);
+        for s in [cx(Vim, Surface::Sidebar), in_url(Mode::Normal, false)] {
+            assert_eq!(feed(&mut Router::default(), &s, "<C-w><Left>"), mv(PaneDir::Left));
+            assert_eq!(feed(&mut Router::default(), &s, "<C-w><Down>"), mv(PaneDir::Down));
+            assert_eq!(feed(&mut Router::default(), &s, "<C-w><Up>"), mv(PaneDir::Up));
+            assert_eq!(feed(&mut Router::default(), &s, "<C-w><Right>"), mv(PaneDir::Right));
+        }
+        assert_eq!(
+            feed(&mut Router::default(), &cx(Vim, Surface::Sidebar), "<C-w><Home>"),
+            Resolved::Consumed,
+            "a named key that is no target is vim's beep"
+        );
+        assert_eq!(feed(&mut Router::default(), &in_url(Mode::Normal, false), "<C-w><Home>"), Resolved::Consumed, "swallowed in a field");
     }
 
     /// Plan M3a Deviation 9: the prefix keys never reach the engine.
@@ -720,10 +747,20 @@ mod tests {
         assert_eq!(feed(&mut Router::default(), &s, "3G"), row3);
         assert_eq!(feed(&mut Router::default(), &s, "3gg"), row3);
         let resp = cx(Vim, Surface::Response(crate::components::response::ViewMode::Raw));
-        assert_eq!(feed(&mut Router::default(), &resp, "G"), run(vec![ctrl_key(KeyCode::End)]));
-        let mut ten = vec![ctrl_key(KeyCode::Home)];
-        ten.extend(vec![key(KeyCode::Down); 9]);
-        assert_eq!(feed(&mut Router::default(), &resp, "10G"), run(ten));
+        use crate::action::ResponseMotion as M;
+        let mv = |m| run(vec![Step::Action(Action::ResponseMove(m))]);
+        assert_eq!(feed(&mut Router::default(), &resp, "G"), mv(M::Goto { line: None, last: true }));
+        assert_eq!(feed(&mut Router::default(), &resp, "10G"), mv(M::Goto { line: Some(10), last: true }));
+        assert_eq!(feed(&mut Router::default(), &resp, "gg"), mv(M::Goto { line: None, last: false }));
+        assert_eq!(feed(&mut Router::default(), &resp, "5j"), mv(M::Lines(5)));
+        assert_eq!(feed(&mut Router::default(), &resp, "<Up>"), mv(M::Lines(-1)));
+        assert_eq!(feed(&mut Router::default(), &resp, "3<C-d>"), mv(M::HalfPage { down: true, count: Some(3) }));
+        assert_eq!(feed(&mut Router::default(), &resp, "2<C-f>"), mv(M::Page { down: true, count: 2 }));
+        assert_eq!(
+            feed(&mut Router::default(), &resp, "12zt"),
+            mv(M::Place { at: crate::action::Place::Top, line: Some(12) })
+        );
+        assert_eq!(feed(&mut Router::default(), &cx(Arrows, resp.surface), "j"), Resolved::Declined, "arrows' j is a letter");
     }
 
     #[test]
@@ -943,7 +980,8 @@ mod tests {
     #[test]
     fn a_leading_zero_is_a_key() {
         let resp = cx(Vim, Surface::Response(crate::components::response::ViewMode::Pretty));
-        assert_eq!(feed(&mut Router::default(), &resp, "0"), run(vec![key(KeyCode::Home)]));
+        let start = crate::action::ResponseMotion::Col(crate::action::ColMove::Start);
+        assert_eq!(feed(&mut Router::default(), &resp, "0"), run(vec![Step::Action(Action::ResponseMove(start))]));
         assert_eq!(feed(&mut Router::default(), &cx(Vim, Surface::Sidebar), "0"), Resolved::Consumed);
     }
 
@@ -958,7 +996,9 @@ mod tests {
     }
 
     /// Spec §4.5 (plan M4a Deviation 11): the response's letters are rows in
-    /// both profiles; a vim count on them is ignored. The lists' `/` is a note.
+    /// both profiles. Vim's `n` `N` `*` `#` take a count and `?` searches
+    /// backward (plan M5a Task 5); arrows' `n` `N` step. The lists' `/` is a
+    /// note.
     #[test]
     fn the_response_letters_are_rows() {
         use crate::components::response::ViewMode;
@@ -966,22 +1006,102 @@ mod tests {
             feed(&mut Router::default(), &cx(Vim, Surface::Sidebar), "/"),
             run(vec![Step::Action(Action::ShowToast("No search in this list yet".into(), ToastKind::Info))])
         );
-        let search = run(vec![Step::Action(Action::OpenResponseSearch)]);
+        let search = run(vec![Step::Action(Action::OpenResponseSearch { backward: false })]);
         let next = run(vec![Step::Action(Action::StepResponseSearch(1))]);
         let prev = run(vec![Step::Action(Action::StepResponseSearch(-1))]);
+        use crate::action::ResponseFind;
         for profile in [Vim, Arrows] {
             let resp = cx(profile, Surface::Response(ViewMode::Pretty));
             assert_eq!(feed(&mut Router::default(), &resp, "/"), search, "{profile:?}");
-            assert_eq!(feed(&mut Router::default(), &resp, "n"), next, "{profile:?}");
-            assert_eq!(feed(&mut Router::default(), &resp, "N"), prev, "{profile:?}");
         }
+        let arrows = cx(Arrows, Surface::Response(ViewMode::Pretty));
+        assert_eq!(feed(&mut Router::default(), &arrows, "n"), next);
+        assert_eq!(feed(&mut Router::default(), &arrows, "N"), prev);
         let resp = cx(Vim, Surface::Response(ViewMode::Headers));
-        assert_eq!(feed(&mut Router::default(), &resp, "3n"), next, "the count is ignored");
-        assert_eq!(feed(&mut Router::default(), &resp, "c"), Resolved::Consumed, "vim's c waits for M5's yy");
+        let find = |f| run(vec![Step::Action(Action::ResponseFind(f))]);
+        assert_eq!(feed(&mut Router::default(), &resp, "n"), find(ResponseFind::Next { reverse: false, count: 1 }));
+        assert_eq!(feed(&mut Router::default(), &resp, "3N"), find(ResponseFind::Next { reverse: true, count: 3 }));
+        assert_eq!(feed(&mut Router::default(), &resp, "2*"), find(ResponseFind::Word { backward: false, count: 2 }));
+        assert_eq!(feed(&mut Router::default(), &resp, "#"), find(ResponseFind::Word { backward: true, count: 1 }));
+        assert_eq!(feed(&mut Router::default(), &resp, "?"), run(vec![Step::Action(Action::OpenResponseSearch { backward: true })]));
+        assert_eq!(feed(&mut Router::default(), &resp, "c"), Resolved::Consumed, "vim has no c");
         assert_eq!(
             feed(&mut Router::default(), &cx(Arrows, Surface::Response(ViewMode::Headers)), "c"),
             run(vec![Step::Action(Action::CopyResponseHeader)])
         );
+    }
+
+    /// Plan M5a Deviation 11: the response's V surface.
+    #[test]
+    fn v_line_rows() {
+        use crate::action::{LinesOp, ResponseMotion as M};
+        use crate::components::response::ViewMode;
+        let resp = cx(Vim, Surface::Response(ViewMode::Raw));
+        let vis = cx(Vim, Surface::ResponseLines(ViewMode::Raw));
+        let act = |a| run(vec![Step::Action(a)]);
+        assert_eq!(feed(&mut Router::default(), &resp, "V"), act(Action::ResponseLines(LinesOp::Start)));
+        assert_eq!(feed(&mut Router::default(), &resp, "3yy"), act(Action::ResponseLines(LinesOp::Yank { count: Some(3) })));
+        assert_eq!(feed(&mut Router::default(), &vis, "3j"), act(Action::ResponseExtend(M::Lines(3))));
+        assert_eq!(feed(&mut Router::default(), &vis, "G"), act(Action::ResponseExtend(M::Goto { line: None, last: true })));
+        assert_eq!(feed(&mut Router::default(), &vis, "y"), act(Action::ResponseLines(LinesOp::Yank { count: None })));
+        assert_eq!(feed(&mut Router::default(), &vis, "o"), act(Action::ResponseLines(LinesOp::Swap)));
+        assert_eq!(feed(&mut Router::default(), &vis, "V"), act(Action::ResponseLines(LinesOp::End)));
+        assert_eq!(feed(&mut Router::default(), &vis, "<Esc>"), act(Action::ResponseLines(LinesOp::End)));
+        assert_eq!(
+            feed(&mut Router::default(), &vis, "v"),
+            run(vec![Step::Action(Action::ShowToast(table::ONLY_LINES.into(), ToastKind::Info))])
+        );
+        assert_eq!(feed(&mut Router::default(), &vis, "u"), Resolved::Consumed, "swallowed in V");
+        assert_eq!(feed(&mut Router::default(), &vis, ":"), act(Action::OpenExPalette), "Vim's : in Visual");
+        let close_all = Action::TreeFold { op: crate::action::FoldOp::CloseAll, count: 1 };
+        assert_eq!(feed(&mut Router::default(), &vis, "zM"), act(close_all), "Vim's zM in Visual");
+        assert_eq!(feed(&mut Router::default(), &vis, "<C-w>k"), act(Action::PaneMove(crate::action::PaneDir::Up)));
+        let search = act(Action::OpenResponseSearch { backward: false });
+        assert_eq!(feed(&mut Router::default(), &cx(Arrows, vis.surface), "/"), search, "arrows' / with a selection up");
+    }
+
+    /// Amendment A6.3 (probe V14 in the Task 6 report): in V, PageDown and
+    /// PageUp extend as ctrl+f and ctrl+b do, counted. On the plain
+    /// response they move as ctrl+f and ctrl+b do, counted too; arrows'
+    /// stay the component's named keys.
+    #[test]
+    fn v_line_page_keys_extend() {
+        use crate::action::ResponseMotion as M;
+        use crate::components::response::ViewMode;
+        let vis = cx(Vim, Surface::ResponseLines(ViewMode::Pretty));
+        let ext = |m| run(vec![Step::Action(Action::ResponseExtend(m))]);
+        assert_eq!(feed(&mut Router::default(), &vis, "<PageDown>"), ext(M::Page { down: true, count: 1 }));
+        assert_eq!(feed(&mut Router::default(), &vis, "3<PageUp>"), ext(M::Page { down: false, count: 3 }));
+        assert_eq!(feed(&mut Router::default(), &vis, "<C-f>"), ext(M::Page { down: true, count: 1 }));
+        let resp = cx(Vim, Surface::Response(ViewMode::Pretty));
+        let mv = |m| run(vec![Step::Action(Action::ResponseMove(m))]);
+        assert_eq!(feed(&mut Router::default(), &resp, "3<PageDown>"), mv(M::Page { down: true, count: 3 }));
+        assert_eq!(feed(&mut Router::default(), &resp, "<PageUp>"), mv(M::Page { down: false, count: 1 }));
+        let arrows = cx(Arrows, Surface::Response(ViewMode::Pretty));
+        assert_eq!(feed(&mut Router::default(), &arrows, "<PageDown>"), Resolved::Declined);
+    }
+
+    /// Vim's Enter (`+`) and Space (`l` that wraps) on the response, in V
+    /// and out (the user's decision, 2026-10-10: Vim's, in vim); arrows
+    /// keeps main's Space and Enter, the component's.
+    #[test]
+    fn vims_enter_and_space_move_on_the_response() {
+        use crate::action::{ColMove, ResponseMotion as M};
+        use crate::components::response::ViewMode;
+        let vis = cx(Vim, Surface::ResponseLines(ViewMode::Pretty));
+        let ext = |m| run(vec![Step::Action(Action::ResponseExtend(m))]);
+        assert_eq!(feed(&mut Router::default(), &vis, "<CR>"), ext(M::NextLine(1)));
+        assert_eq!(feed(&mut Router::default(), &vis, "3<CR>"), ext(M::NextLine(3)));
+        assert_eq!(feed(&mut Router::default(), &vis, "<Space>"), ext(M::Col(ColMove::Space(1))));
+        let resp = cx(Vim, Surface::Response(ViewMode::Pretty));
+        let mv = |m| run(vec![Step::Action(Action::ResponseMove(m))]);
+        assert_eq!(feed(&mut Router::default(), &resp, "2<Space>"), mv(M::Col(ColMove::Space(2))));
+        assert_eq!(feed(&mut Router::default(), &resp, "<CR>"), mv(M::NextLine(1)));
+        for surface in [Surface::ResponseLines(ViewMode::Pretty), Surface::Response(ViewMode::Pretty)] {
+            let arrows = cx(Arrows, surface);
+            assert_eq!(feed(&mut Router::default(), &arrows, "<CR>"), Resolved::Declined);
+            assert_eq!(feed(&mut Router::default(), &arrows, "<Space>"), Resolved::Declined);
+        }
     }
 
     /// Review Focus 4.

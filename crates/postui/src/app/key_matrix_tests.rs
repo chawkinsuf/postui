@@ -38,6 +38,8 @@ pub(super) enum Fixture {
     /// wider than the pane: the cursor a page down and the view scrolled
     /// sideways, so every direction can move.
     ResponseWide,
+    /// "line 1" … "line 100" on Raw (not JSON), focused, the cursor on line 0.
+    ResponseText,
     /// The Environments list with three environments, cursor on row 0.
     ManageEnvs,
     /// `ManageEnvs` with the keyboard in the detail pane, on its first
@@ -136,6 +138,12 @@ enum Expect {
     /// The response cursor is on the view's top line, and the view has
     /// scrolled (a half page down from the top, `R.ctrl-d`).
     ResponsePaged,
+    /// The response view's top line.
+    ResponseTop(usize),
+    /// The response view's bottom line (top + height − 1).
+    ResponseBottom(usize),
+    /// The engine's unnamed register holds exactly this text.
+    Unnamed(&'static str),
     /// The app is quitting.
     Quit,
     /// Whether the open request has unsaved edits.
@@ -250,6 +258,35 @@ const CASES: &[Case] = &[
     arrows("R.ctrl-d", ResponseLines, "<C-d>", &[ResponsePaged]),
     vim("R.fold", ResponseLines, "jzc", &[ResponseVisible(1), ResponseLine(0)]),
     vim("R.fold", ResponseLines, "jzczo", &[ResponseVisible(202)]),
+    // Key list §7, M5a: the response window is Vim's (plan M5a Deviation 4).
+    vim("R.page", ResponseText, "<C-f>", &[ResponsePaged]),
+    vim("R.page", ResponseText, "50Gzt", &[ResponseLine(49), ResponseTop(49)]),
+    vim("R.page", ResponseText, "50Gzb", &[ResponseLine(49), ResponseBottom(49)]),
+    vim("R.page", ResponseText, "10zt", &[ResponseLine(9), ResponseTop(9)]),
+    arrows("R.page", ResponseText, "<PageDown>", &[ResponsePaged]),
+    arrows("R.page", ResponseText, "<C-f>", &[ResponsePaged]),
+    vim("R.fold", ResponseLines, "jzczo", &[ResponseLine(1)]),
+    vim("R.foldall", ResponseLines, "zM", &[ResponseVisible(1), ResponseLine(0)]),
+    vim("R.foldall", ResponseLines, "jzMzR", &[ResponseVisible(202), ResponseLine(1)]),
+    vim("R.search", ResponseText, "/^line 5$<CR>", &[ResponseLine(4), NoToast]),
+    vim("R.search", ResponseText, "/LINE<CR>", &[ResponseLine(0), Toast("Pattern not found: LINE")]),
+    vim("R.search", ResponseText, "?line 9<CR>", &[ResponseLine(98), Toast("search hit TOP, continuing at BOTTOM")]),
+    arrows("R.search", ResponseText, "/line 5<CR>", &[ResponseLine(4)]),
+    vim("R.star", ResponseText, "*", &[ResponseLine(1)]),
+    vim("R.star", ResponseText, "3*", &[ResponseLine(3)]),
+    vim("R.star", ResponseText, "#", &[ResponseLine(99), Toast("search hit TOP, continuing at BOTTOM")]),
+    vim("R.star", ResponseText, "#n", &[ResponseLine(98)]),
+    vim("R.yy", ResponseText, "yy", &[Unnamed("line 1\n"), NoToast]),
+    vim("R.yy", ResponseText, "j3yy", &[Unnamed("line 2\nline 3\nline 4\n"), Toast("3 lines yanked"), ResponseLine(1)]),
+    vim("R.col", ResponseText, "<CR>", &[ResponseLine(1)]),
+    vim("R.col", ResponseText, "3<CR>", &[ResponseLine(3)]),
+    vim("R.col", ResponseText, "$<Space>", &[ResponseLine(1)]),
+    vim("R.col", ResponseText, "<C-End><C-Home>", &[ResponseLine(0)]),
+    vim("R.visual", ResponseText, "V", &[Mode("V-LINE")]),
+    vim("R.visual", ResponseText, "Vjjy", &[Unnamed("line 1\nline 2\nline 3\n"), Toast("3 lines yanked"), ResponseLine(0), Mode("NORMAL")]),
+    vim("R.visual", ResponseText, "jjVkky", &[Unnamed("line 1\nline 2\nline 3\n"), ResponseLine(0)]),
+    vim("R.visual", ResponseText, "Vj<Esc>j", &[Mode("NORMAL"), ResponseLine(2)]),
+    vim("R.visual", ResponseText, "vj", &[Toast("Only line selection (V) here"), ResponseLine(1), Mode("NORMAL")]),
     vim("R.fold", ResponseLines, "za", &[ResponseVisible(1)]),
     vim("R.fold", ResponseLines, "zaj", &[ResponseVisible(1), ResponseLine(0), NoToast]),
     // Key list §8, M4a: panes by geometry (spec §5.8).
@@ -267,6 +304,11 @@ const CASES: &[Case] = &[
     vim("P.ctrlw", ManageEnvs, "<C-w>l", &[ManageFocus(ListFocus::Detail)]),
     vim("P.ctrlw", ManageEnvDetail, "<C-w>h", &[ManageFocus(ListFocus::List)]),
     arrows("P.ctrlw", ResponseLines, "<Tab>", &[FocusIs(PaneId::Sidebar)]),
+    // Key list §8, M5a: the arrow keys as `ctrl+w` targets.
+    vim("P.ctrlw-arrows", ResponseLines, "<C-w><Up>", &[FocusIs(PaneId::Editor)]),
+    vim("P.ctrlw-arrows", ResponseLines, "<C-w><Left>", &[FocusIs(PaneId::Sidebar)]),
+    vim("P.ctrlw-arrows", ResponseLines, "<C-w><Left><C-w><Right>", &[FocusIs(PaneId::Response)]),
+    vim("P.ctrlw-arrows", UrlLine, "i<Esc><C-w><Down>", &[FocusIs(PaneId::Response), FieldLive(false)]),
     // Key list §8, M4a: tab strips (spec §5.8). The fixture is a GET, so
     // the editor's Body tab is disabled; the strip is Headers, Params, Vars.
     vim("P.gt", TableThreeHeaders, "gt", &[EditorTabIs(EditorTab::Params), Sub(SubFocus::Content)]),
@@ -550,27 +592,35 @@ pub(super) fn build(f: Fixture) -> App {
                 _ => {}
             }
         }
-        ResponseLines | ResponseWide => {
+        ResponseLines | ResponseWide | ResponseText => {
             let mut items: Vec<String> = (0..200).map(|i| i.to_string()).collect();
             if matches!(f, ResponseWide) {
                 items[0] = format!("\"{}\"", "x".repeat(300));
             }
-            let body = format!("[{}]", items.join(","));
+            let (body, content_type) = if matches!(f, ResponseText) {
+                ((1..=100).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n"), "text/plain")
+            } else {
+                (format!("[{}]", items.join(",")), "application/json")
+            };
             app.session.response.set_state(
                 ResponseState::Ready(Box::new(crate::http::ResponseData {
                     status: 200,
                     url: "https://x.test/a".into(),
-                    headers: vec![("content-type".into(), "application/json".into())],
+                    headers: vec![("content-type".into(), content_type.into())],
                     sent_headers: Vec::new(),
                     body: body.clone(),
                     ttfb: std::time::Duration::from_millis(1),
                     elapsed: std::time::Duration::from_millis(1),
                     size: body.len(),
-                    content_type: Some("application/json".into()),
+                    content_type: Some(content_type.into()),
                 })),
                 app.session.send_generation,
             );
             app.focus = PaneId::Response;
+            if matches!(f, ResponseText) {
+                // A draw measures the viewport the window keys need.
+                draw(&mut app);
+            }
             if matches!(f, ResponseWide) {
                 // By the pane's own keys, after a draw has measured the
                 // viewport they page and scroll.
@@ -673,6 +723,9 @@ fn check(app: &App, e: Expect) -> Result<(), String> {
         ManageTabIs(t) => app.manage.tab == t,
         ResponseVisible(n) => app.session.response.view().is_some_and(|v| v.visible_len() == n),
         ResponsePaged => app.session.response.view().is_some_and(|v| v.scroll > 0 && v.cursor == v.scroll),
+        ResponseTop(n) => app.session.response.view().is_some_and(|v| v.scroll == n),
+        ResponseBottom(n) => app.session.response.view().is_some_and(|v| v.scroll + v.height() - 1 == n),
+        Unnamed(s) => app.glue.unnamed_text() == s,
         ManageCursor(n) => app.manage.list.cursor == n,
         ManageFocus(f) => app.manage.list.focus == f,
         DetailAim(row, col) => {
@@ -1025,7 +1078,7 @@ fn every_action_is_keyboard_reachable_in_both_profiles() {
                 b.profile.has(KeyProfile::Vim)
                     && match b.intent {
                         Intent::Act(f) => f() == action,
-                        Intent::Tab { delta, leave: false } => action == Action::CycleTabs(delta),
+                        Intent::Tab { delta } => action == Action::CycleTabs(delta),
                         _ => false,
                     }
             })

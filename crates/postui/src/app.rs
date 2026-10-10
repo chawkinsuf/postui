@@ -464,6 +464,10 @@ pub struct App {
     /// `dispatch` and at the end of every event in `handle_key` and
     /// `handle_mouse`.
     op_in_flight: bool,
+    /// Vim's `:` opened the line over the response's V: the selection ends
+    /// once every dialog is closed, as Vim's Visual has ended when its
+    /// `:'<,'>` line does (`end_visual_off_response`).
+    ex_over_visual: bool,
     /// The open request as of the last `capture_undo` call (with its slug),
     /// diffed against the live editor each call to detect edits that never
     /// went through an `Action`. `None` before the first request is open.
@@ -1772,6 +1776,7 @@ impl App {
             history: crate::undo::History::new(),
             marked_entry: None,
             op_in_flight: false,
+            ex_over_visual: false,
             shadow: None,
             field_gate_was_on: false,
             no_coalesce: false,
@@ -3020,7 +3025,7 @@ impl App {
                 self.focus = pane;
                 true
             }
-            Action::PaneMove { dir, leave } => self.pane_move(dir, leave),
+            Action::PaneMove(dir) => self.pane_move(dir),
             Action::ScrollPane(pane, delta) => {
                 // While the Manager screen is up its left list owns the
                 // sidebar's pane slot (see `App::scrollbar_spec`), so a
@@ -3032,7 +3037,12 @@ impl App {
                 match pane {
                     PaneId::Sidebar => self.sidebar.handle_scroll(delta),
                     PaneId::Editor => self.editor.handle_scroll(delta),
-                    PaneId::Response => self.session.response.handle_scroll(delta),
+                    PaneId::Response => {
+                        self.session.response.handle_scroll(delta);
+                        if self.profile() == crate::config::KeyProfile::Vim {
+                            self.session.response.cursor_into_view();
+                        }
+                    }
                 }
                 true
             }
@@ -3049,11 +3059,17 @@ impl App {
                 use crate::components::modal::Modal;
                 use crate::components::palette::PaletteState;
                 let scope = self.ex_scope();
+                self.ex_over_visual |= self.profile() == crate::config::KeyProfile::Vim
+                    && self.focus == PaneId::Response
+                    && self.session.response.line_selection();
                 self.push_modal(Modal::Palette(PaletteState::new_ex(&self.usage, crate::usage::now(), scope)));
                 true
             }
             Action::NoHlSearch => {
+                // Vim's `:noh` turns the highlight off in every window.
                 self.glue.no_hlsearch();
+                self.modal_glue.no_hlsearch();
+                self.session.response.no_hlsearch();
                 true
             }
             Action::Close => {
@@ -3120,11 +3136,17 @@ impl App {
                 let leave = self.tab_chord_leaves();
                 self.go_tab(TabTo::By(i64::from(delta)), leave, false)
             }
-            Action::GoTab { to, leave } => self.go_tab(to, leave, true),
-            Action::OpenResponseSearch => {
-                self.update(Action::FocusPane(PaneId::Response));
-                self.session.response.open_search();
-                true
+            Action::GoTab { to } => self.go_tab(to, true, true),
+            Action::OpenResponseSearch { backward } => {
+                let focused = self.update(Action::FocusPane(PaneId::Response));
+                let syntax = crate::components::response::SearchSyntax::of(self.profile());
+                self.session.response.open_search(syntax, backward) || focused
+            }
+            Action::ResponseFind(crate::action::ResponseFind::Next { reverse, count }) => {
+                self.session.response.find_next(reverse, count)
+            }
+            Action::ResponseFind(crate::action::ResponseFind::Word { backward, count }) => {
+                self.session.response.find_word(backward, count)
             }
             Action::StepResponseSearch(delta) => self.session.response.step_search(delta.into()),
             Action::CopyResponseHeader => match self.session.response.copyable_header_row() {
@@ -3135,7 +3157,24 @@ impl App {
                 self.session.response.click_row(row, toggle);
                 true
             }
-            Action::TreeFold(op) => self.session.response.fold(op),
+            Action::TreeFold { op, count } => self.session.response.fold(op, count),
+            Action::ResponseMove(m) => self.session.response.motion(m),
+            Action::ResponseExtend(m) => self.session.response.extend(m),
+            Action::ResponseLines(op) => {
+                let had = self.session.response.line_selection();
+                match self.session.response.lines(op) {
+                    Some(lines) => {
+                        let n = lines.len();
+                        self.glue.yank_lines(&lines);
+                        // Vim's `'report'` (2): three lines or more say so.
+                        if n >= 3 {
+                            self.update(Action::ShowToast(format!("{n} lines yanked"), ToastKind::Info));
+                        }
+                        true
+                    }
+                    None => had != self.session.response.line_selection() || op == crate::action::LinesOp::Swap,
+                }
+            }
             Action::CopySelection(surface) => {
                 if let Some(text) = self.selection_text_of(surface) {
                     self.copy_text_with_toast(&text, "Copied selection".to_string());
@@ -10116,6 +10155,31 @@ impl App {
         );
     }
 
+    /// The response search's note (a wrap, a miss), toasted once at the
+    /// event boundary, as Vim's message line shows it (plan M5a
+    /// Deviation 4). Whether one was toasted: a miss changes nothing else,
+    /// so the frame needs redrawing for the toast alone.
+    fn toast_response_note(&mut self) -> bool {
+        match self.session.response.take_note() {
+            Some(note) => self.update(Action::ShowToast(note, ToastKind::Info)),
+            None => false,
+        }
+    }
+
+    /// Vim has one last search pattern for every window, so the response's
+    /// and the text engine's are kept one at the event boundary: a search
+    /// the response ran goes to the engine that holds the pattern (a
+    /// dialog's while one has a session, as the registers go), otherwise
+    /// the response takes the engine's, which a field's search may have
+    /// changed.
+    pub(super) fn sync_last_pattern(&mut self) {
+        let glue = if self.modal_session.is_some() { &mut self.modal_glue } else { &mut self.glue };
+        match self.session.response.take_last_search() {
+            Some((query, backward)) => glue.set_last_pattern(query, backward),
+            None => self.session.response.adopt_last_search(glue.last_pattern(), glue.hlsearch()),
+        }
+    }
+
     /// Central key router. Order (each step tested):
     /// 1. A CTRL/ALT combo the keymap maps to Quit pre-empts everything,
     ///    including open modals — ctrl+c must always quit.
@@ -10166,12 +10230,15 @@ impl App {
         // per action: a key handled without an action (a var-form or
         // grid commit) can bail between `begin_op` and its record.
         self.op_in_flight = false;
+        let ended = self.end_visual_off_response();
+        self.sync_last_pattern();
+        let noted = self.toast_response_note();
         self.arm_pending_toasts();
         // Not every key reaches `update` -- Esc on a modal just pops it
         // -- so the gate is re-checked at the event boundary too.
         let regated = self.reraise_startup_config_gate();
         let asked = self.raise_keymap_choice();
-        changed || regated || asked
+        changed || ended || noted || regated || asked
     }
 
     fn route_key(&mut self, ev: KeyEvent) -> fields::Ran {
@@ -11589,5 +11656,7 @@ mod key_matrix_tests;
 mod global_tests;
 #[cfg(test)]
 mod ex_tests;
+#[cfg(test)]
+mod response_conformance_tests;
 #[cfg(test)]
 mod tests;

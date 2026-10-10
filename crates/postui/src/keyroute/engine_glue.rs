@@ -375,6 +375,47 @@ impl Glue {
         std::mem::swap(self.engine.registers_mut(), other.engine.registers_mut());
     }
 
+    /// The last search pattern and whether it went backward (Vim's one
+    /// `spats[0]`), for the response to share.
+    pub fn last_pattern(&self) -> Option<(&str, bool)> {
+        self.engine.last_pattern()
+    }
+
+    /// The response's search becomes the engine's last pattern.
+    pub fn set_last_pattern(&mut self, text: String, backward: bool) {
+        self.engine.set_last_pattern(text, backward);
+    }
+
+    /// Takes `other`'s last pattern when the keyboard moves between the
+    /// screen's engine and a dialog's, where the registers trade
+    /// (`swap_registers`): one pattern for both.
+    pub fn adopt_last_pattern(&mut self, other: &Glue) {
+        self.engine.adopt_last_pattern(&other.engine);
+    }
+
+    /// A linewise yank from outside a field (plan M5a Deviation 5): the
+    /// response's `yy` and V `y` fill the unnamed register and `"0`, as
+    /// Vim's yank does, so a `p` in any field puts the lines.
+    pub fn yank_lines(&mut self, lines: &[String]) {
+        let mut text = lines.join("\n");
+        text.push('\n');
+        self.engine
+            .registers_mut()
+            .yank(None, crate::vim::engine::Register { text, kind: crate::vim::engine::RegKind::Line });
+    }
+
+    /// The unnamed register's text, for the key matrix.
+    #[cfg(test)]
+    pub fn unnamed_text(&self) -> String {
+        self.engine.registers().unnamed().text.clone()
+    }
+
+    /// The unnamed register, kind and all, for the response's conformance.
+    #[cfg(test)]
+    pub fn unnamed(&self) -> crate::vim::engine::Register {
+        self.engine.registers().unnamed().clone()
+    }
+
     /// A field got the caret (piece 3 §4.2 `enter`). A one-line field
     /// starts a fresh state; the body keeps its own (§3.11).
     pub fn enter(&mut self, buf: &mut FieldBuf<'_>, start: Start, seat: OpenSeat) {
@@ -652,6 +693,42 @@ mod tests {
         screen.swap_registers(&mut dialog);
         keys(&mut screen, &mut FieldBuf::Line(&mut url), "P");
         assert_eq!(url.text(), "xyzabc");
+    }
+
+    /// Vim has one last pattern: a search in a dialog's field is `n`'s in
+    /// the screen's once the dialog closes, and the highlight goes on. The
+    /// screen's engine keeps its own while the dialog is open, so the body
+    /// under it goes on painting it.
+    #[test]
+    fn a_dialog_search_is_the_screens_last_pattern() {
+        let (mut screen, mut url) = opened("abc abc", Start::Normal, OpenSeat::Keep, 0);
+        keys(&mut screen, &mut FieldBuf::Line(&mut url), "/c<CR>");
+        assert_eq!(url.cursor(), 2);
+        screen.no_hlsearch();
+        let mut dialog = Glue::default();
+        dialog.adopt_last_pattern(&screen);
+        assert_eq!(dialog.last_pattern(), Some(("c", false)), "the dialog's n has the screen's");
+        let mut field = LineInput::new("xbz");
+        field.set_cursor(0);
+        dialog.enter(&mut FieldBuf::Line(&mut field), Start::Normal, OpenSeat::Keep);
+        keys(&mut dialog, &mut FieldBuf::Line(&mut field), "?b<CR>");
+        assert_eq!(screen.last_pattern(), Some(("c", false)), "the screen keeps its own meanwhile");
+        screen.adopt_last_pattern(&dialog);
+        assert_eq!(screen.last_pattern(), Some(("b", true)));
+        assert!(screen.hlsearch(), "a search made elsewhere turns the highlight on");
+        keys(&mut screen, &mut FieldBuf::Line(&mut url), "n");
+        assert_eq!(url.cursor(), 1, "`n` follows the dialog's `?b`: back from 2");
+    }
+
+    /// Plan M5a Deviation 5: the response's yank fills the unnamed register
+    /// and `"0`, linewise, as Vim's yank does (probes V1, V7).
+    #[test]
+    fn a_response_yank_fills_the_unnamed_register_and_0() {
+        let mut g = Glue::default();
+        g.yank_lines(&["line 5".to_string(), "line 6".to_string()]);
+        let want = crate::vim::engine::Register { text: "line 5\nline 6\n".into(), kind: crate::vim::engine::RegKind::Line };
+        assert_eq!(g.engine.registers().unnamed(), &want);
+        assert_eq!(g.engine.registers().zero(), &want);
     }
 
     #[test]

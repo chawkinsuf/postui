@@ -768,6 +768,71 @@ fn scroll_dispatches_without_changing_focus() {
     assert_eq!(app.focus, before, "scrolling must not steal focus");
 }
 
+/// A click on response text puts Vim's hidden column on the clicked char,
+/// as Vim's click does, so `*` takes the clicked word.
+#[test]
+fn a_click_puts_the_vim_column_on_the_clicked_char() {
+    use crate::config::KeyProfile;
+    let mut app = App::new_for_test();
+    app.use_profile(KeyProfile::Vim);
+    ready_response(&mut app, r#"{"alpha": "beta gamma"}"#);
+    render_once(&mut app);
+    let r = app.hits.rect_of(&Hit::JsonRow(1)).expect("row 1 drawn");
+    // `  "alpha": "beta gamma"`: the `g` of gamma is char 18.
+    app.handle_mouse(left_down(r.x + 18, r.y));
+    assert_eq!(app.focus, PaneId::Response);
+    app.handle_key(KeyEvent::new(KeyCode::Char('*'), KeyModifiers::SHIFT));
+    assert_eq!(app.glue.last_pattern(), Some(("\\<gamma\\>", false)));
+}
+
+/// The response search box's Esc chip says what Esc does there: vim's
+/// abandons the box (cancel), arrows' runs it and closes (done).
+#[test]
+fn the_search_box_esc_chip_follows_the_profile() {
+    use crate::config::KeyProfile;
+    for (profile, label) in [(KeyProfile::Vim, "cancel"), (KeyProfile::Arrows, "done")] {
+        let mut app = App::new_for_test();
+        app.use_profile(profile);
+        ready_response(&mut app, "a\nb");
+        app.focus = PaneId::Response;
+        app.update(Action::OpenResponseSearch { backward: false });
+        let text = footer_text(&mut app).split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(text.contains(&format!("esc {label}")), "{profile:?}: {text}");
+    }
+}
+
+/// The user's decision (2026-10-10): the vim profile's wheel drags the
+/// response's cursor into the window, as Vim's does; V extends to it, and
+/// the cursor keeps its wanted column. Arrows' wheel leaves the cursor
+/// where it is, as on main.
+#[test]
+fn the_vim_wheel_drags_the_response_cursor_along() {
+    use crate::config::KeyProfile;
+    let body = (1..=60).map(|i| format!("    line {i}")).collect::<Vec<_>>().join("\n");
+    for (profile, follows) in [(KeyProfile::Vim, true), (KeyProfile::Arrows, false)] {
+        let mut app = App::new_for_test();
+        app.use_profile(profile);
+        ready_response(&mut app, &body);
+        app.focus = PaneId::Response;
+        render_once(&mut app);
+        app.update(Action::ScrollPane(PaneId::Response, 20));
+        let v = app.session.response.view().unwrap();
+        assert_eq!(v.scroll, 20, "{profile:?}");
+        assert_eq!(v.cursor, if follows { 20 } else { 0 }, "{profile:?}: the cursor on the window's top line");
+    }
+    let mut app = App::new_for_test();
+    app.use_profile(KeyProfile::Vim);
+    ready_response(&mut app, &body);
+    app.focus = PaneId::Response;
+    render_once(&mut app);
+    app.update(Action::Render);
+    app.handle_key(KeyEvent::new(KeyCode::Char('V'), KeyModifiers::SHIFT));
+    app.update(Action::ScrollPane(PaneId::Response, 20));
+    assert!(app.session.response.line_selection(), "V stays up");
+    let lines = app.session.response.lines(crate::action::LinesOp::Yank { count: None }).unwrap();
+    assert_eq!(lines.len(), 21, "V reaches the line the wheel dragged the cursor to");
+}
+
 fn left_down(x: u16, y: u16) -> ratatui::crossterm::event::MouseEvent {
     ratatui::crossterm::event::MouseEvent {
         kind: ratatui::crossterm::event::MouseEventKind::Down(
@@ -9143,6 +9208,265 @@ fn click_editor_tab_selects_it() {
     assert_eq!(app.focus, PaneId::Editor);
 }
 
+/// Plan M5a Task 6: vim's `V` puts the response on its own surface with the
+/// footer's `V-LINE`; `y` yanks and says so from three lines (Vim's
+/// `'report'`), and a window key ends the selection as it moves.
+#[test]
+fn the_response_v_selection_yanks_and_ends_on_a_window_key() {
+    use crate::components::response::ViewMode;
+    use crate::keyroute::Surface;
+    let shifted = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::SHIFT);
+    let mut app = App::new_for_test();
+    app.use_profile(crate::config::KeyProfile::Vim);
+    let body = (1..=30).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+    ready_response(&mut app, &body);
+    app.focus = PaneId::Response;
+    app.handle_key(shifted('V'));
+    assert_eq!(app.surface(), Surface::ResponseLines(ViewMode::Raw));
+    assert_eq!(app.mode_indicator(), Some("V-LINE"));
+    app.handle_key(plain('j'));
+    app.handle_key(plain('j'));
+    app.handle_key(plain('y'));
+    assert_eq!(app.surface(), Surface::Response(ViewMode::Raw), "the yank ends V");
+    assert_eq!(app.mode_indicator(), Some("NORMAL"));
+    assert!(app.toasts.messages().contains(&"3 lines yanked"), "{:?}", app.toasts.messages());
+    app.handle_key(plain('y'));
+    app.handle_key(plain('y'));
+    assert_eq!(app.toasts.messages().iter().filter(|m| **m == "3 lines yanked").count(), 1, "one line says nothing");
+    app.handle_key(shifted('V'));
+    app.handle_key(plain('j'));
+    app.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL));
+    app.handle_key(plain('k'));
+    assert_ne!(app.focus, PaneId::Response, "the window key moved");
+    assert!(!app.session.response.line_selection(), "and ended V");
+}
+
+/// The user's decision (2026-10-10, replacing plan M5a Deviation 11): in
+/// vim's V the searches are motions that extend the selection, as Vim 9.1
+/// does (probe: `V/` `V?` `V*` `V#` `Vn` `VN` all extend, a miss keeps V and
+/// the cursor). Arrows' `/` still drops a shift selection, as on main.
+#[test]
+fn vim_searches_extend_the_response_v_selection() {
+    use crate::config::KeyProfile;
+    let shifted = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::SHIFT);
+    let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+    // Rows 0..=29 read "line 1" .. "line 30".
+    let body = (1..=30).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+    let mut app = App::new_for_test();
+    app.use_profile(KeyProfile::Vim);
+    ready_response(&mut app, &body);
+    app.focus = PaneId::Response;
+    let cursor = |app: &App| app.session.response.view().unwrap().cursor;
+    let search = |app: &mut App, start: KeyEvent, text: &str| {
+        app.handle_key(start);
+        for c in text.chars() {
+            app.handle_key(plain(c));
+        }
+        app.handle_key(enter);
+    };
+    app.handle_key(shifted('V'));
+    search(&mut app, plain('/'), "line 2");
+    assert_eq!(cursor(&app), 1, "/");
+    assert_eq!(app.mode_indicator(), Some("V-LINE"), "/ extends");
+    app.handle_key(plain('n'));
+    assert_eq!(cursor(&app), 19, "n: line 20");
+    app.handle_key(shifted('N'));
+    assert_eq!(cursor(&app), 1, "N");
+    search(&mut app, shifted('?'), "line 3");
+    assert_eq!(cursor(&app), 29, "? wraps to line 30");
+    app.handle_key(shifted('*'));
+    assert_eq!(cursor(&app), 0, "* on `line`, wrapping");
+    app.handle_key(shifted('#'));
+    assert_eq!(cursor(&app), 29, "#");
+    search(&mut app, plain('/'), "zzz");
+    assert_eq!(cursor(&app), 29, "a miss stays");
+    assert!(app.toasts.messages().contains(&"Pattern not found: zzz"), "{:?}", app.toasts.messages());
+    assert_eq!(app.mode_indicator(), Some("V-LINE"), "and keeps V");
+    app.handle_key(plain('y'));
+    assert!(app.toasts.messages().contains(&"30 lines yanked"), "anchored at the first row: {:?}", app.toasts.messages());
+
+    let mut app = App::new_for_test();
+    app.use_profile(KeyProfile::Arrows);
+    ready_response(&mut app, &body);
+    app.focus = PaneId::Response;
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT));
+    search(&mut app, plain('/'), "line 5");
+    assert_eq!(cursor(&app), 4);
+    assert!(!app.session.response.line_selection(), "arrows: the jump drops it, as on main");
+}
+
+/// Vim ends Visual whenever the window changes, not only on a window key: a
+/// click on another pane (or any other focus move) ends vim's V as well. An
+/// arrows shift selection is a GUI selection and stays, as on main.
+#[test]
+fn the_response_v_selection_ends_on_any_focus_move_in_vim_only() {
+    use crate::config::KeyProfile;
+    let body = (1..=30).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+    for (profile, start, stays) in [
+        (KeyProfile::Vim, KeyEvent::new(KeyCode::Char('V'), KeyModifiers::SHIFT), false),
+        (KeyProfile::Arrows, KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT), true),
+    ] {
+        let mut app = App::new_for_test();
+        app.use_profile(profile);
+        ready_response(&mut app, &body);
+        app.focus = PaneId::Response;
+        app.handle_key(start);
+        assert!(app.session.response.line_selection(), "{profile:?}");
+        render_once(&mut app);
+        let r = app.hits.rect_of(&Hit::EditorTab(0)).unwrap();
+        app.handle_mouse(left_down(r.x, r.y));
+        assert_eq!(app.focus, PaneId::Editor, "{profile:?}");
+        assert_eq!(app.session.response.line_selection(), stays, "{profile:?}: a click away");
+        app.focus = PaneId::Response;
+        if !stays {
+            assert_eq!(app.mode_indicator(), Some("NORMAL"), "back on the response, V is over");
+        }
+    }
+    // The jq bar taking the caret leaves the window too, though the focus
+    // stays on the response pane: a caret key there ends V.
+    let mut app = App::new_for_test();
+    app.use_profile(KeyProfile::Vim);
+    ready_response(&mut app, r#"{"a": 1, "b": 2}"#);
+    app.focus = PaneId::Response;
+    app.update(Action::Render);
+    app.handle_key(KeyEvent::new(KeyCode::Char('V'), KeyModifiers::SHIFT));
+    assert!(app.session.response.line_selection());
+    app.update(Action::OpenJqBar);
+    app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+    assert!(app.session.response.jq_focused());
+    assert!(!app.session.response.line_selection(), "the jq bar ended V");
+}
+
+/// Vim's `:` in Visual opens the line over the selection (`:'<,'>`): V
+/// stays up while the palette is, so its commands act on it, and ends once
+/// the palette closes, as Vim's Visual has.
+#[test]
+fn vims_colon_in_v_opens_the_palette_over_it() {
+    use crate::components::modal::Modal;
+    use crate::config::KeyProfile;
+    let body = (1..=30).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+    let mut app = App::new_for_test();
+    app.use_profile(KeyProfile::Vim);
+    ready_response(&mut app, &body);
+    app.focus = PaneId::Response;
+    app.handle_key(KeyEvent::new(KeyCode::Char('V'), KeyModifiers::SHIFT));
+    app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE));
+    assert!(matches!(app.modals.top(), Some(Modal::Palette(_))), "the : line opened");
+    assert!(app.session.response.line_selection(), "V stays under it");
+    app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+    assert!(app.session.response.line_selection(), "typing on the line keeps it");
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(app.modals.is_empty());
+    assert!(!app.session.response.line_selection(), "V ended with the line");
+    // A V started later is not ended by the old line.
+    app.handle_key(KeyEvent::new(KeyCode::Char('V'), KeyModifiers::SHIFT));
+    app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+    assert!(app.session.response.line_selection());
+}
+
+/// Vim has one last search pattern for every window (Vim 9.1's
+/// `spats[0]`): `/` in the body is `n`'s in the response, a response search
+/// is the body's `n`, and it turns the body's highlight back on, as Vim's
+/// `hlsearch` shows the last pattern everywhere.
+#[test]
+fn the_body_and_the_response_share_vims_last_pattern() {
+    use super::key_matrix_tests::{Fixture, build, draw, feed};
+    let mut app = build(Fixture::Body);
+    app.editor.set_body_text("a b\nb a");
+    app.use_profile(crate::config::KeyProfile::Vim);
+    draw(&mut app);
+    feed(&mut app, "/a<CR>:noh<CR>");
+    assert_eq!(app.glue.last_pattern(), Some(("a", false)));
+    assert!(!app.glue.hlsearch());
+    ready_response(&mut app, "x\nb\na\nb");
+    app.focus = PaneId::Response;
+    feed(&mut app, "n");
+    assert_eq!(app.session.response.view().unwrap().cursor, 2, "the response's n finds the body's /a");
+    feed(&mut app, "?b<CR>");
+    assert_eq!(app.session.response.view().unwrap().cursor, 1);
+    assert_eq!(app.glue.last_pattern(), Some(("b", true)), "the response's ?b is the engine's");
+    assert!(app.glue.hlsearch(), "and the body's highlight is back on");
+    app.focus = PaneId::Editor;
+    feed(&mut app, "n");
+    assert_eq!(
+        (app.editor.body.cursor.row, app.editor.body.cursor.col),
+        (1, 0),
+        "the body's n follows the response's ?b: back from the a on row 1"
+    );
+}
+
+/// With vim's V up on the tree, Space and Enter are Vim's (the user's
+/// decision, 2026-10-10): Space moves right, on to the next line from the
+/// `{` that is all of line 1, and Enter a line down, both extending V; an
+/// arrows shift selection keeps main's Space, a fold toggle that drops the
+/// selection.
+#[test]
+fn space_and_enter_in_a_response_line_selection_follow_the_profile() {
+    use crate::config::KeyProfile;
+    let space = plain(' ');
+    let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+    let mut app = App::new_for_test();
+    app.use_profile(KeyProfile::Vim);
+    ready_response(&mut app, r#"{"a": {"b": 1}, "c": 2}"#);
+    app.focus = PaneId::Response;
+    let rows = app.session.response.view().unwrap().visible_len();
+    // The landing's reconcile (the jq sync) runs first, as a real one does.
+    app.update(Action::Render);
+    app.handle_key(KeyEvent::new(KeyCode::Char('V'), KeyModifiers::SHIFT));
+    assert_eq!(app.mode_indicator(), Some("V-LINE"));
+    app.handle_key(space);
+    assert_eq!(app.session.response.view().unwrap().visible_len(), rows, "vim: no fold toggled");
+    assert!(app.session.response.line_selection(), "vim: V stays up");
+    assert_eq!(app.session.response.view().unwrap().cursor, 1, "vim: Space wraps to the next line");
+    app.handle_key(enter);
+    assert!(app.session.response.line_selection(), "vim: Enter extends");
+    assert_eq!(app.session.response.view().unwrap().cursor, 2);
+    assert_eq!(app.mode_indicator(), Some("V-LINE"));
+
+    let mut app = App::new_for_test();
+    app.use_profile(KeyProfile::Arrows);
+    ready_response(&mut app, r#"{"a": {"b": 1}, "c": 2}"#);
+    app.focus = PaneId::Response;
+    app.update(Action::Render);
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT));
+    assert!(app.session.response.line_selection());
+    app.handle_key(space);
+    assert!(app.session.response.view().unwrap().visible_len() < rows, "arrows: Space folds `a`, as on main");
+    assert!(!app.session.response.line_selection(), "and the fold drops the selection");
+}
+
+/// Task 6 fix round 1 (the controller's ruling: arrows keeps main): an
+/// arrows `keys.toml` letter still beats the response's rows with a shift
+/// selection up; vim's V swallows its unbound letters (Deviation 11).
+#[test]
+fn an_arrows_keys_toml_letter_wins_over_a_response_line_selection() {
+    use crate::config::KeyProfile;
+    use crate::keyroute::Surface;
+    let mut app = App::new_for_test();
+    app.use_profile(KeyProfile::Arrows);
+    app.keymap.apply_overrides("quit = [\"ctrl+c\", \"n\"]\n").unwrap();
+    let body = (1..=30).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+    ready_response(&mut app, &body);
+    app.focus = PaneId::Response;
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT));
+    assert!(matches!(app.surface(), Surface::ResponseLines(_)));
+    assert_eq!(app.key_ctx(&plain('n')).user_bare, Some(Action::Quit));
+    app.handle_key(plain('n'));
+    assert!(app.should_quit, "the keys.toml binding won over arrows' n row");
+
+    let mut app = App::new_for_test();
+    app.use_profile(KeyProfile::Vim);
+    app.keymap.apply_overrides("quit = [\"ctrl+c\", \"x\"]\n").unwrap();
+    ready_response(&mut app, &body);
+    app.focus = PaneId::Response;
+    assert_eq!(app.key_ctx(&plain('x')).user_bare, Some(Action::Quit), "vim: a letter wins on the response");
+    app.handle_key(KeyEvent::new(KeyCode::Char('V'), KeyModifiers::SHIFT));
+    assert_eq!(app.key_ctx(&plain('x')).user_bare, None, "vim's V swallows it");
+    app.handle_key(plain('x'));
+    assert!(!app.should_quit);
+}
+
 fn ready_response(app: &mut App, body: &str) {
     app.session.response.set_state(
         ResponseState::Ready(Box::new(crate::http::ResponseData {
@@ -9322,7 +9646,7 @@ fn click_footer_response_chips_toggle_view_and_open_search() {
     render_once(&mut app);
     let r = app
         .hits
-        .rect_of(&Hit::FooterChip(Action::OpenResponseSearch))
+        .rect_of(&Hit::FooterChip(Action::OpenResponseSearch { backward: false }))
         .expect("the '/' chip is registered");
     app.handle_mouse(left_down(r.x + 1, r.y));
     assert!(
@@ -22702,7 +23026,7 @@ fn esc_in_the_tree_dismisses_selection_and_search_but_never_the_filter() {
     ready_response(&mut app, JQ_BODY);
     app.update(Action::JqApply(".data.total".into()));
     app.focus = PaneId::Response;
-    app.update(Action::OpenResponseSearch);
+    app.update(Action::OpenResponseSearch { backward: false });
     // First Esc: the search box closes on its (empty) query, the caret
     // back in the tree; the bar (and filter) stay.
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
@@ -22718,6 +23042,28 @@ fn esc_in_the_tree_dismisses_selection_and_search_but_never_the_filter() {
     assert!(app.session.response.jq_open());
     assert_eq!(app.editor.jq, ".data.total");
     assert_eq!(app.session.response.view().unwrap().view_text(), "2");
+}
+
+/// Amendment A5.4 (the user's decision, 2026-10-10): with no search,
+/// arrows' `n` and `N` do nothing, as on main, while vim's say Vim's E35.
+/// A search's miss toasts its note in both profiles, at the key's event
+/// boundary (plan M5a Deviation 4).
+#[test]
+fn the_response_search_notes_toast_by_profile() {
+    use crate::config::KeyProfile::{Arrows, Vim};
+    const E35: &str = "No previous regular expression";
+    for profile in [Arrows, Vim] {
+        let mut app = App::new_for_test();
+        app.use_profile(profile);
+        ready_response(&mut app, r#"{"a": 1}"#);
+        app.focus = PaneId::Response;
+        super::key_matrix_tests::feed(&mut app, "nN");
+        let e35 = app.toasts.messages().contains(&E35);
+        assert_eq!(e35, profile == Vim, "{profile:?}: {:?}", app.toasts.messages());
+        assert_eq!(app.session.response.view().unwrap().cursor, 0, "{profile:?}");
+        super::key_matrix_tests::feed(&mut app, "/zzz<CR>");
+        assert!(app.toasts.messages().contains(&"Pattern not found: zzz"), "{profile:?}: {:?}", app.toasts.messages());
+    }
 }
 
 #[test]

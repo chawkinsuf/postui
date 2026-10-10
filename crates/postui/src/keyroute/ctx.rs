@@ -72,6 +72,9 @@ pub enum Surface {
     Table(EditorTab),
     Body,
     Response(ViewMode),
+    /// The response with a line selection up (plan M5a Deviation 11): vim's
+    /// `V`, or shift+↑/↓ in either profile.
+    ResponseLines(ViewMode),
     VarList,
     VarGrid,
     VarForm,
@@ -187,13 +190,14 @@ pub struct EngineView {
 impl Surface {
     /// One surface of every kind, for tests that walk the table.
     #[cfg(test)]
-    pub(crate) const SAMPLES: [Surface; 17] = [
+    pub(crate) const SAMPLES: [Surface; 18] = [
         Surface::Sidebar,
         Surface::UrlLine,
         Surface::Method,
         Surface::Table(EditorTab::Params),
         Surface::Body,
         Surface::Response(ViewMode::Pretty),
+        Surface::ResponseLines(ViewMode::Raw),
         Surface::VarList,
         Surface::VarGrid,
         Surface::VarForm,

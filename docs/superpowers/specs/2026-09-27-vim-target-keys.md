@@ -15,8 +15,9 @@ Implemented by pieces 3 (text engine: §1–§5) and 4 (vim profile: §6–§9).
 - **Out** — deliberately not supported. Typing it must never do something
   else by surprise (see §9).
 - **Test** — `V`: compared against real Vim 9.1 (text editing, via the
-  comparison harness). `S`: a spec test in postui (app actions that have no
-  Vim equivalent to compare with).
+  comparison harness; the response's §7 keys, via its own replay,
+  `scripts/vim_oracle/response.py`). `S`: a spec test in postui (app
+  actions that have no Vim equivalent to compare with).
 - **Who** — `you`: a rule you stated in your own words (quoted in memory).
   `mine`: my recommendation — accept, change or reject. `earlier`: decided
   during the vim-mode rounds but I can't show you stated it; treat as mine.
@@ -137,15 +138,16 @@ The ID column names each row for the matrix tests (piece 4 spec §8.1, crates/po
 
 | ID | Keys | Tier | Test | Notes |
 |---|---|---|---|---|
-| `R.move` | `j` `k` `gg` `G`, counts | 1 | S | |
-| `R.ctrl-d` | `ctrl+d` `ctrl+u` scroll the view AND move the cursor by half a page | 1 | S | sweep 7 found only the cursor moves today; the fix applies to the arrows profile too — you (accepted my recommendation) |
-| `R.page` | `ctrl+f` `ctrl+b`, `zz` `zt` `zb` | 2 | S | |
-| `R.fold` | `zo` `zc` `za` | 1 | S | |
-| `R.foldall` | `zR` `zM` (open/close all) | 2 | S | |
-| `R.search` | `/` `n` `N` search with a match counter | 1 | S | |
-| `R.star` | `*` `#` search for the word under the cursor | 2 | S | |
-| `R.yy` | `yy` copy the line / node value | 2 | S | mine |
-| `R.visual` | `v` `V` select + `y` in Raw | 2 | S | mine |
+| `R.move` | `j` `k` `gg` `G`, ctrl+Home ctrl+End, counts; the view follows by Vim's rules, so a far jump centres its line | 1 | V | the window rules in both profiles — you (2026-10-10) |
+| `R.col` | Vim's cursor column, kept without a caret: `h` `l` `0` `$` (and the named keys) move it and scroll sideways; Enter is `+`, Space `l` that wraps | 2 | V | you (2026-10-10, the conformance pass) |
+| `R.ctrl-d` | `ctrl+d` `ctrl+u` scroll the view AND move the cursor by half a page; a count sets `'scroll'` | 1 | V | sweep 7 found only the cursor moves today; the fix applies to the arrows profile too — you (accepted my recommendation); Vim's `halfpage()` — you (2026-10-10) |
+| `R.page` | `ctrl+f` `ctrl+b` and PageDown/PageUp (Vim's page, both profiles), `zz` `zt` `zb`, counted | 2 | V | you (2026-10-10) |
+| `R.fold` | `zo` `zc` `za`, counted; the cursor keeps its line inside a closed fold | 1 | V | Vim |
+| `R.foldall` | `zR` `zM` (open/close all) | 2 | V | |
+| `R.search` | `/` `?` `n` `N` search with a match counter, from the cursor; Vim patterns in vim, plain text in arrows, both matching case; Esc leaves the highlight in vim, `:noh` hides it | 1 | V | you (2026-10-10); `?` and the highlight: Vim |
+| `R.star` | `*` `#` search for the word under the cursor, counted | 2 | V | Vim's word rule |
+| `R.yy` | `yy`, `{N}yy` yank lines into the unnamed register (a closed fold: all its lines) | 2 | V | you (2026-10-10); the closed-fold rule follows Vim |
+| `R.visual` | `V` line selection: motions and searches (`/ ? n N * #`) extend, `o`, `y`, `zo` `zc` `za` `zR` `zM`, `:` opens the ex palette over it; `v` is a note | 2 | V | mine; searches extend, folds and `:`: Vim |
 
 ## 8. Panes, tabs, command line
 

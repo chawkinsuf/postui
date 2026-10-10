@@ -123,10 +123,11 @@ pub enum Action {
     FocusPane(PaneId),
     /// A vim window key (piece 4 spec §5.8): resolved against the screen,
     /// the focused pane and what `App` remembers. A direction with no pane
-    /// does nothing. `leave`: typed in an open field, which closes first,
+    /// does nothing. Typed in an open screen field, the field closes first,
     /// but only when there is a pane to move to: a refused move leaves the
-    /// field open (the user's decision, 2026-10-05, as for `GoTab`).
-    PaneMove { dir: PaneDir, leave: bool },
+    /// field open (the user's decision, 2026-10-05). On a closed surface
+    /// there is no field to close (plan M5a Deviation 16).
+    PaneMove(PaneDir),
     ScrollPane(PaneId, i16),
     OpenPalette,
     /// Vim's `:` (spec §5.9): the palette in ex mode, its query read as a
@@ -202,11 +203,11 @@ pub enum Action {
     /// A vim tab key (piece 4 spec §5.8), on the strip `CycleTabs` steps.
     /// A disabled or out-of-range tab, or the tab already showing, does
     /// nothing. With the editor focused, a tab it selects lands the caret
-    /// in that tab's content. `leave`: typed in an open field, which closes
-    /// first, but only when there is a tab to go to: a refused key leaves
-    /// the field open (the user's decision, plan M4a), and so does a close
-    /// the field itself refuses.
-    GoTab { to: TabTo, leave: bool },
+    /// in that tab's content. Typed in an open screen field, the field
+    /// closes first, but only when there is a tab to go to: a refused key
+    /// leaves the field open (the user's decision, plan M4a), and so does a
+    /// close the field itself refuses (plan M5a Deviation 16).
+    GoTab { to: TabTo },
     CycleMethod,
     FocusUrl,
     /// Toggles `App::table_collapsed` (params/headers table body vs. tab
@@ -704,10 +705,14 @@ pub enum Action {
     ResponseViewMode(crate::components::response::ViewMode),
     /// Opens the response pane's in-pane search (Task 17, spec §5): the
     /// dispatchable form of the `Find` button / `/` key, so the footer's
-    /// Response-pane search chip and the palette can reach it too.
-    OpenResponseSearch,
-    /// The response search's next (`1`) or previous (`-1`) match: `n` and
-    /// `N` in both profiles (piece 4 spec §4.5), as the ▼/▲ buttons do.
+    /// Response-pane search chip and the palette can reach it too. Vim's
+    /// `?` opens it `backward` (plan M5a Deviation 10).
+    OpenResponseSearch { backward: bool },
+    /// A vim search key on the response (plan M5a Task 5).
+    ResponseFind(ResponseFind),
+    /// The response search's next (`1`) or previous (`-1`) match from the
+    /// cursor: arrows' `n` and `N` (piece 4 spec §4.5; plan M5a Deviation
+    /// 10), as the ▼/▲ buttons do.
     StepResponseSearch(i8),
     /// Arrows' `c` on the response's Headers view: copies the header under
     /// the cursor. Nothing on any other row (spec §4.5).
@@ -718,9 +723,18 @@ pub enum Action {
         row: usize,
         toggle: bool,
     },
-    /// `zo` `zc` `za` on the response's tree view (piece 4 spec §5.7): the
-    /// fold under the cursor. Nothing on Raw or Headers.
-    TreeFold(FoldOp),
+    /// `zo` `zc` `za` `zR` `zM` on the response's tree view (piece 4 spec
+    /// §5.7): `count` levels, as Vim's counted fold keys. Nothing on Raw or
+    /// Headers.
+    TreeFold { op: FoldOp, count: usize },
+    /// A vim cursor or window key on the response (piece 4 spec §5.7; plan
+    /// M5a Task 3).
+    ResponseMove(ResponseMotion),
+    /// A motion in the response's V: the cursor moves and the selection
+    /// covers from its anchor to the cursor's line (plan M5a Deviation 11).
+    ResponseExtend(ResponseMotion),
+    /// Vim's line Visual and yank on the response (plan M5a Task 6).
+    ResponseLines(LinesOp),
     /// Copy `target`'s text to the clipboard through `App::clipboard`'s
     /// tiered copy. Toasts "nothing to copy — send a request first" when
     /// there's no ready response and `target` needs one.
@@ -1062,13 +1076,96 @@ pub enum Action {
     JqCollect,
 }
 
-/// Vim's fold keys on the response tree (piece 4 spec §5.7): `zo` opens,
-/// `zc` closes, `za` toggles the fold under the cursor.
+/// Where `zt` `zz` `zb` put the cursor's line (piece 4 spec §5.7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Place {
+    Top,
+    Middle,
+    Bottom,
+}
+
+/// A cursor or window command on the response viewer (piece 4 spec §5.7;
+/// plan M5a Task 3): each is Vim's, on a window of the visible lines
+/// (`vim::engine::View`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResponseMotion {
+    /// `j` `k` `<Down>` `<Up>`: this many lines, down when positive.
+    Lines(i64),
+    /// `gg` (`last` false), `G` and ctrl+Home: line N (1-based) when
+    /// counted, else the first or the last line, on its first non-blank.
+    Goto { line: Option<usize>, last: bool },
+    /// ctrl+End: line N when counted, else the last line, on its last char.
+    GotoEnd { line: Option<usize> },
+    /// Enter (Vim's `+`): this many lines down, on the first non-blank.
+    NextLine(usize),
+    /// A move along the line, of Vim's hidden column (the response draws no
+    /// caret): `h` `l` `0` `$` and their named keys, and Space.
+    Col(ColMove),
+    /// ctrl+d and ctrl+u: Vim's `halfpage()`; a count sets the view's
+    /// `'scroll'`.
+    HalfPage { down: bool, count: Option<usize> },
+    /// ctrl+f and ctrl+b, PageDown and PageUp: Vim's `onepage()`, `count`
+    /// pages.
+    Page { down: bool, count: usize },
+    /// `zt` `zz` `zb`: line N when counted (the cursor goes there), then
+    /// the window placed around the cursor's line.
+    Place { at: Place, line: Option<usize> },
+}
+
+/// A move along the response's line ([`ResponseMotion::Col`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColMove {
+    /// `h` `<Left>`: this many chars left.
+    Left(usize),
+    /// `l` `<Right>`: this many chars right, not past the line's end.
+    Right(usize),
+    /// Space: this many chars right, on to the next line's start at a
+    /// line's end (Vim's `whichwrap` `s`).
+    Space(usize),
+    /// `0` `<Home>`: the line's first char.
+    Start,
+    /// `$` `<End>`: the last char of the line this many lines down, less
+    /// one, wanted on every line after.
+    End(usize),
+}
+
+/// A vim search key on the response (piece 4 spec §5.7; plan M5a Task 5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResponseFind {
+    /// `n` (`reverse` false) and `N`, counted: Vim's repeat, `N` against
+    /// the last search's direction.
+    Next { reverse: bool, count: usize },
+    /// `*` (`backward` false) and `#`, counted: Vim's word under the cursor.
+    Word { backward: bool, count: usize },
+}
+
+/// Vim's line Visual and yank on the response (plan M5a Task 6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinesOp {
+    /// `V`: a line selection on the cursor's line.
+    Start,
+    /// `V` again, or Esc: the selection ends, the cursor where it is.
+    End,
+    /// `o`: the cursor goes to the other end.
+    Swap,
+    /// `yy` (`count` lines from the cursor) or a V `y` (the selection):
+    /// into the unnamed register, linewise.
+    Yank { count: Option<usize> },
+    /// `zo` (`open`) and `zc` in V: one level of folds over the selected
+    /// lines, then the selection ends, as Vim's Visual `zo` `zc` do.
+    Fold { open: bool },
+}
+
+/// Vim's fold keys on the response tree (piece 4 spec §5.7; plan M5a
+/// Deviation 9): `zo` opens, `zc` closes, `za` toggles the folds at the
+/// cursor's line; `zR` and `zM` open and close every one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FoldOp {
     Open,
     Close,
     Toggle,
+    OpenAll,
+    CloseAll,
 }
 
 /// Where `ctrl+w` moves the keyboard (piece 4 spec §5.8): `h` `j` `k` `l`

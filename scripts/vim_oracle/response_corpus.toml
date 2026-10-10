@@ -1,0 +1,254 @@
+# The response pane's vim keys against real Vim 9.1 (response.py). Each
+# group runs its cases on one body; a case is the keys typed from line 1,
+# column 1, with the view at the top. Ids are `group/keys`.
+#
+# Raw bodies are lines as they are. Pretty bodies are JSON the pane
+# pretty-prints; Vim gets the same lines (two-space indent) with one fold per
+# container, all open.
+
+[body.raw30]
+view = "raw"
+lines = [
+  "foo bar baz",
+  "  bar foo",
+  "    baz",
+  "",
+  "foo.bar(baz)",
+  "  item_1 = foo",
+  "  item_2 = bar",
+  "x",
+  "naïve café foo",
+  "    deep   indent foo",
+  "bar",
+  "",
+  "   ",
+  "foo foo foo",
+  "the end of foo",
+  "line 16 bar",
+  "line 17 foo",
+  "  line 18 baz",
+  "line 19 bar",
+  "line 20 foo",
+  "line 21 bar",
+  "    line 22 baz",
+  "line 23 foo",
+  "line 24 bar",
+  "line 25 foo",
+  "  line 26 baz",
+  "line 27 bar",
+  "line 28 foo",
+  "line 29 bar",
+  "  last foo line",
+]
+
+[body.raw5]
+view = "raw"
+lines = ["one foo", "  two", "three foo", "", "  five"]
+
+[body.one]
+view = "raw"
+lines = ["only foo line"]
+
+[body.wide]
+view = "raw"
+lines = ["\tfoo\tbar", "日本語 foo bar", "ab\tcd foo", "plain text with foo here", "\t\tdeep", "x"]
+
+[body.tree]
+view = "pretty"
+json = '''{"id": 1, "name": "foo", "tags": ["a", "b", "foo"], "owner": {"name": "bar", "email": "foo@x.test", "roles": ["admin", "dev"]}, "items": [{"id": 1, "name": "foo"}, {"id": 2, "name": "bar"}, {"id": 3, "name": "baz"}], "meta": {"a": {"b": {"c": "foo"}}}, "count": 3, "next": null, "tail": "foo"}'''
+
+[body.small]
+view = "pretty"
+json = '''{"a": {"b": {"c": 1}, "d": 2}, "e": [1, 2]}'''
+
+[[group]]
+id = "move"
+body = "raw30"
+cases = [
+  "j", "k", "5j", "40j", "G", "gg", "5G", "99G", "5gg", "Gk", "Gj", "Ggg",
+  "10G3k", "10G30k", "<Down>", "<Up>", "3<Down>", "10G2<Up>",
+  "<C-End>", "<C-End><C-Home>", "5<C-Home>", "5<C-End>",
+]
+
+[[group]]
+id = "move5"
+body = "raw5"
+cases = ["j", "9j", "G", "Gk", "G9k", "gg", "3G", "9G"]
+
+[[group]]
+id = "column"
+body = "raw30"
+cases = [
+  "$", "$j", "$jj", "$G", "$gg", "$<C-d>", "$5G",
+  "0", "$0", "l", "3l", "$h", "3lj", "3lG",
+  "/baz<CR>", "/baz<CR>j", "/baz<CR>jj", "/baz<CR>k", "/baz<CR>G", "/baz<CR><C-d>",
+  "/baz<CR>0", "/baz<CR>$", "/baz<CR>zt", "/baz<CR>10zt", "/baz<CR><CR>", "/baz<CR><Space>",
+  "/indent<CR>j", "/café<CR>j",
+]
+
+[[group]]
+id = "column2"
+body = "raw30"
+cases = [
+  "3h", "$3h", "$9h", "5l", "99l", "$l", "<Right>", "3<Right>", "$<Left>", "$<Home>", "<End>", "3<End>", "2$", "29G3$", "30G2$",
+  "$k", "$G", "$<C-d>", "$<C-f>", "$zt", "$10zt", "$10zz", "$Gk", "$<C-End>k", "$0j", "$jj0", "3ljjj", "3lG3k",
+  "/item<CR>j", "/item<CR>jjj", "/item<CR>$j", "/foo<CR>n", "/foo<CR>jn", "/foo<CR>jN", "$n", "$N", "$*", "0#",
+  "14G$n", "14G$N", "15G$*", "15G$#", "9Gll*", "9G6l*", "9G7l*", "10G4l*", "10G8l*", "10G5l#",
+  "5G3l*", "5G4l*", "5G7l*", "5G8l*", "6G7l*", "6G9l*",
+]
+
+[[group]]
+id = "one"
+body = "one"
+cases = [
+  "j", "k", "G", "gg", "<C-d>", "<C-u>", "<C-f>", "<C-b>", "<PageDown>", "zt", "zb", "<Space>", "$<Space>", "<CR>",
+  "yy", "3yy", "V", "Vj", "Vy", "*", "#", "/foo<CR>", "/foo<CR>n", "?foo<CR>N", "$", "3l", "2$", "<C-End>",
+]
+
+[[group]]
+id = "wide"
+body = "wide"
+cases = [
+  "$", "$j", "$jj", "$jjj", "lj", "llj", "lljj", "2lj", "3lj", "4lj", "/bar<CR>j", "/bar<CR>jj", "/bar<CR>k",
+  "jlj", "jllj", "jlllj", "j3lj", "j4lj", "j$k", "jj3lk", "jj4lk", "jj3lj", "jjj9lk", "jjj9lkk", "/日<CR>", "/語<CR>j",
+  "<CR>", "4G<CR>", "4G<Space>", "G<CR>", "j*", "jl*", "jll*", "j4l*", "5G*", "1G*", "1Gl*", "3G3l*", "3G4l*",
+  "<Space>", "4<Space>", "j3<Space>", "jj5<Space>", "/deep<CR>0", "5G$k", "5Gk",
+]
+
+[[group]]
+id = "foldmove"
+body = "tree"
+cases = [
+  "zM<C-d>", "zMG<C-u>", "zMzo<C-d>", "zMzo<C-d><C-d>", "zMzo<C-u>", "4Gzc<C-d>", "8Gzc<C-d>", "4Gzc3G<C-d>",
+  "4Gzcgg<C-d>", "20G6Gzc<C-u>", "6Gzc<C-d><C-d>", "6Gzc3<C-d>", "12Gzc10G<C-d>", "4Gzc12Gzc2G<C-d>",
+  "6Gzc<C-u>", "30Gzc<C-u>", "30Gzc<C-d>", "35Gzc<C-b>", "35Gzc<C-f>", "6Gzc<PageDown>", "zMzoG<C-b>",
+  "zM<CR>", "zMG<CR>", "zM<Space>", "zMzo<CR>", "zMzo3<CR>", "zMzoj<CR>", "zMzoj<Space>", "zMzoj$", "zMzoj0",
+  "zMzoj5<Space>", "zMzoG$<Space>", "6Gzc$<Space>", "6Gzc0<Space>", "zM$", "zM0", "zMl", "zMh",
+  "zMzoj<C-End>", "zMzo<C-End>", "zMzo5<C-End>", "zMzo6<C-Home>", "zM<C-End>", "zMzo6Gzc$j",
+  "zMzoGk", "zMzoGkk", "zMzo2G3j", "zMzo9j", "zMzoj9j", "zMzojjjjj", "zMzojjjjjj", "zMzoGzt", "zMzojzb",
+  "zMzo10Gzc", "zMzo10Gzck", "zMzo10Gzcj", "zMzo10Gza", "zMzo17G2zo", "zMzo17G3zo", "zMzo17G9zo",
+  "zMzo17G2zoj", "zMzo18Gzo", "zMzo18G2zo", "zMzoG2zc", "zMzoGzc", "zMzoGzcj", "zMzoGzck",
+  "18Gzczc", "18Gzczczc", "18G3zc", "18G3zcj", "18G3zck", "18G2zcza", "18G2zc2za", "18Gzaza",
+]
+
+[[group]]
+id = "foldvisual"
+body = "tree"
+cases = [
+  "zMzoV", "zMzojV", "zMzojVj", "zMzojVjj", "zMzojVjo", "zMzojVjoj", "zMzojVjok", "zMzojVk", "zMzojVko",
+  "zMzojVG", "zMzojVgg", "zMzojV<C-d>", "zMzoGVk", "zMzoGVkk", "zMzoGVgg", "zMzojjVjy", "zMzojjVky",
+  "zMzojVjzo", "zMzojVjzc", "zMzojV/foo<CR>", "zMzojV/foo<CR>y", "zMzojV$", "zMzojV0", "zMzojV<Space>",
+  "zMzojV<CR>", "zMzojVjV", "zMzojVj<Esc>", "zMzojVj<Esc>j", "zMzojVjyj", "zMzojVoy", "6GzcV", "6GzcVo",
+  "6GzcVk", "6GzcVko", "6GzcVkoj", "6GzcVj", "6GzcVjj", "6GzcVjy", "6GzcVky", "6Gzc5GV", "5GVzc", "5GVjzc",
+  "5GVjzcj", "6GVkzc", "2GV10jzc", "5GV5jzc", "zMzojV3jzo", "zMzojV3jzoj", "zMzojjjV4kzo", "5GVjza", "zMzojVjza",
+  "VjzM", "zMVzR", "5GVj2zc", "zMzojV3j2zo", "18GVzc", "18G$Vjzc", "5GVjzaj", "5GVjzao", "VjzMj", "zMVzRk",
+]
+
+[[group]]
+id = "pageprobe"
+body = "tree"
+cases = [
+  "5Gzc<C-d>", "6Gzc<C-d>", "7Gzc<C-d>", "8Gzc<C-d>", "6Gzc3<C-d>", "5Gzc3<C-d>", "6Gzc1<C-d>",
+  "6Gzckzt<C-d>", "4Gzc2G<C-d>", "4Gzc2G3<C-d>", "6G<C-d>", "30Gzt6Gzc<C-u>", "30G<C-u>", "20Gzc<C-u>",
+  "35G<C-u>", "6Gzc35G<C-u>", "6Gzc35G<C-u><C-u>", "6Gzc41G<C-u>", "6Gzc41G3<C-u>", "6Gzc12G<C-u>",
+  "6Gzc12G3<C-u>", "zMzoG<C-u>", "zMzo38G<C-u>", "zMzo38G2<C-u>", "6Gzc41Gzt<C-u>", "6Gzc41Gzt<C-u><C-u>",
+  "6Gzc19Gzt<C-u>", "20Gzc1<C-u>", "20Gzc2<C-u>", "20Gzc3<C-u>", "20Gzc5<C-u>", "20Gzc10<C-u>", "18Gzc1<C-u>",
+  "21Gzc1<C-u>", "18Gzc22G1<C-u>", "18Gzc22G2<C-u>", "20Gzck", "20Gzc2k",
+]
+
+[[group]]
+id = "window"
+body = "raw30"
+cases = [
+  "<C-d>", "<C-u>", "<C-d><C-d>", "<C-d><C-d><C-d>", "3<C-d>", "3<C-d><C-d>", "G<C-u>", "G<C-d>",
+  "<C-f>", "2<C-f>", "<C-f><C-f>", "<C-b>", "G<C-b>", "G<C-f>", "<C-f><C-b>",
+  "<PageDown>", "3<PageDown>", "<PageUp>", "G<PageUp>", "G2<PageUp>",
+  "10Gzt", "10Gzz", "10Gzb", "20Gzt", "10zt", "15zz", "20zb", "Gzt", "Gzb", "ggzb",
+]
+
+[[group]]
+id = "window5"
+body = "raw5"
+cases = ["<C-d>", "<C-f>", "<C-f><C-f>", "<C-b>", "<PageDown>", "Gzt", "3Gzz", "zb"]
+
+[[group]]
+id = "enter"
+body = "raw30"
+cases = [
+  "<CR>", "3<CR>", "G<CR>", "29G<CR>", "29G3<CR>", "3G<CR>", "12G<CR>", "40<CR>",
+  "<Space>", "3<Space>", "$<Space>", "$2<Space>", "3G$<Space>", "4G<Space>", "G$<Space>", "8G<Space>",
+  "12G<Space>", "13G<Space>", "100<Space>",
+]
+
+[[group]]
+id = "yank"
+body = "raw30"
+cases = [
+  "yy", "3yy", "Gyy", "G3yy", "29G3yy", "29G2yy", "28G5yy", "99yy", "10G3yyj", "/baz<CR>yy", "/baz<CR>3yy",
+]
+
+[[group]]
+id = "visual"
+body = "raw30"
+cases = [
+  "V", "Vj", "V3j", "VG", "10GVgg", "10GV5k", "Vjo", "Vjoj", "Vjoy", "Vjy", "V3jy", "10GV3ky", "VjV", "Vj<Esc>",
+  "V<C-d>", "V<C-f>", "V<PageDown>", "V3<PageDown>", "Vzt", "10GVzb", "V<CR>", "V3<CR>", "V<Space>", "V$<Space>",
+  "V/baz<CR>", "V/baz<CR>y", "V/zzz<CR>", "Vn", "V*", "V#", "/baz<CR>V", "/baz<CR>Vjo", "/baz<CR>Vjy",
+  "V10G", "V<C-End>", "GV<C-Home>", "Vjjyj", "GVk", "GVj", "V<C-b>", "Vk",
+  "/baz<CR>Vy", "/baz<CR>Vyj", "/baz<CR>Vjyj", "10GV3kyj", "2G/baz<CR>Vky", "2G/baz<CR>Vkyj", "/baz<CR>Vj$y",
+  "/baz<CR>V$o", "$V3jo", "$Vjoj",
+]
+
+[[group]]
+id = "search"
+body = "raw30"
+cases = [
+  "/foo<CR>", "/foo<CR>n", "/foo<CR>3n", "/foo<CR>N", "/foo<CR>2N", "?foo<CR>", "?foo<CR>n", "?foo<CR>N",
+  "/zzz<CR>", "/foo<CR>/zzz<CR>", "/foo<CR>/<CR>", "?foo<CR>/<CR>", "/foo<CR>?<CR>", "n", "N",
+  "/foo<CR>Gn", "Gn", "/foo<CR>G", "/^ba<CR>", "/o\\+<CR>", "/foo$<CR>", "/$<CR>", "/$<CR>n", "/^$<CR>", "/^$<CR>n",
+  "/bar<CR>/foo<Esc>", "/foo<Esc>", "/foo<Esc>n", "/bar<CR>/foo<Esc>n", "/bar<CR>/<Esc>n",
+  "/\\(<CR>", "/\\(<CR>n", "/foo<CR><Esc>n", "/foo<CR><Esc>N",
+  "/foo\\|bar<CR>3n", "/foo<CR>14G", "/foo<CR>14Gn", "/ba[rz]<CR>n",
+  "99n", "/foo<CR>99n", "/foo<CR>G99N",
+]
+
+[[group]]
+id = "star"
+body = "raw30"
+cases = [
+  "*", "3*", "#", "2#", "**", "*n", "*N", "#n", "14G*", "14G#", "4G*", "13G*", "5G*", "5G$*",
+  "9G*", "9G$*", "10G*", "6G*", "/baz<CR>*", "/baz<CR>j*", "$*", "$#", "G*", "G#", "8G*", "11G*",
+]
+
+[[group]]
+id = "fold"
+body = "tree"
+cases = [
+  "zc", "za", "zcza", "zczo", "zM", "zMzR", "zMzo", "zM2zo", "zM9zo", "zMza",
+  "5Gzc", "5Gzcj", "5Gzck", "6Gzc", "6Gzczo", "6G2zc", "6G9zc", "6Gza", "6Gzaza",
+  "zMj", "zMG", "zMgg", "zMk", "zMzoj", "zMzojj", "zMzoG", "zMzo5j",
+  "6Gzcj", "6GzcG", "6Gzck", "11Gzcj", "11Gzck", "12Gzc5j",
+  "5Gzcyy", "5Gzc3yy", "6Gzcyy", "6GzcVjy", "6GzckVjy", "5GzcVy",
+  "zM/foo<CR>", "zMzo/foo<CR>", "6Gzc/foo<CR>", "6Gzc?foo<CR>", "6Gzc*", "7Gzc*", "6GzcN",
+  "/bar<CR>zc", "/bar<CR>zczo", "/dev<CR>zcj",
+  "zMzoGzc", "zMzoGk", "Gzc", "Gzck",
+  "zM5G", "zMzo10G", "zMzo10Gzo", "zMzo10Gj", "zMzo10Gk", "zMzo10Gyy",
+  "6Gzcjzo", "6Gzckzo", "6Gzc<CR>", "6Gzc<Space>", "6Gzcl", "6Gzc$", "6Gzc0",
+  "6Gzczt", "6Gzczb", "6Gzc<C-d>", "6Gzc<C-u>", "6Gzc<C-f>",
+  "zR", "zo", "5Gzo", "zMzc", "6Gzozc",
+  "zMV", "zMzoVj", "zMzoVjy", "zMzoVGy", "6GzcVjo", "6GzcV3j",
+  "zMzo5G", "zMzo6G", "zMzo6Gj", "zMzo6Gzo", "zMzo6Gzoj",
+  "zMzoj$", "zMzoj*", "zMzo6G*", "zMzo6G<Space>",
+]
+
+[[group]]
+id = "foldsmall"
+body = "small"
+cases = [
+  "zc", "zM", "zMzo", "zMzozo", "zM2zo", "zMzoj", "zMzojzo", "zMzojzoj", "zMzojzojzo",
+  "2Gzc", "3Gzc", "3G2zc", "3G3zc", "3G9zc", "3Gzcza", "3Gzaza", "3G2za", "zMzoj2zo", "zMzoG",
+  "3GzcG", "3Gzcgg", "zMzo3G", "zMzo4G", "zMzo4Gzo", "zMzo2Gzo",
+  "zMzojzc", "zMzojzck", "zMzojzcj", "Gzc", "7Gzc", "7Gzck", "7Gzcj",
+  "3Gzc<CR>", "3Gzc<Space>", "3Gzcyy", "3Gzc2yy", "zMzojyy", "zMzojVjy",
+  "zMzo/2<CR>", "zM/2<CR>", "zM/1<CR>n", "zMzoj*", "3Gzc*",
+]

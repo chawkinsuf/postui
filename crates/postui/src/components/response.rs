@@ -1,7 +1,7 @@
 use super::json_tree::{JsonTree, TokenKind};
 use super::line_input::LineInput;
 use super::{Component, DrawCtx, pane_surface};
-use crate::action::Action;
+use crate::action::{Action, Place, ResponseMotion};
 use crate::config::JqTab;
 use crate::hit::ScrollbarSpec;
 use crate::layout::PaneId;
@@ -66,16 +66,107 @@ pub enum ViewMode {
     Headers,
 }
 
+/// How the search box's text reads (plan M5a Deviation 3): Vim's pattern
+/// in the vim profile, plain text in arrows. Both match case.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchSyntax {
+    Literal,
+    Vim,
+}
+
+impl SearchSyntax {
+    pub fn of(profile: crate::config::KeyProfile) -> Self {
+        match profile {
+            crate::config::KeyProfile::Vim => SearchSyntax::Vim,
+            crate::config::KeyProfile::Arrows => SearchSyntax::Literal,
+        }
+    }
+}
+
 /// The in-pane search: a live input while `active`, then a committed query
-/// with its match list. Matches are `(full line index, char column)` into the
-/// current view's *fully expanded* text, so a hit inside a collapsed
-/// container is still found (and jumped to).
+/// with its match list. Matches are `(full line, start, end)`, chars, end
+/// exclusive, in the current view's *fully expanded* text, so a hit inside a
+/// collapsed container is still found (and jumped to).
 pub struct SearchState {
     pub input: LineInput,
     pub active: bool,
+    /// What is searched for. A Vim pattern is kept as Vim's `do_search()`
+    /// stores it (`as_stored`: `\?` typed in a `?` search is `?`), so a
+    /// later search in the other direction reuses it unchanged.
     pub query: String,
-    pub matches: Vec<(usize, usize)>,
+    pub syntax: SearchSyntax,
+    /// `?` and `#` search backward: Vim's `n` follows it, `N` goes the
+    /// other way.
+    pub backward: bool,
+    pub matches: Vec<(usize, usize, usize)>,
     pub current: usize,
+    /// Why `query` found nothing to search with: a Vim pattern outside the
+    /// engine's subset. `n` says it again, as Vim's `n` repeats E54.
+    pub error: Option<String>,
+    /// While the box is open, the search it replaced: vim's Esc puts it
+    /// back, as Vim's Esc abandons the `/` line and leaves the last search
+    /// as it was. Its matches follow the view as this one's do.
+    before: Option<Box<SearchState>>,
+}
+
+impl SearchState {
+    /// The box, open for typing, over the search it replaces.
+    fn open(syntax: SearchSyntax, backward: bool, before: Option<SearchState>) -> Self {
+        let mut search = Self::with(LineInput::new(""), true, String::new(), syntax, backward);
+        search.before = before.map(Box::new);
+        search
+    }
+
+    /// A search for `query` that needs no typing (`*`, `n` after Esc),
+    /// its matches still to compute.
+    fn committed(query: String, syntax: SearchSyntax, backward: bool) -> Self {
+        Self::with(LineInput::new(&query), false, query, syntax, backward)
+    }
+
+    fn with(input: LineInput, active: bool, query: String, syntax: SearchSyntax, backward: bool) -> Self {
+        Self { input, active, query, syntax, backward, matches: Vec::new(), current: 0, error: None, before: None }
+    }
+
+    /// Fills `matches` (and `error`) for `query` over `corpus`, from the
+    /// first. `Some(note)` for a Vim pattern outside the engine's subset:
+    /// no matches then.
+    fn find_matches(&mut self, corpus: &[String]) -> Option<String> {
+        use crate::vim::engine::compile;
+        self.matches.clear();
+        self.current = 0;
+        self.error = None;
+        if self.query.is_empty() {
+            return None;
+        }
+        match self.syntax {
+            SearchSyntax::Literal => {
+                for (i, line) in corpus.iter().enumerate() {
+                    // Columns are chars, so they line up with rendered spans.
+                    let (mut byte, mut col) = (0, 0);
+                    for (at, hit) in line.match_indices(self.query.as_str()) {
+                        col += line[byte..at].chars().count();
+                        let len = hit.chars().count();
+                        self.matches.push((i, col, col + len));
+                        (byte, col) = (at + hit.len(), col + len);
+                    }
+                }
+            }
+            SearchSyntax::Vim => {
+                let pat = match compile(&self.query) {
+                    Ok(p) => p,
+                    Err(note) => {
+                        self.error = Some(note.clone());
+                        return Some(note);
+                    }
+                };
+                for (i, line) in corpus.iter().enumerate() {
+                    let chars: Vec<char> = line.chars().collect();
+                    self.matches.extend(pat.chain(&chars).into_iter().map(|(s, e)| (i, s, e)));
+                }
+            }
+        }
+        None
+    }
 }
 
 /// Menu mode's candidate row: the text the completion was applied to,
@@ -597,6 +688,30 @@ pub struct ReadyView {
     /// Height of the body viewport as of the last draw, so key handling can
     /// keep the cursor on screen. A sane guess until the first frame.
     height: usize,
+    /// Vim's window option `'scroll'` (plan M5a Task 3): the lines ctrl+d
+    /// and ctrl+u move, set by a counted one, reset when the viewport's
+    /// height changes, as Vim's `win_comp_scroll()` does (Deviation 19).
+    scroll_opt: Option<usize>,
+    /// The full tree line the cursor is really on while a closed fold hides
+    /// it (plan M5a Deviation 8): the cursor shows on the fold's line, and
+    /// opening the fold, a search or `*` go from this one. Any cursor move
+    /// forgets it ([`ReadyView::cursor_moved`]), and so does a new tree or
+    /// view.
+    fold_line: Option<usize>,
+    /// Vim's cursor column, which the response tracks without drawing a
+    /// caret (the user's decision, 2026-10-10, replacing plan M5a Deviation
+    /// 7): `(line, column)` in search-corpus lines and chars, set by a move
+    /// along a line, a search landing or a first-non-blank landing. A move
+    /// to another line forgets it ([`ReadyView::cursor_moved`]); the column
+    /// there comes from `want`.
+    at_col: Option<(usize, usize)>,
+    /// Vim's `w_curswant`: the display column a move to another line lands
+    /// on (the line's last char when shorter), `usize::MAX` after `$`.
+    want: usize,
+    /// The V anchor's column, as Vim's Visual start has one (`o` goes there).
+    anchor_col: usize,
+    /// A note for the app to toast (Vim's message line): a wrap, a miss.
+    note: Option<String>,
     /// Width of the body viewport as of the last draw — the horizontal
     /// counterpart of `height`, used to clamp `h_scroll`.
     width: usize,
@@ -623,6 +738,11 @@ pub struct ReadyView {
     /// sweeps extend by whole words from this span instead of by cells.
     /// Cleared by any single click (`clear_sel`).
     sel_word_anchor: Option<((usize, usize), (usize, usize))>,
+    /// While the selection is whole lines (vim's `V`, shift+↑/↓: the
+    /// response's V surface, plan M5a Deviation 11), the buffer line it
+    /// started on, so a fold a motion opens above it never moves it. A
+    /// drag's character selection has none.
+    line_anchor: Option<usize>,
     /// The cached parse of the response body for jq to run filters
     /// against — built lazily (a sync run parses it the first time it's
     /// needed) or handed back from a background run.
@@ -730,7 +850,7 @@ impl ReadyView {
                 .map(|h| (h.name.as_str(), h.display.as_str())),
         ));
         header_rows.extend((0..data.sent_headers.len()).map(HeaderRow::Sent));
-        Self {
+        let mut view = Self {
             mode,
             body_mode: mode,
             tree,
@@ -747,12 +867,19 @@ impl ReadyView {
             h_scroll: 0,
             search: None,
             height: 10,
+            scroll_opt: None,
+            fold_line: None,
+            at_col: None,
+            want: 0,
+            anchor_col: 0,
+            note: None,
             width: 40,
             content_width: None,
             last_area: None,
             sel_anchor: None,
             sel: None,
             sel_word_anchor: None,
+            line_anchor: None,
             jq_doc: None,
             jq_tree: None,
             jq_applied: None,
@@ -761,7 +888,9 @@ impl ReadyView {
             jq_runs: 0,
             tree_epoch: 0,
             raw_marks: HashMap::new(),
-        }
+        };
+        view.reset_want();
+        view
     }
 
     /// Whether the `Pretty` view is offered at all: a parsed tree, or a
@@ -795,6 +924,7 @@ impl ReadyView {
     /// the tree on screen actually changes — clearing an already-absent
     /// filter tree leaves the body tree, and its width measure, as it was.
     fn set_jq_tree(&mut self, tree: Option<JsonTree>) {
+        self.cursor_moved();
         if tree.is_some() || self.jq_tree.is_some() {
             self.tree_epoch += 1;
         }
@@ -809,14 +939,28 @@ impl ReadyView {
         }
     }
 
-    fn open_search(&mut self) {
-        self.search = Some(SearchState {
-            input: LineInput::new(""),
-            active: true,
-            query: String::new(),
-            matches: Vec::new(),
-            current: 0,
-        });
+    /// Vim's box keeps the search it replaces for its Esc; a box opened
+    /// over an open one keeps what that one replaced.
+    fn open_search(&mut self, syntax: SearchSyntax, backward: bool) {
+        let before = match self.search.take() {
+            Some(open) if open.active => open.before.map(|b| *b),
+            shown => shown,
+        };
+        let before = before.filter(|_| syntax == SearchSyntax::Vim);
+        self.search = Some(SearchState::open(syntax, backward, before));
+    }
+
+    /// The text of search-corpus line `line` (the expanded tree line on
+    /// Pretty), without building the whole corpus.
+    fn buffer_line(&self, line: usize) -> Option<String> {
+        match self.mode {
+            ViewMode::Pretty => {
+                let tree = self.active_tree()?;
+                (line < tree.line_count()).then(|| tree.line(line).expanded_text())
+            }
+            ViewMode::Raw => self.raw_lines.get(line).cloned(),
+            ViewMode::Headers => self.header_lines.get(line).cloned(),
+        }
     }
 
     /// How many lines the current view shows right now (collapse included).
@@ -886,6 +1030,11 @@ impl ReadyView {
         self.width
     }
 
+    /// The body viewport's height as of the last draw, in rows.
+    pub fn height(&self) -> usize {
+        self.height
+    }
+
     /// The widest visible line as the last draw measured it, or `None`
     /// when the view changed since (or never drew): a read that never pays
     /// for a measure, for the key router's repeat cap.
@@ -904,14 +1053,12 @@ impl ReadyView {
 
     /// The current view's text with nothing hidden — the corpus search runs
     /// over, and the coordinate space its match positions live in.
-    fn search_corpus(&self) -> Vec<String> {
+    fn search_corpus(&self) -> std::borrow::Cow<'_, [String]> {
+        use std::borrow::Cow;
         match self.mode {
-            ViewMode::Pretty => self
-                .active_tree()
-                .map(|t| t.full_text_lines())
-                .unwrap_or_default(),
-            ViewMode::Raw => self.raw_lines.clone(),
-            ViewMode::Headers => self.header_lines.clone(),
+            ViewMode::Pretty => Cow::Owned(self.active_tree().map(|t| t.full_text_lines()).unwrap_or_default()),
+            ViewMode::Raw => Cow::Borrowed(&self.raw_lines),
+            ViewMode::Headers => Cow::Borrowed(&self.header_lines),
         }
     }
 
@@ -932,71 +1079,520 @@ impl ReadyView {
         self.cursor = self.cursor.min(self.visible_len().saturating_sub(1));
     }
 
-    /// Keeps the cursor inside the viewport after a move.
+    /// The window Vim's `move.c` port runs on (plan M5a Task 3).
+    fn window(&self) -> crate::vim::engine::View {
+        crate::vim::engine::View { height: self.height.max(1) }
+    }
+
+    /// Keeps the cursor inside the viewport after a move: Vim's
+    /// `update_topline()`, so a near move scrolls just enough and a far
+    /// jump (a search, `50G`) puts its line mid-window (plan M5a
+    /// Deviation 4).
     fn follow_cursor(&mut self) {
-        let h = self.height.max(1);
-        if self.cursor < self.scroll {
-            self.scroll = self.cursor;
-        } else if self.cursor >= self.scroll + h {
-            self.scroll = self.cursor + 1 - h;
+        if self.visible_len() == 0 {
+            self.scroll = 0;
+            return;
+        }
+        self.window().update_topline(self);
+    }
+
+    /// The line the cursor is really on: on the tree view, the full line,
+    /// which a closed fold may hide (Deviation 8); elsewhere, the cursor.
+    pub fn real_line(&self) -> Option<usize> {
+        match self.mode {
+            ViewMode::Pretty => self.fold_line.or_else(|| self.active_tree()?.full_index_of_visible(self.cursor)),
+            _ => (self.cursor < self.visible_len()).then_some(self.cursor),
         }
     }
 
-    /// After a fold opens or closes (a click, `zo` `zc` `za`): the change
+    /// `zo` `zc` `za` `zR` `zM` (spec §5.7; plan M5a Deviations 8 and 9):
+    /// on the tree view only. The cursor shows on the line that now holds
+    /// its real line and remembers that line while it is hidden. Whether
+    /// anything changed.
+    fn fold(&mut self, op: crate::action::FoldOp, count: usize) -> bool {
+        if self.mode != ViewMode::Pretty {
+            return false;
+        }
+        let Some(real) = self.real_line() else {
+            return false;
+        };
+        let Some(tree) = self.active_tree_mut() else {
+            return false;
+        };
+        if !tree.fold_at(real, op, count) {
+            return false;
+        }
+        let shown = tree.holder(real).unwrap_or(0);
+        let hidden = tree.visible_index_of(real).is_none();
+        let anchor = self.line_anchor;
+        self.clear_sel();
+        self.cursor = shown;
+        self.fold_line = hidden.then_some(real);
+        // Vim's `za` `zR` `zM` keep Visual up, a closed fold taken whole.
+        if let Some(anchor) = anchor {
+            self.select_lines_from(anchor);
+            self.fold_adjust_visual();
+        }
+        self.follow_cursor();
+        true
+    }
+
+    /// The cursor moved (a key, a click, a pull to the view's edge, a new
+    /// tree or view): it is no longer on the hidden line a closed fold
+    /// remembered (plan M5a Deviation 8), and its column comes from `want`
+    /// on the line it is on now.
+    fn cursor_moved(&mut self) {
+        self.fold_line = None;
+        self.at_col = None;
+    }
+
+    /// Vim's cursor column on the cursor's real line: the one set there, or
+    /// `want`'s. Past the line's end only in V, as Vim's Visual allows.
+    fn cur_col(&self) -> usize {
+        let Some(line) = self.real_line() else { return 0 };
+        let text = self.buffer_line(line).unwrap_or_default();
+        let visual = self.line_anchor.is_some();
+        let len = text.chars().count();
+        match self.at_col {
+            Some((l, c)) if l == line => c.min(if visual { len } else { len.saturating_sub(1) }),
+            _ => col_of_vcol(&text, self.want, visual),
+        }
+    }
+
+    /// Puts Vim's cursor on column `col` of its line, wanted there after.
+    /// In a closed fold the wanted column is 0: Vim draws the cursor at the
+    /// fold line's start and takes `w_curswant` from where it is drawn
+    /// (probed: `6G` into a closed fold, `zo`, `j` lands on column 1).
+    fn set_col(&mut self, col: usize) {
+        let Some(line) = self.real_line() else { return };
+        let text = self.buffer_line(line).unwrap_or_default();
+        self.at_col = Some((line, col));
+        self.want = if self.in_closed_fold(line) { 0 } else { want_at(&text, col) };
+    }
+
+    /// The column wanted at the start of a view: the first line's first
+    /// char's, as Vim takes `w_curswant` from where its cursor starts.
+    fn reset_want(&mut self) {
+        self.want = self.buffer_line(0).map_or(0, |t| want_at(&t, 0));
+    }
+
+    /// The closed fold full line `line` is in, as Vim's `hasFolding()`
+    /// finds it: (its first line, its last).
+    fn closed_fold_at(&self, line: usize) -> Option<(usize, usize)> {
+        match self.mode {
+            ViewMode::Pretty => self.active_tree()?.closed_fold(line),
+            _ => None,
+        }
+    }
+
+    fn in_closed_fold(&self, line: usize) -> bool {
+        self.closed_fold_at(line).is_some()
+    }
+
+    /// The first non-blank of the cursor's line (Vim's `'startofline'`
+    /// landing after `G`, `gg` and the page keys, and `+`'s).
+    fn col_first_non_blank(&mut self) {
+        let Some(line) = self.real_line() else { return };
+        let text = self.buffer_line(line).unwrap_or_default();
+        self.set_col(first_non_blank(&text));
+    }
+
+    /// Vim's `foldOpenCursor()` (`'foldopen'`'s `hor` and `search`): the
+    /// closed folds at the cursor's real line open, and the cursor shows on
+    /// it. A V selection's rows follow.
+    fn open_folds_at_cursor(&mut self) {
+        if self.mode != ViewMode::Pretty {
+            return;
+        }
+        let Some(real) = self.real_line() else { return };
+        let Some(tree) = self.active_tree_mut() else { return };
+        if !tree.open_folds_at(real) {
+            return;
+        }
+        let row = tree.visible_index_of(real).unwrap_or(0);
+        self.cursor = row;
+        self.fold_line = None;
+        if let Some(anchor) = self.line_anchor {
+            self.select_lines_from(anchor);
+        }
+        self.follow_cursor();
+    }
+
+    /// Vim's `foldAdjustVisual()`, which its main loop runs after each
+    /// command in Visual: a closed fold at the selection's start puts that
+    /// end on the fold's first line, column 0; one at its end puts that end
+    /// on the fold's last line, past its last char. So a V on a closed fold
+    /// holds all of it, and `o` or a motion go on from its far end.
+    fn fold_adjust_visual(&mut self) {
+        if self.mode != ViewMode::Pretty {
+            return;
+        }
+        let (Some(a_line), Some(c_line)) = (self.line_anchor, self.real_line()) else { return };
+        let anchor = (a_line, self.anchor_col);
+        let cursor = (c_line, self.cur_col());
+        let cursor_ends = anchor <= cursor;
+        let (mut start, mut end) = if cursor_ends { (anchor, cursor) } else { (cursor, anchor) };
+        let Some(tree) = self.active_tree() else { return };
+        if let Some((open, _)) = tree.closed_fold(start.0) {
+            start = (open, 0);
+        }
+        if let Some((_, close)) = tree.closed_fold(end.0) {
+            end = (close, tree.line(close).expanded_text().chars().count());
+        }
+        let (new_anchor, new_cursor) = if cursor_ends { (start, end) } else { (end, start) };
+        if new_cursor != cursor {
+            // The column moves, not the wanted one, as Vim's does.
+            let want = self.want;
+            self.land_line(new_cursor.0);
+            self.at_col = Some(new_cursor);
+            self.want = want;
+        }
+        self.anchor_col = new_anchor.1;
+        self.select_lines_from(new_anchor.0);
+    }
+
+    /// After a fold opens or closes (a click, Space, Enter): the change
     /// renumbers the visible lines a selection is addressed in, and may
-    /// leave the cursor past the end or out of view.
+    /// leave the cursor past the end or out of view. They act on the visible
+    /// opener, so its line is the cursor's.
     fn after_fold(&mut self) {
+        self.cursor_moved();
         self.clear_sel();
         self.clamp_cursor();
         self.follow_cursor();
     }
 
-    /// The one place a key moves the cursor: `delta` lines, clamped, the
-    /// view following. Every cursor move but shift+↑/↓ drops a line
-    /// selection, or the next shift+↓ would grow it from the anchor the
-    /// move left behind; the rule lives here, not in the key arms, so a
-    /// mover cannot miss it. [`Self::select_line_extend`] is the one
-    /// exception and steps the cursor itself.
-    fn move_cursor(&mut self, delta: i32) {
-        let max = self.visible_len().saturating_sub(1) as i32;
-        self.jump_cursor((self.cursor as i32 + delta).clamp(0, max) as usize);
-    }
-
-    /// The one place a key lands the cursor on a given line (a document
-    /// jump, a search match, a half page): clamped, the view following,
-    /// a line selection dropped as [`Self::move_cursor`] drops it.
-    fn jump_cursor(&mut self, at: usize) {
+    /// The one place a key puts the cursor on a line: clamped, a line
+    /// selection dropped (every cursor move but an extend drops one, or the
+    /// next shift+↓ would grow it from a stale anchor). The view does not
+    /// follow here; [`Self::jump_cursor`] does.
+    fn land(&mut self, at: usize) {
         self.clear_sel();
+        self.cursor_moved();
         self.cursor = at;
         self.clamp_cursor();
+    }
+
+    /// Lands on buffer line `line` (clamped to the last), as Vim's `{N}G`
+    /// counts lines (final review I1; probes G1–G8). On the tree view a
+    /// closed fold that hides it shows the cursor on its row and remembers
+    /// the line (Deviation 8); elsewhere a line is a row. The view does not
+    /// follow here.
+    fn land_line(&mut self, line: usize) {
+        let tree = match self.mode {
+            ViewMode::Pretty => self.active_tree().filter(|t| t.line_count() > 0),
+            _ => None,
+        };
+        let Some((real, shown, hidden)) = tree.map(|t| {
+            let real = line.min(t.line_count() - 1);
+            (real, t.holder(real).unwrap_or(0), t.visible_index_of(real).is_none())
+        }) else {
+            self.land(line);
+            return;
+        };
+        self.land(shown);
+        self.fold_line = hidden.then_some(real);
+    }
+
+    /// `delta` lines, clamped, the view following (Vim's `j`/`k`).
+    fn move_cursor(&mut self, delta: i32) {
+        self.motion(ResponseMotion::Lines(i64::from(delta)));
+    }
+
+    /// Lands the cursor on a line (a document jump, a search match), the
+    /// view following.
+    fn jump_cursor(&mut self, at: usize) {
+        self.land(at);
         self.follow_cursor();
     }
 
-    /// `ctrl+d` (`down`) or `ctrl+u` (piece 4 spec §5.7, both profiles):
-    /// the view and the cursor move half a page together, so the cursor
-    /// keeps its screen row. Where the view cannot scroll further the
-    /// cursor still moves, clamped to the first or last line (plan M4a
-    /// Deviation 10). A cursor the wheel or the scrollbar left off screen
-    /// is first brought to the view's nearest edge, as Vim keeps it, so the
-    /// step starts from what shows.
-    fn half_page(&mut self, down: bool) {
+    /// The cursor, or the nearest line the view shows when the wheel or the
+    /// scrollbar left it off screen: where a window command starts, as Vim's
+    /// cursor never leaves the window (plan M4a Deviation 10, plan M5a
+    /// Deviation 12).
+    fn shown_cursor(&self) -> usize {
         let height = self.height.max(1);
-        let half = (height / 2).max(1);
         let last = self.visible_len().saturating_sub(1);
-        let max_scroll = self.visible_len().saturating_sub(height);
-        let shown = self
-            .cursor
-            .clamp(self.scroll.min(last), (self.scroll + height - 1).min(last));
-        let at = if down {
-            // A view already past the end (the pane grew, or a fold shrank
-            // what shows) stays put rather than jump back up.
-            self.scroll = (self.scroll + half).min(max_scroll).max(self.scroll);
-            (shown + half).min(last)
-        } else {
-            self.scroll = self.scroll.saturating_sub(half);
-            shown.saturating_sub(half)
-        };
-        self.jump_cursor(at);
+        self.cursor.clamp(self.scroll.min(last), (self.scroll + height - 1).min(last))
+    }
+
+    /// Puts the cursor on `row`, the view's edge a window command pulled an
+    /// off-screen cursor to: a cursor that moves forgets its hidden line.
+    fn pull_cursor(&mut self, row: usize) {
+        if row != self.cursor {
+            self.cursor = row;
+            self.cursor_moved();
+        }
+    }
+
+    /// What a motion can change: when none of it did, the motion beeped and
+    /// the frame needs no redraw.
+    #[allow(clippy::type_complexity)]
+    fn motion_mark(
+        &self,
+    ) -> (usize, usize, usize, Option<usize>, Option<(usize, usize)>, Option<((usize, usize), (usize, usize))>, Option<usize>, usize)
+    {
+        (self.cursor, self.scroll, self.h_scroll, self.fold_line, self.at_col, self.sel, self.line_anchor, self.visible_len())
+    }
+
+    /// A vim motion or window command (plan M5a Task 3), as Vim 9.1 runs
+    /// it on a window of the visible lines. A window key that beeps at an
+    /// edge changes nothing, a selection included (amendment A3.2).
+    fn motion(&mut self, m: ResponseMotion) {
+        let len = self.visible_len();
+        if len == 0 {
+            return;
+        }
+        let w = self.window();
+        match m {
+            ResponseMotion::Lines(n) => {
+                let at = (self.cursor as i64).saturating_add(n).clamp(0, len as i64 - 1) as usize;
+                let real = self.real_line().unwrap_or(0);
+                match self.closed_fold_at(real) {
+                    _ if at != self.cursor => self.jump_cursor(at),
+                    // In a closed fold on the last row: Vim's
+                    // `cursor_down()` goes to the fold's last line first
+                    // (probe F5), so that is where `j` leaves the cursor.
+                    Some((_, end)) if n > 0 => {
+                        self.land_line(end);
+                        self.follow_cursor();
+                    }
+                    // On the first row, `k` goes to the fold's first line,
+                    // the row's own.
+                    Some(_) => self.jump_cursor(at),
+                    None => {
+                        // Vim's `j`/`k` beeps at the edge and the cursor
+                        // keeps its column (final review T5 m4). A selection
+                        // still drops, as on main.
+                        self.clear_sel();
+                        self.follow_cursor();
+                    }
+                }
+            }
+            ResponseMotion::Goto { line, last } => {
+                let at = match line {
+                    Some(n) => n.saturating_sub(1),
+                    None if last => usize::MAX,
+                    None => 0,
+                };
+                self.land_line(at);
+                self.col_first_non_blank();
+                self.follow_cursor();
+            }
+            ResponseMotion::GotoEnd { line } => {
+                // Its `$` is a move along the line: it opens the folds there.
+                self.land_line(line.map_or(usize::MAX, |n| n.saturating_sub(1)));
+                self.open_folds_at_cursor();
+                self.want = usize::MAX;
+                self.follow_cursor();
+            }
+            ResponseMotion::NextLine(n) => {
+                // Vim's `+` is `cursor_down()` then the first non-blank; on
+                // the last row `cursor_down()` fails and nothing lands.
+                let last = self.cursor + 1 >= len;
+                self.motion(ResponseMotion::Lines(i64::try_from(n.max(1)).unwrap_or(i64::MAX)));
+                if !last {
+                    self.col_first_non_blank();
+                }
+            }
+            ResponseMotion::Col(c) => self.col_move(c),
+            ResponseMotion::HalfPage { down, count } => {
+                let shown = self.shown_cursor();
+                let from = if shown == self.cursor { self.real_line().unwrap_or(0) } else { self.row_to_line(shown) };
+                let lines = self.buffer_line_count();
+                // `nv_halfpage()`: on the first or last line it beeps before
+                // `'scroll'` is set. It asks of the cursor's line, which a
+                // closed fold may hide.
+                if (down && from + 1 >= lines) || (!down && from == 0) {
+                    return;
+                }
+                self.clear_sel();
+                self.pull_cursor(shown);
+                let top = self.scroll;
+                let mut scroll = self.scroll_opt;
+                w.halfpage(self, down, count.unwrap_or(0), &mut scroll);
+                self.scroll_opt = scroll;
+                // The view scrolls by rows (a closed fold is one). Vim's
+                // `halfpage()` (9.1.0016, the Vim the probes ran) moves the
+                // cursor one buffer line for each row scrolled, then the rest
+                // of `'scroll'` a closed fold at a time; a cursor in a closed
+                // fold goes to its first line (`foldAdjustCursor()`), then
+                // into the window (probed: `6Gzc<C-d>` from a line the fold
+                // 4–8 hides lands on 17; `zMzo<C-d>`, which cannot scroll, on
+                // 41; `30Gzc<C-u>` with seven rows to scroll on 14).
+                let n = scroll.unwrap_or((w.height / 2).max(1)).min(w.height);
+                let scrolled = self.scroll.abs_diff(top);
+                let rest = n.saturating_sub(scrolled);
+                let to = if down {
+                    self.folds_down((from + scrolled).min(lines - 1), rest)
+                } else {
+                    self.folds_up(from.saturating_sub(scrolled), rest)
+                };
+                let to = self.closed_fold_at(to).map_or(to, |(open, _)| open);
+                self.land_line(to);
+                w.cursor_correct(self);
+                self.col_first_non_blank();
+            }
+            ResponseMotion::Page { down, count } => {
+                let before = (self.cursor, self.fold_line, self.at_col);
+                self.pull_cursor(self.shown_cursor());
+                let shown = (self.scroll, self.cursor);
+                let moved = w.onepage(self, down, count.max(1));
+                if !moved && (self.scroll, self.cursor) == shown {
+                    // Beeped at once: nothing changed, the selection and
+                    // the column included (final review m3).
+                    (self.cursor, self.fold_line, self.at_col) = before;
+                } else {
+                    self.clear_sel();
+                    // A page that beeped part way keeps the wanted column,
+                    // as Vim's `nv_page()` skips `beginline()` then.
+                    if moved {
+                        self.col_first_non_blank();
+                    }
+                }
+            }
+            ResponseMotion::Place { at, line } => {
+                match line {
+                    // `nv_zet()` keeps the column (clamped) and the wanted
+                    // one.
+                    Some(n) => {
+                        let (col, want) = (self.cur_col(), self.want);
+                        self.land_line(n.saturating_sub(1));
+                        self.at_col = self.real_line().map(|l| (l, col));
+                        self.want = want;
+                    }
+                    None => self.pull_cursor(self.shown_cursor()),
+                }
+                match at {
+                    Place::Top => w.scroll_cursor_top(self, 0, true),
+                    Place::Middle => w.scroll_cursor_halfway(self, true, false),
+                    Place::Bottom => w.scroll_cursor_bot(self, 0, true),
+                }
+            }
+        }
+    }
+
+    /// The rest of `halfpage()`'s move down, once the window hit the end:
+    /// `n` lines from buffer line `from`, a closed fold counting as one.
+    fn folds_down(&self, from: usize, n: usize) -> usize {
+        let last = self.buffer_line_count().saturating_sub(1);
+        let mut line = from;
+        for _ in 0..n {
+            if line >= last {
+                break;
+            }
+            line = self.closed_fold_at(line).map_or(line, |(_, end)| end) + 1;
+        }
+        line.min(last)
+    }
+
+    /// The rest of `halfpage()`'s move up, once the window hit the top: `n`
+    /// lines up from buffer line `from`, each landing in a closed fold going
+    /// to its first line (probed: from 20 in the fold 18–21, `2<C-u>` lands
+    /// on 17, `1<C-u>` on 18).
+    fn folds_up(&self, from: usize, n: usize) -> usize {
+        if n > from {
+            return 0;
+        }
+        let mut line = from;
+        for _ in 0..n {
+            if line == 0 {
+                break;
+            }
+            line = self.closed_fold_at(line - 1).map_or(line - 1, |(open, _)| open);
+        }
+        line
+    }
+
+    /// How many buffer lines the view has: the tree's full lines, or its
+    /// rows.
+    fn buffer_line_count(&self) -> usize {
+        match (self.mode, self.active_tree()) {
+            (ViewMode::Pretty, Some(tree)) => tree.line_count(),
+            _ => self.visible_len(),
+        }
+    }
+
+    /// A move of Vim's hidden column ([`ColMove`]). `h` `l` `0` `$` still
+    /// scroll the view sideways as they did, since no caret shows where the
+    /// column is. Like Vim's (`'foldopen'` `hor`), a move along the line
+    /// opens the closed folds at it.
+    fn col_move(&mut self, m: crate::action::ColMove) {
+        use crate::action::ColMove;
+        let Some(line) = self.real_line() else { return };
+        let len = self.buffer_line(line).map_or(0, |t| t.chars().count());
+        let col = self.cur_col();
+        let step = |n: usize| i32::try_from(n).unwrap_or(i32::MAX).saturating_mul(H_SCROLL_STEP.into());
+        // A move that fails (`h` on column 0, `l` on the last char) opens
+        // nothing, as Vim's `nv_left()` and `nv_right()`; `0` and `$` always
+        // do. The folds open before the column is set, so the wanted column
+        // is the one drawn on the open line, as Vim's main loop takes it.
+        match m {
+            ColMove::Left(n) => {
+                self.scroll_h(-step(n));
+                if col > 0 {
+                    self.open_folds_at_cursor();
+                    self.set_col(col.saturating_sub(n));
+                }
+            }
+            ColMove::Right(n) => {
+                self.scroll_h(step(n));
+                if col + 1 < len {
+                    self.open_folds_at_cursor();
+                    self.set_col((col + n).min(len - 1));
+                }
+            }
+            ColMove::Start => {
+                self.h_scroll = 0;
+                self.open_folds_at_cursor();
+                self.set_col(0);
+            }
+            ColMove::End(n) => {
+                // `{N}$` goes N - 1 lines down first; it beeps at the end.
+                if n > 1 {
+                    let before = self.real_line();
+                    self.motion(ResponseMotion::Lines(i64::try_from(n - 1).unwrap_or(i64::MAX)));
+                    if self.real_line() == before {
+                        return;
+                    }
+                }
+                self.scroll_h(i32::MAX);
+                self.open_folds_at_cursor();
+                self.at_col = None;
+                self.want = usize::MAX;
+            }
+            ColMove::Space(n) => self.space(n),
+        }
+    }
+
+    /// Vim's Space (`nv_right()` with `'whichwrap'` `s`): `n` chars right,
+    /// from a line's last char (or an empty line) on to the next line's
+    /// first. It beeps only when it cannot move at all.
+    fn space(&mut self, n: usize) {
+        let lines = self.buffer_line_count();
+        let Some(mut line) = self.real_line() else { return };
+        let mut col = self.cur_col();
+        let start = (line, col);
+        for _ in 0..n.max(1) {
+            let len = self.buffer_line(line).map_or(0, |t| t.chars().count());
+            if col + 1 < len {
+                col += 1;
+            } else if line + 1 < lines {
+                line += 1;
+                col = 0;
+            } else {
+                break;
+            }
+        }
+        if (line, col) == start {
+            return;
+        }
+        if Some(line) != self.real_line() {
+            self.land_line(line);
+            self.follow_cursor();
+        }
+        self.open_folds_at_cursor();
+        self.set_col(col);
     }
 
     fn set_mode(&mut self, mode: ViewMode) {
@@ -1009,63 +1605,238 @@ impl ReadyView {
         if mode != ViewMode::Headers {
             self.body_mode = mode;
         }
+        self.cursor_moved();
         self.cursor = 0;
         self.scroll = 0;
         self.h_scroll = 0;
+        self.reset_want();
         // Match positions are per-view coordinates; the query survives, the
         // positions do not.
         self.recompute_matches();
     }
 
-    fn recompute_matches(&mut self) {
-        let Some(search) = &self.search else { return };
-        if search.query.is_empty() {
-            return;
+    /// Every match of the query, in corpus order, and of the search an open
+    /// box replaced. `Some(note)` for a Vim pattern outside the engine's
+    /// subset: no matches then.
+    fn recompute_matches(&mut self) -> Option<String> {
+        let mut search = self.search.take()?;
+        let wanted = |s: &SearchState| !s.query.is_empty();
+        let corpus = if wanted(&search) || search.before.as_deref().is_some_and(wanted) {
+            self.search_corpus()
+        } else {
+            std::borrow::Cow::Borrowed(&[][..])
+        };
+        let note = search.find_matches(&corpus);
+        if let Some(before) = search.before.as_deref_mut() {
+            before.find_matches(&corpus);
         }
-        let needle = search.query.to_lowercase();
-        let mut matches = Vec::new();
-        for (i, line) in self.search_corpus().iter().enumerate() {
-            let hay = line.to_lowercase();
-            // Column is a char offset so it lines up with rendered spans.
-            let mut from = 0;
-            while let Some(at) = hay[from..].find(&needle) {
-                let byte = from + at;
-                matches.push((i, hay[..byte].chars().count()));
-                from = byte + needle.len();
-            }
-        }
-        let search = self.search.as_mut().expect("checked above");
-        search.matches = matches;
-        search.current = 0;
+        drop(corpus);
+        self.search = Some(search);
+        note
     }
 
-    /// Moves the cursor onto match `current`, expanding whatever containers
-    /// hide it. A jump like any other: a line selection drops with it.
+    /// Where Vim's cursor is: the cursor's real line in corpus lines, and
+    /// its hidden column. `*` takes its word here; a search starts from
+    /// [`Self::search_from`].
+    fn search_pos(&self) -> (usize, usize) {
+        (self.real_line().unwrap_or(0), self.cur_col())
+    }
+
+    /// Where a search in `backward`'s direction starts: [`Self::search_pos`],
+    /// except when a closed fold holds the cursor's line (the cursor hidden
+    /// inside it, or on its own collapsed row). Then Vim's `do_search()`
+    /// starts outside the outermost closed one: a forward search after its
+    /// closing line, a backward one at its opening line's column 0, so the
+    /// matches it hides are skipped (probes R1–R10, the controller's ruling
+    /// over the plan's Review Focus 1).
+    fn search_from(&self, backward: bool) -> (usize, usize) {
+        let (line, col) = self.search_pos();
+        let fold = match self.mode {
+            ViewMode::Pretty => self.active_tree().and_then(|t| t.closed_fold(line)),
+            _ => None,
+        };
+        match fold {
+            Some((open, _)) if backward => (open, 0),
+            Some((_, close)) => (close, usize::MAX),
+            None => (line, col),
+        }
+    }
+
+    /// Lands on match `current`, expanding whatever containers hide it, and
+    /// puts the column on it (on the line's last char for a match at its
+    /// end, as Vim's Normal cursor cannot be past it). A vim search opens
+    /// every closed fold at the line, the one it opens included, as Vim's
+    /// `'foldopen'` `search` does; arrows' only shows the line, as on main.
+    /// A jump like any other: a line selection drops, except vim's V, which
+    /// a search extends as Vim 9.1's Visual does (probed). Its anchor is a
+    /// buffer line, so a fold the landing opens above it does not move it.
     fn jump_to_match(&mut self) {
         let Some(search) = &self.search else { return };
-        let Some(&(line, _)) = search.matches.get(search.current) else {
+        let Some(&(line, start, _)) = search.matches.get(search.current) else {
             return;
         };
+        let vim = search.syntax == SearchSyntax::Vim;
+        let anchor = self.line_anchor.filter(|_| vim);
         let at = match (self.mode, self.active_tree_mut()) {
             (ViewMode::Pretty, Some(tree)) => {
-                tree.expand_ancestors(line);
+                if vim {
+                    tree.open_folds_at(line);
+                } else {
+                    tree.expand_ancestors(line);
+                }
                 tree.visible_index_of(line).unwrap_or(0)
             }
             _ => line,
         };
         self.jump_cursor(at);
+        if let Some(anchor) = anchor {
+            self.select_lines_from(anchor);
+        }
+        let len = self.buffer_line(line).map_or(0, |t| t.chars().count());
+        self.set_col(start.min(len.saturating_sub(1)));
     }
 
-    fn step_match(&mut self, delta: i32) {
-        let Some(search) = self.search.as_mut() else {
-            return;
+    /// The buffer line shown on visible row `row`: on the tree, the line
+    /// the row is (a collapsed container's opening line); elsewhere a row is
+    /// a line.
+    fn row_to_line(&self, row: usize) -> usize {
+        match (self.mode, self.active_tree()) {
+            (ViewMode::Pretty, Some(tree)) => tree.full_index_of_visible(row).unwrap_or(row),
+            _ => row,
+        }
+    }
+
+    /// [`Self::row_to_line`] back: the row showing `line`, or the closed
+    /// fold's row that hides it.
+    fn line_to_row(&self, line: usize) -> usize {
+        match (self.mode, self.active_tree()) {
+            (ViewMode::Pretty, Some(tree)) => tree.holder(line).unwrap_or(0),
+            _ => line,
+        }
+    }
+
+    /// Vim's `searchit()` from the cursor ([`Self::search_from`]), `count`
+    /// hits, wrapping (plan M5a Deviation 4): forward, the first match
+    /// starting after the cursor (one starting on its line's end counts one
+    /// column back, as the engine's `search` has it: amendment A5.3);
+    /// backward, the last one starting before it. The note says a wrap or a
+    /// miss, as Vim's message line does.
+    fn land_match(&mut self, backward: bool, count: usize) -> Option<String> {
+        use crate::vim::engine::{Dir, not_found_note, wrap_note};
+        let (line, col) = self.search_from(backward);
+        let search = self.search.as_ref()?;
+        if let Some(error) = &search.error {
+            return Some(error.clone());
+        }
+        let matches = &search.matches;
+        if matches.is_empty() {
+            return Some(not_found_note(&search.query));
+        }
+        // The first hit, then every match in turn, cyclically: hit k is the
+        // first one stepped k − 1 times, so a 9 999 count costs nothing.
+        let n = matches.len();
+        let steps = count.max(1) - 1;
+        let (idx, wrapped) = if backward {
+            let before = matches.partition_point(|m| (m.0, m.1) < (line, col));
+            let start = before.checked_sub(1);
+            let from = start.unwrap_or(n - 1);
+            ((from + n - steps % n) % n, start.is_none() || steps > from)
+        } else {
+            let at_end = |m: &(usize, usize, usize)| {
+                m.1 > 0 && m.1 == m.2 && self.buffer_line(m.0).is_some_and(|t| t.chars().count() == m.1)
+            };
+            let after = matches.partition_point(|m| (m.0, if at_end(m) { m.1 - 1 } else { m.1 }) <= (line, col));
+            let start = (after < n).then_some(after);
+            let from = start.unwrap_or(0);
+            ((from + steps) % n, start.is_none() || from + steps >= n)
         };
-        let len = search.matches.len();
-        if len == 0 {
+        self.search.as_mut()?.current = idx;
+        self.jump_to_match();
+        wrapped.then(|| wrap_note(if backward { Dir::Backward } else { Dir::Forward }).to_string())
+    }
+
+    /// Commits the box (Enter, Esc, the ▼/▲ click), then lands from the
+    /// cursor in the box's direction. Vim's Esc abandons the box instead:
+    /// the search it replaced comes back, the cursor and the last pattern
+    /// stay (probed: `/bar` Enter, then `/foo` Esc leaves `@/` `bar`, the
+    /// cursor and the highlight). Arrows' Esc on an empty box only closes
+    /// it, as main ran nothing; on a typed one it runs the search, main's
+    /// field rule. Otherwise an empty Vim box takes the last query, as
+    /// Vim's `/` Enter does, and says Vim's E35 when there is none (probe
+    /// E1); an empty arrows box finds nothing, as on main. A Vim pattern
+    /// becomes the last one before it compiles, as Vim's `do_search()`
+    /// stores it, so one outside the engine's subset is kept too and `n`
+    /// says why again (probed: `/\(` then `n` repeats E54).
+    fn commit_search(&mut self, esc: bool, last: &mut LastPattern) {
+        use crate::vim::engine::{Dir, as_stored};
+        let Some(search) = self.search.as_mut() else { return };
+        let before = search.before.take();
+        if esc && search.syntax == SearchSyntax::Vim {
+            self.search = before.map(|b| *b);
             return;
         }
-        search.current = (search.current as i32 + delta).rem_euclid(len as i32) as usize;
-        self.jump_to_match();
+        search.active = false;
+        search.input.end_edit();
+        let typed = search.input.text().to_string();
+        if esc && typed.is_empty() {
+            search.query.clear();
+            search.matches.clear();
+            search.current = 0;
+            return;
+        }
+        let vim = search.syntax == SearchSyntax::Vim;
+        let dir = if search.backward { Dir::Backward } else { Dir::Forward };
+        search.query = match (vim, typed.is_empty()) {
+            (true, true) => last.pattern.as_ref().map(|(q, _)| q.clone()).unwrap_or_default(),
+            (true, false) => as_stored(&typed, dir),
+            (false, _) => typed,
+        };
+        let (query, backward) = (search.query.clone(), search.backward);
+        if vim && !query.is_empty() {
+            last.set(query.clone(), backward);
+        }
+        self.note = match self.recompute_matches() {
+            Some(note) => Some(note),
+            None if query.is_empty() => vim.then(|| crate::vim::engine::NO_PREVIOUS_PATTERN.to_string()),
+            None => self.land_match(backward, 1),
+        };
+    }
+
+    /// Makes vim's last pattern the search, in its direction: after Esc
+    /// cleared the search, or once a search elsewhere replaced the pattern.
+    /// `n` and `N` then go on as Vim's do.
+    fn restore_search(&mut self, query: String, backward: bool) {
+        self.search = Some(SearchState::committed(query, SearchSyntax::Vim, backward));
+        // A pattern that does not compile keeps its note for `n` to say.
+        self.recompute_matches();
+    }
+
+    /// Vim's `*` and `#` (plan M5a Task 5): the keyword under or after the
+    /// cursor's column, else the non-blank string there, searched as a Vim
+    /// pattern whatever the profile. Whether a search ran.
+    fn star(&mut self, backward: bool, count: usize, last: &mut LastPattern) -> bool {
+        use crate::vim::engine::{Dir, NO_STRING_UNDER_CURSOR, as_stored, find_ident, ident_pattern};
+        let (line, col) = self.search_pos();
+        let Some(text) = self.buffer_line(line) else {
+            return false;
+        };
+        let chars: Vec<char> = text.chars().collect();
+        let Some((start, end)) = find_ident(&chars, col) else {
+            self.note = Some(NO_STRING_UNDER_CURSOR.into());
+            return false;
+        };
+        let dir = if backward { Dir::Backward } else { Dir::Forward };
+        let pat = as_stored(&ident_pattern(&chars, start, end, backward), dir);
+        self.search = Some(SearchState::committed(pat.clone(), SearchSyntax::Vim, backward));
+        last.set(pat, backward);
+        if let Some(note) = self.recompute_matches() {
+            self.note = Some(note);
+            return false;
+        }
+        // Vim searches from the word's start, so the word itself is skipped.
+        self.at_col = Some((line, start));
+        self.note = self.land_match(backward, count);
+        true
     }
 
     /// Char ranges of every match on `line`, plus the current one.
@@ -1080,18 +1851,17 @@ impl ReadyView {
         if search.active || search.query.is_empty() {
             return none;
         }
-        let width = search.query.chars().count();
         let ranges = search
             .matches
             .iter()
-            .filter(|(l, _)| *l == line)
-            .map(|(_, c)| (*c, c + width))
+            .filter(|(l, _, _)| *l == line)
+            .map(|(_, s, e)| (*s, *e))
             .collect();
         let current = search
             .matches
             .get(search.current)
-            .filter(|(l, _)| *l == line)
-            .map(|(_, c)| (*c, c + width));
+            .filter(|(l, _, _)| *l == line)
+            .map(|(_, s, e)| (*s, *e));
         LineMatches { ranges, current }
     }
 
@@ -1174,6 +1944,12 @@ impl ReadyView {
         self.sel = None;
         self.sel_anchor = None;
         self.sel_word_anchor = None;
+        self.line_anchor = None;
+    }
+
+    /// The row the V anchor's buffer line shows on now.
+    fn line_anchor_row(&self) -> Option<usize> {
+        self.line_anchor.map(|line| self.line_to_row(line))
     }
 
     /// The inclusive cell span a double click at cell `(line, col)`
@@ -1186,28 +1962,251 @@ impl ReadyView {
         Some(((line, s), (line, e - 1)))
     }
 
-    /// Extends a line-wise selection by `delta` lines (shift+Up/Down): the
-    /// anchor line is fixed, the cursor line moves, and every line between
-    /// them is covered in full. The one cursor move that keeps a selection,
-    /// so it steps the cursor itself rather than through
-    /// [`Self::move_cursor`], which drops one.
-    fn select_line_extend(&mut self, delta: i32) {
-        let anchor_line = self.sel_anchor.map(|(l, _)| l).unwrap_or(self.cursor);
-        self.sel_anchor = Some((anchor_line, 0));
-        let max = self.visible_len().saturating_sub(1) as i32;
-        self.cursor = (self.cursor as i32 + delta).clamp(0, max) as usize;
-        self.follow_cursor();
+    /// A line selection from buffer line `anchor` (the row showing it now)
+    /// to the cursor's line, every line between covered in full.
+    fn select_lines_from(&mut self, anchor: usize) {
+        self.line_anchor = Some(anchor);
+        let row = self.line_to_row(anchor);
+        self.sel_anchor = Some((row, 0));
         let cl = self.cursor;
         let len = |v: &Self, l: usize| v.display_line_text(l).map_or(0, |t| t.chars().count());
-        self.sel = Some(if cl >= anchor_line {
-            ((anchor_line, 0), (cl, len(self, cl).saturating_sub(1)))
+        self.sel = Some(if cl >= row {
+            ((row, 0), (cl, len(self, cl).saturating_sub(1)))
         } else {
-            (
-                (anchor_line, len(self, anchor_line).saturating_sub(1)),
-                (cl, 0),
-            )
+            ((row, len(self, row).saturating_sub(1)), (cl, 0))
         });
     }
+
+    /// A motion that keeps the selection's anchor (vim's V, shift+↑/↓):
+    /// the cursor moves as `motion` moves it, then the lines from the
+    /// anchor to it are selected. The anchor is the selection's, a drag's
+    /// included, so shift+↑/↓ turns a drag into lines from the line it
+    /// started on, as on main (amendment A6.1, the user's decision); with
+    /// no selection, the cursor's line. A window key that pulls an
+    /// off-screen cursor to the view's edge takes the moving end with it
+    /// (amendment A6.5). The anchor is held by buffer line across the
+    /// motion, so a fold the motion opens or closes never moves it.
+    fn extend(&mut self, m: ResponseMotion) {
+        let len = self.visible_len();
+        if len == 0 {
+            self.motion(m);
+            return;
+        }
+        let anchor = self
+            .line_anchor
+            .unwrap_or_else(|| self.row_to_line(self.sel_anchor.map_or(self.cursor, |(l, _)| l).min(len - 1)));
+        self.motion(m);
+        if self.visible_len() > 0 {
+            self.select_lines_from(anchor);
+            self.fold_adjust_visual();
+        }
+    }
+
+    /// `V`: a line selection on the cursor's line, its anchor at the
+    /// cursor's column, a closed fold taken whole.
+    fn start_lines(&mut self) {
+        if self.visible_len() == 0 {
+            return;
+        }
+        let Some(real) = self.real_line() else { return };
+        self.anchor_col = self.cur_col();
+        self.select_lines_from(real);
+        self.fold_adjust_visual();
+    }
+
+    /// shift+↑/↓: extend a line selection by `delta` lines.
+    fn select_line_extend(&mut self, delta: i32) {
+        self.extend(ResponseMotion::Lines(i64::from(delta)));
+    }
+
+    /// The buffer lines visible row `row` stands for: itself, or on the
+    /// tree a closed container's every line, as Vim's fold yanks (probes
+    /// Y1–Y4).
+    fn buffer_lines_of(&self, row: usize) -> Vec<String> {
+        match self.mode {
+            ViewMode::Pretty => {
+                let Some(tree) = self.active_tree() else { return Vec::new() };
+                let Some(full) = tree.full_index_of_visible(row) else { return Vec::new() };
+                let line = tree.line(full);
+                let end = match (&line.container, line.collapsed) {
+                    (Some(c), true) => c.end_line,
+                    _ => full,
+                };
+                (full..=end).map(|i| tree.line(i).expanded_text()).collect()
+            }
+            ViewMode::Raw => self.raw_lines.get(row).cloned().into_iter().collect(),
+            ViewMode::Headers => self.header_lines.get(row).cloned().into_iter().collect(),
+        }
+    }
+
+    /// `yy` (`count` rows from the cursor, clamped) or a V `y` (the
+    /// selected rows): the lines, as Vim's buffer holds them. The selection
+    /// ends and the cursor goes to the first line yanked, as Vim leaves
+    /// Visual (probes V1–V13). Only a `yy` from the cursor's own line keeps
+    /// its column (probe Y5, in the Task 6 report); a V `y` puts it in
+    /// column 0 even on the cursor's line (R6a, R6d), and a yank from a
+    /// closed fold the cursor is hidden in puts it on the fold's first line
+    /// (Y8, Y10). A `{N}yy` with N ≥ 2 on the last row yanks nothing, as
+    /// Vim's `cursor_down()` fails there and the yank beeps (probed: `3yy`
+    /// on the last line leaves `@"` alone; one line up it yanks two).
+    fn yank_rows(&mut self, count: Option<usize>) -> Option<Vec<String>> {
+        let len = self.visible_len();
+        if len == 0 {
+            return None;
+        }
+        let anchor = self.line_anchor_row();
+        if anchor.is_none() && count.is_some_and(|n| n >= 2) && self.cursor + 1 >= len {
+            return None;
+        }
+        let (lo, hi) = match anchor {
+            Some(a) => (a.min(self.cursor), a.max(self.cursor)),
+            None => (self.cursor, self.cursor.saturating_add(count.unwrap_or(1).max(1) - 1).min(len - 1)),
+        };
+        let lines = (lo..=hi).flat_map(|row| self.buffer_lines_of(row)).collect();
+        match self.line_anchor {
+            Some(_) => self.end_lines_at_start(),
+            // A yank from a closed fold starts on its first line, column 0,
+            // and leaves the cursor there (probes Y8, Y10; `5Gzcyy` lands
+            // on 4 col 1). Any other `yy` keeps the cursor and its column.
+            None if self.real_line().and_then(|l| self.closed_fold_at(l)).is_some() => {
+                self.jump_cursor(lo);
+                self.set_col(0);
+            }
+            None => self.clear_sel(),
+        }
+        Some(lines)
+    }
+
+    /// A V `y`, `zo` or `zc` ends the selection where Vim's operator leaves
+    /// the cursor: a cursor before the anchor stays, column and all;
+    /// otherwise it goes to the anchor's line, column 0 (probed: `10GV3ky`
+    /// stays on 7 col 5, `/baz<CR>Vjy` and `5GVjzc` go to col 1).
+    fn end_lines_at_start(&mut self) {
+        let Some(a_line) = self.line_anchor else { return };
+        let cursor = (self.real_line().unwrap_or(0), self.cur_col());
+        if cursor < (a_line, self.anchor_col) {
+            self.clear_sel();
+            self.at_col = Some(cursor);
+        } else {
+            self.land_line(a_line);
+            self.follow_cursor();
+            self.set_col(0);
+        }
+    }
+
+    /// `zo` (`open`) and `zc` in V: one level of folds over the selected
+    /// buffer lines (Vim's `opFoldRange()`), then the selection ends.
+    fn fold_lines(&mut self, open: bool) {
+        let (Some(a_line), Some(c_line)) = (self.line_anchor, self.real_line()) else { return };
+        let (cursor, anchor) = ((c_line, self.cur_col()), (a_line, self.anchor_col));
+        if self.mode == ViewMode::Pretty
+            && let Some(tree) = self.active_tree_mut()
+        {
+            tree.fold_range(a_line.min(c_line), a_line.max(c_line), open);
+        }
+        // The folds renumbered the rows, so the lines land afresh.
+        self.clear_sel();
+        if cursor < anchor {
+            self.land_line(c_line);
+            self.at_col = Some(cursor);
+        } else {
+            self.land_line(a_line);
+            self.set_col(0);
+        }
+        self.follow_cursor();
+    }
+
+    /// `o` in V: the cursor and the anchor trade ends, columns too; the
+    /// cursor wants its new column after (Vim's `o`).
+    fn swap_ends(&mut self) {
+        let (Some(a_line), Some(c_line)) = (self.line_anchor, self.real_line()) else { return };
+        let (a_col, c_col) = (self.anchor_col, self.cur_col());
+        self.land_line(a_line);
+        self.select_lines_from(c_line);
+        self.anchor_col = c_col;
+        self.set_col(a_col);
+        self.follow_cursor();
+    }
+}
+
+/// The response's lines as Vim's window code sees them (plan M5a Task 3):
+/// the visible lines, `scroll` the top, `cursor` the caret's row. There is
+/// no column (Deviation 7).
+impl crate::vim::engine::Rows for ReadyView {
+    fn lines(&self) -> usize {
+        self.visible_len().max(1)
+    }
+    fn blank(&self) -> bool {
+        self.visible_len() == 0
+    }
+    fn topline(&self) -> usize {
+        self.scroll
+    }
+    fn set_topline(&mut self, row: usize) {
+        self.scroll = row;
+    }
+    fn cur_row(&self) -> usize {
+        self.cursor
+    }
+    fn set_cur_row(&mut self, row: usize, _col0: bool) {
+        if row != self.cursor {
+            self.cursor_moved();
+        }
+        self.cursor = row;
+    }
+}
+
+/// The cells `c` takes at display column `at`, as Vim counts them: a tab
+/// runs to the next multiple of the pinned `'tabstop'` (2).
+fn vim_cells(c: char, at: usize) -> usize {
+    use unicode_width::UnicodeWidthChar;
+    if c == '\t' { 2 - at % 2 } else { c.width().unwrap_or(0) }
+}
+
+/// The display column char `col` of `text` starts at (Vim's `getvcol()`).
+fn vcol_of(text: &str, col: usize) -> usize {
+    text.chars().take(col).fold(0, |v, c| v + vim_cells(c, v))
+}
+
+/// The `w_curswant` of a cursor on char `col`: its display column, or on a
+/// tab its last cell, where Vim's Normal cursor shows (probed: a cursor on
+/// the tab in `ab\tcd` wants column 3, 0-based).
+fn want_at(text: &str, col: usize) -> usize {
+    let start = vcol_of(text, col);
+    match text.chars().nth(col) {
+        Some('\t') => start + vim_cells('\t', start) - 1,
+        _ => start,
+    }
+}
+
+/// Vim's `coladvance(want)`: the char whose cells hold display column
+/// `want`, else the line's last char, or with `past_end` (Visual, where
+/// `'selection'` is inclusive) the column after it. 0 on an empty line.
+fn col_of_vcol(text: &str, want: usize, past_end: bool) -> usize {
+    let mut v = 0;
+    let mut len = 0;
+    for (i, c) in text.chars().enumerate() {
+        let w = vim_cells(c, v);
+        if want < v + w.max(1) {
+            return i;
+        }
+        v += w;
+        len = i + 1;
+    }
+    if past_end { len } else { len.saturating_sub(1) }
+}
+
+/// Vim's `beginline(BL_SOL | BL_FIX)`: the first char that is not a space
+/// or a tab, else the line's last char (0 when empty).
+fn first_non_blank(text: &str) -> usize {
+    let mut len = 0;
+    for (i, c) in text.chars().enumerate() {
+        if c != ' ' && c != '\t' {
+            return i;
+        }
+        len = i + 1;
+    }
+    len.saturating_sub(1)
 }
 
 /// The char index of the cell at display column `col` of `text` (wide
@@ -1275,6 +2274,30 @@ pub struct Response {
     /// the panes have drawn and places the cursor only when no modal
     /// covers the bar.
     jq_caret: Option<Position>,
+    /// Vim's last pattern, which outlives a new response.
+    last_search: LastPattern,
+}
+
+/// Vim's last pattern as the response sees it: the pattern (as stored,
+/// see [`SearchState::query`]) and whether it went backward. Vim has one
+/// for every window, so the app keeps it equal to the text engine's
+/// ([`Response::take_last_search`], [`Response::adopt_last_search`] at
+/// each input event's end). An empty `/` Enter searches it again, and so
+/// does `n` once Esc has cleared the search: Esc never forgets it, as in
+/// Vim.
+#[derive(Default)]
+struct LastPattern {
+    pattern: Option<(String, bool)>,
+    /// A search here set `pattern`: the app gives it to the engine.
+    set: bool,
+}
+
+impl LastPattern {
+    /// A search here made `query` the last pattern.
+    fn set(&mut self, query: String, backward: bool) {
+        self.pattern = Some((query, backward));
+        self.set = true;
+    }
 }
 
 impl Response {
@@ -1323,6 +2346,7 @@ impl Response {
         match tree {
             Some(tree) => {
                 view.tree = Some(tree);
+                view.cursor_moved();
                 view.tree_epoch += 1;
                 // A switched-on filter is about to run against this tree
                 // (see the `jq_applied` reset below): keep the spinner up
@@ -2194,6 +3218,25 @@ impl Response {
         spec.overflows().then_some(spec)
     }
 
+    /// The vim profile's wheel and scrollbar (the user's decision,
+    /// 2026-10-10): the cursor comes into the window, as Vim's mouse
+    /// scrolling drags it (`cursor_correct()`), its wanted column kept and a
+    /// V selection extending to it. Arrows leaves it where it is, as main.
+    pub fn cursor_into_view(&mut self) {
+        let Some(view) = self.view.as_mut() else { return };
+        if view.visible_len() == 0 {
+            return;
+        }
+        let before = view.cursor;
+        view.window().cursor_correct(view);
+        if view.cursor != before
+            && let Some(anchor) = view.line_anchor
+        {
+            view.select_lines_from(anchor);
+            view.fold_adjust_visual();
+        }
+    }
+
     /// Jumps the body view to `offset` (scrollbar drag). Clamped the same way
     /// `handle_scroll` clamps the wheel.
     pub fn set_scroll(&mut self, offset: usize) -> bool {
@@ -2226,40 +3269,115 @@ impl Response {
         }
     }
 
-    /// Opens the in-pane search, exactly as `/` does (the search button).
-    pub fn open_search(&mut self) -> bool {
+    /// Opens the in-pane search (`/`, `?`, the search button): Vim's
+    /// pattern or plain text (plan M5a Deviation 3), forward or backward.
+    pub fn open_search(&mut self, syntax: SearchSyntax, backward: bool) -> bool {
         let Some(view) = self.view.as_mut() else {
             return false;
         };
-        view.open_search();
+        view.open_search(syntax, backward);
         true
     }
 
-    /// Steps to the next (`1`) or previous (`-1`) match, exactly as `n`/`N`
-    /// do (the `▼`/`▲` buttons).
-    ///
-    /// A still-live input is committed first, exactly as `Enter` does, and
-    /// that commit *is* the step: matches only highlight once the query is
-    /// committed, so a click on `▼` straight after typing must land on the
-    /// first match rather than silently skipping it. Without this the whole
-    /// mouse route into search dead-ended — nothing highlighted, and the
-    /// buttons looked broken (found by the stage-7 tmux sweep).
+    /// Arrows' `n`/`N` and the ▼/▲ buttons: the next match down (`1`) or
+    /// up (`-1`) from the cursor. A still-live input is committed first, as
+    /// Enter does, and that commit *is* the step: the mouse route types a
+    /// query and clicks ▼ (found by the stage-7 tmux sweep). With no search,
+    /// or an empty one, nothing happens, as on main (amendment A5.4, the
+    /// user's decision): vim's `n` is [`Response::find_next`].
     pub fn step_search(&mut self, delta: i32) -> bool {
         let Some(view) = self.view.as_mut() else {
             return false;
         };
-        let Some(search) = view.search.as_mut() else {
+        match view.search.as_ref() {
+            None => false,
+            Some(s) if s.active => {
+                view.commit_search(false, &mut self.last_search);
+                true
+            }
+            Some(s) if s.query.is_empty() => false,
+            Some(_) => {
+                view.note = view.land_match(delta < 0, 1);
+                true
+            }
+        }
+    }
+
+    /// Vim's `n` and `N` (plan M5a Deviation 10): `count` hits of vim's
+    /// last pattern in its direction, `N` against it. Unless the search on
+    /// screen is that pattern (Esc cleared it, or it is an arrows one),
+    /// the pattern comes back first; with none, Vim's E35 (probe E6). A box
+    /// still being typed in is committed instead, as [`Self::step_search`]
+    /// does, so what was typed is never lost.
+    pub fn find_next(&mut self, reverse: bool, count: usize) -> bool {
+        let Some(view) = self.view.as_mut() else {
             return false;
         };
-        if search.active {
-            search.active = false;
-            search.query = search.input.text().to_string();
-            view.recompute_matches();
-            view.jump_to_match();
+        if view.search.as_ref().is_some_and(|s| s.active) {
+            view.commit_search(false, &mut self.last_search);
             return true;
         }
-        view.step_match(delta);
+        let Some((query, backward)) = self.last_search.pattern.clone() else {
+            view.note = Some(crate::vim::engine::NO_PREVIOUS_PATTERN.into());
+            return false;
+        };
+        let shown = view
+            .search
+            .as_ref()
+            .is_some_and(|s| s.syntax == SearchSyntax::Vim && s.query == query && s.backward == backward);
+        if !shown {
+            view.restore_search(query.clone(), backward);
+        }
+        view.note = view.land_match(backward ^ reverse, count);
+        // Vim's `n` turns the highlight back on in every window.
+        self.last_search.set(query, backward);
         true
+    }
+
+    /// Vim's `*` and `#` (plan M5a Task 5).
+    pub fn find_word(&mut self, backward: bool, count: usize) -> bool {
+        self.view.as_mut().is_some_and(|view| view.star(backward, count, &mut self.last_search))
+    }
+
+    /// The last pattern a search here set since the app last asked, for
+    /// the text engine: Vim has one for every window.
+    pub fn take_last_search(&mut self) -> Option<(String, bool)> {
+        std::mem::take(&mut self.last_search.set).then(|| self.last_search.pattern.clone()).flatten()
+    }
+
+    /// The text engine's last pattern and highlight, at each input event's
+    /// end: a search in a field may have replaced the pattern. Vim has one
+    /// last pattern and one `'hlsearch'` state for every window, so while
+    /// the highlight is on the response shows that pattern, a new response
+    /// included; `:noh` turns it off everywhere and a search turns it back
+    /// on. A box being typed in, or an arrows search, stay as they are.
+    pub fn adopt_last_search(&mut self, pattern: Option<(&str, bool)>, hl: bool) {
+        let Some((query, backward)) = pattern else { return };
+        if !self.last_search.pattern.as_ref().is_some_and(|(q, b)| q == query && *b == backward) {
+            self.last_search.pattern = Some((query.to_string(), backward));
+        }
+        let Some(view) = self.view.as_mut() else { return };
+        let keep = view.search.as_ref().is_some_and(|s| {
+            s.active || s.syntax == SearchSyntax::Literal || (s.query == query && s.backward == backward)
+        });
+        if hl && !keep {
+            view.restore_search(query.to_string(), backward);
+        }
+    }
+
+    /// Vim's `:noh`: the response's highlight goes with every window's;
+    /// the last pattern stays for `n`, which turns it back on.
+    pub fn no_hlsearch(&mut self) {
+        if let Some(view) = self.view.as_mut()
+            && view.search.as_ref().is_some_and(|s| !s.active && s.syntax == SearchSyntax::Vim)
+        {
+            view.search = None;
+        }
+    }
+
+    /// The note a search left for the app to toast, once.
+    pub fn take_note(&mut self) -> Option<String> {
+        self.view.as_mut()?.note.take()
     }
 
     /// The cursor's row on the Headers view when it is a header with a
@@ -2279,8 +3397,17 @@ impl Response {
         let Some(view) = self.view.as_mut() else {
             return;
         };
+        view.cursor_moved();
         view.cursor = row.min(view.visible_len().saturating_sub(1));
         let cursor = view.cursor;
+        // A click on the text puts Vim's hidden column on the clicked char,
+        // as Vim's click does; the click's selection anchor is that cell. A
+        // closed fold's summary is not its line's text: column 0 there.
+        if !toggle && let Some((_, col)) = view.sel_anchor.filter(|(l, _)| *l == cursor) {
+            let folded = view.real_line().is_some_and(|l| view.in_closed_fold(l));
+            let len = view.real_line().and_then(|l| view.buffer_line(l)).map_or(0, |t| t.chars().count());
+            view.set_col(if folded { 0 } else { col.min(len.saturating_sub(1)) });
+        }
         if toggle
             && view.mode == ViewMode::Pretty
             && let Some(tree) = view.active_tree_mut()
@@ -2290,23 +3417,62 @@ impl Response {
         }
     }
 
-    /// `zo` `zc` `za` (piece 4 spec §5.7): the fold under the cursor on
-    /// the tree view, the cursor landing on the fold's opening line.
-    /// Whether anything changed; Raw and Headers have no folds.
-    pub fn fold(&mut self, op: crate::action::FoldOp) -> bool {
+    /// `zo` `zc` `za` `zR` `zM` (piece 4 spec §5.7): the tree view's folds,
+    /// `count` levels. Whether anything changed; Raw and Headers have none.
+    pub fn fold(&mut self, op: crate::action::FoldOp, count: usize) -> bool {
+        self.view.as_mut().is_some_and(|view| view.fold(op, count))
+    }
+
+    /// A vim motion or window command (plan M5a Task 3). Whether anything
+    /// moved: a beep needs no redraw.
+    pub fn motion(&mut self, m: ResponseMotion) -> bool {
         let Some(view) = self.view.as_mut() else {
             return false;
         };
-        if view.mode != ViewMode::Pretty {
-            return false;
-        }
-        let cursor = view.cursor;
-        let Some(at) = view.active_tree_mut().and_then(|tree| tree.fold(cursor, op)) else {
+        let mark = view.motion_mark();
+        view.motion(m);
+        view.motion_mark() != mark
+    }
+
+    /// Whether a line selection is up: the response's V surface.
+    pub fn line_selection(&self) -> bool {
+        self.view.as_ref().is_some_and(|v| v.line_anchor.is_some())
+    }
+
+    /// A motion in V (plan M5a Deviation 11). Whether anything moved.
+    pub fn extend(&mut self, m: ResponseMotion) -> bool {
+        let Some(view) = self.view.as_mut() else {
             return false;
         };
-        view.cursor = at;
-        view.after_fold();
-        true
+        let mark = view.motion_mark();
+        view.extend(m);
+        view.motion_mark() != mark
+    }
+
+    /// `V`, Esc, `o` and the yanks (plan M5a Task 6): the yanked lines for
+    /// a yank, else `None`.
+    pub fn lines(&mut self, op: crate::action::LinesOp) -> Option<Vec<String>> {
+        use crate::action::LinesOp;
+        let view = self.view.as_mut()?;
+        match op {
+            LinesOp::Start => {
+                view.start_lines();
+                None
+            }
+            LinesOp::End => {
+                view.clear_sel();
+                None
+            }
+            LinesOp::Swap => {
+                view.swap_ends();
+                None
+            }
+            LinesOp::Yank { count } => view.yank_rows(count),
+            LinesOp::Fold { open } => {
+                view.fold_lines(open);
+                None
+            }
+        }
     }
 
     /// Plants a selection anchor at the screen position of a left click in
@@ -2557,19 +3723,14 @@ impl Response {
         let view = self.view.as_mut()?;
 
         // An active search input swallows everything: chars and editing keys
-        // go to the LineInput; Enter and Esc both run the search and hand
-        // the caret back to the tree (the field rule) — Esc in the tree is
-        // what clears it.
+        // go to the LineInput; Enter runs the search and hands the caret
+        // back to the tree, and so does arrows' Esc (the field rule) — Esc
+        // in the tree is what clears it. Vim's Esc abandons the box
+        // (`ReadyView::commit_search`).
         if view.search.as_ref().is_some_and(|s| s.active) {
             match ev.code {
-                KeyCode::Enter | KeyCode::Esc => {
-                    let search = view.search.as_mut().expect("checked above");
-                    search.active = false;
-                    search.query = search.input.text().to_string();
-                    search.input.end_edit();
-                    view.recompute_matches();
-                    view.jump_to_match();
-                }
+                KeyCode::Enter => view.commit_search(false, &mut self.last_search),
+                KeyCode::Esc => view.commit_search(true, &mut self.last_search),
                 _ => {
                     let search = view.search.as_mut().expect("checked above");
                     search.input.handle_key(ev);
@@ -2589,22 +3750,22 @@ impl Response {
             // against the focused pane in `app.rs`).
             // The pane's letters (`c`, `/`, `n`, `N`) are the router's table
             // rows (piece 4 spec §4.5): the component keeps named keys only.
+            // ctrl+d/u/f/b and PageDown/PageUp are Vim's window commands in
+            // both profiles (the user's decision, 2026-10-10).
             KeyCode::Char('d') if ev.modifiers == KeyModifiers::CONTROL => {
-                view.half_page(true);
+                view.motion(ResponseMotion::HalfPage { down: true, count: None });
                 Some(Action::Render)
             }
             KeyCode::Char('u') if ev.modifiers == KeyModifiers::CONTROL => {
-                view.half_page(false);
+                view.motion(ResponseMotion::HalfPage { down: false, count: None });
                 Some(Action::Render)
             }
-            // Every cursor move but shift+↑/↓ drops a line selection:
-            // `move_cursor` and `jump_cursor` do it, not the arms.
             KeyCode::Char('f') if ev.modifiers == KeyModifiers::CONTROL => {
-                view.move_cursor(view.height.max(1) as i32);
+                view.motion(ResponseMotion::Page { down: true, count: 1 });
                 Some(Action::Render)
             }
             KeyCode::Char('b') if ev.modifiers == KeyModifiers::CONTROL => {
-                view.move_cursor(-(view.height.max(1) as i32));
+                view.motion(ResponseMotion::Page { down: false, count: 1 });
                 Some(Action::Render)
             }
             KeyCode::Down if ev.modifiers == KeyModifiers::SHIFT => {
@@ -2624,11 +3785,11 @@ impl Response {
                 Some(Action::Render)
             }
             KeyCode::PageDown if plain => {
-                view.move_cursor(view.height.max(1) as i32);
+                view.motion(ResponseMotion::Page { down: true, count: 1 });
                 Some(Action::Render)
             }
             KeyCode::PageUp if plain => {
-                view.move_cursor(-(view.height.max(1) as i32));
+                view.motion(ResponseMotion::Page { down: false, count: 1 });
                 Some(Action::Render)
             }
             KeyCode::Right if plain => {
@@ -2662,9 +3823,7 @@ impl Response {
                     && let Some(tree) = view.active_tree_mut()
                 {
                     tree.toggle(cursor);
-                    view.clear_sel();
-                    view.clamp_cursor();
-                    view.follow_cursor();
+                    view.after_fold();
                 }
                 Some(Action::Render)
             }
@@ -2672,7 +3831,10 @@ impl Response {
                 view.clear_sel();
                 Some(Action::Render)
             }
-            KeyCode::Esc if view.search.is_some() => {
+            // Arrows' search and its highlight go, as on main. Vim's Esc in
+            // Normal leaves them: `:noh` is what hides the highlight, in
+            // every window, as Vim's does.
+            KeyCode::Esc if view.search.as_ref().is_some_and(|s| s.syntax == SearchSyntax::Literal) => {
                 view.search = None;
                 Some(Action::Render)
             }
@@ -2684,6 +3846,53 @@ impl Response {
             // what walks an edit back).
             _ => None,
         }
+    }
+}
+
+/// The response as Vim's window would report it (1-based, as `line()`,
+/// `charcol()` and `getcharpos('v')` do), for the conformance replay.
+#[cfg(test)]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct VimWindow {
+    pub lines: Vec<String>,
+    pub cursor: (usize, usize),
+    pub top: usize,
+    pub anchor: Option<(usize, usize)>,
+    pub closed: Vec<(usize, usize)>,
+}
+
+#[cfg(test)]
+impl Response {
+    /// Sets the body viewport's height, as a draw would.
+    pub(crate) fn set_view_height(&mut self, height: usize) {
+        if let Some(view) = self.view.as_mut() {
+            view.height = height;
+        }
+    }
+
+    pub(crate) fn vim_window(&self) -> Option<VimWindow> {
+        let view = self.view.as_ref()?;
+        let (line, col) = view.search_pos();
+        let closed = match (view.mode, view.active_tree()) {
+            (ViewMode::Pretty, Some(tree)) => (0..tree.visible_len())
+                .filter_map(|row| {
+                    let full = tree.full_index_of_visible(row)?;
+                    let l = tree.line(full);
+                    match (&l.container, l.collapsed) {
+                        (Some(c), true) => Some((full + 1, c.end_line + 1)),
+                        _ => None,
+                    }
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        Some(VimWindow {
+            lines: view.search_corpus().into_owned(),
+            cursor: (line + 1, col + 1),
+            top: view.row_to_line(view.scroll) + 1,
+            anchor: view.line_anchor.map(|l| (l + 1, view.anchor_col + 1)),
+            closed,
+        })
     }
 }
 
@@ -2868,6 +4077,9 @@ impl Component for Response {
             body_area.height -= 1;
         }
 
+        if view.height != body_area.height as usize {
+            view.scroll_opt = None;
+        }
         view.height = body_area.height as usize;
         let spec = ScrollbarSpec {
             pane: PaneId::Response,
@@ -4070,9 +5282,9 @@ fn search_footer(view: &ReadyView, t: &Theme, width: u16) -> Line<'static> {
         return Line::raw("");
     };
     let accent = Style::default().fg(t.accent);
-    let mut spans = vec![Span::styled("/", accent)];
+    let mut spans = vec![Span::styled(if search.backward { "?" } else { "/" }, accent)];
     if search.active {
-        // The leading "/" already claims one column of `width`.
+        // The leading "/" (or "?") already claims one column of `width`.
         let input_width = width.saturating_sub(1);
         spans.extend(search.input.draw_line_windowed(true, t, input_width).spans);
         return Line::from(spans);
@@ -4371,9 +5583,13 @@ mod tests {
         for jump in jumps {
             let mut r = ready(&body);
             render(&mut r);
+            // Mid-document, so no page key beeps at an edge: a beep changes
+            // nothing and keeps the selection (plan M5a amendment A3.2).
+            r.view.as_mut().unwrap().scroll = 50;
+            r.view.as_mut().unwrap().cursor = 50;
             r.handle_key(shift_down);
             r.handle_key(shift_down);
-            assert_eq!(r.selected_text().as_deref(), Some("0\n1\n2"), "{jump:?}: the selection to drop");
+            assert_eq!(r.selected_text().as_deref(), Some("50\n51\n52"), "{jump:?}: the selection to drop");
             r.handle_key(jump);
             assert_eq!(r.selected_text(), None, "{jump:?}: the jump drops it");
             let cursor = r.view().unwrap().cursor;
@@ -4407,7 +5623,7 @@ mod tests {
         let mut r = ready(&body);
         render(&mut r);
         select(&mut r);
-        assert!(r.open_search());
+        assert!(r.open_search(SearchSyntax::Literal, false));
         for c in "line 5".chars() {
             r.handle_key(ch(c));
         }
@@ -4427,13 +5643,269 @@ mod tests {
         let mut r = ready(&body);
         render(&mut r);
         select(&mut r);
-        assert!(r.open_search());
+        assert!(r.open_search(SearchSyntax::Literal, false));
         for c in "line 7".chars() {
             r.handle_key(ch(c));
         }
         assert!(r.step_search(1));
         assert_eq!(r.view().unwrap().cursor, 7, "jumped to the first match");
         selects_from_cursor(&mut r, "button commit");
+    }
+
+    fn thirty() -> Response {
+        let body = (1..=30).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let mut r = ready(&body);
+        r.view.as_mut().unwrap().height = 23;
+        r
+    }
+
+    fn lines_of(range: std::ops::RangeInclusive<usize>) -> Vec<String> {
+        range.map(|i| format!("line {i}")).collect()
+    }
+
+    /// The plan's probes V1–V13: the yanked lines and where the cursor ends.
+    #[test]
+    fn yank_and_v_match_vim() {
+        use crate::action::{LinesOp, ResponseMotion as M};
+        let yank = LinesOp::Yank { count: None };
+        let mut r = thirty();
+        r.view.as_mut().unwrap().cursor = 4;
+        r.lines(LinesOp::Start);
+        r.extend(M::Lines(2));
+        assert!(r.line_selection());
+        assert_eq!(r.lines(yank), Some(lines_of(5..=7)), "V1");
+        assert_eq!((r.view().unwrap().cursor, r.line_selection()), (4, false));
+        let mut r = thirty();
+        r.view.as_mut().unwrap().cursor = 4;
+        r.lines(LinesOp::Start);
+        r.extend(M::Lines(-2));
+        assert_eq!(r.lines(yank), Some(lines_of(3..=5)), "V2");
+        assert_eq!(r.view().unwrap().cursor, 2, "the cursor on the first line yanked");
+        let mut r = thirty();
+        r.view.as_mut().unwrap().cursor = 4;
+        r.lines(LinesOp::Start);
+        r.extend(M::Lines(1));
+        r.lines(LinesOp::Swap);
+        assert_eq!(r.view().unwrap().cursor, 4, "V12: o swaps the ends");
+        assert!(r.line_selection());
+        let mut r = thirty();
+        r.view.as_mut().unwrap().cursor = 24;
+        r.lines(LinesOp::Start);
+        r.extend(M::Goto { line: None, last: true });
+        assert_eq!(r.lines(yank), Some(lines_of(25..=30)), "V4");
+        let mut r = thirty();
+        r.view.as_mut().unwrap().cursor = 4;
+        assert_eq!(r.lines(LinesOp::Yank { count: Some(3) }), Some(lines_of(5..=7)), "V6");
+        let mut r = thirty();
+        r.view.as_mut().unwrap().cursor = 24;
+        assert_eq!(r.lines(LinesOp::Yank { count: Some(99) }), Some(lines_of(25..=30)), "V13: clamped");
+        // Vim's `{N}yy` on the last line beeps (probed: `3yy` there leaves
+        // `@"` alone); `yy` and `1yy` yank it.
+        let mut r = thirty();
+        r.view.as_mut().unwrap().cursor = 29;
+        assert_eq!(r.lines(LinesOp::Yank { count: Some(3) }), None, "{{N}}yy on the last line");
+        assert_eq!(r.view().unwrap().cursor, 29);
+        assert_eq!(r.lines(LinesOp::Yank { count: Some(1) }), Some(lines_of(30..=30)));
+        assert_eq!(r.lines(LinesOp::Yank { count: None }), Some(lines_of(30..=30)));
+        r.view.as_mut().unwrap().cursor = 28;
+        assert_eq!(r.lines(LinesOp::Yank { count: Some(3) }), Some(lines_of(29..=30)), "one line up: clamped");
+        let mut r = thirty();
+        r.view.as_mut().unwrap().cursor = 4;
+        r.lines(LinesOp::Start);
+        r.extend(M::Lines(1));
+        r.lines(LinesOp::End);
+        assert_eq!((r.view().unwrap().cursor, r.line_selection()), (5, false), "V10, V11");
+    }
+
+    /// Arrows' text search: char columns past wide chars, non-overlapping
+    /// hits, case kept (plan M5a Deviation 6).
+    #[test]
+    fn a_literal_search_counts_columns_in_chars() {
+        let corpus = ["aéé".to_string(), "x".into(), "ééb é".into(), "aaaa".into(), "A".into()];
+        let mut s = SearchState::committed("é".into(), SearchSyntax::Literal, false);
+        assert_eq!(s.find_matches(&corpus), None);
+        assert_eq!(s.matches, [(0, 1, 2), (0, 2, 3), (2, 0, 1), (2, 1, 2), (2, 4, 5)]);
+        let mut s = SearchState::committed("aa".into(), SearchSyntax::Literal, false);
+        s.find_matches(&corpus);
+        assert_eq!(s.matches, [(3, 0, 2), (3, 2, 4)], "non-overlapping, and `A` is not `a`");
+        let mut s = SearchState::committed("éb é".into(), SearchSyntax::Literal, false);
+        s.find_matches(&corpus);
+        assert_eq!(s.matches, [(2, 1, 5)]);
+    }
+
+    /// A motion that beeps changes nothing, so it asks for no redraw; one
+    /// that moves does.
+    #[test]
+    fn a_beeping_motion_asks_no_redraw() {
+        use crate::action::{LinesOp, ResponseMotion as M};
+        let mut r = thirty();
+        assert!(r.motion(M::Goto { line: None, last: true }));
+        assert!(!r.motion(M::Lines(1)), "j on the last line");
+        assert!(!r.motion(M::HalfPage { down: true, count: None }), "ctrl+d at the end");
+        assert!(r.motion(M::Lines(-1)));
+        r.lines(LinesOp::Start);
+        assert!(r.extend(M::Lines(1)), "V grows");
+        assert!(!r.extend(M::Lines(1)), "V at the end");
+        assert!(r.line_selection());
+        let mut r = thirty();
+        assert!(!r.motion(M::Lines(-1)), "k on the first line");
+        assert!(r.motion(M::Page { down: true, count: 1 }));
+    }
+
+    /// A vim search in V extends it, as Vim's Visual does, and
+    /// a fold the landing opens above the anchor leaves the anchor on its
+    /// own line, as Vim's Visual start is a buffer position.
+    #[test]
+    fn a_vim_search_in_v_keeps_the_anchor_line_when_it_opens_a_fold() {
+        use crate::action::{FoldOp, LinesOp};
+        // Lines: 0 `{`, 1 `"a": {`, 2 `"b": "hit"`, 3 `},`, 4 `"c": 1,`,
+        // 5 `"d": 2`, 6 `}`.
+        let mut r = ready(r#"{"a": {"b": "hit"}, "c": 1, "d": 2}"#);
+        render(&mut r);
+        r.view.as_mut().unwrap().cursor = 1;
+        r.fold(FoldOp::Close, 1);
+        r.view.as_mut().unwrap().cursor = 3;
+        r.lines(LinesOp::Start);
+        r.open_search(SearchSyntax::Vim, true);
+        typed(&mut r, "hit");
+        assert_eq!(r.view().unwrap().cursor, 2, "on `b`, the fold opened");
+        assert!(r.line_selection(), "V extended");
+        let lines = r.lines(LinesOp::Yank { count: None }).unwrap();
+        assert_eq!(lines.len(), 4, "from `b` to `d`: {lines:?}");
+        assert_eq!(lines[3].trim(), r#""d": 2"#);
+    }
+
+    /// Probes Y1, Y2 and Y4: a closed fold yanks all its lines.
+    #[test]
+    fn a_closed_fold_yanks_all_its_lines() {
+        use crate::action::{FoldOp, LinesOp};
+        let mut r = ready(r#"{"a": {"b": 1}, "c": 2}"#);
+        render(&mut r);
+        r.view.as_mut().unwrap().cursor = 1;
+        r.fold(FoldOp::Close, 1);
+        let lines = r.lines(LinesOp::Yank { count: None }).unwrap();
+        assert_eq!(lines.len(), 3, "Y1: {lines:?}");
+        assert_eq!(lines[0].trim(), r#""a": {"#);
+        let lines = r.lines(LinesOp::Yank { count: Some(2) }).unwrap();
+        assert_eq!(lines.len(), 4, "Y2");
+        r.fold(FoldOp::CloseAll, 1);
+        assert_eq!(r.lines(LinesOp::Yank { count: None }).unwrap().len(), 6, "Y4");
+        assert_eq!(r.view().unwrap().cursor, 0);
+    }
+
+    /// Where Vim leaves its cursor after a yank (probes Y5, Y8, Y9, Y10
+    /// in the Task 6 report, R6a and R6d in its review): a `yy` on the
+    /// cursor's own line keeps its column, so a following `n` starts
+    /// there; a V `y` goes to column 0; a yank of a closed fold puts the
+    /// cursor on the fold's first line, so `zR` shows it there.
+    #[test]
+    fn a_yank_leaves_the_cursor_where_vim_does() {
+        use crate::action::{FoldOp, LinesOp};
+        let mut r = thirty();
+        let v = r.view.as_mut().unwrap();
+        v.cursor = 4;
+        v.at_col = Some((4, 3));
+        r.lines(LinesOp::Yank { count: Some(3) });
+        assert_eq!(r.view().unwrap().at_col, Some((4, 3)), "Y5: yy keeps the column");
+        // R6a, R6d: a V `y` puts the cursor in column 0, even with the
+        // cursor on the selection's first line, so `n` finds the same match.
+        let body = (1..=30).map(|i| format!("line {i} line {i}")).collect::<Vec<_>>().join("\n");
+        let mut r = ready(&body);
+        r.view.as_mut().unwrap().height = 23;
+        assert!(r.open_search(SearchSyntax::Vim, false));
+        r.handle_key(ch('5'));
+        r.handle_key(key(KeyCode::Enter));
+        assert_eq!((r.view().unwrap().cursor, r.view().unwrap().at_col), (4, Some((4, 5))), "/5 lands");
+        r.lines(LinesOp::Start);
+        r.lines(LinesOp::Yank { count: None });
+        assert_eq!(r.view().unwrap().at_col, Some((4, 0)), "R6a: V y puts the column at 0");
+        assert!(r.find_next(false, 1));
+        assert_eq!((r.view().unwrap().cursor, r.view().unwrap().at_col), (4, Some((4, 5))), "R6d: n finds the same match");
+        for v_line in [false, true] {
+            let mut r = ready(r#"{"a": {"b": 1}, "c": 2}"#);
+            render(&mut r);
+            r.view.as_mut().unwrap().cursor = 2;
+            r.fold(FoldOp::CloseAll, 1);
+            assert_eq!(r.view().unwrap().real_line(), Some(2), "hidden in the closed root");
+            if v_line {
+                r.lines(LinesOp::Start);
+            }
+            assert_eq!(r.lines(LinesOp::Yank { count: None }).unwrap().len(), 6);
+            r.fold(FoldOp::OpenAll, 1);
+            assert_eq!(r.view().unwrap().cursor, 0, "Y8/Y10 (V {v_line}): the fold's first line");
+        }
+    }
+
+    /// Review Focus 4: the selection ends when the view changes under it.
+    #[test]
+    fn v_line_ends_when_the_view_changes_under_it() {
+        use crate::action::{LinesOp, ResponseMotion as M};
+        let mut r = thirty();
+        r.lines(LinesOp::Start);
+        r.extend(M::Lines(1));
+        r.set_view_mode(ViewMode::Headers);
+        assert!(!r.line_selection(), "a view switch");
+        let mut r = thirty();
+        r.lines(LinesOp::Start);
+        r.motion(M::Lines(1));
+        assert!(!r.line_selection(), "a plain motion");
+        let mut r = thirty();
+        render(&mut r);
+        r.lines(LinesOp::Start);
+        let area = r.view().unwrap().last_area.unwrap();
+        r.begin_selection_at(area.x + 1, area.y + 1);
+        assert!(!r.line_selection(), "a click");
+    }
+
+    /// Amendment A6.1 (the user's decision): shift+↑/↓ after a drag turns
+    /// the drag's character selection into a line selection from the
+    /// drag's anchor line, as on main, wherever the cursor is.
+    #[test]
+    fn shift_arrows_after_a_drag_grow_lines_from_the_drags_anchor() {
+        for (key, cursor, want) in [
+            (KeyCode::Down, 0, "line 2\nline 3\nline 4"),
+            (KeyCode::Up, 8, "line 4\nline 5\nline 6\nline 7\nline 8"),
+        ] {
+            let mut r = thirty();
+            render(&mut r);
+            r.view.as_mut().unwrap().cursor = cursor;
+            let area = r.view().unwrap().last_area.unwrap();
+            assert!(r.begin_selection_at(area.x + 2, area.y + 3));
+            assert!(r.drag_selection_to(area.x + 1, area.y + 5));
+            assert!(!r.line_selection(), "a drag is a character selection");
+            r.handle_key(KeyEvent::new(key, KeyModifiers::SHIFT));
+            assert!(r.line_selection(), "{key:?}: now a line selection");
+            assert_eq!(r.selected_text().as_deref(), Some(want), "{key:?}: from the drag's line 4 to the cursor");
+        }
+    }
+
+    /// Amendment A6.5: in V, a window key that pulls an off-screen cursor
+    /// to the view's edge (Deviation 12) takes the selection's moving end
+    /// with it.
+    #[test]
+    fn v_line_follows_a_cursor_a_window_key_pulls() {
+        use crate::action::{Place, ResponseMotion as M};
+        for m in [
+            M::Place { at: Place::Top, line: None },
+            M::Place { at: Place::Middle, line: None },
+            M::Place { at: Place::Bottom, line: None },
+            M::HalfPage { down: true, count: None },
+            M::HalfPage { down: false, count: None },
+            M::Page { down: true, count: 1 },
+            M::Page { down: false, count: 1 },
+        ] {
+            let mut r = hundred_at(0, 5);
+            r.lines(crate::action::LinesOp::Start);
+            // The wheel leaves the cursor above the view.
+            r.view.as_mut().unwrap().scroll = 40;
+            r.extend(m);
+            let v = r.view().unwrap();
+            assert!(v.cursor >= v.scroll && v.cursor < v.scroll + 23, "{m:?}: the cursor is in the view");
+            assert_ne!(v.cursor, 5, "{m:?}: the cursor moved");
+            let sel = v.sel.expect("still a selection");
+            assert!(r.line_selection(), "{m:?}");
+            assert_eq!((sel.0.0, sel.1.0), (5, v.cursor), "{m:?}: from the anchor to the cursor");
+        }
     }
 
     #[test]
@@ -5060,26 +6532,149 @@ mod tests {
         hits
     }
 
-    #[test]
-    fn page_keys_move_the_cursor_by_a_viewport_page() {
-        let body = (0..100)
-            .map(|i| format!("line {i}"))
-            .collect::<Vec<_>>()
-            .join("\n");
+    /// "line 1" … "line 100" on Raw, a 23-row viewport as in the plan's Vim
+    /// 9.1 probes, the view's top on `top` and the cursor on `cursor`
+    /// (0-based).
+    fn hundred_at(top: usize, cursor: usize) -> Response {
+        let body = (1..=100).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
         let mut r = ready(&body);
-        render(&mut r); // records the viewport height
-        let height = {
+        let v = r.view.as_mut().unwrap();
+        v.height = 23;
+        v.scroll = top;
+        v.cursor = cursor;
+        r
+    }
+
+    /// Plan M5a Task 3: every window key gives Vim 9.1's top line and
+    /// cursor (the plan's probe record, IDs as there).
+    #[test]
+    fn the_window_keys_match_vim() {
+        use crate::action::{Place, ResponseMotion as M};
+        let f = |count| M::Page { down: true, count };
+        let b = M::Page { down: false, count: 1 };
+        let d = |count| M::HalfPage { down: true, count };
+        let u = M::HalfPage { down: false, count: None };
+        let at = |at, line| M::Place { at, line };
+        let goto = |line| M::Goto { line, last: true };
+        type Probe = (&'static str, usize, usize, Vec<M>, usize, usize);
+        let cases: Vec<Probe> = vec![
+            ("P1", 0, 0, vec![f(1)], 21, 21),
+            ("P2", 0, 0, vec![f(1), f(1)], 42, 42),
+            ("P3", 49, 59, vec![b], 28, 50),
+            ("P4", 77, 79, vec![f(1)], 99, 99),
+            ("P5", 77, 79, vec![f(1), f(1)], 99, 99),
+            ("P7", 0, 4, vec![b], 0, 4),
+            ("P8", 0, 0, vec![f(2)], 42, 42),
+            ("P9", 0, 9, vec![f(1)], 21, 21),
+            ("P10", 29, 39, vec![b], 8, 30),
+            ("X1", 0, 0, vec![f(1), b], 0, 22),
+            ("X5", 0, 0, vec![d(None), u], 0, 0),
+            ("Z1", 39, 49, vec![at(Place::Top, None)], 49, 49),
+            ("Z2", 39, 49, vec![at(Place::Middle, None)], 38, 49),
+            ("Z3", 39, 49, vec![at(Place::Bottom, None)], 27, 49),
+            ("Z4", 77, 99, vec![at(Place::Top, None)], 99, 99),
+            ("Z5", 77, 97, vec![at(Place::Middle, None)], 86, 97),
+            ("Z6", 0, 2, vec![at(Place::Bottom, None)], 0, 2),
+            ("Z7", 39, 49, vec![at(Place::Top, Some(10))], 9, 9),
+            ("Z8", 0, 1, vec![at(Place::Middle, None)], 0, 1),
+            ("D1", 0, 0, vec![d(None)], 11, 11),
+            ("D2", 77, 89, vec![d(None)], 77, 99),
+            ("D3", 77, 99, vec![d(None)], 77, 99),
+            ("D4", 0, 0, vec![d(Some(3)), d(None)], 6, 6),
+            ("J1", 0, 0, vec![goto(None)], 77, 99),
+            ("J2", 0, 0, vec![goto(Some(50))], 38, 49),
+            ("J3", 39, 39, vec![M::Lines(-1)], 38, 38),
+            ("J4", 39, 44, vec![goto(Some(30))], 18, 29),
+            ("J5", 39, 44, vec![goto(Some(10))], 0, 9),
+            ("J6", 0, 4, vec![goto(Some(75))], 63, 74),
+            ("J7", 0, 4, vec![goto(Some(40))], 28, 39),
+            ("X4", 0, 0, vec![goto(None), at(Place::Top, None), M::Lines(-1)], 98, 98),
+        ];
+        for (id, top, cursor, motions, want_top, want_cursor) in cases {
+            let mut r = hundred_at(top, cursor);
+            for m in motions {
+                r.motion(m);
+            }
             let v = r.view().unwrap();
-            assert_eq!(v.cursor, 0);
-            v.height
+            assert_eq!((v.scroll, v.cursor), (want_top, want_cursor), "{id}");
+        }
+    }
+
+    /// Review Focus 5: short, past-the-end and empty views.
+    #[test]
+    fn window_keys_on_short_and_empty_views() {
+        use crate::action::{Place, ResponseMotion as M};
+        let mut r = ready("line 1\nline 2\nline 3\nline 4\nline 5");
+        r.view.as_mut().unwrap().height = 23;
+        r.motion(M::Page { down: true, count: 1 });
+        assert_eq!((r.view().unwrap().scroll, r.view().unwrap().cursor), (4, 4), "X2: the last line on top");
+        let mut r = ready("line 1\nline 2\nline 3\nline 4\nline 5");
+        r.view.as_mut().unwrap().height = 23;
+        r.view.as_mut().unwrap().cursor = 2;
+        r.motion(M::Page { down: false, count: 1 });
+        assert_eq!((r.view().unwrap().scroll, r.view().unwrap().cursor), (0, 2), "X3: ctrl+b at the top beeps");
+        // A big body still parsing has no tree yet: an empty Pretty view.
+        let mut r = ready_gen(&big_json(), 1);
+        assert_eq!(r.view().unwrap().visible_len(), 0);
+        for m in [
+            M::Lines(3),
+            M::Goto { line: None, last: true },
+            M::HalfPage { down: true, count: None },
+            M::Page { down: false, count: 1 },
+            M::Place { at: Place::Middle, line: Some(4) },
+        ] {
+            r.motion(m);
+        }
+        assert_eq!((r.view().unwrap().scroll, r.view().unwrap().cursor), (0, 0));
+    }
+
+    /// Amendment A3.2: a window key that beeps at an edge changes nothing,
+    /// and a line selection stays up (Vim keeps Visual on a failed page key).
+    #[test]
+    fn a_window_key_that_beeps_keeps_the_selection() {
+        use crate::action::ResponseMotion as M;
+        let beeps = [
+            M::Page { down: false, count: 1 },
+            M::HalfPage { down: false, count: None },
+        ];
+        for m in beeps {
+            let mut r = hundred_at(0, 0);
+            r.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT));
+            let before = {
+                let v = r.view().unwrap();
+                assert!(v.sel.is_some(), "a line selection is up");
+                (v.scroll, v.cursor, v.sel)
+            };
+            r.motion(m);
+            let v = r.view().unwrap();
+            assert_eq!((v.scroll, v.cursor, v.sel), before, "{m:?} at the top changes nothing");
+        }
+        let mut r = hundred_at(99, 98);
+        r.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT));
+        let before = {
+            let v = r.view().unwrap();
+            (v.scroll, v.cursor, v.sel)
         };
+        r.motion(M::Page { down: true, count: 1 });
+        r.motion(M::HalfPage { down: true, count: None });
+        let v = r.view().unwrap();
+        assert_eq!((v.scroll, v.cursor, v.sel), before, "ctrl+f and ctrl+d at the end change nothing");
+        // A page key that does move ends the selection.
+        let mut r = hundred_at(0, 0);
+        r.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT));
+        r.motion(M::Page { down: true, count: 1 });
+        assert!(r.view().unwrap().sel.is_none(), "a page that moves drops the selection");
+    }
+
+    /// PageDown and PageUp are Vim's ctrl+f and ctrl+b in both profiles
+    /// (the user's decision, 2026-10-10).
+    #[test]
+    fn the_page_keys_are_vims_page() {
+        let mut r = hundred_at(0, 0);
         r.handle_key(key(KeyCode::PageDown));
-        let v = r.view().unwrap();
-        assert_eq!(v.cursor, height, "PageDown jumps a full viewport");
-        assert!(v.scroll > 0, "the viewport follows the cursor down");
+        assert_eq!((r.view().unwrap().scroll, r.view().unwrap().cursor), (21, 21));
         r.handle_key(key(KeyCode::PageUp));
-        let v = r.view().unwrap();
-        assert_eq!(v.cursor, 0, "PageUp comes back and clamps at the top");
+        assert_eq!((r.view().unwrap().scroll, r.view().unwrap().cursor), (0, 22));
     }
 
     #[test]
@@ -5178,22 +6773,156 @@ mod tests {
         assert_eq!(v.cursor, bottom + height - 1 - half, "the cursor keeps the view's bottom row");
     }
 
-    /// Piece 4 spec §5.7 (`R.fold`): `zo` `zc` `za` on the tree view only.
+    /// Plan M5a Deviation 8 (probes F2, F3, F4, F7): the cursor shows on
+    /// the fold's line but keeps the line it is really on until it moves.
     #[test]
-    fn fold_works_on_the_tree_view_only() {
+    fn folds_keep_the_cursors_line() {
         use crate::action::FoldOp;
         let mut r = ready(r#"{"a": {"b": 1}, "c": 2}"#);
         render(&mut r);
-        assert_eq!(r.view().unwrap().mode, ViewMode::Pretty);
         r.view.as_mut().unwrap().cursor = 2;
-        assert!(r.fold(FoldOp::Close));
-        assert_eq!(r.view().unwrap().cursor, 1, "on the fold's opening line");
-        assert_eq!(r.view().unwrap().visible_len(), 4);
-        assert!(r.fold(FoldOp::Close), "zc again climbs to the root");
-        assert_eq!((r.view().unwrap().cursor, r.view().unwrap().visible_len()), (0, 1));
-        assert!(!r.fold(FoldOp::Close), "nothing changed");
+        assert!(r.fold(FoldOp::Close, 1));
+        assert_eq!((r.view().unwrap().cursor, r.view().unwrap().real_line()), (1, Some(2)), "F2");
+        assert!(r.fold(FoldOp::Open, 1));
+        assert_eq!(r.view().unwrap().cursor, 2, "F3: back on its line");
+        r.fold(FoldOp::Close, 1);
+        r.motion(crate::action::ResponseMotion::Lines(1));
+        assert_eq!((r.view().unwrap().cursor, r.view().unwrap().real_line()), (2, Some(4)), "F4: j leaves the fold");
+        let mut r = ready(r#"{"a": {"b": 1}, "c": 2}"#);
+        render(&mut r);
+        r.view.as_mut().unwrap().cursor = 2;
+        assert!(r.fold(FoldOp::CloseAll, 1));
+        assert_eq!(r.view().unwrap().cursor, 0, "F0");
+        assert!(r.fold(FoldOp::Open, 1));
+        assert_eq!((r.view().unwrap().cursor, r.view().unwrap().real_line()), (1, Some(2)), "F7");
+        assert!(r.fold(FoldOp::OpenAll, 1));
+        assert_eq!(r.view().unwrap().cursor, 2, "F1");
         r.set_view_mode(ViewMode::Raw);
-        assert!(!r.fold(FoldOp::Toggle), "Raw has no folds");
+        assert!(!r.fold(FoldOp::Toggle, 1), "Raw has no folds");
+    }
+
+    /// Amendment A4.1 (Deviation 8, "any cursor move forgets it"): a click,
+    /// which writes the cursor outside `set_cur_row`, forgets the hidden
+    /// line too, so a later `zo` goes from the clicked row.
+    #[test]
+    fn a_click_forgets_the_line_a_fold_hides() {
+        use crate::action::FoldOp;
+        let mut r = ready(r#"{"a": {"b": 1}, "c": 2}"#);
+        render(&mut r);
+        r.view.as_mut().unwrap().cursor = 2;
+        assert!(r.fold(FoldOp::Close, 1));
+        assert_eq!(r.view().unwrap().real_line(), Some(2), "hidden inside \"a\"");
+        // visible: 0 {, 1 "a": {..}, 2 "c": 2, 3 }
+        r.click_row(2, false);
+        assert_eq!((r.view().unwrap().cursor, r.view().unwrap().real_line()), (2, Some(4)));
+        assert!(!r.fold(FoldOp::Open, 1), "nothing closed holds the clicked line");
+        assert_eq!((r.view().unwrap().cursor, r.view().unwrap().real_line()), (2, Some(4)), "not back on the old hidden line");
+    }
+
+    /// Final review I1 (probes G1–G8, Vim 9.1.697): on a folded tree,
+    /// `{N}G`, `{N}gg` and `{N}zt` count buffer lines, as Vim does, not
+    /// the rows shown. A line a closed fold hides shows on the fold's row,
+    /// which remembers it; bare `G` goes to the last line the same way.
+    #[test]
+    fn counted_jumps_count_buffer_lines_on_a_folded_tree() {
+        use crate::action::{FoldOp, Place, ResponseMotion as M};
+        let gg = |line| M::Goto { line, last: false };
+        let big_g = |line| M::Goto { line, last: true };
+        let zt = |line| M::Place { at: Place::Top, line };
+        // Full lines: 0 {, 1 "a": {, 2 "b": 1, 3 }, 4 "c": 2, 5 }. After
+        // `zc` on line 2 the rows are: 0 {, 1 "a": {..} (lines 1-3), 2
+        // "c": 2, 3 }. Each case: (id, zM instead of zc, motions, cursor
+        // row, real line, top row).
+        let cases = [
+            ("G1", false, vec![gg(None), big_g(Some(4))], 1, 3, None),
+            ("G2", false, vec![gg(None), big_g(Some(5))], 2, 4, None),
+            ("G3", false, vec![gg(None), zt(Some(5))], 2, 4, Some(2)),
+            ("G4", false, vec![big_g(None), gg(Some(3))], 1, 2, None),
+            ("G5", true, vec![big_g(None)], 0, 5, None),
+            ("G6", false, vec![gg(None), zt(Some(3))], 1, 2, Some(1)),
+            ("G7", false, vec![gg(None), big_g(Some(99))], 3, 5, None),
+        ];
+        for (id, all, motions, row, real, top) in cases {
+            let mut r = ready(r#"{"a": {"b": 1}, "c": 2}"#);
+            r.view.as_mut().unwrap().height = 23;
+            r.view.as_mut().unwrap().cursor = 2;
+            assert!(r.fold(if all { FoldOp::CloseAll } else { FoldOp::Close }, 1));
+            for m in motions {
+                r.motion(m);
+            }
+            let v = r.view().unwrap();
+            assert_eq!((v.cursor, v.real_line()), (row, Some(real)), "{id}");
+            if let Some(top) = top {
+                assert_eq!(v.scroll, top, "{id}: the line's row on top");
+            }
+        }
+        // G8: `zM G zR` shows the cursor on the last line it went to.
+        let mut r = ready(r#"{"a": {"b": 1}, "c": 2}"#);
+        r.view.as_mut().unwrap().height = 23;
+        r.fold(FoldOp::CloseAll, 1);
+        r.motion(big_g(None));
+        assert!(r.fold(FoldOp::OpenAll, 1));
+        assert_eq!((r.view().unwrap().cursor, r.view().unwrap().real_line()), (5, Some(5)), "G8");
+        // Task 4's review probe: `k`, `3k`, `gg` and `1G` from a line hidden
+        // under a fold on the top row land on the opener, forgetting it.
+        for m in [M::Lines(-1), M::Lines(-3), gg(None), big_g(Some(1))] {
+            let mut r = ready(r#"{"a": {"b": 1}, "c": 2}"#);
+            r.view.as_mut().unwrap().height = 23;
+            r.view.as_mut().unwrap().cursor = 2;
+            r.fold(FoldOp::CloseAll, 1);
+            r.motion(m);
+            assert_eq!((r.view().unwrap().cursor, r.view().unwrap().real_line()), (0, Some(0)), "{m:?}");
+        }
+    }
+
+    /// Final review m3: a page key that pulls an off-screen cursor to the
+    /// view's edge and then beeps changes nothing, the search column
+    /// included, so `n` still steps on from the match it landed on.
+    #[test]
+    fn a_page_key_that_beeps_keeps_the_search_column() {
+        use crate::action::ResponseMotion as M;
+        let body = (0..100).map(|i| if i == 50 { "a x x".to_string() } else { format!("line {i}") }).collect::<Vec<_>>().join("\n");
+        let mut r = ready(&body);
+        r.view.as_mut().unwrap().height = 23;
+        assert!(r.open_search(SearchSyntax::Vim, false));
+        r.handle_key(ch('x'));
+        r.handle_key(key(KeyCode::Enter));
+        assert_eq!((r.view().unwrap().cursor, r.view().unwrap().at_col), (50, Some((50, 2))), "/x lands");
+        r.set_scroll(0);
+        r.motion(M::Page { down: false, count: 1 });
+        let v = r.view().unwrap();
+        assert_eq!((v.scroll, v.cursor, v.at_col), (0, 50, Some((50, 2))), "ctrl+b at the top beeps");
+        assert!(r.find_next(false, 1));
+        assert_eq!((r.view().unwrap().cursor, r.view().unwrap().at_col), (50, Some((50, 4))), "n finds the next match");
+    }
+
+    /// Final review T5 m4 (probes J1–J3, Vim 9.1.697): a `j` or `k` that
+    /// beeps at the view's edge leaves the cursor where it is, its search
+    /// column included, so `n` finds the next match, not the same one.
+    #[test]
+    fn a_line_motion_that_beeps_keeps_the_search_column() {
+        use crate::action::ResponseMotion as M;
+        let mut r = ready("x\nb\nc x x");
+        r.view.as_mut().unwrap().height = 23;
+        r.view.as_mut().unwrap().cursor = 1;
+        assert!(r.open_search(SearchSyntax::Vim, false));
+        r.handle_key(ch('x'));
+        r.handle_key(key(KeyCode::Enter));
+        assert_eq!((r.view().unwrap().cursor, r.view().unwrap().at_col), (2, Some((2, 2))), "J2: /x lands");
+        r.motion(M::Lines(1));
+        assert_eq!((r.view().unwrap().cursor, r.view().unwrap().at_col), (2, Some((2, 2))), "J2: j beeps");
+        assert!(r.find_next(false, 1));
+        assert_eq!((r.view().unwrap().cursor, r.view().unwrap().at_col), (2, Some((2, 4))), "J1: n finds the next match");
+        let mut r = ready("c x x\nb\nx");
+        r.view.as_mut().unwrap().height = 23;
+        r.view.as_mut().unwrap().cursor = 1;
+        assert!(r.open_search(SearchSyntax::Vim, true));
+        r.handle_key(ch('x'));
+        r.handle_key(key(KeyCode::Enter));
+        assert_eq!((r.view().unwrap().cursor, r.view().unwrap().at_col), (0, Some((0, 4))), "?x lands");
+        r.motion(M::Lines(-1));
+        assert!(r.find_next(false, 1));
+        assert_eq!((r.view().unwrap().cursor, r.view().unwrap().at_col), (0, Some((0, 2))), "J3: n goes on backward");
     }
 
     #[test]
@@ -5207,17 +6936,19 @@ mod tests {
         assert_ne!(a.view().unwrap().h_scroll, 0, "Right scrolls sideways");
         a.handle_key(key(KeyCode::Left));
         assert_eq!(a.view().unwrap().h_scroll, 0, "Left scrolls back");
-        let height = a.view().unwrap().height;
+        a.view.as_mut().unwrap().height = 23;
+        b.view.as_mut().unwrap().height = 23;
         a.handle_key(key(KeyCode::PageDown));
         b.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL));
         assert_eq!(a.view().unwrap().cursor, b.view().unwrap().cursor);
-        assert_eq!(b.view().unwrap().cursor, height);
+        assert_eq!((b.view().unwrap().scroll, b.view().unwrap().cursor), (21, 21), "P1");
         b.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
-        assert_eq!(b.view().unwrap().cursor, height - (height / 2).max(1));
+        assert_eq!((b.view().unwrap().scroll, b.view().unwrap().cursor), (10, 10), "half a page back");
         b.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL));
-        assert_eq!(b.view().unwrap().cursor, height);
+        assert_eq!((b.view().unwrap().scroll, b.view().unwrap().cursor), (21, 21));
         a.handle_key(key(KeyCode::PageUp));
         b.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
+        assert_eq!((a.view().unwrap().scroll, a.view().unwrap().cursor), (0, 22), "X1");
         assert_eq!(a.view().unwrap().cursor, b.view().unwrap().cursor);
     }
 
@@ -5408,7 +7139,7 @@ mod tests {
     #[test]
     fn search_commits_counts_matches_and_wraps() {
         let mut r = ready(r#"{"aa": "zz", "bb": "zz"}"#);
-        assert!(r.open_search());
+        assert!(r.open_search(SearchSyntax::Literal, false));
         for c in "zz".chars() {
             assert_eq!(r.handle_key(ch(c)), Some(Action::Render));
         }
@@ -5439,7 +7170,7 @@ mod tests {
     #[test]
     fn the_next_match_button_commits_a_live_query_and_lands_on_the_first_match() {
         let mut r = ready(r#"{"aa": "zz", "bb": "zz"}"#);
-        r.open_search();
+        r.open_search(SearchSyntax::Literal, false);
         for c in "zz".chars() {
             r.handle_key(ch(c));
         }
@@ -5464,7 +7195,7 @@ mod tests {
     #[test]
     fn typing_while_search_is_active_does_not_move_the_cursor() {
         let mut r = ready(r#"{"a": 1, "b": 2}"#);
-        r.open_search();
+        r.open_search(SearchSyntax::Literal, false);
         for c in "jjG".chars() {
             assert_eq!(r.handle_key(ch(c)), Some(Action::Render));
         }
@@ -5481,7 +7212,7 @@ mod tests {
         r.handle_key(ch('j'));
         r.handle_key(key(KeyCode::Char(' '))); // collapse "a"
         assert!(!render(&mut r).contains("needle"), "hidden while collapsed");
-        r.open_search();
+        r.open_search(SearchSyntax::Literal, false);
         for c in "needle".chars() {
             r.handle_key(ch(c));
         }
@@ -5495,28 +7226,522 @@ mod tests {
     }
 
     #[test]
-    fn search_is_case_insensitive_and_finds_nothing_gracefully() {
+    fn search_matches_case_and_finds_nothing_gracefully() {
         let mut r = ready(r#"{"Needle": 1}"#);
-        r.open_search();
-        for c in "NEEDLE".chars() {
-            r.handle_key(ch(c));
-        }
-        r.handle_key(key(KeyCode::Enter));
-        assert!(render(&mut r).contains("1/1"));
-        r.open_search();
-        for c in "absent".chars() {
-            r.handle_key(ch(c));
-        }
-        r.handle_key(key(KeyCode::Enter));
+        r.open_search(SearchSyntax::Literal, false);
+        typed(&mut r, "NEEDLE");
         let out = render(&mut r);
         assert!(out.contains("no matches"), "{out}");
-        assert!(r.step_search(1), "n with no matches is inert");
+        assert_eq!(r.take_note().as_deref(), Some("Pattern not found: NEEDLE"));
+        r.open_search(SearchSyntax::Literal, false);
+        typed(&mut r, "Needle");
+        assert!(render(&mut r).contains("1/1"));
+        assert!(r.step_search(1), "n on the one match stays on it");
+    }
+
+    /// The probe record's search JSON (lines 0–11), pretty-printed by the
+    /// tree exactly as Vim's buffer held it.
+    const PROBE_JSON: &str = r#"{"user-id": 5, "user_id": 6, "Name": "alice", "name": "bob", "items": [1, 2], "id": "x1"}"#;
+
+    fn typed(r: &mut Response, text: &str) {
+        for c in text.chars() {
+            r.handle_key(ch(c));
+        }
+        r.handle_key(key(KeyCode::Enter));
+    }
+
+    /// Where the cursor and the search are: (cursor line, current match's
+    /// line and start, the stored query).
+    fn landed(r: &Response) -> (usize, Option<(usize, usize)>, String) {
+        let v = r.view().unwrap();
+        let s = v.search.as_ref().unwrap();
+        (v.cursor, s.matches.get(s.current).map(|m| (m.0, m.1)), s.query.clone())
+    }
+
+    /// Probes S1, S3–S12, S19 and the blank-line rule (Review Focus 2).
+    /// The tree's lines: 0 `{`, 1 `"user-id": 5,`, 2 `"user_id": 6,`,
+    /// 3 `"Name": "alice",`, 4 `"name": "bob",`, 5 `"items": [`, 6 `1,`,
+    /// 7 `2`, 8 `],`, 9 `"id": "x1"`, 10 `}`, each indented as printed.
+    #[test]
+    fn star_takes_vims_word_or_string() {
+        let at = |line: usize| {
+            let mut r = ready(PROBE_JSON);
+            r.view.as_mut().unwrap().height = 23;
+            r.view.as_mut().unwrap().cursor = line;
+            r
+        };
+        let lines = at(0).view().unwrap().search_corpus().into_owned();
+        assert_eq!(
+            lines,
+            [
+                "{", r#"  "user-id": 5,"#, r#"  "user_id": 6,"#, r#"  "Name": "alice","#, r#"  "name": "bob","#,
+                r#"  "items": ["#, "    1,", "    2", "  ],", r#"  "id": "x1""#, "}",
+            ],
+            "the probe's lines, less its blank line 9"
+        );
+        let mut r = at(1);
+        assert!(r.find_word(false, 1));
+        assert_eq!(landed(&r), (1, Some((1, 3)), r"\<user\>".into()), "S1");
+        assert_eq!(r.take_note().as_deref(), Some("search hit BOTTOM, continuing at TOP"));
+        let mut r = at(2);
+        r.find_word(false, 2);
+        assert_eq!(landed(&r), (2, Some((2, 3)), r"\<user_id\>".into()), "S9");
+        let mut r = at(0);
+        r.find_word(false, 1);
+        assert_eq!(landed(&r).2, "{", "S3: no keyword, the non-blank string, unescaped");
+        let mut r = at(8);
+        r.find_word(false, 1);
+        assert_eq!(landed(&r), (8, Some((8, 2)), "],".into()), "S10");
+        let mut r = at(4);
+        r.find_word(true, 1);
+        assert_eq!(landed(&r), (4, Some((4, 3)), r"\<name\>".into()), "S6: Name is another word");
+        assert_eq!(r.take_note().as_deref(), Some("search hit TOP, continuing at BOTTOM"));
+        let mut r = at(3);
+        r.find_word(false, 1);
+        assert_eq!(landed(&r), (3, Some((3, 3)), r"\<Name\>".into()), "S5: case matters, so it wraps to itself");
+        let mut r = at(6);
+        r.find_word(false, 1);
+        assert_eq!(landed(&r), (6, Some((6, 4)), r"\<1\>".into()), "S11");
+        // S7, S8, S19 with matches on both sides (`name` on raw lines 0, 2,
+        // 4 and 6), so a wrong direction lands elsewhere.
+        let names = || {
+            let mut r = ready("name\nx\nname\nx\nname\nx\nname");
+            r.view.as_mut().unwrap().cursor = 4;
+            r.find_word(true, 1);
+            assert_eq!(landed(&r).0, 2, "# goes up");
+            r
+        };
+        let mut r = names();
+        assert!(r.find_next(false, 1));
+        assert_eq!(landed(&r).0, 0, "S7: n keeps #'s direction, up");
+        let mut r = names();
+        assert!(r.find_next(true, 1));
+        assert_eq!(landed(&r).0, 4, "S8: N after # goes down");
+        let mut r = names();
+        r.find_word(false, 1);
+        assert_eq!(landed(&r).0, 4, "* goes down");
+        assert!(r.find_next(false, 1));
+        assert_eq!(landed(&r).0, 6, "S19: * sets the direction forward again");
+        let mut r = at(9);
+        r.find_word(false, 1);
+        assert_eq!(landed(&r), (1, Some((1, 8)), r"\<id\>".into()), "S12: user-id's id");
+        let mut r = ready("a\n\nb");
+        r.view.as_mut().unwrap().cursor = 1;
+        assert!(!r.find_word(false, 1));
+        assert_eq!(r.take_note().as_deref(), Some("No string under cursor"), "S4");
+        assert_eq!(r.view().unwrap().cursor, 1);
+        // No keyword on the line: the string `.*`, escaped, so it matches
+        // only itself and never the whole line as a regex would.
+        let mut r = ready(".* .*\nabc");
+        r.find_word(false, 1);
+        let s = r.view().unwrap().search.as_ref().unwrap();
+        assert_eq!(s.query, r"\.\*");
+        assert_eq!(s.matches.len(), 2, "{:?}", s.matches);
+    }
+
+    /// Probes S13–S17, Deviation 4 and Review Focus 3.
+    #[test]
+    fn the_search_syntax_follows_the_profile() {
+        let open = |syntax| {
+            let mut r = ready(PROBE_JSON);
+            r.view.as_mut().unwrap().height = 23;
+            r.view.as_mut().unwrap().cursor = 4;
+            r.open_search(syntax, false);
+            r
+        };
+        let mut r = open(SearchSyntax::Vim);
+        typed(&mut r, "name");
+        assert_eq!(landed(&r).1, Some((4, 3)), "S13: a match later on the cursor's line");
+        let mut r = open(SearchSyntax::Vim);
+        typed(&mut r, "zzz");
+        assert_eq!(r.take_note().as_deref(), Some("Pattern not found: zzz"), "S15");
+        assert_eq!(r.view().unwrap().cursor, 4);
+        let mut r = ready(PROBE_JSON);
+        r.open_search(SearchSyntax::Vim, false);
+        typed(&mut r, "name");
+        assert_eq!(landed(&r).1, Some((4, 3)), "S17: Name on line 3 is another case");
+        let mut r = ready("a.c\nabc\na.c\nxa.c");
+        r.open_search(SearchSyntax::Vim, false);
+        typed(&mut r, "^a.c$");
+        let s = r.view().unwrap().search.as_ref().unwrap();
+        assert_eq!(s.matches.iter().map(|m| m.0).collect::<Vec<_>>(), [0, 1, 2], "vim: a pattern, anchored");
+        let mut r = ready("a.c\nabc\na.c");
+        r.open_search(SearchSyntax::Literal, false);
+        typed(&mut r, "a.c");
+        assert_eq!(r.view().unwrap().search.as_ref().unwrap().matches.len(), 2, "arrows: plain text");
+        let mut r = ready("abc");
+        r.open_search(SearchSyntax::Literal, false);
+        typed(&mut r, "ABC");
+        assert_eq!(r.take_note().as_deref(), Some("Pattern not found: ABC"), "arrows matches case too");
+        let mut r = ready("abc\nxyz\nabc");
+        r.view.as_mut().unwrap().cursor = 1;
+        r.open_search(SearchSyntax::Vim, false);
+        typed(&mut r, r"a\{-}");
+        let note = r.take_note().unwrap_or_default();
+        assert!(note.starts_with("pattern not supported"), "an atom outside the subset: {note}");
+        assert_eq!(r.view().unwrap().cursor, 1, "and nothing moves");
+    }
+
+    /// Probe S16: `n` from the cursor, wrapping with Vim's note.
+    #[test]
+    fn n_steps_from_the_cursor_and_wraps() {
+        let mut r = ready(PROBE_JSON);
+        r.open_search(SearchSyntax::Vim, false);
+        typed(&mut r, "user");
+        assert_eq!(landed(&r).1, Some((1, 3)));
+        r.find_next(false, 1);
+        assert_eq!(landed(&r).1, Some((2, 3)));
+        assert_eq!(r.take_note(), None);
+        r.find_next(false, 1);
+        assert_eq!(landed(&r).1, Some((1, 3)));
+        assert_eq!(r.take_note().as_deref(), Some("search hit BOTTOM, continuing at TOP"));
+        r.find_next(true, 3);
+        assert_eq!(landed(&r).1, Some((2, 3)), "3N: back three, wrapping");
+        let mut r = ready(PROBE_JSON);
+        assert!(!r.find_next(false, 1));
+        assert_eq!(r.take_note().as_deref(), Some("No previous regular expression"), "no search yet");
+    }
+
+    /// Amendment A5.3 (probes E2–E5, E7): a match that starts on its line's
+    /// end counts one column back, as the engine's `searchit()` has it, so
+    /// `/$` on one-char lines steps a line at a time. And Vim's E35 for an
+    /// empty `/` with no last pattern (probes E1, E6), the vim syntax only.
+    #[test]
+    fn a_match_on_the_lines_end_counts_one_column_back() {
+        let mut r = ready("a\nb\nc");
+        r.open_search(SearchSyntax::Vim, false);
+        typed(&mut r, "$");
+        assert_eq!(r.view().unwrap().cursor, 1, "E2: not the end of the cursor's own line");
+        assert!(r.find_next(false, 1));
+        assert_eq!(r.view().unwrap().cursor, 2);
+        assert!(r.find_next(false, 1));
+        assert_eq!(r.view().unwrap().cursor, 0, "E3");
+        assert_eq!(r.take_note().as_deref(), Some("search hit BOTTOM, continuing at TOP"));
+        let mut r = ready("x\nab");
+        r.open_search(SearchSyntax::Vim, false);
+        typed(&mut r, r"b\|$");
+        assert_eq!(landed(&r).1, Some((1, 1)));
+        assert!(r.find_next(false, 1));
+        assert_eq!(landed(&r).1, Some((0, 1)), "E5: ab's end is b's column, skipped");
+        assert!(r.find_next(true, 1));
+        assert_eq!(landed(&r).1, Some((1, 1)), "E4: back from the first line's end, wrapping to b");
+        assert!(r.find_next(true, 1));
+        assert_eq!(landed(&r).1, Some((0, 1)), "E7: N from b skips b");
+        let mut r = ready("a\nb");
+        r.open_search(SearchSyntax::Vim, false);
+        typed(&mut r, "");
+        assert_eq!(r.take_note().as_deref(), Some("No previous regular expression"), "E1");
+        assert!(!r.find_next(false, 1));
+        assert_eq!(r.take_note().as_deref(), Some("No previous regular expression"), "E6");
+        let mut r = ready("a\nb");
+        r.open_search(SearchSyntax::Literal, false);
+        typed(&mut r, "");
+        assert_eq!(r.take_note(), None, "arrows: an empty box finds nothing, as on main");
+    }
+
+    /// The controller's rulings on an empty box, and the view's Esc: an
+    /// empty Enter re-runs the last query in vim only (Vim's `/<CR>`);
+    /// arrows' finds nothing, as on main. Esc on an empty box only closes
+    /// it, in both profiles, while Esc on a typed box runs it (plan Q2).
+    /// Esc in the view clears the search but keeps vim's last pattern, so
+    /// `n` and an empty `/` still find it, as in Vim.
+    #[test]
+    fn an_empty_box_reruns_only_in_vim_and_esc_cancels_it() {
+        use SearchSyntax::{Literal, Vim};
+        // Raw lines: x on 0, 2 and 4.
+        const BODY: &str = "x\ny\nx\ny\nx";
+        let cursor = |r: &Response| r.view().unwrap().cursor;
+        let mut r = ready(BODY);
+        r.open_search(Vim, false);
+        typed(&mut r, "x");
+        assert_eq!(cursor(&r), 2);
+        r.open_search(Vim, false);
+        typed(&mut r, "");
+        assert_eq!((cursor(&r), landed(&r).2), (4, "x".into()), "vim: the last query again");
+        let mut r = ready(BODY);
+        r.open_search(Literal, false);
+        typed(&mut r, "x");
+        r.open_search(Literal, false);
+        typed(&mut r, "");
+        assert_eq!((cursor(&r), landed(&r)), (2, (2, None, String::new())), "arrows: nothing, as on main");
+        assert_eq!(r.take_note(), None);
+        // Arrows: Esc on an empty box runs nothing; on a typed one it runs
+        // it (main's field rule).
+        let mut r = ready(BODY);
+        r.open_search(Literal, false);
+        typed(&mut r, "x");
+        r.take_note();
+        r.open_search(Literal, false);
+        r.handle_key(key(KeyCode::Esc));
+        assert_eq!(landed(&r), (2, None, String::new()), "arrows: Esc on an empty box runs nothing");
+        assert_eq!(r.take_note(), None);
+        assert!(!r.view().unwrap().search.as_ref().unwrap().active, "arrows: the box closed");
+        r.open_search(Literal, false);
+        r.handle_key(ch('x'));
+        r.handle_key(key(KeyCode::Esc));
+        assert_eq!(cursor(&r), 4, "arrows: Esc on a typed box runs it");
+        // Vim's Esc abandons the box, empty or typed: the search it replaced
+        // comes back as it was, the cursor stays, nothing is said.
+        let mut r = ready(BODY);
+        r.open_search(Vim, false);
+        typed(&mut r, "x");
+        r.take_note();
+        for text in ["", "y"] {
+            r.open_search(Vim, false);
+            for c in text.chars() {
+                r.handle_key(ch(c));
+            }
+            r.handle_key(key(KeyCode::Esc));
+            assert_eq!(landed(&r), (2, Some((2, 0)), "x".into()), "vim: Esc on {text:?} puts the search back");
+            assert_eq!(r.take_note(), None, "{text:?}");
+            assert!(!r.view().unwrap().search.as_ref().unwrap().active, "{text:?}: the box closed");
+        }
+        // With no search up (`:noh` hid it), Esc leaves none; `n` still has
+        // the last one.
+        r.no_hlsearch();
+        r.open_search(Vim, false);
+        r.handle_key(ch('y'));
+        r.handle_key(key(KeyCode::Esc));
+        assert!(r.view().unwrap().search.is_none(), "vim: nothing to put back");
+        assert_eq!(r.take_last_search(), Some(("x".into(), false)), "the box's y never became the pattern");
+        assert!(r.find_next(false, 1));
+        assert_eq!(landed(&r), (4, Some((4, 0)), "x".into()), "vim's n goes on with x");
+        let mut r = ready(BODY);
+        r.open_search(Vim, false);
+        typed(&mut r, "x");
+        r.handle_key(key(KeyCode::Esc));
+        assert!(r.view().unwrap().search.is_some(), "vim's Esc in the view leaves the search");
+        r.no_hlsearch();
+        assert!(r.view().unwrap().search.is_none(), ":noh hides it");
+        assert!(r.find_next(false, 1), "vim's n still has the last pattern");
+        assert_eq!(landed(&r), (4, Some((4, 0)), "x".into()));
+        r.no_hlsearch();
+        r.open_search(Vim, false);
+        typed(&mut r, "");
+        assert_eq!(landed(&r), (0, Some((0, 0)), "x".into()), "and so does an empty /");
+        assert_eq!(r.take_note().as_deref(), Some("search hit BOTTOM, continuing at TOP"));
+    }
+
+    /// Vim's `do_search()` stores a pattern before it compiles it, so one
+    /// outside the engine's subset is the last pattern too, and `n` says
+    /// why again, before Esc and after (probed: `/\(` then `n` repeats
+    /// E54): never "Pattern not found", and never an older pattern.
+    #[test]
+    fn an_unsupported_pattern_is_the_last_one_and_n_says_so_again() {
+        let mut r = ready("abc\nxyz\nabc");
+        r.open_search(SearchSyntax::Vim, false);
+        typed(&mut r, "abc");
+        r.take_note();
+        r.open_search(SearchSyntax::Vim, false);
+        typed(&mut r, r"a\{-}");
+        let note = r.take_note().unwrap_or_default();
+        assert!(note.starts_with("pattern not supported"), "{note}");
+        let cursor = r.view().unwrap().cursor;
+        assert!(r.find_next(false, 1));
+        assert_eq!(r.take_note().as_deref(), Some(note.as_str()), "n before Esc");
+        r.handle_key(key(KeyCode::Esc));
+        assert!(r.find_next(false, 1));
+        assert_eq!(r.take_note().as_deref(), Some(note.as_str()), "n after Esc, not the older abc");
+        assert_eq!(r.view().unwrap().cursor, cursor, "nothing moves");
+        assert_eq!(r.take_last_search(), Some((r"a\{-}".to_string(), false)), "for the engine too");
+    }
+
+    /// Vim has one last pattern, not one per response: it outlives a new
+    /// response landing (a re-send, another request), so `n` finds it there.
+    #[test]
+    fn the_last_pattern_outlives_a_new_response() {
+        let mut r = ready("x\ny\nx");
+        r.open_search(SearchSyntax::Vim, true);
+        typed(&mut r, "y");
+        r.set_state(ResponseState::Ready(Box::new(data("a\ny\nb\ny"))), 1);
+        assert!(r.find_next(false, 1));
+        assert_eq!(landed(&r), (3, Some((3, 0)), "y".into()), "`n` follows the `?`: backward, wrapping");
+    }
+
+    /// The app keeps the response's last pattern and the text engine's one
+    /// (`App::sync_last_pattern`): a search here is handed over once, and
+    /// while the highlight is on, a pattern searched in a field shows here,
+    /// as Vim's `'hlsearch'` shows the last pattern in every window. A box
+    /// being typed in stays; vim's Esc leaves the search, `:noh` hides it
+    /// until `n`, which turns the highlight back on everywhere.
+    #[test]
+    fn the_last_pattern_is_handed_over_and_taken_up() {
+        let mut r = ready("x\ny\nx");
+        r.open_search(SearchSyntax::Vim, false);
+        typed(&mut r, "x");
+        assert_eq!(r.take_last_search(), Some(("x".to_string(), false)));
+        assert_eq!(r.take_last_search(), None, "once");
+        r.adopt_last_search(Some(("y", true)), true);
+        assert_eq!(r.take_last_search(), None, "the engine's is not handed back");
+        let s = r.view().unwrap().search.as_ref().unwrap();
+        assert_eq!((s.query.as_str(), s.backward, s.matches.len()), ("y", true, 1), "the highlight shows y");
+        r.open_search(SearchSyntax::Vim, false);
+        r.handle_key(ch('x'));
+        r.adopt_last_search(Some(("x", false)), true);
+        let s = r.view().unwrap().search.as_ref().unwrap();
+        assert!(s.active && s.input.text() == "x", "the box being typed in stays");
+        r.handle_key(key(KeyCode::Esc));
+        r.handle_key(key(KeyCode::Esc));
+        assert_eq!(r.view().unwrap().search.as_ref().map(|s| s.query.as_str()), Some("y"), "vim's Esc leaves the search");
+        r.no_hlsearch();
+        r.adopt_last_search(Some(("y", true)), false);
+        assert!(r.view().unwrap().search.is_none(), ":noh hides it, and it stays hidden");
+        assert!(r.find_next(false, 1));
+        assert_eq!(landed(&r).2, "y", "`n` takes the pattern up");
+        assert_eq!(r.take_last_search(), Some(("y".to_string(), true)), "and turns the highlight on everywhere");
+        let mut r = ready("x\ny\nx");
+        r.adopt_last_search(Some(("x", false)), true);
+        assert_eq!(r.view().unwrap().search.as_ref().map(|s| s.matches.len()), Some(2), "a new view shows it too");
+    }
+
+    /// A route that runs vim's `n` while the box is still being typed in
+    /// (a palette or footer action) commits what was typed, as the ▼ step
+    /// does, rather than throwing it away for the old pattern.
+    #[test]
+    fn n_with_the_box_open_commits_what_was_typed() {
+        let mut r = ready("x\ny\nx\ny");
+        r.open_search(SearchSyntax::Vim, false);
+        typed(&mut r, "x");
+        r.open_search(SearchSyntax::Vim, false);
+        r.handle_key(ch('y'));
+        assert!(r.find_next(false, 1));
+        assert_eq!(landed(&r), (3, Some((3, 0)), "y".into()));
+        assert!(!r.view().unwrap().search.as_ref().unwrap().active);
+    }
+
+    /// The user's decision (2026-10-10, replacing plan M5a Deviation 13):
+    /// Esc on the response clears its search and highlight, but vim keeps
+    /// the last pattern and its direction, as Vim's Esc never forgets them.
+    /// Arrows' `n`/▼ after Esc do nothing, as on main.
+    #[test]
+    fn esc_keeps_the_last_pattern_and_its_direction_in_vim_only() {
+        const BODY: &str = "x\ny\nx\ny\nx";
+        let mut r = ready(BODY);
+        r.view.as_mut().unwrap().cursor = 4;
+        r.open_search(SearchSyntax::Vim, true);
+        typed(&mut r, "x");
+        assert_eq!(r.view().unwrap().cursor, 2);
+        r.handle_key(key(KeyCode::Esc));
+        assert!(r.find_next(false, 1));
+        assert_eq!(landed(&r), (0, Some((0, 0)), "x".into()), "n goes on backward, as `?` set it");
+        let mut r = ready(BODY);
+        r.view.as_mut().unwrap().cursor = 2;
+        r.find_word(true, 1);
+        assert_eq!(r.view().unwrap().cursor, 0);
+        r.handle_key(key(KeyCode::Esc));
+        assert!(r.find_next(true, 1));
+        assert_eq!(r.view().unwrap().cursor, 2, "`#` set backward, so N goes forward");
+        let mut r = ready(BODY);
+        r.open_search(SearchSyntax::Literal, false);
+        typed(&mut r, "x");
+        r.handle_key(key(KeyCode::Esc));
+        assert!(!r.step_search(1), "arrows: no search, nothing, as on main");
+        assert_eq!(r.view().unwrap().cursor, 2);
+    }
+
+    /// The last query is the pattern as Vim's `do_search()` stored it, so an
+    /// empty box in the other direction searches the same thing (2026-10-10
+    /// probe, Vim 9.1): `?foo\?` stores `foo?`, a literal `?`, and `/fo\?`
+    /// stores `fo\?`, Vim's 0-or-1, which an empty `?` keeps.
+    #[test]
+    fn an_empty_box_reuses_the_pattern_as_vim_stored_it() {
+        use SearchSyntax::Vim;
+        const BODY: &str = "xfoo\nfoo?\nfox\nzz";
+        let mut r = ready(BODY);
+        r.view.as_mut().unwrap().cursor = 3;
+        r.open_search(Vim, true);
+        typed(&mut r, r"foo\?");
+        assert_eq!(r.view().unwrap().cursor, 1);
+        r.view.as_mut().unwrap().cursor = 0;
+        r.open_search(Vim, false);
+        typed(&mut r, "");
+        assert_eq!(landed(&r), (1, Some((1, 0)), "foo?".into()), "a literal ?, not xfoo's foo");
+        r.open_search(Vim, false);
+        typed(&mut r, r"fo\?");
+        r.view.as_mut().unwrap().cursor = 3;
+        r.open_search(Vim, true);
+        typed(&mut r, "");
+        assert_eq!(landed(&r), (2, Some((2, 0)), r"fo\?".into()), "still 0-or-1: fox's fo");
+    }
+
+    /// Amendment A5.4 (the user's decision): arrows' `n`/`N` and the ▼/▲
+    /// buttons with no search do nothing, as on main; vim's `n` says E35.
+    #[test]
+    fn n_with_no_search_is_silent_in_arrows_and_e35_in_vim() {
+        let mut r = ready(PROBE_JSON);
+        assert!(!r.step_search(1));
+        assert!(!r.step_search(-1));
+        assert_eq!(r.take_note(), None, "arrows: nothing, no note");
+        assert_eq!(r.view().unwrap().cursor, 0);
+        assert!(!r.find_next(true, 2));
+        assert_eq!(r.take_note().as_deref(), Some("No previous regular expression"), "vim");
+    }
+
+    /// Review Focus 1, as Vim 9.1 does it (probes X15, X16, R1–R4, R6–R8,
+    /// R10; the controller's ruling over the plan's premise): when a closed
+    /// fold holds the cursor's line, hidden in it or on its own collapsed
+    /// row, a forward search starts after the outermost closed fold's
+    /// closing line and a backward one at its opening line, so the matches
+    /// it hides are skipped and it stays closed. `*` and `#` still take
+    /// their word from the hidden line. Both profiles.
+    #[test]
+    fn a_search_from_a_closed_fold_starts_outside_it() {
+        use crate::action::FoldOp;
+        // 0 {, 1 "a": {, 2 "b": 1, 3 }, 4 "c": 2, 5 }
+        const FOLD: &str = r#"{"a": {"b": 1}, "c": 2}"#;
+        // 0 {, 1 "a": [, 2 "b", 3 "b", 4 ], 5 "b": 3, 6 }
+        const ARR: &str = r#"{"a": ["b", "b"], "b": 3}"#;
+        // 0 {, 1 "b": 0, 2 "a": [, 3 "b", 4 "b", 5 ], 6 "c": 3, 7 }
+        const ARR2: &str = r#"{"b": 0, "a": ["b", "b"], "c": 3}"#;
+        let folded = |body: &str, line: usize| {
+            let mut r = ready(body);
+            render(&mut r);
+            r.view.as_mut().unwrap().cursor = line;
+            assert!(r.fold(FoldOp::Close, 1));
+            r
+        };
+        let closed = |r: &Response, line: usize| r.view().unwrap().active_tree().unwrap().closed_fold(line);
+        let searched = |mut r: Response, syntax, backward, text: &str| {
+            r.open_search(syntax, backward);
+            typed(&mut r, text);
+            r
+        };
+        let r = searched(folded(FOLD, 2), SearchSyntax::Vim, false, "}");
+        assert_eq!(landed(&r).1, Some((5, 0)), "R1: not the fold's own closing line");
+        assert_eq!(closed(&r, 2), Some((1, 3)), "R1: the fold stays closed");
+        let r = searched(folded(FOLD, 2), SearchSyntax::Literal, false, "}");
+        assert_eq!(landed(&r).1, Some((5, 0)), "R1 in arrows too");
+        let r = searched(folded(FOLD, 2), SearchSyntax::Vim, true, "{");
+        assert_eq!(landed(&r).1, Some((0, 0)), "R2: back from the fold's opening line's column 0");
+        let r = searched(folded(FOLD, 2), SearchSyntax::Vim, false, "c");
+        assert_eq!(landed(&r).1, Some((4, 3)), "R8 (X15)");
+        let mut r = folded(ARR, 2);
+        assert_eq!(r.view().unwrap().cursor, 1);
+        assert!(r.find_word(false, 1));
+        assert_eq!(landed(&r), (2, Some((5, 3)), r"\<b\>".into()), "R3: the word from the hidden line, found past the fold");
+        assert_eq!(closed(&r, 2), Some((1, 4)));
+        let mut r = folded(ARR2, 4);
+        assert!(r.find_word(true, 1));
+        assert_eq!(landed(&r), (1, Some((1, 3)), r"\<b\>".into()), "R4: # from the fold's opening line");
+        let r = searched(folded(ARR, 1), SearchSyntax::Vim, false, "b");
+        assert_eq!(landed(&r).1, Some((5, 3)), "R7: on the fold's own collapsed row");
+        let mut r = searched(ready(ARR), SearchSyntax::Vim, false, "b");
+        assert_eq!(landed(&r).1, Some((2, 5)));
+        assert!(r.fold(FoldOp::Close, 1));
+        assert!(r.find_next(false, 1));
+        assert_eq!(landed(&r).1, Some((5, 3)), "R6: n skips the fold the match closed into");
+        let mut r = searched(ready(ARR2), SearchSyntax::Vim, false, "b");
+        r.find_next(false, 2);
+        assert_eq!(landed(&r).1, Some((4, 5)));
+        assert!(r.fold(FoldOp::Close, 1));
+        assert!(r.find_next(true, 1));
+        assert_eq!(landed(&r).1, Some((1, 3)), "R10: N skips the hidden b on line 3");
     }
 
     #[test]
     fn search_works_in_raw_view_too() {
         let mut r = ready("plain text with a needle inside");
-        r.open_search();
+        r.open_search(SearchSyntax::Literal, false);
         for c in "needle".chars() {
             r.handle_key(ch(c));
         }
@@ -7713,7 +9938,7 @@ mod tests {
     fn a_raw_search_match_far_into_a_windowed_line_still_highlights() {
         let body = format!("{}needle{}", "x".repeat(300), "y".repeat(300));
         let mut r = ready(&body);
-        r.open_search();
+        r.open_search(SearchSyntax::Literal, false);
         for c in "needle".chars() {
             r.handle_key(ch(c));
         }

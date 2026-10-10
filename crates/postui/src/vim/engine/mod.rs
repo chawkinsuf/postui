@@ -38,6 +38,15 @@ mod visual;
 pub use buf::{BodyBuf, BodyVisual, GuiSel, OneLineBuf, Paint, Pos, TextBuf};
 pub use register::{RegKind, Register, Registers};
 pub use search::Dir;
+/// The window code the response viewer shares with the body (plan M5a
+/// Deviation 14).
+pub(crate) use view::{Rows, View};
+/// The search the response viewer shares with the body, its notes included
+/// (plan M5a Deviation 3, amendments A5.1 and A5.3).
+pub(crate) use search::{
+    NO_PREVIOUS_PATTERN, NO_STRING_UNDER_CURSOR, as_stored, compile, find_ident, ident_pattern, not_found_note,
+    wrap_note,
+};
 
 use insert::{InsertKey, RegPending};
 use keys::{Cmd, Motion, Op, ParseCx, Pending, Reach, Step, VisualOp};
@@ -405,6 +414,34 @@ impl Engine {
     /// The last pattern as typed, or made by `*`/`#`.
     pub fn last_search(&self) -> Option<&str> {
         self.last_search.as_ref().map(|s| s.text.as_str())
+    }
+
+    /// The last pattern and whether it went backward, for the response to
+    /// share: Vim has one last pattern for every window.
+    pub fn last_pattern(&self) -> Option<(&str, bool)> {
+        self.last_search.as_ref().map(|s| (s.text.as_str(), s.dir == Dir::Backward))
+    }
+
+    /// A search made outside the engine (the response's) becomes the last
+    /// pattern, and the highlight goes on, as any search turns Vim's
+    /// `hlsearch` back on.
+    pub fn set_last_pattern(&mut self, text: String, backward: bool) {
+        let dir = if backward { Dir::Backward } else { Dir::Forward };
+        self.last_search = Some(LastSearch { text, dir });
+        self.hl = true;
+    }
+
+    /// Takes `other`'s last pattern, as the engine that gets the keyboard
+    /// (a dialog's, or the screen's back from one): one pattern for both. A
+    /// pattern other than this one's own was searched for there, which
+    /// turns the highlight on, as that search would have here. It is a
+    /// copy, not a trade as the registers are (`registers_mut`): the body
+    /// under a dialog goes on painting its pattern.
+    pub fn adopt_last_pattern(&mut self, other: &Engine) {
+        if other.last_search.is_some() && other.last_search != self.last_search {
+            self.last_search = other.last_search.clone();
+            self.hl = true;
+        }
     }
 
     /// Whether the body should paint the last pattern's matches.

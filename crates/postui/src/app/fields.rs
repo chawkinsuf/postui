@@ -178,6 +178,7 @@ impl App {
                     self.modal_glue.leave_ghost();
                 }
                 self.glue.swap_registers(&mut self.modal_glue);
+                self.glue.adopt_last_pattern(&self.modal_glue);
                 self.modal_glue.set_session(FieldSession::None);
             }
             // A body session that closed before the switch left edtui in
@@ -246,7 +247,8 @@ impl App {
     /// The dialog session's half of [`Self::sync_session`] (plan M3b
     /// Deviations 1–3): open, carry within one dialog, move to another
     /// dialog, close, or rebase. The registers go to the dialog engine when
-    /// a dialog session opens and come back when it closes.
+    /// a dialog session opens and come back when it closes, and the last
+    /// search pattern follows them.
     fn sync_modal_session(&mut self, open_as: Option<OpenAs>, cause: Cause, switched_in: bool) {
         let now = self.modal_engine_field();
         let was = self.modal_session;
@@ -288,6 +290,7 @@ impl App {
             }
             (None, Some((_, to))) => {
                 self.glue.swap_registers(&mut self.modal_glue);
+                self.modal_glue.adopt_last_pattern(&self.glue);
                 self.open_session(to, open_as, !mouse, default);
             }
             // The field closed in its own dialog (`j` to the buttons), or
@@ -300,6 +303,7 @@ impl App {
                     self.modal_glue.leave_ghost();
                 }
                 self.glue.swap_registers(&mut self.modal_glue);
+                self.glue.adopt_last_pattern(&self.modal_glue);
                 self.router.clear_pending();
             }
         }

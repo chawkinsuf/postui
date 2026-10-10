@@ -536,41 +536,148 @@ impl JsonTree {
         }
     }
 
-    /// Vim's `zo` `zc` `za` at `visible_index` (piece 4 spec §5.7; plan M4a
-    /// Deviation 9). The line's fold is the container it opens, or else the
-    /// container it sits in, so `zc` on a value closes the object around
-    /// it, and `zc` on a fold already closed closes the one around it, as
-    /// Vim closes the deepest open fold, so `zczc` climbs. Returns where
-    /// the cursor goes: the fold's opening line. `None` when the line has
-    /// no fold (a top-level scalar, out of range) or the fold is already as
-    /// asked.
-    pub fn fold(&mut self, visible_index: usize, op: crate::action::FoldOp) -> Option<usize> {
+    /// The folds at full line `full`, outermost first (plan M5a Deviation
+    /// 9): the containers it sits in, then the one it opens. A closing line
+    /// sits in the container it closes. Empty out of range.
+    fn folds_at(&self, full: usize) -> Vec<usize> {
+        let Some(rec) = self.lines.get(full) else {
+            return Vec::new();
+        };
+        let mut ids = self.parent_ids(full);
+        if rec.container != NONE {
+            ids.push(rec.container as usize);
+        }
+        ids
+    }
+
+    /// Vim's `zo` `zc` `za` with a count at full line `full` (plan M5a
+    /// Deviation 9; probes F2–F8, X6–X14). `zo`: the `count` outermost
+    /// closed folds open. `zc`: the `count` innermost open folds outside
+    /// the outermost closed one close, so `zc` on a fold already closed
+    /// closes the one around it. `za`: on a closed fold as `zo`; on an open
+    /// one as `zc` (Vim 9.1: `2za` closes two levels). Whether anything
+    /// changed.
+    pub fn fold_at(&mut self, full: usize, op: crate::action::FoldOp, count: usize) -> bool {
         use crate::action::FoldOp;
-        let full = self.full_index_of_visible(visible_index)?;
-        let rec = &self.lines[full];
-        // A visible line's enclosing folds are all open: only the one it
-        // opens can be closed.
-        let id = if rec.container != NONE && !(op == FoldOp::Close && rec.collapsed()) {
-            rec.container
+        let ids = self.folds_at(full);
+        let closed_at = ids.iter().position(|&id| self.lines[self.containers[id].open_line as usize].collapsed());
+        let (open, n) = match op {
+            FoldOp::Open => (true, count),
+            FoldOp::Toggle if closed_at.is_some() => (true, count),
+            FoldOp::Close => (false, count),
+            FoldOp::Toggle => (false, count),
+            FoldOp::OpenAll => return self.fold_all(false),
+            FoldOp::CloseAll => return self.fold_all(true),
+        };
+        let pick: Vec<usize> = if open {
+            ids.iter().copied().filter(|&id| self.lines[self.containers[id].open_line as usize].collapsed()).take(n.max(1)).collect()
         } else {
-            rec.parent
+            let k = closed_at.unwrap_or(ids.len());
+            ids[k.saturating_sub(n.max(1))..k].to_vec()
         };
-        if id == NONE {
-            return None;
+        if pick.is_empty() {
+            return false;
         }
-        let open = self.containers[id as usize].open_line as usize;
-        let collapsed = self.lines[open].collapsed();
-        let close = match op {
-            FoldOp::Open => false,
-            FoldOp::Close => true,
-            FoldOp::Toggle => !collapsed,
-        };
-        if close == collapsed {
-            return None;
+        for id in pick {
+            let line = self.containers[id].open_line as usize;
+            if open {
+                self.lines[line].flags &= !COLLAPSED;
+            } else {
+                self.lines[line].flags |= COLLAPSED;
+            }
         }
-        self.lines[open].flags ^= COLLAPSED;
         self.rebuild_visible();
-        self.visible_index_of(open)
+        true
+    }
+
+    /// Vim's `zo` (`open`) and `zc` in Visual (`opFoldRange()`): for each
+    /// full line from `first` to `last`, the fold `zo` or `zc` would pick
+    /// there opens or closes, one level, and the walk goes on after that
+    /// fold. Whether anything changed.
+    pub fn fold_range(&mut self, first: usize, last: usize, open: bool) -> bool {
+        let mut changed = false;
+        let mut line = first;
+        while line <= last.min(self.lines.len().saturating_sub(1)) {
+            let ids = self.folds_at(line);
+            let closed_at = ids.iter().position(|&id| self.lines[self.containers[id].open_line as usize].collapsed());
+            let pick = if open { closed_at.map(|k| ids[k]) } else { closed_at.unwrap_or(ids.len()).checked_sub(1).map(|k| ids[k]) };
+            let Some(id) = pick else {
+                line += 1;
+                continue;
+            };
+            let opener = &mut self.lines[self.containers[id].open_line as usize];
+            if open {
+                opener.flags &= !COLLAPSED;
+            } else {
+                opener.flags |= COLLAPSED;
+            }
+            changed = true;
+            line = self.containers[id].end_line as usize + 1;
+        }
+        if changed {
+            self.rebuild_visible();
+        }
+        changed
+    }
+
+    /// `zR` (`closed` false) and `zM`: every container open or closed.
+    /// Whether anything changed.
+    pub fn fold_all(&mut self, closed: bool) -> bool {
+        let mut changed = false;
+        for c in &self.containers {
+            let line = &mut self.lines[c.open_line as usize];
+            if line.collapsed() != closed {
+                line.flags ^= COLLAPSED;
+                changed = true;
+            }
+        }
+        if changed {
+            self.rebuild_visible();
+        }
+        changed
+    }
+
+    /// The visible line that shows full line `full`: itself, or the
+    /// opening line of the outermost closed fold that hides it. `None` out
+    /// of range.
+    pub fn holder(&self, full: usize) -> Option<usize> {
+        if full >= self.lines.len() {
+            return None;
+        }
+        let shown = self
+            .parent_ids(full)
+            .into_iter()
+            .map(|id| self.containers[id].open_line as usize)
+            .find(|&open| self.lines[open].collapsed())
+            .unwrap_or(full);
+        self.visible_index_of(shown)
+    }
+
+    /// The outermost closed fold at full line `full` (Vim's `hasFolding()`):
+    /// a closed container it sits in, or the one it opens, as its (opening,
+    /// closing) full lines. A search from inside it starts outside it.
+    /// `None` when nothing closed holds the line.
+    pub fn closed_fold(&self, full: usize) -> Option<(usize, usize)> {
+        self.folds_at(full)
+            .into_iter()
+            .map(|id| &self.containers[id])
+            .find(|c| self.lines[c.open_line as usize].collapsed())
+            .map(|c| (c.open_line as usize, c.end_line as usize))
+    }
+
+    /// Vim's `foldOpenCursor()`: every closed fold at full line `full` opens,
+    /// the containers it sits in and the one it opens. Whether any did.
+    pub fn open_folds_at(&mut self, full: usize) -> bool {
+        let mut changed = false;
+        for id in self.folds_at(full) {
+            let opener = &mut self.lines[self.containers[id].open_line as usize];
+            changed |= opener.collapsed();
+            opener.flags &= !COLLAPSED;
+        }
+        if changed {
+            self.rebuild_visible();
+        }
+        changed
     }
 
     /// Expands every container that `full_index` lives inside, so that line
@@ -933,33 +1040,66 @@ mod tests {
         assert_eq!(t.visible_lines().len(), before);
     }
 
-    /// Piece 4 spec §5.7 (plan M4a Deviation 9): a line's fold is the
-    /// container it opens, or else the one it sits in; closing lands the
-    /// cursor on the fold's opening line.
+    /// The plan's probes F0–F8 and X6–X14 (Vim 9.1, `foldmethod=syntax` on
+    /// JSON): `fold_at` acts on the folds holding a full line; `holder` is
+    /// the visible line that shows it.
     #[test]
-    fn fold_follows_vims_fold_rules() {
-        use crate::action::FoldOp;
-        // visible: 0 {, 1 "a": {, 2 "b": 1, 3 }, 4 "c": 2, 5 }
-        let mut t = JsonTree::parse(r#"{"a": {"b": 1}, "c": 2}"#).unwrap();
-        assert_eq!(t.visible_len(), 6);
-        assert_eq!(t.fold(2, FoldOp::Close), Some(1), "zc on a value closes its object");
-        assert_eq!(t.visible_len(), 4);
-        assert_eq!(t.fold(1, FoldOp::Close), Some(0), "zc on a closed fold closes the one around it");
-        assert_eq!(t.visible_len(), 1);
-        assert_eq!(t.fold(0, FoldOp::Close), None, "no fold around the root");
-        assert_eq!(t.fold(0, FoldOp::Open), Some(0), "zo opens one level");
-        assert_eq!(t.visible_len(), 4, "\"a\" is still closed");
-        assert_eq!(t.fold(1, FoldOp::Open), Some(1), "zo on a closed opener opens it");
-        assert_eq!(t.visible_len(), 6);
-        assert_eq!(t.fold(2, FoldOp::Open), None, "zo inside an open fold does nothing");
-        assert_eq!(t.fold(4, FoldOp::Toggle), Some(0), "za on a value closes the root");
-        assert_eq!(t.visible_len(), 1);
-        assert_eq!(t.fold(0, FoldOp::Toggle), Some(0), "za on a closed opener opens it");
-        assert_eq!(t.visible_len(), 6);
-        assert_eq!(t.fold(3, FoldOp::Close), Some(1), "a closing line's fold is its own container");
+    fn folds_follow_vim() {
+        use crate::action::FoldOp::*;
+        // full lines: 0 {, 1 "a": {, 2 "b": 1, 3 }, 4 "c": 2, 5 }
+        let doc = r#"{"a": {"b": 1}, "c": 2}"#;
+        let fresh = || JsonTree::parse(doc).unwrap();
+        let closed = |t: &JsonTree| (0..t.line_count()).filter(|&i| t.line(i).collapsed).collect::<Vec<_>>();
+        let mut t = fresh();
+        assert!(t.fold_all(true));
+        assert_eq!((closed(&t), t.holder(2)), (vec![0, 1], Some(0)), "F0: zM closes every container");
+        assert!(t.fold_all(false));
+        assert_eq!((closed(&t), t.holder(2)), (vec![], Some(2)), "F1: zR");
+        let mut t = fresh();
+        assert!(t.fold_at(2, Close, 1));
+        assert_eq!((closed(&t), t.holder(2)), (vec![1], Some(1)), "F2: zc closes the object around the line");
+        assert!(t.fold_at(2, Open, 1));
+        assert_eq!(t.holder(2), Some(2), "F3: zo");
+        let mut t = fresh();
+        t.fold_all(true);
+        assert!(t.fold_at(2, Open, 1));
+        assert_eq!((closed(&t), t.holder(2)), (vec![1], Some(1)), "F7: zo opens the outermost closed fold");
+        assert!(t.fold_at(2, Open, 1));
+        assert_eq!(closed(&t), Vec::<usize>::new());
+        let mut t = fresh();
+        t.fold_all(true);
+        assert!(t.fold_at(2, Open, 2));
+        assert_eq!(closed(&t), Vec::<usize>::new(), "F8: 2zo");
+        let mut t = fresh();
+        assert!(t.fold_at(2, Close, 2));
+        assert_eq!(closed(&t), vec![0, 1], "X6: 2zc");
+        let mut t = fresh();
+        t.fold_at(2, Close, 1);
+        assert!(t.fold_at(2, Close, 1));
+        assert_eq!((closed(&t), t.holder(2)), (vec![0, 1], Some(0)), "X7: zc zc climbs");
+        let mut t = fresh();
+        assert!(t.fold_at(2, Toggle, 1));
+        assert_eq!(closed(&t), vec![1], "X8: za on an open fold closes one level");
+        assert!(t.fold_at(2, Toggle, 1));
+        assert_eq!(closed(&t), Vec::<usize>::new(), "X9");
+        let mut t = fresh();
+        t.fold_all(true);
+        assert!(t.fold_at(2, Toggle, 1));
+        assert_eq!(closed(&t), vec![1], "X10: za opens one, the outermost");
+        let mut t = fresh();
+        t.fold_all(true);
+        assert!(t.fold_at(2, Toggle, 2));
+        assert_eq!(closed(&t), Vec::<usize>::new(), "X11: 2za");
+        let mut t = fresh();
+        assert!(t.fold_at(3, Close, 1));
+        assert_eq!(closed(&t), vec![1], "X12: a closing line's fold is its own container");
+        let mut t = fresh();
+        assert!(!t.fold_at(2, Open, 1), "X13: nothing closed to open");
+        assert!(t.fold_at(4, Close, 1));
+        assert_eq!(closed(&t), vec![0], "X14: zc on a root value closes the root");
         let mut scalar = JsonTree::parse("1").unwrap();
-        assert_eq!(scalar.fold(0, FoldOp::Close), None, "a top-level scalar has no fold");
-        assert_eq!(t.fold(99, FoldOp::Close), None, "out of range");
+        assert!(!scalar.fold_at(0, Close, 1), "a top-level scalar has no fold");
+        assert!(!t.fold_at(99, Close, 1), "out of range");
     }
 
     #[test]

@@ -283,7 +283,11 @@ pub(crate) fn footer_chips(
                 let mut chips = vec![
                     (tabs_key(), "tabs", Some(Action::CycleTabs(1))),
                     // The search row's key in both profiles (spec §4.6).
-                    (Key::Of(Action::OpenResponseSearch), "search", Some(Action::OpenResponseSearch)),
+                    (
+                        Key::Of(Action::OpenResponseSearch { backward: false }),
+                        "search",
+                        Some(Action::OpenResponseSearch { backward: false }),
+                    ),
                     (Key::Of(Action::OpenJqBar), "filter", Some(Action::OpenJqBar)),
                 ];
                 if jq_bar == JqBarState::Open {
@@ -431,6 +435,12 @@ pub fn draw_footer(
     // Every chip's keycap is spelled for where the keyboard is; a chip
     // with no key in this profile is dropped. `paint_chip_row` works on
     // borrowed strs, which borrow from `owned`.
+    // Vim's Esc abandons the response's search box (arrows' runs it), so
+    // there its chip says cancel.
+    let vim_search_box = spell.profile == crate::config::KeyProfile::Vim
+        && focus == PaneId::Response
+        && field_open
+        && matches!(jq_bar, JqBarState::Closed | JqBarState::Open);
     let raw: Vec<FooterChip> = match chips_override {
         Some(c) => c,
         None => footer_chips(
@@ -445,7 +455,10 @@ pub fn draw_footer(
             field_open,
         )
         .into_iter()
-        .map(|(k, l, a)| (k, l.to_string(), a))
+        .map(|(k, l, a)| {
+            let l = if vim_search_box && k == Key::Named("esc") { "cancel" } else { l };
+            (k, l.to_string(), a)
+        })
         .collect(),
     };
     let owned = resolve(raw, spell, keymap);
@@ -1420,7 +1433,7 @@ mod tests {
                 .is_some()
         );
         assert!(
-            hits.rect_of(&Hit::FooterChip(Action::OpenResponseSearch))
+            hits.rect_of(&Hit::FooterChip(Action::OpenResponseSearch { backward: false }))
                 .is_some()
         );
     }

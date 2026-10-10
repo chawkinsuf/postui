@@ -7,7 +7,7 @@
 use super::ctx::Surface;
 use super::engine_glue::OpenSeat;
 use super::notation::{self, Tok};
-use crate::action::{Action, PaneDir, Verb};
+use crate::action::{Action, ColMove, PaneDir, Place, ResponseMotion, Verb};
 use crate::config::KeyProfile;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::sync::OnceLock;
@@ -71,12 +71,12 @@ pub enum Intent {
     /// `gt` (`delta` 1) and `gT` (-1) (spec §5.8), as `GoTab`: no count
     /// steps the strip; `{N}gt` goes to tab N; `{N}gT` steps back N enabled
     /// tabs, wrapping. A tab it selects lands the caret
-    /// (`App::land_editor_caret`). `leave`: typed in an open field, which
-    /// closes first, only when there is a tab to go to.
-    Tab { delta: i8, leave: bool },
-    /// A window key (spec §5.8): `PaneMove`. `leave`: typed in an open
-    /// field, which closes first, but only when there is a pane to move to.
-    Pane { dir: PaneDir, leave: bool },
+    /// (`App::land_editor_caret`). Typed in an open screen field, the field
+    /// closes first, only when there is a tab to go to (`App::go_tab`).
+    Tab { delta: i8 },
+    /// A window key (spec §5.8): `PaneMove`. Typed in an open screen field,
+    /// the field closes first, only when there is a pane to move to.
+    Pane(PaneDir),
     /// `q{reg}` (spec §5.11): the macro note, and the recording flag armed
     /// with the register, which the next bare `q` in Normal clears
     /// (`Router::recording`).
@@ -84,6 +84,15 @@ pub enum Intent {
     /// Close the open field (committing it), then this action: `ZZ` in a
     /// screen field saves what the field holds (plan M4b Deviation 2).
     CloseThen(fn() -> Action),
+    /// A response motion built from the count, `None` when none was typed
+    /// (plan M5a Deviation 15): `{N}G`, `{N}zt`, `{N}<C-d>`.
+    Motion(fn(Option<usize>) -> crate::action::ResponseMotion),
+    /// A response motion in V, built from the count: it extends the line
+    /// selection (plan M5a Deviation 11).
+    Extend(fn(Option<usize>) -> crate::action::ResponseMotion),
+    /// Any action built from the count, `None` when none was typed (plan
+    /// M5a Deviation 15): `{N}zo`.
+    Counted(fn(Option<usize>) -> Action),
 }
 
 /// How a count applies (spec §3.5).
@@ -157,6 +166,8 @@ impl Surfaces {
     /// and tab rows apply in their idle Normal; never in a dialog's field,
     /// which keeps `g` and `ctrl+w` for the engine.
     pub const FIELD_SCREEN: Self = Self(1 << 21);
+    /// The response with a line selection up (plan M5a Deviation 11).
+    pub const RESPONSE_LINES: Self = Self(1 << 22);
 
     /// Every surface whose rows or controls the keyboard walks: vim's
     /// motions bind here, and in vim a bare char with no row is
@@ -172,8 +183,11 @@ impl Surfaces {
         .or(Self::MANAGE_LIST)
         .or(Self::MANAGE_DETAIL)
         .or(Self::SETTINGS);
-    /// The navigation surfaces but the response, whose `gg`/`G` are
-    /// ctrl+Home/ctrl+End (its bare Home/End scroll sideways).
+    /// Where vim builds counts and swallows a bare char no row names (spec
+    /// §3.4): the navigation surfaces and the response's V.
+    pub const KEYED: Self = Self::NAV.or(Self::RESPONSE_LINES);
+    /// The navigation surfaces but the response, whose motions are its own
+    /// `Motion` rows.
     pub const LISTS: Self = Self::NAV.minus(Self::RESPONSE);
     /// Where a row opens on Enter (`o`).
     pub const OPENS_ROW: Self = Self::SIDEBAR
@@ -206,6 +220,12 @@ impl Surfaces {
         .or(Self::OTHER);
     /// The dialogs with a field: a one-field prompt and a form.
     pub const FORMS: Self = Self::PROMPT.or(Self::FORM);
+    /// Where the window and tab keys apply (spec §5.8; plan M4a Deviation 2,
+    /// plan M5a Deviation 16): the navigation surfaces, a screen field's
+    /// idle Normal and the response's V. One row serves them all: a key
+    /// typed in a field closes it first, on a closed surface no field is
+    /// open, and a V selection ends as the key moves (`App::pane_move`).
+    pub const WINDOWS: Self = Self::NAV.or(Self::FIELD_SCREEN).or(Self::RESPONSE_LINES);
 
     pub const fn or(self, o: Self) -> Self {
         Self(self.0 | o.0)
@@ -223,6 +243,7 @@ impl Surfaces {
             Surface::Table(_) => Self::TABLE,
             Surface::Body => Self::BODY,
             Surface::Response(_) => Self::RESPONSE,
+            Surface::ResponseLines(_) => Self::RESPONSE_LINES,
             Surface::VarList => Self::VAR_LIST,
             Surface::VarGrid => Self::VAR_GRID,
             Surface::VarForm => Self::VAR_FORM,
@@ -295,8 +316,8 @@ const fn both(keys: &'static str, on: Surfaces, intent: Intent) -> Binding {
 
 /// A vim window row: `<C-w>` and a target (spec §5.8), on a closed surface
 /// or from a screen field's idle Normal; a count is dropped.
-const fn pane(keys: &'static str, on: Surfaces, dir: PaneDir, leave: bool) -> Binding {
-    row(keys, on, Intent::Pane { dir, leave }, CountRule::Ignore)
+const fn pane(keys: &'static str, dir: PaneDir) -> Binding {
+    row(keys, Surfaces::WINDOWS, Intent::Pane(dir), CountRule::Ignore)
 }
 
 pub const NO_COUNTED_DELETE: &str = "Counted delete works on requests and table rows";
@@ -347,20 +368,32 @@ fn cancel_top() -> Action {
     Action::CancelTopModal
 }
 
-fn fold_open() -> Action {
-    Action::TreeFold(crate::action::FoldOp::Open)
+fn fold_of(op: crate::action::FoldOp, n: Option<usize>) -> Action {
+    Action::TreeFold { op, count: count1(n) }
 }
 
-fn fold_close() -> Action {
-    Action::TreeFold(crate::action::FoldOp::Close)
+fn fold_open(n: Option<usize>) -> Action {
+    fold_of(crate::action::FoldOp::Open, n)
 }
 
-fn fold_toggle() -> Action {
-    Action::TreeFold(crate::action::FoldOp::Toggle)
+fn fold_close(n: Option<usize>) -> Action {
+    fold_of(crate::action::FoldOp::Close, n)
+}
+
+fn fold_toggle(n: Option<usize>) -> Action {
+    fold_of(crate::action::FoldOp::Toggle, n)
+}
+
+fn fold_open_all() -> Action {
+    fold_of(crate::action::FoldOp::OpenAll, None)
+}
+
+fn fold_close_all() -> Action {
+    fold_of(crate::action::FoldOp::CloseAll, None)
 }
 
 fn response_search() -> Action {
-    Action::OpenResponseSearch
+    Action::OpenResponseSearch { backward: false }
 }
 
 fn next_match() -> Action {
@@ -375,69 +408,263 @@ fn copy_header() -> Action {
     Action::CopyResponseHeader
 }
 
+fn count1(n: Option<usize>) -> usize {
+    n.unwrap_or(1).max(1)
+}
+
+fn find_n(n: Option<usize>) -> Action {
+    Action::ResponseFind(crate::action::ResponseFind::Next { reverse: false, count: count1(n) })
+}
+
+fn find_shift_n(n: Option<usize>) -> Action {
+    Action::ResponseFind(crate::action::ResponseFind::Next { reverse: true, count: count1(n) })
+}
+
+fn find_star(n: Option<usize>) -> Action {
+    Action::ResponseFind(crate::action::ResponseFind::Word { backward: false, count: count1(n) })
+}
+
+fn find_hash(n: Option<usize>) -> Action {
+    Action::ResponseFind(crate::action::ResponseFind::Word { backward: true, count: count1(n) })
+}
+
+fn response_search_back() -> Action {
+    Action::OpenResponseSearch { backward: true }
+}
+
+pub const ONLY_LINES: &str = "Only line selection (V) here";
+
+fn lines_start() -> Action {
+    Action::ResponseLines(crate::action::LinesOp::Start)
+}
+
+fn lines_end() -> Action {
+    Action::ResponseLines(crate::action::LinesOp::End)
+}
+
+fn lines_swap() -> Action {
+    Action::ResponseLines(crate::action::LinesOp::Swap)
+}
+
+fn lines_fold_open() -> Action {
+    Action::ResponseLines(crate::action::LinesOp::Fold { open: true })
+}
+
+fn lines_fold_close() -> Action {
+    Action::ResponseLines(crate::action::LinesOp::Fold { open: false })
+}
+
+fn lines_yank() -> Action {
+    Action::ResponseLines(crate::action::LinesOp::Yank { count: None })
+}
+
+fn yank_rows(n: Option<usize>) -> Action {
+    Action::ResponseLines(crate::action::LinesOp::Yank { count: n })
+}
+
+/// A count as a line distance: no count is one.
+fn lines_of(n: Option<usize>) -> i64 {
+    i64::try_from(n.unwrap_or(1)).unwrap_or(i64::MAX)
+}
+
+fn m_down(n: Option<usize>) -> ResponseMotion {
+    ResponseMotion::Lines(lines_of(n))
+}
+
+fn m_up(n: Option<usize>) -> ResponseMotion {
+    ResponseMotion::Lines(-lines_of(n))
+}
+
+fn m_first(n: Option<usize>) -> ResponseMotion {
+    ResponseMotion::Goto { line: n, last: false }
+}
+
+fn m_last(n: Option<usize>) -> ResponseMotion {
+    ResponseMotion::Goto { line: n, last: true }
+}
+
+fn m_half_down(n: Option<usize>) -> ResponseMotion {
+    ResponseMotion::HalfPage { down: true, count: n }
+}
+
+fn m_half_up(n: Option<usize>) -> ResponseMotion {
+    ResponseMotion::HalfPage { down: false, count: n }
+}
+
+fn m_end_goto(n: Option<usize>) -> ResponseMotion {
+    ResponseMotion::GotoEnd { line: n }
+}
+
+fn m_next_line(n: Option<usize>) -> ResponseMotion {
+    ResponseMotion::NextLine(count1(n))
+}
+
+fn m_left(n: Option<usize>) -> ResponseMotion {
+    ResponseMotion::Col(ColMove::Left(count1(n)))
+}
+
+fn m_right(n: Option<usize>) -> ResponseMotion {
+    ResponseMotion::Col(ColMove::Right(count1(n)))
+}
+
+fn m_space(n: Option<usize>) -> ResponseMotion {
+    ResponseMotion::Col(ColMove::Space(count1(n)))
+}
+
+fn m_line_start(_: Option<usize>) -> ResponseMotion {
+    ResponseMotion::Col(ColMove::Start)
+}
+
+fn m_line_end(n: Option<usize>) -> ResponseMotion {
+    ResponseMotion::Col(ColMove::End(count1(n)))
+}
+
+fn m_page_down(n: Option<usize>) -> ResponseMotion {
+    ResponseMotion::Page { down: true, count: n.unwrap_or(1) }
+}
+
+fn m_page_up(n: Option<usize>) -> ResponseMotion {
+    ResponseMotion::Page { down: false, count: n.unwrap_or(1) }
+}
+
+fn m_top(n: Option<usize>) -> ResponseMotion {
+    ResponseMotion::Place { at: Place::Top, line: n }
+}
+
+fn m_middle(n: Option<usize>) -> ResponseMotion {
+    ResponseMotion::Place { at: Place::Middle, line: n }
+}
+
+fn m_bottom(n: Option<usize>) -> ResponseMotion {
+    ResponseMotion::Place { at: Place::Bottom, line: n }
+}
+
 /// Every row. Order does not matter: no complete row is a prefix of
 /// another on a shared surface (`no_two_rows_collide`).
 pub static TABLE: &[Binding] = &[
     // Key list §6 and §7: moving.
-    row("j", Surfaces::NAV, Intent::Key(DOWN), CountRule::Repeat),
-    row("k", Surfaces::NAV, Intent::Key(Named::key(KeyCode::Up)), CountRule::Repeat),
-    row("h", Surfaces::NAV, Intent::Key(Named::key(KeyCode::Left)), CountRule::Repeat),
-    row("l", Surfaces::NAV, Intent::Key(Named::key(KeyCode::Right)), CountRule::Repeat),
+    row("j", Surfaces::LISTS, Intent::Key(DOWN), CountRule::Repeat),
+    row("k", Surfaces::LISTS, Intent::Key(Named::key(KeyCode::Up)), CountRule::Repeat),
+    row("h", Surfaces::LISTS, Intent::Key(Named::key(KeyCode::Left)), CountRule::Repeat),
+    row("l", Surfaces::LISTS, Intent::Key(Named::key(KeyCode::Right)), CountRule::Repeat),
     row("gg", Surfaces::LISTS, Intent::Edge { bare: HOME, home: HOME }, CountRule::Pass),
     row("G", Surfaces::LISTS, Intent::Edge { bare: Named::key(KeyCode::End), home: HOME }, CountRule::Pass),
-    row(
-        "gg",
-        Surfaces::RESPONSE,
-        Intent::Edge { bare: Named::ctrl(KeyCode::Home), home: Named::ctrl(KeyCode::Home) },
-        CountRule::Pass,
-    ),
-    row(
-        "G",
-        Surfaces::RESPONSE,
-        Intent::Edge { bare: Named::ctrl(KeyCode::End), home: Named::ctrl(KeyCode::Home) },
-        CountRule::Pass,
-    ),
-    row("0", Surfaces::RESPONSE, Intent::Key(HOME), CountRule::Ignore),
-    row("$", Surfaces::RESPONSE, Intent::Key(Named::key(KeyCode::End)), CountRule::Ignore),
-    // Key list §7 (`R.fold`): the tree's folds. Nothing on Raw or Headers.
-    row("zo", Surfaces::RESPONSE, Intent::Act(fold_open), CountRule::Ignore),
-    row("zc", Surfaces::RESPONSE, Intent::Act(fold_close), CountRule::Ignore),
-    row("za", Surfaces::RESPONSE, Intent::Act(fold_toggle), CountRule::Ignore),
+    // The response's moves along a line (the user's decision, 2026-10-10:
+    // Vim's hidden column): they move the column and still scroll the view
+    // sideways; Space is Vim's `l` that wraps (`'whichwrap'` `s`), Enter
+    // Vim's `+`, ctrl+Home `gg` and ctrl+End Vim's `G$`.
+    row("h", Surfaces::RESPONSE, Intent::Motion(m_left), CountRule::Pass),
+    row("l", Surfaces::RESPONSE, Intent::Motion(m_right), CountRule::Pass),
+    row("<Left>", Surfaces::RESPONSE, Intent::Motion(m_left), CountRule::Pass),
+    row("<Right>", Surfaces::RESPONSE, Intent::Motion(m_right), CountRule::Pass),
+    row("0", Surfaces::RESPONSE, Intent::Motion(m_line_start), CountRule::Ignore),
+    row("<Home>", Surfaces::RESPONSE, Intent::Motion(m_line_start), CountRule::Ignore),
+    row("$", Surfaces::RESPONSE, Intent::Motion(m_line_end), CountRule::Pass),
+    row("<End>", Surfaces::RESPONSE, Intent::Motion(m_line_end), CountRule::Pass),
+    row("<Space>", Surfaces::RESPONSE, Intent::Motion(m_space), CountRule::Pass),
+    row("<CR>", Surfaces::RESPONSE, Intent::Motion(m_next_line), CountRule::Pass),
+    row("<C-Home>", Surfaces::RESPONSE, Intent::Motion(m_first), CountRule::Pass),
+    row("<C-End>", Surfaces::RESPONSE, Intent::Motion(m_end_goto), CountRule::Pass),
+    row("h", Surfaces::RESPONSE_LINES, Intent::Extend(m_left), CountRule::Pass),
+    row("l", Surfaces::RESPONSE_LINES, Intent::Extend(m_right), CountRule::Pass),
+    row("<Left>", Surfaces::RESPONSE_LINES, Intent::Extend(m_left), CountRule::Pass),
+    row("<Right>", Surfaces::RESPONSE_LINES, Intent::Extend(m_right), CountRule::Pass),
+    row("0", Surfaces::RESPONSE_LINES, Intent::Extend(m_line_start), CountRule::Ignore),
+    row("<Home>", Surfaces::RESPONSE_LINES, Intent::Extend(m_line_start), CountRule::Ignore),
+    row("$", Surfaces::RESPONSE_LINES, Intent::Extend(m_line_end), CountRule::Pass),
+    row("<End>", Surfaces::RESPONSE_LINES, Intent::Extend(m_line_end), CountRule::Pass),
+    row("<C-Home>", Surfaces::RESPONSE_LINES, Intent::Extend(m_first), CountRule::Pass),
+    row("<C-End>", Surfaces::RESPONSE_LINES, Intent::Extend(m_end_goto), CountRule::Pass),
+    // Key list §7 (`R.move`, `R.ctrl-d`, `R.page`), plan M5a Task 3: the
+    // response's motions are Vim's on a window of its visible lines, each
+    // reading its own count (Deviation 4). Arrows' named keys stay the
+    // component's arms, which run the same window code.
+    row("j", Surfaces::RESPONSE, Intent::Motion(m_down), CountRule::Pass),
+    row("k", Surfaces::RESPONSE, Intent::Motion(m_up), CountRule::Pass),
+    row("<Down>", Surfaces::RESPONSE, Intent::Motion(m_down), CountRule::Pass),
+    row("<Up>", Surfaces::RESPONSE, Intent::Motion(m_up), CountRule::Pass),
+    row("gg", Surfaces::RESPONSE, Intent::Motion(m_first), CountRule::Pass),
+    row("G", Surfaces::RESPONSE, Intent::Motion(m_last), CountRule::Pass),
+    row("<C-d>", Surfaces::RESPONSE, Intent::Motion(m_half_down), CountRule::Pass),
+    row("<C-u>", Surfaces::RESPONSE, Intent::Motion(m_half_up), CountRule::Pass),
+    row("<C-f>", Surfaces::RESPONSE, Intent::Motion(m_page_down), CountRule::Pass),
+    row("<C-b>", Surfaces::RESPONSE, Intent::Motion(m_page_up), CountRule::Pass),
+    // Vim's PageDown and PageUp are ctrl+f and ctrl+b, counted as they are
+    // (`3<PageDown>` pages three times). Arrows keeps the component's arms.
+    row("<PageDown>", Surfaces::RESPONSE, Intent::Motion(m_page_down), CountRule::Pass),
+    row("<PageUp>", Surfaces::RESPONSE, Intent::Motion(m_page_up), CountRule::Pass),
+    row("zt", Surfaces::RESPONSE, Intent::Motion(m_top), CountRule::Pass),
+    row("zz", Surfaces::RESPONSE, Intent::Motion(m_middle), CountRule::Pass),
+    row("zb", Surfaces::RESPONSE, Intent::Motion(m_bottom), CountRule::Pass),
+    // Key list §7 (`R.yy`, `R.visual`), plan M5a Deviations 5 and 11: Vim's
+    // yank into the unnamed register, and its line Visual.
+    row("yy", Surfaces::RESPONSE, Intent::Counted(yank_rows), CountRule::Pass),
+    row("V", Surfaces::RESPONSE, Intent::Act(lines_start), CountRule::Ignore),
+    row("v", Surfaces::RESPONSE.or(Surfaces::RESPONSE_LINES), Intent::Note(ONLY_LINES), CountRule::Ignore),
+    row("V", Surfaces::RESPONSE_LINES, Intent::Act(lines_end), CountRule::Ignore),
+    row("<Esc>", Surfaces::RESPONSE_LINES, Intent::Act(lines_end), CountRule::Ignore),
+    row("o", Surfaces::RESPONSE_LINES, Intent::Act(lines_swap), CountRule::Ignore),
+    row("y", Surfaces::RESPONSE_LINES, Intent::Act(lines_yank), CountRule::Ignore),
+    row("j", Surfaces::RESPONSE_LINES, Intent::Extend(m_down), CountRule::Pass),
+    row("k", Surfaces::RESPONSE_LINES, Intent::Extend(m_up), CountRule::Pass),
+    row("<Down>", Surfaces::RESPONSE_LINES, Intent::Extend(m_down), CountRule::Pass),
+    row("<Up>", Surfaces::RESPONSE_LINES, Intent::Extend(m_up), CountRule::Pass),
+    row("gg", Surfaces::RESPONSE_LINES, Intent::Extend(m_first), CountRule::Pass),
+    row("G", Surfaces::RESPONSE_LINES, Intent::Extend(m_last), CountRule::Pass),
+    row("<C-d>", Surfaces::RESPONSE_LINES, Intent::Extend(m_half_down), CountRule::Pass),
+    row("<C-u>", Surfaces::RESPONSE_LINES, Intent::Extend(m_half_up), CountRule::Pass),
+    row("<C-f>", Surfaces::RESPONSE_LINES, Intent::Extend(m_page_down), CountRule::Pass),
+    row("<C-b>", Surfaces::RESPONSE_LINES, Intent::Extend(m_page_up), CountRule::Pass),
+    // Amendment A6.3: Vim's PageDown and PageUp extend Visual as ctrl+f and
+    // ctrl+b do (probe V14).
+    row("<PageDown>", Surfaces::RESPONSE_LINES, Intent::Extend(m_page_down), CountRule::Pass),
+    row("<PageUp>", Surfaces::RESPONSE_LINES, Intent::Extend(m_page_up), CountRule::Pass),
+    // Vim's Enter (`+`) and Space in V move as they do outside it,
+    // extending. Arrows keeps main's Space and Enter: these are vim rows.
+    row("<CR>", Surfaces::RESPONSE_LINES, Intent::Extend(m_next_line), CountRule::Pass),
+    row("<Space>", Surfaces::RESPONSE_LINES, Intent::Extend(m_space), CountRule::Pass),
+    row("zt", Surfaces::RESPONSE_LINES, Intent::Extend(m_top), CountRule::Pass),
+    row("zz", Surfaces::RESPONSE_LINES, Intent::Extend(m_middle), CountRule::Pass),
+    row("zb", Surfaces::RESPONSE_LINES, Intent::Extend(m_bottom), CountRule::Pass),
+    // Key list §7 (`R.fold`, `R.foldall`): the tree's folds, counted (plan
+    // M5a Deviation 9). Nothing on Raw or Headers.
+    row("zo", Surfaces::RESPONSE, Intent::Counted(fold_open), CountRule::Pass),
+    row("zc", Surfaces::RESPONSE, Intent::Counted(fold_close), CountRule::Pass),
+    row("za", Surfaces::RESPONSE, Intent::Counted(fold_toggle), CountRule::Pass),
+    row("zR", Surfaces::RESPONSE, Intent::Act(fold_open_all), CountRule::Ignore),
+    row("zM", Surfaces::RESPONSE, Intent::Act(fold_close_all), CountRule::Ignore),
+    // In V, as Vim's Visual has them: `zo` `zc` act on every selected line
+    // and end the selection; `za` `zR` `zM` act as outside it and keep it.
+    row("zo", Surfaces::RESPONSE_LINES, Intent::Act(lines_fold_open), CountRule::Ignore),
+    row("zc", Surfaces::RESPONSE_LINES, Intent::Act(lines_fold_close), CountRule::Ignore),
+    row("za", Surfaces::RESPONSE_LINES, Intent::Counted(fold_toggle), CountRule::Pass),
+    row("zR", Surfaces::RESPONSE_LINES, Intent::Act(fold_open_all), CountRule::Ignore),
+    row("zM", Surfaces::RESPONSE_LINES, Intent::Act(fold_close_all), CountRule::Ignore),
     // Key list §8 (`P.gt`), spec §5.8: every tab strip, on a closed
     // surface or from a screen field's idle Normal (§3.7).
-    row("gt", Surfaces::NAV, Intent::Tab { delta: 1, leave: false }, CountRule::Pass),
-    row("gT", Surfaces::NAV, Intent::Tab { delta: -1, leave: false }, CountRule::Pass),
-    row("gt", Surfaces::FIELD_SCREEN, Intent::Tab { delta: 1, leave: true }, CountRule::Pass),
-    row("gT", Surfaces::FIELD_SCREEN, Intent::Tab { delta: -1, leave: true }, CountRule::Pass),
+    row("gt", Surfaces::WINDOWS, Intent::Tab { delta: 1 }, CountRule::Pass),
+    row("gT", Surfaces::WINDOWS, Intent::Tab { delta: -1 }, CountRule::Pass),
     // Key list §8 (`P.ctrlw`), spec §5.8: the window keys, with Vim's ctrl
     // spellings of the targets (plan M4a Deviation 3). In a screen field a
     // non-target is swallowed, never replayed as an edit (Deviation 4).
-    pane("<C-w>h", Surfaces::NAV, PaneDir::Left, false),
-    pane("<C-w>j", Surfaces::NAV, PaneDir::Down, false),
-    pane("<C-w>k", Surfaces::NAV, PaneDir::Up, false),
-    pane("<C-w>l", Surfaces::NAV, PaneDir::Right, false),
-    pane("<C-w>w", Surfaces::NAV, PaneDir::Next, false),
-    pane("<C-w>W", Surfaces::NAV, PaneDir::Prev, false),
-    pane("<C-w>p", Surfaces::NAV, PaneDir::Last, false),
-    pane("<C-w><C-h>", Surfaces::NAV, PaneDir::Left, false),
-    pane("<C-w><C-j>", Surfaces::NAV, PaneDir::Down, false),
-    pane("<C-w><C-k>", Surfaces::NAV, PaneDir::Up, false),
-    pane("<C-w><C-l>", Surfaces::NAV, PaneDir::Right, false),
-    pane("<C-w><C-w>", Surfaces::NAV, PaneDir::Next, false),
-    pane("<C-w><C-p>", Surfaces::NAV, PaneDir::Last, false),
-    pane("<C-w>h", Surfaces::FIELD_SCREEN, PaneDir::Left, true),
-    pane("<C-w>j", Surfaces::FIELD_SCREEN, PaneDir::Down, true),
-    pane("<C-w>k", Surfaces::FIELD_SCREEN, PaneDir::Up, true),
-    pane("<C-w>l", Surfaces::FIELD_SCREEN, PaneDir::Right, true),
-    pane("<C-w>w", Surfaces::FIELD_SCREEN, PaneDir::Next, true),
-    pane("<C-w>W", Surfaces::FIELD_SCREEN, PaneDir::Prev, true),
-    pane("<C-w>p", Surfaces::FIELD_SCREEN, PaneDir::Last, true),
-    pane("<C-w><C-h>", Surfaces::FIELD_SCREEN, PaneDir::Left, true),
-    pane("<C-w><C-j>", Surfaces::FIELD_SCREEN, PaneDir::Down, true),
-    pane("<C-w><C-k>", Surfaces::FIELD_SCREEN, PaneDir::Up, true),
-    pane("<C-w><C-l>", Surfaces::FIELD_SCREEN, PaneDir::Right, true),
-    pane("<C-w><C-w>", Surfaces::FIELD_SCREEN, PaneDir::Next, true),
-    pane("<C-w><C-p>", Surfaces::FIELD_SCREEN, PaneDir::Last, true),
+    pane("<C-w>h", PaneDir::Left),
+    pane("<C-w>j", PaneDir::Down),
+    pane("<C-w>k", PaneDir::Up),
+    pane("<C-w>l", PaneDir::Right),
+    pane("<C-w>w", PaneDir::Next),
+    pane("<C-w>W", PaneDir::Prev),
+    pane("<C-w>p", PaneDir::Last),
+    pane("<C-w><C-h>", PaneDir::Left),
+    pane("<C-w><C-j>", PaneDir::Down),
+    pane("<C-w><C-k>", PaneDir::Up),
+    pane("<C-w><C-l>", PaneDir::Right),
+    pane("<C-w><C-w>", PaneDir::Next),
+    pane("<C-w><C-p>", PaneDir::Last),
+    // Key list §8 (`P.ctrlw-arrows`): the arrow keys, as Vim's `<C-w><Left>`.
+    pane("<C-w><Left>", PaneDir::Left),
+    pane("<C-w><Down>", PaneDir::Down),
+    pane("<C-w><Up>", PaneDir::Up),
+    pane("<C-w><Right>", PaneDir::Right),
     row("<C-w><any>", Surfaces::FIELD_SCREEN, Intent::Swallow, CountRule::Ignore),
     // Key list §6: opening.
     row("o", Surfaces::OPENS_ROW, Intent::Key(Named::key(KeyCode::Enter)), CountRule::Ignore),
@@ -446,18 +673,31 @@ pub static TABLE: &[Binding] = &[
     row("a", Surfaces::URL_LINE, Intent::Open { key: ENTER, seat: OpenSeat::After }, CountRule::Ignore),
     row("I", Surfaces::URL_LINE, Intent::Open { key: ENTER, seat: OpenSeat::FirstNonBlank }, CountRule::Ignore),
     row("A", Surfaces::URL_LINE, Intent::Open { key: ENTER, seat: OpenSeat::End }, CountRule::Ignore),
-    // Key list §7 and spec §4.5 (plan M4a Deviation 11): the response's
-    // letters, the same in both profiles; arrows' `c` copies a header.
-    both("/", Surfaces::RESPONSE, Intent::Act(response_search)),
-    both("n", Surfaces::RESPONSE, Intent::Act(next_match)),
-    both("N", Surfaces::RESPONSE, Intent::Act(prev_match)),
-    arrows("c", Surfaces::RESPONSE, Intent::Act(copy_header)),
+    // Key list §7 and spec §4.5 (plan M4a Deviation 11): `/` is the same in
+    // both profiles. Vim's `n` `N` are counted and follow `?`/`#`'s
+    // direction; arrows' step down and up, as the ▼/▲ buttons do (plan M5a
+    // Deviation 10). `?`, `*` and `#` are vim's. Arrows' `c` copies a header.
+    both("/", Surfaces::RESPONSE.or(Surfaces::RESPONSE_LINES), Intent::Act(response_search)),
+    arrows("n", Surfaces::RESPONSE.or(Surfaces::RESPONSE_LINES), Intent::Act(next_match)),
+    arrows("N", Surfaces::RESPONSE.or(Surfaces::RESPONSE_LINES), Intent::Act(prev_match)),
+    // In vim's V they are motions that extend the selection, as Vim's
+    // Visual takes them (Vim 9.1, probed).
+    row("n", Surfaces::RESPONSE.or(Surfaces::RESPONSE_LINES), Intent::Counted(find_n), CountRule::Pass),
+    row("N", Surfaces::RESPONSE.or(Surfaces::RESPONSE_LINES), Intent::Counted(find_shift_n), CountRule::Pass),
+    row("*", Surfaces::RESPONSE.or(Surfaces::RESPONSE_LINES), Intent::Counted(find_star), CountRule::Pass),
+    row("#", Surfaces::RESPONSE.or(Surfaces::RESPONSE_LINES), Intent::Counted(find_hash), CountRule::Pass),
+    row("?", Surfaces::RESPONSE.or(Surfaces::RESPONSE_LINES), Intent::Act(response_search_back), CountRule::Ignore),
+    arrows("c", Surfaces::RESPONSE.or(Surfaces::RESPONSE_LINES), Intent::Act(copy_header)),
     // Key list §6, Out (parked by the user): a list has no search yet.
     row("/", Surfaces::SEARCHLESS, Intent::Note("No search in this list yet"), CountRule::Ignore),
     // Key list §6 and §9: the app's undo, redo and command palette.
     row("u", Surfaces::APP, Intent::Act(undo), CountRule::Repeat),
     row("<C-r>", Surfaces::APP, Intent::Act(redo), CountRule::Repeat),
     row(":", Surfaces::APP, Intent::Act(ex_palette), CountRule::Ignore),
+    // Vim's `:` in Visual opens the line over the selection (its `'<,'>`):
+    // V stays up for the palette's commands and ends once it closes
+    // (`App::end_visual_off_response`). Visual's `u` is not undo.
+    row(":", Surfaces::RESPONSE_LINES, Intent::Act(ex_palette), CountRule::Ignore),
     // Key list §6, spec §5.1–§5.4 and §6.1: the list verbs. The shared
     // letters are one row for both profiles; vim doubles delete and yank
     // and takes counts, arrows uses one letter. Vim's other verbs on the
@@ -642,7 +882,7 @@ pub fn keys_for_class(profile: KeyProfile, class: Surfaces, action: &Action) -> 
                 && match b.intent {
                     Intent::Act(f) | Intent::CloseThen(f) => f() == *action,
                     Intent::Verb(v) => matches!(action, Action::OnSelection(w) if w.kind() == v.kind()),
-                    Intent::Tab { delta, .. } => *action == Action::CycleTabs(delta),
+                    Intent::Tab { delta } => *action == Action::CycleTabs(delta),
                     Intent::Reopen(None) => *action == Action::ReopenField,
                     _ => false,
                 }
@@ -670,13 +910,14 @@ pub fn vim_first_chars() -> Vec<char> {
 }
 
 /// Whether a digit builds a count on `surface` in the vim profile: a
-/// navigation surface (lists and panes) where some row repeats or reads
-/// one (plan M1 Deviation 22). The app-wide `u` and `ctrl+r` rows repeat
-/// on every surface, so the navigation filter keeps prompts, forms, the
-/// body and the testbed out. Which navigation surfaces qualify is
-/// derived from [`TABLE`], so it cannot drift from the rows.
+/// navigation surface (lists and panes) or the response's V, where some
+/// row repeats or reads one (plan M1 Deviation 22). The app-wide `u` and
+/// `ctrl+r` rows repeat on every surface, so the navigation filter keeps
+/// prompts, forms, the body and the testbed out. Which navigation
+/// surfaces qualify is derived from [`TABLE`], so it cannot drift from
+/// the rows.
 pub fn takes_count(surface: Surface) -> bool {
-    Surfaces::NAV.has(surface)
+    Surfaces::KEYED.has(surface)
         && TABLE.iter().any(|b| {
             b.profile.has(KeyProfile::Vim)
                 && b.on.has(surface)
@@ -818,6 +1059,15 @@ mod tests {
         }
     }
 
+    /// Plan M5a Task 1 (Deviation 16): each window and tab key is one row,
+    /// for the navigation surfaces and a screen field alike.
+    #[test]
+    fn window_and_tab_keys_are_one_row_each() {
+        for keys in ["gt", "gT", "<C-w>h", "<C-w><C-w>", "<C-w>p", "<C-w><Left>", "<C-w><Up>"] {
+            assert_eq!(TABLE.iter().filter(|b| b.keys == keys).count(), 1, "{keys}");
+        }
+    }
+
     #[test]
     fn counts_fit_their_intents() {
         use crate::action::Verb;
@@ -829,7 +1079,11 @@ mod tests {
             }
             let tab = matches!(b.intent, Intent::Tab { .. });
             if b.count == CountRule::Pass {
-                assert!(edge || counted_verb || tab, "{}: Pass is for Edge rows, dd, p and the tab keys", b.keys);
+                assert!(
+                    edge || counted_verb || tab || matches!(b.intent, Intent::Motion(_) | Intent::Extend(_) | Intent::Counted(_)),
+                    "{}: Pass is for Edge rows, dd, p, the tab keys and the response's motions and counted actions",
+                    b.keys
+                );
             }
             if matches!(
                 b.intent,
@@ -837,7 +1091,7 @@ mod tests {
                     | Intent::Swallow
                     | Intent::Open { .. }
                     | Intent::Reopen(_)
-                    | Intent::Pane { .. }
+                    | Intent::Pane(_)
                     | Intent::Recording
                     | Intent::CloseThen(_)
             ) {

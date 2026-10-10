@@ -1,0 +1,681 @@
+{"header":{"vim":"9.1.0697","patches":"1-16, 647, 678, 697","settings":"expandtab shiftwidth=2 autoindent selection=inclusive tabstop=2 softtabstop=0 backspace=indent,eol,start whichwrap=b,s startofline nojoinspaces nrformats=bin,hex noshiftround nosmartindent nocindent textwidth=0 noignorecase notildeop matchpairs=(:),{:},[:] iskeyword=@,48-57,_,192-255 cpoptions=aABceFs formatoptions=tcq virtualedit= wrapscan magic nosmartcase casemap=internal,keepascii paragraphs=IPLPPPQPP\\ TPHPLIPpLpItpplpipbp sections=SHNHH\\ HUnhsh","winheight":23,"corpus_sha256":"a8ce8bc90163bbed0d81fb7800358742e10355fbf527486b0b60a13aa5cf8df1","bodies":{"raw30":{"view":"raw","body":"foo bar baz\n  bar foo\n    baz\n\nfoo.bar(baz)\n  item_1 = foo\n  item_2 = bar\nx\nnaïve café foo\n    deep   indent foo\nbar\n\n   \nfoo foo foo\nthe end of foo\nline 16 bar\nline 17 foo\n  line 18 baz\nline 19 bar\nline 20 foo\nline 21 bar\n    line 22 baz\nline 23 foo\nline 24 bar\nline 25 foo\n  line 26 baz\nline 27 bar\nline 28 foo\nline 29 bar\n  last foo line","lines":["foo bar baz","  bar foo","    baz","","foo.bar(baz)","  item_1 = foo","  item_2 = bar","x","naïve café foo","    deep   indent foo","bar","","   ","foo foo foo","the end of foo","line 16 bar","line 17 foo","  line 18 baz","line 19 bar","line 20 foo","line 21 bar","    line 22 baz","line 23 foo","line 24 bar","line 25 foo","  line 26 baz","line 27 bar","line 28 foo","line 29 bar","  last foo line"]},"raw5":{"view":"raw","body":"one foo\n  two\nthree foo\n\n  five","lines":["one foo","  two","three foo","","  five"]},"one":{"view":"raw","body":"only foo line","lines":["only foo line"]},"wide":{"view":"raw","body":"\tfoo\tbar\n日本語 foo bar\nab\tcd foo\nplain text with foo here\n\t\tdeep\nx","lines":["\tfoo\tbar","日本語 foo bar","ab\tcd foo","plain text with foo here","\t\tdeep","x"]},"tree":{"view":"pretty","body":"{\"id\": 1, \"name\": \"foo\", \"tags\": [\"a\", \"b\", \"foo\"], \"owner\": {\"name\": \"bar\", \"email\": \"foo@x.test\", \"roles\": [\"admin\", \"dev\"]}, \"items\": [{\"id\": 1, \"name\": \"foo\"}, {\"id\": 2, \"name\": \"bar\"}, {\"id\": 3, \"name\": \"baz\"}], \"meta\": {\"a\": {\"b\": {\"c\": \"foo\"}}}, \"count\": 3, \"next\": null, \"tail\": \"foo\"}","lines":["{","  \"id\": 1,","  \"name\": \"foo\",","  \"tags\": [","    \"a\",","    \"b\",","    \"foo\"","  ],","  \"owner\": {","    \"name\": \"bar\",","    \"email\": \"foo@x.test\",","    \"roles\": [","      \"admin\",","      \"dev\"","    ]","  },","  \"items\": [","    {","      \"id\": 1,","      \"name\": \"foo\"","    },","    {","      \"id\": 2,","      \"name\": \"bar\"","    },","    {","      \"id\": 3,","      \"name\": \"baz\"","    }","  ],","  \"meta\": {","    \"a\": {","      \"b\": {","        \"c\": \"foo\"","      }","    }","  },","  \"count\": 3,","  \"next\": null,","  \"tail\": \"foo\"","}"]},"small":{"view":"pretty","body":"{\"a\": {\"b\": {\"c\": 1}, \"d\": 2}, \"e\": [1, 2]}","lines":["{","  \"a\": {","    \"b\": {","      \"c\": 1","    },","    \"d\": 2","  },","  \"e\": [","    1,","    2","  ]","}"]}}}}
+{"id":"column/$","body":"raw30","keys":"$","expect":{"mode":"n","cursor":[1,11],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"column/$0","body":"raw30","keys":"$0","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"column/$5G","body":"raw30","keys":"$5G","expect":{"mode":"n","cursor":[5,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"column/$<C-d>","body":"raw30","keys":"$<C-d>","expect":{"mode":"n","cursor":[12,1],"top":8,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"column/$G","body":"raw30","keys":"$G","expect":{"mode":"n","cursor":[30,3],"top":8,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"column/$gg","body":"raw30","keys":"$gg","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"column/$h","body":"raw30","keys":"$h","expect":{"mode":"n","cursor":[1,10],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"column/$j","body":"raw30","keys":"$j","expect":{"mode":"n","cursor":[2,9],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"column/$jj","body":"raw30","keys":"$jj","expect":{"mode":"n","cursor":[3,7],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"column//baz<CR>","body":"raw30","keys":"/baz<CR>","expect":{"mode":"n","cursor":[1,9],"top":1,"reg":"","regtype":"v","search":"baz","fwd":1,"closed":[],"msg":null}}
+{"id":"column//baz<CR>$","body":"raw30","keys":"/baz<CR>$","expect":{"mode":"n","cursor":[1,11],"top":1,"reg":"","regtype":"v","search":"baz","fwd":1,"closed":[],"msg":null}}
+{"id":"column//baz<CR>0","body":"raw30","keys":"/baz<CR>0","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"baz","fwd":1,"closed":[],"msg":null}}
+{"id":"column//baz<CR>10zt","body":"raw30","keys":"/baz<CR>10zt","expect":{"mode":"n","cursor":[10,9],"top":10,"reg":"","regtype":"v","search":"baz","fwd":1,"closed":[],"msg":null}}
+{"id":"column//baz<CR><C-d>","body":"raw30","keys":"/baz<CR><C-d>","expect":{"mode":"n","cursor":[12,1],"top":8,"reg":"","regtype":"v","search":"baz","fwd":1,"closed":[],"msg":null}}
+{"id":"column//baz<CR><CR>","body":"raw30","keys":"/baz<CR><CR>","expect":{"mode":"n","cursor":[2,3],"top":1,"reg":"","regtype":"v","search":"baz","fwd":1,"closed":[],"msg":null}}
+{"id":"column//baz<CR><Space>","body":"raw30","keys":"/baz<CR><Space>","expect":{"mode":"n","cursor":[1,10],"top":1,"reg":"","regtype":"v","search":"baz","fwd":1,"closed":[],"msg":null}}
+{"id":"column//baz<CR>G","body":"raw30","keys":"/baz<CR>G","expect":{"mode":"n","cursor":[30,3],"top":8,"reg":"","regtype":"v","search":"baz","fwd":1,"closed":[],"msg":null}}
+{"id":"column//baz<CR>j","body":"raw30","keys":"/baz<CR>j","expect":{"mode":"n","cursor":[2,9],"top":1,"reg":"","regtype":"v","search":"baz","fwd":1,"closed":[],"msg":null}}
+{"id":"column//baz<CR>jj","body":"raw30","keys":"/baz<CR>jj","expect":{"mode":"n","cursor":[3,7],"top":1,"reg":"","regtype":"v","search":"baz","fwd":1,"closed":[],"msg":null}}
+{"id":"column//baz<CR>k","body":"raw30","keys":"/baz<CR>k","expect":{"mode":"n","cursor":[1,9],"top":1,"reg":"","regtype":"v","search":"baz","fwd":1,"closed":[],"msg":null}}
+{"id":"column//baz<CR>zt","body":"raw30","keys":"/baz<CR>zt","expect":{"mode":"n","cursor":[1,9],"top":1,"reg":"","regtype":"v","search":"baz","fwd":1,"closed":[],"msg":null}}
+{"id":"column//café<CR>j","body":"raw30","keys":"/café<CR>j","expect":{"mode":"n","cursor":[10,7],"top":1,"reg":"","regtype":"v","search":"café","fwd":1,"closed":[],"msg":null}}
+{"id":"column//indent<CR>j","body":"raw30","keys":"/indent<CR>j","expect":{"mode":"n","cursor":[11,3],"top":1,"reg":"","regtype":"v","search":"indent","fwd":1,"closed":[],"msg":null}}
+{"id":"column/0","body":"raw30","keys":"0","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"column/3l","body":"raw30","keys":"3l","expect":{"mode":"n","cursor":[1,4],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"column/3lG","body":"raw30","keys":"3lG","expect":{"mode":"n","cursor":[30,3],"top":8,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"column/3lj","body":"raw30","keys":"3lj","expect":{"mode":"n","cursor":[2,4],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"column/l","body":"raw30","keys":"l","expect":{"mode":"n","cursor":[1,2],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"column2/$*","body":"raw30","keys":"$*","expect":{"mode":"n","cursor":[3,5],"top":1,"reg":"","regtype":"v","search":"\\<baz\\>","fwd":1,"closed":[],"msg":null}}
+{"id":"column2/$0j","body":"raw30","keys":"$0j","expect":{"mode":"n","cursor":[2,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"column2/$10zt","body":"raw30","keys":"$10zt","expect":{"mode":"n","cursor":[10,11],"top":10,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"column2/$10zz","body":"raw30","keys":"$10zz","expect":{"mode":"n","cursor":[10,11],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"column2/$3h","body":"raw30","keys":"$3h","expect":{"mode":"n","cursor":[1,8],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"column2/$9h","body":"raw30","keys":"$9h","expect":{"mode":"n","cursor":[1,2],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"column2/$<C-End>k","body":"raw30","keys":"$<C-End>k","expect":{"mode":"n","cursor":[29,11],"top":8,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"column2/$<C-d>","body":"raw30","keys":"$<C-d>","expect":{"mode":"n","cursor":[12,1],"top":8,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"column2/$<C-f>","body":"raw30","keys":"$<C-f>","expect":{"mode":"n","cursor":[22,5],"top":22,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"column2/$<Home>","body":"raw30","keys":"$<Home>","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"column2/$<Left>","body":"raw30","keys":"$<Left>","expect":{"mode":"n","cursor":[1,10],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"column2/$G","body":"raw30","keys":"$G","expect":{"mode":"n","cursor":[30,3],"top":8,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"column2/$Gk","body":"raw30","keys":"$Gk","expect":{"mode":"n","cursor":[29,3],"top":8,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"column2/$N","body":"raw30","keys":"$N","expect":{"mode":"n","cursor":[1,11],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":"No previous regular expression"}}
+{"id":"column2/$jj0","body":"raw30","keys":"$jj0","expect":{"mode":"n","cursor":[3,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"column2/$k","body":"raw30","keys":"$k","expect":{"mode":"n","cursor":[1,11],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"column2/$l","body":"raw30","keys":"$l","expect":{"mode":"n","cursor":[1,11],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"column2/$n","body":"raw30","keys":"$n","expect":{"mode":"n","cursor":[1,11],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":"No previous regular expression"}}
+{"id":"column2/$zt","body":"raw30","keys":"$zt","expect":{"mode":"n","cursor":[1,11],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"column2//foo<CR>jN","body":"raw30","keys":"/foo<CR>jN","expect":{"mode":"n","cursor":[2,7],"top":1,"reg":"","regtype":"v","search":"foo","fwd":1,"closed":[],"msg":null}}
+{"id":"column2//foo<CR>jn","body":"raw30","keys":"/foo<CR>jn","expect":{"mode":"n","cursor":[5,1],"top":1,"reg":"","regtype":"v","search":"foo","fwd":1,"closed":[],"msg":null}}
+{"id":"column2//foo<CR>n","body":"raw30","keys":"/foo<CR>n","expect":{"mode":"n","cursor":[5,1],"top":1,"reg":"","regtype":"v","search":"foo","fwd":1,"closed":[],"msg":null}}
+{"id":"column2//item<CR>$j","body":"raw30","keys":"/item<CR>$j","expect":{"mode":"n","cursor":[7,14],"top":1,"reg":"","regtype":"v","search":"item","fwd":1,"closed":[],"msg":null}}
+{"id":"column2//item<CR>j","body":"raw30","keys":"/item<CR>j","expect":{"mode":"n","cursor":[7,3],"top":1,"reg":"","regtype":"v","search":"item","fwd":1,"closed":[],"msg":null}}
+{"id":"column2//item<CR>jjj","body":"raw30","keys":"/item<CR>jjj","expect":{"mode":"n","cursor":[9,3],"top":1,"reg":"","regtype":"v","search":"item","fwd":1,"closed":[],"msg":null}}
+{"id":"column2/0#","body":"raw30","keys":"0#","expect":{"mode":"n","cursor":[30,8],"top":8,"reg":"","regtype":"v","search":"\\<foo\\>","fwd":0,"closed":[],"msg":"search hit TOP, continuing at BOTTOM"}}
+{"id":"column2/10G4l*","body":"raw30","keys":"10G4l*","expect":{"mode":"n","cursor":[10,12],"top":1,"reg":"","regtype":"v","search":"\\<indent\\>","fwd":1,"closed":[],"msg":"search hit BOTTOM, continuing at TOP"}}
+{"id":"column2/10G5l#","body":"raw30","keys":"10G5l#","expect":{"mode":"n","cursor":[10,12],"top":1,"reg":"","regtype":"v","search":"\\<indent\\>","fwd":0,"closed":[],"msg":"search hit TOP, continuing at BOTTOM"}}
+{"id":"column2/10G8l*","body":"raw30","keys":"10G8l*","expect":{"mode":"n","cursor":[10,12],"top":1,"reg":"","regtype":"v","search":"\\<indent\\>","fwd":1,"closed":[],"msg":"search hit BOTTOM, continuing at TOP"}}
+{"id":"column2/14G$N","body":"raw30","keys":"14G$N","expect":{"mode":"n","cursor":[14,11],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":"No previous regular expression"}}
+{"id":"column2/14G$n","body":"raw30","keys":"14G$n","expect":{"mode":"n","cursor":[14,11],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":"No previous regular expression"}}
+{"id":"column2/15G$#","body":"raw30","keys":"15G$#","expect":{"mode":"n","cursor":[14,9],"top":1,"reg":"","regtype":"v","search":"\\<foo\\>","fwd":0,"closed":[],"msg":null}}
+{"id":"column2/15G$*","body":"raw30","keys":"15G$*","expect":{"mode":"n","cursor":[17,9],"top":1,"reg":"","regtype":"v","search":"\\<foo\\>","fwd":1,"closed":[],"msg":null}}
+{"id":"column2/2$","body":"raw30","keys":"2$","expect":{"mode":"n","cursor":[2,9],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"column2/29G3$","body":"raw30","keys":"29G3$","expect":{"mode":"n","cursor":[30,15],"top":8,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"column2/30G2$","body":"raw30","keys":"30G2$","expect":{"mode":"n","cursor":[30,3],"top":8,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"column2/3<End>","body":"raw30","keys":"3<End>","expect":{"mode":"n","cursor":[3,7],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"column2/3<Right>","body":"raw30","keys":"3<Right>","expect":{"mode":"n","cursor":[1,4],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"column2/3h","body":"raw30","keys":"3h","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"column2/3lG3k","body":"raw30","keys":"3lG3k","expect":{"mode":"n","cursor":[27,3],"top":8,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"column2/3ljjj","body":"raw30","keys":"3ljjj","expect":{"mode":"n","cursor":[4,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"column2/5G3l*","body":"raw30","keys":"5G3l*","expect":{"mode":"n","cursor":[7,12],"top":1,"reg":"","regtype":"v","search":"\\<bar\\>","fwd":1,"closed":[],"msg":null}}
+{"id":"column2/5G4l*","body":"raw30","keys":"5G4l*","expect":{"mode":"n","cursor":[7,12],"top":1,"reg":"","regtype":"v","search":"\\<bar\\>","fwd":1,"closed":[],"msg":null}}
+{"id":"column2/5G7l*","body":"raw30","keys":"5G7l*","expect":{"mode":"n","cursor":[18,11],"top":1,"reg":"","regtype":"v","search":"\\<baz\\>","fwd":1,"closed":[],"msg":null}}
+{"id":"column2/5G8l*","body":"raw30","keys":"5G8l*","expect":{"mode":"n","cursor":[18,11],"top":1,"reg":"","regtype":"v","search":"\\<baz\\>","fwd":1,"closed":[],"msg":null}}
+{"id":"column2/5l","body":"raw30","keys":"5l","expect":{"mode":"n","cursor":[1,6],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"column2/6G7l*","body":"raw30","keys":"6G7l*","expect":{"mode":"n","cursor":[9,12],"top":1,"reg":"","regtype":"v","search":"\\<foo\\>","fwd":1,"closed":[],"msg":null}}
+{"id":"column2/6G9l*","body":"raw30","keys":"6G9l*","expect":{"mode":"n","cursor":[9,12],"top":1,"reg":"","regtype":"v","search":"\\<foo\\>","fwd":1,"closed":[],"msg":null}}
+{"id":"column2/99l","body":"raw30","keys":"99l","expect":{"mode":"n","cursor":[1,11],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"column2/9G6l*","body":"raw30","keys":"9G6l*","expect":{"mode":"n","cursor":[9,7],"top":1,"reg":"","regtype":"v","search":"\\<café\\>","fwd":1,"closed":[],"msg":"search hit BOTTOM, continuing at TOP"}}
+{"id":"column2/9G7l*","body":"raw30","keys":"9G7l*","expect":{"mode":"n","cursor":[9,7],"top":1,"reg":"","regtype":"v","search":"\\<café\\>","fwd":1,"closed":[],"msg":"search hit BOTTOM, continuing at TOP"}}
+{"id":"column2/9Gll*","body":"raw30","keys":"9Gll*","expect":{"mode":"n","cursor":[9,1],"top":1,"reg":"","regtype":"v","search":"\\<naïve\\>","fwd":1,"closed":[],"msg":"search hit BOTTOM, continuing at TOP"}}
+{"id":"column2/<End>","body":"raw30","keys":"<End>","expect":{"mode":"n","cursor":[1,11],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"column2/<Right>","body":"raw30","keys":"<Right>","expect":{"mode":"n","cursor":[1,2],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"enter/$2<Space>","body":"raw30","keys":"$2<Space>","expect":{"mode":"n","cursor":[2,2],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"enter/$<Space>","body":"raw30","keys":"$<Space>","expect":{"mode":"n","cursor":[2,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"enter/100<Space>","body":"raw30","keys":"100<Space>","expect":{"mode":"n","cursor":[10,18],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"enter/12G<CR>","body":"raw30","keys":"12G<CR>","expect":{"mode":"n","cursor":[13,3],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"enter/12G<Space>","body":"raw30","keys":"12G<Space>","expect":{"mode":"n","cursor":[13,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"enter/13G<Space>","body":"raw30","keys":"13G<Space>","expect":{"mode":"n","cursor":[14,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"enter/29G3<CR>","body":"raw30","keys":"29G3<CR>","expect":{"mode":"n","cursor":[30,3],"top":8,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"enter/29G<CR>","body":"raw30","keys":"29G<CR>","expect":{"mode":"n","cursor":[30,3],"top":8,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"enter/3<CR>","body":"raw30","keys":"3<CR>","expect":{"mode":"n","cursor":[4,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"enter/3<Space>","body":"raw30","keys":"3<Space>","expect":{"mode":"n","cursor":[1,4],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"enter/3G$<Space>","body":"raw30","keys":"3G$<Space>","expect":{"mode":"n","cursor":[4,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"enter/3G<CR>","body":"raw30","keys":"3G<CR>","expect":{"mode":"n","cursor":[4,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"enter/40<CR>","body":"raw30","keys":"40<CR>","expect":{"mode":"n","cursor":[30,3],"top":8,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"enter/4G<Space>","body":"raw30","keys":"4G<Space>","expect":{"mode":"n","cursor":[5,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"enter/8G<Space>","body":"raw30","keys":"8G<Space>","expect":{"mode":"n","cursor":[9,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"enter/<CR>","body":"raw30","keys":"<CR>","expect":{"mode":"n","cursor":[2,3],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"enter/<Space>","body":"raw30","keys":"<Space>","expect":{"mode":"n","cursor":[1,2],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"enter/G$<Space>","body":"raw30","keys":"G$<Space>","expect":{"mode":"n","cursor":[30,15],"top":8,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"enter/G<CR>","body":"raw30","keys":"G<CR>","expect":{"mode":"n","cursor":[30,3],"top":8,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"fold//bar<CR>zc","body":"tree","keys":"/bar<CR>zc","expect":{"mode":"n","cursor":[10,14],"top":1,"reg":"","regtype":"v","search":"bar","fwd":1,"closed":[[9,16]],"msg":null}}
+{"id":"fold//bar<CR>zczo","body":"tree","keys":"/bar<CR>zczo","expect":{"mode":"n","cursor":[10,14],"top":1,"reg":"","regtype":"v","search":"bar","fwd":1,"closed":[],"msg":null}}
+{"id":"fold//dev<CR>zcj","body":"tree","keys":"/dev<CR>zcj","expect":{"mode":"n","cursor":[16,4],"top":1,"reg":"","regtype":"v","search":"dev","fwd":1,"closed":[[12,15]],"msg":null}}
+{"id":"fold/11Gzcj","body":"tree","keys":"11Gzcj","expect":{"mode":"n","cursor":[17,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[9,16]],"msg":null}}
+{"id":"fold/11Gzck","body":"tree","keys":"11Gzck","expect":{"mode":"n","cursor":[8,4],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[9,16]],"msg":null}}
+{"id":"fold/12Gzc5j","body":"tree","keys":"12Gzc5j","expect":{"mode":"n","cursor":[20,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[12,15]],"msg":null}}
+{"id":"fold/5Gzc","body":"tree","keys":"5Gzc","expect":{"mode":"n","cursor":[5,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null}}
+{"id":"fold/5Gzc3yy","body":"tree","keys":"5Gzc3yy","expect":{"mode":"n","cursor":[4,1],"top":1,"reg":"  \"tags\": [\n    \"a\",\n    \"b\",\n    \"foo\"\n  ],\n  \"owner\": {\n    \"name\": \"bar\",\n","regtype":"V","search":"","fwd":1,"closed":[[4,8]],"msg":"7 lines yanked"}}
+{"id":"fold/5GzcVy","body":"tree","keys":"5GzcVy","expect":{"mode":"n","cursor":[4,1],"top":1,"reg":"  \"tags\": [\n    \"a\",\n    \"b\",\n    \"foo\"\n  ],\n","regtype":"V","search":"","fwd":1,"closed":[[4,8]],"msg":"5 lines yanked"}}
+{"id":"fold/5Gzcj","body":"tree","keys":"5Gzcj","expect":{"mode":"n","cursor":[9,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null}}
+{"id":"fold/5Gzck","body":"tree","keys":"5Gzck","expect":{"mode":"n","cursor":[3,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null}}
+{"id":"fold/5Gzcyy","body":"tree","keys":"5Gzcyy","expect":{"mode":"n","cursor":[4,1],"top":1,"reg":"  \"tags\": [\n    \"a\",\n    \"b\",\n    \"foo\"\n  ],\n","regtype":"V","search":"","fwd":1,"closed":[[4,8]],"msg":"5 lines yanked"}}
+{"id":"fold/5Gzo","body":"tree","keys":"5Gzo","expect":{"mode":"n","cursor":[5,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"fold/6G2zc","body":"tree","keys":"6G2zc","expect":{"mode":"n","cursor":[6,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[1,41]],"msg":null}}
+{"id":"fold/6G9zc","body":"tree","keys":"6G9zc","expect":{"mode":"n","cursor":[6,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[1,41]],"msg":null}}
+{"id":"fold/6Gza","body":"tree","keys":"6Gza","expect":{"mode":"n","cursor":[6,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null}}
+{"id":"fold/6Gzaza","body":"tree","keys":"6Gzaza","expect":{"mode":"n","cursor":[6,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"fold/6Gzc","body":"tree","keys":"6Gzc","expect":{"mode":"n","cursor":[6,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null}}
+{"id":"fold/6Gzc$","body":"tree","keys":"6Gzc$","expect":{"mode":"n","cursor":[6,8],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"fold/6Gzc*","body":"tree","keys":"6Gzc*","expect":{"mode":"n","cursor":[33,8],"top":11,"reg":"","regtype":"v","search":"\\<b\\>","fwd":1,"closed":[[4,8]],"msg":null}}
+{"id":"fold/6Gzc/foo<CR>","body":"tree","keys":"6Gzc/foo<CR>","expect":{"mode":"n","cursor":[11,15],"top":1,"reg":"","regtype":"v","search":"foo","fwd":1,"closed":[[4,8]],"msg":null}}
+{"id":"fold/6Gzc0","body":"tree","keys":"6Gzc0","expect":{"mode":"n","cursor":[6,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"fold/6Gzc<C-d>","body":"tree","keys":"6Gzc<C-d>","expect":{"mode":"n","cursor":[17,3],"top":16,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null}}
+{"id":"fold/6Gzc<C-f>","body":"tree","keys":"6Gzc<C-f>","expect":{"mode":"n","cursor":[26,5],"top":26,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null}}
+{"id":"fold/6Gzc<C-u>","body":"tree","keys":"6Gzc<C-u>","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null}}
+{"id":"fold/6Gzc<CR>","body":"tree","keys":"6Gzc<CR>","expect":{"mode":"n","cursor":[9,3],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null}}
+{"id":"fold/6Gzc<Space>","body":"tree","keys":"6Gzc<Space>","expect":{"mode":"n","cursor":[6,6],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"fold/6Gzc?foo<CR>","body":"tree","keys":"6Gzc?foo<CR>","expect":{"mode":"n","cursor":[3,12],"top":1,"reg":"","regtype":"v","search":"foo","fwd":0,"closed":[[4,8]],"msg":null}}
+{"id":"fold/6GzcG","body":"tree","keys":"6GzcG","expect":{"mode":"n","cursor":[41,1],"top":19,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null}}
+{"id":"fold/6GzcN","body":"tree","keys":"6GzcN","expect":{"mode":"n","cursor":[6,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":"No previous regular expression"}}
+{"id":"fold/6GzcV3j","body":"tree","keys":"6GzcV3j","expect":{"mode":"V","cursor":[11,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null,"visual":[4,1]}}
+{"id":"fold/6GzcVjo","body":"tree","keys":"6GzcVjo","expect":{"mode":"V","cursor":[4,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null,"visual":[9,5]}}
+{"id":"fold/6GzcVjy","body":"tree","keys":"6GzcVjy","expect":{"mode":"n","cursor":[4,1],"top":1,"reg":"  \"tags\": [\n    \"a\",\n    \"b\",\n    \"foo\"\n  ],\n  \"owner\": {\n","regtype":"V","search":"","fwd":1,"closed":[[4,8]],"msg":"6 lines yanked"}}
+{"id":"fold/6Gzcj","body":"tree","keys":"6Gzcj","expect":{"mode":"n","cursor":[9,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null}}
+{"id":"fold/6Gzcjzo","body":"tree","keys":"6Gzcjzo","expect":{"mode":"n","cursor":[9,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null}}
+{"id":"fold/6Gzck","body":"tree","keys":"6Gzck","expect":{"mode":"n","cursor":[3,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null}}
+{"id":"fold/6GzckVjy","body":"tree","keys":"6GzckVjy","expect":{"mode":"n","cursor":[3,1],"top":1,"reg":"  \"name\": \"foo\",\n  \"tags\": [\n    \"a\",\n    \"b\",\n    \"foo\"\n  ],\n","regtype":"V","search":"","fwd":1,"closed":[[4,8]],"msg":"6 lines yanked"}}
+{"id":"fold/6Gzckzo","body":"tree","keys":"6Gzckzo","expect":{"mode":"n","cursor":[3,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null}}
+{"id":"fold/6Gzcl","body":"tree","keys":"6Gzcl","expect":{"mode":"n","cursor":[6,6],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"fold/6Gzcyy","body":"tree","keys":"6Gzcyy","expect":{"mode":"n","cursor":[4,1],"top":1,"reg":"  \"tags\": [\n    \"a\",\n    \"b\",\n    \"foo\"\n  ],\n","regtype":"V","search":"","fwd":1,"closed":[[4,8]],"msg":"5 lines yanked"}}
+{"id":"fold/6Gzczb","body":"tree","keys":"6Gzczb","expect":{"mode":"n","cursor":[6,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null}}
+{"id":"fold/6Gzczo","body":"tree","keys":"6Gzczo","expect":{"mode":"n","cursor":[6,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"fold/6Gzczt","body":"tree","keys":"6Gzczt","expect":{"mode":"n","cursor":[6,5],"top":4,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null}}
+{"id":"fold/6Gzozc","body":"tree","keys":"6Gzozc","expect":{"mode":"n","cursor":[6,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null}}
+{"id":"fold/7Gzc*","body":"tree","keys":"7Gzc*","expect":{"mode":"n","cursor":[11,15],"top":1,"reg":"","regtype":"v","search":"\\<foo\\>","fwd":1,"closed":[[4,8]],"msg":null}}
+{"id":"fold/Gzc","body":"tree","keys":"Gzc","expect":{"mode":"n","cursor":[41,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[1,41]],"msg":null}}
+{"id":"fold/Gzck","body":"tree","keys":"Gzck","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[1,41]],"msg":null}}
+{"id":"fold/zM","body":"tree","keys":"zM","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[1,41]],"msg":null}}
+{"id":"fold/zM/foo<CR>","body":"tree","keys":"zM/foo<CR>","expect":{"mode":"n","cursor":[3,12],"top":1,"reg":"","regtype":"v","search":"foo","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":"search hit BOTTOM, continuing at TOP"}}
+{"id":"fold/zM2zo","body":"tree","keys":"zM2zo","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"fold/zM5G","body":"tree","keys":"zM5G","expect":{"mode":"n","cursor":[5,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[1,41]],"msg":null}}
+{"id":"fold/zM9zo","body":"tree","keys":"zM9zo","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"fold/zMG","body":"tree","keys":"zMG","expect":{"mode":"n","cursor":[41,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[1,41]],"msg":null}}
+{"id":"fold/zMV","body":"tree","keys":"zMV","expect":{"mode":"V","cursor":[41,2],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[1,41]],"msg":null,"visual":[1,1]}}
+{"id":"fold/zMgg","body":"tree","keys":"zMgg","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[1,41]],"msg":null}}
+{"id":"fold/zMj","body":"tree","keys":"zMj","expect":{"mode":"n","cursor":[41,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[1,41]],"msg":null}}
+{"id":"fold/zMk","body":"tree","keys":"zMk","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[1,41]],"msg":null}}
+{"id":"fold/zMzR","body":"tree","keys":"zMzR","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"fold/zMza","body":"tree","keys":"zMza","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"fold/zMzc","body":"tree","keys":"zMzc","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[1,41]],"msg":null}}
+{"id":"fold/zMzo","body":"tree","keys":"zMzo","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"fold/zMzo/foo<CR>","body":"tree","keys":"zMzo/foo<CR>","expect":{"mode":"n","cursor":[3,12],"top":1,"reg":"","regtype":"v","search":"foo","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"fold/zMzo10G","body":"tree","keys":"zMzo10G","expect":{"mode":"n","cursor":[10,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"fold/zMzo10Gj","body":"tree","keys":"zMzo10Gj","expect":{"mode":"n","cursor":[17,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"fold/zMzo10Gk","body":"tree","keys":"zMzo10Gk","expect":{"mode":"n","cursor":[4,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"fold/zMzo10Gyy","body":"tree","keys":"zMzo10Gyy","expect":{"mode":"n","cursor":[9,1],"top":1,"reg":"  \"owner\": {\n    \"name\": \"bar\",\n    \"email\": \"foo@x.test\",\n    \"roles\": [\n      \"admin\",\n      \"dev\"\n    ]\n  },\n","regtype":"V","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":"8 lines yanked"}}
+{"id":"fold/zMzo10Gzo","body":"tree","keys":"zMzo10Gzo","expect":{"mode":"n","cursor":[10,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[12,15],[17,30],[31,37]],"msg":null}}
+{"id":"fold/zMzo5G","body":"tree","keys":"zMzo5G","expect":{"mode":"n","cursor":[5,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"fold/zMzo5j","body":"tree","keys":"zMzo5j","expect":{"mode":"n","cursor":[17,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"fold/zMzo6G","body":"tree","keys":"zMzo6G","expect":{"mode":"n","cursor":[6,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"fold/zMzo6G*","body":"tree","keys":"zMzo6G*","expect":{"mode":"n","cursor":[33,8],"top":1,"reg":"","regtype":"v","search":"\\<b\\>","fwd":1,"closed":[[4,8],[9,16],[17,30]],"msg":null}}
+{"id":"fold/zMzo6G<Space>","body":"tree","keys":"zMzo6G<Space>","expect":{"mode":"n","cursor":[6,6],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"fold/zMzo6Gj","body":"tree","keys":"zMzo6Gj","expect":{"mode":"n","cursor":[9,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"fold/zMzo6Gzo","body":"tree","keys":"zMzo6Gzo","expect":{"mode":"n","cursor":[6,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"fold/zMzo6Gzoj","body":"tree","keys":"zMzo6Gzoj","expect":{"mode":"n","cursor":[7,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"fold/zMzoG","body":"tree","keys":"zMzoG","expect":{"mode":"n","cursor":[41,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"fold/zMzoGk","body":"tree","keys":"zMzoGk","expect":{"mode":"n","cursor":[40,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"fold/zMzoGzc","body":"tree","keys":"zMzoGzc","expect":{"mode":"n","cursor":[41,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[1,41]],"msg":null}}
+{"id":"fold/zMzoVGy","body":"tree","keys":"zMzoVGy","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"{\n  \"id\": 1,\n  \"name\": \"foo\",\n  \"tags\": [\n    \"a\",\n    \"b\",\n    \"foo\"\n  ],\n  \"owner\": {\n    \"name\": \"bar\",\n    \"email\": \"foo@x.test\",\n    \"roles\": [\n      \"admin\",\n      \"dev\"\n    ]\n  },\n  \"items\": [\n    {\n      \"id\": 1,\n      \"name\": \"foo\"\n    },\n    {\n      \"id\": 2,\n      \"name\": \"bar\"\n    },\n    {\n      \"id\": 3,\n      \"name\": \"baz\"\n    }\n  ],\n  \"meta\": {\n    \"a\": {\n      \"b\": {\n        \"c\": \"foo\"\n      }\n    }\n  },\n  \"count\": 3,\n  \"next\": null,\n  \"tail\": \"foo\"\n}\n","regtype":"V","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":"41 lines yanked"}}
+{"id":"fold/zMzoVj","body":"tree","keys":"zMzoVj","expect":{"mode":"V","cursor":[2,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null,"visual":[1,1]}}
+{"id":"fold/zMzoVjy","body":"tree","keys":"zMzoVjy","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"{\n  \"id\": 1,\n","regtype":"V","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"fold/zMzoj","body":"tree","keys":"zMzoj","expect":{"mode":"n","cursor":[2,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"fold/zMzoj$","body":"tree","keys":"zMzoj$","expect":{"mode":"n","cursor":[2,10],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"fold/zMzoj*","body":"tree","keys":"zMzoj*","expect":{"mode":"n","cursor":[19,8],"top":1,"reg":"","regtype":"v","search":"\\<id\\>","fwd":1,"closed":[[4,8],[9,16],[22,25],[26,29],[31,37]],"msg":null}}
+{"id":"fold/zMzojj","body":"tree","keys":"zMzojj","expect":{"mode":"n","cursor":[3,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"fold/zR","body":"tree","keys":"zR","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"fold/za","body":"tree","keys":"za","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[1,41]],"msg":null}}
+{"id":"fold/zc","body":"tree","keys":"zc","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[1,41]],"msg":null}}
+{"id":"fold/zcza","body":"tree","keys":"zcza","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"fold/zczo","body":"tree","keys":"zczo","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"fold/zo","body":"tree","keys":"zo","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"foldmove/12Gzc10G<C-d>","body":"tree","keys":"12Gzc10G<C-d>","expect":{"mode":"n","cursor":[21,5],"top":12,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[12,15]],"msg":null}}
+{"id":"foldmove/18G2zc2za","body":"tree","keys":"18G2zc2za","expect":{"mode":"n","cursor":[18,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"foldmove/18G2zcza","body":"tree","keys":"18G2zcza","expect":{"mode":"n","cursor":[18,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[18,21]],"msg":null}}
+{"id":"foldmove/18G3zc","body":"tree","keys":"18G3zc","expect":{"mode":"n","cursor":[18,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[1,41]],"msg":null}}
+{"id":"foldmove/18G3zcj","body":"tree","keys":"18G3zcj","expect":{"mode":"n","cursor":[41,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[1,41]],"msg":null}}
+{"id":"foldmove/18G3zck","body":"tree","keys":"18G3zck","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[1,41]],"msg":null}}
+{"id":"foldmove/18Gzaza","body":"tree","keys":"18Gzaza","expect":{"mode":"n","cursor":[18,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"foldmove/18Gzczc","body":"tree","keys":"18Gzczc","expect":{"mode":"n","cursor":[18,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[17,30]],"msg":null}}
+{"id":"foldmove/18Gzczczc","body":"tree","keys":"18Gzczczc","expect":{"mode":"n","cursor":[18,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[1,41]],"msg":null}}
+{"id":"foldmove/20G6Gzc<C-u>","body":"tree","keys":"20G6Gzc<C-u>","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null}}
+{"id":"foldmove/30Gzc<C-d>","body":"tree","keys":"30Gzc<C-d>","expect":{"mode":"n","cursor":[41,1],"top":8,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[17,30]],"msg":null}}
+{"id":"foldmove/30Gzc<C-u>","body":"tree","keys":"30Gzc<C-u>","expect":{"mode":"n","cursor":[14,7],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[17,30]],"msg":null}}
+{"id":"foldmove/35Gzc<C-b>","body":"tree","keys":"35Gzc<C-b>","expect":{"mode":"n","cursor":[14,7],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[33,35]],"msg":null}}
+{"id":"foldmove/35Gzc<C-f>","body":"tree","keys":"35Gzc<C-f>","expect":{"mode":"n","cursor":[36,5],"top":36,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[33,35]],"msg":null}}
+{"id":"foldmove/4Gzc12Gzc2G<C-d>","body":"tree","keys":"4Gzc12Gzc2G<C-d>","expect":{"mode":"n","cursor":[19,7],"top":19,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[12,15]],"msg":null}}
+{"id":"foldmove/4Gzc3G<C-d>","body":"tree","keys":"4Gzc3G<C-d>","expect":{"mode":"n","cursor":[16,3],"top":16,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null}}
+{"id":"foldmove/4Gzc<C-d>","body":"tree","keys":"4Gzc<C-d>","expect":{"mode":"n","cursor":[16,3],"top":16,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null}}
+{"id":"foldmove/4Gzcgg<C-d>","body":"tree","keys":"4Gzcgg<C-d>","expect":{"mode":"n","cursor":[16,3],"top":16,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null}}
+{"id":"foldmove/6Gzc$<Space>","body":"tree","keys":"6Gzc$<Space>","expect":{"mode":"n","cursor":[7,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"foldmove/6Gzc0<Space>","body":"tree","keys":"6Gzc0<Space>","expect":{"mode":"n","cursor":[6,2],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"foldmove/6Gzc3<C-d>","body":"tree","keys":"6Gzc3<C-d>","expect":{"mode":"n","cursor":[9,3],"top":4,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null}}
+{"id":"foldmove/6Gzc<C-d><C-d>","body":"tree","keys":"6Gzc<C-d><C-d>","expect":{"mode":"n","cursor":[28,7],"top":19,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null}}
+{"id":"foldmove/6Gzc<C-u>","body":"tree","keys":"6Gzc<C-u>","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null}}
+{"id":"foldmove/6Gzc<PageDown>","body":"tree","keys":"6Gzc<PageDown>","expect":{"mode":"n","cursor":[26,5],"top":26,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null}}
+{"id":"foldmove/8Gzc<C-d>","body":"tree","keys":"8Gzc<C-d>","expect":{"mode":"n","cursor":[19,7],"top":16,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null}}
+{"id":"foldmove/zM$","body":"tree","keys":"zM$","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"foldmove/zM0","body":"tree","keys":"zM0","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"foldmove/zM<C-End>","body":"tree","keys":"zM<C-End>","expect":{"mode":"n","cursor":[41,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"foldmove/zM<C-d>","body":"tree","keys":"zM<C-d>","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[1,41]],"msg":null}}
+{"id":"foldmove/zM<CR>","body":"tree","keys":"zM<CR>","expect":{"mode":"n","cursor":[41,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[1,41]],"msg":null}}
+{"id":"foldmove/zM<Space>","body":"tree","keys":"zM<Space>","expect":{"mode":"n","cursor":[2,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"foldmove/zMG<C-u>","body":"tree","keys":"zMG<C-u>","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[1,41]],"msg":null}}
+{"id":"foldmove/zMG<CR>","body":"tree","keys":"zMG<CR>","expect":{"mode":"n","cursor":[41,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[1,41]],"msg":null}}
+{"id":"foldmove/zMh","body":"tree","keys":"zMh","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[1,41]],"msg":null}}
+{"id":"foldmove/zMl","body":"tree","keys":"zMl","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[1,41]],"msg":null}}
+{"id":"foldmove/zMzo10Gza","body":"tree","keys":"zMzo10Gza","expect":{"mode":"n","cursor":[10,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[12,15],[17,30],[31,37]],"msg":null}}
+{"id":"foldmove/zMzo10Gzc","body":"tree","keys":"zMzo10Gzc","expect":{"mode":"n","cursor":[10,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[1,41]],"msg":null}}
+{"id":"foldmove/zMzo10Gzcj","body":"tree","keys":"zMzo10Gzcj","expect":{"mode":"n","cursor":[41,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[1,41]],"msg":null}}
+{"id":"foldmove/zMzo10Gzck","body":"tree","keys":"zMzo10Gzck","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[1,41]],"msg":null}}
+{"id":"foldmove/zMzo17G2zo","body":"tree","keys":"zMzo17G2zo","expect":{"mode":"n","cursor":[17,3],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[18,21],[22,25],[26,29],[31,37]],"msg":null}}
+{"id":"foldmove/zMzo17G2zoj","body":"tree","keys":"zMzo17G2zoj","expect":{"mode":"n","cursor":[18,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[18,21],[22,25],[26,29],[31,37]],"msg":null}}
+{"id":"foldmove/zMzo17G3zo","body":"tree","keys":"zMzo17G3zo","expect":{"mode":"n","cursor":[17,3],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[18,21],[22,25],[26,29],[31,37]],"msg":null}}
+{"id":"foldmove/zMzo17G9zo","body":"tree","keys":"zMzo17G9zo","expect":{"mode":"n","cursor":[17,3],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[18,21],[22,25],[26,29],[31,37]],"msg":null}}
+{"id":"foldmove/zMzo18G2zo","body":"tree","keys":"zMzo18G2zo","expect":{"mode":"n","cursor":[18,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[22,25],[26,29],[31,37]],"msg":null}}
+{"id":"foldmove/zMzo18Gzo","body":"tree","keys":"zMzo18Gzo","expect":{"mode":"n","cursor":[18,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[18,21],[22,25],[26,29],[31,37]],"msg":null}}
+{"id":"foldmove/zMzo2G3j","body":"tree","keys":"zMzo2G3j","expect":{"mode":"n","cursor":[9,3],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"foldmove/zMzo3<CR>","body":"tree","keys":"zMzo3<CR>","expect":{"mode":"n","cursor":[4,3],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"foldmove/zMzo5<C-End>","body":"tree","keys":"zMzo5<C-End>","expect":{"mode":"n","cursor":[5,8],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"foldmove/zMzo6<C-Home>","body":"tree","keys":"zMzo6<C-Home>","expect":{"mode":"n","cursor":[6,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"foldmove/zMzo6Gzc$j","body":"tree","keys":"zMzo6Gzc$j","expect":{"mode":"n","cursor":[7,9],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"foldmove/zMzo9j","body":"tree","keys":"zMzo9j","expect":{"mode":"n","cursor":[40,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"foldmove/zMzo<C-End>","body":"tree","keys":"zMzo<C-End>","expect":{"mode":"n","cursor":[41,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"foldmove/zMzo<C-d>","body":"tree","keys":"zMzo<C-d>","expect":{"mode":"n","cursor":[41,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"foldmove/zMzo<C-d><C-d>","body":"tree","keys":"zMzo<C-d><C-d>","expect":{"mode":"n","cursor":[41,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"foldmove/zMzo<C-u>","body":"tree","keys":"zMzo<C-u>","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"foldmove/zMzo<CR>","body":"tree","keys":"zMzo<CR>","expect":{"mode":"n","cursor":[2,3],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"foldmove/zMzoG$<Space>","body":"tree","keys":"zMzoG$<Space>","expect":{"mode":"n","cursor":[41,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"foldmove/zMzoG2zc","body":"tree","keys":"zMzoG2zc","expect":{"mode":"n","cursor":[41,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[1,41]],"msg":null}}
+{"id":"foldmove/zMzoG<C-b>","body":"tree","keys":"zMzoG<C-b>","expect":{"mode":"n","cursor":[41,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"foldmove/zMzoGk","body":"tree","keys":"zMzoGk","expect":{"mode":"n","cursor":[40,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"foldmove/zMzoGkk","body":"tree","keys":"zMzoGkk","expect":{"mode":"n","cursor":[39,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"foldmove/zMzoGzc","body":"tree","keys":"zMzoGzc","expect":{"mode":"n","cursor":[41,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[1,41]],"msg":null}}
+{"id":"foldmove/zMzoGzcj","body":"tree","keys":"zMzoGzcj","expect":{"mode":"n","cursor":[41,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[1,41]],"msg":null}}
+{"id":"foldmove/zMzoGzck","body":"tree","keys":"zMzoGzck","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[1,41]],"msg":null}}
+{"id":"foldmove/zMzoGzt","body":"tree","keys":"zMzoGzt","expect":{"mode":"n","cursor":[41,1],"top":41,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"foldmove/zMzoj$","body":"tree","keys":"zMzoj$","expect":{"mode":"n","cursor":[2,10],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"foldmove/zMzoj0","body":"tree","keys":"zMzoj0","expect":{"mode":"n","cursor":[2,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"foldmove/zMzoj5<Space>","body":"tree","keys":"zMzoj5<Space>","expect":{"mode":"n","cursor":[2,6],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"foldmove/zMzoj9j","body":"tree","keys":"zMzoj9j","expect":{"mode":"n","cursor":[41,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"foldmove/zMzoj<C-End>","body":"tree","keys":"zMzoj<C-End>","expect":{"mode":"n","cursor":[41,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"foldmove/zMzoj<CR>","body":"tree","keys":"zMzoj<CR>","expect":{"mode":"n","cursor":[3,3],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"foldmove/zMzoj<Space>","body":"tree","keys":"zMzoj<Space>","expect":{"mode":"n","cursor":[2,2],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"foldmove/zMzojjjjj","body":"tree","keys":"zMzojjjjj","expect":{"mode":"n","cursor":[17,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"foldmove/zMzojjjjjj","body":"tree","keys":"zMzojjjjjj","expect":{"mode":"n","cursor":[31,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"foldmove/zMzojzb","body":"tree","keys":"zMzojzb","expect":{"mode":"n","cursor":[2,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"foldsmall/2Gzc","body":"small","keys":"2Gzc","expect":{"mode":"n","cursor":[2,3],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[2,7]],"msg":null}}
+{"id":"foldsmall/3G2za","body":"small","keys":"3G2za","expect":{"mode":"n","cursor":[3,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[2,7]],"msg":null}}
+{"id":"foldsmall/3G2zc","body":"small","keys":"3G2zc","expect":{"mode":"n","cursor":[3,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[2,7]],"msg":null}}
+{"id":"foldsmall/3G3zc","body":"small","keys":"3G3zc","expect":{"mode":"n","cursor":[3,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[1,12]],"msg":null}}
+{"id":"foldsmall/3G9zc","body":"small","keys":"3G9zc","expect":{"mode":"n","cursor":[3,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[1,12]],"msg":null}}
+{"id":"foldsmall/3Gzaza","body":"small","keys":"3Gzaza","expect":{"mode":"n","cursor":[3,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"foldsmall/3Gzc","body":"small","keys":"3Gzc","expect":{"mode":"n","cursor":[3,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[3,5]],"msg":null}}
+{"id":"foldsmall/3Gzc*","body":"small","keys":"3Gzc*","expect":{"mode":"n","cursor":[3,6],"top":1,"reg":"","regtype":"v","search":"\\<b\\>","fwd":1,"closed":[],"msg":"search hit BOTTOM, continuing at TOP"}}
+{"id":"foldsmall/3Gzc2yy","body":"small","keys":"3Gzc2yy","expect":{"mode":"n","cursor":[3,1],"top":1,"reg":"    \"b\": {\n      \"c\": 1\n    },\n    \"d\": 2\n","regtype":"V","search":"","fwd":1,"closed":[[3,5]],"msg":"4 lines yanked"}}
+{"id":"foldsmall/3Gzc<CR>","body":"small","keys":"3Gzc<CR>","expect":{"mode":"n","cursor":[6,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[3,5]],"msg":null}}
+{"id":"foldsmall/3Gzc<Space>","body":"small","keys":"3Gzc<Space>","expect":{"mode":"n","cursor":[3,6],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"foldsmall/3GzcG","body":"small","keys":"3GzcG","expect":{"mode":"n","cursor":[12,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[3,5]],"msg":null}}
+{"id":"foldsmall/3Gzcgg","body":"small","keys":"3Gzcgg","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[3,5]],"msg":null}}
+{"id":"foldsmall/3Gzcyy","body":"small","keys":"3Gzcyy","expect":{"mode":"n","cursor":[3,1],"top":1,"reg":"    \"b\": {\n      \"c\": 1\n    },\n","regtype":"V","search":"","fwd":1,"closed":[[3,5]],"msg":"3 lines yanked"}}
+{"id":"foldsmall/3Gzcza","body":"small","keys":"3Gzcza","expect":{"mode":"n","cursor":[3,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"foldsmall/7Gzc","body":"small","keys":"7Gzc","expect":{"mode":"n","cursor":[7,3],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[2,7]],"msg":null}}
+{"id":"foldsmall/7Gzcj","body":"small","keys":"7Gzcj","expect":{"mode":"n","cursor":[8,3],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[2,7]],"msg":null}}
+{"id":"foldsmall/7Gzck","body":"small","keys":"7Gzck","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[2,7]],"msg":null}}
+{"id":"foldsmall/Gzc","body":"small","keys":"Gzc","expect":{"mode":"n","cursor":[12,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[1,12]],"msg":null}}
+{"id":"foldsmall/zM","body":"small","keys":"zM","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[1,12]],"msg":null}}
+{"id":"foldsmall/zM/1<CR>n","body":"small","keys":"zM/1<CR>n","expect":{"mode":"n","cursor":[9,5],"top":1,"reg":"","regtype":"v","search":"1","fwd":1,"closed":[],"msg":"search hit BOTTOM, continuing at TOP"}}
+{"id":"foldsmall/zM/2<CR>","body":"small","keys":"zM/2<CR>","expect":{"mode":"n","cursor":[6,10],"top":1,"reg":"","regtype":"v","search":"2","fwd":1,"closed":[[3,5],[8,11]],"msg":"search hit BOTTOM, continuing at TOP"}}
+{"id":"foldsmall/zM2zo","body":"small","keys":"zM2zo","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[2,7],[8,11]],"msg":null}}
+{"id":"foldsmall/zMzo","body":"small","keys":"zMzo","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[2,7],[8,11]],"msg":null}}
+{"id":"foldsmall/zMzo/2<CR>","body":"small","keys":"zMzo/2<CR>","expect":{"mode":"n","cursor":[6,10],"top":1,"reg":"","regtype":"v","search":"2","fwd":1,"closed":[[3,5],[8,11]],"msg":null}}
+{"id":"foldsmall/zMzo2Gzo","body":"small","keys":"zMzo2Gzo","expect":{"mode":"n","cursor":[2,3],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[3,5],[8,11]],"msg":null}}
+{"id":"foldsmall/zMzo3G","body":"small","keys":"zMzo3G","expect":{"mode":"n","cursor":[3,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[2,7],[8,11]],"msg":null}}
+{"id":"foldsmall/zMzo4G","body":"small","keys":"zMzo4G","expect":{"mode":"n","cursor":[4,7],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[2,7],[8,11]],"msg":null}}
+{"id":"foldsmall/zMzo4Gzo","body":"small","keys":"zMzo4Gzo","expect":{"mode":"n","cursor":[4,7],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[3,5],[8,11]],"msg":null}}
+{"id":"foldsmall/zMzoG","body":"small","keys":"zMzoG","expect":{"mode":"n","cursor":[12,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[2,7],[8,11]],"msg":null}}
+{"id":"foldsmall/zMzoj","body":"small","keys":"zMzoj","expect":{"mode":"n","cursor":[2,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[2,7],[8,11]],"msg":null}}
+{"id":"foldsmall/zMzoj*","body":"small","keys":"zMzoj*","expect":{"mode":"n","cursor":[2,4],"top":1,"reg":"","regtype":"v","search":"\\<a\\>","fwd":1,"closed":[[3,5],[8,11]],"msg":"search hit BOTTOM, continuing at TOP"}}
+{"id":"foldsmall/zMzoj2zo","body":"small","keys":"zMzoj2zo","expect":{"mode":"n","cursor":[2,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[3,5],[8,11]],"msg":null}}
+{"id":"foldsmall/zMzojVjy","body":"small","keys":"zMzojVjy","expect":{"mode":"n","cursor":[2,1],"top":1,"reg":"  \"a\": {\n    \"b\": {\n      \"c\": 1\n    },\n    \"d\": 2\n  },\n  \"e\": [\n    1,\n    2\n  ]\n","regtype":"V","search":"","fwd":1,"closed":[[2,7],[8,11]],"msg":"10 lines yanked"}}
+{"id":"foldsmall/zMzojyy","body":"small","keys":"zMzojyy","expect":{"mode":"n","cursor":[2,1],"top":1,"reg":"  \"a\": {\n    \"b\": {\n      \"c\": 1\n    },\n    \"d\": 2\n  },\n","regtype":"V","search":"","fwd":1,"closed":[[2,7],[8,11]],"msg":"6 lines yanked"}}
+{"id":"foldsmall/zMzojzc","body":"small","keys":"zMzojzc","expect":{"mode":"n","cursor":[2,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[1,12]],"msg":null}}
+{"id":"foldsmall/zMzojzcj","body":"small","keys":"zMzojzcj","expect":{"mode":"n","cursor":[12,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[1,12]],"msg":null}}
+{"id":"foldsmall/zMzojzck","body":"small","keys":"zMzojzck","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[1,12]],"msg":null}}
+{"id":"foldsmall/zMzojzo","body":"small","keys":"zMzojzo","expect":{"mode":"n","cursor":[2,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[3,5],[8,11]],"msg":null}}
+{"id":"foldsmall/zMzojzoj","body":"small","keys":"zMzojzoj","expect":{"mode":"n","cursor":[3,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[3,5],[8,11]],"msg":null}}
+{"id":"foldsmall/zMzojzojzo","body":"small","keys":"zMzojzojzo","expect":{"mode":"n","cursor":[3,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[8,11]],"msg":null}}
+{"id":"foldsmall/zMzozo","body":"small","keys":"zMzozo","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[2,7],[8,11]],"msg":null}}
+{"id":"foldsmall/zc","body":"small","keys":"zc","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[1,12]],"msg":null}}
+{"id":"foldvisual/18G$Vjzc","body":"tree","keys":"18G$Vjzc","expect":{"mode":"n","cursor":[18,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[18,21]],"msg":null}}
+{"id":"foldvisual/18GVzc","body":"tree","keys":"18GVzc","expect":{"mode":"n","cursor":[18,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[18,21]],"msg":null}}
+{"id":"foldvisual/2GV10jzc","body":"tree","keys":"2GV10jzc","expect":{"mode":"n","cursor":[2,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[1,41]],"msg":null}}
+{"id":"foldvisual/5GV5jzc","body":"tree","keys":"5GV5jzc","expect":{"mode":"n","cursor":[5,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16]],"msg":null}}
+{"id":"foldvisual/5GVj2zc","body":"tree","keys":"5GVj2zc","expect":{"mode":"n","cursor":[5,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null}}
+{"id":"foldvisual/5GVjza","body":"tree","keys":"5GVjza","expect":{"mode":"V","cursor":[8,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null,"visual":[4,1]}}
+{"id":"foldvisual/5GVjzaj","body":"tree","keys":"5GVjzaj","expect":{"mode":"V","cursor":[9,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null,"visual":[4,1]}}
+{"id":"foldvisual/5GVjzao","body":"tree","keys":"5GVjzao","expect":{"mode":"V","cursor":[4,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null,"visual":[8,5]}}
+{"id":"foldvisual/5GVjzc","body":"tree","keys":"5GVjzc","expect":{"mode":"n","cursor":[5,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null}}
+{"id":"foldvisual/5GVjzcj","body":"tree","keys":"5GVjzcj","expect":{"mode":"n","cursor":[9,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null}}
+{"id":"foldvisual/5GVzc","body":"tree","keys":"5GVzc","expect":{"mode":"n","cursor":[5,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null}}
+{"id":"foldvisual/6GVkzc","body":"tree","keys":"6GVkzc","expect":{"mode":"n","cursor":[5,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null}}
+{"id":"foldvisual/6Gzc5GV","body":"tree","keys":"6Gzc5GV","expect":{"mode":"V","cursor":[8,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null,"visual":[4,1]}}
+{"id":"foldvisual/6GzcV","body":"tree","keys":"6GzcV","expect":{"mode":"V","cursor":[8,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null,"visual":[4,1]}}
+{"id":"foldvisual/6GzcVj","body":"tree","keys":"6GzcVj","expect":{"mode":"V","cursor":[9,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null,"visual":[4,1]}}
+{"id":"foldvisual/6GzcVjj","body":"tree","keys":"6GzcVjj","expect":{"mode":"V","cursor":[10,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null,"visual":[4,1]}}
+{"id":"foldvisual/6GzcVjy","body":"tree","keys":"6GzcVjy","expect":{"mode":"n","cursor":[4,1],"top":1,"reg":"  \"tags\": [\n    \"a\",\n    \"b\",\n    \"foo\"\n  ],\n  \"owner\": {\n","regtype":"V","search":"","fwd":1,"closed":[[4,8]],"msg":"6 lines yanked"}}
+{"id":"foldvisual/6GzcVk","body":"tree","keys":"6GzcVk","expect":{"mode":"V","cursor":[3,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null,"visual":[8,5]}}
+{"id":"foldvisual/6GzcVko","body":"tree","keys":"6GzcVko","expect":{"mode":"V","cursor":[8,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null,"visual":[3,5]}}
+{"id":"foldvisual/6GzcVkoj","body":"tree","keys":"6GzcVkoj","expect":{"mode":"V","cursor":[9,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null,"visual":[3,5]}}
+{"id":"foldvisual/6GzcVky","body":"tree","keys":"6GzcVky","expect":{"mode":"n","cursor":[3,5],"top":1,"reg":"  \"name\": \"foo\",\n  \"tags\": [\n    \"a\",\n    \"b\",\n    \"foo\"\n  ],\n","regtype":"V","search":"","fwd":1,"closed":[[4,8]],"msg":"6 lines yanked"}}
+{"id":"foldvisual/6GzcVo","body":"tree","keys":"6GzcVo","expect":{"mode":"V","cursor":[4,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null,"visual":[8,5]}}
+{"id":"foldvisual/VjzM","body":"tree","keys":"VjzM","expect":{"mode":"V","cursor":[41,2],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[1,41]],"msg":null,"visual":[1,1]}}
+{"id":"foldvisual/VjzMj","body":"tree","keys":"VjzMj","expect":{"mode":"V","cursor":[41,2],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[1,41]],"msg":null,"visual":[1,1]}}
+{"id":"foldvisual/zMVzR","body":"tree","keys":"zMVzR","expect":{"mode":"V","cursor":[41,2],"top":19,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null,"visual":[1,1]}}
+{"id":"foldvisual/zMVzRk","body":"tree","keys":"zMVzRk","expect":{"mode":"V","cursor":[40,1],"top":19,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null,"visual":[1,1]}}
+{"id":"foldvisual/zMzoGVgg","body":"tree","keys":"zMzoGVgg","expect":{"mode":"V","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null,"visual":[41,1]}}
+{"id":"foldvisual/zMzoGVk","body":"tree","keys":"zMzoGVk","expect":{"mode":"V","cursor":[40,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null,"visual":[41,1]}}
+{"id":"foldvisual/zMzoGVkk","body":"tree","keys":"zMzoGVkk","expect":{"mode":"V","cursor":[39,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null,"visual":[41,1]}}
+{"id":"foldvisual/zMzoV","body":"tree","keys":"zMzoV","expect":{"mode":"V","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null,"visual":[1,1]}}
+{"id":"foldvisual/zMzojV","body":"tree","keys":"zMzojV","expect":{"mode":"V","cursor":[2,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null,"visual":[2,1]}}
+{"id":"foldvisual/zMzojV$","body":"tree","keys":"zMzojV$","expect":{"mode":"V","cursor":[2,11],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null,"visual":[2,1]}}
+{"id":"foldvisual/zMzojV/foo<CR>","body":"tree","keys":"zMzojV/foo<CR>","expect":{"mode":"V","cursor":[3,12],"top":1,"reg":"","regtype":"v","search":"foo","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null,"visual":[2,1]}}
+{"id":"foldvisual/zMzojV/foo<CR>y","body":"tree","keys":"zMzojV/foo<CR>y","expect":{"mode":"n","cursor":[2,1],"top":1,"reg":"  \"id\": 1,\n  \"name\": \"foo\",\n","regtype":"V","search":"foo","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"foldvisual/zMzojV0","body":"tree","keys":"zMzojV0","expect":{"mode":"V","cursor":[2,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null,"visual":[2,1]}}
+{"id":"foldvisual/zMzojV3j2zo","body":"tree","keys":"zMzojV3j2zo","expect":{"mode":"n","cursor":[2,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[12,15],[17,30],[31,37]],"msg":null}}
+{"id":"foldvisual/zMzojV3jzo","body":"tree","keys":"zMzojV3jzo","expect":{"mode":"n","cursor":[2,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[12,15],[17,30],[31,37]],"msg":null}}
+{"id":"foldvisual/zMzojV3jzoj","body":"tree","keys":"zMzojV3jzoj","expect":{"mode":"n","cursor":[3,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[12,15],[17,30],[31,37]],"msg":null}}
+{"id":"foldvisual/zMzojV<C-d>","body":"tree","keys":"zMzojV<C-d>","expect":{"mode":"V","cursor":[41,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null,"visual":[2,1]}}
+{"id":"foldvisual/zMzojV<CR>","body":"tree","keys":"zMzojV<CR>","expect":{"mode":"V","cursor":[3,3],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null,"visual":[2,1]}}
+{"id":"foldvisual/zMzojV<Space>","body":"tree","keys":"zMzojV<Space>","expect":{"mode":"V","cursor":[2,2],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null,"visual":[2,1]}}
+{"id":"foldvisual/zMzojVG","body":"tree","keys":"zMzojVG","expect":{"mode":"V","cursor":[41,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null,"visual":[2,1]}}
+{"id":"foldvisual/zMzojVgg","body":"tree","keys":"zMzojVgg","expect":{"mode":"V","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null,"visual":[2,1]}}
+{"id":"foldvisual/zMzojVj","body":"tree","keys":"zMzojVj","expect":{"mode":"V","cursor":[3,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null,"visual":[2,1]}}
+{"id":"foldvisual/zMzojVj<Esc>","body":"tree","keys":"zMzojVj<Esc>","expect":{"mode":"n","cursor":[3,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"foldvisual/zMzojVj<Esc>j","body":"tree","keys":"zMzojVj<Esc>j","expect":{"mode":"n","cursor":[4,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"foldvisual/zMzojVjV","body":"tree","keys":"zMzojVjV","expect":{"mode":"n","cursor":[3,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"foldvisual/zMzojVjj","body":"tree","keys":"zMzojVjj","expect":{"mode":"V","cursor":[8,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null,"visual":[2,1]}}
+{"id":"foldvisual/zMzojVjo","body":"tree","keys":"zMzojVjo","expect":{"mode":"V","cursor":[2,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null,"visual":[3,1]}}
+{"id":"foldvisual/zMzojVjoj","body":"tree","keys":"zMzojVjoj","expect":{"mode":"V","cursor":[3,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null,"visual":[3,1]}}
+{"id":"foldvisual/zMzojVjok","body":"tree","keys":"zMzojVjok","expect":{"mode":"V","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null,"visual":[3,1]}}
+{"id":"foldvisual/zMzojVjyj","body":"tree","keys":"zMzojVjyj","expect":{"mode":"n","cursor":[3,1],"top":1,"reg":"  \"id\": 1,\n  \"name\": \"foo\",\n","regtype":"V","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"foldvisual/zMzojVjza","body":"tree","keys":"zMzojVjza","expect":{"mode":"V","cursor":[41,2],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[1,41]],"msg":null,"visual":[1,1]}}
+{"id":"foldvisual/zMzojVjzc","body":"tree","keys":"zMzojVjzc","expect":{"mode":"n","cursor":[2,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[1,41]],"msg":null}}
+{"id":"foldvisual/zMzojVjzo","body":"tree","keys":"zMzojVjzo","expect":{"mode":"n","cursor":[2,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"foldvisual/zMzojVk","body":"tree","keys":"zMzojVk","expect":{"mode":"V","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null,"visual":[2,1]}}
+{"id":"foldvisual/zMzojVko","body":"tree","keys":"zMzojVko","expect":{"mode":"V","cursor":[2,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null,"visual":[1,1]}}
+{"id":"foldvisual/zMzojVoy","body":"tree","keys":"zMzojVoy","expect":{"mode":"n","cursor":[2,1],"top":1,"reg":"  \"id\": 1,\n","regtype":"V","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"foldvisual/zMzojjVjy","body":"tree","keys":"zMzojjVjy","expect":{"mode":"n","cursor":[3,1],"top":1,"reg":"  \"name\": \"foo\",\n  \"tags\": [\n    \"a\",\n    \"b\",\n    \"foo\"\n  ],\n","regtype":"V","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":"6 lines yanked"}}
+{"id":"foldvisual/zMzojjVky","body":"tree","keys":"zMzojjVky","expect":{"mode":"n","cursor":[2,1],"top":1,"reg":"  \"id\": 1,\n  \"name\": \"foo\",\n","regtype":"V","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"foldvisual/zMzojjjV4kzo","body":"tree","keys":"zMzojjjV4kzo","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"move/10G2<Up>","body":"raw30","keys":"10G2<Up>","expect":{"mode":"n","cursor":[8,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"move/10G30k","body":"raw30","keys":"10G30k","expect":{"mode":"n","cursor":[1,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"move/10G3k","body":"raw30","keys":"10G3k","expect":{"mode":"n","cursor":[7,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"move/3<Down>","body":"raw30","keys":"3<Down>","expect":{"mode":"n","cursor":[4,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"move/40j","body":"raw30","keys":"40j","expect":{"mode":"n","cursor":[30,1],"top":8,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"move/5<C-End>","body":"raw30","keys":"5<C-End>","expect":{"mode":"n","cursor":[5,12],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"move/5<C-Home>","body":"raw30","keys":"5<C-Home>","expect":{"mode":"n","cursor":[5,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"move/5G","body":"raw30","keys":"5G","expect":{"mode":"n","cursor":[5,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"move/5gg","body":"raw30","keys":"5gg","expect":{"mode":"n","cursor":[5,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"move/5j","body":"raw30","keys":"5j","expect":{"mode":"n","cursor":[6,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"move/99G","body":"raw30","keys":"99G","expect":{"mode":"n","cursor":[30,3],"top":8,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"move/<C-End>","body":"raw30","keys":"<C-End>","expect":{"mode":"n","cursor":[30,15],"top":8,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"move/<C-End><C-Home>","body":"raw30","keys":"<C-End><C-Home>","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"move/<Down>","body":"raw30","keys":"<Down>","expect":{"mode":"n","cursor":[2,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"move/<Up>","body":"raw30","keys":"<Up>","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"move/G","body":"raw30","keys":"G","expect":{"mode":"n","cursor":[30,3],"top":8,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"move/Ggg","body":"raw30","keys":"Ggg","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"move/Gj","body":"raw30","keys":"Gj","expect":{"mode":"n","cursor":[30,3],"top":8,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"move/Gk","body":"raw30","keys":"Gk","expect":{"mode":"n","cursor":[29,3],"top":8,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"move/gg","body":"raw30","keys":"gg","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"move/j","body":"raw30","keys":"j","expect":{"mode":"n","cursor":[2,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"move/k","body":"raw30","keys":"k","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"move5/3G","body":"raw5","keys":"3G","expect":{"mode":"n","cursor":[3,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"move5/9G","body":"raw5","keys":"9G","expect":{"mode":"n","cursor":[5,3],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"move5/9j","body":"raw5","keys":"9j","expect":{"mode":"n","cursor":[5,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"move5/G","body":"raw5","keys":"G","expect":{"mode":"n","cursor":[5,3],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"move5/G9k","body":"raw5","keys":"G9k","expect":{"mode":"n","cursor":[1,3],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"move5/Gk","body":"raw5","keys":"Gk","expect":{"mode":"n","cursor":[4,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"move5/gg","body":"raw5","keys":"gg","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"move5/j","body":"raw5","keys":"j","expect":{"mode":"n","cursor":[2,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"one/#","body":"one","keys":"#","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"\\<only\\>","fwd":0,"closed":[],"msg":"search hit TOP, continuing at BOTTOM"}}
+{"id":"one/$","body":"one","keys":"$","expect":{"mode":"n","cursor":[1,13],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"one/$<Space>","body":"one","keys":"$<Space>","expect":{"mode":"n","cursor":[1,13],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"one/*","body":"one","keys":"*","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"\\<only\\>","fwd":1,"closed":[],"msg":"search hit BOTTOM, continuing at TOP"}}
+{"id":"one//foo<CR>","body":"one","keys":"/foo<CR>","expect":{"mode":"n","cursor":[1,6],"top":1,"reg":"","regtype":"v","search":"foo","fwd":1,"closed":[],"msg":null}}
+{"id":"one//foo<CR>n","body":"one","keys":"/foo<CR>n","expect":{"mode":"n","cursor":[1,6],"top":1,"reg":"","regtype":"v","search":"foo","fwd":1,"closed":[],"msg":"search hit BOTTOM, continuing at TOP"}}
+{"id":"one/2$","body":"one","keys":"2$","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"one/3l","body":"one","keys":"3l","expect":{"mode":"n","cursor":[1,4],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"one/3yy","body":"one","keys":"3yy","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"one/<C-End>","body":"one","keys":"<C-End>","expect":{"mode":"n","cursor":[1,13],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"one/<C-b>","body":"one","keys":"<C-b>","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"one/<C-d>","body":"one","keys":"<C-d>","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"one/<C-f>","body":"one","keys":"<C-f>","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"one/<C-u>","body":"one","keys":"<C-u>","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"one/<CR>","body":"one","keys":"<CR>","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"one/<PageDown>","body":"one","keys":"<PageDown>","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"one/<Space>","body":"one","keys":"<Space>","expect":{"mode":"n","cursor":[1,2],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"one/?foo<CR>N","body":"one","keys":"?foo<CR>N","expect":{"mode":"n","cursor":[1,6],"top":1,"reg":"","regtype":"v","search":"foo","fwd":0,"closed":[],"msg":"search hit BOTTOM, continuing at TOP"}}
+{"id":"one/G","body":"one","keys":"G","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"one/V","body":"one","keys":"V","expect":{"mode":"V","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null,"visual":[1,1]}}
+{"id":"one/Vj","body":"one","keys":"Vj","expect":{"mode":"V","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null,"visual":[1,1]}}
+{"id":"one/Vy","body":"one","keys":"Vy","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"only foo line\n","regtype":"V","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"one/gg","body":"one","keys":"gg","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"one/j","body":"one","keys":"j","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"one/k","body":"one","keys":"k","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"one/yy","body":"one","keys":"yy","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"only foo line\n","regtype":"V","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"one/zb","body":"one","keys":"zb","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"one/zt","body":"one","keys":"zt","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"pageprobe/18Gzc1<C-u>","body":"tree","keys":"18Gzc1<C-u>","expect":{"mode":"n","cursor":[17,3],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[18,21]],"msg":null}}
+{"id":"pageprobe/18Gzc22G1<C-u>","body":"tree","keys":"18Gzc22G1<C-u>","expect":{"mode":"n","cursor":[18,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[18,21]],"msg":null}}
+{"id":"pageprobe/18Gzc22G2<C-u>","body":"tree","keys":"18Gzc22G2<C-u>","expect":{"mode":"n","cursor":[17,3],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[18,21]],"msg":null}}
+{"id":"pageprobe/20Gzc10<C-u>","body":"tree","keys":"20Gzc10<C-u>","expect":{"mode":"n","cursor":[9,3],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[18,21]],"msg":null}}
+{"id":"pageprobe/20Gzc1<C-u>","body":"tree","keys":"20Gzc1<C-u>","expect":{"mode":"n","cursor":[18,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[18,21]],"msg":null}}
+{"id":"pageprobe/20Gzc2<C-u>","body":"tree","keys":"20Gzc2<C-u>","expect":{"mode":"n","cursor":[17,3],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[18,21]],"msg":null}}
+{"id":"pageprobe/20Gzc2k","body":"tree","keys":"20Gzc2k","expect":{"mode":"n","cursor":[16,4],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[18,21]],"msg":null}}
+{"id":"pageprobe/20Gzc3<C-u>","body":"tree","keys":"20Gzc3<C-u>","expect":{"mode":"n","cursor":[16,3],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[18,21]],"msg":null}}
+{"id":"pageprobe/20Gzc5<C-u>","body":"tree","keys":"20Gzc5<C-u>","expect":{"mode":"n","cursor":[14,7],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[18,21]],"msg":null}}
+{"id":"pageprobe/20Gzc<C-u>","body":"tree","keys":"20Gzc<C-u>","expect":{"mode":"n","cursor":[8,3],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[18,21]],"msg":null}}
+{"id":"pageprobe/20Gzck","body":"tree","keys":"20Gzck","expect":{"mode":"n","cursor":[17,7],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[18,21]],"msg":null}}
+{"id":"pageprobe/21Gzc1<C-u>","body":"tree","keys":"21Gzc1<C-u>","expect":{"mode":"n","cursor":[18,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[18,21]],"msg":null}}
+{"id":"pageprobe/30G<C-u>","body":"tree","keys":"30G<C-u>","expect":{"mode":"n","cursor":[19,7],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"pageprobe/30Gzt6Gzc<C-u>","body":"tree","keys":"30Gzt6Gzc<C-u>","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null}}
+{"id":"pageprobe/35G<C-u>","body":"tree","keys":"35G<C-u>","expect":{"mode":"n","cursor":[24,7],"top":2,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"pageprobe/4Gzc2G3<C-d>","body":"tree","keys":"4Gzc2G3<C-d>","expect":{"mode":"n","cursor":[4,3],"top":4,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null}}
+{"id":"pageprobe/4Gzc2G<C-d>","body":"tree","keys":"4Gzc2G<C-d>","expect":{"mode":"n","cursor":[16,3],"top":16,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null}}
+{"id":"pageprobe/5Gzc3<C-d>","body":"tree","keys":"5Gzc3<C-d>","expect":{"mode":"n","cursor":[4,3],"top":4,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null}}
+{"id":"pageprobe/5Gzc<C-d>","body":"tree","keys":"5Gzc<C-d>","expect":{"mode":"n","cursor":[16,3],"top":16,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null}}
+{"id":"pageprobe/6G<C-d>","body":"tree","keys":"6G<C-d>","expect":{"mode":"n","cursor":[17,3],"top":12,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"pageprobe/6Gzc12G3<C-u>","body":"tree","keys":"6Gzc12G3<C-u>","expect":{"mode":"n","cursor":[9,3],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null}}
+{"id":"pageprobe/6Gzc12G<C-u>","body":"tree","keys":"6Gzc12G<C-u>","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null}}
+{"id":"pageprobe/6Gzc19Gzt<C-u>","body":"tree","keys":"6Gzc19Gzt<C-u>","expect":{"mode":"n","cursor":[4,3],"top":4,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null}}
+{"id":"pageprobe/6Gzc1<C-d>","body":"tree","keys":"6Gzc1<C-d>","expect":{"mode":"n","cursor":[4,3],"top":2,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null}}
+{"id":"pageprobe/6Gzc35G<C-u>","body":"tree","keys":"6Gzc35G<C-u>","expect":{"mode":"n","cursor":[24,7],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null}}
+{"id":"pageprobe/6Gzc35G<C-u><C-u>","body":"tree","keys":"6Gzc35G<C-u><C-u>","expect":{"mode":"n","cursor":[13,7],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null}}
+{"id":"pageprobe/6Gzc3<C-d>","body":"tree","keys":"6Gzc3<C-d>","expect":{"mode":"n","cursor":[9,3],"top":4,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null}}
+{"id":"pageprobe/6Gzc41G3<C-u>","body":"tree","keys":"6Gzc41G3<C-u>","expect":{"mode":"n","cursor":[38,3],"top":16,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null}}
+{"id":"pageprobe/6Gzc41G<C-u>","body":"tree","keys":"6Gzc41G<C-u>","expect":{"mode":"n","cursor":[30,3],"top":4,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null}}
+{"id":"pageprobe/6Gzc41Gzt<C-u>","body":"tree","keys":"6Gzc41Gzt<C-u>","expect":{"mode":"n","cursor":[30,3],"top":30,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null}}
+{"id":"pageprobe/6Gzc41Gzt<C-u><C-u>","body":"tree","keys":"6Gzc41Gzt<C-u><C-u>","expect":{"mode":"n","cursor":[19,7],"top":19,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null}}
+{"id":"pageprobe/6Gzc<C-d>","body":"tree","keys":"6Gzc<C-d>","expect":{"mode":"n","cursor":[17,3],"top":16,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null}}
+{"id":"pageprobe/6Gzckzt<C-d>","body":"tree","keys":"6Gzckzt<C-d>","expect":{"mode":"n","cursor":[18,5],"top":18,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null}}
+{"id":"pageprobe/7Gzc<C-d>","body":"tree","keys":"7Gzc<C-d>","expect":{"mode":"n","cursor":[18,5],"top":16,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null}}
+{"id":"pageprobe/8Gzc<C-d>","body":"tree","keys":"8Gzc<C-d>","expect":{"mode":"n","cursor":[19,7],"top":16,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8]],"msg":null}}
+{"id":"pageprobe/zMzo38G2<C-u>","body":"tree","keys":"zMzo38G2<C-u>","expect":{"mode":"n","cursor":[17,3],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"pageprobe/zMzo38G<C-u>","body":"tree","keys":"zMzo38G<C-u>","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"pageprobe/zMzoG<C-u>","body":"tree","keys":"zMzoG<C-u>","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[[4,8],[9,16],[17,30],[31,37]],"msg":null}}
+{"id":"search//$<CR>","body":"raw30","keys":"/$<CR>","expect":{"mode":"n","cursor":[1,11],"top":1,"reg":"","regtype":"v","search":"$","fwd":1,"closed":[],"msg":null}}
+{"id":"search//$<CR>n","body":"raw30","keys":"/$<CR>n","expect":{"mode":"n","cursor":[2,9],"top":1,"reg":"","regtype":"v","search":"$","fwd":1,"closed":[],"msg":null}}
+{"id":"search//\\(<CR>","body":"raw30","keys":"/\\(<CR>","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"\\(","fwd":1,"closed":[],"msg":"Unmatched \\("}}
+{"id":"search//\\(<CR>n","body":"raw30","keys":"/\\(<CR>n","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"\\(","fwd":1,"closed":[],"msg":"Unmatched \\("}}
+{"id":"search//^$<CR>","body":"raw30","keys":"/^$<CR>","expect":{"mode":"n","cursor":[4,1],"top":1,"reg":"","regtype":"v","search":"^$","fwd":1,"closed":[],"msg":null}}
+{"id":"search//^$<CR>n","body":"raw30","keys":"/^$<CR>n","expect":{"mode":"n","cursor":[12,1],"top":1,"reg":"","regtype":"v","search":"^$","fwd":1,"closed":[],"msg":null}}
+{"id":"search//^ba<CR>","body":"raw30","keys":"/^ba<CR>","expect":{"mode":"n","cursor":[11,1],"top":1,"reg":"","regtype":"v","search":"^ba","fwd":1,"closed":[],"msg":null}}
+{"id":"search//ba[rz]<CR>n","body":"raw30","keys":"/ba[rz]<CR>n","expect":{"mode":"n","cursor":[1,9],"top":1,"reg":"","regtype":"v","search":"ba[rz]","fwd":1,"closed":[],"msg":null}}
+{"id":"search//bar<CR>/<Esc>n","body":"raw30","keys":"/bar<CR>/<Esc>n","expect":{"mode":"n","cursor":[2,3],"top":1,"reg":"","regtype":"v","search":"bar","fwd":1,"closed":[],"msg":null}}
+{"id":"search//bar<CR>/foo<Esc>","body":"raw30","keys":"/bar<CR>/foo<Esc>","expect":{"mode":"n","cursor":[1,5],"top":1,"reg":"","regtype":"v","search":"bar","fwd":1,"closed":[],"msg":null}}
+{"id":"search//bar<CR>/foo<Esc>n","body":"raw30","keys":"/bar<CR>/foo<Esc>n","expect":{"mode":"n","cursor":[2,3],"top":1,"reg":"","regtype":"v","search":"bar","fwd":1,"closed":[],"msg":null}}
+{"id":"search//foo$<CR>","body":"raw30","keys":"/foo$<CR>","expect":{"mode":"n","cursor":[2,7],"top":1,"reg":"","regtype":"v","search":"foo$","fwd":1,"closed":[],"msg":null}}
+{"id":"search//foo<CR>","body":"raw30","keys":"/foo<CR>","expect":{"mode":"n","cursor":[2,7],"top":1,"reg":"","regtype":"v","search":"foo","fwd":1,"closed":[],"msg":null}}
+{"id":"search//foo<CR>/<CR>","body":"raw30","keys":"/foo<CR>/<CR>","expect":{"mode":"n","cursor":[5,1],"top":1,"reg":"","regtype":"v","search":"foo","fwd":1,"closed":[],"msg":null}}
+{"id":"search//foo<CR>/zzz<CR>","body":"raw30","keys":"/foo<CR>/zzz<CR>","expect":{"mode":"n","cursor":[2,7],"top":1,"reg":"","regtype":"v","search":"zzz","fwd":1,"closed":[],"msg":"Pattern not found: zzz"}}
+{"id":"search//foo<CR>14G","body":"raw30","keys":"/foo<CR>14G","expect":{"mode":"n","cursor":[14,1],"top":1,"reg":"","regtype":"v","search":"foo","fwd":1,"closed":[],"msg":null}}
+{"id":"search//foo<CR>14Gn","body":"raw30","keys":"/foo<CR>14Gn","expect":{"mode":"n","cursor":[14,5],"top":1,"reg":"","regtype":"v","search":"foo","fwd":1,"closed":[],"msg":null}}
+{"id":"search//foo<CR>2N","body":"raw30","keys":"/foo<CR>2N","expect":{"mode":"n","cursor":[30,8],"top":8,"reg":"","regtype":"v","search":"foo","fwd":1,"closed":[],"msg":"search hit TOP, continuing at BOTTOM"}}
+{"id":"search//foo<CR>3n","body":"raw30","keys":"/foo<CR>3n","expect":{"mode":"n","cursor":[9,12],"top":1,"reg":"","regtype":"v","search":"foo","fwd":1,"closed":[],"msg":null}}
+{"id":"search//foo<CR>99n","body":"raw30","keys":"/foo<CR>99n","expect":{"mode":"n","cursor":[9,12],"top":1,"reg":"","regtype":"v","search":"foo","fwd":1,"closed":[],"msg":"search hit BOTTOM, continuing at TOP"}}
+{"id":"search//foo<CR><Esc>N","body":"raw30","keys":"/foo<CR><Esc>N","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"foo","fwd":1,"closed":[],"msg":null}}
+{"id":"search//foo<CR><Esc>n","body":"raw30","keys":"/foo<CR><Esc>n","expect":{"mode":"n","cursor":[5,1],"top":1,"reg":"","regtype":"v","search":"foo","fwd":1,"closed":[],"msg":null}}
+{"id":"search//foo<CR>?<CR>","body":"raw30","keys":"/foo<CR>?<CR>","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"foo","fwd":0,"closed":[],"msg":null}}
+{"id":"search//foo<CR>G","body":"raw30","keys":"/foo<CR>G","expect":{"mode":"n","cursor":[30,3],"top":8,"reg":"","regtype":"v","search":"foo","fwd":1,"closed":[],"msg":null}}
+{"id":"search//foo<CR>G99N","body":"raw30","keys":"/foo<CR>G99N","expect":{"mode":"n","cursor":[23,9],"top":8,"reg":"","regtype":"v","search":"foo","fwd":1,"closed":[],"msg":"search hit TOP, continuing at BOTTOM"}}
+{"id":"search//foo<CR>Gn","body":"raw30","keys":"/foo<CR>Gn","expect":{"mode":"n","cursor":[30,8],"top":8,"reg":"","regtype":"v","search":"foo","fwd":1,"closed":[],"msg":null}}
+{"id":"search//foo<CR>N","body":"raw30","keys":"/foo<CR>N","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"foo","fwd":1,"closed":[],"msg":null}}
+{"id":"search//foo<CR>n","body":"raw30","keys":"/foo<CR>n","expect":{"mode":"n","cursor":[5,1],"top":1,"reg":"","regtype":"v","search":"foo","fwd":1,"closed":[],"msg":null}}
+{"id":"search//foo<Esc>","body":"raw30","keys":"/foo<Esc>","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"search//foo<Esc>n","body":"raw30","keys":"/foo<Esc>n","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":"No previous regular expression"}}
+{"id":"search//foo\\|bar<CR>3n","body":"raw30","keys":"/foo\\|bar<CR>3n","expect":{"mode":"n","cursor":[5,1],"top":1,"reg":"","regtype":"v","search":"foo\\|bar","fwd":1,"closed":[],"msg":null}}
+{"id":"search//o\\+<CR>","body":"raw30","keys":"/o\\+<CR>","expect":{"mode":"n","cursor":[1,2],"top":1,"reg":"","regtype":"v","search":"o\\+","fwd":1,"closed":[],"msg":null}}
+{"id":"search//zzz<CR>","body":"raw30","keys":"/zzz<CR>","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"zzz","fwd":1,"closed":[],"msg":"Pattern not found: zzz"}}
+{"id":"search/99n","body":"raw30","keys":"99n","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":"No previous regular expression"}}
+{"id":"search/?foo<CR>","body":"raw30","keys":"?foo<CR>","expect":{"mode":"n","cursor":[30,8],"top":8,"reg":"","regtype":"v","search":"foo","fwd":0,"closed":[],"msg":"search hit TOP, continuing at BOTTOM"}}
+{"id":"search/?foo<CR>/<CR>","body":"raw30","keys":"?foo<CR>/<CR>","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"foo","fwd":1,"closed":[],"msg":"search hit BOTTOM, continuing at TOP"}}
+{"id":"search/?foo<CR>N","body":"raw30","keys":"?foo<CR>N","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"foo","fwd":0,"closed":[],"msg":"search hit BOTTOM, continuing at TOP"}}
+{"id":"search/?foo<CR>n","body":"raw30","keys":"?foo<CR>n","expect":{"mode":"n","cursor":[28,9],"top":8,"reg":"","regtype":"v","search":"foo","fwd":0,"closed":[],"msg":"search hit TOP, continuing at BOTTOM"}}
+{"id":"search/Gn","body":"raw30","keys":"Gn","expect":{"mode":"n","cursor":[30,3],"top":8,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":"No previous regular expression"}}
+{"id":"search/N","body":"raw30","keys":"N","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":"No previous regular expression"}}
+{"id":"search/n","body":"raw30","keys":"n","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":"No previous regular expression"}}
+{"id":"star/#","body":"raw30","keys":"#","expect":{"mode":"n","cursor":[30,8],"top":8,"reg":"","regtype":"v","search":"\\<foo\\>","fwd":0,"closed":[],"msg":"search hit TOP, continuing at BOTTOM"}}
+{"id":"star/#n","body":"raw30","keys":"#n","expect":{"mode":"n","cursor":[28,9],"top":8,"reg":"","regtype":"v","search":"\\<foo\\>","fwd":0,"closed":[],"msg":"search hit TOP, continuing at BOTTOM"}}
+{"id":"star/$#","body":"raw30","keys":"$#","expect":{"mode":"n","cursor":[26,11],"top":4,"reg":"","regtype":"v","search":"\\<baz\\>","fwd":0,"closed":[],"msg":"search hit TOP, continuing at BOTTOM"}}
+{"id":"star/$*","body":"raw30","keys":"$*","expect":{"mode":"n","cursor":[3,5],"top":1,"reg":"","regtype":"v","search":"\\<baz\\>","fwd":1,"closed":[],"msg":null}}
+{"id":"star/*","body":"raw30","keys":"*","expect":{"mode":"n","cursor":[2,7],"top":1,"reg":"","regtype":"v","search":"\\<foo\\>","fwd":1,"closed":[],"msg":null}}
+{"id":"star/**","body":"raw30","keys":"**","expect":{"mode":"n","cursor":[5,1],"top":1,"reg":"","regtype":"v","search":"\\<foo\\>","fwd":1,"closed":[],"msg":null}}
+{"id":"star/*N","body":"raw30","keys":"*N","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"\\<foo\\>","fwd":1,"closed":[],"msg":null}}
+{"id":"star/*n","body":"raw30","keys":"*n","expect":{"mode":"n","cursor":[5,1],"top":1,"reg":"","regtype":"v","search":"\\<foo\\>","fwd":1,"closed":[],"msg":null}}
+{"id":"star//baz<CR>*","body":"raw30","keys":"/baz<CR>*","expect":{"mode":"n","cursor":[3,5],"top":1,"reg":"","regtype":"v","search":"\\<baz\\>","fwd":1,"closed":[],"msg":null}}
+{"id":"star//baz<CR>j*","body":"raw30","keys":"/baz<CR>j*","expect":{"mode":"n","cursor":[5,1],"top":1,"reg":"","regtype":"v","search":"\\<foo\\>","fwd":1,"closed":[],"msg":null}}
+{"id":"star/10G*","body":"raw30","keys":"10G*","expect":{"mode":"n","cursor":[10,5],"top":1,"reg":"","regtype":"v","search":"\\<deep\\>","fwd":1,"closed":[],"msg":"search hit BOTTOM, continuing at TOP"}}
+{"id":"star/11G*","body":"raw30","keys":"11G*","expect":{"mode":"n","cursor":[16,9],"top":1,"reg":"","regtype":"v","search":"\\<bar\\>","fwd":1,"closed":[],"msg":null}}
+{"id":"star/13G*","body":"raw30","keys":"13G*","expect":{"mode":"n","cursor":[13,3],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":"No string under cursor"}}
+{"id":"star/14G#","body":"raw30","keys":"14G#","expect":{"mode":"n","cursor":[10,19],"top":1,"reg":"","regtype":"v","search":"\\<foo\\>","fwd":0,"closed":[],"msg":null}}
+{"id":"star/14G*","body":"raw30","keys":"14G*","expect":{"mode":"n","cursor":[14,5],"top":1,"reg":"","regtype":"v","search":"\\<foo\\>","fwd":1,"closed":[],"msg":null}}
+{"id":"star/2#","body":"raw30","keys":"2#","expect":{"mode":"n","cursor":[28,9],"top":6,"reg":"","regtype":"v","search":"\\<foo\\>","fwd":0,"closed":[],"msg":"search hit TOP, continuing at BOTTOM"}}
+{"id":"star/3*","body":"raw30","keys":"3*","expect":{"mode":"n","cursor":[6,12],"top":1,"reg":"","regtype":"v","search":"\\<foo\\>","fwd":1,"closed":[],"msg":null}}
+{"id":"star/4G*","body":"raw30","keys":"4G*","expect":{"mode":"n","cursor":[4,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":"No string under cursor"}}
+{"id":"star/5G$*","body":"raw30","keys":"5G$*","expect":{"mode":"n","cursor":[5,12],"top":1,"reg":"","regtype":"v","search":")","fwd":1,"closed":[],"msg":"search hit BOTTOM, continuing at TOP"}}
+{"id":"star/5G*","body":"raw30","keys":"5G*","expect":{"mode":"n","cursor":[6,12],"top":1,"reg":"","regtype":"v","search":"\\<foo\\>","fwd":1,"closed":[],"msg":null}}
+{"id":"star/6G*","body":"raw30","keys":"6G*","expect":{"mode":"n","cursor":[6,3],"top":1,"reg":"","regtype":"v","search":"\\<item_1\\>","fwd":1,"closed":[],"msg":"search hit BOTTOM, continuing at TOP"}}
+{"id":"star/8G*","body":"raw30","keys":"8G*","expect":{"mode":"n","cursor":[8,1],"top":1,"reg":"","regtype":"v","search":"\\<x\\>","fwd":1,"closed":[],"msg":"search hit BOTTOM, continuing at TOP"}}
+{"id":"star/9G$*","body":"raw30","keys":"9G$*","expect":{"mode":"n","cursor":[10,19],"top":1,"reg":"","regtype":"v","search":"\\<foo\\>","fwd":1,"closed":[],"msg":null}}
+{"id":"star/9G*","body":"raw30","keys":"9G*","expect":{"mode":"n","cursor":[9,1],"top":1,"reg":"","regtype":"v","search":"\\<naïve\\>","fwd":1,"closed":[],"msg":"search hit BOTTOM, continuing at TOP"}}
+{"id":"star/G#","body":"raw30","keys":"G#","expect":{"mode":"n","cursor":[30,3],"top":8,"reg":"","regtype":"v","search":"\\<last\\>","fwd":0,"closed":[],"msg":"search hit TOP, continuing at BOTTOM"}}
+{"id":"star/G*","body":"raw30","keys":"G*","expect":{"mode":"n","cursor":[30,3],"top":8,"reg":"","regtype":"v","search":"\\<last\\>","fwd":1,"closed":[],"msg":"search hit BOTTOM, continuing at TOP"}}
+{"id":"visual/$V3jo","body":"raw30","keys":"$V3jo","expect":{"mode":"V","cursor":[1,11],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null,"visual":[4,1]}}
+{"id":"visual/$Vjoj","body":"raw30","keys":"$Vjoj","expect":{"mode":"V","cursor":[2,10],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null,"visual":[2,10]}}
+{"id":"visual//baz<CR>V","body":"raw30","keys":"/baz<CR>V","expect":{"mode":"V","cursor":[1,9],"top":1,"reg":"","regtype":"v","search":"baz","fwd":1,"closed":[],"msg":null,"visual":[1,9]}}
+{"id":"visual//baz<CR>V$o","body":"raw30","keys":"/baz<CR>V$o","expect":{"mode":"V","cursor":[1,9],"top":1,"reg":"","regtype":"v","search":"baz","fwd":1,"closed":[],"msg":null,"visual":[1,12]}}
+{"id":"visual//baz<CR>Vj$y","body":"raw30","keys":"/baz<CR>Vj$y","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"foo bar baz\n  bar foo\n","regtype":"V","search":"baz","fwd":1,"closed":[],"msg":null}}
+{"id":"visual//baz<CR>Vjo","body":"raw30","keys":"/baz<CR>Vjo","expect":{"mode":"V","cursor":[1,9],"top":1,"reg":"","regtype":"v","search":"baz","fwd":1,"closed":[],"msg":null,"visual":[2,9]}}
+{"id":"visual//baz<CR>Vjy","body":"raw30","keys":"/baz<CR>Vjy","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"foo bar baz\n  bar foo\n","regtype":"V","search":"baz","fwd":1,"closed":[],"msg":null}}
+{"id":"visual//baz<CR>Vjyj","body":"raw30","keys":"/baz<CR>Vjyj","expect":{"mode":"n","cursor":[2,1],"top":1,"reg":"foo bar baz\n  bar foo\n","regtype":"V","search":"baz","fwd":1,"closed":[],"msg":null}}
+{"id":"visual//baz<CR>Vy","body":"raw30","keys":"/baz<CR>Vy","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"foo bar baz\n","regtype":"V","search":"baz","fwd":1,"closed":[],"msg":null}}
+{"id":"visual//baz<CR>Vyj","body":"raw30","keys":"/baz<CR>Vyj","expect":{"mode":"n","cursor":[2,1],"top":1,"reg":"foo bar baz\n","regtype":"V","search":"baz","fwd":1,"closed":[],"msg":null}}
+{"id":"visual/10GV3ky","body":"raw30","keys":"10GV3ky","expect":{"mode":"n","cursor":[7,5],"top":1,"reg":"  item_2 = bar\nx\nnaïve café foo\n    deep   indent foo\n","regtype":"V","search":"","fwd":1,"closed":[],"msg":"4 lines yanked"}}
+{"id":"visual/10GV3kyj","body":"raw30","keys":"10GV3kyj","expect":{"mode":"n","cursor":[8,1],"top":1,"reg":"  item_2 = bar\nx\nnaïve café foo\n    deep   indent foo\n","regtype":"V","search":"","fwd":1,"closed":[],"msg":"4 lines yanked"}}
+{"id":"visual/10GV5k","body":"raw30","keys":"10GV5k","expect":{"mode":"V","cursor":[5,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null,"visual":[10,5]}}
+{"id":"visual/10GVgg","body":"raw30","keys":"10GVgg","expect":{"mode":"V","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null,"visual":[10,5]}}
+{"id":"visual/10GVzb","body":"raw30","keys":"10GVzb","expect":{"mode":"V","cursor":[10,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null,"visual":[10,5]}}
+{"id":"visual/2G/baz<CR>Vky","body":"raw30","keys":"2G/baz<CR>Vky","expect":{"mode":"n","cursor":[2,5],"top":1,"reg":"  bar foo\n    baz\n","regtype":"V","search":"baz","fwd":1,"closed":[],"msg":null}}
+{"id":"visual/2G/baz<CR>Vkyj","body":"raw30","keys":"2G/baz<CR>Vkyj","expect":{"mode":"n","cursor":[3,5],"top":1,"reg":"  bar foo\n    baz\n","regtype":"V","search":"baz","fwd":1,"closed":[],"msg":null}}
+{"id":"visual/GV<C-Home>","body":"raw30","keys":"GV<C-Home>","expect":{"mode":"V","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null,"visual":[30,3]}}
+{"id":"visual/GVj","body":"raw30","keys":"GVj","expect":{"mode":"V","cursor":[30,3],"top":8,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null,"visual":[30,3]}}
+{"id":"visual/GVk","body":"raw30","keys":"GVk","expect":{"mode":"V","cursor":[29,3],"top":8,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null,"visual":[30,3]}}
+{"id":"visual/V","body":"raw30","keys":"V","expect":{"mode":"V","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null,"visual":[1,1]}}
+{"id":"visual/V#","body":"raw30","keys":"V#","expect":{"mode":"V","cursor":[30,8],"top":8,"reg":"","regtype":"v","search":"\\<foo\\>","fwd":0,"closed":[],"msg":"search hit TOP, continuing at BOTTOM","visual":[1,1]}}
+{"id":"visual/V$<Space>","body":"raw30","keys":"V$<Space>","expect":{"mode":"V","cursor":[2,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null,"visual":[1,1]}}
+{"id":"visual/V*","body":"raw30","keys":"V*","expect":{"mode":"V","cursor":[2,7],"top":1,"reg":"","regtype":"v","search":"\\<foo\\>","fwd":1,"closed":[],"msg":null,"visual":[1,1]}}
+{"id":"visual/V/baz<CR>","body":"raw30","keys":"V/baz<CR>","expect":{"mode":"V","cursor":[1,9],"top":1,"reg":"","regtype":"v","search":"baz","fwd":1,"closed":[],"msg":null,"visual":[1,1]}}
+{"id":"visual/V/baz<CR>y","body":"raw30","keys":"V/baz<CR>y","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"foo bar baz\n","regtype":"V","search":"baz","fwd":1,"closed":[],"msg":null}}
+{"id":"visual/V/zzz<CR>","body":"raw30","keys":"V/zzz<CR>","expect":{"mode":"V","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"zzz","fwd":1,"closed":[],"msg":"Pattern not found: zzz","visual":[1,1]}}
+{"id":"visual/V10G","body":"raw30","keys":"V10G","expect":{"mode":"V","cursor":[10,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null,"visual":[1,1]}}
+{"id":"visual/V3<CR>","body":"raw30","keys":"V3<CR>","expect":{"mode":"V","cursor":[4,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null,"visual":[1,1]}}
+{"id":"visual/V3<PageDown>","body":"raw30","keys":"V3<PageDown>","expect":{"mode":"V","cursor":[30,1],"top":30,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null,"visual":[1,1]}}
+{"id":"visual/V3j","body":"raw30","keys":"V3j","expect":{"mode":"V","cursor":[4,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null,"visual":[1,1]}}
+{"id":"visual/V3jy","body":"raw30","keys":"V3jy","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"foo bar baz\n  bar foo\n    baz\n\n","regtype":"V","search":"","fwd":1,"closed":[],"msg":"4 lines yanked"}}
+{"id":"visual/V<C-End>","body":"raw30","keys":"V<C-End>","expect":{"mode":"V","cursor":[30,16],"top":8,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null,"visual":[1,1]}}
+{"id":"visual/V<C-b>","body":"raw30","keys":"V<C-b>","expect":{"mode":"V","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null,"visual":[1,1]}}
+{"id":"visual/V<C-d>","body":"raw30","keys":"V<C-d>","expect":{"mode":"V","cursor":[12,1],"top":8,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null,"visual":[1,1]}}
+{"id":"visual/V<C-f>","body":"raw30","keys":"V<C-f>","expect":{"mode":"V","cursor":[22,5],"top":22,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null,"visual":[1,1]}}
+{"id":"visual/V<CR>","body":"raw30","keys":"V<CR>","expect":{"mode":"V","cursor":[2,3],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null,"visual":[1,1]}}
+{"id":"visual/V<PageDown>","body":"raw30","keys":"V<PageDown>","expect":{"mode":"V","cursor":[22,5],"top":22,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null,"visual":[1,1]}}
+{"id":"visual/V<Space>","body":"raw30","keys":"V<Space>","expect":{"mode":"V","cursor":[1,2],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null,"visual":[1,1]}}
+{"id":"visual/VG","body":"raw30","keys":"VG","expect":{"mode":"V","cursor":[30,3],"top":8,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null,"visual":[1,1]}}
+{"id":"visual/Vj","body":"raw30","keys":"Vj","expect":{"mode":"V","cursor":[2,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null,"visual":[1,1]}}
+{"id":"visual/Vj<Esc>","body":"raw30","keys":"Vj<Esc>","expect":{"mode":"n","cursor":[2,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"visual/VjV","body":"raw30","keys":"VjV","expect":{"mode":"n","cursor":[2,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"visual/Vjjyj","body":"raw30","keys":"Vjjyj","expect":{"mode":"n","cursor":[2,1],"top":1,"reg":"foo bar baz\n  bar foo\n    baz\n","regtype":"V","search":"","fwd":1,"closed":[],"msg":"3 lines yanked"}}
+{"id":"visual/Vjo","body":"raw30","keys":"Vjo","expect":{"mode":"V","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null,"visual":[2,1]}}
+{"id":"visual/Vjoj","body":"raw30","keys":"Vjoj","expect":{"mode":"V","cursor":[2,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null,"visual":[2,1]}}
+{"id":"visual/Vjoy","body":"raw30","keys":"Vjoy","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"foo bar baz\n  bar foo\n","regtype":"V","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"visual/Vjy","body":"raw30","keys":"Vjy","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"foo bar baz\n  bar foo\n","regtype":"V","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"visual/Vk","body":"raw30","keys":"Vk","expect":{"mode":"V","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null,"visual":[1,1]}}
+{"id":"visual/Vn","body":"raw30","keys":"Vn","expect":{"mode":"V","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":"No previous regular expression","visual":[1,1]}}
+{"id":"visual/Vzt","body":"raw30","keys":"Vzt","expect":{"mode":"V","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null,"visual":[1,1]}}
+{"id":"wide/$","body":"wide","keys":"$","expect":{"mode":"n","cursor":[1,8],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"wide/$j","body":"wide","keys":"$j","expect":{"mode":"n","cursor":[2,11],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"wide/$jj","body":"wide","keys":"$jj","expect":{"mode":"n","cursor":[3,9],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"wide/$jjj","body":"wide","keys":"$jjj","expect":{"mode":"n","cursor":[4,24],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"wide//bar<CR>j","body":"wide","keys":"/bar<CR>j","expect":{"mode":"n","cursor":[2,4],"top":1,"reg":"","regtype":"v","search":"bar","fwd":1,"closed":[],"msg":null}}
+{"id":"wide//bar<CR>jj","body":"wide","keys":"/bar<CR>jj","expect":{"mode":"n","cursor":[3,6],"top":1,"reg":"","regtype":"v","search":"bar","fwd":1,"closed":[],"msg":null}}
+{"id":"wide//bar<CR>k","body":"wide","keys":"/bar<CR>k","expect":{"mode":"n","cursor":[1,6],"top":1,"reg":"","regtype":"v","search":"bar","fwd":1,"closed":[],"msg":null}}
+{"id":"wide//deep<CR>0","body":"wide","keys":"/deep<CR>0","expect":{"mode":"n","cursor":[5,1],"top":1,"reg":"","regtype":"v","search":"deep","fwd":1,"closed":[],"msg":null}}
+{"id":"wide//日<CR>","body":"wide","keys":"/日<CR>","expect":{"mode":"n","cursor":[2,1],"top":1,"reg":"","regtype":"v","search":"日","fwd":1,"closed":[],"msg":null}}
+{"id":"wide//語<CR>j","body":"wide","keys":"/語<CR>j","expect":{"mode":"n","cursor":[3,4],"top":1,"reg":"","regtype":"v","search":"語","fwd":1,"closed":[],"msg":null}}
+{"id":"wide/1G*","body":"wide","keys":"1G*","expect":{"mode":"n","cursor":[2,5],"top":1,"reg":"","regtype":"v","search":"\\<foo\\>","fwd":1,"closed":[],"msg":null}}
+{"id":"wide/1Gl*","body":"wide","keys":"1Gl*","expect":{"mode":"n","cursor":[2,5],"top":1,"reg":"","regtype":"v","search":"\\<foo\\>","fwd":1,"closed":[],"msg":null}}
+{"id":"wide/2lj","body":"wide","keys":"2lj","expect":{"mode":"n","cursor":[2,2],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"wide/3G3l*","body":"wide","keys":"3G3l*","expect":{"mode":"n","cursor":[3,4],"top":1,"reg":"","regtype":"v","search":"\\<cd\\>","fwd":1,"closed":[],"msg":"search hit BOTTOM, continuing at TOP"}}
+{"id":"wide/3G4l*","body":"wide","keys":"3G4l*","expect":{"mode":"n","cursor":[3,4],"top":1,"reg":"","regtype":"v","search":"\\<cd\\>","fwd":1,"closed":[],"msg":"search hit BOTTOM, continuing at TOP"}}
+{"id":"wide/3lj","body":"wide","keys":"3lj","expect":{"mode":"n","cursor":[2,3],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"wide/4<Space>","body":"wide","keys":"4<Space>","expect":{"mode":"n","cursor":[1,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"wide/4G<CR>","body":"wide","keys":"4G<CR>","expect":{"mode":"n","cursor":[5,3],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"wide/4G<Space>","body":"wide","keys":"4G<Space>","expect":{"mode":"n","cursor":[4,2],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"wide/4lj","body":"wide","keys":"4lj","expect":{"mode":"n","cursor":[2,3],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"wide/5G$k","body":"wide","keys":"5G$k","expect":{"mode":"n","cursor":[4,24],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"wide/5G*","body":"wide","keys":"5G*","expect":{"mode":"n","cursor":[5,3],"top":1,"reg":"","regtype":"v","search":"\\<deep\\>","fwd":1,"closed":[],"msg":"search hit BOTTOM, continuing at TOP"}}
+{"id":"wide/5Gk","body":"wide","keys":"5Gk","expect":{"mode":"n","cursor":[4,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"wide/<CR>","body":"wide","keys":"<CR>","expect":{"mode":"n","cursor":[2,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"wide/<Space>","body":"wide","keys":"<Space>","expect":{"mode":"n","cursor":[1,2],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"wide/G<CR>","body":"wide","keys":"G<CR>","expect":{"mode":"n","cursor":[6,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"wide/j$k","body":"wide","keys":"j$k","expect":{"mode":"n","cursor":[1,8],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"wide/j*","body":"wide","keys":"j*","expect":{"mode":"n","cursor":[2,1],"top":1,"reg":"","regtype":"v","search":"\\<日本語\\>","fwd":1,"closed":[],"msg":"search hit BOTTOM, continuing at TOP"}}
+{"id":"wide/j3<Space>","body":"wide","keys":"j3<Space>","expect":{"mode":"n","cursor":[2,4],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"wide/j3lj","body":"wide","keys":"j3lj","expect":{"mode":"n","cursor":[3,6],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"wide/j4l*","body":"wide","keys":"j4l*","expect":{"mode":"n","cursor":[3,7],"top":1,"reg":"","regtype":"v","search":"\\<foo\\>","fwd":1,"closed":[],"msg":null}}
+{"id":"wide/j4lj","body":"wide","keys":"j4lj","expect":{"mode":"n","cursor":[3,7],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"wide/jj3lj","body":"wide","keys":"jj3lj","expect":{"mode":"n","cursor":[4,6],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"wide/jj3lk","body":"wide","keys":"jj3lk","expect":{"mode":"n","cursor":[2,3],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"wide/jj4lk","body":"wide","keys":"jj4lk","expect":{"mode":"n","cursor":[2,4],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"wide/jj5<Space>","body":"wide","keys":"jj5<Space>","expect":{"mode":"n","cursor":[3,7],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"wide/jjj9lk","body":"wide","keys":"jjj9lk","expect":{"mode":"n","cursor":[3,9],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"wide/jjj9lkk","body":"wide","keys":"jjj9lkk","expect":{"mode":"n","cursor":[2,8],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"wide/jl*","body":"wide","keys":"jl*","expect":{"mode":"n","cursor":[2,1],"top":1,"reg":"","regtype":"v","search":"\\<日本語\\>","fwd":1,"closed":[],"msg":"search hit BOTTOM, continuing at TOP"}}
+{"id":"wide/jlj","body":"wide","keys":"jlj","expect":{"mode":"n","cursor":[3,3],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"wide/jll*","body":"wide","keys":"jll*","expect":{"mode":"n","cursor":[2,1],"top":1,"reg":"","regtype":"v","search":"\\<日本語\\>","fwd":1,"closed":[],"msg":"search hit BOTTOM, continuing at TOP"}}
+{"id":"wide/jllj","body":"wide","keys":"jllj","expect":{"mode":"n","cursor":[3,4],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"wide/jlllj","body":"wide","keys":"jlllj","expect":{"mode":"n","cursor":[3,6],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"wide/lj","body":"wide","keys":"lj","expect":{"mode":"n","cursor":[2,2],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"wide/llj","body":"wide","keys":"llj","expect":{"mode":"n","cursor":[2,2],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"wide/lljj","body":"wide","keys":"lljj","expect":{"mode":"n","cursor":[3,3],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"window/10Gzb","body":"raw30","keys":"10Gzb","expect":{"mode":"n","cursor":[10,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"window/10Gzt","body":"raw30","keys":"10Gzt","expect":{"mode":"n","cursor":[10,5],"top":10,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"window/10Gzz","body":"raw30","keys":"10Gzz","expect":{"mode":"n","cursor":[10,5],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"window/10zt","body":"raw30","keys":"10zt","expect":{"mode":"n","cursor":[10,1],"top":10,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"window/15zz","body":"raw30","keys":"15zz","expect":{"mode":"n","cursor":[15,1],"top":4,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"window/20Gzt","body":"raw30","keys":"20Gzt","expect":{"mode":"n","cursor":[20,1],"top":20,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"window/20zb","body":"raw30","keys":"20zb","expect":{"mode":"n","cursor":[20,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"window/2<C-f>","body":"raw30","keys":"2<C-f>","expect":{"mode":"n","cursor":[30,3],"top":30,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"window/3<C-d>","body":"raw30","keys":"3<C-d>","expect":{"mode":"n","cursor":[4,1],"top":4,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"window/3<C-d><C-d>","body":"raw30","keys":"3<C-d><C-d>","expect":{"mode":"n","cursor":[7,3],"top":7,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"window/3<PageDown>","body":"raw30","keys":"3<PageDown>","expect":{"mode":"n","cursor":[30,1],"top":30,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"window/<C-b>","body":"raw30","keys":"<C-b>","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"window/<C-d>","body":"raw30","keys":"<C-d>","expect":{"mode":"n","cursor":[12,1],"top":8,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"window/<C-d><C-d>","body":"raw30","keys":"<C-d><C-d>","expect":{"mode":"n","cursor":[23,1],"top":8,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"window/<C-d><C-d><C-d>","body":"raw30","keys":"<C-d><C-d><C-d>","expect":{"mode":"n","cursor":[30,3],"top":8,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"window/<C-f>","body":"raw30","keys":"<C-f>","expect":{"mode":"n","cursor":[22,5],"top":22,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"window/<C-f><C-b>","body":"raw30","keys":"<C-f><C-b>","expect":{"mode":"n","cursor":[23,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"window/<C-f><C-f>","body":"raw30","keys":"<C-f><C-f>","expect":{"mode":"n","cursor":[30,3],"top":30,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"window/<C-u>","body":"raw30","keys":"<C-u>","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"window/<PageDown>","body":"raw30","keys":"<PageDown>","expect":{"mode":"n","cursor":[22,5],"top":22,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"window/<PageUp>","body":"raw30","keys":"<PageUp>","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"window/G2<PageUp>","body":"raw30","keys":"G2<PageUp>","expect":{"mode":"n","cursor":[9,3],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"window/G<C-b>","body":"raw30","keys":"G<C-b>","expect":{"mode":"n","cursor":[9,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"window/G<C-d>","body":"raw30","keys":"G<C-d>","expect":{"mode":"n","cursor":[30,3],"top":8,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"window/G<C-f>","body":"raw30","keys":"G<C-f>","expect":{"mode":"n","cursor":[30,3],"top":30,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"window/G<C-u>","body":"raw30","keys":"G<C-u>","expect":{"mode":"n","cursor":[19,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"window/G<PageUp>","body":"raw30","keys":"G<PageUp>","expect":{"mode":"n","cursor":[9,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"window/Gzb","body":"raw30","keys":"Gzb","expect":{"mode":"n","cursor":[30,3],"top":8,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"window/Gzt","body":"raw30","keys":"Gzt","expect":{"mode":"n","cursor":[30,3],"top":30,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"window/ggzb","body":"raw30","keys":"ggzb","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"window5/3Gzz","body":"raw5","keys":"3Gzz","expect":{"mode":"n","cursor":[3,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"window5/<C-b>","body":"raw5","keys":"<C-b>","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"window5/<C-d>","body":"raw5","keys":"<C-d>","expect":{"mode":"n","cursor":[5,3],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"window5/<C-f>","body":"raw5","keys":"<C-f>","expect":{"mode":"n","cursor":[5,3],"top":5,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"window5/<C-f><C-f>","body":"raw5","keys":"<C-f><C-f>","expect":{"mode":"n","cursor":[5,3],"top":5,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"window5/<PageDown>","body":"raw5","keys":"<PageDown>","expect":{"mode":"n","cursor":[5,3],"top":5,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"window5/Gzt","body":"raw5","keys":"Gzt","expect":{"mode":"n","cursor":[5,3],"top":5,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"window5/zb","body":"raw5","keys":"zb","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"yank//baz<CR>3yy","body":"raw30","keys":"/baz<CR>3yy","expect":{"mode":"n","cursor":[1,9],"top":1,"reg":"foo bar baz\n  bar foo\n    baz\n","regtype":"V","search":"baz","fwd":1,"closed":[],"msg":"3 lines yanked"}}
+{"id":"yank//baz<CR>yy","body":"raw30","keys":"/baz<CR>yy","expect":{"mode":"n","cursor":[1,9],"top":1,"reg":"foo bar baz\n","regtype":"V","search":"baz","fwd":1,"closed":[],"msg":null}}
+{"id":"yank/10G3yyj","body":"raw30","keys":"10G3yyj","expect":{"mode":"n","cursor":[11,3],"top":1,"reg":"    deep   indent foo\nbar\n\n","regtype":"V","search":"","fwd":1,"closed":[],"msg":"3 lines yanked"}}
+{"id":"yank/28G5yy","body":"raw30","keys":"28G5yy","expect":{"mode":"n","cursor":[28,1],"top":6,"reg":"line 28 foo\nline 29 bar\n  last foo line\n","regtype":"V","search":"","fwd":1,"closed":[],"msg":"3 lines yanked"}}
+{"id":"yank/29G2yy","body":"raw30","keys":"29G2yy","expect":{"mode":"n","cursor":[29,1],"top":7,"reg":"line 29 bar\n  last foo line\n","regtype":"V","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"yank/29G3yy","body":"raw30","keys":"29G3yy","expect":{"mode":"n","cursor":[29,1],"top":7,"reg":"line 29 bar\n  last foo line\n","regtype":"V","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"yank/3yy","body":"raw30","keys":"3yy","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"foo bar baz\n  bar foo\n    baz\n","regtype":"V","search":"","fwd":1,"closed":[],"msg":"3 lines yanked"}}
+{"id":"yank/99yy","body":"raw30","keys":"99yy","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"foo bar baz\n  bar foo\n    baz\n\nfoo.bar(baz)\n  item_1 = foo\n  item_2 = bar\nx\nnaïve café foo\n    deep   indent foo\nbar\n\n   \nfoo foo foo\nthe end of foo\nline 16 bar\nline 17 foo\n  line 18 baz\nline 19 bar\nline 20 foo\nline 21 bar\n    line 22 baz\nline 23 foo\nline 24 bar\nline 25 foo\n  line 26 baz\nline 27 bar\nline 28 foo\nline 29 bar\n  last foo line\n","regtype":"V","search":"","fwd":1,"closed":[],"msg":"30 lines yanked"}}
+{"id":"yank/G3yy","body":"raw30","keys":"G3yy","expect":{"mode":"n","cursor":[30,3],"top":8,"reg":"","regtype":"v","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"yank/Gyy","body":"raw30","keys":"Gyy","expect":{"mode":"n","cursor":[30,3],"top":8,"reg":"  last foo line\n","regtype":"V","search":"","fwd":1,"closed":[],"msg":null}}
+{"id":"yank/yy","body":"raw30","keys":"yy","expect":{"mode":"n","cursor":[1,1],"top":1,"reg":"foo bar baz\n","regtype":"V","search":"","fwd":1,"closed":[],"msg":null}}

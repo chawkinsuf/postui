@@ -266,7 +266,7 @@ pub fn all_commands() -> Vec<Command> {
             id: "response-search",
             name: "Response: search",
             description: "Search the response's active tab",
-            action: Action::OpenResponseSearch,
+            action: Action::OpenResponseSearch { backward: false },
         },
         Command {
             id: "response-jq",
@@ -1135,7 +1135,7 @@ mod tests {
                 .find(|c| c.id == "response-search")
                 .unwrap()
                 .action,
-            Action::OpenResponseSearch
+            Action::OpenResponseSearch { backward: false }
         );
         assert_eq!(
             commands
