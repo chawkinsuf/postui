@@ -1005,7 +1005,7 @@ mod tests {
             feed(&mut Router::default(), &cx(Vim, Surface::Sidebar), "/"),
             run(vec![Step::Action(Action::ShowToast("No search in this list yet".into(), ToastKind::Info))])
         );
-        let search = run(vec![Step::Action(Action::OpenResponseSearch)]);
+        let search = run(vec![Step::Action(Action::OpenResponseSearch { backward: false })]);
         let next = run(vec![Step::Action(Action::StepResponseSearch(1))]);
         let prev = run(vec![Step::Action(Action::StepResponseSearch(-1))]);
         use crate::action::ResponseFind;
@@ -1022,7 +1022,7 @@ mod tests {
         assert_eq!(feed(&mut Router::default(), &resp, "3N"), find(ResponseFind::Next { reverse: true, count: 3 }));
         assert_eq!(feed(&mut Router::default(), &resp, "2*"), find(ResponseFind::Word { backward: false, count: 2 }));
         assert_eq!(feed(&mut Router::default(), &resp, "#"), find(ResponseFind::Word { backward: true, count: 1 }));
-        assert_eq!(feed(&mut Router::default(), &resp, "?"), run(vec![Step::Action(Action::OpenResponseSearchBack)]));
+        assert_eq!(feed(&mut Router::default(), &resp, "?"), run(vec![Step::Action(Action::OpenResponseSearch { backward: true })]));
         assert_eq!(feed(&mut Router::default(), &resp, "c"), Resolved::Consumed, "vim has no c");
         assert_eq!(
             feed(&mut Router::default(), &cx(Arrows, Surface::Response(ViewMode::Headers)), "c"),
@@ -1051,13 +1051,16 @@ mod tests {
             run(vec![Step::Action(Action::ShowToast(table::ONLY_LINES.into(), ToastKind::Info))])
         );
         assert_eq!(feed(&mut Router::default(), &vis, "u"), Resolved::Consumed, "swallowed in V");
+        assert_eq!(feed(&mut Router::default(), &vis, ":"), act(Action::OpenExPalette), "Vim's : in Visual");
         assert_eq!(feed(&mut Router::default(), &vis, "<C-w>k"), act(Action::PaneMove(crate::action::PaneDir::Up)));
-        assert_eq!(feed(&mut Router::default(), &cx(Arrows, vis.surface), "/"), act(Action::OpenResponseSearch), "arrows' / with a selection up");
+        let search = act(Action::OpenResponseSearch { backward: false });
+        assert_eq!(feed(&mut Router::default(), &cx(Arrows, vis.surface), "/"), search, "arrows' / with a selection up");
     }
 
     /// Amendment A6.3 (probe V14 in the Task 6 report): in V, PageDown and
     /// PageUp extend as ctrl+f and ctrl+b do, counted. On the plain
-    /// response they stay the component's named keys.
+    /// response they move as ctrl+f and ctrl+b do, counted too; arrows'
+    /// stay the component's named keys.
     #[test]
     fn v_line_page_keys_extend() {
         use crate::action::ResponseMotion as M;
@@ -1068,7 +1071,11 @@ mod tests {
         assert_eq!(feed(&mut Router::default(), &vis, "3<PageUp>"), ext(M::Page { down: false, count: 3 }));
         assert_eq!(feed(&mut Router::default(), &vis, "<C-f>"), ext(M::Page { down: true, count: 1 }));
         let resp = cx(Vim, Surface::Response(ViewMode::Pretty));
-        assert_eq!(feed(&mut Router::default(), &resp, "<PageDown>"), Resolved::Declined);
+        let mv = |m| run(vec![Step::Action(Action::ResponseMove(m))]);
+        assert_eq!(feed(&mut Router::default(), &resp, "3<PageDown>"), mv(M::Page { down: true, count: 3 }));
+        assert_eq!(feed(&mut Router::default(), &resp, "<PageUp>"), mv(M::Page { down: false, count: 1 }));
+        let arrows = cx(Arrows, Surface::Response(ViewMode::Pretty));
+        assert_eq!(feed(&mut Router::default(), &arrows, "<PageDown>"), Resolved::Declined);
     }
 
     /// Task 6 fix round 1 (the controller's ruling; probe R6f): in vim's V,

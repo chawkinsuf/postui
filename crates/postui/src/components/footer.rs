@@ -283,7 +283,11 @@ pub(crate) fn footer_chips(
                 let mut chips = vec![
                     (tabs_key(), "tabs", Some(Action::CycleTabs(1))),
                     // The search row's key in both profiles (spec §4.6).
-                    (Key::Of(Action::OpenResponseSearch), "search", Some(Action::OpenResponseSearch)),
+                    (
+                        Key::Of(Action::OpenResponseSearch { backward: false }),
+                        "search",
+                        Some(Action::OpenResponseSearch { backward: false }),
+                    ),
                     (Key::Of(Action::OpenJqBar), "filter", Some(Action::OpenJqBar)),
                 ];
                 if jq_bar == JqBarState::Open {
@@ -1420,7 +1424,7 @@ mod tests {
                 .is_some()
         );
         assert!(
-            hits.rect_of(&Hit::FooterChip(Action::OpenResponseSearch))
+            hits.rect_of(&Hit::FooterChip(Action::OpenResponseSearch { backward: false }))
                 .is_some()
         );
     }

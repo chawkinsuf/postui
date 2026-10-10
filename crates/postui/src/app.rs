@@ -464,6 +464,10 @@ pub struct App {
     /// `dispatch` and at the end of every event in `handle_key` and
     /// `handle_mouse`.
     op_in_flight: bool,
+    /// Vim's `:` opened the line over the response's V: the selection ends
+    /// once every dialog is closed, as Vim's Visual has ended when its
+    /// `:'<,'>` line does (`end_visual_off_response`).
+    ex_over_visual: bool,
     /// The open request as of the last `capture_undo` call (with its slug),
     /// diffed against the live editor each call to detect edits that never
     /// went through an `Action`. `None` before the first request is open.
@@ -1772,6 +1776,7 @@ impl App {
             history: crate::undo::History::new(),
             marked_entry: None,
             op_in_flight: false,
+            ex_over_visual: false,
             shadow: None,
             field_gate_was_on: false,
             no_coalesce: false,
@@ -3049,6 +3054,9 @@ impl App {
                 use crate::components::modal::Modal;
                 use crate::components::palette::PaletteState;
                 let scope = self.ex_scope();
+                self.ex_over_visual |= self.profile() == crate::config::KeyProfile::Vim
+                    && self.focus == PaneId::Response
+                    && self.session.response.line_selection();
                 self.push_modal(Modal::Palette(PaletteState::new_ex(&self.usage, crate::usage::now(), scope)));
                 true
             }
@@ -3121,15 +3129,10 @@ impl App {
                 self.go_tab(TabTo::By(i64::from(delta)), leave, false)
             }
             Action::GoTab { to } => self.go_tab(to, true, true),
-            Action::OpenResponseSearch => {
+            Action::OpenResponseSearch { backward } => {
                 let focused = self.update(Action::FocusPane(PaneId::Response));
                 let syntax = crate::components::response::SearchSyntax::of(self.profile());
-                self.session.response.open_search(syntax, false) || focused
-            }
-            Action::OpenResponseSearchBack => {
-                let focused = self.update(Action::FocusPane(PaneId::Response));
-                let syntax = crate::components::response::SearchSyntax::of(self.profile());
-                self.session.response.open_search(syntax, true) || focused
+                self.session.response.open_search(syntax, backward) || focused
             }
             Action::ResponseFind(crate::action::ResponseFind::Next { reverse, count }) => {
                 self.session.response.find_next(reverse, count)

@@ -1992,7 +1992,7 @@ impl App {
                 })
             }
             // As `/` does: the profile's syntax, forward (amendment A5.2).
-            Hit::ResponseSearchButton => self.update(Action::OpenResponseSearch),
+            Hit::ResponseSearchButton => self.update(Action::OpenResponseSearch { backward: false }),
             Hit::ResponseSearchNext => self.step_response_search(1),
             Hit::ResponseSearchPrev => self.step_response_search(-1),
             Hit::CopyUrl => {

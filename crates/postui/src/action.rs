@@ -705,11 +705,9 @@ pub enum Action {
     ResponseViewMode(crate::components::response::ViewMode),
     /// Opens the response pane's in-pane search (Task 17, spec §5): the
     /// dispatchable form of the `Find` button / `/` key, so the footer's
-    /// Response-pane search chip and the palette can reach it too.
-    OpenResponseSearch,
-    /// Vim's `?` on the response (plan M5a Deviation 10): the search box,
-    /// searching backward.
-    OpenResponseSearchBack,
+    /// Response-pane search chip and the palette can reach it too. Vim's
+    /// `?` opens it `backward` (plan M5a Deviation 10).
+    OpenResponseSearch { backward: bool },
     /// A vim search key on the response (plan M5a Task 5).
     ResponseFind(ResponseFind),
     /// The response search's next (`1`) or previous (`-1`) match from the

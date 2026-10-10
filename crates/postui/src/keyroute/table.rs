@@ -393,7 +393,7 @@ fn fold_close_all() -> Action {
 }
 
 fn response_search() -> Action {
-    Action::OpenResponseSearch
+    Action::OpenResponseSearch { backward: false }
 }
 
 fn next_match() -> Action {
@@ -429,7 +429,7 @@ fn find_hash(n: Option<usize>) -> Action {
 }
 
 fn response_search_back() -> Action {
-    Action::OpenResponseSearchBack
+    Action::OpenResponseSearch { backward: true }
 }
 
 pub const ONLY_LINES: &str = "Only line selection (V) here";
@@ -529,6 +529,10 @@ pub static TABLE: &[Binding] = &[
     row("<C-u>", Surfaces::RESPONSE, Intent::Motion(m_half_up), CountRule::Pass),
     row("<C-f>", Surfaces::RESPONSE, Intent::Motion(m_page_down), CountRule::Pass),
     row("<C-b>", Surfaces::RESPONSE, Intent::Motion(m_page_up), CountRule::Pass),
+    // Vim's PageDown and PageUp are ctrl+f and ctrl+b, counted as they are
+    // (`3<PageDown>` pages three times). Arrows keeps the component's arms.
+    row("<PageDown>", Surfaces::RESPONSE, Intent::Motion(m_page_down), CountRule::Pass),
+    row("<PageUp>", Surfaces::RESPONSE, Intent::Motion(m_page_up), CountRule::Pass),
     row("zt", Surfaces::RESPONSE, Intent::Motion(m_top), CountRule::Pass),
     row("zz", Surfaces::RESPONSE, Intent::Motion(m_middle), CountRule::Pass),
     row("zb", Surfaces::RESPONSE, Intent::Motion(m_bottom), CountRule::Pass),
@@ -552,8 +556,7 @@ pub static TABLE: &[Binding] = &[
     row("<C-f>", Surfaces::RESPONSE_LINES, Intent::Extend(m_page_down), CountRule::Pass),
     row("<C-b>", Surfaces::RESPONSE_LINES, Intent::Extend(m_page_up), CountRule::Pass),
     // Amendment A6.3: Vim's PageDown and PageUp extend Visual as ctrl+f and
-    // ctrl+b do (probe V14). On the plain response they stay the
-    // component's named keys, which run the same `onepage()`.
+    // ctrl+b do (probe V14).
     row("<PageDown>", Surfaces::RESPONSE_LINES, Intent::Extend(m_page_down), CountRule::Pass),
     row("<PageUp>", Surfaces::RESPONSE_LINES, Intent::Extend(m_page_up), CountRule::Pass),
     // Vim's Enter in V moves down a line, counted, extending (probe R6f in
@@ -626,6 +629,10 @@ pub static TABLE: &[Binding] = &[
     row("u", Surfaces::APP, Intent::Act(undo), CountRule::Repeat),
     row("<C-r>", Surfaces::APP, Intent::Act(redo), CountRule::Repeat),
     row(":", Surfaces::APP, Intent::Act(ex_palette), CountRule::Ignore),
+    // Vim's `:` in Visual opens the line over the selection (its `'<,'>`):
+    // V stays up for the palette's commands and ends once it closes
+    // (`App::end_visual_off_response`). Visual's `u` is not undo.
+    row(":", Surfaces::RESPONSE_LINES, Intent::Act(ex_palette), CountRule::Ignore),
     // Key list §6, spec §5.1–§5.4 and §6.1: the list verbs. The shared
     // letters are one row for both profiles; vim doubles delete and yank
     // and takes counts, arrows uses one letter. Vim's other verbs on the

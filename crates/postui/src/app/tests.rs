@@ -9272,8 +9272,36 @@ fn the_response_v_selection_ends_on_any_focus_move_in_vim_only() {
     assert!(!app.session.response.line_selection(), "the jq bar ended V");
 }
 
-/// Vim has one last search pattern for every window (the user's decision,
-/// 2026-10-10): `/` in the body is `n`'s in the response, a response search
+/// Vim's `:` in Visual opens the line over the selection (`:'<,'>`): V
+/// stays up while the palette is, so its commands act on it, and ends once
+/// the palette closes, as Vim's Visual has.
+#[test]
+fn vims_colon_in_v_opens_the_palette_over_it() {
+    use crate::components::modal::Modal;
+    use crate::config::KeyProfile;
+    let body = (1..=30).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+    let mut app = App::new_for_test();
+    app.use_profile(KeyProfile::Vim);
+    ready_response(&mut app, &body);
+    app.focus = PaneId::Response;
+    app.handle_key(KeyEvent::new(KeyCode::Char('V'), KeyModifiers::SHIFT));
+    app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE));
+    assert!(matches!(app.modals.top(), Some(Modal::Palette(_))), "the : line opened");
+    assert!(app.session.response.line_selection(), "V stays under it");
+    app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+    assert!(app.session.response.line_selection(), "typing on the line keeps it");
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(app.modals.is_empty());
+    assert!(!app.session.response.line_selection(), "V ended with the line");
+    // A V started later is not ended by the old line.
+    app.handle_key(KeyEvent::new(KeyCode::Char('V'), KeyModifiers::SHIFT));
+    app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+    assert!(app.session.response.line_selection());
+}
+
+/// Vim has one last search pattern for every window (Vim 9.1's
+/// `spats[0]`): `/` in the body is `n`'s in the response, a response search
 /// is the body's `n`, and it turns the body's highlight back on, as Vim's
 /// `hlsearch` shows the last pattern everywhere.
 #[test]
@@ -9551,7 +9579,7 @@ fn click_footer_response_chips_toggle_view_and_open_search() {
     render_once(&mut app);
     let r = app
         .hits
-        .rect_of(&Hit::FooterChip(Action::OpenResponseSearch))
+        .rect_of(&Hit::FooterChip(Action::OpenResponseSearch { backward: false }))
         .expect("the '/' chip is registered");
     app.handle_mouse(left_down(r.x + 1, r.y));
     assert!(
@@ -22931,7 +22959,7 @@ fn esc_in_the_tree_dismisses_selection_and_search_but_never_the_filter() {
     ready_response(&mut app, JQ_BODY);
     app.update(Action::JqApply(".data.total".into()));
     app.focus = PaneId::Response;
-    app.update(Action::OpenResponseSearch);
+    app.update(Action::OpenResponseSearch { backward: false });
     // First Esc: the search box closes on its (empty) query, the caret
     // back in the tree; the bar (and filter) stay.
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
