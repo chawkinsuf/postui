@@ -356,6 +356,7 @@ const CASES: &[Case] = &[
     vim("X.verbs", SidebarThree, ":man<CR>", &[NoModal, ScreenIs(Screen::Manage)]),
     vim("X.verbs", SidebarThree, ":new<CR>", &[PromptOpen]),
     vim("X.verbs", TableThreeHeaders, ":new<CR>", &[TableRow(3), FieldLive(true), Mode("INSERT")]),
+    vim("X.verbs", TableThreeHeaders, "i<Esc>:new<CR>", &[TableRow(3), FieldLive(true), Mode("INSERT")]),
     vim("X.verbs", VarGrid, ":new<CR>", &[FieldLive(true), Mode("INSERT")]),
     vim("X.verbs", SidebarThree, ":rename<CR>", &[PromptOpen]),
     vim_u("X.verbs", TableThreeHeaders, ":delete<CR>", &[TableLen(2), NoModal]),

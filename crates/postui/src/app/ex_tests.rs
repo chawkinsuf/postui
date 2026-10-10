@@ -234,6 +234,25 @@ fn the_add_verbs_open_in_insert_from_the_line_as_from_the_row() {
     }
 }
 
+/// Plan M5b Deviation 19: `:new` from an open cell opens the new row in
+/// Insert, as from the closed table (spec §5.9, M4b's final review).
+/// Before, the session carried the open cell's Normal to the new one.
+#[test]
+fn colon_new_from_an_open_cell_opens_in_insert() {
+    let mut app = vim(Fixture::TableThreeHeaders);
+    feed(&mut app, "i<Esc>");
+    assert!(app.field_caret().is_live());
+    assert_eq!(app.mode_indicator(), Some("NORMAL"), "the cell is open, in Normal");
+    feed(&mut app, ":new<CR>");
+    assert_eq!(app.editor.table.selected, Some(3), "the new row");
+    assert!(app.field_caret().is_live());
+    assert_eq!(app.mode_indicator(), Some("INSERT"));
+    let mut app = vim(Fixture::VarGrid);
+    feed(&mut app, "i<Esc>:new<CR>");
+    assert!(app.field_caret().is_live());
+    assert_eq!(app.mode_indicator(), Some("INSERT"), "the grid's new option too");
+}
+
 /// Review Focus 2.
 #[test]
 fn unsupported_queries_run_nothing_and_never_pin_a_verb() {

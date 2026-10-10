@@ -203,8 +203,10 @@ impl App {
             }
             // A carry across Insert-only is a close and an open (plan M3b
             // Deviation 16): the engine would keep Insert-only on the field
-            // it carries to.
-            Edge::Carry(from, to) if from.insert_only() != to.insert_only() => {
+            // it carries to. So is an add verb's (plan M5b Deviation 19):
+            // `:new` from an open cell opens the new row in Insert, as from
+            // a closed table, where a carry would keep the cell's Normal.
+            Edge::Carry(from, to) if add || from.insert_only() != to.insert_only() => {
                 self.close_session(from);
                 self.open_session(to, open_as, !mouse, Start::Normal);
             }
