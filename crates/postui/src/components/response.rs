@@ -90,6 +90,9 @@ impl SearchSyntax {
 pub struct SearchState {
     pub input: LineInput,
     pub active: bool,
+    /// What is searched for. A Vim pattern is kept as Vim's `do_search()`
+    /// stores it (`as_stored`: `\?` typed in a `?` search is `?`), so a
+    /// later search in the other direction reuses it unchanged.
     pub query: String,
     pub syntax: SearchSyntax,
     /// `?` and `#` search backward: Vim's `n` follows it, `N` goes the
@@ -632,7 +635,8 @@ pub struct ReadyView {
     /// that lands sets `(line, column)` of its match, in search-corpus
     /// lines; any cursor move forgets it ([`ReadyView::cursor_moved`]).
     at_col: Option<(usize, usize)>,
-    /// The last query committed, for an empty `/` Enter, which Vim takes as
+    /// The last query committed (a Vim pattern as stored, see
+    /// [`SearchState::query`]), for an empty `/` Enter, which Vim takes as
     /// "the last pattern".
     last_query: Option<String>,
     /// A note for the app to toast (Vim's message line): a wrap, a miss.
@@ -1230,10 +1234,10 @@ impl ReadyView {
     /// Every match of the query, in corpus order. `Some(note)` for a Vim
     /// pattern outside the engine's subset: no matches then.
     fn recompute_matches(&mut self) -> Option<String> {
-        use crate::vim::engine::{Dir, as_stored, compile, not_supported_note};
+        use crate::vim::engine::{compile, not_supported_note};
         let search = self.search.as_ref()?;
         let query = search.query.clone();
-        let (syntax, backward) = (search.syntax, search.backward);
+        let syntax = search.syntax;
         let mut matches = Vec::new();
         if !query.is_empty() {
             let corpus = self.search_corpus();
@@ -1254,8 +1258,7 @@ impl ReadyView {
                     }
                 }
                 SearchSyntax::Vim => {
-                    let dir = if backward { Dir::Backward } else { Dir::Forward };
-                    let pat = match compile(&as_stored(&query, dir)) {
+                    let pat = match compile(&query) {
                         Ok(p) => p,
                         Err(atom) => {
                             let search = self.search.as_mut().expect("checked above");
@@ -1369,6 +1372,7 @@ impl ReadyView {
     /// query, as Vim's `/` Enter does, and says Vim's E35 when there is
     /// none (probe E1); an empty arrows box finds nothing, as on main.
     fn commit_search(&mut self, esc: bool) {
+        use crate::vim::engine::{Dir, as_stored};
         let Some(search) = self.search.as_mut() else { return };
         search.active = false;
         search.input.end_edit();
@@ -1380,7 +1384,12 @@ impl ReadyView {
             return;
         }
         let vim = search.syntax == SearchSyntax::Vim;
-        search.query = if typed.is_empty() && vim { self.last_query.clone().unwrap_or_default() } else { typed };
+        let dir = if search.backward { Dir::Backward } else { Dir::Forward };
+        search.query = match (vim, typed.is_empty()) {
+            (true, true) => self.last_query.clone().unwrap_or_default(),
+            (true, false) => as_stored(&typed, dir),
+            (false, _) => typed,
+        };
         let (query, backward) = (search.query.clone(), search.backward);
         if !query.is_empty() {
             self.last_query = Some(query.clone());
@@ -6729,6 +6738,31 @@ mod tests {
         typed(&mut r, "");
         assert_eq!(r.take_note().as_deref(), Some("No previous regular expression"), "and the last query");
         assert_eq!(cursor(&r), 2);
+    }
+
+    /// The last query is the pattern as Vim's `do_search()` stored it, so an
+    /// empty box in the other direction searches the same thing (2026-10-10
+    /// probe, Vim 9.1): `?foo\?` stores `foo?`, a literal `?`, and `/fo\?`
+    /// stores `fo\?`, Vim's 0-or-1, which an empty `?` keeps.
+    #[test]
+    fn an_empty_box_reuses_the_pattern_as_vim_stored_it() {
+        use SearchSyntax::Vim;
+        const BODY: &str = "xfoo\nfoo?\nfox\nzz";
+        let mut r = ready(BODY);
+        r.view.as_mut().unwrap().cursor = 3;
+        r.open_search(Vim, true);
+        typed(&mut r, r"foo\?");
+        assert_eq!(r.view().unwrap().cursor, 1);
+        r.view.as_mut().unwrap().cursor = 0;
+        r.open_search(Vim, false);
+        typed(&mut r, "");
+        assert_eq!(landed(&r), (1, Some((1, 0)), "foo?".into()), "a literal ?, not xfoo's foo");
+        r.open_search(Vim, false);
+        typed(&mut r, r"fo\?");
+        r.view.as_mut().unwrap().cursor = 3;
+        r.open_search(Vim, true);
+        typed(&mut r, "");
+        assert_eq!(landed(&r), (2, Some((2, 0)), r"fo\?".into()), "still 0-or-1: fox's fo");
     }
 
     /// Amendment A5.4 (the user's decision): arrows' `n`/`N` and the ▼/▲
