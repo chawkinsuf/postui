@@ -820,7 +820,7 @@ fn check(app: &App, e: Expect) -> Result<(), String> {
         PaletteRefused(t) => matches!(app.modals.top(), Some(Modal::Palette(p)) if p.refused() == Some(t)),
         ModalOpen => !app.modals.is_empty(),
         ScreenIs(s) => app.screen == s,
-        BodyHl(on) => app.glue.hlsearch() == on,
+        BodyHl(on) => app.session.response.search_memory().hlsearch() == on,
     };
     ok.then_some(()).ok_or_else(|| {
         format!(

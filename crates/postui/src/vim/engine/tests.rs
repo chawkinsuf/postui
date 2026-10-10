@@ -2105,10 +2105,10 @@ fn search_motions_messages_and_the_shared_pattern() {
     };
     let mut f = Field::new("foo bar foo", 0);
     assert_eq!(message(f.keys("n")), "No previous regular expression");
-    assert!(!f.engine.hlsearch());
+    assert!(!f.engine.memory.hlsearch());
     assert_eq!(f.keys("*"), Outcome::consumed());
     assert_eq!(f.col(), 8);
-    assert!(f.engine.hlsearch());
+    assert!(f.engine.memory.hlsearch());
     assert_eq!(f.engine.last_search(), Some("\\<foo\\>"));
     assert_eq!(message(f.keys("n")), "search hit BOTTOM, continuing at TOP");
     assert_eq!(f.col(), 0);
@@ -2150,10 +2150,10 @@ fn the_search_prompt_in_a_field() {
     assert!(!declined(&f.key(code(KeyCode::Enter))));
     assert_eq!(f.text(), "foo", "d3/fo deleted to the third hit, which wrapped");
     assert_eq!(f.engine.mode(), Mode::Normal);
-    assert!(f.engine.hlsearch());
+    assert!(f.engine.memory.hlsearch());
     assert_eq!(f.engine.search_matches(&OneLineBuf::new(&mut f.input), 0..1), vec![(Pos::new(0, 0), Pos::new(0, 2))]);
-    f.engine.no_hlsearch();
-    assert!(!f.engine.hlsearch());
+    f.engine.memory.no_hlsearch();
+    assert!(!f.engine.memory.hlsearch());
     assert!(f.engine.search_matches(&OneLineBuf::new(&mut f.input), 0..1).is_empty());
     f.keys("/");
     assert!(!declined(&f.key(code(KeyCode::Tab))));

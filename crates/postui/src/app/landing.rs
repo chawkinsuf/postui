@@ -277,7 +277,7 @@ impl App {
     fn fresh_scratch(&mut self) {
         self.editor = Editor::default();
         self.shadow = None;
-        self.glue.drop_body();
+        self.glue.drop_body(self.session.response.search_memory_mut());
     }
 
     /// The view an undo step records (§4.1).

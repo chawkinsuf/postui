@@ -82,7 +82,7 @@ fn run(head: &Value, case: &Value) -> Result<(), String> {
         crate::vim::engine::RegKind::Char => "v",
     };
     check("reg", format!("{:?}/{kind}", reg.text), format!("{:?}/{}", want["reg"].as_str().unwrap(), want["regtype"].as_str().unwrap()));
-    let (pattern, fwd) = match app.glue.last_pattern() {
+    let (pattern, fwd) = match app.session.response.search_memory().pattern() {
         Some((p, backward)) => (p.to_string(), if backward { 0 } else { 1 }),
         None => (String::new(), 1),
     };

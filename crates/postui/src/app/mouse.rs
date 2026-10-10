@@ -64,7 +64,9 @@ impl App {
         // `begin_op` and its record.
         self.op_in_flight = false;
         let ended = self.end_visual_off_response();
-        self.sync_last_pattern();
+        // The response shows a pattern a field searched (plan M5b
+        // Deviation 20): the one memory, nothing copied.
+        self.session.response.follow_last_pattern();
         let noted = self.toast_response_note();
         self.arm_pending_toasts();
         // Same reason as `handle_key`: a click that only pops a modal

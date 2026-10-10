@@ -782,7 +782,7 @@ fn a_click_puts_the_vim_column_on_the_clicked_char() {
     app.handle_mouse(left_down(r.x + 18, r.y));
     assert_eq!(app.focus, PaneId::Response);
     app.handle_key(KeyEvent::new(KeyCode::Char('*'), KeyModifiers::SHIFT));
-    assert_eq!(app.glue.last_pattern(), Some(("\\<gamma\\>", false)));
+    assert_eq!(app.session.response.search_memory().pattern(), Some(("\\<gamma\\>", false)));
 }
 
 /// The response search box's Esc chip says what Esc does there: vim's
@@ -9377,16 +9377,16 @@ fn the_body_and_the_response_share_vims_last_pattern() {
     app.use_profile(crate::config::KeyProfile::Vim);
     draw(&mut app);
     feed(&mut app, "/a<CR>:noh<CR>");
-    assert_eq!(app.glue.last_pattern(), Some(("a", false)));
-    assert!(!app.glue.hlsearch());
+    assert_eq!(app.session.response.search_memory().pattern(), Some(("a", false)));
+    assert!(!app.session.response.search_memory().hlsearch());
     ready_response(&mut app, "x\nb\na\nb");
     app.focus = PaneId::Response;
     feed(&mut app, "n");
     assert_eq!(app.session.response.view().unwrap().cursor, 2, "the response's n finds the body's /a");
     feed(&mut app, "?b<CR>");
     assert_eq!(app.session.response.view().unwrap().cursor, 1);
-    assert_eq!(app.glue.last_pattern(), Some(("b", true)), "the response's ?b is the engine's");
-    assert!(app.glue.hlsearch(), "and the body's highlight is back on");
+    assert_eq!(app.session.response.search_memory().pattern(), Some(("b", true)), "the response's ?b is the engine's");
+    assert!(app.session.response.search_memory().hlsearch(), "and the body's highlight is back on");
     app.focus = PaneId::Editor;
     feed(&mut app, "n");
     assert_eq!(
