@@ -731,12 +731,14 @@ Decisions made while building M5a (`you` = the user ruled; `mine` = my ruling, o
 - `you`: a shift+↑/↓ after a drag anchors at the drag's anchor line, as on main, in both profiles.
 - `you`: an edge-beeping ctrl+u/ctrl+b/PageUp keeps the line selection in both profiles (main dropped it in arrows).
 - `mine`: the `"+yy` register is not real (the `"` note stays), Esc in the search box is unchanged, and Vim's hidden-line move on `j` from a closed fold (probe F5) is left.
-- `mine`: any cursor move (click, shown cursor, `o`, Space toggle) forgets the hidden fold line; the 13 Extend rows mirror the Motion rows on purpose.
+- `mine`: a click, a move of the shown cursor and `o` in V forget the hidden fold line, and so does a window key that pulls an off-screen cursor to the view's edge; a Space fold toggle goes through the fold path and keeps it. The 13 Extend rows mirror the Motion rows on purpose.
+- `mine`: the footer gets no new chips for V (the mode word reads `V-LINE`), and `'scroll'` resets when the response pane's height changes, as Vim's `win_comp_scroll()` does on a resize (plan Deviations 18, 19).
+- `mine`: the response's search shares the engine's note strings, and a match that starts at a line's end counts one column back (`land_match` follows the engine's rule, Vim's `/$`).
 - `mine`: an edge beep on a page key changes nothing and keeps the selection, as Vim keeps Visual on a failed page key.
 - `mine`: in V, PageDown/PageUp extend like ctrl+f/ctrl+b; ctrl+Home/End are not table rows, so there they jump and end the selection where Vim extends (a known gap).
 - `mine`: `?` `*` `#` `V` `v` are vim-only, as `dd` and `zo` are.
 - `mine`: the empty-box re-run of the last query (`/<CR>`) is vim-only, and Esc on an empty box does nothing in both profiles.
-- `mine`: a search or `*` from a line hidden in a closed fold starts on the hidden line, in both profiles (Vim's rule; probes X15, X16), where the plan's Review Focus 1 had assumed the fold's first line.
+- `mine`: a search from a cursor whose real line is inside a closed container (including the collapsed row itself) takes the outermost closed one, in both profiles, as Vim 9.1 does. A forward search (`/`, forward `n`, `*`) starts after its closing line; a backward one (`?`, backward `n`/`N`, `#`) starts at its opening line, column 0. `*` and `#` still take their word from the hidden real line. This replaces the plan's Review Focus 1 premise that a search starts on the hidden line (probes X15, X16 cannot tell the two apart).
 - `mine`: V `y` drops the search column (Vim); only `yy` keeps it.
 - `mine`: in vim's V, Enter extends one line down and Space is swallowed; arrows' V keeps main's Space and Enter.
 - `mine`: a keys.toml override of `n` `N` `c` `/` still wins in arrows while a shift selection is up.
