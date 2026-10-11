@@ -150,13 +150,11 @@ impl App {
         }
         // Every request the entry moved changes slug again: the session's
         // cache and in-flight entries follow, as they did for the forward
-        // op.
+        // op, and so does the register.
         for (old, new) in &u.meta.moves {
-            if u.redo {
-                self.session.rename(old, new);
-            } else {
-                self.session.rename(new, old);
-            }
+            let (from, to) = if u.redo { (old, new) } else { (new, old) };
+            self.session.rename(from, to);
+            self.yank.follow(from, to);
         }
         // The Variable Manager's grid/form cache the declarations and
         // won't otherwise notice a file the replay rewrote under them.

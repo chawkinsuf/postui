@@ -3911,6 +3911,7 @@ impl App {
                         // collapsed) means no neighbour: the cursor keeps
                         // its row.
                         self.session.rename(&slug, &new_slug);
+                        self.yank.follow(&slug, &new_slug);
                         self.land(Landing {
                             open: was_open.then_some(Open::Scratch { buffer: None }),
                             cursor: from_row
@@ -3986,6 +3987,7 @@ impl App {
                     Ok((slug, leaf)) => {
                         let label = crate::undo::StepLabel::rename(leaf.clone());
                         self.session.rename(&from, &slug);
+                        self.yank.follow(&from, &slug);
                         // The editor follows the new slug in place, never
                         // reloading.
                         if self.editor.slug.as_deref() == Some(from.as_str()) {
@@ -6662,6 +6664,7 @@ impl App {
                 match p.rename_space(&from, &to) {
                     Ok(to) => {
                         self.session.rename_space(&from, &to);
+                        self.yank.follow_space(&from, &to);
                         let from_prefix = format!("{from}/");
                         let rekey = |s: &str| {
                             s.strip_prefix(&from_prefix).map(|rest| format!("{to}/{rest}"))
@@ -6923,6 +6926,7 @@ impl App {
                 }
                 for (old, new) in &moved {
                     self.session.rename(old, new);
+                    self.yank.follow(old, new);
                 }
                 let follow = open.and_then(|open| {
                     moved.iter().find(|(old, _)| *old == open).map(|(_, new)| new.clone())

@@ -31,6 +31,30 @@ pub enum Register {
     },
 }
 
+impl Register {
+    /// The request at `from` now lives at `to` (a rename, a move to
+    /// another space, their undo or redo): a register naming it follows,
+    /// as the session's cache does, so a put copies the request as it is
+    /// now rather than failing on the old slug.
+    pub fn follow(&mut self, from: &str, to: &str) {
+        if let Self::Request(slug) = self
+            && slug == from
+        {
+            *slug = to.to_string();
+        }
+    }
+
+    /// Every request of the space `from` now lives in the space `to` (a
+    /// space rename).
+    pub fn follow_space(&mut self, from: &str, to: &str) {
+        if let Self::Request(slug) = self
+            && let Some(rest) = slug.strip_prefix(&format!("{from}/"))
+        {
+            *slug = format!("{to}/{rest}");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
