@@ -131,7 +131,7 @@ fn a_change_elsewhere_makes_dot_stale() {
     assert!(app.field_gate(), "the body's session holds the edit");
     feed(&mut app, ":e!<CR><C-w>h");
     assert_eq!(app.surface(), crate::keyroute::Surface::Sidebar);
-    assert!(app.toasts.messages().contains(&"Changes discarded — ^Z undoes"), "the `:e!` ran: {:?}", app.toasts.messages());
+    assert!(app.toasts.messages().contains(&"Changes discarded — u undoes"), "the `:e!` ran: {:?}", app.toasts.messages());
     feed(&mut app, ".");
     assert_eq!(requests(&app), ["main/beta", "main/matrix"], "the body's edit was the last change");
 }

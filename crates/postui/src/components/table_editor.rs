@@ -368,8 +368,10 @@ impl TableEditorState {
 
     /// Deletes up to `n` rows from `start` down as one change (piece 4
     /// spec §5.3: a counted `dd`); a count past the end is clamped. The
-    /// cursor lands on the row that moved up into `start` (or the add row
-    /// when the run reached the end). Returns how many rows went.
+    /// cursor lands on the row that moved up into `start`, or, when the run
+    /// reached the end, on the new last row, as Vim's `dd` does, in both
+    /// profiles (the user, 2026-10-11). Only an emptied table lands on the
+    /// add row. Returns how many rows went.
     pub fn delete_rows(&mut self, map: &mut IndexMap<String, Entry>, start: usize, n: usize) -> usize {
         if start >= map.len() || n == 0 {
             return 0;
@@ -377,7 +379,7 @@ impl TableEditorState {
         let end = start.saturating_add(n).min(map.len());
         self.editing = None;
         map.drain(start..end);
-        self.selected = Some(start.min(map.len()));
+        self.selected = Some(start.min(map.len().saturating_sub(1)));
         end - start
     }
 

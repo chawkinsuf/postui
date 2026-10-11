@@ -3360,6 +3360,25 @@ fn discard_changes_reverts_immediately_with_an_undo_hint() {
     );
 }
 
+/// Sweep backlog item 1: in vim the hint names `u` (the footer's key), and
+/// `u` where the keyboard is undoes the discard: the body's idle Normal
+/// hands it on.
+#[test]
+fn vims_discard_hint_names_u_and_u_undoes_the_discard() {
+    use super::key_matrix_tests::{Fixture, build, draw, feed, use_persisted_profile};
+    let mut app = build(Fixture::Body);
+    // Persisted, so `:e!`'s reload keeps the profile (no keymap question).
+    use_persisted_profile(&mut app, crate::config::KeyProfile::Vim);
+    draw(&mut app);
+    feed(&mut app, "ix<Esc>");
+    let edited = app.editor.body_text();
+    feed(&mut app, ":e!<CR>");
+    assert_ne!(app.editor.body_text(), edited, "discarded");
+    assert!(app.toasts.messages().contains(&"Changes discarded — u undoes"), "{:?}", app.toasts.messages());
+    feed(&mut app, "u");
+    assert_eq!(app.editor.body_text(), edited, "the hint's key undoes the discard");
+}
+
 #[test]
 fn applying_a_jq_filter_never_dirties_the_request_or_gates_quit() {
     let mut app = App::new_for_test();

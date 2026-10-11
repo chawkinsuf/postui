@@ -460,6 +460,19 @@ const CASES: &[Case] = &[
     vim_u("L.Ndd", SidebarThreeBetaOpen, "2dd", &[Requests(&["main/alpha"]), NoEditorSlug]),
     arrows_u("L.dd", SidebarThreeBetaOpen, "d", &[Requests(&["main/alpha", "main/gamma"]), NoEditorSlug]),
     vim_u("L.Ndd", TableThreeHeaders, "2dd", &[Headers(&["a"])]),
+    // Sweep backlog item 2: Vim's `dd` on the last line lands on the new
+    // last line, so a table's never parks on the add row; arrows the same
+    // (the user, 2026-10-11). A run to the end lands there too.
+    vim_u("L.dd", TableThreeHeaders, "jdd", &[Headers(&["a", "b"]), TableRow(1)]),
+    vim_u("L.Ndd", TableThreeHeaders, "5dd", &[Headers(&["a"]), TableRow(0)]),
+    arrows_u("L.dd", TableThreeHeaders, "<Down>d", &[Headers(&["a", "b"]), TableRow(1)]),
+    // Sweep backlog item 1: the undo hint names the key that undoes here.
+    vim_u("L.dd", TableThreeHeaders, "dd", &[Toast(" — u undoes")]),
+    vim_u("L.Ndd", TableThreeHeaders, "2dd", &[Toast("Deleted 2 rows — u undoes")]),
+    vim_u("L.dd", SidebarThree, "dd", &[Toast(" — u undoes")]),
+    vim_u("L.dd", TableThreeHeaders, ":delete<CR>", &[Toast(" — u undoes")]),
+    vim_u("L.dd", SidebarThree, ":delete<CR>", &[Toast(" — u undoes")]),
+    arrows_u("L.dd", TableThreeHeaders, "d", &[Toast(" — ^Z undoes")]),
     vim("L.Ndd", ManageEnvs, "2dd", &[Toast("Counted delete works on requests and table rows"), EnvNames(&["prod", "qa", "dev"])]),
     // Yank is invisible; put lands under (p) or over (P) the cursor.
     vim("L.yank", SidebarThree, "yy", &[Yanked("main/beta"), NoToast, Requests(&["main/alpha", "main/beta", "main/gamma"])]),
@@ -997,9 +1010,8 @@ fn a_counted_table_delete_undone_reselects_the_first_restored_row() {
     draw(&mut app);
     feed(&mut app, "2dd");
     check(&app, Headers(&["a"])).unwrap();
-    // Move off the row the delete left selected, so an undo that never
-    // touches the cursor cannot pass.
-    feed(&mut app, "k");
+    // The delete leaves the cursor on the new last row, off the rows that
+    // come back, so an undo that never touches the cursor cannot pass.
     check(&app, TableRow(0)).unwrap();
     feed(&mut app, "u");
     check(&app, Headers(&["a", "b", "c"])).unwrap();
