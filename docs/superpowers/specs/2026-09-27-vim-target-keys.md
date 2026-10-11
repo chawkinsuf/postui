@@ -130,8 +130,8 @@ The ID column names each row for the matrix tests (piece 4 spec §8.1, crates/po
 | `L.yank` | `yy` then `p` / `P` duplicates below / above | 1 | S | earlier |
 | `L.undo` | `u` `ctrl+r` app undo/redo, reselecting what came back | 1 | S | undo restores exactly — **you** |
 | `L.search` | `/` search or filter the list, `n` `N` | Out | | parked for a future update: a search that only moves to one row isn't enough, and the scope is already large (you) |
-| `L.fold` | `zo` `zc` `za` fold/unfold sidebar folders | 2 | S | mine |
-| `L.dot` | `.` repeats the last list action (e.g. `dd..`) | 2 | S | you (accepted my recommendation); each repeat is its own undo step |
+| `L.fold` | `zo` `zc` `za` `zR` `zM` fold the sidebar's folders, counted; the cursor keeps its row inside a shut folder | 2 | S | Vim's folds (plan M5b). The other lists have no folds and say "No fold found" |
+| `L.dot` | `.` repeats the last list change (`dd`, `p`, `P`), a typed count replacing its own (e.g. `dd..`) | 2 | S | you (accepted my recommendation); runs on any surface where the change runs — you (2026-10-09); each repeat is its own undo step. Survives undo, redo and `:` commands, silent with nothing to repeat: Vim |
 | `L.hml` | `H` `M` `L`, `zz` `zt` `zb` in lists | Out | | little value in short lists |
 
 ## 7. Response viewer (Tree / Raw / Headers)
@@ -156,11 +156,11 @@ The ID column names each row for the matrix tests (piece 4 spec §8.1, crates/po
 | `P.ctrlw` | `ctrl+w h/j/k/l`, `ctrl+w w/W/p` by pane geometry (sidebar left; editor over response) | 1 | S | earlier |
 | `P.ctrlw-arrows` | `ctrl+w` + arrow keys | 2 | S | |
 | `P.gt` | `gt` `gT` `{N}gt` on every tab strip (editor, response, Manage) | 1 | S | earlier |
-| `X.wq` | `:w` `:q` `:q!` `:wq` `:x` `:qa` `:wa` | 1 | S | |
+| `X.wq` | `:w` `:q` `:q!` `:wq` `:x` `:qa` `:wa`; `:w!` `:wq!` `:x!` write over outside changes | 1 | S | `!`: Vim (plan M5b) |
 | `X.e` | `:e` / `:e!` reload from disk | 2 | S | |
 | `X.verbs` | `:` + app verbs (`:send`, `:new`, `:rename`, `:manage`, …) | 1 | S | earlier |
 | `X.edit` | Command line editing: `ctrl+u` `ctrl+w`, `Backspace`, `Esc` cancels | 1 | S | |
-| `X.history` | Command-line history (`↑` `↓`) | 2 | S | |
+| `X.history` | Command-line history (`↑` `↓`), kept across launches | 2 | S | kept across launches — you (2026-10-09); recall by the typed prefix, 200 lines: Vim |
 | `X.unsupported` | `:s`, `:g`, `:set …` | Out | | show no match; never run something else |
 | `X.noh` | `:noh` | Out, then 2 | S | Out until body search ships; then it clears the search highlight |
 
