@@ -2996,39 +2996,18 @@ impl App {
                 self.should_quit = true;
                 true
             }
-            Action::WriteQuit => {
+            Action::WriteQuit | Action::ForceWrite { quit: true } => {
                 if !self.editor_holds_unsaved() {
                     return self.apply(Action::ForceQuit);
                 }
                 if self.editor.slug.is_none() {
                     return self.apply(Action::PromptSaveScratch(Box::new(Action::ForceQuit)));
                 }
-                self.apply(Action::SaveRequestThen(Box::new(Action::ForceQuit)))
+                // A failed write keeps the app open.
+                let force = matches!(action, Action::ForceWrite { .. });
+                self.save_request_checked(Some(Action::ForceQuit), force)
             }
-            Action::ForceWrite { quit } => {
-                if quit && !self.editor_holds_unsaved() {
-                    return self.apply(Action::ForceQuit);
-                }
-                if self.editor.slug.is_none() {
-                    // No file to write over: Save as, as `:w` and `:wq` ask.
-                    return if quit {
-                        self.apply(Action::PromptSaveScratch(Box::new(Action::ForceQuit)))
-                    } else {
-                        self.apply(Action::SaveRequest)
-                    };
-                }
-                if self.refuse_without_project() {
-                    return true;
-                }
-                // A cell still under the caret is part of what is written.
-                self.commit_table_edit();
-                // The write without the drift check, as the drift dialog's
-                // Overwrite runs it; a failed write keeps the app open.
-                if self.force_save_request() && quit {
-                    return self.apply(Action::ForceQuit);
-                }
-                true
-            }
+            Action::ForceWrite { quit: false } => self.save_request_checked(None, true),
             Action::Tick => {
                 // Only a pointer actually over the sidebar edge-scrolls it:
                 // the response pane shares the list's bottom row, and a
@@ -3168,6 +3147,14 @@ impl App {
                     && let Some(prior) = self.theme_preview.take()
                 {
                     self.set_theme_by_name(&prior);
+                }
+                // A click off the `:` line abandons it, as Esc does, and
+                // Vim keeps an abandoned line (probe H6) — same rule as
+                // `apply_modal_result`'s.
+                if let Some(Modal::Palette(p)) = &popped_modal
+                    && p.is_ex()
+                {
+                    self.cmdline_history.add(p.input());
                 }
                 // Overlay close is always instant — no motion rule
                 // exception for the open-settle key. Snapping `ModalOpen`
@@ -3623,8 +3610,8 @@ impl App {
                 });
                 true
             }
-            Action::SaveRequest => self.save_request_checked(None),
-            Action::SaveRequestThen(then) => self.save_request_checked(Some(*then)),
+            Action::SaveRequest => self.save_request_checked(None, false),
+            Action::SaveRequestThen(then) => self.save_request_checked(Some(*then), false),
             Action::ForceSaveRequest => self.force_save_request(),
             Action::ReloadOpenRequest => {
                 let Some(slug) = self.editor.slug.clone() else {
@@ -4582,8 +4569,8 @@ impl App {
             }
             Action::SidebarFold { op, count } => {
                 use crate::components::sidebar::FoldChange;
-                let Some(real) = self.sidebar.fold_cursor() else { return false };
-                match self.sidebar.fold_change(op, count, &self.expanded(), &self.active_space()) {
+                let real = self.sidebar.fold_cursor();
+                match self.sidebar.fold_change(op, count, real.as_ref(), &self.expanded(), &self.active_space()) {
                     FoldChange::NoFold => {
                         self.update(Action::ShowToast(crate::keyroute::table::NO_FOLD.into(), ToastKind::Info))
                     }
@@ -4595,7 +4582,9 @@ impl App {
                             p.set_expanded(set);
                         }
                         self.refresh_sidebar();
-                        self.sidebar.show_fold_cursor(real);
+                        if let Some(real) = real {
+                            self.sidebar.show_fold_cursor(real);
+                        }
                         true
                     }
                 }
@@ -7553,7 +7542,7 @@ impl App {
                         // toast) is the feedback; a success toast on top
                         // of it would be a lie.
                         self.last_action_failed = false;
-                        self.save_request_checked(None);
+                        self.save_request_checked(None, false);
                         if self.last_action_failed {
                             return true;
                         }
@@ -8539,7 +8528,12 @@ impl App {
         }
     }
 
-    fn save_request_checked(&mut self, then: Option<Action>) -> bool {
+    /// `force` is `:w!` (plan M5b Task 1): the write lands whatever the
+    /// file holds now, as the drift dialog's Overwrite does — no drift
+    /// question, and a file that will not read is written over — but an
+    /// un-held slug is still re-seeded first where it reads, so the drift
+    /// check is live again for the next save.
+    fn save_request_checked(&mut self, then: Option<Action>, force: bool) -> bool {
         if self.refuse_without_project() {
             return true;
         }
@@ -8566,13 +8560,18 @@ impl App {
             && let Some(Err(e)) = self
                 .project_mut()
                 .map(|p| p.open_request(&slug).map(|_| ()))
+            && !force
         {
             self.toasts
                 .push(format!("could not read {slug}: {e}"), ToastKind::Error);
             self.last_action_failed = true;
             return true;
         }
-        let drift = self.project().and_then(|p| p.held_request_drift(&slug));
+        let drift = if force {
+            None
+        } else {
+            self.project().and_then(|p| p.held_request_drift(&slug))
+        };
         let Some(drift) = drift else {
             if self.force_save_request()
                 && let Some(then) = then

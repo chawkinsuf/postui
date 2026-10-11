@@ -100,6 +100,32 @@ fn bang_writes_over_a_file_changed_outside() {
     assert_ne!(on_disk(&app).url, "https://x/outside", "the app's content is on disk");
 }
 
+/// The M5b code review's second finding: `:w!` on a slug the project no
+/// longer holds re-seeds it as `:w` does, so the drift check is live again
+/// for the next save; a file that will not read is still written over.
+#[test]
+fn bang_holds_an_un_held_request_again() {
+    let mut app = vim(Fixture::TableThreeHeaders);
+    let slug = app.editor.slug.clone().expect("the fixture's request is saved");
+    app.proj_mut().close_request(&slug);
+    feed(&mut app, ":w!<CR>");
+    assert!(!app.editor.is_dirty(), "written");
+    assert!(app.proj().held_request(&slug).is_some(), "held again");
+    let theirs = postui_core::model::HttpRequest::from_toml_str(r#"url = "https://x/outside""#).unwrap();
+    postui_core::fixtures::save_request(app.proj().root(), &slug, &theirs).unwrap();
+    feed(&mut app, ":w<CR>");
+    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })), "the drift dialog");
+
+    let mut app = vim(Fixture::TableThreeHeaders);
+    let slug = app.editor.slug.clone().unwrap();
+    app.proj_mut().close_request(&slug);
+    std::fs::write(postui_core::storage::request_path(app.proj().root(), &slug), "url = \"unclosed\n").unwrap();
+    feed(&mut app, ":w!<CR>");
+    assert!(app.modals.is_empty(), "no dialog");
+    assert!(!app.editor.is_dirty(), "written over");
+    assert!(postui_core::fixtures::load_request(app.proj().root(), &slug).is_ok(), "the app's content is on disk");
+}
+
 /// Plan M5b Deviation 18: on a clean request `:x!` quits without writing
 /// (a file changed outside stays as it is); a never-saved one asks for a
 /// name, as without `!`.
@@ -454,6 +480,17 @@ fn the_line_keeps_its_history() {
     assert_eq!(palette(&app).input(), "noh");
     feed(&mut app, "<Esc>:<BS>");
     assert_eq!(app.cmdline_history.lines(), ["abc", "noh"]);
+}
+
+/// The M5b code review's first finding: a click off the line abandons
+/// it as Esc does, so the line is kept too (probe H6).
+#[test]
+fn a_click_off_the_line_keeps_it() {
+    let mut app = vim(Fixture::SidebarThree);
+    feed(&mut app, ":send");
+    click(&mut app, crate::hit::Hit::ModalOutside);
+    assert!(app.modals.is_empty());
+    assert_eq!(app.cmdline_history.lines(), ["send"]);
 }
 
 /// Review Focus 3: a recalled line runs what it spells, as typed: a verb

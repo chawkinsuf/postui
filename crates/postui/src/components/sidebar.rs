@@ -642,8 +642,16 @@ impl Sidebar {
     /// `space` (plan M5b Deviations 9 and 11; probes F1–F38), from the open
     /// set `expanded`. `zo` `zc` `za` pick by `FoldOp::pick`, the rule
     /// `JsonTree::fold_at` uses, over the folders holding the cursor's row;
-    /// `zR` and `zM`: every folder of `space`.
-    pub fn fold_change(&self, op: FoldOp, count: usize, expanded: &BTreeSet<String>, space: &str) -> FoldChange {
+    /// `zR` and `zM`: every folder of `space`, the cursor or none. `real` is
+    /// the caller's `fold_cursor`, which it puts back after the change.
+    pub fn fold_change(
+        &self,
+        op: FoldOp,
+        count: usize,
+        real: Option<&RowKey>,
+        expanded: &BTreeSet<String>,
+        space: &str,
+    ) -> FoldChange {
         let mut set = expanded.clone();
         match op {
             FoldOp::OpenAll => set.extend(self.folders_in(space)),
@@ -652,8 +660,8 @@ impl Sidebar {
                 set.retain(|f| !f.starts_with(&prefix));
             }
             FoldOp::Open | FoldOp::Close | FoldOp::Toggle => {
-                let Some(real) = self.fold_cursor() else { return FoldChange::Same };
-                let ids = Self::folds_of(&real);
+                let Some(real) = real else { return FoldChange::Same };
+                let ids = Self::folds_of(real);
                 if ids.is_empty() {
                     return FoldChange::NoFold;
                 }
@@ -2778,7 +2786,7 @@ mod tests {
             FoldKey::Z(op, count) => (op, count),
         };
         let real = s.fold_cursor().expect("a cursor");
-        match s.fold_change(op, count, open, "main") {
+        match s.fold_change(op, count, Some(&real), open, "main") {
             FoldChange::NoFold => return true,
             FoldChange::Same => {}
             FoldChange::Expanded(set) => {

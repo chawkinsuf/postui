@@ -3330,7 +3330,7 @@ impl Response {
         if !memory.hlsearch() {
             return;
         }
-        let Some((query, backward)) = memory.pattern().map(|(q, b)| (q.to_string(), b)) else {
+        let Some((query, backward)) = memory.pattern() else {
             return;
         };
         let Some(view) = self.view.as_mut() else { return };
@@ -3338,7 +3338,7 @@ impl Response {
             s.active || s.syntax == SearchSyntax::Literal || (s.query == query && s.backward == backward)
         });
         if !keep {
-            view.restore_search(query, backward);
+            view.restore_search(query.to_string(), backward);
         }
     }
 
