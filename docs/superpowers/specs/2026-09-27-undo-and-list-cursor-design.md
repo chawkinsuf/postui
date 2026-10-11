@@ -342,6 +342,16 @@ fn land(&mut self, l: Landing) -> bool
 4. Call `refresh_sidebar` once, with `pending_expand` holding the
    ancestors of the cursor row, so rows inside collapsed folders
    appear.
+
+   Amended 2026-10-11. An undo or redo lands the same way, so undoing a
+   delete inside a collapsed folder opens that folder to show the
+   restored row, and the opened folder is saved to `state.toml` outside
+   the undo journal. That is intended (`you`, accepting my
+   recommendation): whether a folder is open is view state, like
+   whether a text field is open, which the undo rule's scope ruling of
+   2026-10-03 leaves out, and Vim's `'foldopen'` opens folds on undo.
+   The undo rule covers the data and the cursor, not which folders are
+   open.
 5. Place the cursor. An explicit aim wins. `OnOpen` is the default
    whenever `open` changed. `On(key)` falls back to `OnOpen` when the
    row is not in the active space, and `OnOpen` falls back to the first

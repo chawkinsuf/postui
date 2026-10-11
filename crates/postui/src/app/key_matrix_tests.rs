@@ -1045,6 +1045,55 @@ fn arrows_after_a_vim_fold_act_on_the_folder_row() {
     check(&app, SidebarFolderSel("main/f")).unwrap();
 }
 
+/// The register names the yanked request by slug, so it follows every
+/// change of that slug, as the session's cache does: a rename, its undo
+/// and redo, a move to another space, and a rename of its space. `yy`, a
+/// rename, then `p` copies the request as it is now (plan M2 final
+/// review M3).
+#[test]
+fn the_yanked_request_follows_its_slug() {
+    let reg = |s: &str| crate::yank::Register::Request(s.into());
+    let mut app = build(SidebarThree);
+    app.use_profile(KeyProfile::Vim);
+    draw(&mut app);
+    feed(&mut app, "yy");
+    assert_eq!(app.yank, reg("main/beta"));
+    app.update(Action::RenameRequest { from: "main/beta".into(), to: "bravo".into() });
+    assert_eq!(app.yank, reg("main/bravo"), "a rename");
+    app.update(Action::Undo);
+    assert_eq!(app.yank, reg("main/beta"), "its undo");
+    app.update(Action::Redo);
+    assert_eq!(app.yank, reg("main/bravo"), "its redo");
+    feed(&mut app, "p");
+    check(&app, Requests(&["main/alpha", "main/bravo", "main/bravo-copy", "main/gamma"])).unwrap();
+
+    app.update(Action::CreateSpace("auth".into()));
+    app.update(Action::ForceMoveRequestToSpace { slug: "main/bravo".into(), space: "auth".into() });
+    assert_eq!(app.yank, reg("auth/bravo"), "a move to another space");
+    app.update(Action::Undo);
+    assert_eq!(app.yank, reg("main/bravo"), "the move's undo");
+    app.update(Action::Redo);
+    assert_eq!(app.yank, reg("auth/bravo"), "the move's redo");
+    app.update(Action::Undo);
+
+    app.update(Action::ForceMoveAllRequests { from: "main".into(), to: "auth".into() });
+    assert_eq!(app.yank, reg("auth/bravo"), "a move of every request in its space");
+    app.update(Action::Undo);
+    assert_eq!(app.yank, reg("main/bravo"), "the move-all's undo");
+
+    app.update(Action::RenameSpace { from: "main".into(), to: "home".into() });
+    assert_eq!(app.yank, reg("home/bravo"), "a rename of its space");
+    app.update(Action::Undo);
+    assert_eq!(app.yank, reg("main/bravo"), "the space rename's undo");
+    app.update(Action::Redo);
+    assert_eq!(app.yank, reg("home/bravo"), "the space rename's redo");
+    app.update(Action::Undo);
+
+    // A register naming another request is left alone.
+    app.update(Action::RenameRequest { from: "main/alpha".into(), to: "ant".into() });
+    assert_eq!(app.yank, reg("main/bravo"));
+}
+
 /// Sweep backlog item 4: where Esc leaves the Manage screen (a tab's list,
 /// Settings with no field open), the footer says so with a chip that does
 /// the same, in both profiles; the header's Manage chip is the only other

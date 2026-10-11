@@ -651,6 +651,8 @@ Amended by plan M5b (2026-10-10). The fold keys follow Vim 9.1, probed on a buff
 
 Amended after the sweep (2026-10-11; backlog item 3). On the folder row that shows a row a shut folder hides, `l` opens every folder around that row and lands on it, and `h` does nothing and keeps it for a later `zo` (`Vim`, probes P1–P11: the cursor sits at column 0 of the hidden line, `l` moves and `'foldopen'`'s `hor` opens every fold around the cursor, leaving other folds shut; `h` cannot move, so nothing opens). Elsewhere `h` and `l` are main's tree rows as before, and a folder toggle (Enter, a click) still forgets the hidden row (`mine`).
 
+Amended 2026-10-11 (plan M2 final review, item M3). A yanked request follows its slug: a rename, a move to another space, a space rename, and the undo or redo of each re-key the register as they re-key the session's cache, so `yy`, a rename, then `p` copies the request as it is now instead of failing on the old slug (`mine`; the user asked for the fix). It comes nearer Vim, whose register holds the yanked text, which a rename does not touch, without changing the register's design: it still names the request and the put re-reads it (§5.2, M2), so a deleted source still fails loudly and empties the register, where Vim would still put the text. A request moved to another space stays in the register, and its put is refused in the old space as any cross-space put is ("yanked from another space"), the register kept for a put there.
+
 ### 5.3 Tables (Params, Headers, Vars)
 
 | Keys (vim) | Arrows | Behaviour | Who |
