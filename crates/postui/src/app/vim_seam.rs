@@ -201,6 +201,9 @@ impl App {
             // Insert back whether or not a session is still owned.
             if was == Some(KeyProfile::Vim) {
                 self.unpaint(FieldId::Body, true);
+                // The sidebar's row a `zc` hid is the vim cursor's; arrows'
+                // `→` and `←` on the folder row act on the folder.
+                self.sidebar.forget_fold_cursor();
             }
             return;
         }
@@ -1166,7 +1169,10 @@ impl App {
             }
             Action::ForceWrite { quit: false } => self.save_request_checked(None, true),
             Action::CloseWindow { write, force } => {
-                if self.screen != Screen::Manage {
+                // Manage by the keyboard's surface, as the line's caption and
+                // the quit chip read it: a dialog over Manage quits, as one
+                // over the main screen does.
+                if !table::Surfaces::MANAGE.has(self.surface()) {
                     return self.apply(match (write, force) {
                         (false, false) => Action::GatedQuit,
                         (false, true) => Action::ForceQuit,
@@ -1174,13 +1180,21 @@ impl App {
                         (true, true) => Action::ForceWrite { quit: true },
                     });
                 }
-                // A field open on the screen closes first, as the line's
-                // `:q` and `ZZ` close it; one that refuses keeps the screen
-                // (the final review's ruling I-2).
-                self.last_action_failed = false;
-                self.update(Action::CloseField);
-                if self.last_action_failed {
-                    return true;
+                if force {
+                    // `ZQ` and `:q!` abandon a field open on the screen, as
+                    // Vim's `!` abandons changes, so a field whose close
+                    // would refuse cannot keep the screen. `CloseScreen`
+                    // drops a Settings edit.
+                    self.varmanager.end_edits();
+                } else {
+                    // A field open on the screen closes first, as the line's
+                    // `:q` and `ZZ` close it; one that refuses keeps the
+                    // screen (the final review's ruling I-2).
+                    self.last_action_failed = false;
+                    self.update(Action::CloseField);
+                    if self.last_action_failed {
+                        return true;
+                    }
                 }
                 self.update(Action::CloseScreen)
             }

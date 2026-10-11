@@ -638,6 +638,12 @@ impl Sidebar {
         }
     }
 
+    /// Forgets a row a closed folder hid: only vim's fold keys remember
+    /// one, so arrows' keys on the folder row act on the folder itself.
+    pub fn forget_fold_cursor(&mut self) {
+        self.fold_row = None;
+    }
+
     /// Whether the selected folder row is showing a row it hides
     /// (`fold_cursor` is not the selected row).
     fn hides_cursor_row(&self) -> bool {

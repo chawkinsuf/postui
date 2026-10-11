@@ -895,6 +895,13 @@ impl VarManager {
         });
     }
 
+    /// Drops the form's and the grid's live edits, keeping nothing: vim's
+    /// `ZQ` and `:q!` abandoning the screen (`Action::CloseWindow`).
+    pub fn end_edits(&mut self) {
+        self.form.editing = None;
+        self.grid.editing = None;
+    }
+
     /// The option `row` names, or `None` for the ghost row / no selector.
     pub fn entry_at(&self, ctx: &Project, row: usize) -> Option<String> {
         let VmDetail::Group(selector) = &self.detail else {

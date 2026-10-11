@@ -90,6 +90,48 @@ fn zz_on_a_field_that_refuses_its_commit_keeps_running() {
     assert_eq!(app.settings.cursor, row);
 }
 
+/// The code review of sweep backlog item 4: on Manage `ZQ` is `:q!`, which
+/// abandons what the field holds, so a field whose close refuses cannot
+/// keep the screen; nothing is written and the request stays as it was.
+#[test]
+fn zq_on_manage_abandons_a_field_that_refuses_its_close() {
+    let mut app = refused_settings_field();
+    let limit = app.ui_settings.osc52_limit;
+    feed(&mut app, "ZQ");
+    assert_eq!(app.screen, Screen::Main, "Manage closed");
+    assert!(!app.should_quit);
+    assert_eq!(app.settings.editing, None, "the field abandoned");
+    assert_eq!(app.ui_settings.osc52_limit, limit, "nothing committed");
+    assert!(app.editor.is_dirty(), "the request untouched");
+    // A Variables edit is abandoned the same way, its text never written.
+    let mut app = vim(Fixture::VarForm);
+    let before = snapshot(&app);
+    feed(&mut app, "ixyz<Esc>");
+    assert!(app.varmanager.form.editing.is_some());
+    feed(&mut app, "ZQ");
+    assert_eq!(app.screen, Screen::Main);
+    assert!(app.varmanager.form.editing.is_none(), "the edit abandoned");
+    let diff = super::key_matrix_tests::snapshot_diff(&before, &snapshot(&app));
+    assert!(!diff.contains("file "), "nothing written: {diff}");
+}
+
+/// The code review of sweep backlog item 4: a dialog over Manage takes the
+/// window verbs as a dialog over the main screen does (they quit), as the
+/// line's caption and the quit chip say; Manage is never closed under it.
+#[test]
+fn a_window_verb_in_a_dialog_over_manage_quits() {
+    for q in [":q<CR>", ":q!<CR>"] {
+        let mut app = vim(Fixture::VarList);
+        feed(&mut app, "a");
+        assert!(matches!(app.modals.top(), Some(Modal::Prompt { .. })), "{q}: the new-variable prompt");
+        assert_eq!(app.surface(), crate::keyroute::Surface::Prompt);
+        feed(&mut app, "<Esc>");
+        feed(&mut app, q);
+        assert!(app.should_quit, "{q}: quit, as over the main screen");
+        assert_eq!(app.screen, Screen::Manage, "{q}: Manage not closed under the dialog");
+    }
+}
+
 #[test]
 fn zx_is_swallowed_on_a_list() {
     let mut app = vim(Fixture::SidebarThree);

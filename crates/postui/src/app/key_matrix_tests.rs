@@ -1029,6 +1029,22 @@ fn the_matrix_holds() {
     assert!(failures.is_empty(), "{} case(s) failed:\n{}", failures.len(), failures.join("\n"));
 }
 
+/// The code review of sweep backlog item 3: the row a vim `zc` hid is the
+/// vim cursor's, so after a switch to arrows `→` on the folder row opens
+/// that folder alone and stays on it.
+#[test]
+fn arrows_after_a_vim_fold_act_on_the_folder_row() {
+    let mut app = build(SidebarFolder);
+    app.use_profile(KeyProfile::Vim);
+    draw(&mut app);
+    feed(&mut app, "zojzc");
+    check(&app, SidebarFolderSel("main/f")).unwrap();
+    app.use_profile(KeyProfile::Arrows);
+    feed(&mut app, "<Right>");
+    check(&app, Requests(&["main/alpha", "main/beta", "main/gamma", "main/f/inner"])).unwrap();
+    check(&app, SidebarFolderSel("main/f")).unwrap();
+}
+
 /// Sweep backlog item 4: where Esc leaves the Manage screen (a tab's list,
 /// Settings with no field open), the footer says so with a chip that does
 /// the same, in both profiles; the header's Manage chip is the only other

@@ -1142,8 +1142,12 @@ mod tests {
         assert_eq!(t.selected, Some(1));
         assert_eq!(t.delete_rows(&mut map, 1, 9), 1, "clamped");
         assert_eq!(map.keys().map(String::as_str).collect::<Vec<_>>(), ["a"]);
+        assert_eq!(t.selected, Some(0), "a run to the end lands on the new last row");
         assert_eq!(t.delete_rows(&mut map, 5, 1), 0, "past the end: nothing");
         assert_eq!(t.delete_rows(&mut map, 0, 0), 0, "no count: nothing");
+        assert_eq!(t.delete_rows(&mut map, 0, 1), 1);
+        assert!(map.is_empty());
+        assert_eq!(t.selected, Some(0), "an emptied table lands on the add row");
     }
 
     fn key(c: KeyCode) -> KeyEvent {
