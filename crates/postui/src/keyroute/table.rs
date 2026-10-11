@@ -182,12 +182,7 @@ impl Surfaces {
         .or(Self::METHOD)
         .or(Self::TABLE)
         .or(Self::RESPONSE)
-        .or(Self::VAR_LIST)
-        .or(Self::VAR_GRID)
-        .or(Self::VAR_FORM)
-        .or(Self::MANAGE_LIST)
-        .or(Self::MANAGE_DETAIL)
-        .or(Self::SETTINGS);
+        .or(Self::MANAGE);
     /// The Manage screen's surfaces: its tabs' lists, panes and fields.
     pub const MANAGE: Self = Self::VAR_LIST
         .or(Self::VAR_GRID)

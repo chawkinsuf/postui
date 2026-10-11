@@ -204,6 +204,14 @@ impl Sidebar {
         };
         Self::build_rows(&sorted, &prefix, 0, &ctx, &mut rows);
         self.rows = rows;
+        // The row a closed folder hid is remembered only while it is still
+        // listed: once an outside delete takes it, the folder row's keys
+        // (`h`, `l`, `zo`) act on the folder again.
+        if let Some((real, _)) = &self.fold_row
+            && !Self::listed(&sorted, real)
+        {
+            self.fold_row = None;
+        }
 
         self.selected =
             prev.and_then(|id| self.rows.iter().position(|r| Self::row_matches(r, &id)));
@@ -442,6 +450,17 @@ impl Sidebar {
             (Row::Folder { path: p, .. }, Row::Folder { path: q, .. }) => p == q,
             (Row::Request { slug: s, .. }, Row::Request { slug: t, .. }) => s == t,
             _ => false,
+        }
+    }
+
+    /// Whether `key` names a request in `listing`, or a folder holding one
+    /// (a folder exists only through the requests under it).
+    fn listed(listing: &[RequestListing], key: &RowKey) -> bool {
+        match key {
+            RowKey::Request(slug) => listing.iter().any(|l| l.slug == *slug),
+            RowKey::Folder(path) => listing
+                .iter()
+                .any(|l| l.slug.strip_prefix(path.as_str()).is_some_and(|rest| rest.starts_with('/'))),
         }
     }
 
@@ -2829,6 +2848,33 @@ mod tests {
         assert_eq!(s.fold_cursor(), Some(RowKey::Request("main/api/pong".into())), "remembered while it exists");
         s.show_fold_cursor(RowKey::Request("main/zeta/gone".into()));
         assert_eq!(s.fold_cursor(), Some(folder), "the vanished row is not remembered");
+    }
+
+    /// The vim-backlog code review: a relist that no longer holds the hidden
+    /// row (an outside delete) forgets it, so `l` and `h` on the folder row
+    /// are the folder's own keys again rather than the hidden row's. A
+    /// hidden folder counts while a request under it is listed.
+    #[test]
+    fn a_relist_without_the_hidden_row_forgets_it() {
+        use crate::action::FoldOp::Close;
+        let key = |c| KeyEvent::new(c, KeyModifiers::NONE);
+        let pong = RowKey::Request("main/api/pong".into());
+        let api = RowKey::Folder("main/api".into());
+        let (mut s, mut open) = probe_tree(&["api", "api/auth", "zeta"], &pong);
+        press(&mut s, &mut open, FoldKey::Z(Close, 1));
+        s.refresh(listing(&["top", "api/ping", "api/auth/login", "zeta/z1"]), "main", &open, &[]);
+        assert_eq!(s.selected_key(), Some(api.clone()));
+        assert_eq!(s.fold_cursor(), Some(api.clone()), "pong is gone: nothing hidden");
+        assert_eq!(s.handle_key(key(KeyCode::Right)), Some(Action::ToggleSelectedFolder), "l: the folder's own key");
+
+        let auth = RowKey::Folder("main/api/auth".into());
+        let (mut s, mut open) = probe_tree(&["api", "api/auth", "zeta"], &auth);
+        press(&mut s, &mut open, FoldKey::Z(Close, 2));
+        assert_eq!(s.fold_cursor(), Some(auth.clone()), "the auth folder hidden under api");
+        s.refresh(listing(&["top", "api/ping", "api/auth/login", "zeta/z1"]), "main", &open, &[]);
+        assert_eq!(s.fold_cursor(), Some(auth), "still listed through its request: kept");
+        s.refresh(listing(&["top", "api/ping", "zeta/z1"]), "main", &open, &[]);
+        assert_eq!(s.fold_cursor(), Some(api), "its last request gone: forgotten");
     }
 
     /// One fold probe: the folders open before, the cursor, the keys, the
