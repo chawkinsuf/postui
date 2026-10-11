@@ -2928,6 +2928,7 @@ impl App {
             // The actions only vim's keys make: the vim seam runs them.
             Action::WriteQuit
             | Action::ForceWrite { .. }
+            | Action::CloseWindow { .. }
             | Action::OpenExPalette
             | Action::NoHlSearch
             | Action::ResponseFind(_)

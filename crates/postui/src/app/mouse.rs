@@ -297,7 +297,7 @@ impl App {
                 // Variable Manager from underneath the showcase, with no way
                 // back short of quitting.
                 if self.screen == Screen::Testbed
-                    && !matches!(hit, Hit::FooterChip(Action::Quit | Action::GatedQuit))
+                    && !matches!(hit, Hit::FooterChip(Action::Quit | Action::GatedQuit | Action::CloseWindow { .. }))
                 {
                     return false;
                 }

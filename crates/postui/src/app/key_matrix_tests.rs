@@ -148,6 +148,8 @@ enum Expect {
     Unnamed(&'static str),
     /// The app is quitting.
     Quit,
+    /// The app is not quitting.
+    NoQuit,
     /// Whether the open request has unsaved edits.
     Dirty(bool),
     UrlText(&'static str),
@@ -370,6 +372,24 @@ const CASES: &[Case] = &[
     vim("X.wq", TableThreeHeaders, ":w!<CR>", &[NoModal, Dirty(false)]),
     vim("X.wq", DirtyScratch, ":wq<CR>", &[PromptOpen]),
     vim("X.wq", UrlLine, "ix<Esc>:w<CR>", &[NoModal, Dirty(false), FieldLive(false)]),
+    // Sweep backlog item 4: Manage is drawn over the main screen as Vim's
+    // second tab page over the first, so the window verbs close it and
+    // leave the request as it was, neither written nor discarded (Vim 9.1,
+    // probes Q1–Q6); the `a` forms still quit.
+    vim("X.wq", TableThreeHeaders, ":manage<CR>:q<CR>", &[ScreenIs(Screen::Main), NoQuit, NoModal, Dirty(true)]),
+    vim("X.wq", TableThreeHeaders, ":manage<CR>:q!<CR>", &[ScreenIs(Screen::Main), NoQuit, Dirty(true)]),
+    vim("X.wq", TableThreeHeaders, ":manage<CR>:wq<CR>", &[ScreenIs(Screen::Main), NoQuit, Dirty(true)]),
+    vim("X.wq", TableThreeHeaders, ":manage<CR>:x<CR>", &[ScreenIs(Screen::Main), NoQuit, Dirty(true)]),
+    vim("X.wq", TableThreeHeaders, ":manage<CR>:wq!<CR>", &[ScreenIs(Screen::Main), NoQuit, Dirty(true)]),
+    vim("X.wq", TableThreeHeaders, ":manage<CR>ZZ", &[ScreenIs(Screen::Main), NoQuit, Dirty(true)]),
+    vim("X.wq", TableThreeHeaders, ":manage<CR>ZQ", &[ScreenIs(Screen::Main), NoQuit, Dirty(true)]),
+    vim("X.wq", TableThreeHeaders, ":manage<CR>:qa<CR>", &[Dialog, NoQuit]),
+    vim("X.wq", TableThreeHeaders, ":manage<CR>:qa!<CR>", &[Quit, Dirty(true)]),
+    vim("X.wq", TableThreeHeaders, ":manage<CR>:wqa<CR>", &[Quit, Dirty(false)]),
+    vim("X.wq", TableThreeHeaders, ":qa<CR>", &[Dialog]),
+    vim("X.wq", Settings, ":q<CR>", &[ScreenIs(Screen::Main), NoQuit]),
+    vim("X.wq", VarList, "ZZ", &[ScreenIs(Screen::Main), NoQuit]),
+    vim("X.wq", ManageEnvDetail, "ZQ", &[ScreenIs(Screen::Main), NoQuit]),
     vim("X.e", TableThreeHeaders, ":e<CR>", &[NoModal, Dirty(true)]),
     vim("X.e", TableThreeHeaders, ":e!<CR>", &[NoModal, Dirty(false)]),
     vim("X.verbs", SidebarThree, ":", &[Palette, Mode("INSERT")]),
@@ -834,6 +854,7 @@ fn check(app: &App, e: Expect) -> Result<(), String> {
         Yanked(slug) => app.yank == crate::yank::Register::Request(slug.into()),
         FieldsEditor => matches!(app.modals.top(), Some(Modal::FieldsEditor(_))),
         Quit => app.should_quit,
+        NoQuit => !app.should_quit,
         Dirty(d) => app.editor.is_dirty() == d,
         UrlText(t) => app.editor.url.text() == t,
         PalettePinned(name) => matches!(app.modals.top(), Some(Modal::Palette(p)) if p.pinned().map(|r| r.name) == Some(name)),
