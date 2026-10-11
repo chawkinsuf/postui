@@ -488,6 +488,16 @@ pub struct PaletteState {
     /// changed: on the ex line, Enter with nothing typed runs only a
     /// picked row, as Vim's `:<CR>` runs nothing.
     picked: bool,
+    /// The `:` line's history as it stood when the line opened, oldest
+    /// first (plan M5b Task 5). Empty for ctrl+p's palette.
+    history: Vec<String>,
+    /// The line ↑ or ↓ last recalled; `None` below the newest, the typed
+    /// line.
+    hist_at: Option<usize>,
+    /// What was on the line at the first ↑ or ↓ since it was last typed in
+    /// (Vim's `lookfor`): recall looks for lines that start with it, and ↓
+    /// past the newest puts it back.
+    lookfor: Option<String>,
 }
 
 impl PaletteState {
@@ -513,13 +523,16 @@ impl PaletteState {
             pinned: None,
             refused: None,
             picked: false,
+            history: Vec::new(),
+            hist_at: None,
+            lookfor: None,
         }
     }
 
     /// The same palette opened by vim's `:` (spec §5.9), reading its query
-    /// as a verb in `scope`.
-    pub fn new_ex(usage: &crate::usage::UsageStore, now_secs: i64, scope: crate::keyroute::ex::Scope) -> Self {
-        Self { ex: Some(scope), ..Self::new(usage, now_secs) }
+    /// as a verb in `scope`, with the line's history to recall.
+    pub fn new_ex(usage: &crate::usage::UsageStore, now_secs: i64, scope: crate::keyroute::ex::Scope, history: &[String]) -> Self {
+        Self { ex: Some(scope), history: history.to_vec(), ..Self::new(usage, now_secs) }
     }
 
     pub fn is_ex(&self) -> bool {
@@ -560,12 +573,14 @@ impl PaletteState {
     /// The query changed outside this picker's own keys (the vim engine
     /// typed into it): the rows follow, as after a typed key.
     pub(crate) fn filter_changed(&mut self) {
+        self.lookfor = None;
         self.refilter();
     }
 
     /// Pastes into the fuzzy query (the bracketed-paste/ctrl+v path),
     /// flattened to one line like every single-line surface.
     pub fn paste(&mut self, text: &str) {
+        self.lookfor = None;
         self.input.paste(text);
         self.refilter();
     }
@@ -699,6 +714,10 @@ impl PaletteState {
                 return Some(super::modal::ModalResult { actions: vec![], close: true, usage: None });
             }
             KeyCode::Enter => return self.confirm(),
+            // Vim's ↑ and ↓ on the `:` line recall its history (plan M5b
+            // Deviation 13); ctrl+p and ctrl+n go on moving the list.
+            KeyCode::Up if self.ex.is_some() => self.recall(true),
+            KeyCode::Down if self.ex.is_some() => self.recall(false),
             KeyCode::Up => {
                 self.selected = self.selected.saturating_sub(1);
                 self.ensure_visible = true;
@@ -727,11 +746,41 @@ impl PaletteState {
                 let before = self.input.text().to_string();
                 self.input.handle_key(key);
                 if self.input.text() != before {
+                    self.lookfor = None;
                     self.refilter();
                 }
             }
         }
         None
+    }
+
+    /// Vim's ↑ (`older`) and ↓ on the `:` line (plan M5b Deviation 13;
+    /// probes H1–H21): the next line that way that starts with what was on
+    /// the line at the first ↑ or ↓ since it was last typed in. ↓ past the
+    /// newest puts that text back; ↑ past the oldest match changes nothing.
+    fn recall(&mut self, older: bool) {
+        let prefix = self.lookfor.get_or_insert_with(|| self.input.text().to_string()).clone();
+        let mut at = self.hist_at.unwrap_or(self.history.len());
+        let found = loop {
+            if older {
+                let Some(prev) = at.checked_sub(1) else { return };
+                at = prev;
+            } else {
+                at += 1;
+                if at >= self.history.len() {
+                    break None;
+                }
+            }
+            if self.history[at].starts_with(&prefix) {
+                break Some(at);
+            }
+        };
+        self.hist_at = found;
+        let text = found.map_or(prefix, |i| self.history[i].clone());
+        if text != self.input.text() {
+            self.input.set_text(&text);
+            self.refilter();
+        }
     }
 
     /// Whether the filter box has keystrokes of its own to step — what
@@ -1388,7 +1437,43 @@ mod tests {
     }
 
     fn ex() -> PaletteState {
-        PaletteState::new_ex(&crate::usage::UsageStore::default(), 0, ex_scope())
+        PaletteState::new_ex(&crate::usage::UsageStore::default(), 0, ex_scope(), &[])
+    }
+
+    /// Plan M5b Deviation 13: ↑ and ↓ on the `:` line recall its history as
+    /// Vim's do (probes H1–H21), from `echo 1`, `let g:a=1`, `echo 22`.
+    #[test]
+    fn the_ex_line_recalls_its_history_as_vim_does() {
+        let history = ["echo 1".to_string(), "let g:a=1".to_string(), "echo 22".to_string()];
+        let run = |keys: &[KeyEvent]| {
+            let mut p = PaletteState::new_ex(&crate::usage::UsageStore::default(), 0, ex_scope(), &history);
+            for k in keys {
+                p.handle_key(*k);
+            }
+            p.input().to_string()
+        };
+        let up = key(KeyCode::Up);
+        let down = key(KeyCode::Down);
+        let bs = key(KeyCode::Backspace);
+        let c = |ch: char| key(KeyCode::Char(ch));
+        assert_eq!(run(&[up]), "echo 22", "H1");
+        assert_eq!(run(&[up, up]), "let g:a=1", "H2");
+        assert_eq!(run(&[c('e'), up]), "echo 22", "H3a");
+        assert_eq!(run(&[c('e'), up, up]), "echo 1", "H3b");
+        assert_eq!(run(&[c('e'), up, up, up]), "echo 1", "H3c: it stops at the oldest match");
+        assert_eq!(run(&[c('e'), up, down]), "e", "H4: back to what was typed");
+        assert_eq!(run(&[up, down]), "", "H5");
+        assert_eq!(run(&[up, up, up, up, up]), "echo 1", "H8");
+        assert_eq!(run(&[c('l'), up]), "let g:a=1", "H9a");
+        assert_eq!(run(&[c('x'), up]), "x", "H9b: no match, no change");
+        assert_eq!(run(&[c('e'), up, c('x'), up]), "echo 22x", "H10: the typed text is the new prefix");
+        assert_eq!(run(&[up, up, down]), "echo 22", "H17");
+        assert_eq!(run(&[c('e'), up, up, down, down]), "e", "H18");
+        assert_eq!(run(&[c('e'), c('c'), up, bs, up]), "echo 2", "H21: the place in the list is kept");
+        assert_eq!(run(&[ctrl('p')]), "", "ctrl+p moves the list (Deviation 14)");
+        let mut p = PaletteState::new(&crate::usage::UsageStore::default(), 0);
+        p.handle_key(down);
+        assert_eq!(p.selected(), 1, "ctrl+p's palette: ↓ still moves the list");
     }
 
     fn type_in(p: &mut PaletteState, s: &str) {

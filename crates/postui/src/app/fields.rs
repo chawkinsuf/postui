@@ -178,7 +178,6 @@ impl App {
                     self.modal_glue.leave_ghost();
                 }
                 self.glue.swap_registers(&mut self.modal_glue);
-                self.glue.adopt_last_pattern(&self.modal_glue);
                 self.modal_glue.set_session(FieldSession::None);
             }
             // A body session that closed before the switch left edtui in
@@ -189,7 +188,7 @@ impl App {
             }
             return;
         }
-        self.glue.own_body(self.editor.slug.as_deref());
+        self.glue.own_body(self.editor.slug.as_deref(), &mut self.search_memory);
         let now = self.engine_field();
         let mouse = matches!(cause, Cause::Mouse(_));
         let edge = engine_glue::edge(self.glue.owned(), now.map(|(id, _)| id));
@@ -203,8 +202,10 @@ impl App {
             }
             // A carry across Insert-only is a close and an open (plan M3b
             // Deviation 16): the engine would keep Insert-only on the field
-            // it carries to.
-            Edge::Carry(from, to) if from.insert_only() != to.insert_only() => {
+            // it carries to. So is an add verb's (plan M5b Deviation 19):
+            // `:new` from an open cell opens the new row in Insert, as from
+            // a closed table, where a carry would keep the cell's Normal.
+            Edge::Carry(from, to) if add || from.insert_only() != to.insert_only() => {
                 self.close_session(from);
                 self.open_session(to, open_as, !mouse, Start::Normal);
             }
@@ -247,8 +248,8 @@ impl App {
     /// The dialog session's half of [`Self::sync_session`] (plan M3b
     /// Deviations 1–3): open, carry within one dialog, move to another
     /// dialog, close, or rebase. The registers go to the dialog engine when
-    /// a dialog session opens and come back when it closes, and the last
-    /// search pattern follows them.
+    /// a dialog session opens and come back when it closes; the last search
+    /// pattern is the one both engines borrow (plan M5b Deviation 20).
     fn sync_modal_session(&mut self, open_as: Option<OpenAs>, cause: Cause, switched_in: bool) {
         let now = self.modal_engine_field();
         let was = self.modal_session;
@@ -290,7 +291,6 @@ impl App {
             }
             (None, Some((_, to))) => {
                 self.glue.swap_registers(&mut self.modal_glue);
-                self.modal_glue.adopt_last_pattern(&self.glue);
                 self.open_session(to, open_as, !mouse, default);
             }
             // The field closed in its own dialog (`j` to the buttons), or
@@ -303,7 +303,6 @@ impl App {
                     self.modal_glue.leave_ghost();
                 }
                 self.glue.swap_registers(&mut self.modal_glue);
-                self.glue.adopt_last_pattern(&self.modal_glue);
                 self.router.clear_pending();
             }
         }
@@ -493,14 +492,10 @@ impl App {
         if self.box_claims(id, &ev) {
             return Some(Ran::routed(self.handle_key_routed(ev)));
         }
-        let view = self.view_ctx(id);
         // Read before the key: whether a `u` or ctrl+r it hands back means
         // the field had nothing to step (final review M-1).
         let idle = self.glue_of(id).undo_ready();
-        let out = {
-            let (glue, buf) = self.session_parts(id);
-            glue.handle(ev, &mut buf?, &view)
-        };
+        let out = self.engine_handle(id, ev)?;
         Some(match out {
             Outcome::Consumed { changed, note, request } => {
                 self.engine_feedback(note, request);
@@ -517,6 +512,20 @@ impl App {
             }
             Outcome::Declined { count, keys } => self.route_declined(id, count, keys, idle),
         })
+    }
+
+    /// One key into `id`'s engine with the app's last pattern lent for it
+    /// (plan M5b Deviation 20). The pattern is back on the app before this
+    /// returns, also when `id`'s buffer is gone (`None`).
+    fn engine_handle(&mut self, id: FieldId, ev: KeyEvent) -> Option<Outcome> {
+        let view = self.view_ctx(id);
+        let mut memory = std::mem::take(&mut self.search_memory);
+        let out = {
+            let (glue, buf) = self.session_parts(id);
+            buf.map(|mut buf| glue.handle(ev, &mut buf, &view, &mut memory))
+        };
+        self.search_memory = memory;
+        out
     }
 
     /// Keys a query box owns before the engine (plan M3b Deviation 5, the
@@ -587,12 +596,7 @@ impl App {
         } else {
             KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE)
         };
-        let view = self.view_ctx(id);
-        let out = {
-            let (glue, buf) = self.session_parts(id);
-            glue.handle(key, &mut buf?, &view)
-        };
-        if let Outcome::Consumed { note, request, .. } = out {
+        if let Outcome::Consumed { note, request, .. } = self.engine_handle(id, key)? {
             self.engine_feedback(note, request);
         }
         Some(true)
@@ -718,7 +722,12 @@ impl App {
             }
             None => 0..usize::MAX,
         };
-        let found = self.glue.body_search(&mut self.editor.body, &mut self.editor.body_visual, rows);
+        let found = self.glue.body_search(
+            &mut self.editor.body,
+            &mut self.editor.body_visual,
+            rows,
+            &mut self.search_memory,
+        );
         self.editor.body_search = found;
     }
 

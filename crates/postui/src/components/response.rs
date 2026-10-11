@@ -6,6 +6,7 @@ use crate::config::JqTab;
 use crate::hit::ScrollbarSpec;
 use crate::layout::PaneId;
 use crate::theme::Theme;
+use crate::vim::engine::SearchMemory;
 use postui_core::jq::complete::{self, Candidate, Context, Kind};
 use postui_core::jq::{JqDocument, JqError};
 use ratatui::Frame;
@@ -1767,7 +1768,7 @@ impl ReadyView {
     /// becomes the last one before it compiles, as Vim's `do_search()`
     /// stores it, so one outside the engine's subset is kept too and `n`
     /// says why again (probed: `/\(` then `n` repeats E54).
-    fn commit_search(&mut self, esc: bool, last: &mut LastPattern) {
+    fn commit_search(&mut self, esc: bool, memory: &mut SearchMemory) {
         use crate::vim::engine::{Dir, as_stored};
         let Some(search) = self.search.as_mut() else { return };
         let before = search.before.take();
@@ -1787,13 +1788,13 @@ impl ReadyView {
         let vim = search.syntax == SearchSyntax::Vim;
         let dir = if search.backward { Dir::Backward } else { Dir::Forward };
         search.query = match (vim, typed.is_empty()) {
-            (true, true) => last.pattern.as_ref().map(|(q, _)| q.clone()).unwrap_or_default(),
+            (true, true) => memory.pattern().map(|(q, _)| q.to_string()).unwrap_or_default(),
             (true, false) => as_stored(&typed, dir),
             (false, _) => typed,
         };
         let (query, backward) = (search.query.clone(), search.backward);
         if vim && !query.is_empty() {
-            last.set(query.clone(), backward);
+            memory.set(query.clone(), backward);
         }
         self.note = match self.recompute_matches() {
             Some(note) => Some(note),
@@ -1814,7 +1815,7 @@ impl ReadyView {
     /// Vim's `*` and `#` (plan M5a Task 5): the keyword under or after the
     /// cursor's column, else the non-blank string there, searched as a Vim
     /// pattern whatever the profile. Whether a search ran.
-    fn star(&mut self, backward: bool, count: usize, last: &mut LastPattern) -> bool {
+    fn star(&mut self, backward: bool, count: usize, memory: &mut SearchMemory) -> bool {
         use crate::vim::engine::{Dir, NO_STRING_UNDER_CURSOR, as_stored, find_ident, ident_pattern};
         let (line, col) = self.search_pos();
         let Some(text) = self.buffer_line(line) else {
@@ -1828,7 +1829,7 @@ impl ReadyView {
         let dir = if backward { Dir::Backward } else { Dir::Forward };
         let pat = as_stored(&ident_pattern(&chars, start, end, backward), dir);
         self.search = Some(SearchState::committed(pat.clone(), SearchSyntax::Vim, backward));
-        last.set(pat, backward);
+        memory.set(pat, backward);
         if let Some(note) = self.recompute_matches() {
             self.note = Some(note);
             return false;
@@ -2274,30 +2275,6 @@ pub struct Response {
     /// the panes have drawn and places the cursor only when no modal
     /// covers the bar.
     jq_caret: Option<Position>,
-    /// Vim's last pattern, which outlives a new response.
-    last_search: LastPattern,
-}
-
-/// Vim's last pattern as the response sees it: the pattern (as stored,
-/// see [`SearchState::query`]) and whether it went backward. Vim has one
-/// for every window, so the app keeps it equal to the text engine's
-/// ([`Response::take_last_search`], [`Response::adopt_last_search`] at
-/// each input event's end). An empty `/` Enter searches it again, and so
-/// does `n` once Esc has cleared the search: Esc never forgets it, as in
-/// Vim.
-#[derive(Default)]
-struct LastPattern {
-    pattern: Option<(String, bool)>,
-    /// A search here set `pattern`: the app gives it to the engine.
-    set: bool,
-}
-
-impl LastPattern {
-    /// A search here made `query` the last pattern.
-    fn set(&mut self, query: String, backward: bool) {
-        self.pattern = Some((query, backward));
-        self.set = true;
-    }
 }
 
 impl Response {
@@ -3284,15 +3261,16 @@ impl Response {
     /// Enter does, and that commit *is* the step: the mouse route types a
     /// query and clicks ▼ (found by the stage-7 tmux sweep). With no search,
     /// or an empty one, nothing happens, as on main (amendment A5.4, the
-    /// user's decision): vim's `n` is [`Response::find_next`].
-    pub fn step_search(&mut self, delta: i32) -> bool {
+    /// user's decision): vim's `n` is [`Response::find_next`]. `memory` is
+    /// the app's last pattern, which a Vim commit sets.
+    pub fn step_search(&mut self, delta: i32, memory: &mut SearchMemory) -> bool {
         let Some(view) = self.view.as_mut() else {
             return false;
         };
         match view.search.as_ref() {
             None => false,
             Some(s) if s.active => {
-                view.commit_search(false, &mut self.last_search);
+                view.commit_search(false, memory);
                 true
             }
             Some(s) if s.query.is_empty() => false,
@@ -3308,16 +3286,17 @@ impl Response {
     /// screen is that pattern (Esc cleared it, or it is an arrows one),
     /// the pattern comes back first; with none, Vim's E35 (probe E6). A box
     /// still being typed in is committed instead, as [`Self::step_search`]
-    /// does, so what was typed is never lost.
-    pub fn find_next(&mut self, reverse: bool, count: usize) -> bool {
+    /// does, so what was typed is never lost. `memory` is the app's one
+    /// last pattern (plan M5b Deviation 20).
+    pub fn find_next(&mut self, reverse: bool, count: usize, memory: &mut SearchMemory) -> bool {
         let Some(view) = self.view.as_mut() else {
             return false;
         };
         if view.search.as_ref().is_some_and(|s| s.active) {
-            view.commit_search(false, &mut self.last_search);
+            view.commit_search(false, memory);
             return true;
         }
-        let Some((query, backward)) = self.last_search.pattern.clone() else {
+        let Some((query, backward)) = memory.pattern().map(|(q, b)| (q.to_string(), b)) else {
             view.note = Some(crate::vim::engine::NO_PREVIOUS_PATTERN.into());
             return false;
         };
@@ -3330,44 +3309,43 @@ impl Response {
         }
         view.note = view.land_match(backward ^ reverse, count);
         // Vim's `n` turns the highlight back on in every window.
-        self.last_search.set(query, backward);
+        memory.set(query, backward);
         true
     }
 
-    /// Vim's `*` and `#` (plan M5a Task 5).
-    pub fn find_word(&mut self, backward: bool, count: usize) -> bool {
-        self.view.as_mut().is_some_and(|view| view.star(backward, count, &mut self.last_search))
+    /// Vim's `*` and `#` (plan M5a Task 5): the word becomes the app's
+    /// last pattern.
+    pub fn find_word(&mut self, backward: bool, count: usize, memory: &mut SearchMemory) -> bool {
+        self.view.as_mut().is_some_and(|view| view.star(backward, count, memory))
     }
 
-    /// The last pattern a search here set since the app last asked, for
-    /// the text engine: Vim has one for every window.
-    pub fn take_last_search(&mut self) -> Option<(String, bool)> {
-        std::mem::take(&mut self.last_search.set).then(|| self.last_search.pattern.clone()).flatten()
-    }
-
-    /// The text engine's last pattern and highlight, at each input event's
-    /// end: a search in a field may have replaced the pattern. Vim has one
-    /// last pattern and one `'hlsearch'` state for every window, so while
-    /// the highlight is on the response shows that pattern, a new response
-    /// included; `:noh` turns it off everywhere and a search turns it back
-    /// on. A box being typed in, or an arrows search, stay as they are.
-    pub fn adopt_last_search(&mut self, pattern: Option<(&str, bool)>, hl: bool) {
-        let Some((query, backward)) = pattern else { return };
-        if !self.last_search.pattern.as_ref().is_some_and(|(q, b)| q == query && *b == backward) {
-            self.last_search.pattern = Some((query.to_string(), backward));
+    /// At each input event's end, the view follows the app's last pattern:
+    /// an engine's search may have replaced it, or the request switch that
+    /// put this response on screen left a view that shows an older one.
+    /// Vim has one last pattern and one `'hlsearch'` state for every
+    /// window, so while the highlight is on the response shows that
+    /// pattern, a new response included; a box being typed in, an arrows
+    /// search, or the pattern already shown stay as they are.
+    pub fn follow_last_pattern(&mut self, memory: &SearchMemory) {
+        if !memory.hlsearch() {
+            return;
         }
+        let Some((query, backward)) = memory.pattern() else {
+            return;
+        };
         let Some(view) = self.view.as_mut() else { return };
         let keep = view.search.as_ref().is_some_and(|s| {
             s.active || s.syntax == SearchSyntax::Literal || (s.query == query && s.backward == backward)
         });
-        if hl && !keep {
+        if !keep {
             view.restore_search(query.to_string(), backward);
         }
     }
 
-    /// Vim's `:noh`: the response's highlight goes with every window's;
-    /// the last pattern stays for `n`, which turns it back on.
-    pub fn no_hlsearch(&mut self) {
+    /// Vim's `:noh`: the highlight goes in every window, the response's
+    /// too; the last pattern stays for `n`, which turns it back on.
+    pub fn no_hlsearch(&mut self, memory: &mut SearchMemory) {
+        memory.no_hlsearch();
         if let Some(view) = self.view.as_mut()
             && view.search.as_ref().is_some_and(|s| !s.active && s.syntax == SearchSyntax::Vim)
         {
@@ -3606,9 +3584,9 @@ impl Response {
         had
     }
 
-    /// Ready-state key handling. Split out so [`Component::handle_key`] stays
+    /// Ready-state key handling. Split out so [`Response::handle_key`] stays
     /// a readable state dispatch.
-    fn ready_key(&mut self, ev: KeyEvent) -> Option<Action> {
+    fn ready_key(&mut self, ev: KeyEvent, memory: &mut SearchMemory) -> Option<Action> {
         // The jq bar swallows everything while focused: chars and editing
         // keys go to its LineInput, Enter/Down blur (committing is
         // implicit — every edit re-runs the filter — so the filter
@@ -3729,8 +3707,8 @@ impl Response {
         // (`ReadyView::commit_search`).
         if view.search.as_ref().is_some_and(|s| s.active) {
             match ev.code {
-                KeyCode::Enter => view.commit_search(false, &mut self.last_search),
-                KeyCode::Esc => view.commit_search(true, &mut self.last_search),
+                KeyCode::Enter => view.commit_search(false, memory),
+                KeyCode::Esc => view.commit_search(true, memory),
                 _ => {
                     let search = view.search.as_mut().expect("checked above");
                     search.input.handle_key(ev);
@@ -3896,8 +3874,11 @@ impl Response {
     }
 }
 
-impl Component for Response {
-    fn handle_key(&mut self, ev: KeyEvent) -> Option<Action> {
+impl Response {
+    /// A key on the pane. `memory` is the app's one last pattern (plan M5b
+    /// Deviation 20), which the search box's Enter sets: it is lent for
+    /// the key, which `Component::handle_key` has no room for.
+    pub fn handle_key(&mut self, ev: KeyEvent, memory: &mut SearchMemory) -> Option<Action> {
         match self.state {
             ResponseState::InFlight { .. } if ev.code == KeyCode::Esc => Some(Action::CancelSend),
             // Modified combos belong to the global keymap, not the pane —
@@ -3923,10 +3904,21 @@ impl Component for Response {
                                 | KeyCode::Char('b')
                         )) =>
             {
-                self.ready_key(ev)
+                self.ready_key(ev, memory)
             }
             _ => None,
         }
+    }
+}
+
+impl Component for Response {
+    /// Keys need the app's [`SearchMemory`], which this signature has no room
+    /// for; the real handler is the inherent [`Response::handle_key`]. The
+    /// trait's default would drop every key silently, so a generic call
+    /// trips here in debug builds instead.
+    fn handle_key(&mut self, _key: KeyEvent) -> Option<Action> {
+        debug_assert!(false, "call Response::handle_key(ev, memory), not Component::handle_key");
+        None
     }
 
     fn handle_scroll(&mut self, delta: i16) {
@@ -5355,14 +5347,63 @@ mod tests {
         }
     }
 
-    fn ready(body: &str) -> Response {
+    fn ready(body: &str) -> Pane {
         ready_gen(body, 0)
     }
 
-    fn ready_gen(body: &str, generation: u64) -> Response {
-        let mut r = Response::default();
+    fn ready_gen(body: &str, generation: u64) -> Pane {
+        let mut r = Pane::default();
         r.set_state(ResponseState::Ready(Box::new(data(body))), generation);
         r
+    }
+
+    /// A response with the app's last pattern beside it, as `App` holds
+    /// the two (plan M5b Deviation 20: the app owns the memory and lends
+    /// it). The calls that take the pattern lend this one; everything else
+    /// is the response's.
+    #[derive(Default)]
+    struct Pane {
+        r: Response,
+        memory: SearchMemory,
+    }
+
+    impl std::ops::Deref for Pane {
+        type Target = Response;
+        fn deref(&self) -> &Response {
+            &self.r
+        }
+    }
+
+    impl std::ops::DerefMut for Pane {
+        fn deref_mut(&mut self) -> &mut Response {
+            &mut self.r
+        }
+    }
+
+    impl Pane {
+        fn handle_key(&mut self, ev: KeyEvent) -> Option<Action> {
+            self.r.handle_key(ev, &mut self.memory)
+        }
+
+        fn find_next(&mut self, reverse: bool, count: usize) -> bool {
+            self.r.find_next(reverse, count, &mut self.memory)
+        }
+
+        fn find_word(&mut self, backward: bool, count: usize) -> bool {
+            self.r.find_word(backward, count, &mut self.memory)
+        }
+
+        fn step_search(&mut self, delta: i32) -> bool {
+            self.r.step_search(delta, &mut self.memory)
+        }
+
+        fn no_hlsearch(&mut self) {
+            self.r.no_hlsearch(&mut self.memory);
+        }
+
+        fn follow_last_pattern(&mut self) {
+            self.r.follow_last_pattern(&self.memory);
+        }
     }
 
     /// A JSON body over [`SYNC_PRETTY_BYTES`], so its parse is deferred.
@@ -5607,12 +5648,12 @@ mod tests {
     fn a_search_jump_drops_the_line_selection() {
         let body = (0..100).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
         let shift_down = KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT);
-        let select = |r: &mut Response| {
+        let select = |r: &mut Pane| {
             r.handle_key(shift_down);
             r.handle_key(shift_down);
             assert_eq!(r.selected_text().as_deref(), Some("line 0\nline 1\nline 2"), "the selection to drop");
         };
-        let selects_from_cursor = |r: &mut Response, what: &str| {
+        let selects_from_cursor = |r: &mut Pane, what: &str| {
             assert_eq!(r.selected_text(), None, "{what}: the jump drops it");
             let cursor = r.view().unwrap().cursor;
             r.handle_key(shift_down);
@@ -5652,7 +5693,7 @@ mod tests {
         selects_from_cursor(&mut r, "button commit");
     }
 
-    fn thirty() -> Response {
+    fn thirty() -> Pane {
         let body = (1..=30).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
         let mut r = ready(&body);
         r.view.as_mut().unwrap().height = 23;
@@ -6498,7 +6539,7 @@ mod tests {
     /// A one-line body that is not JSON (so the view settles on `Raw`) and
     /// is far wider than the 60-col test viewport; "TAIL" is only visible
     /// once the view is scrolled right.
-    fn wide_raw() -> Response {
+    fn wide_raw() -> Pane {
         ready(&format!("{}TAIL", "x".repeat(100)))
     }
 
@@ -6535,7 +6576,7 @@ mod tests {
     /// "line 1" … "line 100" on Raw, a 23-row viewport as in the plan's Vim
     /// 9.1 probes, the view's top on `top` and the cursor on `cursor`
     /// (0-based).
-    fn hundred_at(top: usize, cursor: usize) -> Response {
+    fn hundred_at(top: usize, cursor: usize) -> Pane {
         let body = (1..=100).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
         let mut r = ready(&body);
         let v = r.view.as_mut().unwrap();
@@ -7020,8 +7061,9 @@ mod tests {
             "clamped to the widest line minus the viewport: {}",
             v.h_scroll
         );
+        let h = v.h_scroll;
         assert!(
-            !r.set_scroll_h(v.h_scroll),
+            !r.set_scroll_h(h),
             "a no-op move reports no change"
         );
     }
@@ -7243,7 +7285,7 @@ mod tests {
     /// tree exactly as Vim's buffer held it.
     const PROBE_JSON: &str = r#"{"user-id": 5, "user_id": 6, "Name": "alice", "name": "bob", "items": [1, 2], "id": "x1"}"#;
 
-    fn typed(r: &mut Response, text: &str) {
+    fn typed(r: &mut Pane, text: &str) {
         for c in text.chars() {
             r.handle_key(ch(c));
         }
@@ -7503,7 +7545,7 @@ mod tests {
         r.handle_key(ch('y'));
         r.handle_key(key(KeyCode::Esc));
         assert!(r.view().unwrap().search.is_none(), "vim: nothing to put back");
-        assert_eq!(r.take_last_search(), Some(("x".into(), false)), "the box's y never became the pattern");
+        assert_eq!(r.memory.pattern(), Some(("x", false)), "the box's y never became the pattern");
         assert!(r.find_next(false, 1));
         assert_eq!(landed(&r), (4, Some((4, 0)), "x".into()), "vim's n goes on with x");
         let mut r = ready(BODY);
@@ -7543,7 +7585,7 @@ mod tests {
         assert!(r.find_next(false, 1));
         assert_eq!(r.take_note().as_deref(), Some(note.as_str()), "n after Esc, not the older abc");
         assert_eq!(r.view().unwrap().cursor, cursor, "nothing moves");
-        assert_eq!(r.take_last_search(), Some((r"a\{-}".to_string(), false)), "for the engine too");
+        assert_eq!(r.memory.pattern(), Some((r"a\{-}", false)), "for the engine too");
     }
 
     /// Vim has one last pattern, not one per response: it outlives a new
@@ -7558,39 +7600,42 @@ mod tests {
         assert_eq!(landed(&r), (3, Some((3, 0)), "y".into()), "`n` follows the `?`: backward, wrapping");
     }
 
-    /// The app keeps the response's last pattern and the text engine's one
-    /// (`App::sync_last_pattern`): a search here is handed over once, and
-    /// while the highlight is on, a pattern searched in a field shows here,
-    /// as Vim's `'hlsearch'` shows the last pattern in every window. A box
-    /// being typed in stays; vim's Esc leaves the search, `:noh` hides it
-    /// until `n`, which turns the highlight back on everywhere.
+    /// Plan M5b Deviation 20: the app's one last pattern is lent to the
+    /// response. A search here sets it and turns the highlight on; while it
+    /// is on, a pattern an engine searched shows here at the event's end, a
+    /// new view included; a box being typed in stays; vim's Esc leaves the
+    /// search; `:noh` hides it until `n`, which turns the highlight back on.
     #[test]
-    fn the_last_pattern_is_handed_over_and_taken_up() {
+    fn the_response_follows_the_one_last_pattern() {
         let mut r = ready("x\ny\nx");
         r.open_search(SearchSyntax::Vim, false);
         typed(&mut r, "x");
-        assert_eq!(r.take_last_search(), Some(("x".to_string(), false)));
-        assert_eq!(r.take_last_search(), None, "once");
-        r.adopt_last_search(Some(("y", true)), true);
-        assert_eq!(r.take_last_search(), None, "the engine's is not handed back");
+        assert_eq!(r.memory.pattern(), Some(("x", false)));
+        assert!(r.memory.hlsearch());
+        r.memory.set("y".into(), true);
+        r.follow_last_pattern();
         let s = r.view().unwrap().search.as_ref().unwrap();
         assert_eq!((s.query.as_str(), s.backward, s.matches.len()), ("y", true, 1), "the highlight shows y");
         r.open_search(SearchSyntax::Vim, false);
         r.handle_key(ch('x'));
-        r.adopt_last_search(Some(("x", false)), true);
+        r.memory.set("x".into(), false);
+        r.follow_last_pattern();
         let s = r.view().unwrap().search.as_ref().unwrap();
         assert!(s.active && s.input.text() == "x", "the box being typed in stays");
         r.handle_key(key(KeyCode::Esc));
         r.handle_key(key(KeyCode::Esc));
         assert_eq!(r.view().unwrap().search.as_ref().map(|s| s.query.as_str()), Some("y"), "vim's Esc leaves the search");
+        r.memory.set("y".into(), true);
         r.no_hlsearch();
-        r.adopt_last_search(Some(("y", true)), false);
+        r.follow_last_pattern();
         assert!(r.view().unwrap().search.is_none(), ":noh hides it, and it stays hidden");
+        assert!(!r.memory.hlsearch());
         assert!(r.find_next(false, 1));
         assert_eq!(landed(&r).2, "y", "`n` takes the pattern up");
-        assert_eq!(r.take_last_search(), Some(("y".to_string(), true)), "and turns the highlight on everywhere");
+        assert!(r.memory.hlsearch(), "and turns the highlight on everywhere");
         let mut r = ready("x\ny\nx");
-        r.adopt_last_search(Some(("x", false)), true);
+        r.memory.set("x".into(), false);
+        r.follow_last_pattern();
         assert_eq!(r.view().unwrap().search.as_ref().map(|s| s.matches.len()), Some(2), "a new view shows it too");
     }
 
@@ -7701,7 +7746,7 @@ mod tests {
             r
         };
         let closed = |r: &Response, line: usize| r.view().unwrap().active_tree().unwrap().closed_fold(line);
-        let searched = |mut r: Response, syntax, backward, text: &str| {
+        let searched = |mut r: Pane, syntax, backward, text: &str| {
             r.open_search(syntax, backward);
             typed(&mut r, text);
             r
@@ -7806,7 +7851,7 @@ mod tests {
 
     #[test]
     fn keys_do_nothing_outside_the_ready_state() {
-        let mut r = Response::default();
+        let mut r = Pane::default();
         assert_eq!(
             r.handle_key(ch('j')),
             None,
@@ -7999,7 +8044,7 @@ mod tests {
         use crate::hit::Hit;
         let mut r = ready(r#"{"a": 1}"#);
         let mut empty = Response::default();
-        for (name, resp) in [("ready", &mut r), ("empty", &mut empty)] {
+        for (name, resp) in [("ready", &mut *r), ("empty", &mut empty)] {
             for collapsed in [false, true] {
                 resp.collapsed = collapsed;
                 let hits = render_hits(resp);
@@ -8660,7 +8705,7 @@ mod tests {
     /// The big-body setup `a_big_body_fetches_keys_on_the_pool` uses: a
     /// response over the sync limit with its tree and document attached,
     /// the bar focused with `text` typed and applied.
-    fn big_body_bar(body: &str, generation: u64, text: &str) -> Response {
+    fn big_body_bar(body: &str, generation: u64, text: &str) -> Pane {
         let mut r = ready_gen(body, generation);
         // These tests read the ghost, which only cycle mode draws.
         r.set_jq_tab(JqTab::Cycle);
@@ -8827,7 +8872,7 @@ mod tests {
 
     /// One keystroke in the focused bar, followed by the app's reconcile
     /// (filter re-applied, completion refreshed).
-    fn bar_key(r: &mut Response, ev: KeyEvent) {
+    fn bar_key(r: &mut Pane, ev: KeyEvent) {
         r.handle_key(ev);
         let text = r.jq_text().to_string();
         r.apply_jq(&text, SYNC_PRETTY_BYTES);

@@ -782,7 +782,7 @@ fn a_click_puts_the_vim_column_on_the_clicked_char() {
     app.handle_mouse(left_down(r.x + 18, r.y));
     assert_eq!(app.focus, PaneId::Response);
     app.handle_key(KeyEvent::new(KeyCode::Char('*'), KeyModifiers::SHIFT));
-    assert_eq!(app.glue.last_pattern(), Some(("\\<gamma\\>", false)));
+    assert_eq!(app.search_memory.pattern(), Some(("\\<gamma\\>", false)));
 }
 
 /// The response search box's Esc chip says what Esc does there: vim's
@@ -7698,7 +7698,7 @@ fn esc_on_in_flight_response_pane_requests_cancel() {
     let action = app
         .session
         .response
-        .handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        .handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &mut app.search_memory);
     assert_eq!(action, Some(Action::CancelSend));
 }
 
@@ -7753,7 +7753,7 @@ fn esc_on_idle_response_pane_does_nothing() {
     let action = app
         .session
         .response
-        .handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        .handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &mut app.search_memory);
     assert_eq!(action, None);
 }
 
@@ -9377,16 +9377,16 @@ fn the_body_and_the_response_share_vims_last_pattern() {
     app.use_profile(crate::config::KeyProfile::Vim);
     draw(&mut app);
     feed(&mut app, "/a<CR>:noh<CR>");
-    assert_eq!(app.glue.last_pattern(), Some(("a", false)));
-    assert!(!app.glue.hlsearch());
+    assert_eq!(app.search_memory.pattern(), Some(("a", false)));
+    assert!(!app.search_memory.hlsearch());
     ready_response(&mut app, "x\nb\na\nb");
     app.focus = PaneId::Response;
     feed(&mut app, "n");
     assert_eq!(app.session.response.view().unwrap().cursor, 2, "the response's n finds the body's /a");
     feed(&mut app, "?b<CR>");
     assert_eq!(app.session.response.view().unwrap().cursor, 1);
-    assert_eq!(app.glue.last_pattern(), Some(("b", true)), "the response's ?b is the engine's");
-    assert!(app.glue.hlsearch(), "and the body's highlight is back on");
+    assert_eq!(app.search_memory.pattern(), Some(("b", true)), "the response's ?b is the engine's");
+    assert!(app.search_memory.hlsearch(), "and the body's highlight is back on");
     app.focus = PaneId::Editor;
     feed(&mut app, "n");
     assert_eq!(
@@ -9394,6 +9394,56 @@ fn the_body_and_the_response_share_vims_last_pattern() {
         (1, 0),
         "the body's n follows the response's ?b: back from the a on row 1"
     );
+}
+
+/// Vim has one last search pattern for every buffer (`spats[0]`), and the
+/// app owns it (plan M5b Deviation 20, the user's review ruling): a request
+/// switch or a project switch, which swap the response (`Session::sync_open`,
+/// `Session::reset`), keep it for the body's `n` and the response's. A
+/// search in the request switched to is the pattern back in the first one.
+#[test]
+fn the_last_pattern_outlives_request_and_project_switches() {
+    use super::key_matrix_tests::{draw, feed};
+    use crate::components::editor::{EditorTab, SubFocus};
+    let open = |app: &mut App, slug: &str, text: &str| {
+        app.update(Action::ForceOpenRequest(slug.into()));
+        assert_eq!(app.editor.slug.as_deref(), Some(slug));
+        app.editor.set_body_text(text);
+        app.editor.active_tab = EditorTab::Body;
+        app.editor.preferred_tab = EditorTab::Body;
+        app.focus = PaneId::Editor;
+        app.editor.sub_focus = SubFocus::Content;
+        draw(app);
+    };
+    let caret = |app: &App| (app.editor.body.cursor.row, app.editor.body.cursor.col);
+    let response_n = |app: &mut App, body: &str| {
+        ready_response(app, body);
+        app.focus = PaneId::Response;
+        feed(app, "n");
+        app.session.response.view().unwrap().cursor
+    };
+    let (mut app, _dir) = three_row_app();
+    app.use_profile(crate::config::KeyProfile::Vim);
+    open(&mut app, "main/alpha", "a x");
+    feed(&mut app, "/x<CR>");
+    assert_eq!(caret(&app), (0, 2));
+    open(&mut app, "main/beta", "b\nx");
+    feed(&mut app, "n");
+    assert_eq!(caret(&app), (1, 0), "the body's n in another request finds x");
+    assert_eq!(response_n(&mut app, "y\nx"), 1, "and so does the response's, a different one");
+    open(&mut app, "main/beta", "b\nx");
+    feed(&mut app, "/b<CR>");
+    open(&mut app, "main/alpha", "x b");
+    feed(&mut app, "n");
+    assert_eq!(caret(&app), (0, 2), "back in alpha, n searches beta's b, not alpha's x");
+    let other = tempfile::tempdir().unwrap();
+    postui_core::fixtures::ensure_project(other.path()).unwrap();
+    postui_core::fixtures::save_request(other.path(), "main/zeta", &req("https://y")).unwrap();
+    app.update(Action::ForceSwitchProject(other.path().to_path_buf()));
+    open(&mut app, "main/zeta", "z\nb");
+    feed(&mut app, "n");
+    assert_eq!(caret(&app), (1, 0), "a project switch keeps it for the body");
+    assert_eq!(response_n(&mut app, "y\nb"), 1, "and for the response");
 }
 
 /// With vim's V up on the tree, Space and Enter are Vim's (the user's

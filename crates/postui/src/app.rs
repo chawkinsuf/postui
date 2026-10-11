@@ -229,6 +229,12 @@ pub struct App {
     /// The top dialog's field's engine (plan M3b Deviation 1): a second
     /// engine, so a screen field parked under a dialog keeps its state.
     pub(crate) modal_glue: crate::keyroute::engine_glue::Glue,
+    /// Vim's one last search pattern and its `'hlsearch'` state (plan M5b
+    /// Deviation 20, the user's review ruling: the app owns it). It lives
+    /// as long as the app, across request and project switches, which swap
+    /// the response; the response and each engine have it lent for the
+    /// call that needs it.
+    pub(crate) search_memory: crate::vim::engine::SearchMemory,
     /// The dialog field with a session, by its dialog's serial (plan M3b
     /// Deviation 2).
     pub(crate) modal_session: Option<(u64, crate::keyroute::FieldId)>,
@@ -242,6 +248,9 @@ pub struct App {
     /// Palette command frecency stats (recency + count per command id),
     /// loaded from `ui.toml` at startup and saved back on quit.
     pub usage: crate::usage::UsageStore,
+    /// The `:` line's history (plan M5b Task 5): read from `ui.toml` at
+    /// startup, written back at quit.
+    pub(crate) cmdline_history: crate::cmdline::CmdlineHistory,
     /// The HTTP clients used for every send (verifying + insecure, picked
     /// per request). Built eagerly and cheaply
     /// (`reqwest::Client::builder().build()` needs no running Tokio
@@ -332,6 +341,12 @@ pub struct App {
     /// from its row, the `:` line, or a click on the line's pinned row. The
     /// next `sync_session` consumes it, so a key and a click read it alike.
     add_opens_insert: bool,
+    /// `.` (spec §5.12; plan M5b Deviations 5–8): the last list change a
+    /// vim key made, while no other change has been made since.
+    dot: Option<Dot>,
+    /// What this event did to `.`, settled once the event loop has
+    /// captured its undo step (`settle_dot`).
+    dot_pending: DotPending,
     /// The terminal pointer shape last emitted (Kitty OSC 22, task 8d).
     /// Starts at `Default` — the terminal's own cursor is already that, so
     /// startup emits nothing until the pointer first moves onto something
@@ -584,6 +599,27 @@ fn theme_picker_toggle_label(dark: bool) -> String {
     }
 }
 
+/// The change `.` repeats (spec §5.12) and the history's change count
+/// right after it: any change since makes it stale (plan M5b Deviation 6).
+#[derive(Debug, Clone, Copy)]
+struct Dot {
+    change: crate::keyroute::Change,
+    at: u64,
+}
+
+/// What a key or mouse event did to `.`, settled once the event loop has
+/// captured the event's undo step (plan M5b Deviation 8).
+#[derive(Debug, Clone, Copy, Default)]
+enum DotPending {
+    #[default]
+    None,
+    /// A list change ran, from the history's change count `before`.
+    Made { change: crate::keyroute::Change, before: u64 },
+    /// The palette ran what it ran from `before`, with no field open under
+    /// it: that leaves `.` alone, as Vim's command-line commands do.
+    Kept { before: u64 },
+}
+
 impl App {
     /// Resolves the project to open (see [`resolve_startup`]) and opens it,
     /// self-initializing or prompting to create as its disposition says.
@@ -595,6 +631,7 @@ impl App {
             keymap,
             themes,
             usage,
+            cmdline,
             config_error,
         } = loaded;
         let terminal_colors = {
@@ -631,6 +668,7 @@ impl App {
             app.terminal_colors = terminal_colors;
             app.apply_ui_settings(ui_settings, theme_name, theme);
             app.usage = usage;
+            app.cmdline_history = cmdline;
             app.keymap = keymap;
             app.config_error = config_error;
             for w in warnings {
@@ -655,6 +693,7 @@ impl App {
         app.terminal_colors = terminal_colors;
         app.apply_ui_settings(ui_settings, theme_name, theme);
         app.usage = usage;
+        app.cmdline_history = cmdline;
         app.keymap = keymap;
         app.config_error = config_error;
         for w in warnings {
@@ -1726,10 +1765,12 @@ impl App {
             panes: Default::default(),
             glue: Default::default(),
             modal_glue: Default::default(),
+            search_memory: Default::default(),
             modal_session: None,
             modal_seen: None,
             history_stepped: false,
             usage: crate::usage::UsageStore::default(),
+            cmdline_history: Default::default(),
             clients: crate::http::Clients::new(),
             tx,
             ai_task: None,
@@ -1746,6 +1787,8 @@ impl App {
             sidebar_menu_revert: None,
             modal_handoff: false,
             add_opens_insert: false,
+            dot: None,
+            dot_pending: DotPending::None,
             last_pointer_shape: PointerShape::Default,
             pointer: None,
             url_well_hovered: false,
@@ -2947,18 +2990,24 @@ impl App {
                     p.set_open_request(slug.as_deref());
                 }
                 let _ = self.config.save_usage(&self.usage);
+                // As `save_usage`: the app is exiting and ui.toml is app
+                // state, so a failed write has no one left to tell.
+                let _ = self.config.save_cmdline_history(&self.cmdline_history);
                 self.should_quit = true;
                 true
             }
-            Action::WriteQuit => {
+            Action::WriteQuit | Action::ForceWrite { quit: true } => {
                 if !self.editor_holds_unsaved() {
                     return self.apply(Action::ForceQuit);
                 }
                 if self.editor.slug.is_none() {
                     return self.apply(Action::PromptSaveScratch(Box::new(Action::ForceQuit)));
                 }
-                self.apply(Action::SaveRequestThen(Box::new(Action::ForceQuit)))
+                // A failed write keeps the app open.
+                let force = matches!(action, Action::ForceWrite { .. });
+                self.save_request_checked(Some(Action::ForceQuit), force)
             }
+            Action::ForceWrite { quit: false } => self.save_request_checked(None, true),
             Action::Tick => {
                 // Only a pointer actually over the sidebar edge-scrolls it:
                 // the response pane shares the list's bottom row, and a
@@ -3062,14 +3111,18 @@ impl App {
                 self.ex_over_visual |= self.profile() == crate::config::KeyProfile::Vim
                     && self.focus == PaneId::Response
                     && self.session.response.line_selection();
-                self.push_modal(Modal::Palette(PaletteState::new_ex(&self.usage, crate::usage::now(), scope)));
+                self.push_modal(Modal::Palette(PaletteState::new_ex(
+                    &self.usage,
+                    crate::usage::now(),
+                    scope,
+                    self.cmdline_history.lines(),
+                )));
                 true
             }
             Action::NoHlSearch => {
-                // Vim's `:noh` turns the highlight off in every window.
-                self.glue.no_hlsearch();
-                self.modal_glue.no_hlsearch();
-                self.session.response.no_hlsearch();
+                // Vim's `:noh` turns the highlight off in every window: the
+                // one memory every engine borrows (plan M5b Deviation 20).
+                self.session.response.no_hlsearch(&mut self.search_memory);
                 true
             }
             Action::Close => {
@@ -3094,6 +3147,14 @@ impl App {
                     && let Some(prior) = self.theme_preview.take()
                 {
                     self.set_theme_by_name(&prior);
+                }
+                // A click off the `:` line abandons it, as Esc does, and
+                // Vim keeps an abandoned line (probe H6) — same rule as
+                // `apply_modal_result`'s.
+                if let Some(Modal::Palette(p)) = &popped_modal
+                    && p.is_ex()
+                {
+                    self.cmdline_history.add(p.input());
                 }
                 // Overlay close is always instant — no motion rule
                 // exception for the open-settle key. Snapping `ModalOpen`
@@ -3143,12 +3204,14 @@ impl App {
                 self.session.response.open_search(syntax, backward) || focused
             }
             Action::ResponseFind(crate::action::ResponseFind::Next { reverse, count }) => {
-                self.session.response.find_next(reverse, count)
+                self.session.response.find_next(reverse, count, &mut self.search_memory)
             }
             Action::ResponseFind(crate::action::ResponseFind::Word { backward, count }) => {
-                self.session.response.find_word(backward, count)
+                self.session.response.find_word(backward, count, &mut self.search_memory)
             }
-            Action::StepResponseSearch(delta) => self.session.response.step_search(delta.into()),
+            Action::StepResponseSearch(delta) => {
+                self.session.response.step_search(delta.into(), &mut self.search_memory)
+            }
             Action::CopyResponseHeader => match self.session.response.copyable_header_row() {
                 Some(row) => self.update(Action::CopyToClipboard(CopyTarget::ResponseHeader(row))),
                 None => false,
@@ -3547,8 +3610,8 @@ impl App {
                 });
                 true
             }
-            Action::SaveRequest => self.save_request_checked(None),
-            Action::SaveRequestThen(then) => self.save_request_checked(Some(*then)),
+            Action::SaveRequest => self.save_request_checked(None, false),
+            Action::SaveRequestThen(then) => self.save_request_checked(Some(*then), false),
             Action::ForceSaveRequest => self.force_save_request(),
             Action::ReloadOpenRequest => {
                 let Some(slug) = self.editor.slug.clone() else {
@@ -3918,6 +3981,20 @@ impl App {
                 }
                 None => false,
             },
+            Action::RepeatChange { count } => {
+                let Some(dot) = self.dot else { return false };
+                let change = crate::keyroute::Change { count: count.or(dot.change.count), ..dot.change };
+                let surface = self.surface();
+                let Some(steps) = crate::keyroute::replay(change, surface, self.repeat_cap(surface)) else {
+                    return false;
+                };
+                let before = self.history.changes();
+                let ran = self.run_steps(steps);
+                // The repeat is the change now, its count the new one
+                // (probes D3, D11).
+                self.dot_pending = DotPending::Made { change, before };
+                ran.changed
+            }
             Action::PromptMoveSelectedRequestToSpace => {
                 if let Some(slug) = self.sidebar.selected_slug() {
                     self.apply(Action::PromptMoveRequestToSpace(slug));
@@ -4489,6 +4566,28 @@ impl App {
                     self.refresh_sidebar();
                 }
                 true
+            }
+            Action::SidebarFold { op, count } => {
+                use crate::components::sidebar::FoldChange;
+                let real = self.sidebar.fold_cursor();
+                match self.sidebar.fold_change(op, count, real.as_ref(), &self.expanded(), &self.active_space()) {
+                    FoldChange::NoFold => {
+                        self.update(Action::ShowToast(crate::keyroute::table::NO_FOLD.into(), ToastKind::Info))
+                    }
+                    FoldChange::Same => false,
+                    FoldChange::Expanded(set) => {
+                        if let Some(p) = self.project_mut() {
+                            // The setter persists, as `h` and `l` do: a fold
+                            // is no undo step (plan M5b Deviation 12).
+                            p.set_expanded(set);
+                        }
+                        self.refresh_sidebar();
+                        if let Some(real) = real {
+                            self.sidebar.show_fold_cursor(real);
+                        }
+                        true
+                    }
+                }
             }
             Action::OpenProjectChooser => {
                 self.apply(Action::ReloadProjectFiles);
@@ -7443,7 +7542,7 @@ impl App {
                         // toast) is the feedback; a success toast on top
                         // of it would be a lie.
                         self.last_action_failed = false;
-                        self.save_request_checked(None);
+                        self.save_request_checked(None, false);
                         if self.last_action_failed {
                             return true;
                         }
@@ -8429,7 +8528,12 @@ impl App {
         }
     }
 
-    fn save_request_checked(&mut self, then: Option<Action>) -> bool {
+    /// `force` is `:w!` (plan M5b Task 1): the write lands whatever the
+    /// file holds now, as the drift dialog's Overwrite does — no drift
+    /// question, and a file that will not read is written over — but an
+    /// un-held slug is still re-seeded first where it reads, so the drift
+    /// check is live again for the next save.
+    fn save_request_checked(&mut self, then: Option<Action>, force: bool) -> bool {
         if self.refuse_without_project() {
             return true;
         }
@@ -8456,13 +8560,18 @@ impl App {
             && let Some(Err(e)) = self
                 .project_mut()
                 .map(|p| p.open_request(&slug).map(|_| ()))
+            && !force
         {
             self.toasts
                 .push(format!("could not read {slug}: {e}"), ToastKind::Error);
             self.last_action_failed = true;
             return true;
         }
-        let drift = self.project().and_then(|p| p.held_request_drift(&slug));
+        let drift = if force {
+            None
+        } else {
+            self.project().and_then(|p| p.held_request_drift(&slug))
+        };
         let Some(drift) = drift else {
             if self.force_save_request()
                 && let Some(then) = then
@@ -10166,17 +10275,27 @@ impl App {
         }
     }
 
-    /// Vim has one last search pattern for every window, so the response's
-    /// and the text engine's are kept one at the event boundary: a search
-    /// the response ran goes to the engine that holds the pattern (a
-    /// dialog's while one has a session, as the registers go), otherwise
-    /// the response takes the engine's, which a field's search may have
-    /// changed.
-    pub(super) fn sync_last_pattern(&mut self) {
-        let glue = if self.modal_session.is_some() { &mut self.modal_glue } else { &mut self.glue };
-        match self.session.response.take_last_search() {
-            Some((query, backward)) => glue.set_last_pattern(query, backward),
-            None => self.session.response.adopt_last_search(glue.last_pattern(), glue.hlsearch()),
+    /// Settles what the last event did to `.` (plan M5b Deviations 5–8),
+    /// now that its undo capture has run: a list change that changed
+    /// something becomes `.`; a change the palette ran leaves `.` as it
+    /// was; any other change since `.` was made makes it stale. The event
+    /// loop calls it right after each `capture_undo` (amendment A4.4), so a
+    /// change a later non-input event records is never credited to a key.
+    pub fn settle_dot(&mut self) {
+        let now = self.history.changes();
+        match std::mem::take(&mut self.dot_pending) {
+            DotPending::Made { change, before } if now != before => self.dot = Some(Dot { change, at: now }),
+            DotPending::Kept { before } => {
+                if let Some(dot) = self.dot.as_mut()
+                    && dot.at == before
+                {
+                    dot.at = now;
+                }
+            }
+            _ => {}
+        }
+        if self.dot.is_some_and(|d| d.at != now) {
+            self.dot = None;
         }
     }
 
@@ -10231,7 +10350,10 @@ impl App {
         // grid commit) can bail between `begin_op` and its record.
         self.op_in_flight = false;
         let ended = self.end_visual_off_response();
-        self.sync_last_pattern();
+        // The response's view shows the app's last pattern (plan M5b
+        // Deviation 20): one a field searched, or the one a request switch
+        // put on screen a view too old for.
+        self.session.response.follow_last_pattern(&self.search_memory);
         let noted = self.toast_response_note();
         self.arm_pending_toasts();
         // Not every key reaches `update` -- Esc on a modal just pops it
@@ -10317,7 +10439,16 @@ impl App {
             // The pending keys grew (the footer echoes them), or vim
             // swallowed the key.
             crate::keyroute::Resolved::Consumed => fields::Ran::consumed(),
-            crate::keyroute::Resolved::Run(steps) => self.run_steps(steps),
+            crate::keyroute::Resolved::Run(steps) => {
+                let before = self.history.changes();
+                let ran = self.run_steps(steps);
+                // Spec §5.12: the list change the key ran is `.`'s, once the
+                // event's capture shows it changed something.
+                if let Some(change) = self.router.take_change() {
+                    self.dot_pending = DotPending::Made { change, before };
+                }
+                ran
+            }
         }
     }
 
@@ -10965,7 +11096,7 @@ impl App {
                 }
                 action
             }
-            PaneId::Response => self.session.response.handle_key(ev),
+            PaneId::Response => self.session.response.handle_key(ev, &mut self.search_memory),
         }
     }
 
@@ -11216,7 +11347,7 @@ impl App {
     /// cursor's own marker (a steady control fill) just moves on the next
     /// draw.
     fn set_sidebar_selected(&mut self, i: usize) {
-        self.sidebar.selected = Some(i);
+        self.sidebar.select_row(i);
     }
 
     /// Pops the top modal on `close` and dispatches each of `res`'s
@@ -11231,10 +11362,26 @@ impl App {
     /// inserting a `{{name}}` token) after the mutation they depend on
     /// (declaring `name`) was refused.
     fn apply_modal_result(&mut self, res: ModalResult) -> bool {
+        let changes_before = self.history.changes();
         let mut changed = res.close;
         let mut popped = None;
         if res.close {
             popped = self.modals.pop();
+            // Vim's command-line commands leave `.` alone (probes D9, D16),
+            // unless a field open under the line closes with it, or a field
+            // session (the body's, which never closes) holds edits the
+            // line's command may flush: that edit may be the last change
+            // (plan M5b Deviation 6).
+            if matches!(popped, Some(Modal::Palette(_))) && !self.screen_field_open() && !self.field_gate() {
+                self.dot_pending = DotPending::Kept { before: changes_before };
+            }
+            // Vim keeps each line its `:` closed with, Enter or Esc (probes
+            // H1, H6; plan M5b Deviations 13 and 17).
+            if let Some(Modal::Palette(p)) = &popped
+                && p.is_ex()
+            {
+                self.cmdline_history.add(p.input());
+            }
             // Overlay close is always instant.
             self.anims.snap(AnimKey::ModalOpen, 1.0);
             // A dropdown that closes without dispatching anything (clicked
@@ -11656,6 +11803,8 @@ mod key_matrix_tests;
 mod global_tests;
 #[cfg(test)]
 mod ex_tests;
+#[cfg(test)]
+mod dot_tests;
 #[cfg(test)]
 mod response_conformance_tests;
 #[cfg(test)]

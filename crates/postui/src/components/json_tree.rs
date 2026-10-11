@@ -551,35 +551,22 @@ impl JsonTree {
     }
 
     /// Vim's `zo` `zc` `za` with a count at full line `full` (plan M5a
-    /// Deviation 9; probes F2–F8, X6–X14). `zo`: the `count` outermost
-    /// closed folds open. `zc`: the `count` innermost open folds outside
-    /// the outermost closed one close, so `zc` on a fold already closed
-    /// closes the one around it. `za`: on a closed fold as `zo`; on an open
-    /// one as `zc` (Vim 9.1: `2za` closes two levels). Whether anything
-    /// changed.
+    /// Deviation 9; probes F2–F8, X6–X14), by `FoldOp::pick`'s rule over
+    /// the folds holding the line; `zR` and `zM` act on every fold. Whether
+    /// anything changed.
     pub fn fold_at(&mut self, full: usize, op: crate::action::FoldOp, count: usize) -> bool {
         use crate::action::FoldOp;
         let ids = self.folds_at(full);
-        let closed_at = ids.iter().position(|&id| self.lines[self.containers[id].open_line as usize].collapsed());
-        let (open, n) = match op {
-            FoldOp::Open => (true, count),
-            FoldOp::Toggle if closed_at.is_some() => (true, count),
-            FoldOp::Close => (false, count),
-            FoldOp::Toggle => (false, count),
-            FoldOp::OpenAll => return self.fold_all(false),
-            FoldOp::CloseAll => return self.fold_all(true),
-        };
-        let pick: Vec<usize> = if open {
-            ids.iter().copied().filter(|&id| self.lines[self.containers[id].open_line as usize].collapsed()).take(n.max(1)).collect()
-        } else {
-            let k = closed_at.unwrap_or(ids.len());
-            ids[k.saturating_sub(n.max(1))..k].to_vec()
+        let closed: Vec<bool> = ids.iter().map(|&id| self.lines[self.containers[id].open_line as usize].collapsed()).collect();
+        let Some((open, pick)) = op.pick(&closed, count) else {
+            // `zR` and `zM`: no chain, every fold.
+            return self.fold_all(op == FoldOp::CloseAll);
         };
         if pick.is_empty() {
             return false;
         }
-        for id in pick {
-            let line = self.containers[id].open_line as usize;
+        for i in pick {
+            let line = self.containers[ids[i]].open_line as usize;
             if open {
                 self.lines[line].flags &= !COLLAPSED;
             } else {

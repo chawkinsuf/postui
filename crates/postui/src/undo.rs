@@ -242,6 +242,10 @@ pub struct History {
     /// step. Cleared by `pop_undo`/`pop_redo`/`push_undo_no_coalesce`/
     /// `break_coalescing`; set by `record`.
     coalescing: bool,
+    /// How many steps `record` and `record_no_coalesce` have taken, a merge
+    /// included: the app's change counter (plan M5b Deviation 8). Undo and
+    /// redo move steps between the stacks and never count; `clear` keeps it.
+    changes: u64,
 }
 
 impl History {
@@ -251,6 +255,7 @@ impl History {
             redo: Vec::new(),
             last_record: None,
             coalescing: false,
+            changes: 0,
         }
     }
 
@@ -262,6 +267,7 @@ impl History {
     /// the redo stack either way and evicts
     /// the oldest step past the cap.
     pub fn record(&mut self, step: Step, now: Instant) {
+        self.changes += 1;
         self.redo.clear();
 
         let merged = self.coalescing
@@ -369,6 +375,7 @@ impl History {
     /// (not replayed) step must not merge with what came before *and* must
     /// invalidate any stale redo entries (spec's linear-history rule).
     pub fn record_no_coalesce(&mut self, step: Step) {
+        self.changes += 1;
         self.redo.clear();
         self.undo.push(step);
         if self.undo.len() > MAX_STEPS {
@@ -390,6 +397,11 @@ impl History {
     /// Called after undo/redo so the next edit starts a fresh step.
     pub fn break_coalescing(&mut self) {
         self.coalescing = false;
+    }
+
+    /// The change counter: `.` is stale once it moved (plan M5b).
+    pub fn changes(&self) -> u64 {
+        self.changes
     }
 
     /// Number of steps on the undo stack. Test-only: production code
@@ -519,6 +531,25 @@ mod tests {
         h.push_redo(s);
         h.record_no_coalesce(delta("", "x"));
         assert!(h.pop_redo().is_none());
+    }
+
+    /// Plan M5b Deviation 8: every recorded step counts, a merged one too;
+    /// undo, redo and `clear` do not.
+    #[test]
+    fn changes_count_recorded_steps_only() {
+        let mut h = History::new();
+        let t0 = Instant::now();
+        h.record(delta("", "a"), t0);
+        h.record(delta("a", "ab"), t0 + Duration::from_millis(10));
+        assert_eq!(h.changes(), 2, "a merge is still a change");
+        h.record_no_coalesce(delta("ab", "abc"));
+        assert_eq!(h.changes(), 3);
+        let step = h.pop_undo().unwrap();
+        h.push_redo(step);
+        let step = h.pop_redo().unwrap();
+        h.push_undo_no_coalesce(step);
+        h.clear();
+        assert_eq!(h.changes(), 3, "undo, redo and clear count nothing");
     }
 
     #[test]

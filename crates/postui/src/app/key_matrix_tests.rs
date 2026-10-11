@@ -74,6 +74,8 @@ pub(super) enum Fixture {
 enum Expect {
     /// The sidebar cursor's request slug.
     SidebarSel(&'static str),
+    /// The sidebar cursor is on this folder row.
+    SidebarFolderSel(&'static str),
     TableRow(usize),
     /// 0 the name cell, 1 the value cell.
     TableCol(usize),
@@ -243,6 +245,20 @@ const CASES: &[Case] = &[
     vim("L.search", SidebarThree, "/j", &[Toast("No search in this list yet"), SidebarSel("main/gamma")]),
     vim("L.hml", SidebarThree, "Hj", &[SidebarSel("main/gamma"), NoToast]),
     vim("L.hml", SidebarThree, "zzj", &[SidebarSel("main/gamma"), NoToast]),
+    // Key list §6 (`L.fold`), M5b: the sidebar's folders are Vim's folds
+    // (plan M5b Deviations 9–11); the other lists have none.
+    vim("L.fold", SidebarFolder, "zo", &[Requests(&["main/alpha", "main/beta", "main/gamma", "main/f/inner"]), SidebarFolderSel("main/f")]),
+    vim("L.fold", SidebarFolder, "zojzc", &[Requests(&["main/alpha", "main/beta", "main/gamma"]), SidebarFolderSel("main/f")]),
+    vim("L.fold", SidebarFolder, "zojzczo", &[SidebarSel("main/f/inner")]),
+    vim("L.fold", SidebarFolder, "zojzckzo", &[SidebarSel("main/gamma"), Toast("No fold found")]),
+    vim("L.fold", SidebarFolder, "za", &[Requests(&["main/alpha", "main/beta", "main/gamma", "main/f/inner"])]),
+    vim("L.fold", SidebarFolder, "zaza", &[Requests(&["main/alpha", "main/beta", "main/gamma"]), SidebarFolderSel("main/f")]),
+    vim("L.fold", SidebarFolder, "zR", &[Requests(&["main/alpha", "main/beta", "main/gamma", "main/f/inner"])]),
+    vim("L.fold", SidebarFolder, "zRjzM", &[Requests(&["main/alpha", "main/beta", "main/gamma"]), SidebarFolderSel("main/f")]),
+    vim("L.fold", SidebarFolder, "zc", &[Requests(&["main/alpha", "main/beta", "main/gamma"]), NoToast]),
+    vim("L.fold", SidebarThree, "zo", &[Toast("No fold found"), SidebarSel("main/beta")]),
+    vim("L.fold", TableThreeHeaders, "za", &[Toast("No fold found"), TableLen(3)]),
+    vim("L.fold", TableThreeHeaders, "zRj", &[NoToast, TableRow(2)]),
     vim("R.move", ResponseLines, "j", &[ResponseLine(1)]),
     vim("R.move", ResponseLines, "5j", &[ResponseLine(5)]),
     vim("R.move", ResponseLines, "G", &[ResponseLast]),
@@ -342,6 +358,9 @@ const CASES: &[Case] = &[
     vim("X.wq", TableThreeHeaders, ":wq<CR>", &[Quit, Dirty(false)]),
     vim("X.wq", TableThreeHeaders, ":x<CR>", &[Quit, Dirty(false)]),
     vim("X.wq", TableThreeHeaders, ":wa<CR>", &[NoModal, Dirty(false)]),
+    vim("X.wq", TableThreeHeaders, ":wq!<CR>", &[Quit, Dirty(false)]),
+    vim("X.wq", TableThreeHeaders, ":x!<CR>", &[Quit, Dirty(false)]),
+    vim("X.wq", TableThreeHeaders, ":w!<CR>", &[NoModal, Dirty(false)]),
     vim("X.wq", DirtyScratch, ":wq<CR>", &[PromptOpen]),
     vim("X.wq", UrlLine, "ix<Esc>:w<CR>", &[NoModal, Dirty(false), FieldLive(false)]),
     vim("X.e", TableThreeHeaders, ":e<CR>", &[NoModal, Dirty(true)]),
@@ -353,6 +372,7 @@ const CASES: &[Case] = &[
     vim("X.verbs", SidebarThree, ":man<CR>", &[NoModal, ScreenIs(Screen::Manage)]),
     vim("X.verbs", SidebarThree, ":new<CR>", &[PromptOpen]),
     vim("X.verbs", TableThreeHeaders, ":new<CR>", &[TableRow(3), FieldLive(true), Mode("INSERT")]),
+    vim("X.verbs", TableThreeHeaders, "i<Esc>:new<CR>", &[TableRow(3), FieldLive(true), Mode("INSERT")]),
     vim("X.verbs", VarGrid, ":new<CR>", &[FieldLive(true), Mode("INSERT")]),
     vim("X.verbs", SidebarThree, ":rename<CR>", &[PromptOpen]),
     vim_u("X.verbs", TableThreeHeaders, ":delete<CR>", &[TableLen(2), NoModal]),
@@ -369,6 +389,12 @@ const CASES: &[Case] = &[
     vim("X.edit", SidebarThree, ":abc<BS>", &[PaletteQuery("ab")]),
     vim("X.edit", SidebarThree, ":<BS>", &[NoModal]),
     vim("X.edit", SidebarThree, ":abc<Esc>j", &[NoModal, SidebarSel("main/gamma")]),
+    // Key list §8 (`X.history`), M5b: ↑ and ↓ recall the line's history.
+    vim("X.history", SidebarThree, ":abc<Esc>:<Up>", &[PaletteQuery("abc")]),
+    vim("X.history", SidebarThree, ":abc<Esc>:xyz<Esc>:a<Up>", &[PaletteQuery("abc")]),
+    vim("X.history", SidebarThree, ":ab<Esc>:xy<Esc>:ac<Esc>:a<Up><Up>", &[PaletteQuery("ab")]),
+    vim("X.history", SidebarThree, ":abc<Esc>:<Up><Down>", &[PaletteQuery("")]),
+    vim("X.history", SidebarThree, ":<Up>", &[PaletteQuery(""), Palette]),
     vim("X.unsupported", SidebarThree, ":s", &[PaletteRefused("Not supported: :s")]),
     vim("X.unsupported", SidebarThree, ":s<CR>j", &[NoModal, NoToast, SidebarSel("main/gamma")]),
     vim("X.unsupported", SidebarThree, ":%s/a/b/<CR>j", &[NoModal, NoToast, SidebarSel("main/gamma")]),
@@ -450,6 +476,11 @@ const CASES: &[Case] = &[
     arrows_u("L.yank", TableThreeHeaders, "yP", &[Headers(&["a", "b-copy", "b", "c"]), TableRow(1)]),
     vim_u("L.yank", VarGrid, "yyp", &[OptionCount(3)]),
     arrows_u("L.yank", VarGrid, "cv", &[OptionCount(3)]),
+    // Key list §6 (`L.dot`), M5b: `.` repeats the last list change.
+    vim("L.dot", SidebarThree, "dd.", &[Requests(&["main/alpha"])]),
+    vim("L.dot", SidebarThree, ".", &[Requests(&["main/alpha", "main/beta", "main/gamma"]), NoToast]),
+    vim("L.dot", TableThreeHeaders, "kdd2.", &[Headers(&[])]),
+    vim("L.dot", ManageEnvs, "dd.", &[EnvNames(&["dev"])]),
     // Key list §9, M3: prompts, pickers and confirms (spec §5.10).
     vim("D.prompt", SidebarThree, "r", &[PromptOpen, Mode("INSERT")]),
     vim("D.prompt", SidebarThree, "r<Esc>", &[PromptOpen, Mode("NORMAL")]),
@@ -712,6 +743,9 @@ pub(super) fn draw(app: &mut App) {
 fn check(app: &App, e: Expect) -> Result<(), String> {
     let ok = match e {
         SidebarSel(slug) => app.sidebar.selected_slug().as_deref() == Some(slug),
+        SidebarFolderSel(path) => {
+            matches!(app.sidebar.selected_key(), Some(crate::components::sidebar::RowKey::Folder(p)) if p == path)
+        }
         TableRow(n) => app.editor.table.selected == Some(n),
         TableCol(n) => usize::from(app.editor.table.col == crate::components::table_editor::Col::Value) == n,
         TableLen(n) => app.editor.headers.len() == n,
@@ -786,7 +820,7 @@ fn check(app: &App, e: Expect) -> Result<(), String> {
         PaletteRefused(t) => matches!(app.modals.top(), Some(Modal::Palette(p)) if p.refused() == Some(t)),
         ModalOpen => !app.modals.is_empty(),
         ScreenIs(s) => app.screen == s,
-        BodyHl(on) => app.glue.hlsearch() == on,
+        BodyHl(on) => app.search_memory.hlsearch() == on,
     };
     ok.then_some(()).ok_or_else(|| {
         format!(
@@ -935,11 +969,12 @@ pub(super) fn snapshot_diff(before: &Snapshot, after: &Snapshot) -> String {
 }
 
 /// Keys through `App::handle_key`, each followed by the event loop's
-/// undo capture and a draw (spec §8.1).
+/// undo capture, its `.` settle and a draw (spec §8.1).
 pub(super) fn feed(app: &mut App, keys: &str) {
     for ev in crate::keyroute::notation::events(keys) {
         app.handle_key(ev);
         app.capture_undo();
+        app.settle_dot();
         draw(app);
     }
 }

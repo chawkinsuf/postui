@@ -350,6 +350,10 @@ fn undo() -> Action {
     Action::Undo
 }
 
+fn repeat_change(n: Option<usize>) -> Action {
+    Action::RepeatChange { count: n }
+}
+
 fn redo() -> Action {
     Action::Redo
 }
@@ -390,6 +394,33 @@ fn fold_open_all() -> Action {
 
 fn fold_close_all() -> Action {
     fold_of(crate::action::FoldOp::CloseAll, None)
+}
+
+/// Vim's E490, without its number (plan M5b Deviation 11).
+pub const NO_FOLD: &str = "No fold found";
+
+fn folder_fold(op: crate::action::FoldOp, n: Option<usize>) -> Action {
+    Action::SidebarFold { op, count: count1(n) }
+}
+
+fn folder_open(n: Option<usize>) -> Action {
+    folder_fold(crate::action::FoldOp::Open, n)
+}
+
+fn folder_close(n: Option<usize>) -> Action {
+    folder_fold(crate::action::FoldOp::Close, n)
+}
+
+fn folder_toggle(n: Option<usize>) -> Action {
+    folder_fold(crate::action::FoldOp::Toggle, n)
+}
+
+fn folders_open_all() -> Action {
+    folder_fold(crate::action::FoldOp::OpenAll, None)
+}
+
+fn folders_close_all() -> Action {
+    folder_fold(crate::action::FoldOp::CloseAll, None)
 }
 
 fn response_search() -> Action {
@@ -640,6 +671,19 @@ pub static TABLE: &[Binding] = &[
     row("za", Surfaces::RESPONSE_LINES, Intent::Counted(fold_toggle), CountRule::Pass),
     row("zR", Surfaces::RESPONSE_LINES, Intent::Act(fold_open_all), CountRule::Ignore),
     row("zM", Surfaces::RESPONSE_LINES, Intent::Act(fold_close_all), CountRule::Ignore),
+    // Key list §6 (`L.fold`), plan M5b Deviations 9–11: the sidebar's
+    // folders are Vim's folds, counted. The other lists have none and say
+    // so, as Vim's E490 does, so `za` never adds a row there.
+    row("zo", Surfaces::SIDEBAR, Intent::Counted(folder_open), CountRule::Pass),
+    row("zc", Surfaces::SIDEBAR, Intent::Counted(folder_close), CountRule::Pass),
+    row("za", Surfaces::SIDEBAR, Intent::Counted(folder_toggle), CountRule::Pass),
+    row("zR", Surfaces::SIDEBAR, Intent::Act(folders_open_all), CountRule::Ignore),
+    row("zM", Surfaces::SIDEBAR, Intent::Act(folders_close_all), CountRule::Ignore),
+    row("zo", Surfaces::LISTS.minus(Surfaces::SIDEBAR), Intent::Note(NO_FOLD), CountRule::Ignore),
+    row("zc", Surfaces::LISTS.minus(Surfaces::SIDEBAR), Intent::Note(NO_FOLD), CountRule::Ignore),
+    row("za", Surfaces::LISTS.minus(Surfaces::SIDEBAR), Intent::Note(NO_FOLD), CountRule::Ignore),
+    row("zR", Surfaces::LISTS.minus(Surfaces::SIDEBAR), Intent::Swallow, CountRule::Ignore),
+    row("zM", Surfaces::LISTS.minus(Surfaces::SIDEBAR), Intent::Swallow, CountRule::Ignore),
     // Key list §8 (`P.gt`), spec §5.8: every tab strip, on a closed
     // surface or from a screen field's idle Normal (§3.7).
     row("gt", Surfaces::WINDOWS, Intent::Tab { delta: 1 }, CountRule::Pass),
@@ -694,6 +738,10 @@ pub static TABLE: &[Binding] = &[
     row("u", Surfaces::APP, Intent::Act(undo), CountRule::Repeat),
     row("<C-r>", Surfaces::APP, Intent::Act(redo), CountRule::Repeat),
     row(":", Surfaces::APP, Intent::Act(ex_palette), CountRule::Ignore),
+    // Key list §6 (`L.dot`), spec §5.12 (plan M5b Deviations 2 and 5): `.`
+    // repeats the last list change where it runs, its count replaced by one
+    // typed here.
+    row(".", Surfaces::NAV, Intent::Counted(repeat_change), CountRule::Pass),
     // Vim's `:` in Visual opens the line over the selection (its `'<,'>`):
     // V stays up for the palette's commands and ends once it closes
     // (`App::end_visual_off_response`). Visual's `u` is not undo.
@@ -981,6 +1029,24 @@ mod tests {
         assert!(matches!(best(rows(), &typed("ZZ"), Surfaces::FIELD_LINE), Match::Complete(b) if b.keys == "ZZ"));
         assert!(matches!(best(rows(), &typed("Zx"), Surfaces::FIELD_LINE), Match::Complete(b) if b.keys == "Z<any>"));
         assert!(matches!(best(rows(), &typed("Z"), Surfaces::FIELD_LINE), Match::Prefix));
+    }
+
+    /// Plan M5b Deviations 9 and 11: the fold keys are the sidebar's; every
+    /// other list says it has no fold, so `za` never becomes `a`.
+    #[test]
+    fn the_fold_keys_are_the_sidebars_and_a_note_elsewhere() {
+        use crate::components::manage::ManageTab;
+        let complete = |keys: &str, s: Surface| match lookup(&notation::parse(keys), KeyProfile::Vim, s) {
+            Match::Complete(b) => Some(b.intent),
+            _ => None,
+        };
+        assert!(matches!(complete("zc", Surface::Sidebar), Some(Intent::Counted(_))));
+        assert!(matches!(complete("zM", Surface::Sidebar), Some(Intent::Act(_))));
+        for s in [Surface::VarList, Surface::Settings, Surface::ManageList(ManageTab::Environments), Surface::UrlLine] {
+            assert!(matches!(complete("za", s), Some(Intent::Note(t)) if t == NO_FOLD), "{s:?}");
+            assert!(matches!(complete("zR", s), Some(Intent::Swallow)), "{s:?}");
+        }
+        assert!(matches!(lookup(&notation::parse("zc"), KeyProfile::Arrows, Surface::Sidebar), Match::NoMatch), "vim's");
     }
 
     /// Plan M3a Deviation 18: a keys.toml letter never reaches a field, so

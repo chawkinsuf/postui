@@ -36,6 +36,8 @@ fn save() -> Action { Action::SaveRequest }
 fn quit() -> Action { Action::GatedQuit }
 fn force_quit() -> Action { Action::ForceQuit }
 fn write_quit() -> Action { Action::WriteQuit }
+fn force_write() -> Action { Action::ForceWrite { quit: false } }
+fn force_write_quit() -> Action { Action::ForceWrite { quit: true } }
 fn reload() -> Action { Action::ReloadFromDisk }
 fn discard() -> Action { Action::DiscardChanges }
 fn send() -> Action { Action::Send }
@@ -53,6 +55,8 @@ pub static VERBS: &[ExVerb] = &[
     verb(&["quit", "q", "qa", "qall", "quitall"], Run::Act(quit), "Quit"),
     verb(&["quit!", "q!", "qa!", "qall!"], Run::Act(force_quit), "Quit without saving"),
     verb(&["wq", "x", "xit", "exit", "wqa", "xa"], Run::Act(write_quit), "Save request, then quit"),
+    verb(&["write!", "w!", "update!", "up!", "wa!"], Run::Act(force_write), "Save request over outside changes"),
+    verb(&["wq!", "x!", "xit!", "exit!", "wqa!", "xa!"], Run::Act(force_write_quit), "Save request over outside changes, then quit"),
     verb(&["edit", "e"], Run::Act(reload), "Reload from disk"),
     verb(&["edit!", "e!"], Run::Then(discard, reload), "Discard changes, then reload"),
     verb(&["send"], Run::Act(send), "Send request"),
@@ -237,6 +241,20 @@ mod tests {
         assert_eq!(pinned("noh", &sidebar()).actions, vec![close.clone(), Action::NoHlSearch]);
         assert_eq!(pinned("split", &Scope { surface: Surface::Body, verbs: vec![] }).actions, vec![close, Action::CycleSplit]);
         assert_eq!(pinned("w", &sidebar()).name, "write", "the pinned row shows the full name");
+    }
+
+    /// Plan M5b Deviation 18: Vim's `!` on the write verbs.
+    #[test]
+    fn the_bang_write_verbs_resolve() {
+        let close = Action::CloseField;
+        for q in ["w!", "write!", "up!", "update!", "wa!"] {
+            assert_eq!(pinned(q, &sidebar()).actions, vec![close.clone(), Action::ForceWrite { quit: false }], "{q}");
+        }
+        for q in ["wq!", "x!", "xit!", "exit!", "wqa!", "xa!"] {
+            assert_eq!(pinned(q, &sidebar()).actions, vec![close.clone(), Action::ForceWrite { quit: true }], "{q}");
+        }
+        assert_eq!(pinned("wr", &sidebar()).name, "write", "a prefix still reaches the plain verb");
+        assert_eq!(pinned("upd", &sidebar()).name, "write");
     }
 
     /// Exact beats prefix; the shortest name wins a prefix; ties go to the

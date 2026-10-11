@@ -905,7 +905,7 @@ impl Engine {
                 Moved::to(Pos::new(row, first_non_blank_fix(&buf.line(row))), MKind::Linewise, WantUpdate::Here)
             }
             Motion::SearchNext { reverse } => {
-                let Some(last) = self.last_search.clone() else {
+                let Some(last) = self.memory.last.clone() else {
                     // `normal_search()` resets the wanted column before
                     // `do_search()` finds no pattern (probed: `jnj`).
                     self.note = Some(Note::Message(search::NO_PREVIOUS_PATTERN.into()));
@@ -927,13 +927,13 @@ impl Engine {
                 // Vim's `do_search()` keeps the pattern as its delimiter
                 // leaves it: `#`'s `\?` becomes `?`.
                 let text = search::as_stored(&search::ident_pattern(&line, start, end, backward), dir);
-                self.last_search = Some(LastSearch { text: text.clone(), dir });
+                self.memory.last = Some(LastSearch { text: text.clone(), dir });
                 self.search_motion(buf, Pos::new(from.row, start), &text, dir, count)
             }
             // The prompt's Enter: `run_search` stored the typed pattern, or
             // the prompt was empty and the last one stands.
             Motion::Search { dir } => {
-                let Some(last) = self.last_search.clone() else {
+                let Some(last) = self.memory.last.clone() else {
                     self.note = Some(Note::Message(search::NO_PREVIOUS_PATTERN.into()));
                     return Moved::search_failed(from);
                 };
@@ -947,7 +947,7 @@ impl Engine {
     /// the wanted column reset even on failure; a wrap or a miss leaves its
     /// message, and the highlight goes on.
     pub(super) fn search_motion<B: TextBuf>(&mut self, buf: &B, from: Pos, text: &str, dir: Dir, count: usize) -> Moved {
-        self.hl = true;
+        self.memory.hl = true;
         let pat = match self.compiled(text) {
             Ok(p) => p,
             Err(note) => {

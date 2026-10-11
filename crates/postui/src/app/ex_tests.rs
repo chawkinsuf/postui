@@ -62,6 +62,94 @@ fn enter_on_the_pinned_row_runs_it() {
     assert!(app.should_quit, "a clean request quits at once");
 }
 
+/// Plan M5b Deviation 18: `!` writes over a file changed outside the app
+/// with no dialog, as Vim's `:w!` and `:wq!` do; without it the drift
+/// dialog asks, as before. The disk holds the app's content afterwards.
+#[test]
+fn bang_writes_over_a_file_changed_outside() {
+    let outside = |app: &App| {
+        let slug = app.editor.slug.clone().expect("the fixture's request is saved");
+        let theirs = postui_core::model::HttpRequest::from_toml_str(r#"url = "https://x/outside""#).unwrap();
+        postui_core::fixtures::save_request(app.proj().root(), &slug, &theirs).unwrap();
+    };
+    let on_disk = |app: &App| {
+        let slug = app.editor.slug.clone().unwrap();
+        postui_core::fixtures::load_request(app.proj().root(), &slug).unwrap()
+    };
+    let mut app = vim(Fixture::TableThreeHeaders);
+    outside(&app);
+    feed(&mut app, ":wq<CR>");
+    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })), "the drift dialog");
+    assert!(!app.should_quit);
+    assert_eq!(on_disk(&app).url, "https://x/outside", "nothing written yet");
+    for q in [":wq!<CR>", ":x!<CR>"] {
+        let mut app = vim(Fixture::TableThreeHeaders);
+        outside(&app);
+        feed(&mut app, q);
+        assert!(app.modals.is_empty(), "{q}: no dialog");
+        assert!(!app.editor.is_dirty(), "{q}: written");
+        assert!(app.should_quit, "{q}");
+        assert_ne!(on_disk(&app).url, "https://x/outside", "{q}: the app's content is on disk");
+    }
+    let mut app = vim(Fixture::TableThreeHeaders);
+    outside(&app);
+    feed(&mut app, ":w!<CR>");
+    assert!(app.modals.is_empty());
+    assert!(!app.editor.is_dirty(), "written");
+    assert!(!app.should_quit, ":w! does not quit");
+    assert_ne!(on_disk(&app).url, "https://x/outside", "the app's content is on disk");
+}
+
+/// The M5b code review's second finding: `:w!` on a slug the project no
+/// longer holds re-seeds it as `:w` does, so the drift check is live again
+/// for the next save; a file that will not read is still written over.
+#[test]
+fn bang_holds_an_un_held_request_again() {
+    let mut app = vim(Fixture::TableThreeHeaders);
+    let slug = app.editor.slug.clone().expect("the fixture's request is saved");
+    app.proj_mut().close_request(&slug);
+    feed(&mut app, ":w!<CR>");
+    assert!(!app.editor.is_dirty(), "written");
+    assert!(app.proj().held_request(&slug).is_some(), "held again");
+    let theirs = postui_core::model::HttpRequest::from_toml_str(r#"url = "https://x/outside""#).unwrap();
+    postui_core::fixtures::save_request(app.proj().root(), &slug, &theirs).unwrap();
+    feed(&mut app, ":w<CR>");
+    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })), "the drift dialog");
+
+    let mut app = vim(Fixture::TableThreeHeaders);
+    let slug = app.editor.slug.clone().unwrap();
+    app.proj_mut().close_request(&slug);
+    std::fs::write(postui_core::storage::request_path(app.proj().root(), &slug), "url = \"unclosed\n").unwrap();
+    feed(&mut app, ":w!<CR>");
+    assert!(app.modals.is_empty(), "no dialog");
+    assert!(!app.editor.is_dirty(), "written over");
+    assert!(postui_core::fixtures::load_request(app.proj().root(), &slug).is_ok(), "the app's content is on disk");
+}
+
+/// Plan M5b Deviation 18: on a clean request `:x!` quits without writing
+/// (a file changed outside stays as it is); a never-saved one asks for a
+/// name, as without `!`.
+#[test]
+fn bang_on_a_clean_or_never_saved_request() {
+    let mut app = vim(Fixture::SidebarThreeBetaOpen);
+    let slug = app.editor.slug.clone().expect("the fixture's request is saved");
+    let theirs = postui_core::model::HttpRequest::from_toml_str(r#"url = "https://x/outside""#).unwrap();
+    postui_core::fixtures::save_request(app.proj().root(), &slug, &theirs).unwrap();
+    feed(&mut app, ":x!<CR>");
+    assert!(app.should_quit, "a clean request quits at once");
+    assert_eq!(
+        postui_core::fixtures::load_request(app.proj().root(), &slug).unwrap().url,
+        "https://x/outside",
+        "nothing was written"
+    );
+    for q in [":wq!<CR>", ":w!<CR>"] {
+        let mut app = vim(Fixture::DirtyScratch);
+        feed(&mut app, q);
+        assert!(matches!(app.modals.top(), Some(Modal::Prompt { .. })), "{q}: Save as");
+        assert!(!app.should_quit, "{q}");
+    }
+}
+
 /// The final review's I-1: `:q` meets the dirty gate from every state the
 /// line opens from, a dialog under it included; ctrl+c keeps its modal
 /// exemption, and `:q!` is the line's way out.
@@ -172,6 +260,25 @@ fn the_add_verbs_open_in_insert_from_the_line_as_from_the_row() {
     }
 }
 
+/// Plan M5b Deviation 19: `:new` from an open cell opens the new row in
+/// Insert, as from the closed table (spec §5.9, M4b's final review).
+/// Before, the session carried the open cell's Normal to the new one.
+#[test]
+fn colon_new_from_an_open_cell_opens_in_insert() {
+    let mut app = vim(Fixture::TableThreeHeaders);
+    feed(&mut app, "i<Esc>");
+    assert!(app.field_caret().is_live());
+    assert_eq!(app.mode_indicator(), Some("NORMAL"), "the cell is open, in Normal");
+    feed(&mut app, ":new<CR>");
+    assert_eq!(app.editor.table.selected, Some(3), "the new row");
+    assert!(app.field_caret().is_live());
+    assert_eq!(app.mode_indicator(), Some("INSERT"));
+    let mut app = vim(Fixture::VarGrid);
+    feed(&mut app, "i<Esc>:new<CR>");
+    assert!(app.field_caret().is_live());
+    assert_eq!(app.mode_indicator(), Some("INSERT"), "the grid's new option too");
+}
+
 /// Review Focus 2.
 #[test]
 fn unsupported_queries_run_nothing_and_never_pin_a_verb() {
@@ -217,10 +324,10 @@ fn the_line_edits_and_closes() {
 fn noh_clears_the_body_highlight() {
     let mut app = vim(Fixture::Body);
     feed(&mut app, "/a<CR>");
-    assert!(app.glue.hlsearch());
+    assert!(app.search_memory.hlsearch());
     feed(&mut app, ":noh<CR>");
     assert!(app.modals.is_empty());
-    assert!(!app.glue.hlsearch());
+    assert!(!app.search_memory.hlsearch());
     assert!(app.field_caret().is_live(), "the body is not a field CloseField closes");
 }
 
@@ -356,4 +463,57 @@ fn the_commands_chip_opens_the_palette_it_spells() {
     let mut app = build(Fixture::SidebarThree);
     click_chip(&mut app, Action::OpenPalette);
     assert!(!palette(&app).is_ex());
+}
+
+/// Plan M5b Deviations 13 and 17 (probes H1, H6, H7): the line keeps what
+/// it closed with, Enter or Esc, an equal line moved to the newest place;
+/// ↑ recalls them; Backspace on an empty line keeps nothing.
+#[test]
+fn the_line_keeps_its_history() {
+    let mut app = vim(Fixture::SidebarThree);
+    feed(&mut app, ":abc<Esc>:noh<CR>:abc<Esc>");
+    assert_eq!(app.cmdline_history.lines(), ["noh", "abc"]);
+    feed(&mut app, ":<Up>");
+    assert_eq!(palette(&app).input(), "abc");
+    assert_eq!(app.mode_indicator(), Some("INSERT"), "still typing");
+    feed(&mut app, "<Up>");
+    assert_eq!(palette(&app).input(), "noh");
+    feed(&mut app, "<Esc>:<BS>");
+    assert_eq!(app.cmdline_history.lines(), ["abc", "noh"]);
+}
+
+/// The M5b code review's first finding: a click off the line abandons
+/// it as Esc does, so the line is kept too (probe H6).
+#[test]
+fn a_click_off_the_line_keeps_it() {
+    let mut app = vim(Fixture::SidebarThree);
+    feed(&mut app, ":send");
+    click(&mut app, crate::hit::Hit::ModalOutside);
+    assert!(app.modals.is_empty());
+    assert_eq!(app.cmdline_history.lines(), ["send"]);
+}
+
+/// Review Focus 3: a recalled line runs what it spells, as typed: a verb
+/// pins, and text no verb spells is Vim's E492, never a fuzzy row.
+#[test]
+fn a_recalled_line_runs_what_it_spells() {
+    let mut app = vim(Fixture::SidebarThree);
+    feed(&mut app, ":noh<CR>:<Up>");
+    assert_eq!(palette(&app).pinned().map(|r| r.name), Some("nohlsearch"));
+    feed(&mut app, "<Esc>:W<CR>:<Up><CR>");
+    assert!(app.modals.is_empty());
+    let e492 = toasts(&app).iter().filter(|t| t.as_str() == "Not a command: :W").count();
+    assert_eq!(e492, 2, "{:?}", toasts(&app));
+}
+
+/// Plan M5b Deviation 16: the history is written at quit, with the usage.
+#[test]
+fn quitting_writes_the_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = vim(Fixture::SidebarThree);
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+    feed(&mut app, ":noh<CR>:q<CR>");
+    assert!(app.should_quit);
+    let (_, loaded, _) = crate::config::Config::load_from(crate::config::Config::at(dir.path().to_path_buf()), false);
+    assert_eq!(loaded.cmdline.lines(), ["noh", "q"]);
 }

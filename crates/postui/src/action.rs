@@ -116,6 +116,12 @@ pub enum Action {
     /// request has unsaved edits. A never-saved request asks for a name;
     /// a refused or cancelled save does not quit.
     WriteQuit,
+    /// `:w!` (`quit` false), and `:wq!` and `:x!` (piece 4 spec §5.9; plan
+    /// M5b Deviation 18): `SaveRequest` and `WriteQuit`, but a file changed
+    /// outside the app is written over without the drift dialog, as Vim's
+    /// `!` writes. A never-saved request asks for a name; a write that
+    /// fails does not quit.
+    ForceWrite { quit: bool },
     Tick,
     Render,
     FocusNext,
@@ -727,6 +733,13 @@ pub enum Action {
     /// §5.7): `count` levels, as Vim's counted fold keys. Nothing on Raw or
     /// Headers.
     TreeFold { op: FoldOp, count: usize },
+    /// Vim's `zo` `zc` `za` `zR` `zM` on the sidebar's folders (key list §6
+    /// `L.fold`; plan M5b Deviation 9): `count` levels, as on the response.
+    SidebarFold { op: FoldOp, count: usize },
+    /// `.` (key list §6 `L.dot`, spec §5.12; plan M5b Deviations 2 and 5):
+    /// the last list change again, where it runs, with this count in place
+    /// of its own when one was typed.
+    RepeatChange { count: Option<usize> },
     /// A vim cursor or window key on the response (piece 4 spec §5.7; plan
     /// M5a Task 3).
     ResponseMove(ResponseMotion),
@@ -1166,6 +1179,37 @@ pub enum FoldOp {
     Toggle,
     OpenAll,
     CloseAll,
+}
+
+impl FoldOp {
+    /// Vim's pick for `zo` `zc` `za` with a count, one rule for the
+    /// response tree (`JsonTree::fold_at`, plan M5a Deviation 9) and the
+    /// sidebar (`Sidebar::fold_change`, plan M5b Deviation 9). `closed` is
+    /// the chain of folds holding the cursor's line, outermost first,
+    /// `true` where closed. `zo`: the `count` outermost closed folds open.
+    /// `zc`: the `count` innermost open folds outside the outermost closed
+    /// one close, so `zc` on a fold already closed closes the one around
+    /// it. `za`: on a closed fold as `zo`; on an open one as `zc` (Vim 9.1:
+    /// `2za` closes two levels). Whether the picked folds open, and their
+    /// indices in `closed`. `None` for `zR` and `zM`, which act on every
+    /// fold, not on a chain.
+    pub fn pick(self, closed: &[bool], count: usize) -> Option<(bool, Vec<usize>)> {
+        let closed_at = closed.iter().position(|&c| c);
+        let open = match self {
+            FoldOp::Open => true,
+            FoldOp::Close => false,
+            FoldOp::Toggle => closed_at.is_some(),
+            FoldOp::OpenAll | FoldOp::CloseAll => return None,
+        };
+        let n = count.max(1);
+        let pick = if open {
+            closed.iter().enumerate().filter(|&(_, &c)| c).map(|(i, _)| i).take(n).collect()
+        } else {
+            let k = closed_at.unwrap_or(closed.len());
+            (k.saturating_sub(n)..k).collect()
+        };
+        Some((open, pick))
+    }
 }
 
 /// Where `ctrl+w` moves the keyboard (piece 4 spec §5.8): `h` `j` `k` `l`

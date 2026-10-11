@@ -288,6 +288,44 @@ pub(crate) struct LastSearch {
     pub dir: Dir,
 }
 
+/// Vim's last search pattern (`spats[0]`) and its `'hlsearch'` state: one
+/// for the whole app (plan M5b Deviation 20). The app holds it, and the
+/// response and each engine have it lent for the call that needs it
+/// ([`Engine::swap_memory`]); an engine's own serves it when none is lent
+/// (its tests, the conformance suite).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SearchMemory {
+    last: Option<LastSearch>,
+    /// On after any search until `no_hlsearch`.
+    hl: bool,
+}
+
+impl SearchMemory {
+    /// The last pattern as stored, and whether it went backward.
+    pub fn pattern(&self) -> Option<(&str, bool)> {
+        self.last.as_ref().map(|s| (s.text.as_str(), s.dir == Dir::Backward))
+    }
+
+    /// A search outside the engine (the response's) makes `text` the last
+    /// pattern, and the highlight goes on, as any search turns Vim's
+    /// `hlsearch` back on.
+    pub fn set(&mut self, text: String, backward: bool) {
+        let dir = if backward { Dir::Backward } else { Dir::Forward };
+        self.last = Some(LastSearch { text, dir });
+        self.hl = true;
+    }
+
+    /// Whether the last pattern's matches are painted.
+    pub fn hlsearch(&self) -> bool {
+        self.hl && self.last.is_some()
+    }
+
+    /// `:noh`: the highlight goes until the next search.
+    pub fn no_hlsearch(&mut self) {
+        self.hl = false;
+    }
+}
+
 /// A pending Insert restart (Vim's `restart_edit`, `ins_at_eol`, `o_lnum`):
 /// `ctrl+o` left Insert for one Normal command.
 #[derive(Debug, Clone, Copy)]
@@ -352,10 +390,9 @@ pub struct Engine {
     /// A message the last command left; `handle` takes it (a note from a
     /// motion, a search).
     note: Option<Note>,
-    /// The last pattern and its direction, for `n` and `N`.
-    last_search: Option<LastSearch>,
-    /// Vim's `hlsearch` state: on after any search command until `no_hlsearch`.
-    hl: bool,
+    /// The last pattern and the highlight: the app's while it is lent for
+    /// a call ([`Engine::swap_memory`]), else the engine's own.
+    memory: SearchMemory,
     /// The `/` or `?` prompt while it is open; `mode` is the mode under it.
     search: Option<search::Prompt>,
     /// What the running search motion typed (an empty `text` for an empty
@@ -413,45 +450,13 @@ impl Engine {
 
     /// The last pattern as typed, or made by `*`/`#`.
     pub fn last_search(&self) -> Option<&str> {
-        self.last_search.as_ref().map(|s| s.text.as_str())
+        self.memory.last.as_ref().map(|s| s.text.as_str())
     }
 
-    /// The last pattern and whether it went backward, for the response to
-    /// share: Vim has one last pattern for every window.
-    pub fn last_pattern(&self) -> Option<(&str, bool)> {
-        self.last_search.as_ref().map(|s| (s.text.as_str(), s.dir == Dir::Backward))
-    }
-
-    /// A search made outside the engine (the response's) becomes the last
-    /// pattern, and the highlight goes on, as any search turns Vim's
-    /// `hlsearch` back on.
-    pub fn set_last_pattern(&mut self, text: String, backward: bool) {
-        let dir = if backward { Dir::Backward } else { Dir::Forward };
-        self.last_search = Some(LastSearch { text, dir });
-        self.hl = true;
-    }
-
-    /// Takes `other`'s last pattern, as the engine that gets the keyboard
-    /// (a dialog's, or the screen's back from one): one pattern for both. A
-    /// pattern other than this one's own was searched for there, which
-    /// turns the highlight on, as that search would have here. It is a
-    /// copy, not a trade as the registers are (`registers_mut`): the body
-    /// under a dialog goes on painting its pattern.
-    pub fn adopt_last_pattern(&mut self, other: &Engine) {
-        if other.last_search.is_some() && other.last_search != self.last_search {
-            self.last_search = other.last_search.clone();
-            self.hl = true;
-        }
-    }
-
-    /// Whether the body should paint the last pattern's matches.
-    pub fn hlsearch(&self) -> bool {
-        self.hl && self.last_search.is_some()
-    }
-
-    /// `:noh` (piece 4): the highlight goes until the next search.
-    pub fn no_hlsearch(&mut self) {
-        self.hl = false;
+    /// Trades the engine's memory for `other` (plan M5b Deviation 20): the
+    /// glue lends the app's for a call and takes it back after.
+    pub fn swap_memory(&mut self, other: &mut SearchMemory) {
+        std::mem::swap(&mut self.memory, other);
     }
 
     /// One key while the prompt is open (Deviation 16).
@@ -530,11 +535,11 @@ impl Engine {
     /// Either way it is remembered for the `.` record (`Dot::search`).
     fn type_search(&mut self, typed: LastSearch) {
         if typed.text.is_empty() {
-            if let Some(last) = &mut self.last_search {
+            if let Some(last) = &mut self.memory.last {
                 last.dir = typed.dir;
             }
         } else {
-            self.last_search = Some(typed.clone());
+            self.memory.last = Some(typed.clone());
         }
         self.typed_search = Some(typed);
     }
@@ -551,10 +556,10 @@ impl Engine {
             let (pat, _) = p.split();
             return (!pat.is_empty()).then(|| search::as_stored(&pat, p.dir));
         }
-        if !self.hl {
+        if !self.memory.hl {
             return None;
         }
-        self.last_search.as_ref().map(|l| l.text.clone())
+        self.memory.last.as_ref().map(|l| l.text.clone())
     }
 
     /// Every match of the live pattern on `rows`, `(start, end)` exclusive,
