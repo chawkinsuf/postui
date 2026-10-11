@@ -686,6 +686,10 @@ impl Sidebar {
             let at = RowKey::Folder(path);
             self.select_key(&at);
             self.fold_row = Some((real, at));
+        } else {
+            // Neither shown nor under a closed folder (deleted from outside):
+            // nothing to remember.
+            self.fold_row = None;
         }
     }
 
@@ -2784,6 +2788,19 @@ mod tests {
             }
         }
         false
+    }
+
+    /// Task 3 review: a request neither shown nor under a closed folder (it
+    /// was deleted from outside) is no longer remembered as the hidden row.
+    #[test]
+    fn a_hidden_request_that_vanished_is_forgotten() {
+        let (mut s, mut open) = probe_tree(&["api", "api/auth", "zeta"], &RowKey::Request("main/api/pong".into()));
+        press(&mut s, &mut open, FoldKey::Z(crate::action::FoldOp::Close, 1));
+        let folder = RowKey::Folder("main/api".into());
+        assert_eq!(s.selected_key(), Some(folder.clone()));
+        assert_eq!(s.fold_cursor(), Some(RowKey::Request("main/api/pong".into())), "remembered while it exists");
+        s.show_fold_cursor(RowKey::Request("main/zeta/gone".into()));
+        assert_eq!(s.fold_cursor(), Some(folder), "the vanished row is not remembered");
     }
 
     /// One fold probe: the folders open before, the cursor, the keys, the

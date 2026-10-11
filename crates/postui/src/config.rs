@@ -675,7 +675,8 @@ impl Config {
             Ok(None) => (crate::usage::UsageStore::default(), crate::cmdline::CmdlineHistory::default()),
             Err(e) => {
                 warnings.push(e);
-                (crate::usage::UsageStore::default(), crate::cmdline::CmdlineHistory::default())
+                // The file may be fine on disk; a quit save must not replace it.
+                (crate::usage::UsageStore::default(), crate::cmdline::CmdlineHistory::unreadable())
             }
         };
 
@@ -1145,6 +1146,18 @@ mod tests {
         std::fs::write(dir.path().join("ui.toml"), "not = [toml").unwrap();
         let (_, _, warnings) = Config::load_from(disk(), false);
         assert!(warnings.iter().any(|w| w.contains("command-line history")), "{warnings:?}");
+    }
+
+    /// A `ui.toml` that cannot be read at startup (here: a directory in its
+    /// place) leaves the history unwritable, so a quit save cannot replace
+    /// history the app never read.
+    #[test]
+    fn a_ui_toml_that_cannot_be_read_leaves_the_history_unwritable() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("ui.toml")).unwrap();
+        let (_, loaded, warnings) = Config::load_from(Config::at(dir.path().to_path_buf()), false);
+        assert!(warnings.iter().any(|w| w.contains("ui.toml")), "{warnings:?}");
+        assert!(!loaded.cmdline.writable());
     }
 
     #[test]

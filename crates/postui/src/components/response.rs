@@ -3584,7 +3584,7 @@ impl Response {
         had
     }
 
-    /// Ready-state key handling. Split out so [`Component::handle_key`] stays
+    /// Ready-state key handling. Split out so [`Response::handle_key`] stays
     /// a readable state dispatch.
     fn ready_key(&mut self, ev: KeyEvent, memory: &mut SearchMemory) -> Option<Action> {
         // The jq bar swallows everything while focused: chars and editing
@@ -3912,6 +3912,15 @@ impl Response {
 }
 
 impl Component for Response {
+    /// Keys need the app's [`SearchMemory`], which this signature has no room
+    /// for; the real handler is the inherent [`Response::handle_key`]. The
+    /// trait's default would drop every key silently, so a generic call
+    /// trips here in debug builds instead.
+    fn handle_key(&mut self, _key: KeyEvent) -> Option<Action> {
+        debug_assert!(false, "call Response::handle_key(ev, memory), not Component::handle_key");
+        None
+    }
+
     fn handle_scroll(&mut self, delta: i16) {
         let Some(view) = self.view.as_mut() else {
             return;

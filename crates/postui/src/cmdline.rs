@@ -24,6 +24,13 @@ impl Default for CmdlineHistory {
 }
 
 impl CmdlineHistory {
+    /// An empty history that is never written: `ui.toml` could not be read
+    /// at all, so what is on disk is unknown and a quit save must not
+    /// replace it.
+    pub fn unreadable() -> Self {
+        Self { lines: Vec::new(), writable: false }
+    }
+
     /// The history in `ui.toml`'s text: `[history]`'s `cmdline`, a list of
     /// strings, oldest first. No table or no key is no history. A table or
     /// key that does not read gives an empty history that is never written,
