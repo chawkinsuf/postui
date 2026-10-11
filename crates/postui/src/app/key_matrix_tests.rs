@@ -251,6 +251,13 @@ const CASES: &[Case] = &[
     vim("L.fold", SidebarFolder, "zojzc", &[Requests(&["main/alpha", "main/beta", "main/gamma"]), SidebarFolderSel("main/f")]),
     vim("L.fold", SidebarFolder, "zojzczo", &[SidebarSel("main/f/inner")]),
     vim("L.fold", SidebarFolder, "zojzckzo", &[SidebarSel("main/gamma"), Toast("No fold found")]),
+    // Sweep backlog item 3: `l` opens the folder hiding the cursor's row and
+    // lands on it; `h` keeps it, as Vim's cursor at column 0 does.
+    vim("L.fold", SidebarFolder, "zojzcl", &[Requests(&["main/alpha", "main/beta", "main/gamma", "main/f/inner"]), SidebarSel("main/f/inner")]),
+    vim("L.fold", SidebarFolder, "zojzc3l", &[SidebarSel("main/f/inner")]),
+    vim("L.fold", SidebarFolder, "zojzch", &[Requests(&["main/alpha", "main/beta", "main/gamma"]), SidebarFolderSel("main/f")]),
+    vim("L.fold", SidebarFolder, "zojzchzo", &[SidebarSel("main/f/inner")]),
+    vim("L.fold", SidebarFolder, "l", &[Requests(&["main/alpha", "main/beta", "main/gamma", "main/f/inner"]), SidebarFolderSel("main/f")]),
     vim("L.fold", SidebarFolder, "za", &[Requests(&["main/alpha", "main/beta", "main/gamma", "main/f/inner"])]),
     vim("L.fold", SidebarFolder, "zaza", &[Requests(&["main/alpha", "main/beta", "main/gamma"]), SidebarFolderSel("main/f")]),
     vim("L.fold", SidebarFolder, "zR", &[Requests(&["main/alpha", "main/beta", "main/gamma", "main/f/inner"])]),

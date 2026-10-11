@@ -638,6 +638,12 @@ impl Sidebar {
         }
     }
 
+    /// Whether the selected folder row is showing a row it hides
+    /// (`fold_cursor` is not the selected row).
+    fn hides_cursor_row(&self) -> bool {
+        self.fold_cursor() != self.selected_key()
+    }
+
     /// Vim's `zo` `zc` `za` with a count, and `zR` `zM`, on the folders of
     /// `space` (plan M5b Deviations 9 and 11; probes F1–F38), from the open
     /// set `expanded`. `zo` `zc` `za` pick by `FoldOp::pick`, the rule
@@ -988,6 +994,14 @@ impl Component for Sidebar {
                 self.move_selection(-self.page());
                 Some(Action::Render)
             }
+            // The folder row shows a row it hides (a vim `zc`): the cursor is
+            // really there, at column 0. Vim's `l` moves, and `'foldopen'`
+            // opens every fold around it; its `h` cannot move, so nothing
+            // opens and the cursor keeps its line (sweep backlog item 3).
+            KeyCode::Right if plain && self.hides_cursor_row() => {
+                Some(Action::SidebarFold { op: crate::action::FoldOp::Open, count: usize::MAX })
+            }
+            KeyCode::Left if plain && self.hides_cursor_row() => Some(Action::Render),
             KeyCode::Right if plain => matches!(
                 self.selected_row()?,
                 Row::Folder {
@@ -2922,10 +2936,38 @@ mod tests {
         let at = s.selected.expect("on the folder");
         s.select_row(at);
         assert_eq!(s.fold_cursor(), Some(auth.clone()), "a click forgets it");
-        // So is `l` or `h`'s fold toggle.
+        // So is a folder toggle (Enter, a click on its arrow).
         let (mut s, mut open) = probe_tree(&all, &login);
         press(&mut s, &mut open, zc);
         assert!(s.toggle_selected_folder().is_some());
         assert_eq!(s.fold_cursor(), Some(auth), "a toggle forgets it");
+    }
+
+    /// Sweep backlog item 3, against Vim 9.1 (the cursor at column 0 of a
+    /// line inside a closed fold): `h` does not move, so nothing opens and
+    /// the cursor keeps its line; `l` moves, and `'foldopen'`'s `hor` opens
+    /// every fold around the cursor (probes P1–P7). The folder row showing
+    /// the hidden row does the same.
+    #[test]
+    fn h_and_l_keep_the_hidden_row_as_vims_cursor_does() {
+        use crate::action::FoldOp::{Close, Open};
+        let login = RowKey::Request("main/api/auth/login".into());
+        let api = RowKey::Folder("main/api".into());
+        let zc = FoldKey::Z(Close, 1);
+        let key = |c| KeyEvent::new(c, KeyModifiers::NONE);
+        let (mut s, mut open) = probe_tree(&["api", "api/auth", "zeta"], &login);
+        press(&mut s, &mut open, zc);
+        press(&mut s, &mut open, zc);
+        assert_eq!(s.selected_key(), Some(api.clone()));
+        // P5: `h` changes nothing.
+        assert_eq!(s.handle_key(key(KeyCode::Left)), Some(Action::Render));
+        assert_eq!(s.selected_key(), Some(api), "h does not leave the folder row");
+        assert_eq!(s.fold_cursor(), Some(login.clone()), "h keeps the hidden row");
+        // P4: `l` opens both folders around it and lands on it.
+        let l = s.handle_key(key(KeyCode::Right));
+        assert_eq!(l, Some(Action::SidebarFold { op: Open, count: usize::MAX }));
+        press(&mut s, &mut open, FoldKey::Z(Open, usize::MAX));
+        assert!(open.contains("main/api") && open.contains("main/api/auth"), "{open:?}");
+        assert_eq!(s.selected_key(), Some(login));
     }
 }
