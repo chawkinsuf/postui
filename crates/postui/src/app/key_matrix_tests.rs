@@ -1072,11 +1072,22 @@ fn the_yanked_request_follows_its_slug() {
     assert_eq!(app.yank, reg("auth/bravo"), "a move to another space");
     app.update(Action::Undo);
     assert_eq!(app.yank, reg("main/bravo"), "the move's undo");
+    app.update(Action::Redo);
+    assert_eq!(app.yank, reg("auth/bravo"), "the move's redo");
+    app.update(Action::Undo);
+
+    app.update(Action::ForceMoveAllRequests { from: "main".into(), to: "auth".into() });
+    assert_eq!(app.yank, reg("auth/bravo"), "a move of every request in its space");
+    app.update(Action::Undo);
+    assert_eq!(app.yank, reg("main/bravo"), "the move-all's undo");
 
     app.update(Action::RenameSpace { from: "main".into(), to: "home".into() });
     assert_eq!(app.yank, reg("home/bravo"), "a rename of its space");
     app.update(Action::Undo);
     assert_eq!(app.yank, reg("main/bravo"), "the space rename's undo");
+    app.update(Action::Redo);
+    assert_eq!(app.yank, reg("home/bravo"), "the space rename's redo");
+    app.update(Action::Undo);
 
     // A register naming another request is left alone.
     app.update(Action::RenameRequest { from: "main/alpha".into(), to: "ant".into() });

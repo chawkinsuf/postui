@@ -153,8 +153,7 @@ impl App {
         // op, and so does the register.
         for (old, new) in &u.meta.moves {
             let (from, to) = if u.redo { (old, new) } else { (new, old) };
-            self.session.rename(from, to);
-            self.yank.follow(from, to);
+            self.follow_slug(from, to);
         }
         // The Variable Manager's grid/form cache the declarations and
         // won't otherwise notice a file the replay rewrote under them.
