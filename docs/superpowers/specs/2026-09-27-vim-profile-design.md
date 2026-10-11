@@ -649,6 +649,8 @@ A list's keys act only on the chord they name (plan 2026-10-05-vim-profile-m4a-c
 
 Amended by plan M5b (2026-10-10). The fold keys follow Vim 9.1, probed on a buffer that mirrors a sidebar (probes F1–F38): a folder is a fold whose first line is its own row; `zc` on a shut folder shuts the one around it; the cursor keeps the row a shut folder hides and comes back to it on `zo`, and any probed move forgets it (`Vim`; the mechanism `mine`). `h` and `l` forgetting it too is `mine`, not `Vim`: it was never probed, and Vim's `h`/`l` on a closed fold would open it (default `'foldopen'` has `hor`) and show the real line. The sidebar's `h`/`l` are main's ←/→ tree rows (the controller's ruling). Backlog for the §8.4 acceptance sweep: compare sidebar `h`/`l` on a closed folder with Vim's `'foldopen'` behaviour (compared 2026-10-10: the folder row matches; the hidden row does not, see the sweep's backlog item 3). `zo` `zc` `za` with no folder at the cursor say "No fold found", Vim's E490, and so do they on every other list and table, so `za` never adds a row there (`Vim`). Folds persist as `h` and `l` do and are never undo steps (`mine`). Not done: Vim's whole-fold `dd` and `yy` on a shut folder; list verbs on a closed folder act on the folder row, as on main (`mine`).
 
+Amended after the sweep (2026-10-11; backlog item 3). On the folder row that shows a row a shut folder hides, `l` opens every folder around that row and lands on it, and `h` does nothing and keeps it for a later `zo` (`Vim`, probes P1–P11: the cursor sits at column 0 of the hidden line, `l` moves and `'foldopen'`'s `hor` opens every fold around the cursor, leaving other folds shut; `h` cannot move, so nothing opens). Elsewhere `h` and `l` are main's tree rows as before, and a folder toggle (Enter, a click) still forgets the hidden row (`mine`).
+
 ### 5.3 Tables (Params, Headers, Vars)
 
 | Keys (vim) | Arrows | Behaviour | Who |
@@ -660,6 +662,8 @@ Amended by plan M5b (2026-10-10). The fold keys follow Vim 9.1, probed on a buff
 | `Space` | Space | toggle the row's enabled flag (the surface owns Space) | earlier |
 | `dd`, `{N}dd` | `d`, Delete | delete the row, or N rows as one editor undo step (new `Editor::delete_rows(start, n)`). Undo reselects the first restored row and never lands on the ghost row (piece 2) | you; count earlier |
 | `yy` `p` `P` | `y` `p` `P` | copy a row below or above it. The copy keeps its key when the table has no row by it (vim's `p` puts what was yanked, so a header put into another request goes out under its own name), and takes `DuplicateTableRow`'s `-copy` naming on a clash. A row yanked on another tab is refused with a toast (684893c, ac03b90) | earlier; key kept you (code review, 2026-10-03) |
+
+Amended after the sweep (2026-10-11; backlog item 2). A delete that reaches the end of the table lands on the new last row, as Vim's `dd` on the last line does, not on the "+ Add" row (`Vim`); arrows the same (`you`, 2026-10-11, accepting my recommendation). Only an emptied table lands on the add row.
 
 ### 5.4 Manage lists and the Variable Manager
 
@@ -676,6 +680,8 @@ expects (`earlier`, 2026-09-18 spec "Vim mode on navigation surfaces").
 | Options grid | `yy` / `p` copy / paste an option through the grid's own stash, which is scoped to its selector (`earlier`); `dd` delete; `a` new option; `:rename`, `:value` | `c` `v` `d`, `o` new option and `a` new option, `r`, `e` | earlier; `a` = new option mine, accepted 2026-09-27 (not new variable as in vim-mode: a row here is an option) |
 | Variable form | fields only: `j` `k` between fields, Enter/`i` open; `:promote` `:reveal` `:secret` `:clear` `:delete` | `p` `r` `s` `x` | earlier |
 | Manage detail panes | fields and buttons: `j` `k`, Enter/`i`; `:delete` `:rename` reach the row | as today | earlier |
+
+Amended after the sweep (2026-10-11; backlog item 4). Where `Esc` leaves the screen (the Variables, Environments and Spaces lists, and Settings with no field open), the footer ends with an `esc back` chip that runs `CloseScreen`, in both profiles; before, only the header's Manage chip showed a way back (`mine`, under the footer-advertises-its-keys rule). In vim the window verbs close the screen: see §5.11.
 
 ### 5.5 Settings tab
 
@@ -877,8 +883,8 @@ modal field in either profile until M3.
 
 | Keys (vim) | Behaviour | Who |
 |---|---|---|
-| `ZZ` | `:x`, i.e. `WriteQuit` | you |
-| `ZQ` | `:q!`, i.e. `ForceQuit` | you |
+| `ZZ` | `:x`, i.e. `WriteQuit` (on Manage, closes it: amended below) | you |
+| `ZQ` | `:q!`, i.e. `ForceQuit` (likewise) | you |
 | `Z` + any other key | swallowed | earlier |
 | `q{reg}` | a muted note "Macros are not supported". It arms the recording flag, and the echo shows `recording @{reg} — not supported` until the next bare `q` in Normal, which is swallowed silently and clears it. `qa x q @a` then runs `x` once, drops the `q`, and notes `@a`. Nothing types into a field and nothing opens | note earlier; closing `q` mine, accepted 2026-09-27 |
 | `@{reg}` | the same note, with the register key consumed | earlier |
@@ -889,6 +895,8 @@ modal field in either profile until M3.
 | `u` `ctrl+r` `:` | table rows on every surface except Cmdlines, pickers and dialogs (amended by plan M1, Deviation 26) | earlier; dialogs you |
 
 Amended by plan M4b (`mine`): `ZZ`/`ZQ` and the note rows apply on the navigation surfaces and in a screen field's idle Normal, never on a dialog, a prompt, a picker or a dialog's field. They bind on `Surfaces::NAV` and the screen-field classes; the body pane is reached through its field class (it is always a live field when focused), not through a `Surface::Body` row. `q` followed by a register char (`a`–`z`, `A`–`Z`, `0`–`9`, `"`) arms the recording flag; `q` followed by anything else shows the note only. A mouse press or a profile switch clears the flag along with the pending keys; a field close drops the pending keys but keeps the flag (`mine`; it overrides plan M4b Deviation 5). `"x` on a list consumes only the register key, so a following `p` puts the row register (flagged for review). The quit chip reads `:q` where the line opens and `^C` elsewhere.
+
+Amended after the sweep (2026-10-11; backlog item 4). Manage is drawn over the main screen as Vim's second tab page is over its first. Vim 9.1 closes a tab page that is not the last on `:q`, `:q!`, `:wq`, `:x`, `:close`, `ZZ` and `ZQ`, and writes and discards nothing in the other tab's buffer (probes Q1–Q6). So those verbs (with `:wq!`, `:x!`, `:xit`, `:exit`) are `Action::CloseWindow`: on the main screen and the testbed they quit as before (`GatedQuit`, `ForceQuit`, `WriteQuit`, `ForceWrite { quit: true }`), and on Manage they close an open field, then the screen, and leave the request as it was, saved or not (`Vim`; the tab-page mapping `mine`). The `a` forms (`:qa`, `:qa!`, `:wqa`, `:xa` and their bangs) quit everywhere (`Vim`). On Manage the pinned row reads "Close Manage" and the quit chip is `:qa` (`mine`). `:w` on Manage still saves the request, as before (`mine`; in Vim it would write Manage's own buffer). A `ZQ` typed in an open Manage field commits the field before closing, where Vim's `:q!` would drop it (`mine`: Manage writes through, and dropping typed text silently is worse).
 
 ### 5.12 `.` repeats a list change (tier 2)
 

@@ -138,7 +138,8 @@ Items 5–8 are resolved; see "Round 8 resolved" below.
 
 ### Round 8 resolved (2026-10-11)
 
-Items 1–4 stay open. The spec's §5.6 amendment records the rulings.
+Items 1–4 stayed open until the next section. The spec's §5.6 amendment
+records the rulings.
 
 - **5, fixed.** The glue's `leave` stepped a query box's caret back one,
   as leaving Insert does, and the reopened bar kept it there. A query box
@@ -162,3 +163,25 @@ Items 1–4 stay open. The spec's §5.6 amendment records the rulings.
   with the field still open (test kept). `i` on a closed cell does seat
   the caret after the last character: the cell's caret starts at the
   end, and `Enter` then `i` inserts before it. Left as it is (§5.6).
+
+### Backlog items 1–4 resolved (2026-10-11)
+
+Branch `vim-backlog`. The spec's §5.2, §5.3, §5.4 and §5.11 amendments
+record the rulings. Checked in tmux on the branch's build after the tests.
+
+- **1, fixed.** `App::undo_hint` spells the undo key through
+  `keyroute::spell`, as the footer does: `u` in vim, `^Z` in arrows and
+  while a field is typing. `u` does undo where the hint says so (the
+  body's idle Normal hands it on, so `:e!`'s "Changes discarded — u
+  undoes" is true).
+- **2, fixed.** A table delete that reaches the end lands on the new last
+  row in both profiles (arrows: the user, 2026-10-11). Only an emptied
+  table lands on the add row.
+- **3, fixed.** On the folder row showing a hidden row, `l` opens every
+  folder around it and lands on it; `h` does nothing and keeps it (Vim 9.1,
+  probes P1–P11, nested folders included).
+- **4, fixed.** Every Manage list, and Settings with no field open, ends
+  its footer with `esc back` (both profiles). In vim, `:q`, `:q!`, `:wq`,
+  `:x`, `ZZ` and `ZQ` close Manage and leave the request as it was, as Vim
+  closes a tab page that is not the last (probes Q1–Q6); `:qa` and the
+  other `a` forms quit, and Manage's quit chip reads `:qa`.
