@@ -187,7 +187,7 @@ impl App {
             if let Some(new_slug) = moved_to {
                 self.editor.slug = Some(new_slug.clone());
                 // The body's engine state follows too (amendment C2).
-                self.glue.follow_body(Some(&open), Some(&new_slug));
+                self.vim_body_moved(Some(&open));
                 // Assigned even when the file has no `name` (a legacy
                 // file): the name the op wrote must not outlive its undo,
                 // or a later save would write it back.
@@ -277,7 +277,7 @@ impl App {
     fn fresh_scratch(&mut self) {
         self.editor = Editor::default();
         self.shadow = None;
-        self.glue.drop_body(&mut self.search_memory);
+        self.vim_drop_body();
     }
 
     /// The view an undo step records (§4.1).

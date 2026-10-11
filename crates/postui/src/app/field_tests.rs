@@ -36,7 +36,7 @@ fn header(app: &App, key: &str) -> Option<String> {
 fn enter_opens_the_url_in_normal_and_x_deletes_under_the_caret() {
     let mut app = url_line("https://x.test/ab");
     feed(&mut app, "<CR>");
-    assert_eq!(app.glue.session(), FieldSession::Live(FieldId::Url));
+    assert_eq!(app.vim.glue.session(), FieldSession::Live(FieldId::Url));
     assert_eq!(app.mode_indicator(), Some("NORMAL"));
     assert_eq!(url(&app), ("https://x.test/ab", 16), "a Normal caret rests on the last char");
     feed(&mut app, "x");
@@ -45,7 +45,7 @@ fn enter_opens_the_url_in_normal_and_x_deletes_under_the_caret() {
     assert!(!app.field_caret().is_live(), "Esc in idle Normal closes the field");
     assert_eq!(app.editor.sub_focus, SubFocus::Url, "the line stays selected");
     assert_eq!(url(&app).0, "https://x.test/a", "the text is kept");
-    assert_eq!(app.glue.session(), FieldSession::None);
+    assert_eq!(app.vim.glue.session(), FieldSession::None);
 }
 
 /// Spec §5.6 and plan M3a Deviation 12.
@@ -135,7 +135,7 @@ fn tab_carries_insert_to_the_next_cell() {
     assert_eq!(app.mode_indicator(), Some("INSERT"), "an add verb opens in Insert");
     feed(&mut app, "X-A<Tab>");
     assert_eq!(app.mode_indicator(), Some("INSERT"), "the mode carries");
-    assert!(matches!(app.glue.session(), FieldSession::Live(FieldId::TableCell { col: 1, .. })));
+    assert!(matches!(app.vim.glue.session(), FieldSession::Live(FieldId::TableCell { col: 1, .. })));
     feed(&mut app, "1<Esc><Esc>");
     assert_eq!(header(&app, "X-A").as_deref(), Some("1"));
 }
@@ -148,7 +148,7 @@ fn the_arrows_profile_still_types_modelessly() {
     draw(&mut app);
     feed(&mut app, "<CR>xq");
     assert_eq!(url(&app).0, "abxq", "letters type");
-    assert_eq!(app.glue.session(), FieldSession::None);
+    assert_eq!(app.vim.glue.session(), FieldSession::None);
     assert_eq!(app.mode_indicator(), None);
     feed(&mut app, "<C-z>");
     assert_eq!(url(&app).0, "ab", "the field's own undo");
@@ -160,9 +160,9 @@ fn a_palette_over_an_open_field_parks_it() {
     let mut app = url_line("ab");
     feed(&mut app, "<CR>:");
     assert!(matches!(app.modals.top(), Some(Modal::Palette(_))));
-    assert_eq!(app.glue.session(), FieldSession::Parked(FieldId::Url));
+    assert_eq!(app.vim.glue.session(), FieldSession::Parked(FieldId::Url));
     feed(&mut app, "<Esc>");
-    assert_eq!(app.glue.session(), FieldSession::Live(FieldId::Url));
+    assert_eq!(app.vim.glue.session(), FieldSession::Live(FieldId::Url));
     assert_eq!(app.mode_indicator(), Some("NORMAL"));
 }
 
@@ -174,7 +174,7 @@ fn a_settings_field_opens_in_insert_with_i() {
     let row = SettingsTab::rows().iter().position(|r| *r == SettingsRow::Setting(SettingsField::AiCmd)).unwrap();
     app.settings.set_cursor(row);
     feed(&mut app, "i");
-    assert!(matches!(app.glue.session(), FieldSession::Live(FieldId::Settings(_))));
+    assert!(matches!(app.vim.glue.session(), FieldSession::Live(FieldId::Settings(_))));
     assert_eq!(app.mode_indicator(), Some("INSERT"));
     let seed = app.settings.field_text().to_string();
     feed(&mut app, "zz");
@@ -208,7 +208,7 @@ fn a_click_opens_the_url_in_normal_where_clicked() {
     let at = |kind| MouseEvent { kind, column: area.x + 3, row: area.y, modifiers: KeyModifiers::NONE };
     app.handle_mouse(at(MouseEventKind::Down(MouseButton::Left)));
     app.handle_mouse(at(MouseEventKind::Up(MouseButton::Left)));
-    assert_eq!(app.glue.session(), FieldSession::Live(FieldId::Url));
+    assert_eq!(app.vim.glue.session(), FieldSession::Live(FieldId::Url));
     assert_eq!(app.mode_indicator(), Some("NORMAL"));
     assert_eq!(url(&app).1, 3);
 }
@@ -216,17 +216,17 @@ fn a_click_opens_the_url_in_normal_where_clicked() {
 /// Review Focus 5 and spec §4.3.
 #[test]
 fn switching_profiles_with_a_field_open_keeps_its_text() {
-    use super::fields::Cause;
+    use super::vim_seam::Cause;
     let mut app = url_line("abc");
     feed(&mut app, "<CR>");
     app.use_profile(KeyProfile::Arrows);
     app.sync_session(None, Cause::Before);
-    assert_eq!(app.glue.session(), FieldSession::None);
+    assert_eq!(app.vim.glue.session(), FieldSession::None);
     assert!(app.field_caret().is_live(), "the field stays open");
     assert_eq!(url(&app), ("abc", 2), "the text and caret stay");
     app.use_profile(KeyProfile::Vim);
     app.sync_session(None, Cause::Before);
-    assert_eq!(app.glue.session(), FieldSession::Live(FieldId::Url));
+    assert_eq!(app.vim.glue.session(), FieldSession::Live(FieldId::Url));
     assert_eq!(app.mode_indicator(), Some("INSERT"), "arrows to vim enters Insert");
     assert_eq!(url(&app), ("abc", 2));
 }
@@ -235,7 +235,7 @@ fn switching_profiles_with_a_field_open_keeps_its_text() {
 /// not step the caret back off the end of the line.
 #[test]
 fn switching_to_arrows_in_insert_keeps_the_caret_at_the_end() {
-    use super::fields::Cause;
+    use super::vim_seam::Cause;
     let mut app = url_line("abc");
     feed(&mut app, "<CR>A");
     assert_eq!((app.mode_indicator(), url(&app)), (Some("INSERT"), ("abc", 3)));
@@ -256,10 +256,10 @@ fn the_body_types_in_arrows_after_a_vim_session_closed() {
     app.editor.preferred_tab = EditorTab::Body;
     draw(&mut app);
     feed(&mut app, "l");
-    assert_eq!(app.glue.session(), FieldSession::Live(FieldId::Body));
+    assert_eq!(app.vim.glue.session(), FieldSession::Live(FieldId::Body));
     app.focus = PaneId::Sidebar;
     feed(&mut app, "j");
-    assert_eq!(app.glue.session(), FieldSession::None, "the body's session closed");
+    assert_eq!(app.vim.glue.session(), FieldSession::None, "the body's session closed");
     assert_eq!(app.editor.body.mode, edtui::EditorMode::Normal, "vim left edtui in Normal");
     app.use_profile(KeyProfile::Arrows);
     feed(&mut app, "<Tab>");
@@ -275,10 +275,10 @@ fn the_body_types_in_arrows_after_a_vim_session_closed() {
 fn text_replaced_under_a_session_rebases_it() {
     let mut app = url_line("abc");
     feed(&mut app, "<CR>x");
-    assert!(app.glue.can_undo(EngineKind::Line));
+    assert!(app.vim.glue.can_undo(EngineKind::Line));
     app.editor.url = LineInput::new("wxyz");
     feed(&mut app, "0");
-    assert!(!app.glue.can_undo(EngineKind::Line), "the old history is gone");
+    assert!(!app.vim.glue.can_undo(EngineKind::Line), "the old history is gone");
     feed(&mut app, "x");
     assert_eq!(url(&app).0, "xyz", "the next key edits the new text");
 }
@@ -287,13 +287,13 @@ fn text_replaced_under_a_session_rebases_it() {
 /// under Insert ctrl+o re-enters as Insert, as Insert itself does.
 #[test]
 fn a_rebase_under_insert_ctrl_o_resumes_insert() {
-    use super::fields::Cause;
+    use super::vim_seam::Cause;
     let mut app = url_line("abc");
     feed(&mut app, "<CR>A<C-o>");
     assert_eq!(app.mode_indicator(), Some("(insert)"));
     app.editor.url = LineInput::new("wxyz");
     app.sync_session(None, Cause::Before);
-    assert!(!app.glue.can_undo(EngineKind::Line), "the session started over");
+    assert!(!app.vim.glue.can_undo(EngineKind::Line), "the session started over");
     assert_eq!(app.mode_indicator(), Some("INSERT"));
 }
 
@@ -304,13 +304,13 @@ fn a_right_button_drag_does_not_sync_the_session() {
     use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
     let mut app = url_line("abc");
     feed(&mut app, "<CR>x");
-    assert!(app.glue.can_undo(EngineKind::Line));
+    assert!(app.vim.glue.can_undo(EngineKind::Line));
     app.editor.url = LineInput::new("wxyz");
     let hover = MouseEvent { kind: MouseEventKind::Drag(MouseButton::Right), column: 0, row: 0, modifiers: KeyModifiers::NONE };
     app.handle_mouse(hover);
-    assert!(app.glue.can_undo(EngineKind::Line), "no sync ran, so no rebase");
+    assert!(app.vim.glue.can_undo(EngineKind::Line), "no sync ran, so no rebase");
     feed(&mut app, "0");
-    assert!(!app.glue.can_undo(EngineKind::Line), "a key's sync still rebases");
+    assert!(!app.vim.glue.can_undo(EngineKind::Line), "a key's sync still rebases");
 }
 
 /// Final review I-3: a press-drag that opens a closed field selects, as it
@@ -336,13 +336,13 @@ fn a_press_drag_into_the_body_from_another_pane_selects() {
     let mut app = vim(Fixture::Body);
     app.focus = PaneId::Sidebar;
     let buf = draw_buffer(&mut app);
-    assert_eq!(app.glue.session(), FieldSession::None);
+    assert_eq!(app.vim.glue.session(), FieldSession::None);
     let area = app.editor.last_body_area.expect("the body is drawn");
     let y = area.y + 1;
     let x = (area.x..area.right()).find(|&x| buf[(x, y)].symbol() == "\"").expect("row 1 shows `\"a\"`");
     let at = |kind, x| MouseEvent { kind, column: x, row: y, modifiers: KeyModifiers::NONE };
     app.handle_mouse(at(MouseEventKind::Down(MouseButton::Left), x));
-    assert_eq!(app.glue.session(), FieldSession::Live(FieldId::Body));
+    assert_eq!(app.vim.glue.session(), FieldSession::Live(FieldId::Body));
     draw(&mut app);
     app.handle_mouse(at(MouseEventKind::Drag(MouseButton::Left), x + 2));
     app.handle_mouse(at(MouseEventKind::Up(MouseButton::Left), x + 2));
@@ -464,7 +464,7 @@ fn an_app_undo_under_a_live_url_rebases_its_session() {
     feed(&mut app, "<CR>u");
     assert_eq!(url(&app).0, "abc", "nothing in the field to undo: the app's step came back");
     assert!(app.field_caret().is_live(), "the field stays open");
-    assert!(!app.glue.can_undo(EngineKind::Line), "the session started over on the new text");
+    assert!(!app.vim.glue.can_undo(EngineKind::Line), "the session started over on the new text");
     feed(&mut app, "x");
     assert_eq!(url(&app).0, "ab", "the next x deletes under the caret on the new text");
 }
@@ -515,7 +515,7 @@ fn a_palette_undo_over_an_edited_body_steps_the_engine() {
     from_the_palette(&mut app, Action::Redo);
     assert_eq!(body(&app), "1]", "no edit is lost");
     feed(&mut app, "<Esc>");
-    assert_eq!(app.glue.session(), FieldSession::None);
+    assert_eq!(app.vim.glue.session(), FieldSession::None);
     feed(&mut app, "u");
     let after = snapshot(&app);
     assert!(after.same_but_field(&before), "undo did not restore exactly:\n{}", snapshot_diff(&before, &after));
@@ -566,7 +566,7 @@ fn shift_tab_in_the_vim_body_never_dedents() {
     app.capture_undo();
     draw(&mut app);
     assert_eq!(body(&app), "{\n \"a\": 1\n}", "not dedented");
-    assert!(app.glue.can_undo(EngineKind::Body), "the engine's history survives");
+    assert!(app.vim.glue.can_undo(EngineKind::Body), "the engine's history survives");
 }
 
 /// Amendment C1: ctrl+z in Insert, before the engine has committed a step,
@@ -597,7 +597,7 @@ fn a_flush_for_the_url_keeps_the_bodys_engine_history() {
     draw(&mut app);
     feed(&mut app, "lihello<Esc><Esc>");
     assert_eq!(app.editor.body.lines.to_string(), "hello");
-    assert_eq!(app.glue.session(), FieldSession::None, "the body closed");
+    assert_eq!(app.vim.glue.session(), FieldSession::None, "the body closed");
     app.editor.sub_focus = SubFocus::Url;
     draw(&mut app);
     feed(&mut app, "<CR>x");
@@ -658,7 +658,7 @@ fn caret(app: &App) -> (usize, usize) {
 fn the_body_runs_the_engine_in_vim() {
     let mut app = vim(Fixture::Body);
     feed(&mut app, "jdd");
-    assert_eq!(app.glue.session(), FieldSession::Live(FieldId::Body));
+    assert_eq!(app.vim.glue.session(), FieldSession::Live(FieldId::Body));
     assert_eq!(body(&app), "{\n}");
     feed(&mut app, "u");
     assert_eq!(body(&app), BODY);
@@ -673,7 +673,7 @@ fn esc_in_idle_normal_blurs_the_body() {
     let mut app = vim(Fixture::Body);
     feed(&mut app, "<Esc>");
     assert_eq!(app.editor.sub_focus, SubFocus::None);
-    assert_eq!(app.glue.session(), FieldSession::None);
+    assert_eq!(app.vim.glue.session(), FieldSession::None);
 }
 
 /// Spec §3.7 item 4 and plan M3a Deviation 6: edtui's own keys never run
@@ -723,7 +723,7 @@ fn re_entering_the_body_keeps_its_history() {
     let mut app = vim(Fixture::Body);
     feed(&mut app, "x<Esc>");
     feed(&mut app, "jj");
-    assert_eq!(app.glue.session(), FieldSession::Live(FieldId::Body), "back in by keyboard");
+    assert_eq!(app.vim.glue.session(), FieldSession::Live(FieldId::Body), "back in by keyboard");
     feed(&mut app, "u");
     assert_eq!(body(&app), BODY, "the engine's step from the first visit");
 }
@@ -735,12 +735,12 @@ fn re_entering_the_body_keeps_its_history() {
 fn a_paste_after_the_body_was_replaced_rebases_first() {
     let mut app = vim(Fixture::Body);
     feed(&mut app, "x");
-    assert!(app.glue.can_undo(EngineKind::Body));
+    assert!(app.vim.glue.can_undo(EngineKind::Body));
     app.editor.set_body_text("[1]");
     app.paste_text("Z");
     feed(&mut app, "u");
     assert_eq!(body(&app), "[1]", "u takes the paste back");
-    assert!(!app.glue.can_undo(EngineKind::Body), "the history of the old text is gone");
+    assert!(!app.vim.glue.can_undo(EngineKind::Body), "the history of the old text is gone");
 }
 
 /// Code review: every scratch has the same (no) slug, so a fresh scratch
@@ -762,14 +762,14 @@ fn a_fresh_scratch_does_not_inherit_the_bodys_history() {
     on_body(&mut app);
     feed(&mut app, "ihello<Esc>u");
     assert_eq!(body(&app), "");
-    assert!(app.glue.can_redo(EngineKind::Body));
+    assert!(app.vim.glue.can_redo(EngineKind::Body));
     feed(&mut app, "<Esc>");
-    assert_eq!(app.glue.session(), FieldSession::None, "the body closed");
+    assert_eq!(app.vim.glue.session(), FieldSession::None, "the body closed");
     app.land(Landing { open: Some(crate::undo::Open::Scratch { buffer: None }), ..Landing::default() });
     on_body(&mut app);
     feed(&mut app, "0");
-    assert_eq!(app.glue.session(), FieldSession::Live(FieldId::Body));
-    assert!(!app.glue.can_redo(EngineKind::Body), "the old scratch's redo is gone");
+    assert_eq!(app.vim.glue.session(), FieldSession::Live(FieldId::Body));
+    assert!(!app.vim.glue.can_redo(EngineKind::Body), "the old scratch's redo is gone");
 }
 
 /// Code review (final review I-1 generalized): a key keys.toml binds that
@@ -785,7 +785,7 @@ fn a_bound_key_the_engine_declines_skips_the_body_editor() {
     assert!(matches!(app.modals.top(), Some(Modal::Palette(_))), "the keymap's action ran");
     assert_eq!((body(&app), caret(&app)), before);
     assert!(app.editor.body.selection.is_none(), "no GUI selection under the engine");
-    assert!(app.glue.can_undo(EngineKind::Body), "the engine's history survives");
+    assert!(app.vim.glue.can_undo(EngineKind::Body), "the engine's history survives");
 }
 
 /// Code review: a modal raised outside a key (an async result) parks the
@@ -798,9 +798,9 @@ fn a_modal_raised_outside_a_key_parks_the_body_at_the_catch_up() {
     draw(&mut app);
     assert!(app.editor.body_search.prompt.is_some());
     app.update(Action::OpenPalette);
-    app.catch_up_field_session();
+    app.vim_catch_up();
     draw(&mut app);
-    assert_eq!(app.glue.session(), FieldSession::Parked(FieldId::Body));
+    assert_eq!(app.vim.glue.session(), FieldSession::Parked(FieldId::Body));
     assert!(app.editor.body_search.prompt.is_none(), "no prompt drawn under the modal");
 }
 
@@ -821,13 +821,13 @@ fn a_format_with_the_body_open_is_one_engine_step() {
 fn a_body_clear_with_the_body_open_is_one_engine_step() {
     let mut app = vim(Fixture::Body);
     feed(&mut app, "0");
-    assert_eq!(app.glue.session(), FieldSession::Live(FieldId::Body));
+    assert_eq!(app.vim.glue.session(), FieldSession::Live(FieldId::Body));
     let steps = app.history.undo_len();
     app.update(Action::BodyClear);
     assert_eq!(body(&app), "");
     feed(&mut app, "u");
     assert_eq!(body(&app), BODY, "u takes the clear back");
-    assert!(app.glue.can_redo(EngineKind::Body), "the engine's step, not the app's");
+    assert!(app.vim.glue.can_redo(EngineKind::Body), "the engine's step, not the app's");
     assert_eq!(app.history.undo_len(), steps, "no app step was spent");
 }
 
@@ -863,10 +863,10 @@ fn ctrl_d_pages_by_the_drawn_body() {
 fn a_request_switch_drops_the_bodys_history() {
     let mut app = vim(Fixture::Body);
     feed(&mut app, "x");
-    assert!(app.glue.can_undo(EngineKind::Body));
+    assert!(app.vim.glue.can_undo(EngineKind::Body));
     app.update(Action::ForceCreateRequest("other".into()));
     feed(&mut app, "<Esc>");
-    assert!(!app.glue.can_undo(EngineKind::Body));
+    assert!(!app.vim.glue.can_undo(EngineKind::Body));
 }
 
 /// Amendment C2: the body's state follows the open request's slug when a
@@ -876,7 +876,7 @@ fn a_request_switch_drops_the_bodys_history() {
 fn renaming_the_open_request_keeps_the_bodys_history() {
     let mut app = vim(Fixture::Body);
     feed(&mut app, "x<Esc>jj");
-    assert_eq!(app.glue.session(), FieldSession::Live(FieldId::Body));
+    assert_eq!(app.vim.glue.session(), FieldSession::Live(FieldId::Body));
     let from = app.editor.slug.clone().expect("the fixture's request is saved");
     app.update(Action::RenameRequest { from: from.clone(), to: "renamed".into() });
     assert_ne!(app.editor.slug.as_deref(), Some(from.as_str()), "the editor follows the new slug");
@@ -890,7 +890,7 @@ fn renaming_the_open_request_keeps_the_bodys_history() {
 fn renaming_the_open_requests_space_keeps_the_bodys_history() {
     let mut app = vim(Fixture::Body);
     feed(&mut app, "x<Esc>jj");
-    assert_eq!(app.glue.session(), FieldSession::Live(FieldId::Body));
+    assert_eq!(app.vim.glue.session(), FieldSession::Live(FieldId::Body));
     let slug = app.editor.slug.clone().expect("the fixture's request is saved");
     let (space, _) = slug.split_once('/').expect("a request lives in a space");
     app.update(Action::RenameSpace { from: space.into(), to: "renamed".into() });
@@ -908,11 +908,11 @@ fn renaming_the_open_requests_space_keeps_the_bodys_history() {
 fn undoing_a_rename_keeps_the_bodys_history() {
     let mut app = vim(Fixture::Body);
     feed(&mut app, "x<Esc>jj");
-    assert_eq!(app.glue.session(), FieldSession::Live(FieldId::Body));
+    assert_eq!(app.vim.glue.session(), FieldSession::Live(FieldId::Body));
     let from = app.editor.slug.clone().expect("the fixture's request is saved");
     app.update(Action::RenameRequest { from: from.clone(), to: "renamed".into() });
     feed(&mut app, "<Esc>");
-    assert_eq!(app.glue.session(), FieldSession::None, "the body closed: `u` is the app's");
+    assert_eq!(app.vim.glue.session(), FieldSession::None, "the body closed: `u` is the app's");
     feed(&mut app, "u");
     assert_eq!(app.editor.slug.as_deref(), Some(from.as_str()), "the rename was undone in place");
     app.focus = PaneId::Editor;
@@ -921,7 +921,7 @@ fn undoing_a_rename_keeps_the_bodys_history() {
     draw(&mut app);
     let steps = app.history.undo_len();
     feed(&mut app, "u");
-    assert_eq!(app.glue.session(), FieldSession::Live(FieldId::Body));
+    assert_eq!(app.vim.glue.session(), FieldSession::Live(FieldId::Body));
     assert_eq!(body(&app), BODY, "the engine's step from the earlier visit");
     assert_eq!(app.history.undo_len(), steps, "not the app's step for the same edit");
 }
@@ -941,7 +941,7 @@ fn saving_a_scratch_keeps_the_bodys_history() {
     app.use_profile(KeyProfile::Vim);
     draw(&mut app);
     feed(&mut app, "x<Esc>jj");
-    assert_eq!(app.glue.session(), FieldSession::Live(FieldId::Body));
+    assert_eq!(app.vim.glue.session(), FieldSession::Live(FieldId::Body));
     app.update(Action::SaveRequestAs("saved".into()));
     assert!(app.editor.slug.is_some(), "the scratch is saved");
     feed(&mut app, "u");
@@ -961,11 +961,11 @@ fn a_carry_out_of_the_body_leaves_the_real_body() {
     let at = |kind| MouseEvent { kind, column: area.x, row: area.y, modifiers: KeyModifiers::NONE };
     app.handle_mouse(at(MouseEventKind::Down(MouseButton::Left)));
     app.handle_mouse(at(MouseEventKind::Up(MouseButton::Left)));
-    assert_eq!(app.glue.session(), FieldSession::Live(FieldId::Url), "the click carried the session");
+    assert_eq!(app.vim.glue.session(), FieldSession::Live(FieldId::Url), "the click carried the session");
     let text = body(&app);
     assert!(!text.split('\n').any(|l| !l.is_empty() && l.trim().is_empty()), "a whitespace-only line is left: {text:?}");
     feed(&mut app, "<Esc><Esc>j");
-    assert_eq!(app.glue.session(), FieldSession::Live(FieldId::Body), "back in by keyboard");
+    assert_eq!(app.vim.glue.session(), FieldSession::Live(FieldId::Body), "back in by keyboard");
     feed(&mut app, "u");
     assert_eq!(body(&app), BODY, "the body's history survived the carry");
 }
@@ -979,7 +979,7 @@ fn the_arrows_body_still_types_through_edtui() {
     assert_eq!(body(&app), format!("x{BODY}"), "a letter types");
     feed(&mut app, "<C-e>");
     assert_eq!(caret(&app), (0, 2), "edtui's end of line");
-    assert_eq!(app.glue.session(), FieldSession::None);
+    assert_eq!(app.vim.glue.session(), FieldSession::None);
 }
 
 /// Plan M3a Deviation 13: Vim's bracketed paste in Normal.
@@ -1186,7 +1186,7 @@ fn typing_two_braces_opens_the_variable_picker() {
     let mut app = url_line("ab");
     feed(&mut app, "<CR>A{{");
     assert!(matches!(app.modals.top(), Some(Modal::VarPicker(_))));
-    assert_eq!(app.glue.session(), FieldSession::Parked(FieldId::Url));
+    assert_eq!(app.vim.glue.session(), FieldSession::Parked(FieldId::Url));
     assert_eq!(url(&app).0, "ab{{");
 }
 

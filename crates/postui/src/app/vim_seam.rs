@@ -3,6 +3,7 @@
 //! Every method here is `impl App`. The engine itself is reached only
 //! through `keyroute::engine_glue`.
 
+use super::router::Ran;
 use super::*;
 use crate::config::KeyProfile;
 use crate::keyroute::engine_glue::{
@@ -13,31 +14,69 @@ use crate::keyroute::notation::Tok;
 use crate::keyroute::table::{self, Intent, Match};
 use crate::keyroute::{EngineKind, FieldCaret, FieldId, Step};
 
-/// What routing one key did (spec §3.1): whether to redraw, the open mode
-/// a table row asked for (plan M3a Deviation 3), and whether a step other
-/// than the engine ran, which makes the end-of-event sync settle the
-/// session (spec §3.3: "a key the router ran itself").
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct Ran {
-    pub changed: bool,
-    pub open_as: Option<OpenAs>,
-    pub routed: bool,
+/// Everything the App keeps for the vim profile. Only this module reads or
+/// writes it (the boundary test in `lib.rs` holds the rest of the crate to
+/// that); the rest of the App reaches vim through this module's `vim_*`
+/// methods.
+#[derive(Default)]
+pub(crate) struct VimState {
+    /// The vim profile's text engine and its field session (spec §3.7):
+    /// the one door to the engine (`keyroute::engine_glue`).
+    pub(crate) glue: Glue,
+    /// The top dialog's field's engine (plan M3b Deviation 1): a second
+    /// engine, so a screen field parked under a dialog keeps its state.
+    pub(crate) modal_glue: Glue,
+    /// Vim's one last search pattern and its `'hlsearch'` state (plan M5b
+    /// Deviation 20, the user's review ruling: the app owns it). It lives
+    /// as long as the app, across request and project switches, which swap
+    /// the response; the response and each engine have it lent for the
+    /// call that needs it.
+    pub(crate) search_memory: crate::vim::engine::SearchMemory,
+    /// The dialog field with a session, by its dialog's serial (plan M3b
+    /// Deviation 2).
+    pub(crate) modal_session: Option<(u64, FieldId)>,
+    /// The top dialog's serial at the last sync: a dialog field that opens
+    /// under a new top opens in Insert (plan M3b Deviation 3).
+    pub(crate) modal_seen: Option<u64>,
+    /// The `:` line's history (plan M5b Task 5): read from `ui.toml` at
+    /// startup, written back at quit.
+    pub(crate) cmdline_history: crate::cmdline::CmdlineHistory,
+    /// An add verb ran during this event (`OnSelection(Add | AddAlt)`):
+    /// what it opened opens in Insert (spec §5.6), whether the verb came
+    /// from its row, the `:` line, or a click on the line's pinned row. The
+    /// next `sync_session` consumes it, so a key and a click read it alike.
+    add_opens_insert: bool,
+    /// `.` (spec §5.12; plan M5b Deviations 5–8): the last list change a
+    /// vim key made, while no other change has been made since.
+    dot: Option<Dot>,
+    /// What this event did to `.`, settled once the event loop has
+    /// captured its undo step (`vim_settle_dot`).
+    dot_pending: DotPending,
+    /// Vim's `:` opened the line over the response's V: the selection ends
+    /// once every dialog is closed, as Vim's Visual has ended when its
+    /// `:'<,'>` line does (`end_visual_off_response`).
+    ex_over_visual: bool,
 }
 
-impl Ran {
-    /// Today's routing ran.
-    pub(crate) fn routed(changed: bool) -> Self {
-        Self { changed, routed: true, open_as: None }
-    }
+/// The change `.` repeats (spec §5.12) and the history's change count
+/// right after it: any change since makes it stale (plan M5b Deviation 6).
+#[derive(Debug, Clone, Copy)]
+struct Dot {
+    change: crate::keyroute::Change,
+    at: u64,
+}
 
-    /// The router or the engine took the key.
-    pub(crate) fn consumed() -> Self {
-        Self { changed: true, ..Self::default() }
-    }
-
-    pub(crate) fn and(self, o: Ran) -> Self {
-        Self { changed: self.changed || o.changed, open_as: o.open_as.or(self.open_as), routed: self.routed || o.routed }
-    }
+/// What a key or mouse event did to `.`, settled once the event loop has
+/// captured the event's undo step (plan M5b Deviation 8).
+#[derive(Debug, Clone, Copy, Default)]
+enum DotPending {
+    #[default]
+    None,
+    /// A list change ran, from the history's change count `before`.
+    Made { change: crate::keyroute::Change, before: u64 },
+    /// The palette ran what it ran from `before`, with no field open under
+    /// it: that leaves `.` alone, as Vim's command-line commands do.
+    Kept { before: u64 },
 }
 
 /// What an event was, for the session's settle (spec §3.3).
@@ -63,29 +102,6 @@ pub(crate) fn mode_word(mode: Mode) -> &'static str {
     }
 }
 
-/// `id`'s one-line buffer, or none when that field is not open, is the
-/// body, or is a modal's or the response pane's (those live elsewhere).
-/// Takes the parts of `App` that hold one, which leave the body free, so
-/// a carry out of the body can hold both (amendment C3). The one map from
-/// a screen field to its `LineInput`: `App::open_text_field_mut` reads it
-/// too.
-pub(super) fn line_buf<'a>(
-    id: FieldId,
-    url: &'a mut LineInput,
-    table: &'a mut crate::components::table_editor::TableEditorState,
-    varmanager: &'a mut VarManager,
-    settings: &'a mut crate::components::settings::SettingsTab,
-) -> Option<&'a mut LineInput> {
-    match id {
-        FieldId::Url => Some(url),
-        FieldId::TableCell { .. } => table.editing.as_mut().map(|e| &mut e.input),
-        FieldId::VmForm(_) => varmanager.form.editing.as_mut().map(|e| &mut e.input),
-        FieldId::VmGrid { .. } => varmanager.grid.editing.as_mut().map(|e| &mut e.input),
-        FieldId::Settings(_) => settings.editing.is_some().then(|| settings.input_mut()),
-        _ => None,
-    }
-}
-
 impl App {
     /// The glue `id` runs on and `id`'s buffer at once (disjoint fields),
     /// or no buffer when that field is not open. A dialog's field lends the
@@ -93,16 +109,16 @@ impl App {
     pub(crate) fn session_parts(&mut self, id: FieldId) -> (&mut Glue, Option<FieldBuf<'_>>) {
         match id {
             FieldId::Body => {
-                (&mut self.glue, Some(FieldBuf::Body(&mut self.editor.body, &mut self.editor.body_visual)))
+                (&mut self.vim.glue, Some(FieldBuf::Body(&mut self.editor.body, &mut self.editor.body_visual)))
             }
-            FieldId::ModalInput(i) => (&mut self.modal_glue, self.modals.text_input_mut(i).map(FieldBuf::Line)),
+            FieldId::ModalInput(i) => (&mut self.vim.modal_glue, self.modals.text_input_mut(i).map(FieldBuf::Line)),
             FieldId::Palette | FieldId::ChooserFilter | FieldId::VarPickerFilter | FieldId::FilePicker => {
-                (&mut self.modal_glue, self.modals.query_input_mut().map(FieldBuf::Line))
+                (&mut self.vim.modal_glue, self.modals.query_input_mut().map(FieldBuf::Line))
             }
-            FieldId::Jq => (&mut self.glue, Some(FieldBuf::Line(&mut self.session.response.jq_bar_mut().input))),
-            FieldId::Search => (&mut self.glue, self.session.response.search_input_mut().map(FieldBuf::Line)),
+            FieldId::Jq => (&mut self.vim.glue, Some(FieldBuf::Line(&mut self.session.response.jq_bar_mut().input))),
+            FieldId::Search => (&mut self.vim.glue, self.session.response.search_input_mut().map(FieldBuf::Line)),
             _ => (
-                &mut self.glue,
+                &mut self.vim.glue,
                 line_buf(id, &mut self.editor.url, &mut self.editor.table, &mut self.varmanager, &mut self.settings)
                     .map(FieldBuf::Line),
             ),
@@ -115,7 +131,7 @@ impl App {
         let body = FieldBuf::Body(&mut self.editor.body, &mut self.editor.body_visual);
         let to = line_buf(to, &mut self.editor.url, &mut self.editor.table, &mut self.varmanager, &mut self.settings)
             .map(FieldBuf::Line);
-        (&mut self.glue, body, to)
+        (&mut self.vim.glue, body, to)
     }
 
     /// The field with an engine session now, and whether it has the caret
@@ -142,31 +158,31 @@ impl App {
         // row open what they make alike, in Insert (spec §5.6; the final
         // review's I-3). Taken on every sync, so it never outlives the
         // event that set it.
-        let add = std::mem::take(&mut self.add_opens_insert);
+        let add = std::mem::take(&mut self.vim.add_opens_insert);
         let open_as = open_as.or(add.then_some(OpenAs::Insert(OpenSeat::Keep)));
         let profile = self.profile();
-        let was = self.glue.profile();
+        let was = self.vim.glue.profile();
         let switched_in = profile == KeyProfile::Vim && was == Some(KeyProfile::Arrows);
-        self.glue.set_profile(profile);
+        self.vim.glue.set_profile(profile);
         if profile != KeyProfile::Vim {
             // Arrows has no Normal mode: an open field goes on as main's
             // modeless field, its text and caret untouched (spec §4.3).
             // Leaving Insert would step the caret back off the end, so it
             // is put back where it was.
-            if let Some(id) = self.glue.owned() {
+            if let Some(id) = self.vim.glue.owned() {
                 let caret = self.session_parts(id).1.map(|buf| buf.caret());
                 self.close_session(id);
                 if let Some(at) = caret {
                     self.put_caret(id, at);
                 }
                 self.unpaint(id, true);
-                self.glue.set_session(FieldSession::None);
+                self.vim.glue.set_session(FieldSession::None);
             }
             // The dialog session goes the same way, and its engine gives
             // the registers back (plan M3b Deviation 1). A dialog no longer
             // on top is left through the ghost, as `sync_modal_session`
             // leaves it: its field index would name the top's field.
-            if let Some((dialog, id)) = self.modal_session.take() {
+            if let Some((dialog, id)) = self.vim.modal_session.take() {
                 if Some(dialog) == self.modals.top_serial() {
                     let caret = self.session_parts(id).1.map(|buf| buf.caret());
                     self.close_session(id);
@@ -175,10 +191,10 @@ impl App {
                     }
                     self.unpaint(id, true);
                 } else {
-                    self.modal_glue.leave_ghost();
+                    self.vim.modal_glue.leave_ghost();
                 }
-                self.glue.swap_registers(&mut self.modal_glue);
-                self.modal_glue.set_session(FieldSession::None);
+                self.vim.glue.swap_registers(&mut self.vim.modal_glue);
+                self.vim.modal_glue.set_session(FieldSession::None);
             }
             // A body session that closed before the switch left edtui in
             // Normal, where the arrows body binds no keys: give it its
@@ -188,10 +204,10 @@ impl App {
             }
             return;
         }
-        self.glue.own_body(self.editor.slug.as_deref(), &mut self.search_memory);
+        self.vim.glue.own_body(self.editor.slug.as_deref(), &mut self.vim.search_memory);
         let now = self.engine_field();
         let mouse = matches!(cause, Cause::Mouse(_));
-        let edge = engine_glue::edge(self.glue.owned(), now.map(|(id, _)| id));
+        let edge = engine_glue::edge(self.vim.glue.owned(), now.map(|(id, _)| id));
         match edge {
             Edge::Idle => {}
             Edge::Open(id) => {
@@ -226,7 +242,7 @@ impl App {
                 }
             }
         }
-        self.glue.set_session(match now {
+        self.vim.glue.set_session(match now {
             Some((id, true)) => FieldSession::Live(id),
             Some((id, false)) => FieldSession::Parked(id),
             None => FieldSession::None,
@@ -236,7 +252,7 @@ impl App {
             Cause::Key { routed: true } if matches!(edge, Edge::Same(_)) => Some(Settled::Key),
             _ => None,
         };
-        if let (Some(how), Some(id)) = (how, self.glue.live()) {
+        if let (Some(how), Some(id)) = (how, self.vim.glue.live()) {
             let (glue, buf) = self.session_parts(id);
             if let Some(mut buf) = buf {
                 glue.settle(&mut buf, how);
@@ -252,10 +268,10 @@ impl App {
     /// pattern is the one both engines borrow (plan M5b Deviation 20).
     fn sync_modal_session(&mut self, open_as: Option<OpenAs>, cause: Cause, switched_in: bool) {
         let now = self.modal_engine_field();
-        let was = self.modal_session;
+        let was = self.vim.modal_session;
         let top = self.modals.top_serial();
-        let fresh = top != self.modal_seen;
-        self.modal_seen = top;
+        let fresh = top != self.vim.modal_seen;
+        self.vim.modal_seen = top;
         let mouse = matches!(cause, Cause::Mouse(_));
         // A field opens in Insert when its dialog is new, on a click, after
         // a dialog over it closed, and when vim was just switched on; from
@@ -286,11 +302,11 @@ impl App {
             // left belongs to a dialog that is not the top, so it is left
             // through the ghost: its index would name the new top's field.
             (Some(_), Some((_, to))) => {
-                self.modal_glue.leave_ghost();
+                self.vim.modal_glue.leave_ghost();
                 self.open_session(to, open_as, !mouse, default);
             }
             (None, Some((_, to))) => {
-                self.glue.swap_registers(&mut self.modal_glue);
+                self.vim.glue.swap_registers(&mut self.vim.modal_glue);
                 self.open_session(to, open_as, !mouse, default);
             }
             // The field closed in its own dialog (`j` to the buttons), or
@@ -300,14 +316,14 @@ impl App {
                 if Some(from_dialog) == top {
                     self.close_session(from);
                 } else {
-                    self.modal_glue.leave_ghost();
+                    self.vim.modal_glue.leave_ghost();
                 }
-                self.glue.swap_registers(&mut self.modal_glue);
+                self.vim.glue.swap_registers(&mut self.vim.modal_glue);
                 self.router.clear_pending();
             }
         }
-        self.modal_session = now;
-        self.modal_glue.set_session(now.map_or(FieldSession::None, |(_, id)| FieldSession::Live(id)));
+        self.vim.modal_session = now;
+        self.vim.modal_glue.set_session(now.map_or(FieldSession::None, |(_, id)| FieldSession::Live(id)));
         let how = match cause {
             Cause::Mouse(how) => how,
             Cause::Key { routed: true } if was == now => Some(Settled::Key),
@@ -456,7 +472,7 @@ impl App {
     /// the engine may be handed keys, pastes and copies for.
     pub(crate) fn live_engine_field(&self) -> Option<FieldId> {
         let caret = self.field_caret();
-        [self.modal_glue.live(), self.glue.live()]
+        [self.vim.modal_glue.live(), self.vim.glue.live()]
             .into_iter()
             .flatten()
             .find(|&id| caret == FieldCaret::Live(id))
@@ -465,17 +481,9 @@ impl App {
     /// The engine `id` runs on: the dialog engine for a dialog's field
     /// (plan M3b Deviation 1), else the screen's.
     pub(crate) fn glue_of(&self, id: FieldId) -> &Glue {
-        if id.is_modal() { &self.modal_glue } else { &self.glue }
+        if id.is_modal() { &self.vim.modal_glue } else { &self.vim.glue }
     }
 
-    /// Catches the session up with what moved the caret or replaced a
-    /// field's text outside a key or a mouse button: an async result, a
-    /// reload, the `$EDITOR` round-trip. The main loop runs it after each,
-    /// so the next draw (the body's search prompt) and the next paste see
-    /// the session as it is.
-    pub fn catch_up_field_session(&mut self) {
-        self.sync_session(None, Cause::Before);
-    }
 
     /// What the engine needs to know about the view (piece 3 §4.1): the
     /// body's rows as last drawn.
@@ -519,12 +527,12 @@ impl App {
     /// returns, also when `id`'s buffer is gone (`None`).
     fn engine_handle(&mut self, id: FieldId, ev: KeyEvent) -> Option<Outcome> {
         let view = self.view_ctx(id);
-        let mut memory = std::mem::take(&mut self.search_memory);
+        let mut memory = std::mem::take(&mut self.vim.search_memory);
         let out = {
             let (glue, buf) = self.session_parts(id);
             buf.map(|mut buf| glue.handle(ev, &mut buf, &view, &mut memory))
         };
-        self.search_memory = memory;
+        self.vim.search_memory = memory;
         out
     }
 
@@ -582,7 +590,7 @@ impl App {
     /// has the caret. `Some(false)` when it has nothing to step that way,
     /// or the engine is not in idle Normal, where the undo chords do
     /// nothing (plan M3a Deviation 8).
-    pub(crate) fn engine_field_undo(&mut self, redo: bool) -> Option<bool> {
+    pub(crate) fn vim_field_undo(&mut self, redo: bool) -> Option<bool> {
         let id = self.live_engine_field()?;
         let kind = id.engine_kind();
         let glue = self.glue_of(id);
@@ -605,8 +613,8 @@ impl App {
     /// The body's text replaced as one engine step while the body has an
     /// engine session, live or parked (spec §3.7: format, minify, clear).
     /// `false` leaves the rewrite to the caller.
-    pub(crate) fn engine_replace_body(&mut self, text: &str) -> bool {
-        if self.glue.owned() != Some(FieldId::Body) {
+    pub(crate) fn vim_replace_body(&mut self, text: &str) -> bool {
+        if self.vim.glue.owned() != Some(FieldId::Body) {
             return false;
         }
         let (glue, buf) = self.session_parts(FieldId::Body);
@@ -621,8 +629,11 @@ impl App {
     /// review); anywhere else it goes in by Vim's bracketed-paste rule. Each
     /// is one engine step. A one-line field takes it flattened (today's
     /// rule). `None` when no engine field has the caret: today's routing
-    /// pastes.
-    pub(crate) fn engine_paste(&mut self, text: &str) -> Option<bool> {
+    /// pastes. A bracketed paste is an event of its own, so the session
+    /// catches up first, as a key's does: a body replaced since (`$EDITOR`)
+    /// rebases before the paste lands on it.
+    pub(crate) fn vim_paste(&mut self, text: &str) -> Option<bool> {
+        self.sync_session(None, Cause::Before);
         let id = self.live_engine_field()?;
         // Today's routing pastes into the file picker, its folder jump
         // included (plan M3b Deviation 13).
@@ -664,13 +675,14 @@ impl App {
     /// (as a paste), else by the bracketed-paste rule (plan M3a Deviation
     /// 13). Insert ctrl+o counts as Insert: the edit resumes it first, as
     /// `Glue::rebase` does. Only the fields main inserts into: the URL
-    /// line, a cell, the body. `false` leaves it to today's path.
-    pub(crate) fn engine_insert(&mut self, text: &str) -> bool {
-        let Some(id) = self.glue.owned() else { return false };
+    /// line, a cell, the body. `false` leaves it to today's path. A token
+    /// into the body turns on the body's variables, as today's path does.
+    pub(crate) fn vim_insert(&mut self, text: &str) -> bool {
+        let Some(id) = self.vim.glue.owned() else { return false };
         if !matches!(id, FieldId::Url | FieldId::TableCell { .. } | FieldId::Body) {
             return false;
         }
-        let typing = matches!(self.glue.mode(), Mode::Insert | Mode::Replace | Mode::InsertNormal { .. });
+        let typing = matches!(self.vim.glue.mode(), Mode::Insert | Mode::Replace | Mode::InsertNormal { .. });
         let (glue, buf) = self.session_parts(id);
         let Some(mut buf) = buf else { return false };
         let edit = if typing {
@@ -681,13 +693,16 @@ impl App {
             engine_glue::Edit::Append(text)
         };
         glue.edit(&mut buf, &edit);
+        if id == FieldId::Body {
+            self.turn_on_body_vars();
+        }
         true
     }
 
     /// The live engine field's Visual text, which ctrl+c and cmd+c copy
     /// (the user's decision, final review I-2): a mouse selection in a vim
     /// field becomes Visual, so without it ctrl+c would quit.
-    pub(crate) fn engine_visual_text(&mut self) -> Option<String> {
+    pub(crate) fn vim_selection_text(&mut self) -> Option<String> {
         let id = self.live_engine_field()?;
         let (glue, buf) = self.session_parts(id);
         glue.visual_text(&mut buf?)
@@ -709,7 +724,7 @@ impl App {
     /// tab. The range reaches one screen either side of the viewport, so a
     /// jump that scrolls during the render (`G`, a far `n`) still paints its
     /// matches in that frame.
-    pub(crate) fn mirror_body_search(&mut self) {
+    pub(crate) fn vim_mirror_body_search(&mut self) {
         if self.profile() != KeyProfile::Vim || self.editor.active_tab != EditorTab::Body {
             self.editor.body_search = Default::default();
             return;
@@ -722,11 +737,11 @@ impl App {
             }
             None => 0..usize::MAX,
         };
-        let found = self.glue.body_search(
+        let found = self.vim.glue.body_search(
             &mut self.editor.body,
             &mut self.editor.body_visual,
             rows,
-            &mut self.search_memory,
+            &mut self.vim.search_memory,
         );
         self.editor.body_search = found;
     }
@@ -842,6 +857,389 @@ impl App {
                             | KeyCode::PageUp
                             | KeyCode::PageDown
                     )
+            }
+        }
+    }
+}
+
+/// Where a mouse event stands for the field session, between
+/// [`App::vim_mouse_start`] and [`App::vim_mouse_end`]: `None` for an event
+/// that is not a button's, else how the engine settles after it.
+pub(super) struct MouseEdge(Option<Option<Settled>>);
+
+/// The rest of the App calls these, and only these, to reach vim: each is
+/// a whole operation, or answers `None` (or `false`) when vim has no part
+/// in it, and the caller goes on with the plain path. Without the vim
+/// profile each would be a no-op that answers the same.
+impl App {
+    /// The start of an input event, and anything that moved the caret or
+    /// replaced a field's text outside one (an async result, a reload, the
+    /// `$EDITOR` round-trip): the session catches up, so the next draw (the
+    /// body's search prompt), key and paste see it as it is.
+    pub fn vim_catch_up(&mut self) {
+        self.sync_session(None, Cause::Before);
+    }
+
+    /// After a key: the session follows what the key did (spec §3.1).
+    pub(super) fn vim_after_key(&mut self, ran: Ran) {
+        self.sync_session(ran.open_as, Cause::Key { routed: ran.routed });
+    }
+
+    /// Before a mouse event: a button can open, move or close a field;
+    /// motion and the wheel cannot, so only a button event syncs the
+    /// session (spec §3.1). Of the drags only the left button's sweeps a
+    /// selection: some terminals (Ghostty) report hover as `Drag(Right)`,
+    /// and each sync reads the whole body (final review T4).
+    pub(super) fn vim_mouse_start(&mut self, m: &ratatui::crossterm::event::MouseEvent) -> MouseEdge {
+        use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+        let button = matches!(
+            m.kind,
+            MouseEventKind::Down(_) | MouseEventKind::Up(_) | MouseEventKind::Drag(MouseButton::Left)
+        );
+        if !button {
+            return MouseEdge(None);
+        }
+        self.sync_session(None, Cause::Before);
+        // The sweep in flight is the live field's own engine's: a dialog
+        // field runs on the dialog engine (plan M3b Deviation 1).
+        let sweeping = self.live_engine_field().is_some_and(|id| self.glue_of(id).sweeping());
+        MouseEdge(Some(match m.kind {
+            MouseEventKind::Down(MouseButton::Left) => Some(Settled::Click),
+            MouseEventKind::Drag(MouseButton::Left) => Some(Settled::Sweep),
+            MouseEventKind::Up(MouseButton::Left) => Some(if sweeping { Settled::Release } else { Settled::Click }),
+            _ => None,
+        }))
+    }
+
+    /// After a mouse event: a button's settles the session.
+    pub(super) fn vim_mouse_end(&mut self, edge: MouseEdge) {
+        if let MouseEdge(Some(how)) = edge {
+            self.sync_session(None, Cause::Mouse(how));
+        }
+    }
+
+    /// The end of a key or mouse event: a V selection the keyboard left
+    /// ends, and the response shows the app's last pattern (plan M5b
+    /// Deviation 20): one a field searched, or the one a request switch put
+    /// on screen a view too old for. Whether it ended a selection.
+    pub(super) fn vim_event_end(&mut self) -> bool {
+        let ended = self.end_visual_off_response();
+        self.session.response.follow_last_pattern(&self.vim.search_memory);
+        ended
+    }
+
+    /// Vim leaves Visual whenever the window changes (plan M5a Task 6): in
+    /// the vim profile, a V selection on the response ends once the
+    /// keyboard is anywhere else, by a window key, a click, a palette
+    /// command that moves focus, another screen, or the jq bar taking the
+    /// caret. Run at the boundary of each input event, so every way of
+    /// leaving counts. A dialog or the palette over the response leaves it
+    /// up: their commands act on the selection (copy, extract). The `:`
+    /// line vim opened from V leaves it up only while a dialog is: Vim's
+    /// Visual has ended once its `:'<,'>` line closes. A drag's character
+    /// selection is not Visual, and an arrows shift selection is a GUI one:
+    /// both stay, as on main. Whether it ended one.
+    fn end_visual_off_response(&mut self) -> bool {
+        let ex_closed = self.vim.ex_over_visual && self.modals.is_empty();
+        if ex_closed {
+            self.vim.ex_over_visual = false;
+        }
+        let away = ex_closed
+            || self.screen != Screen::Main
+            || self.focus != PaneId::Response
+            || self.session.response.jq_focused();
+        if !(away && self.profile() == KeyProfile::Vim && self.session.response.line_selection()) {
+            return false;
+        }
+        self.session.response.lines(crate::action::LinesOp::End);
+        true
+    }
+
+    /// The response with the app's last search pattern lent to it: its
+    /// keys and its search steps read and set the one pattern every engine
+    /// shares (plan M5b Deviation 20).
+    pub(crate) fn with_response_search<R>(
+        &mut self,
+        f: impl FnOnce(&mut crate::components::response::Response, &mut crate::vim::engine::SearchMemory) -> R,
+    ) -> R {
+        f(&mut self.session.response, &mut self.vim.search_memory)
+    }
+
+    /// Whether `id`'s keystrokes are in its engine session, and if so
+    /// whether it holds edits (plan M3a Deviation 7). `None` when the
+    /// screen engine does not own `id`: the field's own `edited()` counts.
+    pub(crate) fn vim_edited(&self, id: FieldId) -> Option<bool> {
+        (self.vim.glue.owned() == Some(id)).then(|| self.vim.glue.edited(id.engine_kind()))
+    }
+
+    /// The app history took the session's edits as a step: what the fields
+    /// hold now is where their next step starts (plan M3a Deviation 7).
+    pub(crate) fn vim_flush(&mut self) {
+        self.vim.glue.flush();
+    }
+
+    /// Whether the live vim field owns the undo keys: while it has live
+    /// edits or a step either way (amendment C1: before the first committed
+    /// step the live edit still counts, or ctrl+z in Insert would undo an
+    /// older app step and lose the typed text). `None` when no vim field
+    /// has the caret.
+    pub(crate) fn vim_field_has_history(&self) -> Option<bool> {
+        let id = self.live_engine_field()?;
+        let kind = id.engine_kind();
+        let g = self.glue_of(id);
+        Some(g.edited(kind) || g.can_undo(kind) || g.can_redo(kind))
+    }
+
+    /// Whether the engine owns the body's keys (its motions, its chords).
+    pub(crate) fn vim_owns_body(&self) -> bool {
+        self.vim.glue.owned() == Some(FieldId::Body)
+    }
+
+    /// The open request's slug changed in place from `from` to the one the
+    /// editor holds now (a rename, a space rename, their undo or redo, a
+    /// scratch saved under a name): the body's engine state follows it
+    /// (amendment C2).
+    pub(crate) fn vim_body_moved(&mut self, from: Option<&str>) {
+        self.vim.glue.follow_body(from, self.editor.slug.as_deref());
+    }
+
+    /// The editor's body is a new buffer with no slug to tell it apart (a
+    /// fresh scratch): the body's engine state goes with the old one.
+    pub(crate) fn vim_drop_body(&mut self) {
+        self.vim.glue.drop_body(&mut self.vim.search_memory);
+    }
+
+    /// The live engine field's mode and pending state, for the router's
+    /// field lookahead (spec §3.7).
+    pub(crate) fn vim_engine_view(&self) -> Option<crate::keyroute::EngineView> {
+        self.live_engine_field().map(|id| self.glue_of(id).view())
+    }
+
+    /// How the footer spells keys for the live engine field: its idle
+    /// Normal's field class, else typing. `None` when no vim field has the
+    /// caret.
+    pub(crate) fn vim_field_spell(&self, surface: crate::keyroute::Surface) -> Option<crate::keyroute::FieldSpell> {
+        use crate::keyroute::FieldSpell;
+        let id = self.live_engine_field()?;
+        let glue = self.glue_of(id);
+        Some(if glue.mode() == Mode::Normal && !glue.view().pending {
+            FieldSpell::Normal(table::field_class(id, surface))
+        } else {
+            FieldSpell::Typing
+        })
+    }
+
+    /// The live engine field's half-typed keys for the footer (spec §3.8),
+    /// empty when there are none.
+    pub(crate) fn vim_field_echo(&self) -> String {
+        self.live_engine_field().map(|id| self.glue_of(id).echo()).unwrap_or_default()
+    }
+
+    /// The vim mode word (spec §3.8): what is taking the keys. A field with
+    /// a live session shows its engine's mode, on either glue (plan M3b
+    /// Deviation 1); a screen field not synced yet shows the screen
+    /// engine's; any other field with the caret types (`INSERT`: a dialog
+    /// field before its session opens, which opens it in Insert, and the
+    /// query boxes); the response's line selection is `V-LINE` (plan M5a
+    /// Deviation 18); everything else is `NORMAL`. `None` in the arrows
+    /// profile.
+    pub fn mode_indicator(&self) -> Option<&'static str> {
+        if self.profile() != KeyProfile::Vim {
+            return None;
+        }
+        Some(match (self.live_engine_field(), self.field_caret()) {
+            (Some(id), _) => mode_word(self.glue_of(id).mode()),
+            // A screen field whose session has not synced yet (opened with
+            // no event) shows the screen engine's mode, as before M3b: the
+            // sync opens it in Normal.
+            (None, FieldCaret::Live(id)) if !id.is_modal() && !id.insert_only() => mode_word(self.vim.glue.mode()),
+            (None, FieldCaret::Live(_)) => "INSERT",
+            (None, _) if matches!(self.surface(), crate::keyroute::Surface::ResponseLines(_)) => "V-LINE",
+            (None, _) => "NORMAL",
+        })
+    }
+
+    /// The mode and the echo as the footer paints them: `NORMAL  3`.
+    pub fn vim_status(&self) -> Option<String> {
+        let mode = self.mode_indicator()?;
+        let echo = self.key_echo();
+        Some(if echo.is_empty() {
+            mode.to_string()
+        } else {
+            format!("{mode}  {echo}")
+        })
+    }
+
+    /// The next field an add verb opens opens in Insert (spec §5.6).
+    pub(crate) fn vim_open_next_in_insert(&mut self) {
+        self.vim.add_opens_insert = true;
+    }
+
+    /// The `:` line's history as `ui.toml` held it at startup.
+    pub(crate) fn vim_restore_history(&mut self, history: crate::cmdline::CmdlineHistory) {
+        self.vim.cmdline_history = history;
+    }
+
+    /// The app is quitting: the `:` line's history is written with the
+    /// palette's usage. The app is exiting and ui.toml is app state, so a
+    /// failed write has no one left to tell.
+    pub(crate) fn vim_on_quit(&mut self) {
+        let _ = self.config.save_cmdline_history(&self.vim.cmdline_history);
+    }
+
+    /// The key router ran a key's steps from the history's change count
+    /// `before` (spec §5.12): the list change it ran is `.`'s, once the
+    /// event's capture shows it changed something.
+    pub(crate) fn vim_note_change(&mut self, before: u64) {
+        if let Some(change) = self.router.take_change() {
+            self.vim.dot_pending = DotPending::Made { change, before };
+        }
+    }
+
+    /// A modal closed (`popped`) with its result about to run, from the
+    /// history's change count `before`. Vim's command-line commands leave
+    /// `.` alone (probes D9, D16), unless a field open under the line
+    /// closes with it, or a field session (the body's, which never closes)
+    /// holds edits the line's command may flush: that edit may be the last
+    /// change (plan M5b Deviation 6).
+    pub(crate) fn vim_palette_ran(&mut self, popped: Option<&Modal>, before: u64) {
+        if matches!(popped, Some(Modal::Palette(_))) && !self.screen_field_open() && !self.field_gate() {
+            self.vim.dot_pending = DotPending::Kept { before };
+        }
+    }
+
+    /// A modal closed, by its own result or by a click off it. Vim keeps
+    /// each line its `:` closed with, Enter, Esc or abandoned (probes H1,
+    /// H6; plan M5b Deviations 13 and 17).
+    pub(crate) fn vim_line_closed(&mut self, popped: Option<&Modal>) {
+        if let Some(Modal::Palette(p)) = popped
+            && p.is_ex()
+        {
+            self.vim.cmdline_history.add(p.input());
+        }
+    }
+
+    /// Settles what the last event did to `.` (plan M5b Deviations 5–8),
+    /// now that its undo capture has run: a list change that changed
+    /// something becomes `.`; a change the palette ran leaves `.` as it
+    /// was; any other change since `.` was made makes it stale. The event
+    /// loop calls it right after each `capture_undo` (amendment A4.4), so a
+    /// change a later non-input event records is never credited to a key.
+    pub fn vim_settle_dot(&mut self) {
+        let now = self.history.changes();
+        let vim = &mut self.vim;
+        match std::mem::take(&mut vim.dot_pending) {
+            DotPending::Made { change, before } if now != before => vim.dot = Some(Dot { change, at: now }),
+            DotPending::Kept { before } => {
+                if let Some(dot) = vim.dot.as_mut()
+                    && dot.at == before
+                {
+                    dot.at = now;
+                }
+            }
+            _ => {}
+        }
+        if vim.dot.is_some_and(|d| d.at != now) {
+            vim.dot = None;
+        }
+    }
+
+    /// The actions only vim's keys make (`App::apply` hands them here).
+    pub(super) fn apply_vim(&mut self, action: Action) -> bool {
+        match action {
+            Action::WriteQuit | Action::ForceWrite { quit: true } => {
+                if !self.editor_holds_unsaved() {
+                    return self.apply(Action::ForceQuit);
+                }
+                if self.editor.slug.is_none() {
+                    return self.apply(Action::PromptSaveScratch(Box::new(Action::ForceQuit)));
+                }
+                // A failed write keeps the app open.
+                let force = matches!(action, Action::ForceWrite { .. });
+                self.save_request_checked(Some(Action::ForceQuit), force)
+            }
+            Action::ForceWrite { quit: false } => self.save_request_checked(None, true),
+            Action::OpenExPalette => {
+                use crate::components::palette::PaletteState;
+                let scope = self.ex_scope();
+                self.vim.ex_over_visual |= self.profile() == KeyProfile::Vim
+                    && self.focus == PaneId::Response
+                    && self.session.response.line_selection();
+                self.push_modal(Modal::Palette(PaletteState::new_ex(
+                    &self.usage,
+                    crate::usage::now(),
+                    scope,
+                    self.vim.cmdline_history.lines(),
+                )));
+                true
+            }
+            Action::NoHlSearch => {
+                // Vim's `:noh` turns the highlight off in every window: the
+                // one memory every engine borrows (plan M5b Deviation 20).
+                self.session.response.no_hlsearch(&mut self.vim.search_memory);
+                true
+            }
+            Action::ResponseFind(crate::action::ResponseFind::Next { reverse, count }) => {
+                self.session.response.find_next(reverse, count, &mut self.vim.search_memory)
+            }
+            Action::ResponseFind(crate::action::ResponseFind::Word { backward, count }) => {
+                self.session.response.find_word(backward, count, &mut self.vim.search_memory)
+            }
+            Action::TreeFold { op, count } => self.session.response.fold(op, count),
+            Action::ResponseMove(m) => self.session.response.motion(m),
+            Action::ResponseExtend(m) => self.session.response.extend(m),
+            Action::ResponseLines(op) => {
+                let had = self.session.response.line_selection();
+                match self.session.response.lines(op) {
+                    Some(lines) => {
+                        let n = lines.len();
+                        self.vim.glue.yank_lines(&lines);
+                        // Vim's `'report'` (2): three lines or more say so.
+                        if n >= 3 {
+                            self.update(Action::ShowToast(format!("{n} lines yanked"), ToastKind::Info));
+                        }
+                        true
+                    }
+                    None => had != self.session.response.line_selection() || op == crate::action::LinesOp::Swap,
+                }
+            }
+            Action::RepeatChange { count } => {
+                let Some(dot) = self.vim.dot else { return false };
+                let change = crate::keyroute::Change { count: count.or(dot.change.count), ..dot.change };
+                let surface = self.surface();
+                let Some(steps) = crate::keyroute::replay(change, surface, self.repeat_cap(surface)) else {
+                    return false;
+                };
+                let before = self.history.changes();
+                let ran = self.run_steps(steps);
+                // The repeat is the change now, its count the new one
+                // (probes D3, D11).
+                self.vim.dot_pending = DotPending::Made { change, before };
+                ran.changed
+            }
+            Action::SidebarFold { op, count } => {
+                use crate::components::sidebar::FoldChange;
+                let real = self.sidebar.fold_cursor();
+                match self.sidebar.fold_change(op, count, real.as_ref(), &self.expanded(), &self.active_space()) {
+                    FoldChange::NoFold => self.update(Action::ShowToast(table::NO_FOLD.into(), ToastKind::Info)),
+                    FoldChange::Same => false,
+                    FoldChange::Expanded(set) => {
+                        if let Some(p) = self.project_mut() {
+                            // The setter persists, as `h` and `l` do: a fold
+                            // is no undo step (plan M5b Deviation 12).
+                            p.set_expanded(set);
+                        }
+                        self.refresh_sidebar();
+                        if let Some(real) = real {
+                            self.sidebar.show_fold_cursor(real);
+                        }
+                        true
+                    }
+                }
+            }
+            other => {
+                debug_assert!(false, "{other:?} is not a vim action");
+                false
             }
         }
     }
