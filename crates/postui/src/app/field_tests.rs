@@ -48,6 +48,69 @@ fn enter_opens_the_url_in_normal_and_x_deletes_under_the_caret() {
     assert_eq!(app.vim.glue.session(), FieldSession::None);
 }
 
+/// Vim's Esc in Normal moves nothing: on the closed URL line, the method
+/// badge and a closed table it leaves the selection where it is.
+#[test]
+fn esc_on_a_closed_url_line_method_or_table_stays_put() {
+    let mut app = url_line("https://x.test/ab");
+    feed(&mut app, "i<Esc><Esc>");
+    assert!(!app.field_caret().is_live(), "the second Esc closed the line");
+    feed(&mut app, "<Esc>");
+    assert_eq!(app.editor.sub_focus, SubFocus::Url, "the URL line stays selected");
+    feed(&mut app, "h<Esc>");
+    assert_eq!(app.editor.sub_focus, SubFocus::Method, "the method badge stays selected");
+    feed(&mut app, "j");
+    assert_eq!(app.editor.sub_focus, SubFocus::Content);
+    let row = app.editor.table.selected.expect("j lands on a row");
+    feed(&mut app, "<Esc>");
+    assert_eq!(app.editor.table.selected, Some(row), "the table row stays selected");
+    feed(&mut app, "k");
+    assert_eq!(app.editor.table.selected, Some(row - 1), "and k goes on from it");
+}
+
+/// Vim's `cc`, `S` and `C` on the closed URL line change it as on an open
+/// one: the text goes (from the caret for `C`) into the unnamed register,
+/// and the line opens in Insert.
+#[test]
+fn cc_s_and_c_change_the_closed_url_line() {
+    for (keys, want, register) in [("cc", "Z", "ab cd\n"), ("S", "Z", "ab cd\n"), ("C", "aZ", "b cd")] {
+        let mut app = url_line("ab cd");
+        app.editor.url.set_cursor(1);
+        feed(&mut app, keys);
+        assert!(app.field_caret().is_live(), "{keys}: the line opened");
+        assert_eq!(app.mode_indicator(), Some("INSERT"), "{keys}");
+        feed(&mut app, "Z");
+        assert_eq!(url(&app).0, want, "{keys}");
+        assert_eq!(app.vim.glue.unnamed_text(), register, "{keys}: the register");
+        feed(&mut app, "<Esc>u");
+        assert_eq!(url(&app).0, "ab cd", "{keys}: one undo in the field takes it back");
+    }
+    // The engine reads the count: `2cc` on the one line fails, as Vim's
+    // does (probed: the line and the register unchanged).
+    let mut app = url_line("ab cd");
+    feed(&mut app, "2cc");
+    assert_eq!((url(&app).0, app.mode_indicator()), ("ab cd", Some("NORMAL")));
+}
+
+/// The sidebar's dirty dot follows the field's text key by key: on with
+/// the first typed char, off again once `u` brings back the saved text,
+/// while the field is still open (Vim clears 'modified' at once).
+#[test]
+fn the_dirty_dot_follows_an_undo_back_to_the_saved_text() {
+    // The main loop's tick refreshes the dot between keys.
+    for f in [Fixture::UrlLine, Fixture::Body] {
+        let mut app = vim(f);
+        app.editor.mark_saved();
+        feed(&mut app, "Ax");
+        app.update(Action::Tick);
+        assert!(app.sidebar.open_dirty, "{f:?}: typing dirties");
+        feed(&mut app, "<Esc>u");
+        app.update(Action::Tick);
+        assert!(app.field_caret().is_live(), "{f:?}: the field is still open");
+        assert!(!app.sidebar.open_dirty, "{f:?}: the dot goes with the undo");
+    }
+}
+
 /// Spec §5.6 and plan M3a Deviation 12.
 #[test]
 fn the_url_opening_keys_seat_insert() {

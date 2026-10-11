@@ -462,6 +462,27 @@ fn the_jq_bar_types_through_the_engine_as_one_app_step() {
     assert_eq!(app.session.response.jq_text(), "", "one undo takes the whole edit back");
 }
 
+/// Reopening the bar over an applied filter puts the caret after its last
+/// character, as the first open does: typed text appends, and `ctrl+u`
+/// takes the typed text, then the line before it (Vim's Insert `ctrl+u`
+/// with 'backspace' "start").
+#[test]
+fn reopening_the_jq_bar_seats_the_caret_after_the_filter() {
+    let mut app = vim_app(Fixture::ResponseLines);
+    app.update(Action::OpenJqBar);
+    draw(&mut app);
+    feed(&mut app, ".count<CR>");
+    assert!(!app.session.response.jq_focused(), "Enter applies and leaves the bar");
+    feed_key(&mut app, KeyEvent::new(KeyCode::Char('q'), KeyModifiers::ALT));
+    assert!(app.session.response.jq_focused(), "alt+q reopens the bar");
+    feed(&mut app, "X");
+    assert_eq!(app.session.response.jq_text(), ".countX");
+    feed(&mut app, "<C-u>");
+    assert_eq!(app.session.response.jq_text(), ".count", "the typed X");
+    feed(&mut app, "<C-u>");
+    assert_eq!(app.session.response.jq_text(), "", "then the line before it");
+}
+
 /// Plan M3b Deviation 5 (the user's decision): ctrl+backspace off a path
 /// token falls back to the input's word delete in vim as in arrows.
 #[test]

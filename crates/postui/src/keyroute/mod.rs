@@ -37,6 +37,10 @@ pub enum Step {
     /// If this event opens a field, open it so (spec §3.1; plan M3a
     /// Deviation 3). Applied by the end-of-event sync.
     OpenAs(engine_glue::OpenAs),
+    /// Bring the engine session in line with the caret now, not at the
+    /// end of the event: the engine keys after it reach the field a key
+    /// before it opened (`Intent::Edit`).
+    Sync,
 }
 
 /// What the router made of a key.
@@ -338,6 +342,13 @@ pub(crate) fn expand(b: &table::Binding, count: Option<usize>, cap: usize) -> Ve
             }
         }
         Intent::Open { key, seat } => vec![Step::OpenAs(engine_glue::OpenAs::Insert(seat)), Step::Key(key.event())],
+        // The engine reads the count as Vim does: `2cc` on one line.
+        Intent::Edit { key, keys } => {
+            let mut steps = vec![Step::OpenAs(engine_glue::OpenAs::Normal), Step::Key(key.event()), Step::Sync];
+            let typed = count.map_or_else(|| keys.to_string(), |n| format!("{n}{keys}"));
+            steps.extend(notation::parse(&typed).into_iter().map(|t| Step::Engine(t.event())));
+            steps
+        }
         Intent::Note(text) => vec![note_step(text)],
         // The field closes (its own close, keeping the text), then the key
         // runs on the closed surface (plan M3b Deviation 7). A dialog's

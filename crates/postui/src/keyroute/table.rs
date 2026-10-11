@@ -65,6 +65,11 @@ pub enum Intent {
     /// today, and the end-of-event sync seats the engine (spec §5.6; plan
     /// M3a Deviation 12).
     Open { key: Named, seat: OpenSeat },
+    /// Open the field under the cursor in Normal (`key` opens it as it does
+    /// today), then type these keys into its engine with the count before
+    /// them: `cc`, `S` and `C` change the closed URL line as Vim's do, the
+    /// old text in the unnamed register.
+    Edit { key: Named, keys: &'static str },
     /// Reopen a dialog's selected text field (plan M3b Deviation 3): in
     /// Insert at this seat, or in Normal (`None`).
     Reopen(Option<OpenSeat>),
@@ -717,6 +722,13 @@ pub static TABLE: &[Binding] = &[
     row("a", Surfaces::URL_LINE, Intent::Open { key: ENTER, seat: OpenSeat::After }, CountRule::Ignore),
     row("I", Surfaces::URL_LINE, Intent::Open { key: ENTER, seat: OpenSeat::FirstNonBlank }, CountRule::Ignore),
     row("A", Surfaces::URL_LINE, Intent::Open { key: ENTER, seat: OpenSeat::End }, CountRule::Ignore),
+    row("cc", Surfaces::URL_LINE, Intent::Edit { key: ENTER, keys: "cc" }, CountRule::Pass),
+    row("S", Surfaces::URL_LINE, Intent::Edit { key: ENTER, keys: "S" }, CountRule::Pass),
+    row("C", Surfaces::URL_LINE, Intent::Edit { key: ENTER, keys: "C" }, CountRule::Pass),
+    // Vim's Esc in Normal moves nothing: on the method badge, the closed
+    // URL line and a table it keeps the selection where it is, where
+    // arrows' Esc steps out of the badge or line and deselects the row.
+    row("<Esc>", Surfaces::METHOD.or(Surfaces::URL_LINE).or(Surfaces::TABLE), Intent::Swallow, CountRule::Ignore),
     // Key list §7 and spec §4.5 (plan M4a Deviation 11): `/` is the same in
     // both profiles. Vim's `n` `N` are counted and follow `?`/`#`'s
     // direction; arrows' step down and up, as the ▼/▲ buttons do (plan M5a
@@ -1146,8 +1158,12 @@ mod tests {
             let tab = matches!(b.intent, Intent::Tab { .. });
             if b.count == CountRule::Pass {
                 assert!(
-                    edge || counted_verb || tab || matches!(b.intent, Intent::Motion(_) | Intent::Extend(_) | Intent::Counted(_)),
-                    "{}: Pass is for Edge rows, dd, p, the tab keys and the response's motions and counted actions",
+                    edge || counted_verb || tab || matches!(
+                        b.intent,
+                        Intent::Motion(_) | Intent::Extend(_) | Intent::Counted(_) | Intent::Edit { .. }
+                    ),
+                    "{}: Pass is for Edge rows, dd, p, the tab keys, the response's motions and counted actions, \
+                     and the engine's edits",
                     b.keys
                 );
             }

@@ -157,6 +157,7 @@ impl App {
         for step in steps {
             match step {
                 Step::OpenAs(open) => ran.open_as = Some(open),
+                Step::Sync => self.vim_sync_now(ran.open_as),
                 Step::Engine(ev) => match self.engine_key(ev) {
                     Some(r) => ran = ran.and(r),
                     None => break,

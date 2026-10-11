@@ -1635,13 +1635,14 @@ impl ModalStack {
         // commits the field onto the button row ("done"), and only on
         // that row is it the cancel. The footer says which one is under
         // the finger rather than letting one label stand for both.
-        if self.button_focus.is_some() && self.top().is_some_and(Modal::is_form) {
-            let verb = match self.top()? {
-                Modal::FieldsEditor(_) => "apply",
-                Modal::Prompt { .. } | Modal::NewProject { .. } | Modal::MultiPrompt { .. } => {
-                    "save"
-                }
-                _ => "confirm",
+        if let Some(aimed) = self.button_focus
+            && self.top().is_some_and(Modal::is_form)
+        {
+            // Enter runs the aimed button, so the chip names it: every
+            // form's row is Cancel and Confirm.
+            let verb = match aimed {
+                FormButton::Cancel => "cancel",
+                FormButton::Confirm => "confirm",
             };
             return Some(
                 [
@@ -6131,7 +6132,8 @@ mod tests {
 
     /// A one-field prompt's Esc cancels and its Enter confirms with the
     /// field open (spec §10 open question 2), so the footer says so there
-    /// and has no "done" or `⇧enter` chip; the button row keeps its own.
+    /// and has no "done" or `⇧enter` chip; the button row's Enter names the
+    /// aimed button.
     #[test]
     fn prompt_footer_says_cancel_in_a_field_and_on_the_buttons() {
         let mut m = prompt_stack();
@@ -6145,7 +6147,10 @@ mod tests {
         let chips = spelled(m.footer_chips().unwrap());
         assert!(chips.iter().any(|(k, l, _)| k == "esc" && l == "cancel"));
         assert!(chips.iter().any(|(k, l, _)| k == "\u{2191}" && l == "back"));
-        assert!(chips.iter().any(|(k, l, _)| k == "enter" && l == "save"));
+        assert!(chips.iter().any(|(k, l, _)| k == "enter" && l == "confirm"));
+        m.handle_key(key(KeyCode::Left)); // aims Cancel
+        let chips = spelled(m.footer_chips().unwrap());
+        assert!(chips.iter().any(|(k, l, _)| k == "enter" && l == "cancel"));
     }
 
     /// A selected form-modal field (closed to the resting stop, not yet

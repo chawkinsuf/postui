@@ -458,10 +458,16 @@ impl Glue {
     }
 
     /// The session's field lost the caret (piece 3 §4.2 `leave`). A
-    /// one-line state ends with it (§3.11 `end_session`).
+    /// one-line state ends with it (§3.11 `end_session`). A query box has
+    /// no Normal to leave into: its caret stays where it was, so the jq
+    /// bar reopens with it where it was left, as in arrows.
     pub fn leave(&mut self, buf: &mut FieldBuf<'_>) {
+        let keep = self.insert_only.then(|| buf.caret().col);
         target!(self, buf, |t| self.engine.leave(t));
-        if matches!(buf, FieldBuf::Line(_)) {
+        if let FieldBuf::Line(input) = buf {
+            if let Some(col) = keep {
+                input.set_cursor(col);
+            }
             self.line = BufState::new();
         }
         self.seen = None;

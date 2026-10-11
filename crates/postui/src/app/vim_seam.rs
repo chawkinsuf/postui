@@ -972,6 +972,12 @@ impl App {
         (self.vim.glue.owned() == Some(id)).then(|| self.vim.glue.edited(id.engine_kind()))
     }
 
+    /// A key's `Step::Sync`: the session follows the caret now, opened as
+    /// the key asked, so its engine keys reach the field it just opened.
+    pub(crate) fn vim_sync_now(&mut self, open_as: Option<OpenAs>) {
+        self.sync_session(open_as, Cause::Before);
+    }
+
     /// The app history took the session's edits as a step: what the fields
     /// hold now is where their next step starts (plan M3a Deviation 7).
     pub(crate) fn vim_flush(&mut self) {
