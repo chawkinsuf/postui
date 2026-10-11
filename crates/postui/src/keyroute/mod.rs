@@ -14,6 +14,10 @@ pub mod spell;
 pub mod table;
 
 pub use ctx::{EngineKind, EngineView, FieldCaret, FieldId, FieldSpell, KeyCtx, SpellCtx, Surface};
+/// How a step asks a field to open: part of the router's `Step`.
+pub use engine_glue::OpenAs;
+/// The most a count can say: the router's cap, which is the engine's.
+pub use crate::vim::engine::settings::MAX_COUNT;
 
 use crate::action::{Action, TabTo};
 use crate::config::KeyProfile;

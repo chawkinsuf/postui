@@ -216,7 +216,7 @@ fn a_click_opens_the_url_in_normal_where_clicked() {
 /// Review Focus 5 and spec §4.3.
 #[test]
 fn switching_profiles_with_a_field_open_keeps_its_text() {
-    use super::fields::Cause;
+    use super::vim_seam::Cause;
     let mut app = url_line("abc");
     feed(&mut app, "<CR>");
     app.use_profile(KeyProfile::Arrows);
@@ -235,7 +235,7 @@ fn switching_profiles_with_a_field_open_keeps_its_text() {
 /// not step the caret back off the end of the line.
 #[test]
 fn switching_to_arrows_in_insert_keeps_the_caret_at_the_end() {
-    use super::fields::Cause;
+    use super::vim_seam::Cause;
     let mut app = url_line("abc");
     feed(&mut app, "<CR>A");
     assert_eq!((app.mode_indicator(), url(&app)), (Some("INSERT"), ("abc", 3)));
@@ -287,7 +287,7 @@ fn text_replaced_under_a_session_rebases_it() {
 /// under Insert ctrl+o re-enters as Insert, as Insert itself does.
 #[test]
 fn a_rebase_under_insert_ctrl_o_resumes_insert() {
-    use super::fields::Cause;
+    use super::vim_seam::Cause;
     let mut app = url_line("abc");
     feed(&mut app, "<CR>A<C-o>");
     assert_eq!(app.mode_indicator(), Some("(insert)"));

@@ -4,7 +4,34 @@
 
 use super::*;
 use crate::keyroute::table::Surfaces;
-use crate::keyroute::{FieldCaret, FieldId, KeyCtx, Step, Surface};
+use crate::keyroute::{FieldCaret, FieldId, KeyCtx, OpenAs, Step, Surface};
+
+/// What routing one key did (spec §3.1): whether to redraw, the open mode
+/// a table row asked for (plan M3a Deviation 3), and whether a step other
+/// than the engine ran, which makes the end-of-event sync settle the
+/// session (spec §3.3: "a key the router ran itself").
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct Ran {
+    pub changed: bool,
+    pub open_as: Option<OpenAs>,
+    pub routed: bool,
+}
+
+impl Ran {
+    /// Today's routing ran.
+    pub(crate) fn routed(changed: bool) -> Self {
+        Self { changed, routed: true, open_as: None }
+    }
+
+    /// The router or the engine took the key.
+    pub(crate) fn consumed() -> Self {
+        Self { changed: true, ..Self::default() }
+    }
+
+    pub(crate) fn and(self, o: Ran) -> Self {
+        Self { changed: self.changed || o.changed, open_as: o.open_as.or(self.open_as), routed: self.routed || o.routed }
+    }
+}
 
 impl App {
     /// One snapshot of where `ev` lands (spec §3.2).
@@ -91,7 +118,7 @@ impl App {
     /// - the Variables screen: its left rows, the grid's rows and columns,
     ///   or the form's stops.
     pub(super) fn repeat_cap(&self, surface: Surface) -> usize {
-        use crate::vim::engine::settings::MAX_COUNT;
+        use crate::keyroute::MAX_COUNT;
         let most = match surface {
             Surface::Sidebar => self.sidebar.rows.len().saturating_mul(2),
             Surface::Table(_) => (self.editor.table_len() + 1).max(2),
@@ -124,8 +151,7 @@ impl App {
     /// spec §9 M1). A counted list verb is never repeated here: `{N}dd` and
     /// `{N}p` carry their count as one action, so `9p` with the wrong
     /// register is refused, and toasts, once.
-    pub(super) fn run_steps(&mut self, steps: Vec<Step>) -> super::fields::Ran {
-        use super::fields::Ran;
+    pub(super) fn run_steps(&mut self, steps: Vec<Step>) -> Ran {
         let surface = self.surface();
         let mut ran = Ran::default();
         for step in steps {
@@ -213,12 +239,12 @@ impl App {
             return None;
         }
         Some(match (self.live_engine_field(), self.field_caret()) {
-            (Some(id), _) => super::fields::mode_word(self.glue_of(id).mode()),
+            (Some(id), _) => super::vim_seam::mode_word(self.glue_of(id).mode()),
             // A screen field whose session has not synced yet (opened with
             // no event) shows the screen engine's mode, as before M3b: the
             // sync opens it in Normal.
             (None, FieldCaret::Live(id)) if !id.is_modal() && !id.insert_only() => {
-                super::fields::mode_word(self.glue.mode())
+                super::vim_seam::mode_word(self.glue.mode())
             }
             (None, FieldCaret::Live(_)) => "INSERT",
             (None, _) if matches!(self.surface(), Surface::ResponseLines(_)) => "V-LINE",

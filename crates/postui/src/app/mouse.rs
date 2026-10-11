@@ -42,7 +42,7 @@ impl App {
             MouseEventKind::Down(_) | MouseEventKind::Up(_) | MouseEventKind::Drag(MouseButton::Left)
         );
         if button {
-            self.sync_session(None, super::fields::Cause::Before);
+            self.sync_session(None, super::vim_seam::Cause::Before);
         }
         // The sweep in flight is the live field's own engine's: a dialog
         // field runs on the dialog engine (plan M3b Deviation 1).
@@ -57,7 +57,7 @@ impl App {
         };
         let changed = self.handle_mouse_inner(m);
         if button {
-            self.sync_session(None, super::fields::Cause::Mouse(how));
+            self.sync_session(None, super::vim_seam::Cause::Mouse(how));
         }
         // The op safety net at the event boundary, as in `handle_key`: a
         // drag release commits without an action and can bail between

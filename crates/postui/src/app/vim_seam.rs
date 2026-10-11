@@ -3,6 +3,7 @@
 //! Every method here is `impl App`. The engine itself is reached only
 //! through `keyroute::engine_glue`.
 
+use super::router::Ran;
 use super::*;
 use crate::config::KeyProfile;
 use crate::keyroute::engine_glue::{
@@ -12,33 +13,6 @@ use crate::keyroute::engine_glue::{
 use crate::keyroute::notation::Tok;
 use crate::keyroute::table::{self, Intent, Match};
 use crate::keyroute::{EngineKind, FieldCaret, FieldId, Step};
-
-/// What routing one key did (spec §3.1): whether to redraw, the open mode
-/// a table row asked for (plan M3a Deviation 3), and whether a step other
-/// than the engine ran, which makes the end-of-event sync settle the
-/// session (spec §3.3: "a key the router ran itself").
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct Ran {
-    pub changed: bool,
-    pub open_as: Option<OpenAs>,
-    pub routed: bool,
-}
-
-impl Ran {
-    /// Today's routing ran.
-    pub(crate) fn routed(changed: bool) -> Self {
-        Self { changed, routed: true, open_as: None }
-    }
-
-    /// The router or the engine took the key.
-    pub(crate) fn consumed() -> Self {
-        Self { changed: true, ..Self::default() }
-    }
-
-    pub(crate) fn and(self, o: Ran) -> Self {
-        Self { changed: self.changed || o.changed, open_as: o.open_as.or(self.open_as), routed: self.routed || o.routed }
-    }
-}
 
 /// What an event was, for the session's settle (spec §3.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,29 +34,6 @@ pub(crate) fn mode_word(mode: Mode) -> &'static str {
         Mode::Visual(Shape::Char) => "VISUAL",
         Mode::Visual(Shape::Line) => "V-LINE",
         Mode::Search(_) => "SEARCH",
-    }
-}
-
-/// `id`'s one-line buffer, or none when that field is not open, is the
-/// body, or is a modal's or the response pane's (those live elsewhere).
-/// Takes the parts of `App` that hold one, which leave the body free, so
-/// a carry out of the body can hold both (amendment C3). The one map from
-/// a screen field to its `LineInput`: `App::open_text_field_mut` reads it
-/// too.
-pub(super) fn line_buf<'a>(
-    id: FieldId,
-    url: &'a mut LineInput,
-    table: &'a mut crate::components::table_editor::TableEditorState,
-    varmanager: &'a mut VarManager,
-    settings: &'a mut crate::components::settings::SettingsTab,
-) -> Option<&'a mut LineInput> {
-    match id {
-        FieldId::Url => Some(url),
-        FieldId::TableCell { .. } => table.editing.as_mut().map(|e| &mut e.input),
-        FieldId::VmForm(_) => varmanager.form.editing.as_mut().map(|e| &mut e.input),
-        FieldId::VmGrid { .. } => varmanager.grid.editing.as_mut().map(|e| &mut e.input),
-        FieldId::Settings(_) => settings.editing.is_some().then(|| settings.input_mut()),
-        _ => None,
     }
 }
 

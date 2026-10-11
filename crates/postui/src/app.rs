@@ -2538,7 +2538,7 @@ impl App {
             FieldId::Jq | FieldId::Search => self.session.response.open_text_field_mut(),
             // A modal's fields are handled above; the body is no line, and
             // `line_buf` names neither.
-            id => fields::line_buf(id, &mut self.editor.url, &mut self.editor.table, &mut self.varmanager, &mut self.settings),
+            id => line_buf(id, &mut self.editor.url, &mut self.editor.table, &mut self.varmanager, &mut self.settings),
         }
     }
 
@@ -9669,7 +9669,7 @@ impl App {
         // A bracketed paste is an event of its own, so the session catches
         // up first, as a key's does: a body replaced since (`$EDITOR`)
         // rebases before the paste lands on it.
-        self.sync_session(None, fields::Cause::Before);
+        self.sync_session(None, vim_seam::Cause::Before);
         // A vim field the engine runs takes the paste itself (plan M3a
         // Deviation 13).
         if let Some(changed) = self.engine_paste(text) {
@@ -10338,10 +10338,10 @@ impl App {
         // The field session catches up first with whatever moved the caret
         // since the last event (an async result, a reload), then with what
         // this key did (spec §3.1).
-        self.sync_session(None, fields::Cause::Before);
+        self.sync_session(None, vim_seam::Cause::Before);
         let echo = self.key_echo();
         let ran = self.route_key(ev);
-        self.sync_session(ran.open_as, fields::Cause::Key { routed: ran.routed });
+        self.sync_session(ran.open_as, vim_seam::Cause::Key { routed: ran.routed });
         // A key that does nothing may still drop the pending keys the
         // footer echoes (a refused `<C-w>h`, `5gt` past the strip).
         let changed = ran.changed || self.key_echo() != echo;
@@ -10363,7 +10363,7 @@ impl App {
         changed || ended || noted || regated || asked
     }
 
-    fn route_key(&mut self, ev: KeyEvent) -> fields::Ran {
+    fn route_key(&mut self, ev: KeyEvent) -> router::Ran {
         let ev = crate::keys::normalize_super_keys(ev);
         // cmd+c — SUPER+c, from terminals that report it — is copy-only:
         // copy the live selection, otherwise nothing. It is deliberately
@@ -10374,7 +10374,7 @@ impl App {
             if let Some(text) = self.active_selection_text() {
                 self.copy_text_with_toast(&text, "Copied selection".to_string());
             }
-            return fields::Ran::routed(true);
+            return router::Ran::routed(true);
         }
         let combo = KeyCombo::from_event(&ev);
         // Each keymap read (here, in `key_ctx`, and in `handle_key_routed`
@@ -10395,17 +10395,17 @@ impl App {
         if modified && global == Some(Action::Quit) {
             if let Some(text) = self.active_selection_text() {
                 self.copy_text_with_toast(&text, "Copied selection".to_string());
-                return fields::Ran::routed(true);
+                return router::Ran::routed(true);
             }
-            return fields::Ran::routed(self.update(Action::Quit));
+            return router::Ran::routed(self.update(Action::Quit));
         }
 
         // A live row drag owns Escape: it cancels the drag, nothing else.
         if ev.code == KeyCode::Esc && self.sidebar.drag.is_some() {
-            return fields::Ran::routed(self.finish_sidebar_drag(false));
+            return router::Ran::routed(self.finish_sidebar_drag(false));
         }
         if ev.code == KeyCode::Esc && self.manage.list.drag.is_some() {
-            return fields::Ran::routed(self.finish_manage_drag(false));
+            return router::Ran::routed(self.finish_manage_drag(false));
         }
 
         // …and a live row drag owns the rest of the keyboard: with a row
@@ -10416,7 +10416,7 @@ impl App {
         // and before the per-screen routes. The footer says as much: while
         // a drag is live its chips are the cancel keys and nothing else.
         if self.sidebar.drag.is_some() || self.manage.list.drag.is_some() {
-            return fields::Ran::routed(false);
+            return router::Ran::routed(false);
         }
 
         // Plan M3b Deviation 4 (the user's decision): ctrl+r shows or hides
@@ -10428,17 +10428,17 @@ impl App {
             && !ev.modifiers.contains(KeyModifiers::ALT)
             && self.modals.toggle_secret_reveal()
         {
-            return fields::Ran::routed(true);
+            return router::Ran::routed(true);
         }
 
         // The key router (piece 4 spec §3.1): one snapshot of where the
         // key lands, one lookup. What it declines takes today's routing.
         let ctx = self.key_ctx(&ev);
         match self.router.resolve(ev, &ctx) {
-            crate::keyroute::Resolved::Declined => fields::Ran::routed(self.handle_key_routed(ev)),
+            crate::keyroute::Resolved::Declined => router::Ran::routed(self.handle_key_routed(ev)),
             // The pending keys grew (the footer echoes them), or vim
             // swallowed the key.
-            crate::keyroute::Resolved::Consumed => fields::Ran::consumed(),
+            crate::keyroute::Resolved::Consumed => router::Ran::consumed(),
             crate::keyroute::Resolved::Run(steps) => {
                 let before = self.history.changes();
                 let ran = self.run_steps(steps);
@@ -11410,7 +11410,7 @@ impl App {
             // the engine (final review C-1). Without it the palette's Undo
             // skipped the engine, the gate recorded nothing, and an older app
             // step landed over the typed text.
-            self.sync_session(None, fields::Cause::Before);
+            self.sync_session(None, vim_seam::Cause::Before);
         }
         if let Some(id) = &res.usage {
             self.usage.record(id, crate::usage::now());
@@ -11783,10 +11783,34 @@ fn screen_escape_whitelist(action: &Action) -> bool {
     )
 }
 
+/// `id`'s one-line buffer, or none when that field is not open, is the
+/// body, or is a modal's or the response pane's (those live elsewhere).
+/// Takes the parts of `App` that hold one, which leave the body free, so
+/// a carry out of the body can hold both (amendment C3). The one map from
+/// a screen field to its `LineInput`: `App::open_text_field_mut` and the
+/// vim seam's sessions read it.
+fn line_buf<'a>(
+    id: crate::keyroute::FieldId,
+    url: &'a mut LineInput,
+    table: &'a mut crate::components::table_editor::TableEditorState,
+    varmanager: &'a mut VarManager,
+    settings: &'a mut crate::components::settings::SettingsTab,
+) -> Option<&'a mut LineInput> {
+    use crate::keyroute::FieldId;
+    match id {
+        FieldId::Url => Some(url),
+        FieldId::TableCell { .. } => table.editing.as_mut().map(|e| &mut e.input),
+        FieldId::VmForm(_) => varmanager.form.editing.as_mut().map(|e| &mut e.input),
+        FieldId::VmGrid { .. } => varmanager.grid.editing.as_mut().map(|e| &mut e.input),
+        FieldId::Settings(_) => settings.editing.is_some().then(|| settings.input_mut()),
+        _ => None,
+    }
+}
+
 mod landing;
 mod mouse;
 mod router;
-mod fields;
+mod vim_seam;
 mod panes;
 mod verbs;
 #[cfg(test)]
