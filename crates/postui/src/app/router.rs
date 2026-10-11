@@ -47,7 +47,7 @@ impl App {
             // A live field's keys go to its engine (vim), on either glue, or
             // type (arrows, and a field before its session syncs): no keymap
             // letter applies.
-            let engine = self.live_engine_field().map(|id| self.glue_of(id).view());
+            let engine = self.vim_engine_view();
             return KeyCtx {
                 profile,
                 surface,
@@ -188,17 +188,9 @@ impl App {
     /// The spelling context of where the keyboard is now (spec §4.6).
     pub fn spell_ctx(&self) -> crate::keyroute::SpellCtx {
         use crate::keyroute::FieldSpell;
-        use crate::keyroute::engine_glue::Mode;
         let surface = self.surface();
-        let field = match self.live_engine_field() {
-            Some(id) => {
-                let glue = self.glue_of(id);
-                if glue.mode() == Mode::Normal && !glue.view().pending {
-                    FieldSpell::Normal(crate::keyroute::table::field_class(id, surface))
-                } else {
-                    FieldSpell::Typing
-                }
-            }
+        let field = match self.vim_field_spell(surface) {
+            Some(field) => field,
             None if self.field_caret().is_live() => FieldSpell::Typing,
             None => FieldSpell::None,
         };
@@ -216,51 +208,12 @@ impl App {
                 return pending;
             }
         }
-        if let Some(id) = self.live_engine_field() {
-            let echo = self.glue_of(id).echo();
-            if !echo.is_empty() {
-                return echo;
-            }
+        let echo = self.vim_field_echo();
+        if !echo.is_empty() {
+            return echo;
         }
         // Third, the recording note (spec §3.8, §5.11).
         self.router.recording().map_or_else(String::new, |reg| format!("recording @{reg} — not supported"))
-    }
-
-    /// The vim mode word (spec §3.8): what is taking the keys. A field with
-    /// a live session shows its engine's mode, on either glue (plan M3b
-    /// Deviation 1); a screen field not synced yet shows the screen
-    /// engine's; any other field with the caret types (`INSERT`: a dialog
-    /// field before its session opens, which opens it in Insert, and the
-    /// query boxes); the response's line selection is `V-LINE` (plan M5a
-    /// Deviation 18); everything else is `NORMAL`. `None` in the arrows
-    /// profile.
-    pub fn mode_indicator(&self) -> Option<&'static str> {
-        if self.profile() != crate::config::KeyProfile::Vim {
-            return None;
-        }
-        Some(match (self.live_engine_field(), self.field_caret()) {
-            (Some(id), _) => super::vim_seam::mode_word(self.glue_of(id).mode()),
-            // A screen field whose session has not synced yet (opened with
-            // no event) shows the screen engine's mode, as before M3b: the
-            // sync opens it in Normal.
-            (None, FieldCaret::Live(id)) if !id.is_modal() && !id.insert_only() => {
-                super::vim_seam::mode_word(self.glue.mode())
-            }
-            (None, FieldCaret::Live(_)) => "INSERT",
-            (None, _) if matches!(self.surface(), Surface::ResponseLines(_)) => "V-LINE",
-            (None, _) => "NORMAL",
-        })
-    }
-
-    /// The mode and the echo as the footer paints them: `NORMAL  3`.
-    pub fn vim_status(&self) -> Option<String> {
-        let mode = self.mode_indicator()?;
-        let echo = self.key_echo();
-        Some(if echo.is_empty() {
-            mode.to_string()
-        } else {
-            format!("{mode}  {echo}")
-        })
     }
 
     /// The thing the keys go to right now (spec §3.3).

@@ -183,7 +183,7 @@ pub struct Editor {
     /// The overlays now at the front of `body.highlights` (see `Overlay`).
     body_hl_overlays: Vec<Overlay>,
     /// The engine's search prompt and matches for the next draw, mirrored
-    /// in by `App::mirror_body_search` (spec §5.6). Empty in arrows.
+    /// in by `App::vim_mirror_body_search` (spec §5.6). Empty in arrows.
     pub(crate) body_search: crate::keyroute::engine_glue::BodySearch,
     /// The fixed end of an in-progress body selection: planted by a left
     /// click (mouse) or the first shifted motion (keyboard), consumed by

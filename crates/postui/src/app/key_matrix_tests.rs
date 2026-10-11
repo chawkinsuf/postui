@@ -759,7 +759,7 @@ fn check(app: &App, e: Expect) -> Result<(), String> {
         ResponsePaged => app.session.response.view().is_some_and(|v| v.scroll > 0 && v.cursor == v.scroll),
         ResponseTop(n) => app.session.response.view().is_some_and(|v| v.scroll == n),
         ResponseBottom(n) => app.session.response.view().is_some_and(|v| v.scroll + v.height() - 1 == n),
-        Unnamed(s) => app.glue.unnamed_text() == s,
+        Unnamed(s) => app.vim.glue.unnamed_text() == s,
         ManageCursor(n) => app.manage.list.cursor == n,
         ManageFocus(f) => app.manage.list.focus == f,
         DetailAim(row, col) => {
@@ -820,7 +820,7 @@ fn check(app: &App, e: Expect) -> Result<(), String> {
         PaletteRefused(t) => matches!(app.modals.top(), Some(Modal::Palette(p)) if p.refused() == Some(t)),
         ModalOpen => !app.modals.is_empty(),
         ScreenIs(s) => app.screen == s,
-        BodyHl(on) => app.search_memory.hlsearch() == on,
+        BodyHl(on) => app.vim.search_memory.hlsearch() == on,
     };
     ok.then_some(()).ok_or_else(|| {
         format!(
@@ -974,7 +974,7 @@ pub(super) fn feed(app: &mut App, keys: &str) {
     for ev in crate::keyroute::notation::events(keys) {
         app.handle_key(ev);
         app.capture_undo();
-        app.settle_dot();
+        app.vim_settle_dot();
         draw(app);
     }
 }

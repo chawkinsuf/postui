@@ -115,13 +115,13 @@ fn a_prompt_opens_in_insert_and_esc_twice_cancels() {
     let mut app = vim_app(Fixture::SidebarThree);
     feed(&mut app, "r");
     assert_eq!(app.mode_indicator(), Some("INSERT"));
-    assert_eq!(app.modal_glue.session(), FieldSession::Live(FieldId::ModalInput(0)));
+    assert_eq!(app.vim.modal_glue.session(), FieldSession::Live(FieldId::ModalInput(0)));
     feed(&mut app, "<Esc>");
     assert_eq!(app.mode_indicator(), Some("NORMAL"));
     assert!(!app.modals.is_empty());
     feed(&mut app, "<Esc>");
     assert!(app.modals.is_empty());
-    assert_eq!(app.modal_glue.session(), FieldSession::None);
+    assert_eq!(app.vim.modal_glue.session(), FieldSession::None);
     assert!(has_request(&app, "main/beta"), "nothing renamed");
 }
 
@@ -235,7 +235,7 @@ fn the_palette_over_a_normal_url_leaves_it_as_it_was() {
     assert_eq!(app.editor.url.text(), "a");
     feed(&mut app, ":");
     assert!(matches!(app.modals.top(), Some(Modal::Palette(_))));
-    assert_eq!(app.glue.session(), FieldSession::Parked(FieldId::Url));
+    assert_eq!(app.vim.glue.session(), FieldSession::Parked(FieldId::Url));
     feed(&mut app, "zz<Esc>");
     assert!(app.modals.is_empty());
     assert_eq!(app.mode_indicator(), Some("NORMAL"));
@@ -269,7 +269,7 @@ fn tab_carries_insert_between_a_forms_fields() {
     draw(&mut app);
     feed(&mut app, "ab<Tab>cd");
     assert_eq!(app.mode_indicator(), Some("INSERT"));
-    assert_eq!(app.modal_glue.session(), FieldSession::Live(FieldId::ModalInput(1)));
+    assert_eq!(app.vim.modal_glue.session(), FieldSession::Live(FieldId::ModalInput(1)));
     assert!(prompt_text(&app).ends_with("cd"), "{}", prompt_text(&app));
 }
 
@@ -327,14 +327,14 @@ fn a_popped_prompt_leaves_the_form_under_it_alone() {
         kind: PromptKind::NewRequest,
         revealed: false,
     });
-    app.catch_up_field_session();
+    app.vim_catch_up();
     assert_eq!(app.mode_indicator(), Some("INSERT"));
     app.update(Action::CancelTopModal);
-    app.catch_up_field_session();
+    app.vim_catch_up();
     assert!(matches!(app.modals.top(), Some(Modal::MultiPrompt { .. })));
     assert_eq!(app.modals.text_input_mut(0).map(|i| i.cursor()), caret, "the form's field kept its caret");
-    assert_eq!(app.modal_glue.session(), FieldSession::None);
-    assert_eq!(app.modal_session, None);
+    assert_eq!(app.vim.modal_glue.session(), FieldSession::None);
+    assert_eq!(app.vim.modal_session, None);
 }
 
 /// The arrows profile has no dialog sessions: a prompt types as on main.
@@ -343,7 +343,7 @@ fn arrows_dialogs_still_type_modelessly() {
     let mut app = arrows_app(Fixture::SidebarThree);
     feed(&mut app, "rx");
     assert_eq!(prompt_text(&app), "betax");
-    assert_eq!(app.modal_glue.session(), FieldSession::None);
+    assert_eq!(app.vim.modal_glue.session(), FieldSession::None);
     assert_eq!(app.mode_indicator(), None);
 }
 
@@ -381,7 +381,7 @@ fn the_palette_query_types_through_the_engine() {
     let Some(Modal::Palette(p)) = app.modals.top() else { panic!("the palette") };
     assert_eq!(p.input(), "a");
     assert_eq!(app.mode_indicator(), Some("INSERT"));
-    assert_eq!(app.modal_glue.session(), FieldSession::Live(FieldId::Palette));
+    assert_eq!(app.vim.modal_glue.session(), FieldSession::Live(FieldId::Palette));
     feed(&mut app, "<C-w>");
     let Some(Modal::Palette(p)) = app.modals.top() else { panic!("the palette") };
     assert_eq!(p.input(), "", "ctrl+w is the engine's Insert key");
@@ -397,7 +397,7 @@ fn a_query_box_types_letters_and_esc_closes_it() {
     assert!(app.toasts.messages().is_empty(), "no macro note");
     feed(&mut app, "<Esc>");
     assert!(app.modals.is_empty());
-    assert_eq!(app.modal_glue.session(), FieldSession::None);
+    assert_eq!(app.vim.modal_glue.session(), FieldSession::None);
 }
 
 /// Key list D.picker: ctrl+n and ctrl+p move the highlight.
@@ -450,7 +450,7 @@ fn the_jq_bar_types_through_the_engine_as_one_app_step() {
     feed(&mut app, ".x");
     assert_eq!(app.session.response.jq_text(), ".x");
     assert_eq!(app.mode_indicator(), Some("INSERT"));
-    assert_eq!(app.glue.session(), FieldSession::Live(FieldId::Jq));
+    assert_eq!(app.vim.glue.session(), FieldSession::Live(FieldId::Jq));
     assert_eq!(app.history.undo_len(), 0, "the engine's typing holds the gate");
     feed_key(&mut app, KeyEvent::new(KeyCode::Backspace, KeyModifiers::CONTROL));
     assert_eq!(app.session.response.jq_text(), ".", "the segment went");
@@ -508,7 +508,7 @@ fn the_jq_bars_tab_completes_a_quoted_key_in_vim() {
     draw(&mut app);
     feed(&mut app, ".my<Tab>");
     assert_eq!(app.session.response.jq_text(), ".\"my key\"");
-    assert_eq!(app.glue.session(), FieldSession::Live(FieldId::Jq));
+    assert_eq!(app.vim.glue.session(), FieldSession::Live(FieldId::Jq));
     feed(&mut app, "z");
     assert_eq!(app.session.response.jq_text(), ".\"my key\"z", "the engine types on after the rewrite");
 }
@@ -559,7 +559,7 @@ fn a_click_from_the_jq_bar_into_the_url_does_not_carry_insert_only() {
     app.update(Action::OpenJqBar);
     draw(&mut app);
     feed(&mut app, ".");
-    assert_eq!(app.glue.session(), FieldSession::Live(FieldId::Jq));
+    assert_eq!(app.vim.glue.session(), FieldSession::Live(FieldId::Jq));
     let area = app.editor.last_url_text_area.expect("the URL line was drawn");
     app.handle_mouse(ratatui::crossterm::event::MouseEvent {
         kind: ratatui::crossterm::event::MouseEventKind::Down(ratatui::crossterm::event::MouseButton::Left),
@@ -567,7 +567,7 @@ fn a_click_from_the_jq_bar_into_the_url_does_not_carry_insert_only() {
         row: area.y,
         modifiers: KeyModifiers::NONE,
     });
-    assert_eq!(app.glue.session(), FieldSession::Live(FieldId::Url));
+    assert_eq!(app.vim.glue.session(), FieldSession::Live(FieldId::Url));
     assert_eq!(app.mode_indicator(), Some("NORMAL"));
     feed(&mut app, "x");
     assert_eq!(app.editor.url.text(), "b", "Normal's x deletes");

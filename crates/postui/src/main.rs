@@ -262,7 +262,7 @@ async fn run(
                             }
                             Event::FocusGained => {
                                 redraw |= app.update(Action::ReloadProjectFiles);
-                                app.catch_up_field_session();
+                                app.vim_catch_up();
                             }
                             // The window lost focus with a button possibly
                             // still held: the release will land somewhere
@@ -287,7 +287,7 @@ async fn run(
                 redraw |= app.update(action);
                 // Keys and clicks sync the vim field session themselves;
                 // an async result can move the caret or raise a modal too.
-                app.catch_up_field_session();
+                app.vim_catch_up();
             }
             // Adaptive tick period: ~60fps while an animation is easing so
             // motion reads as smooth (a short, eased move sampled at 33ms
@@ -314,7 +314,7 @@ async fn run(
                 other => debug_assert!(false, "not a terminal action: {other:?}"),
             }
             // The `$EDITOR` round-trip replaced the body under its session.
-            app.catch_up_field_session();
+            app.vim_catch_up();
             redraw = true;
         }
 
@@ -326,7 +326,7 @@ async fn run(
         // What this iteration did to `.`, settled now that its change is
         // captured (plan M5b Deviation 8): a change a later event records
         // is never credited to this one's key.
-        app.settle_dot();
+        app.vim_settle_dot();
     }
     Ok(())
 }

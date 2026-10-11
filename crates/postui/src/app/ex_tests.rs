@@ -324,10 +324,10 @@ fn the_line_edits_and_closes() {
 fn noh_clears_the_body_highlight() {
     let mut app = vim(Fixture::Body);
     feed(&mut app, "/a<CR>");
-    assert!(app.search_memory.hlsearch());
+    assert!(app.vim.search_memory.hlsearch());
     feed(&mut app, ":noh<CR>");
     assert!(app.modals.is_empty());
-    assert!(!app.search_memory.hlsearch());
+    assert!(!app.vim.search_memory.hlsearch());
     assert!(app.field_caret().is_live(), "the body is not a field CloseField closes");
 }
 
@@ -472,14 +472,14 @@ fn the_commands_chip_opens_the_palette_it_spells() {
 fn the_line_keeps_its_history() {
     let mut app = vim(Fixture::SidebarThree);
     feed(&mut app, ":abc<Esc>:noh<CR>:abc<Esc>");
-    assert_eq!(app.cmdline_history.lines(), ["noh", "abc"]);
+    assert_eq!(app.vim.cmdline_history.lines(), ["noh", "abc"]);
     feed(&mut app, ":<Up>");
     assert_eq!(palette(&app).input(), "abc");
     assert_eq!(app.mode_indicator(), Some("INSERT"), "still typing");
     feed(&mut app, "<Up>");
     assert_eq!(palette(&app).input(), "noh");
     feed(&mut app, "<Esc>:<BS>");
-    assert_eq!(app.cmdline_history.lines(), ["abc", "noh"]);
+    assert_eq!(app.vim.cmdline_history.lines(), ["abc", "noh"]);
 }
 
 /// The M5b code review's first finding: a click off the line abandons
@@ -490,7 +490,7 @@ fn a_click_off_the_line_keeps_it() {
     feed(&mut app, ":send");
     click(&mut app, crate::hit::Hit::ModalOutside);
     assert!(app.modals.is_empty());
-    assert_eq!(app.cmdline_history.lines(), ["send"]);
+    assert_eq!(app.vim.cmdline_history.lines(), ["send"]);
 }
 
 /// Review Focus 3: a recalled line runs what it spells, as typed: a verb

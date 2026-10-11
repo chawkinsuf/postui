@@ -21,8 +21,7 @@ impl App {
     ///   pane under the pointer. While a modal is open, wheel is a no-op
     ///   here — modal-list scrolling is a later task.
     pub fn handle_mouse(&mut self, m: ratatui::crossterm::event::MouseEvent) -> bool {
-        use crate::keyroute::engine_glue::Settled;
-        use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+        use ratatui::crossterm::event::MouseEventKind;
         // Where the keyboard is before this event, as `handle_key` learns
         // it: a click's focus change counts for `<C-w>l` and `p` (plan M4a
         // Deviation 6).
@@ -32,41 +31,14 @@ impl App {
         if matches!(m.kind, MouseEventKind::Down(_)) {
             self.router.clear();
         }
-        // A button can open, move or close a field; motion and the wheel
-        // cannot, so only a button event syncs the session (spec §3.1).
-        // Of the drags only the left button's sweeps a selection: some
-        // terminals (Ghostty) report hover as `Drag(Right)`, and each sync
-        // reads the whole body (final review T4).
-        let button = matches!(
-            m.kind,
-            MouseEventKind::Down(_) | MouseEventKind::Up(_) | MouseEventKind::Drag(MouseButton::Left)
-        );
-        if button {
-            self.sync_session(None, super::vim_seam::Cause::Before);
-        }
-        // The sweep in flight is the live field's own engine's: a dialog
-        // field runs on the dialog engine (plan M3b Deviation 1).
-        let sweeping = self.live_engine_field().is_some_and(|id| self.glue_of(id).sweeping());
-        let how = match m.kind {
-            MouseEventKind::Down(MouseButton::Left) => Some(Settled::Click),
-            MouseEventKind::Drag(MouseButton::Left) => Some(Settled::Sweep),
-            MouseEventKind::Up(MouseButton::Left) => {
-                Some(if sweeping { Settled::Release } else { Settled::Click })
-            }
-            _ => None,
-        };
+        let edge = self.vim_mouse_start(&m);
         let changed = self.handle_mouse_inner(m);
-        if button {
-            self.sync_session(None, super::vim_seam::Cause::Mouse(how));
-        }
+        self.vim_mouse_end(edge);
         // The op safety net at the event boundary, as in `handle_key`: a
         // drag release commits without an action and can bail between
         // `begin_op` and its record.
         self.op_in_flight = false;
-        let ended = self.end_visual_off_response();
-        // The response's view shows the app's last pattern (plan M5b
-        // Deviation 20), as in `handle_key`.
-        self.session.response.follow_last_pattern(&self.search_memory);
+        let ended = self.vim_event_end();
         let noted = self.toast_response_note();
         self.arm_pending_toasts();
         // Same reason as `handle_key`: a click that only pops a modal
@@ -1089,7 +1061,7 @@ impl App {
     /// match cycle, exactly as `n`/`N` do.
     fn step_response_search(&mut self, delta: i32) -> bool {
         self.update(Action::FocusPane(PaneId::Response));
-        self.session.response.step_search(delta, &mut self.search_memory);
+        self.with_response_search(|response, memory| response.step_search(delta, memory));
         self.update(Action::Render)
     }
 

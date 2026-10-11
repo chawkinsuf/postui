@@ -40,13 +40,13 @@ fn a_refused_count_gt_in_an_open_field_keeps_it_open() {
     app.capture_undo();
     draw(&mut app);
     feed(&mut app, "<CR>");
-    assert_eq!(app.glue.session(), FieldSession::Live(FieldId::Url));
+    assert_eq!(app.vim.glue.session(), FieldSession::Live(FieldId::Url));
     assert_eq!(app.mode_indicator(), Some("NORMAL"));
     feed(&mut app, "0");
     let before = (app.editor.url.text().to_string(), app.editor.url.cursor());
     for keys in ["4gt", "9gt"] {
         feed(&mut app, keys);
-        assert_eq!(app.glue.session(), FieldSession::Live(FieldId::Url), "{keys}: the field stays open");
+        assert_eq!(app.vim.glue.session(), FieldSession::Live(FieldId::Url), "{keys}: the field stays open");
         assert!(app.editor.url_open(), "{keys}");
         assert_eq!(app.mode_indicator(), Some("NORMAL"), "{keys}");
         assert_eq!((app.editor.url.text().to_string(), app.editor.url.cursor()), before, "{keys}: text and caret");
@@ -87,12 +87,12 @@ fn a_tab_step_onto_the_current_tab_keeps_an_open_field_open() {
     app.capture_undo();
     draw(&mut app);
     feed(&mut app, "<CR>0");
-    assert_eq!(app.glue.session(), FieldSession::Live(FieldId::Url));
+    assert_eq!(app.vim.glue.session(), FieldSession::Live(FieldId::Url));
     let before = (app.editor.url.text().to_string(), app.editor.url.cursor());
     // Headers is tab 1 of the GET's three.
     for keys in ["1gt", "3gT", "12gT"] {
         feed(&mut app, keys);
-        assert_eq!(app.glue.session(), FieldSession::Live(FieldId::Url), "{keys}: the field stays open");
+        assert_eq!(app.vim.glue.session(), FieldSession::Live(FieldId::Url), "{keys}: the field stays open");
         assert!(app.editor.url_open(), "{keys}");
         assert_eq!((app.editor.url.text().to_string(), app.editor.url.cursor()), before, "{keys}: text and caret");
         assert_eq!(app.editor.active_tab, EditorTab::Headers, "{keys}");
@@ -191,7 +191,7 @@ fn a_count_gt_onto_the_body_tab_keeps_the_engine_history() {
     // A POST: Headers, Params, Vars, Body.
     feed(&mut app, "4gt");
     assert_eq!(app.editor.active_tab, EditorTab::Body);
-    assert_eq!(app.glue.session(), FieldSession::Live(FieldId::Body));
+    assert_eq!(app.vim.glue.session(), FieldSession::Live(FieldId::Body));
     assert_eq!(app.history.undo_len(), steps, "the session still holds its edits");
     feed(&mut app, "u");
     assert_eq!(app.editor.body_text(), after_first, "u undoes the engine's last edit only");
@@ -208,13 +208,13 @@ fn a_refused_ctrl_w_in_an_open_field_keeps_it_open() {
     app.capture_undo();
     draw(&mut app);
     feed(&mut app, "<CR>");
-    assert_eq!(app.glue.session(), FieldSession::Live(FieldId::Url));
+    assert_eq!(app.vim.glue.session(), FieldSession::Live(FieldId::Url));
     feed(&mut app, "0");
     let before = (app.editor.url.text().to_string(), app.editor.url.cursor());
     // The editor is the top right pane: nothing above it, nothing right.
     for keys in ["<C-w>k", "<C-w>l"] {
         feed(&mut app, keys);
-        assert_eq!(app.glue.session(), FieldSession::Live(FieldId::Url), "{keys}: the field stays open");
+        assert_eq!(app.vim.glue.session(), FieldSession::Live(FieldId::Url), "{keys}: the field stays open");
         assert!(app.editor.url_open(), "{keys}");
         assert_eq!(app.mode_indicator(), Some("NORMAL"), "{keys}");
         assert_eq!((app.editor.url.text().to_string(), app.editor.url.cursor()), before, "{keys}: text and caret");
@@ -494,7 +494,7 @@ fn a_gt_from_a_table_tab_lands_in_the_body_without_a_history_step() {
     feed(&mut app, "4gt");
     assert_eq!(app.editor.active_tab, EditorTab::Body);
     assert_eq!(app.editor.sub_focus, SubFocus::Content, "the caret lands in the body");
-    assert_eq!(app.glue.session(), FieldSession::Live(FieldId::Body));
+    assert_eq!(app.vim.glue.session(), FieldSession::Live(FieldId::Body));
     assert_eq!(app.history.undo_len(), steps, "nothing to flush: no step");
 }
 
