@@ -33,6 +33,10 @@ const fn verb(names: &'static [&'static str], run: Run, caption: &'static str) -
 }
 
 fn save() -> Action { Action::SaveRequest }
+fn close() -> Action { Action::CloseWindow { write: false, force: false } }
+fn force_close() -> Action { Action::CloseWindow { write: false, force: true } }
+fn write_close() -> Action { Action::CloseWindow { write: true, force: false } }
+fn force_write_close() -> Action { Action::CloseWindow { write: true, force: true } }
 fn quit() -> Action { Action::GatedQuit }
 fn force_quit() -> Action { Action::ForceQuit }
 fn write_quit() -> Action { Action::WriteQuit }
@@ -52,11 +56,17 @@ fn nohl() -> Action { Action::NoHlSearch }
 /// file verbs, the request verbs, the app commands, the Variable Manager's.
 pub static VERBS: &[ExVerb] = &[
     verb(&["write", "w", "update", "up", "wa"], Run::Act(save), "Save request"),
-    verb(&["quit", "q", "qa", "qall", "quitall"], Run::Act(quit), "Quit"),
-    verb(&["quit!", "q!", "qa!", "qall!"], Run::Act(force_quit), "Quit without saving"),
-    verb(&["wq", "x", "xit", "exit", "wqa", "xa"], Run::Act(write_quit), "Save request, then quit"),
+    // The window verbs quit on the main screen and close Manage; their `a`
+    // forms quit everywhere (`Action::CloseWindow`).
+    verb(&["quit", "q"], Run::Act(close), "Quit"),
+    verb(&["qall", "qa", "quitall"], Run::Act(quit), "Quit"),
+    verb(&["quit!", "q!"], Run::Act(force_close), "Quit without saving"),
+    verb(&["qall!", "qa!", "quitall!"], Run::Act(force_quit), "Quit without saving"),
+    verb(&["wq", "x", "xit", "exit"], Run::Act(write_close), "Save request, then quit"),
+    verb(&["wqall", "wqa", "xall", "xa"], Run::Act(write_quit), "Save request, then quit"),
     verb(&["write!", "w!", "update!", "up!", "wa!"], Run::Act(force_write), "Save request over outside changes"),
-    verb(&["wq!", "x!", "xit!", "exit!", "wqa!", "xa!"], Run::Act(force_write_quit), "Save request over outside changes, then quit"),
+    verb(&["wq!", "x!", "xit!", "exit!"], Run::Act(force_write_close), "Save request over outside changes, then quit"),
+    verb(&["wqall!", "wqa!", "xall!", "xa!"], Run::Act(force_write_quit), "Save request over outside changes, then quit"),
     verb(&["edit", "e"], Run::Act(reload), "Reload from disk"),
     verb(&["edit!", "e!"], Run::Then(discard, reload), "Discard changes, then reload"),
     verb(&["send"], Run::Act(send), "Send request"),
@@ -100,7 +110,8 @@ pub struct Scope {
 
 /// The pinned row: the verb's full name, its title, and what Enter runs.
 /// `CloseField` leads, so a field parked under the line is committed
-/// first (spec §5.9); it is a no-op when nothing is open.
+/// first (spec §5.9); it is a no-op when nothing is open. `:q!` and `:qa!`
+/// have none: they abandon the field.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExRow {
     pub name: &'static str,
@@ -120,7 +131,11 @@ pub enum Resolved {
 }
 
 fn row(v: &ExVerb) -> ExRow {
-    let mut actions = vec![Action::CloseField];
+    // `:q!` and `:qa!` abandon what the field holds, as Vim's abandon a
+    // changed buffer (Vim 9.1: the text is dropped, nothing is written), so
+    // no close commits it first, and one that would refuse cannot stop them.
+    let abandons = matches!(v.run, Run::Act(f) if matches!(f(), Action::ForceQuit | Action::CloseWindow { write: false, force: true }));
+    let mut actions = if abandons { Vec::new() } else { vec![Action::CloseField] };
     match v.run {
         Run::Act(f) => actions.push(f()),
         Run::Then(a, b) => {
@@ -181,7 +196,13 @@ pub fn resolve(query: &str, scope: &Scope) -> Resolved {
         };
     }
     if let Some(v) = find(query, |v| runs_in(v, scope)) {
-        return Resolved::Pinned(row(v));
+        let mut row = row(v);
+        // On Manage a window verb closes the screen, and its row says so.
+        let closes = row.actions.iter().any(|a| matches!(a, Action::CloseWindow { .. }));
+        if closes && crate::keyroute::table::Surfaces::MANAGE.has(scope.surface) {
+            row.caption = "Close Manage";
+        }
+        return Resolved::Pinned(row);
     }
     // A verb the query spells that runs elsewhere, not here.
     match find(query, |_| true) {
@@ -230,10 +251,17 @@ mod tests {
         for q in ["w", "write", "up", "update", "wa"] {
             assert_eq!(pinned(q, &sidebar()).actions, vec![close.clone(), Action::SaveRequest], "{q}");
         }
-        assert_eq!(pinned("q", &sidebar()).actions, vec![close.clone(), Action::GatedQuit]);
-        assert_eq!(pinned("qa", &sidebar()).actions, vec![close.clone(), Action::GatedQuit]);
-        assert_eq!(pinned("q!", &sidebar()).actions, vec![close.clone(), Action::ForceQuit]);
-        for q in ["wq", "x", "xit", "wqa", "xa"] {
+        let window = |write, force| vec![close.clone(), Action::CloseWindow { write, force }];
+        assert_eq!(pinned("q", &sidebar()).actions, window(false, false));
+        assert_eq!(pinned("q!", &sidebar()).actions, vec![Action::CloseWindow { write: false, force: true }], "no close: it abandons the field");
+        for q in ["wq", "x", "xit", "exit"] {
+            assert_eq!(pinned(q, &sidebar()).actions, window(true, false), "{q}");
+        }
+        for q in ["qa", "qall", "quitall"] {
+            assert_eq!(pinned(q, &sidebar()).actions, vec![close.clone(), Action::GatedQuit], "{q}");
+        }
+        assert_eq!(pinned("qa!", &sidebar()).actions, vec![Action::ForceQuit], "no close: it abandons the field");
+        for q in ["wqa", "wqall", "xa", "xall"] {
             assert_eq!(pinned(q, &sidebar()).actions, vec![close.clone(), Action::WriteQuit], "{q}");
         }
         assert_eq!(pinned("e", &sidebar()).actions, vec![close.clone(), Action::ReloadFromDisk]);
@@ -250,11 +278,27 @@ mod tests {
         for q in ["w!", "write!", "up!", "update!", "wa!"] {
             assert_eq!(pinned(q, &sidebar()).actions, vec![close.clone(), Action::ForceWrite { quit: false }], "{q}");
         }
-        for q in ["wq!", "x!", "xit!", "exit!", "wqa!", "xa!"] {
+        for q in ["wq!", "x!", "xit!", "exit!"] {
+            assert_eq!(pinned(q, &sidebar()).actions, vec![close.clone(), Action::CloseWindow { write: true, force: true }], "{q}");
+        }
+        for q in ["wqa!", "wqall!", "xa!", "xall!"] {
             assert_eq!(pinned(q, &sidebar()).actions, vec![close.clone(), Action::ForceWrite { quit: true }], "{q}");
         }
         assert_eq!(pinned("wr", &sidebar()).name, "write", "a prefix still reaches the plain verb");
         assert_eq!(pinned("upd", &sidebar()).name, "write");
+    }
+
+    /// Sweep backlog item 4: on Manage the window verbs' row says what they
+    /// do there; the `a` forms and the main screen keep "Quit".
+    #[test]
+    fn a_window_verb_on_manage_says_it_closes_manage() {
+        let manage = Scope { surface: Surface::ManageList(crate::components::manage::ManageTab::Spaces), verbs: vec![] };
+        for q in ["q", "q!", "wq", "x", "wq!"] {
+            assert_eq!(pinned(q, &manage).caption, "Close Manage", "{q}");
+        }
+        assert_eq!(pinned("qa", &manage).caption, "Quit");
+        assert_eq!(pinned("q", &Scope { surface: Surface::Settings, verbs: vec![] }).caption, "Close Manage");
+        assert_eq!(pinned("q", &sidebar()).caption, "Quit");
     }
 
     /// Exact beats prefix; the shortest name wins a prefix; ties go to the
@@ -330,7 +374,8 @@ mod tests {
     #[test]
     fn spellings_and_reach() {
         assert_eq!(spelling(&Action::SaveRequest).as_deref(), Some(":w"));
-        assert_eq!(spelling(&Action::GatedQuit).as_deref(), Some(":q"));
+        assert_eq!(spelling(&Action::CloseWindow { write: false, force: false }).as_deref(), Some(":q"));
+        assert_eq!(spelling(&Action::GatedQuit).as_deref(), Some(":qa"));
         assert_eq!(spelling(&Action::Quit), None, "the quit chip spells `:q` itself (`spell::Key::Quit`)");
         assert_eq!(spelling(&Action::CycleSplit).as_deref(), Some(":split"));
         assert_eq!(spelling(&Action::CycleSplitBack).as_deref(), Some(":splitback"));

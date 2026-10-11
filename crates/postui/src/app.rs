@@ -2343,13 +2343,13 @@ impl App {
     /// step for any change. Runs once per input event from the main loop —
     /// the one place keystroke- and mouse-path edits (which never become
     /// Actions) get captured. Returns whether a step was recorded.
-    /// ` — ^Z undoes` (under whatever combo `undo` is currently bound
-    /// to), appended to the toasts of destructive-but-undoable actions
-    /// that act without a confirm modal.
+    /// ` — ^Z undoes` in arrows, ` — u undoes` in vim: the key that undoes
+    /// where the keyboard is, spelled as the footer spells it (spec §4.6),
+    /// appended to the toasts of destructive-but-undoable actions that act
+    /// without a confirm modal.
     fn undo_hint(&self) -> String {
-        self.keymap
-            .combo_for("undo")
-            .map(|c| format!(" — {c} undoes"))
+        crate::keyroute::spell::spell(self.spell_ctx(), &Action::Undo, &self.keymap)
+            .map(|c| format!(" — {} undoes", crate::keyroute::spell::glyphs(&c)))
             .unwrap_or_default()
     }
 
@@ -2928,6 +2928,7 @@ impl App {
             // The actions only vim's keys make: the vim seam runs them.
             Action::WriteQuit
             | Action::ForceWrite { .. }
+            | Action::CloseWindow { .. }
             | Action::OpenExPalette
             | Action::NoHlSearch
             | Action::ResponseFind(_)

@@ -1493,7 +1493,7 @@ mod tests {
         assert_eq!(p.selected(), 0);
         assert_eq!(p.len(), 1 + p.filtered().len());
         let res = p.confirm().unwrap();
-        assert_eq!(res.actions, vec![Action::CloseField, Action::GatedQuit]);
+        assert_eq!(res.actions, vec![Action::CloseField, Action::CloseWindow { write: false, force: false }]);
         assert!(res.close && res.usage.is_none());
         p.handle_key(ctrl('n'));
         assert_eq!(p.selected(), 1);

@@ -3360,6 +3360,25 @@ fn discard_changes_reverts_immediately_with_an_undo_hint() {
     );
 }
 
+/// Sweep backlog item 1: in vim the hint names `u` (the footer's key), and
+/// `u` where the keyboard is undoes the discard: the body's idle Normal
+/// hands it on.
+#[test]
+fn vims_discard_hint_names_u_and_u_undoes_the_discard() {
+    use super::key_matrix_tests::{Fixture, build, draw, feed, use_persisted_profile};
+    let mut app = build(Fixture::Body);
+    // Persisted, so `:e!`'s reload keeps the profile (no keymap question).
+    use_persisted_profile(&mut app, crate::config::KeyProfile::Vim);
+    draw(&mut app);
+    feed(&mut app, "ix<Esc>");
+    let edited = app.editor.body_text();
+    feed(&mut app, ":e!<CR>");
+    assert_ne!(app.editor.body_text(), edited, "discarded");
+    assert!(app.toasts.messages().contains(&"Changes discarded — u undoes"), "{:?}", app.toasts.messages());
+    feed(&mut app, "u");
+    assert_eq!(app.editor.body_text(), edited, "the hint's key undoes the discard");
+}
+
 #[test]
 fn applying_a_jq_filter_never_dirties_the_request_or_gates_quit() {
     let mut app = App::new_for_test();
@@ -17491,7 +17510,7 @@ fn vm_footer_drops_rename_delete_on_a_header_row() {
         app.varmanager.footer_chips(app.proj(), None),
     );
     let labels: Vec<&str> = chips.iter().map(|(_, l, _)| *l).collect();
-    assert_eq!(labels, ["new variable", "new selector"], "{chips:?}");
+    assert_eq!(labels, ["new variable", "new selector", "back"], "{chips:?}");
     assert!(chips.iter().all(|(_, _, a)| a.is_some()), "no dead chip: {chips:?}");
 }
 
@@ -17513,7 +17532,7 @@ fn vm_footer_drops_chips_with_no_target() {
         .into_iter()
         .map(|(k, _, _)| k)
         .collect();
-    assert_eq!(keys, vec!["a", "A"]);
+    assert_eq!(keys, vec!["a", "A", "esc"]);
 
     // Grid focus with the cursor on the ghost row: only "new option".
     goto_group(&mut app, "user");
@@ -30454,7 +30473,16 @@ fn footer_keycaps_follow_the_profile() {
     assert_eq!(footer_chip_text(&mut app, Action::OpenExPalette).as_deref(), Some(": commands"), "a click opens the line it spells");
     assert_eq!(footer_chip_text(&mut app, Action::PromptNewRequest).as_deref(), Some("a new"), "a shared letter");
     assert_eq!(footer_chip_text(&mut app, Action::DeleteSelectedRequest).as_deref(), Some("dd delete"));
-    assert_eq!(footer_chip_text(&mut app, Action::GatedQuit).as_deref(), Some(":q quit"), "vim gave up q: the ex verb spells it and a click runs it (plan M4b Deviation 20)");
+    assert_eq!(
+        footer_chip_text(&mut app, Action::CloseWindow { write: false, force: false }).as_deref(),
+        Some(":q quit"),
+        "vim gave up q: the ex verb spells it and a click runs it (plan M4b Deviation 20)"
+    );
+    // Sweep backlog item 4: on Manage `:q` closes the screen, so the quit
+    // chip is `:qa`, and the way back is its own chip.
+    app.update(Action::OpenManage { tab: None });
+    assert_eq!(footer_chip_text(&mut app, Action::GatedQuit).as_deref(), Some(":qa quit"));
+    assert_eq!(footer_chip_text(&mut app, Action::CloseScreen).as_deref(), Some("esc back"));
 }
 
 /// Spec §4.6 and §5.4: the Variables list's chips spell the shared

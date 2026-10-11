@@ -1200,24 +1200,24 @@ mod tests {
         }
     }
 
-    /// Spec §5.11, key list G.ZZ: `ZZ` writes and quits, `ZQ` quits; in a
-    /// screen field's idle Normal `ZZ` closes the field first (Deviation 2);
-    /// a dialog's field keeps swallowing `Z<any>`.
+    /// Spec §5.11, key list G.ZZ: `ZZ` is `:x`, `ZQ` is `:q!` (on the main
+    /// screen they quit, on Manage they close it: `Action::CloseWindow`);
+    /// in a screen field's idle Normal `ZZ` closes the field first
+    /// (Deviation 2); a dialog's field keeps swallowing `Z<any>`.
     #[test]
     fn zz_and_zq_quit() {
+        let zz = || Step::Action(Action::CloseWindow { write: true, force: false });
+        let zq = || Step::Action(Action::CloseWindow { write: false, force: true });
         let s = cx(Vim, Surface::Sidebar);
-        assert_eq!(feed(&mut Router::default(), &s, "ZZ"), run(vec![Step::Action(Action::WriteQuit)]));
-        assert_eq!(feed(&mut Router::default(), &s, "ZQ"), run(vec![Step::Action(Action::ForceQuit)]));
-        assert_eq!(feed(&mut Router::default(), &s, "3ZZ"), run(vec![Step::Action(Action::WriteQuit)]), "a count is dropped");
+        assert_eq!(feed(&mut Router::default(), &s, "ZZ"), run(vec![zz()]));
+        assert_eq!(feed(&mut Router::default(), &s, "ZQ"), run(vec![zq()]));
+        assert_eq!(feed(&mut Router::default(), &s, "3ZZ"), run(vec![zz()]), "a count is dropped");
         let mut r = Router::default();
         assert_eq!(feed(&mut r, &s, "Zx"), Resolved::Consumed, "vim's beep");
         assert_eq!(feed(&mut r, &s, "j"), run(vec![key(KeyCode::Down)]));
         let url = in_url(Mode::Normal, false);
-        assert_eq!(
-            feed(&mut Router::default(), &url, "ZZ"),
-            run(vec![Step::Action(Action::CloseField), Step::Action(Action::WriteQuit)])
-        );
-        assert_eq!(feed(&mut Router::default(), &url, "ZQ"), run(vec![Step::Action(Action::ForceQuit)]));
+        assert_eq!(feed(&mut Router::default(), &url, "ZZ"), run(vec![Step::Action(Action::CloseField), zz()]));
+        assert_eq!(feed(&mut Router::default(), &url, "ZQ"), run(vec![zq()]));
         assert_eq!(feed(&mut Router::default(), &url, "Zx"), Resolved::Consumed);
         let prompt = KeyCtx {
             field: FieldCaret::Live(FieldId::ModalInput(0)),

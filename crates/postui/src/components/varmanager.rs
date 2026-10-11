@@ -895,6 +895,13 @@ impl VarManager {
         });
     }
 
+    /// Drops the form's and the grid's live edits, keeping nothing: vim's
+    /// `ZQ` and `:q!` abandoning the screen (`Action::CloseWindow`).
+    pub fn end_edits(&mut self) {
+        self.form.editing = None;
+        self.grid.editing = None;
+    }
+
     /// The option `row` names, or `None` for the ghost row / no selector.
     pub fn entry_at(&self, ctx: &Project, row: usize) -> Option<String> {
         let VmDetail::Group(selector) = &self.detail else {
@@ -1026,12 +1033,15 @@ impl VarManager {
                 // `list_verb`'s: the cursor's row only, so on a section
                 // header just the two `new` chips remain; `edit fields`
                 // appears only on a selector's row.
+                // Esc leaves the screen from the list; nothing else on it
+                // says how.
                 vec![
                     chip(Verb::Delete { count: 1 }, "delete"),
                     chip(Verb::Rename, "rename"),
                     chip(Verb::Fields, "edit fields"),
                     chip(Verb::Add, "new variable"),
                     chip(Verb::AddAlt, "new selector"),
+                    (Key::Named("esc"), "back", Some(Action::CloseScreen)),
                 ]
             };
         chips.retain(|(_, _, a)| a.is_some());
@@ -3020,7 +3030,7 @@ fields = ["user_id", "customer_id"]
                 assert_eq!(vm.verb_action(&ctx, None, verb), None, "{verb:?} with {open:?} open");
             }
             let labels: Vec<_> = vm.footer_chips(&ctx, None).into_iter().map(|(_, l, _)| l).collect();
-            assert_eq!(labels, ["new variable", "new selector"], "{open:?} open");
+            assert_eq!(labels, ["new variable", "new selector", "back"], "{open:?} open");
         }
     }
 
@@ -4180,14 +4190,15 @@ fields = ["user_id", "customer_id"]
         select_group(&mut vm, &ctx, "creds");
 
         // The left list's strip: the selector-pane verbs in the order its
-        // buttons stand in, then the two `+` buttons in theirs.
+        // buttons stand in, then the two `+` buttons in theirs, then the
+        // way back.
         use crate::keyroute::Surface;
         use crate::keyroute::spell::spelled_on;
         let keys: Vec<String> = spelled_on(Surface::VarList, vm.footer_chips(&ctx, None))
             .into_iter()
             .map(|(k, _, _)| k)
             .collect();
-        assert_eq!(keys, vec!["d", "r", "m", "a", "A"]);
+        assert_eq!(keys, vec!["d", "r", "m", "a", "A", "esc"]);
 
         // The grid's strip: the same verb order, and `paste` at the far
         // right — it comes and goes with what is copied, and from there it

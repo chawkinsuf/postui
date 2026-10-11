@@ -182,7 +182,9 @@ impl Surfaces {
         .or(Self::METHOD)
         .or(Self::TABLE)
         .or(Self::RESPONSE)
-        .or(Self::VAR_LIST)
+        .or(Self::MANAGE);
+    /// The Manage screen's surfaces: its tabs' lists, panes and fields.
+    pub const MANAGE: Self = Self::VAR_LIST
         .or(Self::VAR_GRID)
         .or(Self::VAR_FORM)
         .or(Self::MANAGE_LIST)
@@ -331,12 +333,14 @@ pub const NO_MACROS: &str = "Macros are not supported";
 pub const NO_MARKS: &str = "Marks are not supported";
 pub const NO_REGISTERS: &str = "Registers are not supported here";
 
+/// `ZZ`: `:x`, which quits on the main screen and closes Manage.
 fn write_quit() -> Action {
-    Action::WriteQuit
+    Action::CloseWindow { write: true, force: false }
 }
 
+/// `ZQ`: `:q!`, likewise.
 fn force_quit() -> Action {
-    Action::ForceQuit
+    Action::CloseWindow { write: false, force: true }
 }
 
 fn new_option() -> Action {

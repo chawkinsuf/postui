@@ -368,6 +368,8 @@ impl SettingsTab {
             // actually edits or resets.
             chips.push((Key::Nav(Nav::LeftRight), "select button", None));
         }
+        // Esc leaves the screen; nothing else on it says how.
+        chips.push((Key::Named("esc"), "back", Some(Action::CloseScreen)));
         chips
     }
 }
@@ -858,10 +860,10 @@ mod tests {
         assert!(!chips.is_empty(), "a focused area advertises its keys");
         assert!(chips.iter().any(|(k, _, _)| *k == "enter"));
         // The focused row is a settings row, so exactly the two row keys
-        // are advertised: not the Files pair, and not a list tab's
-        // new/rename/delete set carried over.
+        // and the way back are advertised: not the Files pair, and not a
+        // list tab's new/rename/delete set carried over.
         let keys: Vec<_> = chips.iter().map(|(k, l, _)| (k.as_str(), *l)).collect();
-        assert_eq!(keys, vec![("↑↓", "move"), ("enter", "change")]);
+        assert_eq!(keys, vec![("↑↓", "move"), ("enter", "change"), ("esc", "back")]);
     }
 
     /// A live edit owns the keyboard, so the chips advertise its keys

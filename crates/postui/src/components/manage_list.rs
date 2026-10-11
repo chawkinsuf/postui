@@ -687,6 +687,8 @@ impl ManageList {
         }
         // Both lists reorder with the same keys.
         chips.push((Key::Named("alt+↑↓"), "reorder", None));
+        // Esc leaves the screen from the list; nothing else on it says how.
+        chips.push((Key::Named("esc"), "back", Some(Action::CloseScreen)));
         chips
     }
 

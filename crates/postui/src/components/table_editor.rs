@@ -368,8 +368,10 @@ impl TableEditorState {
 
     /// Deletes up to `n` rows from `start` down as one change (piece 4
     /// spec §5.3: a counted `dd`); a count past the end is clamped. The
-    /// cursor lands on the row that moved up into `start` (or the add row
-    /// when the run reached the end). Returns how many rows went.
+    /// cursor lands on the row that moved up into `start`, or, when the run
+    /// reached the end, on the new last row, as Vim's `dd` does, in both
+    /// profiles (the user, 2026-10-11). Only an emptied table lands on the
+    /// add row. Returns how many rows went.
     pub fn delete_rows(&mut self, map: &mut IndexMap<String, Entry>, start: usize, n: usize) -> usize {
         if start >= map.len() || n == 0 {
             return 0;
@@ -377,7 +379,7 @@ impl TableEditorState {
         let end = start.saturating_add(n).min(map.len());
         self.editing = None;
         map.drain(start..end);
-        self.selected = Some(start.min(map.len()));
+        self.selected = Some(start.min(map.len().saturating_sub(1)));
         end - start
     }
 
@@ -1140,8 +1142,12 @@ mod tests {
         assert_eq!(t.selected, Some(1));
         assert_eq!(t.delete_rows(&mut map, 1, 9), 1, "clamped");
         assert_eq!(map.keys().map(String::as_str).collect::<Vec<_>>(), ["a"]);
+        assert_eq!(t.selected, Some(0), "a run to the end lands on the new last row");
         assert_eq!(t.delete_rows(&mut map, 5, 1), 0, "past the end: nothing");
         assert_eq!(t.delete_rows(&mut map, 0, 0), 0, "no count: nothing");
+        assert_eq!(t.delete_rows(&mut map, 0, 1), 1);
+        assert!(map.is_empty());
+        assert_eq!(t.selected, Some(0), "an emptied table lands on the add row");
     }
 
     fn key(c: KeyCode) -> KeyEvent {

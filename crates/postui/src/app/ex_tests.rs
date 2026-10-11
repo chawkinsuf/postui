@@ -442,7 +442,7 @@ fn the_quit_chip_runs_what_it_spells() {
     draw(&mut app);
     assert!(app.hits.rect_of(&crate::hit::Hit::FooterChip(Action::Quit)).is_some(), "typing in the dialog: `^C`, the emergency exit");
     feed(&mut app, "<Esc>");
-    click_chip(&mut app, Action::GatedQuit);
+    click_chip(&mut app, Action::CloseWindow { write: false, force: false });
     assert!(!app.should_quit, "the gate, not a quit");
     assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })), "the dirty gate's confirm");
     let mut app = build(Fixture::DirtyScratch);
@@ -450,6 +450,24 @@ fn the_quit_chip_runs_what_it_spells() {
     feed(&mut app, "<C-p>");
     click_chip(&mut app, Action::Quit);
     assert!(app.should_quit, "arrows' ^C chip stays the emergency exit over a dialog");
+}
+
+/// Sweep backlog item 4: on Manage, where `:q` closes the screen, the quit
+/// chip reads `:qa` and quits as the typed `:qa` does.
+#[test]
+fn on_manage_the_quit_chip_is_qa() {
+    use ratatui::{Terminal, backend::TestBackend};
+    let mut app = vim(Fixture::ManageEnvs);
+    app.anims.finish_all();
+    let mut terminal = Terminal::new(TestBackend::new(160, 48)).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    let r = app.hits.rect_of(&crate::hit::Hit::FooterChip(Action::GatedQuit)).expect("the quit chip runs :qa");
+    let buf = terminal.backend().buffer();
+    let y = r.y + r.height / 2;
+    let text: String = (r.x..r.x + r.width).map(|x| buf.cell((x, y)).unwrap().symbol().to_string()).collect();
+    assert!(text.contains(":qa"), "{text:?}");
+    click_chip(&mut app, Action::GatedQuit);
+    assert!(app.should_quit);
 }
 
 /// The code review's sixth finding: the commands chip reads `:` in vim,

@@ -122,6 +122,18 @@ pub enum Action {
     /// `!` writes. A never-saved request asks for a name; a write that
     /// fails does not quit.
     ForceWrite { quit: bool },
+    /// Vim's window verbs: `:q` (neither), `:q!` and `ZQ` (`force`),
+    /// `:wq`, `:x` and `ZZ` (`write`), `:wq!` and `:x!` (both). On the main
+    /// screen they quit, as `GatedQuit`, `ForceQuit`, `WriteQuit` and
+    /// `ForceWrite { quit: true }`. The Manage screen is drawn over the main
+    /// screen as Vim's second tab page is over its first, and closing a tab
+    /// page that is not the last neither quits nor touches the request
+    /// (Vim 9.1, sweep backlog item 4): there each one is `CloseScreen`,
+    /// `force` abandoning a field open on it. "There" is the keyboard on a
+    /// Manage surface (`Surfaces::MANAGE`): a dialog over Manage quits, as
+    /// one over the main screen does. The `a` forms (`:qa`, `:wqa`) are the
+    /// quit actions everywhere.
+    CloseWindow { write: bool, force: bool },
     Tick,
     Render,
     FocusNext,

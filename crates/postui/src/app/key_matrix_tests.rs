@@ -148,6 +148,8 @@ enum Expect {
     Unnamed(&'static str),
     /// The app is quitting.
     Quit,
+    /// The app is not quitting.
+    NoQuit,
     /// Whether the open request has unsaved edits.
     Dirty(bool),
     UrlText(&'static str),
@@ -251,6 +253,13 @@ const CASES: &[Case] = &[
     vim("L.fold", SidebarFolder, "zojzc", &[Requests(&["main/alpha", "main/beta", "main/gamma"]), SidebarFolderSel("main/f")]),
     vim("L.fold", SidebarFolder, "zojzczo", &[SidebarSel("main/f/inner")]),
     vim("L.fold", SidebarFolder, "zojzckzo", &[SidebarSel("main/gamma"), Toast("No fold found")]),
+    // Sweep backlog item 3: `l` opens the folder hiding the cursor's row and
+    // lands on it; `h` keeps it, as Vim's cursor at column 0 does.
+    vim("L.fold", SidebarFolder, "zojzcl", &[Requests(&["main/alpha", "main/beta", "main/gamma", "main/f/inner"]), SidebarSel("main/f/inner")]),
+    vim("L.fold", SidebarFolder, "zojzc3l", &[SidebarSel("main/f/inner")]),
+    vim("L.fold", SidebarFolder, "zojzch", &[Requests(&["main/alpha", "main/beta", "main/gamma"]), SidebarFolderSel("main/f")]),
+    vim("L.fold", SidebarFolder, "zojzchzo", &[SidebarSel("main/f/inner")]),
+    vim("L.fold", SidebarFolder, "l", &[Requests(&["main/alpha", "main/beta", "main/gamma", "main/f/inner"]), SidebarFolderSel("main/f")]),
     vim("L.fold", SidebarFolder, "za", &[Requests(&["main/alpha", "main/beta", "main/gamma", "main/f/inner"])]),
     vim("L.fold", SidebarFolder, "zaza", &[Requests(&["main/alpha", "main/beta", "main/gamma"]), SidebarFolderSel("main/f")]),
     vim("L.fold", SidebarFolder, "zR", &[Requests(&["main/alpha", "main/beta", "main/gamma", "main/f/inner"])]),
@@ -363,6 +372,24 @@ const CASES: &[Case] = &[
     vim("X.wq", TableThreeHeaders, ":w!<CR>", &[NoModal, Dirty(false)]),
     vim("X.wq", DirtyScratch, ":wq<CR>", &[PromptOpen]),
     vim("X.wq", UrlLine, "ix<Esc>:w<CR>", &[NoModal, Dirty(false), FieldLive(false)]),
+    // Sweep backlog item 4: Manage is drawn over the main screen as Vim's
+    // second tab page over the first, so the window verbs close it and
+    // leave the request as it was, neither written nor discarded (Vim 9.1,
+    // probes Q1–Q6); the `a` forms still quit.
+    vim("X.wq", TableThreeHeaders, ":manage<CR>:q<CR>", &[ScreenIs(Screen::Main), NoQuit, NoModal, Dirty(true)]),
+    vim("X.wq", TableThreeHeaders, ":manage<CR>:q!<CR>", &[ScreenIs(Screen::Main), NoQuit, Dirty(true)]),
+    vim("X.wq", TableThreeHeaders, ":manage<CR>:wq<CR>", &[ScreenIs(Screen::Main), NoQuit, Dirty(true)]),
+    vim("X.wq", TableThreeHeaders, ":manage<CR>:x<CR>", &[ScreenIs(Screen::Main), NoQuit, Dirty(true)]),
+    vim("X.wq", TableThreeHeaders, ":manage<CR>:wq!<CR>", &[ScreenIs(Screen::Main), NoQuit, Dirty(true)]),
+    vim("X.wq", TableThreeHeaders, ":manage<CR>ZZ", &[ScreenIs(Screen::Main), NoQuit, Dirty(true)]),
+    vim("X.wq", TableThreeHeaders, ":manage<CR>ZQ", &[ScreenIs(Screen::Main), NoQuit, Dirty(true)]),
+    vim("X.wq", TableThreeHeaders, ":manage<CR>:qa<CR>", &[Dialog, NoQuit]),
+    vim("X.wq", TableThreeHeaders, ":manage<CR>:qa!<CR>", &[Quit, Dirty(true)]),
+    vim("X.wq", TableThreeHeaders, ":manage<CR>:wqa<CR>", &[Quit, Dirty(false)]),
+    vim("X.wq", TableThreeHeaders, ":qa<CR>", &[Dialog]),
+    vim("X.wq", Settings, ":q<CR>", &[ScreenIs(Screen::Main), NoQuit]),
+    vim("X.wq", VarList, "ZZ", &[ScreenIs(Screen::Main), NoQuit]),
+    vim("X.wq", ManageEnvDetail, "ZQ", &[ScreenIs(Screen::Main), NoQuit]),
     vim("X.e", TableThreeHeaders, ":e<CR>", &[NoModal, Dirty(true)]),
     vim("X.e", TableThreeHeaders, ":e!<CR>", &[NoModal, Dirty(false)]),
     vim("X.verbs", SidebarThree, ":", &[Palette, Mode("INSERT")]),
@@ -460,6 +487,19 @@ const CASES: &[Case] = &[
     vim_u("L.Ndd", SidebarThreeBetaOpen, "2dd", &[Requests(&["main/alpha"]), NoEditorSlug]),
     arrows_u("L.dd", SidebarThreeBetaOpen, "d", &[Requests(&["main/alpha", "main/gamma"]), NoEditorSlug]),
     vim_u("L.Ndd", TableThreeHeaders, "2dd", &[Headers(&["a"])]),
+    // Sweep backlog item 2: Vim's `dd` on the last line lands on the new
+    // last line, so a table's never parks on the add row; arrows the same
+    // (the user, 2026-10-11). A run to the end lands there too.
+    vim_u("L.dd", TableThreeHeaders, "jdd", &[Headers(&["a", "b"]), TableRow(1)]),
+    vim_u("L.Ndd", TableThreeHeaders, "5dd", &[Headers(&["a"]), TableRow(0)]),
+    arrows_u("L.dd", TableThreeHeaders, "<Down>d", &[Headers(&["a", "b"]), TableRow(1)]),
+    // Sweep backlog item 1: the undo hint names the key that undoes here.
+    vim_u("L.dd", TableThreeHeaders, "dd", &[Toast(" — u undoes")]),
+    vim_u("L.Ndd", TableThreeHeaders, "2dd", &[Toast("Deleted 2 rows — u undoes")]),
+    vim_u("L.dd", SidebarThree, "dd", &[Toast(" — u undoes")]),
+    vim_u("L.dd", TableThreeHeaders, ":delete<CR>", &[Toast(" — u undoes")]),
+    vim_u("L.dd", SidebarThree, ":delete<CR>", &[Toast(" — u undoes")]),
+    arrows_u("L.dd", TableThreeHeaders, "d", &[Toast(" — ^Z undoes")]),
     vim("L.Ndd", ManageEnvs, "2dd", &[Toast("Counted delete works on requests and table rows"), EnvNames(&["prod", "qa", "dev"])]),
     // Yank is invisible; put lands under (p) or over (P) the cursor.
     vim("L.yank", SidebarThree, "yy", &[Yanked("main/beta"), NoToast, Requests(&["main/alpha", "main/beta", "main/gamma"])]),
@@ -814,6 +854,7 @@ fn check(app: &App, e: Expect) -> Result<(), String> {
         Yanked(slug) => app.yank == crate::yank::Register::Request(slug.into()),
         FieldsEditor => matches!(app.modals.top(), Some(Modal::FieldsEditor(_))),
         Quit => app.should_quit,
+        NoQuit => !app.should_quit,
         Dirty(d) => app.editor.is_dirty() == d,
         UrlText(t) => app.editor.url.text() == t,
         PalettePinned(name) => matches!(app.modals.top(), Some(Modal::Palette(p)) if p.pinned().map(|r| r.name) == Some(name)),
@@ -988,6 +1029,50 @@ fn the_matrix_holds() {
     assert!(failures.is_empty(), "{} case(s) failed:\n{}", failures.len(), failures.join("\n"));
 }
 
+/// The code review of sweep backlog item 3: the row a vim `zc` hid is the
+/// vim cursor's, so after a switch to arrows `→` on the folder row opens
+/// that folder alone and stays on it.
+#[test]
+fn arrows_after_a_vim_fold_act_on_the_folder_row() {
+    let mut app = build(SidebarFolder);
+    app.use_profile(KeyProfile::Vim);
+    draw(&mut app);
+    feed(&mut app, "zojzc");
+    check(&app, SidebarFolderSel("main/f")).unwrap();
+    app.use_profile(KeyProfile::Arrows);
+    feed(&mut app, "<Right>");
+    check(&app, Requests(&["main/alpha", "main/beta", "main/gamma", "main/f/inner"])).unwrap();
+    check(&app, SidebarFolderSel("main/f")).unwrap();
+}
+
+/// Sweep backlog item 4: where Esc leaves the Manage screen (a tab's list,
+/// Settings with no field open), the footer says so with a chip that does
+/// the same, in both profiles; the header's Manage chip is the only other
+/// way back.
+#[test]
+fn every_manage_list_advertises_its_way_back() {
+    for profile in [KeyProfile::Arrows, KeyProfile::Vim] {
+        for f in [ManageEnvs, ManageSpaces, VarList, Settings] {
+            let mut app = build(f);
+            app.use_profile(profile);
+            draw(&mut app);
+            assert!(
+                app.hits.rect_of(&Hit::FooterChip(Action::CloseScreen)).is_some(),
+                "{profile:?} {f:?}: no way back on the footer"
+            );
+            feed(&mut app, "<Esc>");
+            assert_eq!(app.screen, Screen::Main, "{profile:?} {f:?}: and Esc leaves");
+        }
+        // Where Esc goes back to the list, the screen chip is not there.
+        for f in [ManageEnvDetail, VarGrid, VarForm] {
+            let mut app = build(f);
+            app.use_profile(profile);
+            draw(&mut app);
+            assert!(app.hits.rect_of(&Hit::FooterChip(Action::CloseScreen)).is_none(), "{profile:?} {f:?}");
+        }
+    }
+}
+
 /// Spec §5.3: undo of a counted table delete reselects the first restored
 /// row (amendment A8-3).
 #[test]
@@ -997,9 +1082,8 @@ fn a_counted_table_delete_undone_reselects_the_first_restored_row() {
     draw(&mut app);
     feed(&mut app, "2dd");
     check(&app, Headers(&["a"])).unwrap();
-    // Move off the row the delete left selected, so an undo that never
-    // touches the cursor cannot pass.
-    feed(&mut app, "k");
+    // The delete leaves the cursor on the new last row, off the rows that
+    // come back, so an undo that never touches the cursor cannot pass.
     check(&app, TableRow(0)).unwrap();
     feed(&mut app, "u");
     check(&app, Headers(&["a", "b", "c"])).unwrap();

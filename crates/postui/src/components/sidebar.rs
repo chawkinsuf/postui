@@ -204,6 +204,14 @@ impl Sidebar {
         };
         Self::build_rows(&sorted, &prefix, 0, &ctx, &mut rows);
         self.rows = rows;
+        // The row a closed folder hid is remembered only while it is still
+        // listed: once an outside delete takes it, the folder row's keys
+        // (`h`, `l`, `zo`) act on the folder again.
+        if let Some((real, _)) = &self.fold_row
+            && !Self::listed(&sorted, real)
+        {
+            self.fold_row = None;
+        }
 
         self.selected =
             prev.and_then(|id| self.rows.iter().position(|r| Self::row_matches(r, &id)));
@@ -445,6 +453,17 @@ impl Sidebar {
         }
     }
 
+    /// Whether `key` names a request in `listing`, or a folder holding one
+    /// (a folder exists only through the requests under it).
+    fn listed(listing: &[RequestListing], key: &RowKey) -> bool {
+        match key {
+            RowKey::Request(slug) => listing.iter().any(|l| l.slug == *slug),
+            RowKey::Folder(path) => listing
+                .iter()
+                .any(|l| l.slug.strip_prefix(path.as_str()).is_some_and(|rest| rest.starts_with('/'))),
+        }
+    }
+
     fn row_matches(row: &Row, id: &RowKey) -> bool {
         match (row, id) {
             (Row::Folder { path, .. }, RowKey::Folder(p)) => path == p,
@@ -636,6 +655,18 @@ impl Sidebar {
             Some((real, at)) if *at == shown => Some(real.clone()),
             _ => Some(shown),
         }
+    }
+
+    /// Forgets a row a closed folder hid: only vim's fold keys remember
+    /// one, so arrows' keys on the folder row act on the folder itself.
+    pub fn forget_fold_cursor(&mut self) {
+        self.fold_row = None;
+    }
+
+    /// Whether the selected folder row is showing a row it hides
+    /// (`fold_cursor` is not the selected row).
+    fn hides_cursor_row(&self) -> bool {
+        self.fold_cursor() != self.selected_key()
     }
 
     /// Vim's `zo` `zc` `za` with a count, and `zR` `zM`, on the folders of
@@ -988,6 +1019,14 @@ impl Component for Sidebar {
                 self.move_selection(-self.page());
                 Some(Action::Render)
             }
+            // The folder row shows a row it hides (a vim `zc`): the cursor is
+            // really there, at column 0. Vim's `l` moves, and `'foldopen'`
+            // opens every fold around it; its `h` cannot move, so nothing
+            // opens and the cursor keeps its line (sweep backlog item 3).
+            KeyCode::Right if plain && self.hides_cursor_row() => {
+                Some(Action::SidebarFold { op: crate::action::FoldOp::Open, count: usize::MAX })
+            }
+            KeyCode::Left if plain && self.hides_cursor_row() => Some(Action::Render),
             KeyCode::Right if plain => matches!(
                 self.selected_row()?,
                 Row::Folder {
@@ -2811,6 +2850,33 @@ mod tests {
         assert_eq!(s.fold_cursor(), Some(folder), "the vanished row is not remembered");
     }
 
+    /// The vim-backlog code review: a relist that no longer holds the hidden
+    /// row (an outside delete) forgets it, so `l` and `h` on the folder row
+    /// are the folder's own keys again rather than the hidden row's. A
+    /// hidden folder counts while a request under it is listed.
+    #[test]
+    fn a_relist_without_the_hidden_row_forgets_it() {
+        use crate::action::FoldOp::Close;
+        let key = |c| KeyEvent::new(c, KeyModifiers::NONE);
+        let pong = RowKey::Request("main/api/pong".into());
+        let api = RowKey::Folder("main/api".into());
+        let (mut s, mut open) = probe_tree(&["api", "api/auth", "zeta"], &pong);
+        press(&mut s, &mut open, FoldKey::Z(Close, 1));
+        s.refresh(listing(&["top", "api/ping", "api/auth/login", "zeta/z1"]), "main", &open, &[]);
+        assert_eq!(s.selected_key(), Some(api.clone()));
+        assert_eq!(s.fold_cursor(), Some(api.clone()), "pong is gone: nothing hidden");
+        assert_eq!(s.handle_key(key(KeyCode::Right)), Some(Action::ToggleSelectedFolder), "l: the folder's own key");
+
+        let auth = RowKey::Folder("main/api/auth".into());
+        let (mut s, mut open) = probe_tree(&["api", "api/auth", "zeta"], &auth);
+        press(&mut s, &mut open, FoldKey::Z(Close, 2));
+        assert_eq!(s.fold_cursor(), Some(auth.clone()), "the auth folder hidden under api");
+        s.refresh(listing(&["top", "api/ping", "api/auth/login", "zeta/z1"]), "main", &open, &[]);
+        assert_eq!(s.fold_cursor(), Some(auth), "still listed through its request: kept");
+        s.refresh(listing(&["top", "api/ping", "zeta/z1"]), "main", &open, &[]);
+        assert_eq!(s.fold_cursor(), Some(api), "its last request gone: forgotten");
+    }
+
     /// One fold probe: the folders open before, the cursor, the keys, the
     /// folders shut after (a folder shut inside a shut one included), the
     /// row the cursor is really on, the row it is drawn on, and whether a
@@ -2922,10 +2988,38 @@ mod tests {
         let at = s.selected.expect("on the folder");
         s.select_row(at);
         assert_eq!(s.fold_cursor(), Some(auth.clone()), "a click forgets it");
-        // So is `l` or `h`'s fold toggle.
+        // So is a folder toggle (Enter, a click on its arrow).
         let (mut s, mut open) = probe_tree(&all, &login);
         press(&mut s, &mut open, zc);
         assert!(s.toggle_selected_folder().is_some());
         assert_eq!(s.fold_cursor(), Some(auth), "a toggle forgets it");
+    }
+
+    /// Sweep backlog item 3, against Vim 9.1 (the cursor at column 0 of a
+    /// line inside a closed fold): `h` does not move, so nothing opens and
+    /// the cursor keeps its line; `l` moves, and `'foldopen'`'s `hor` opens
+    /// every fold around the cursor (probes P1–P7). The folder row showing
+    /// the hidden row does the same.
+    #[test]
+    fn h_and_l_keep_the_hidden_row_as_vims_cursor_does() {
+        use crate::action::FoldOp::{Close, Open};
+        let login = RowKey::Request("main/api/auth/login".into());
+        let api = RowKey::Folder("main/api".into());
+        let zc = FoldKey::Z(Close, 1);
+        let key = |c| KeyEvent::new(c, KeyModifiers::NONE);
+        let (mut s, mut open) = probe_tree(&["api", "api/auth", "zeta"], &login);
+        press(&mut s, &mut open, zc);
+        press(&mut s, &mut open, zc);
+        assert_eq!(s.selected_key(), Some(api.clone()));
+        // P5: `h` changes nothing.
+        assert_eq!(s.handle_key(key(KeyCode::Left)), Some(Action::Render));
+        assert_eq!(s.selected_key(), Some(api), "h does not leave the folder row");
+        assert_eq!(s.fold_cursor(), Some(login.clone()), "h keeps the hidden row");
+        // P4: `l` opens both folders around it and lands on it.
+        let l = s.handle_key(key(KeyCode::Right));
+        assert_eq!(l, Some(Action::SidebarFold { op: Open, count: usize::MAX }));
+        press(&mut s, &mut open, FoldKey::Z(Open, usize::MAX));
+        assert!(open.contains("main/api") && open.contains("main/api/auth"), "{open:?}");
+        assert_eq!(s.selected_key(), Some(login));
     }
 }

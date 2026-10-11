@@ -83,12 +83,19 @@ pub fn spell(at: SpellCtx, action: &Action, keymap: &Keymap) -> Option<String> {
     colon_applies(at).then(|| super::ex::spelling(action)).flatten()
 }
 
-/// What the quit chip runs at `at`: `:q`'s gated quit where its keycap
-/// reads `:q` (vim, where the line opens), so a click over a dialog meets
-/// the dirty gate as the typed `:q` does; else `Quit`, whose keys are
-/// arrows' `q` and the `^C` emergency exit.
+/// What the quit chip runs at `at`: in vim where the line opens, the verb
+/// its keycap reads, so a click over a dialog meets the dirty gate as the
+/// typed one does: `:q` on the main screen, and on Manage, where `:q`
+/// closes the screen (`Action::CloseWindow`), `:qa`. Else `Quit`, whose
+/// keys are arrows' `q` and the `^C` emergency exit.
 pub fn quit_action(at: SpellCtx) -> Action {
-    if at.profile == KeyProfile::Vim && colon_applies(at) { Action::GatedQuit } else { Action::Quit }
+    if at.profile != KeyProfile::Vim || !colon_applies(at) {
+        Action::Quit
+    } else if table::Surfaces::MANAGE.has(at.surface) {
+        Action::GatedQuit
+    } else {
+        Action::CloseWindow { write: false, force: false }
+    }
 }
 
 /// Which of a `Key::OneOf` pair its keycap is spelled from at `at`: `a`
@@ -122,8 +129,8 @@ pub fn keycap(key: &Key, at: SpellCtx, keymap: &Keymap) -> Option<String> {
         // the ex verb the chip then runs; the keymap's `^C` on a picker or
         // a dialog.
         Key::Quit { .. } => match quit_action(at) {
-            Action::GatedQuit => super::ex::spelling(&Action::GatedQuit)?,
-            quit => glyphs(&spell(at, &quit, keymap)?),
+            Action::Quit => glyphs(&spell(at, &Action::Quit, keymap)?),
+            verb => super::ex::spelling(&verb)?,
         },
         Key::Pick => if vim { "^N/^P" } else { "\u{2191}\u{2193}" }.to_string(),
         Key::OrRow(named, a) => row_for(at, a).map_or_else(|| (*named).to_string(), notation::display),
@@ -211,7 +218,7 @@ mod tests {
         assert_eq!(cap(Key::Of(Action::Undo), normal).as_deref(), Some("u"), "the engine hands u on from idle Normal");
         assert_eq!(cap(Key::Of(Action::Undo), typing).as_deref(), Some("^Z"));
         assert_eq!(cap(Key::Of(Action::OpenExPalette), normal).as_deref(), Some(":"));
-        assert_eq!(cap(Key::Of(Action::WriteQuit), normal).as_deref(), Some("ZZ"));
+        assert_eq!(cap(Key::Of(Action::CloseWindow { write: true, force: false }), normal).as_deref(), Some("ZZ"));
         assert_eq!(cap(Key::Of(Action::SaveRequest), normal).as_deref(), Some(":w"), "the line opens from idle Normal");
         assert_eq!(cap(Key::Of(Action::SaveRequest), typing), None);
         assert_eq!(cap(Key::Of(Action::OnSelection(crate::action::Verb::Delete { count: 1 })), normal), None, "no verb row in a field");
@@ -299,6 +306,11 @@ mod tests {
         assert_eq!(cap(Key::Of(Action::SaveRequest), at(Vim, Surface::Picker), &v), None, "no : on a picker");
         assert_eq!(cap(Key::Quit { plain_q: false }, at(Vim, Surface::Sidebar), &v).as_deref(), Some(":q"));
         assert_eq!(cap(Key::Quit { plain_q: false }, at(Vim, Surface::Picker), &v).as_deref(), Some("^C"));
+        let envs = Surface::ManageList(crate::components::manage::ManageTab::Environments);
+        assert_eq!(cap(Key::Quit { plain_q: false }, at(Vim, envs), &v).as_deref(), Some(":qa"), "on Manage :q closes the screen");
+        assert_eq!(quit_action(at(Vim, envs)), Action::GatedQuit);
+        assert_eq!(quit_action(at(Vim, Surface::Sidebar)), Action::CloseWindow { write: false, force: false });
+        assert_eq!(cap(Key::Quit { plain_q: true }, at(Arrows, envs), &a).as_deref(), Some("q"), "arrows unchanged");
         assert_eq!(cap(Key::Quit { plain_q: true }, at(Arrows, Surface::Sidebar), &a).as_deref(), Some("q"));
         let live = SpellCtx { field: FieldSpell::Typing, ..at(Vim, Surface::UrlLine) };
         assert_eq!(cap(Key::Of(Action::SaveRequest), live, &v), None, "typing: the keymap only");
