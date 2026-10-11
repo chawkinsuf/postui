@@ -17510,7 +17510,7 @@ fn vm_footer_drops_rename_delete_on_a_header_row() {
         app.varmanager.footer_chips(app.proj(), None),
     );
     let labels: Vec<&str> = chips.iter().map(|(_, l, _)| *l).collect();
-    assert_eq!(labels, ["new variable", "new selector"], "{chips:?}");
+    assert_eq!(labels, ["new variable", "new selector", "back"], "{chips:?}");
     assert!(chips.iter().all(|(_, _, a)| a.is_some()), "no dead chip: {chips:?}");
 }
 
@@ -17532,7 +17532,7 @@ fn vm_footer_drops_chips_with_no_target() {
         .into_iter()
         .map(|(k, _, _)| k)
         .collect();
-    assert_eq!(keys, vec!["a", "A"]);
+    assert_eq!(keys, vec!["a", "A", "esc"]);
 
     // Grid focus with the cursor on the ghost row: only "new option".
     goto_group(&mut app, "user");

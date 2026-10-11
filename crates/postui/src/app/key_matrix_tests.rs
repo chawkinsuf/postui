@@ -1008,6 +1008,34 @@ fn the_matrix_holds() {
     assert!(failures.is_empty(), "{} case(s) failed:\n{}", failures.len(), failures.join("\n"));
 }
 
+/// Sweep backlog item 4: where Esc leaves the Manage screen (a tab's list,
+/// Settings with no field open), the footer says so with a chip that does
+/// the same, in both profiles; the header's Manage chip is the only other
+/// way back.
+#[test]
+fn every_manage_list_advertises_its_way_back() {
+    for profile in [KeyProfile::Arrows, KeyProfile::Vim] {
+        for f in [ManageEnvs, ManageSpaces, VarList, Settings] {
+            let mut app = build(f);
+            app.use_profile(profile);
+            draw(&mut app);
+            assert!(
+                app.hits.rect_of(&Hit::FooterChip(Action::CloseScreen)).is_some(),
+                "{profile:?} {f:?}: no way back on the footer"
+            );
+            feed(&mut app, "<Esc>");
+            assert_eq!(app.screen, Screen::Main, "{profile:?} {f:?}: and Esc leaves");
+        }
+        // Where Esc goes back to the list, the screen chip is not there.
+        for f in [ManageEnvDetail, VarGrid, VarForm] {
+            let mut app = build(f);
+            app.use_profile(profile);
+            draw(&mut app);
+            assert!(app.hits.rect_of(&Hit::FooterChip(Action::CloseScreen)).is_none(), "{profile:?} {f:?}");
+        }
+    }
+}
+
 /// Spec §5.3: undo of a counted table delete reselects the first restored
 /// row (amendment A8-3).
 #[test]
