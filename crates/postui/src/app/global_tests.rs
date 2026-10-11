@@ -90,29 +90,37 @@ fn zz_on_a_field_that_refuses_its_commit_keeps_running() {
     assert_eq!(app.settings.cursor, row);
 }
 
-/// The code review of sweep backlog item 4: on Manage `ZQ` is `:q!`, which
-/// abandons what the field holds, so a field whose close refuses cannot
-/// keep the screen; nothing is written and the request stays as it was.
+/// The code review of sweep backlog item 4: on Manage `ZQ` and `:q!` close
+/// the screen abandoning what the field holds, as Vim's close a tab page
+/// dropping a changed buffer's text (Vim 9.1 probe: both alike, nothing
+/// written), so a field whose close refuses cannot keep the screen; the
+/// request stays as it was. `:qa!` quits past it.
 #[test]
 fn zq_on_manage_abandons_a_field_that_refuses_its_close() {
+    for q in ["ZQ", ":q!<CR>"] {
+        let mut app = refused_settings_field();
+        let limit = app.ui_settings.osc52_limit;
+        feed(&mut app, q);
+        assert_eq!(app.screen, Screen::Main, "{q}: Manage closed");
+        assert!(!app.should_quit, "{q}");
+        assert_eq!(app.settings.editing, None, "{q}: the field abandoned");
+        assert_eq!(app.ui_settings.osc52_limit, limit, "{q}: nothing committed");
+        assert!(app.editor.is_dirty(), "{q}: the request untouched");
+        // A Variables edit is abandoned the same way, its text never
+        // written, though it would commit.
+        let mut app = vim(Fixture::VarForm);
+        let before = snapshot(&app);
+        feed(&mut app, "ixyz<Esc>");
+        assert!(app.varmanager.form.editing.is_some());
+        feed(&mut app, q);
+        assert_eq!(app.screen, Screen::Main, "{q}");
+        assert!(app.varmanager.form.editing.is_none(), "{q}: the edit abandoned");
+        let diff = super::key_matrix_tests::snapshot_diff(&before, &snapshot(&app));
+        assert!(!diff.contains("file "), "{q}: nothing written: {diff}");
+    }
     let mut app = refused_settings_field();
-    let limit = app.ui_settings.osc52_limit;
-    feed(&mut app, "ZQ");
-    assert_eq!(app.screen, Screen::Main, "Manage closed");
-    assert!(!app.should_quit);
-    assert_eq!(app.settings.editing, None, "the field abandoned");
-    assert_eq!(app.ui_settings.osc52_limit, limit, "nothing committed");
-    assert!(app.editor.is_dirty(), "the request untouched");
-    // A Variables edit is abandoned the same way, its text never written.
-    let mut app = vim(Fixture::VarForm);
-    let before = snapshot(&app);
-    feed(&mut app, "ixyz<Esc>");
-    assert!(app.varmanager.form.editing.is_some());
-    feed(&mut app, "ZQ");
-    assert_eq!(app.screen, Screen::Main);
-    assert!(app.varmanager.form.editing.is_none(), "the edit abandoned");
-    let diff = super::key_matrix_tests::snapshot_diff(&before, &snapshot(&app));
-    assert!(!diff.contains("file "), "nothing written: {diff}");
+    feed(&mut app, ":qa!<CR>");
+    assert!(app.should_quit, ":qa! quits past a field that refuses its close");
 }
 
 /// The code review of sweep backlog item 4: a dialog over Manage takes the

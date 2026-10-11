@@ -110,7 +110,8 @@ pub struct Scope {
 
 /// The pinned row: the verb's full name, its title, and what Enter runs.
 /// `CloseField` leads, so a field parked under the line is committed
-/// first (spec §5.9); it is a no-op when nothing is open.
+/// first (spec §5.9); it is a no-op when nothing is open. `:q!` and `:qa!`
+/// have none: they abandon the field.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExRow {
     pub name: &'static str,
@@ -130,7 +131,11 @@ pub enum Resolved {
 }
 
 fn row(v: &ExVerb) -> ExRow {
-    let mut actions = vec![Action::CloseField];
+    // `:q!` and `:qa!` abandon what the field holds, as Vim's abandon a
+    // changed buffer (Vim 9.1: the text is dropped, nothing is written), so
+    // no close commits it first, and one that would refuse cannot stop them.
+    let abandons = matches!(v.run, Run::Act(f) if matches!(f(), Action::ForceQuit | Action::CloseWindow { write: false, force: true }));
+    let mut actions = if abandons { Vec::new() } else { vec![Action::CloseField] };
     match v.run {
         Run::Act(f) => actions.push(f()),
         Run::Then(a, b) => {
@@ -248,14 +253,14 @@ mod tests {
         }
         let window = |write, force| vec![close.clone(), Action::CloseWindow { write, force }];
         assert_eq!(pinned("q", &sidebar()).actions, window(false, false));
-        assert_eq!(pinned("q!", &sidebar()).actions, window(false, true));
+        assert_eq!(pinned("q!", &sidebar()).actions, vec![Action::CloseWindow { write: false, force: true }], "no close: it abandons the field");
         for q in ["wq", "x", "xit", "exit"] {
             assert_eq!(pinned(q, &sidebar()).actions, window(true, false), "{q}");
         }
         for q in ["qa", "qall", "quitall"] {
             assert_eq!(pinned(q, &sidebar()).actions, vec![close.clone(), Action::GatedQuit], "{q}");
         }
-        assert_eq!(pinned("qa!", &sidebar()).actions, vec![close.clone(), Action::ForceQuit]);
+        assert_eq!(pinned("qa!", &sidebar()).actions, vec![Action::ForceQuit], "no close: it abandons the field");
         for q in ["wqa", "wqall", "xa", "xall"] {
             assert_eq!(pinned(q, &sidebar()).actions, vec![close.clone(), Action::WriteQuit], "{q}");
         }
