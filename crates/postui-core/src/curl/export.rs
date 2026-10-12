@@ -31,9 +31,10 @@ pub fn to_curl(req: &PreparedRequest) -> String {
     }
     let mut lines = vec![head];
     for (name, value) in &req.headers {
-        // `Name:` with nothing after it tells curl to drop the header;
-        // `Name;` is curl's spelling of an empty value.
-        let header = if value.is_empty() {
+        // `Name:` with only blanks after it tells curl to drop the header;
+        // `Name;` is curl's spelling of an empty value, and HTTP trims a
+        // blank one to empty anyway.
+        let header = if value.trim().is_empty() {
             format!("{name};")
         } else {
             format!("{name}: {value}")
@@ -161,6 +162,8 @@ mod tests {
     fn an_empty_header_value_uses_curls_semicolon_form() {
         let p = prepared(Method::Get, "https://x", &[("X-Empty", "")], None);
         assert_eq!(to_curl(&p), "curl 'https://x' \\\n  -H 'X-Empty;'");
+        let blank = prepared(Method::Get, "https://x", &[("X-Pad", " \t")], None);
+        assert_eq!(to_curl(&blank), "curl 'https://x' \\\n  -H 'X-Pad;'");
     }
 
     fn secret_ctx() -> PrepareContext {

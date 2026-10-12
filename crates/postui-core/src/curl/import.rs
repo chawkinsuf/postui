@@ -219,7 +219,8 @@ fn short_to_long(c: char) -> Option<&'static str> {
 #[derive(Default)]
 struct Flags {
     urls: Vec<String>,
-    method: Option<String>,
+    /// The flag as written, and its value.
+    method: Option<(String, String)>,
     head: bool,
     get: bool,
     headers: Vec<(String, String)>,
@@ -231,6 +232,9 @@ struct Flags {
     user_agent: Option<String>,
     referer: Option<String>,
     insecure: bool,
+    /// The method curl would send a dropped body with (a file or form
+    /// flag): POST, or PUT for `-T` (spec D10).
+    dropped_body: Option<Method>,
     ignored: Vec<String>,
 }
 
@@ -240,7 +244,7 @@ impl Flags {
     fn apply(&mut self, display: &str, long: &str, value: Option<String>) {
         match (long, value) {
             ("url", Some(v)) => self.urls.push(v),
-            ("request", Some(v)) => self.method = Some(v),
+            ("request", Some(v)) => self.method = Some((display.to_string(), v)),
             ("head", None) => self.head = true,
             ("get", None) => self.get = true,
             ("insecure", None) => self.insecure = true,
@@ -248,8 +252,10 @@ impl Flags {
             ("globoff", None) => {}
             ("header", Some(v)) => self.header(display, v),
             ("data" | "data-ascii" | "data-binary" | "json", Some(v)) if v.starts_with('@') => {
-                self.ignore(display, Some(v))
+                self.drop_body(display, v, Method::Post)
             }
+            ("form" | "form-string", Some(v)) => self.drop_body(display, v, Method::Post),
+            ("upload-file", Some(v)) => self.drop_body(display, v, Method::Put),
             ("data" | "data-ascii" | "data-binary" | "data-raw", Some(v)) => self.data.push(v),
             ("json", Some(v)) => {
                 self.data.push(v);
@@ -257,7 +263,7 @@ impl Flags {
             }
             ("data-urlencode", Some(v)) => match urlencode_data(&v) {
                 Some(d) => self.data.push(d),
-                None => self.ignore(display, Some(v)),
+                None => self.drop_body(display, v, Method::Post),
             },
             ("user", Some(v)) => self.user = Some((display.to_string(), v)),
             ("cookie", Some(v)) if v.contains('=') => self.cookies.push(v),
@@ -272,6 +278,13 @@ impl Flags {
             Some(v) => format!("{display} {v}"),
             None => display.to_string(),
         });
+    }
+
+    /// A body flag whose content cannot be imported (a file, a form): the
+    /// flag is listed as ignored, but curl would still have sent `method`.
+    fn drop_body(&mut self, display: &str, value: String, method: Method) {
+        self.ignore(display, Some(value));
+        self.dropped_body.get_or_insert(method);
     }
 
     /// `Name: value`; `Name;` is an empty value; `Name:` with nothing
@@ -401,12 +414,16 @@ fn build(
         user_agent,
         referer,
         insecure,
+        dropped_body,
         mut ignored,
     } = flags;
-    // A shell variable in the credentials would be encoded as the literal
-    // `{{NAME}}`; the flag is dropped instead (spec D8).
+    // A shell variable or `$(…)` in the credentials would be encoded as
+    // literal text; the flag is dropped instead (spec D8).
     let user = match user {
-        Some((display, u)) if converted.iter().any(|n| u.contains(&format!("{{{{{n}}}}}"))) => {
+        Some((display, u))
+            if converted.iter().any(|n| u.contains(&format!("{{{{{n}}}}}")))
+                || substitutions.iter().any(|s| u.contains(s.as_str())) =>
+        {
             ignored.push(format!("{display} {u}"));
             None
         }
@@ -432,18 +449,22 @@ fn build(
         }
     }
 
+    // A dropped body still sets curl's method (spec D10), unless `-G`
+    // would have sent it in the query.
     let fallback = if head {
         Method::Head
     } else if body_text.is_some() {
         Method::Post
+    } else if let Some(m) = dropped_body.filter(|_| !get) {
+        m
     } else {
         Method::Get
     };
     let method = match method_flag {
-        Some(m) => match Method::ALL.iter().find(|x| x.as_str().eq_ignore_ascii_case(&m)) {
+        Some((display, m)) => match Method::ALL.iter().find(|x| x.as_str().eq_ignore_ascii_case(&m)) {
             Some(x) => *x,
             None => {
-                ignored.push(format!("-X {m}"));
+                ignored.push(format!("{display} {m}"));
                 fallback
             }
         },
@@ -544,6 +565,8 @@ fn suggested_name(method: Method, url: &str) -> String {
     let rest = url.split_once("://").map_or(url, |(_, r)| r);
     let rest = &rest[..rest.find(['?', '#']).unwrap_or(rest.len())];
     let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
+    // `user:password@` must never reach a name, a slug or a file name.
+    let host = host.rsplit_once('@').map_or(host, |(_, h)| h);
     let leaf = path.rsplit('/').find(|s| !s.is_empty()).unwrap_or(host);
     let leaf = if leaf.is_empty() { "request" } else { leaf };
     format!("{} {leaf}", method.as_str())
@@ -670,6 +693,7 @@ mod tests {
         assert_eq!(c.ignored, ["-X PURGE"]);
         assert_eq!(one("curl -X PURGE -d a=1 https://x/a").request.method, Method::Post);
         assert_eq!(one("curl -X post https://x").request.method, Method::Post);
+        assert_eq!(one("curl --request PURGE https://x").ignored, ["--request PURGE"]);
     }
 
     #[test]
@@ -715,9 +739,27 @@ mod tests {
     fn file_data_is_ignored_but_data_raw_at_is_literal() {
         let c = one("curl -d @body.json https://x");
         assert_eq!(body(&c), None);
-        assert_eq!(c.request.method, Method::Get);
         assert_eq!(c.ignored, ["-d @body.json"]);
         assert_eq!(body(&one("curl --data-raw @x https://x")), Some("@x"));
+    }
+
+    #[test]
+    fn a_dropped_body_keeps_curls_method_d10() {
+        for (cmd, method) in [
+            ("curl -d @body.json https://x", Method::Post),
+            ("curl --json @b.json https://x", Method::Post),
+            ("curl --data-urlencode q@file https://x", Method::Post),
+            ("curl -F file=@a.png https://x/upload", Method::Post),
+            ("curl --form-string a=b https://x", Method::Post),
+            ("curl -T a.txt https://x/put", Method::Put),
+            ("curl -X PATCH -F a=b https://x", Method::Patch),
+            ("curl -G -d @q.txt https://x", Method::Get),
+        ] {
+            let c = one(cmd);
+            assert_eq!(c.request.method, method, "{cmd}");
+            assert_eq!(body(&c), None, "{cmd}");
+        }
+        assert_eq!(one("curl -T a.txt https://x").ignored, ["-T a.txt"]);
     }
 
     #[test]
@@ -765,6 +807,22 @@ mod tests {
         assert_eq!(e.converted, ["T"]);
         assert_eq!(header(&e, "Authorization"), None);
         assert_eq!(header(&one("curl -u a:b https://x"), "Authorization"), Some("Basic YTpi"));
+    }
+
+    #[test]
+    fn a_user_holding_a_substitution_is_ignored_not_encoded() {
+        let c = one(r#"curl -u "me:$(pass show api)" https://x"#);
+        assert_eq!(header(&c, "Authorization"), None);
+        assert_eq!(c.ignored, ["-u me:$(pass show api)", "$(pass show api) kept as text"]);
+        let b = one("curl -u me:`cat pw` https://x");
+        assert_eq!(header(&b, "Authorization"), None);
+    }
+
+    #[test]
+    fn credentials_in_the_url_never_reach_the_name() {
+        assert_eq!(one("curl https://admin:s3cret@api.example.com").suggested_name, "GET api.example.com");
+        assert_eq!(one("curl https://u:p@h:8080/").suggested_name, "GET h:8080");
+        assert_eq!(one("curl https://u:p@h/items").suggested_name, "GET items");
     }
 
     #[test]

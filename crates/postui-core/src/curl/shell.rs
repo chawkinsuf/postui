@@ -30,9 +30,6 @@ pub(crate) enum ShellError {
 }
 
 pub(crate) fn split(text: &str) -> Result<Vec<ShellCommand>, ShellError> {
-    if is_cmd_style(text) {
-        return Err(ShellError::CmdStyle);
-    }
     let text = text.replace("\r\n", "\n");
     Splitter {
         chars: text.chars().peekable(),
@@ -44,14 +41,6 @@ pub(crate) fn split(text: &str) -> Result<Vec<ShellCommand>, ShellError> {
         tail_words: Vec::new(),
     }
     .run()
-}
-
-/// Browsers' "Copy as cURL (cmd)" ends each continued line with ` ^` and
-/// quotes with `^"`. Either signal refuses the paste: a line ending in
-/// ` ^` here, a word opening with `^"` in `Splitter::run`. A bash body that
-/// merely contains `^"` inside quotes still parses.
-fn is_cmd_style(text: &str) -> bool {
-    text.lines().any(|l| l.trim_end().ends_with(" ^"))
 }
 
 /// A shell variable name: `[A-Za-z_][A-Za-z0-9_]*` — always a valid
@@ -97,11 +86,22 @@ struct Splitter<'a> {
 }
 
 impl Splitter<'_> {
+    /// Browsers' "Copy as cURL (cmd)" ends each continued line with ` ^` and
+    /// quotes with `^"`. Either signal refuses the paste: a bare `^` word
+    /// ending a line (`cmd_continuation`), or a word opening with `^"`. Both
+    /// are seen outside quotes only, so a bash body holding them still
+    /// parses.
     fn run(mut self) -> Result<Vec<ShellCommand>, ShellError> {
         while let Some(c) = self.chars.next() {
             match c {
                 ' ' | '\t' => self.end_word(),
-                '\n' | ';' => self.end_command(),
+                '\n' => {
+                    if self.cmd_continuation() {
+                        return Err(ShellError::CmdStyle);
+                    }
+                    self.end_command();
+                }
+                ';' => self.end_command(),
                 '&' => {
                     // `&&` and a lone `&` (background) both end the command.
                     if self.chars.peek() == Some(&'&') {
@@ -145,8 +145,17 @@ impl Splitter<'_> {
                 c => self.push(c),
             }
         }
+        if self.cmd_continuation() {
+            return Err(ShellError::CmdStyle);
+        }
         self.end_command();
         Ok(self.commands)
+    }
+
+    /// The line ends in cmd's ` ^` continuation: its last word is `^`.
+    fn cmd_continuation(&mut self) -> bool {
+        self.end_word();
+        !self.in_tail && self.current.words.last().is_some_and(|w| w == "^")
     }
 
     fn unclosed(&self) -> ShellError {
@@ -400,25 +409,7 @@ impl Splitter<'_> {
             }
             Some('(') => {
                 self.chars.next();
-                let mut depth = 1usize;
-                let mut inner = String::new();
-                loop {
-                    match self.chars.next() {
-                        None => return Err(self.unclosed()),
-                        Some('(') => {
-                            depth += 1;
-                            inner.push('(');
-                        }
-                        Some(')') => {
-                            depth -= 1;
-                            if depth == 0 {
-                                break;
-                            }
-                            inner.push(')');
-                        }
-                        Some(c) => inner.push(c),
-                    }
-                }
+                let inner = self.substitution_body()?;
                 let literal = format!("$({inner})");
                 self.word.push_str(&literal);
                 self.current.substitutions.push(literal);
@@ -448,6 +439,59 @@ impl Splitter<'_> {
                 self.word.push('$');
                 Ok(())
             }
+        }
+    }
+
+    /// The text of a `$(…)` up to its closing `)`, as written. Parentheses
+    /// nest, and a `)` that is quoted or escaped inside does not close it.
+    fn substitution_body(&mut self) -> Result<String, ShellError> {
+        let mut depth = 1usize;
+        let mut inner = String::new();
+        loop {
+            let Some(c) = self.chars.next() else {
+                return Err(self.unclosed());
+            };
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Ok(inner);
+                    }
+                }
+                '\\' => {
+                    inner.push(c);
+                    match self.chars.next() {
+                        Some(n) => inner.push(n),
+                        None => return Err(self.unclosed()),
+                    }
+                    continue;
+                }
+                '\'' | '"' => {
+                    inner.push(c);
+                    loop {
+                        match self.chars.next() {
+                            None => return Err(self.unclosed()),
+                            Some('\\') if c == '"' => {
+                                inner.push('\\');
+                                match self.chars.next() {
+                                    Some(n) => inner.push(n),
+                                    None => return Err(self.unclosed()),
+                                }
+                            }
+                            Some(q) => {
+                                inner.push(q);
+                                if q == c {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+            inner.push(c);
         }
     }
 
@@ -595,6 +639,14 @@ mod tests {
     }
 
     #[test]
+    fn a_quoted_or_escaped_paren_does_not_close_a_substitution() {
+        let cmds = split(r#"curl -H "X: $(echo ')' ")" \) (x))" https://x"#).unwrap();
+        assert_eq!(cmds[0].words, ["curl", "-H", r#"X: $(echo ')' ")" \) (x))"#, "https://x"]);
+        assert_eq!(cmds[0].substitutions, [r#"$(echo ')' ")" \) (x))"#]);
+        assert_eq!(split("curl $(echo ')"), Err(ShellError::Unclosed { command: 1 }));
+    }
+
+    #[test]
     fn an_unclosed_quote_names_its_command() {
         assert_eq!(split("curl a\ncurl 'b"), Err(ShellError::Unclosed { command: 2 }));
         assert_eq!(split("curl \"a"), Err(ShellError::Unclosed { command: 1 }));
@@ -609,5 +661,11 @@ mod tests {
         assert!(split("curl -d 'a ^\"x' https://x").is_ok());
         // One line is enough when a word opens with `^"`.
         assert_eq!(split("curl ^\"https://x/a^\""), Err(ShellError::CmdStyle));
+        // Unquoted cmd: only the ` ^` continuation gives it away.
+        assert_eq!(split("curl https://x ^  \r\n  -k"), Err(ShellError::CmdStyle));
+        assert_eq!(split("curl https://x ^"), Err(ShellError::CmdStyle));
+        // A quoted bash line that ends in ` ^` is body text.
+        assert!(split("curl -d 'regex: a ^\nb' https://x").is_ok());
+        assert!(split("curl -d \"a ^\nb\" https://x").is_ok());
     }
 }

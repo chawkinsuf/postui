@@ -40,6 +40,12 @@ The user's, from the brainstorm (2026-10-11):
 - **D7 Shell variables become postui variables** (spec review). `$NAME`
   and `${NAME}` outside single quotes become `{{NAME}}`; a body that had
   one gets `substitute_body` switched on (§3.2).
+- **D10 A dropped body keeps curl's method** (code review, 2026-10-11).
+  A body flag the import cannot carry (`-d @file`, `--json @file`,
+  `--data-urlencode name@file`, `-F`/`--form`, `--form-string`, `-T`)
+  is listed as ignored, yet the method is still the one curl would
+  send — POST, or PUT for `-T` — unless `-X`, `-I` or `-G` says
+  otherwise. The request reaches the same endpoint, with no body.
 
 Mine, approved with the design sections:
 
@@ -189,7 +195,7 @@ Warning kind when anything was ignored or skipped, success otherwise.
 | `-X`/`--request M` | `method` when M is one of the seven (case-insensitive); otherwise ignored with a warning and curl's rule applies (POST with data, else GET) |
 | `-I`/`--head` | HEAD |
 | `-H`/`--header 'K: V'` | header row, in order; a repeated name joins values (`; ` for `Cookie`, `, ` otherwise). `K;` (curl's empty-value form) → empty value. `K:` with nothing (curl's remove-header form) → ignored |
-| `-d`/`--data`/`--data-ascii`/`--data-binary`/`--data-raw` | body text; several join with `&`. Data without `-X` implies POST. `-d @file`/`--data-binary @file` → ignored (no file access); `--data-raw @x` is literal |
+| `-d`/`--data`/`--data-ascii`/`--data-binary`/`--data-raw` | body text; several join with `&`. Data without `-X` implies POST. `-d @file`/`--data-binary @file` → ignored (no file access), still POST (D10); `--data-raw @x` is literal |
 | `--data-urlencode` | `name=content` → `name=` + percent-encoded content; bare `content` → encoded content; `@file` forms ignored; joins with the other data by `&` |
 | `--json D` | body D, plus `Content-Type: application/json` and `Accept: application/json` unless the command set them |
 | `-G`/`--get` | the joined data is appended to the URL's query (`?` or `&`) instead of becoming the body; method GET unless `-X`/`-I` said otherwise |
@@ -197,7 +203,8 @@ Warning kind when anything was ignored or skipped, success otherwise.
 | `-b`/`--cookie` containing `=` | `Cookie` header (joined like a repeated Cookie header); without `=` it names a cookie file → ignored |
 | `-A`/`--user-agent`, `-e`/`--referer` | `User-Agent` / `Referer` header |
 | `-k`/`--insecure` | `insecure = true` |
-| anything else (`-F`, `--compressed`, `-L`, `-o`, `-s`, `-v`, `-i`, `--max-time`, …) | ignored; a flag that takes a value consumes it and both are listed |
+| `-F`/`--form`, `--form-string`, `-T`/`--upload-file` | ignored; method POST (`-T`: PUT) unless `-X`/`-I`/`-G` said otherwise (D10) |
+| anything else (`--compressed`, `-L`, `-o`, `-s`, `-v`, `-i`, `--max-time`, …) | ignored; a flag that takes a value consumes it and both are listed |
 
 Short flags may be bundled (`-sSL`, `-sk`) and a short flag's value may
 be attached (`-XPOST`, `-HAccept:x`); long flags accept `--flag=value`.
