@@ -197,9 +197,9 @@ Warning kind when anything was ignored or skipped, success otherwise.
 | `-H`/`--header 'K: V'` | header row, in order; a repeated name joins values (`; ` for `Cookie`, `, ` otherwise). `K;` (curl's empty-value form) → empty value. `K:` with nothing (curl's remove-header form) → ignored |
 | `-d`/`--data`/`--data-ascii`/`--data-binary`/`--data-raw` | body text; several join with `&`. Data without `-X` implies POST. `-d @file`/`--data-binary @file` → ignored (no file access), still POST (D10); `--data-raw @x` is literal |
 | `--data-urlencode` | `name=content` → `name=` + percent-encoded content; bare `content` → encoded content; `@file` forms ignored; joins with the other data by `&` |
-| `--json D` | body D, plus `Content-Type: application/json` and `Accept: application/json` unless the command set them |
-| `-G`/`--get` | the joined data is appended to the URL's query (`?` or `&`) instead of becoming the body; method GET unless `-X`/`-I` said otherwise |
-| `-u`/`--user u:p` | `Authorization: Basic base64(u:p)` unless an explicit Authorization header is given |
+| `--json D` | body D, plus `Content-Type: application/json` and `Accept: application/json` unless the command set them. As curl does, a `--json` piece joins the data before it with no `&` |
+| `-G`/`--get` | the joined data is appended to the URL's query (`?` or `&`, ahead of any `#fragment`) instead of becoming the body; method GET unless `-X`/`-I` said otherwise |
+| `-u`/`--user u:p` | `Authorization: Basic base64(u:p)` unless an explicit Authorization header is given. With `--digest`, `--ntlm`, `--ntlm-wb`, `--negotiate`, `--anyauth` or `--aws-sigv4` (curl would not send Basic) the flag is ignored |
 | `-b`/`--cookie` containing `=` | `Cookie` header (joined like a repeated Cookie header); without `=` it names a cookie file → ignored |
 | `-A`/`--user-agent`, `-e`/`--referer` | `User-Agent` / `Referer` header |
 | `-k`/`--insecure` | `insecure = true` |

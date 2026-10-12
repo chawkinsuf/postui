@@ -224,10 +224,14 @@ struct Flags {
     head: bool,
     get: bool,
     headers: Vec<(String, String)>,
-    data: Vec<String>,
+    /// Every data piece joined as curl joins them (`push_data`).
+    data: Option<String>,
     json: bool,
     /// The flag as written, and its value.
     user: Option<(String, String)>,
+    /// An auth flag that is not Basic (`--digest`, `--aws-sigv4`, …): curl
+    /// would not send `-u` as a Basic header.
+    other_auth: bool,
     cookies: Vec<String>,
     user_agent: Option<String>,
     referer: Option<String>,
@@ -256,20 +260,40 @@ impl Flags {
             }
             ("form" | "form-string", Some(v)) => self.drop_body(display, v, Method::Post),
             ("upload-file", Some(v)) => self.drop_body(display, v, Method::Put),
-            ("data" | "data-ascii" | "data-binary" | "data-raw", Some(v)) => self.data.push(v),
+            ("data" | "data-ascii" | "data-binary" | "data-raw", Some(v)) => self.push_data(&v, "&"),
             ("json", Some(v)) => {
-                self.data.push(v);
+                self.push_data(&v, "");
                 self.json = true;
             }
             ("data-urlencode", Some(v)) => match urlencode_data(&v) {
-                Some(d) => self.data.push(d),
+                Some(d) => self.push_data(&d, "&"),
                 None => self.drop_body(display, v, Method::Post),
             },
             ("user", Some(v)) => self.user = Some((display.to_string(), v)),
+            ("digest" | "ntlm" | "ntlm-wb" | "negotiate" | "anyauth", None) => {
+                self.other_auth = true;
+                self.ignore(display, None);
+            }
+            ("aws-sigv4", Some(v)) => {
+                self.other_auth = true;
+                self.ignore(display, Some(v));
+            }
             ("cookie", Some(v)) if v.contains('=') => self.cookies.push(v),
             ("user-agent", Some(v)) => self.user_agent = Some(v),
             ("referer", Some(v)) => self.referer = Some(v),
             (_, value) => self.ignore(display, value),
+        }
+    }
+
+    /// One data piece, after `sep` when data came before it: curl joins
+    /// pieces with `&`, except in front of a `--json` one.
+    fn push_data(&mut self, piece: &str, sep: &str) {
+        match &mut self.data {
+            Some(d) => {
+                d.push_str(sep);
+                d.push_str(piece);
+            }
+            None => self.data = Some(piece.to_string()),
         }
     }
 
@@ -410,6 +434,7 @@ fn build(
         data,
         json,
         user,
+        other_auth,
         cookies,
         user_agent,
         referer,
@@ -418,10 +443,12 @@ fn build(
         mut ignored,
     } = flags;
     // A shell variable or `$(…)` in the credentials would be encoded as
-    // literal text; the flag is dropped instead (spec D8).
+    // literal text (spec D8), and another auth scheme would not have sent
+    // them as Basic: the flag is dropped instead.
     let user = match user {
         Some((display, u))
-            if converted.iter().any(|n| u.contains(&format!("{{{{{n}}}}}")))
+            if other_auth
+                || converted.iter().any(|n| u.contains(&format!("{{{{{n}}}}}")))
                 || substitutions.iter().any(|s| u.contains(s.as_str())) =>
         {
             ignored.push(format!("{display} {u}"));
@@ -432,18 +459,19 @@ fn build(
     let url = urls.pop().ok_or(CurlErrorKind::NoUrl)?;
     ignored.extend(urls);
     // curl assumes http:// for a bare host (spec plan P3).
-    let mut url = if url.contains("://") || url.starts_with("{{") {
+    let mut url = if has_scheme(&url) || url.starts_with("{{") {
         url
     } else {
         format!("http://{url}")
     };
 
     let mut body_text = None;
-    if !data.is_empty() {
-        let joined = data.join("&");
+    if let Some(joined) = data {
         if get {
-            url.push(if url.contains('?') { '&' } else { '?' });
-            url.push_str(&joined);
+            // Into the query, ahead of any `#fragment` (curl's URL API).
+            let (base, fragment) = url.split_at(url.find('#').unwrap_or(url.len()));
+            let sep = if base.contains('?') { '&' } else { '?' };
+            url = format!("{base}{sep}{joined}{fragment}");
         } else {
             body_text = Some(joined);
         }
@@ -512,21 +540,27 @@ fn build(
         }
     }
 
-    // Only variables that reached the request count as converted: not
-    // those that sat in a dropped flag or the pipeline tail.
+    // Only variables and `$(…)` that reached the request are reported as
+    // converted or kept: not those that sat in a dropped flag or the
+    // pipeline tail.
+    let in_request = |text: &str| {
+        url.contains(text)
+            || headers.iter().any(|(k, e)| k.contains(text) || e.value.contains(text))
+            || body_text.as_ref().is_some_and(|b| b.contains(text))
+    };
     let converted: Vec<String> = converted
         .into_iter()
-        .filter(|n| {
-            let mark = format!("{{{{{n}}}}}");
-            url.contains(&mark)
-                || headers.values().any(|e| e.value.contains(&mark))
-                || body_text.as_ref().is_some_and(|b| b.contains(&mark))
-        })
+        .filter(|n| in_request(&format!("{{{{{n}}}}}")))
         .collect();
     let substitute_body = body_text
         .as_ref()
         .is_some_and(|b| converted.iter().any(|n| b.contains(&format!("{{{{{n}}}}}"))));
-    ignored.extend(substitutions.into_iter().map(|s| format!("{s} kept as text")));
+    ignored.extend(
+        substitutions
+            .into_iter()
+            .filter(|s| in_request(s))
+            .map(|s| format!("{s} kept as text")),
+    );
     ignored.extend(tail);
 
     let suggested_name = suggested_name(method, &url);
@@ -561,8 +595,20 @@ fn add_header(headers: &mut IndexMap<String, Entry>, name: String, value: String
     }
 }
 
+/// Whether `url` starts with `scheme://` — a `://` later on (a redirect
+/// target in the query) does not count.
+fn has_scheme(url: &str) -> bool {
+    url.split_once("://").is_some_and(|(scheme, _)| {
+        scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+            && scheme.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+    })
+}
+
 fn suggested_name(method: Method, url: &str) -> String {
-    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    let rest = match url.split_once("://") {
+        Some((_, r)) if has_scheme(url) => r,
+        _ => url,
+    };
     let rest = &rest[..rest.find(['?', '#']).unwrap_or(rest.len())];
     let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
     // `user:password@` must never reach a name, a slug or a file name.
@@ -789,10 +835,45 @@ mod tests {
     }
 
     #[test]
+    fn get_flag_data_goes_before_the_fragment() {
+        assert_eq!(one("curl -G -d a=1 'https://x/p#top'").request.url, "https://x/p?a=1#top");
+        assert_eq!(one("curl -G -d a=1 'https://x/p?b=2#t?c'").request.url, "https://x/p?b=2&a=1#t?c");
+    }
+
+    #[test]
+    fn repeated_json_pieces_join_with_no_separator() {
+        let c = one(r#"curl --json '{"a":' --json '1}' https://x"#);
+        assert_eq!(body(&c), Some(r#"{"a":1}"#));
+        assert_eq!(header(&c, "Content-Type"), Some("application/json"));
+        // curl skips the `&` only in front of a `--json` piece.
+        assert_eq!(body(&one("curl -d a=1 --json b https://x")), Some("a=1b"));
+        assert_eq!(body(&one("curl --json a -d b=1 https://x")), Some("a&b=1"));
+    }
+
+    #[test]
     fn user_becomes_basic_auth_unless_authorization_is_given() {
         assert_eq!(header(&one("curl -u alice:secret https://x"), "Authorization"), Some("Basic YWxpY2U6c2VjcmV0"));
         let c = one("curl -u alice:secret -H 'Authorization: Bearer t' https://x");
         assert_eq!(header(&c, "Authorization"), Some("Bearer t"));
+    }
+
+    #[test]
+    fn a_non_basic_auth_flag_drops_the_user() {
+        for (cmd, ignored) in [
+            ("curl --digest -u bob:pw https://x", vec!["--digest", "-u bob:pw"]),
+            ("curl -u bob:pw --ntlm https://x", vec!["--ntlm", "-u bob:pw"]),
+            ("curl --ntlm-wb -u bob:pw https://x", vec!["--ntlm-wb", "-u bob:pw"]),
+            ("curl --negotiate -u : https://x", vec!["--negotiate", "-u :"]),
+            ("curl --anyauth --user bob:pw https://x", vec!["--anyauth", "--user bob:pw"]),
+            (
+                "curl --aws-sigv4 aws:amz:us-east-1:s3 -u k:s https://x",
+                vec!["--aws-sigv4 aws:amz:us-east-1:s3", "-u k:s"],
+            ),
+        ] {
+            let c = one(cmd);
+            assert_eq!(header(&c, "Authorization"), None, "{cmd}");
+            assert_eq!(c.ignored, ignored, "{cmd}");
+        }
     }
 
     #[test]
@@ -813,7 +894,7 @@ mod tests {
     fn a_user_holding_a_substitution_is_ignored_not_encoded() {
         let c = one(r#"curl -u "me:$(pass show api)" https://x"#);
         assert_eq!(header(&c, "Authorization"), None);
-        assert_eq!(c.ignored, ["-u me:$(pass show api)", "$(pass show api) kept as text"]);
+        assert_eq!(c.ignored, ["-u me:$(pass show api)"]);
         let b = one("curl -u me:`cat pw` https://x");
         assert_eq!(header(&b, "Authorization"), None);
     }
@@ -862,6 +943,12 @@ mod tests {
         assert_eq!(one("curl example.com/x").request.url, "http://example.com/x");
         assert_eq!(one("curl '{{base}}/x'").request.url, "{{base}}/x");
         assert_eq!(one("curl $BASE/users").suggested_name, "GET users");
+        // A `://` later in the URL is not a scheme.
+        let q = one("curl 'example.com/login?next=https://app/x'");
+        assert_eq!(q.request.url, "http://example.com/login?next=https://app/x");
+        assert_eq!(q.suggested_name, "GET login");
+        assert_eq!(one("curl '{{base}}/login?next=https://app/x'").suggested_name, "GET login");
+        assert_eq!(one("curl HTTPS://x/a").request.url, "HTTPS://x/a");
     }
 
     #[test]
@@ -878,6 +965,12 @@ mod tests {
         let c = one(r#"curl -L -H "X-Date: $(date)" https://a https://b | jq ."#);
         assert_eq!(header(&c, "X-Date"), Some("$(date)"));
         assert_eq!(c.ignored, ["-L", "https://a", "$(date) kept as text", "| jq ."]);
+    }
+
+    #[test]
+    fn a_substitution_outside_the_request_gets_no_kept_note() {
+        assert_eq!(one(r#"curl https://x | jq "$(cat filter)""#).ignored, ["| jq $(cat filter)"]);
+        assert_eq!(one(r#"curl -o "$(date).json" https://x"#).ignored, ["-o $(date).json"]);
     }
 
     #[test]
