@@ -101,6 +101,12 @@ pub fn all_commands() -> Vec<Command> {
             action: Action::DuplicateRequest,
         },
         Command {
+            id: "request-copy-curl",
+            name: "Request: copy as curl",
+            description: "Copy the open request as a curl command, variables resolved",
+            action: Action::CopyAsCurl(None),
+        },
+        Command {
             id: "request-delete",
             name: "Request: delete",
             description: "Delete the open request (undo restores it)",

@@ -273,3 +273,130 @@ fn esc_skips_to_the_next_command_in_both_profiles() {
         }
     }
 }
+
+/// A test app whose clipboard writes land in the returned file.
+fn copy_app() -> (App, tempfile::TempDir, std::path::PathBuf) {
+    let mut app = App::new_for_test();
+    postui_core::fixtures::save_request(app.proj().root(), "main/top", &req("https://x/top")).unwrap();
+    let other = postui_core::model::HttpRequest::from_toml_str(
+        "method = \"POST\"\nurl = \"https://x/other\"\n[headers]\nX-A = \"1\"\n",
+    )
+    .unwrap();
+    postui_core::fixtures::save_request(app.proj().root(), "main/other", &other).unwrap();
+    app.update(Action::RefreshSidebar);
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("clip.txt");
+    let cmd = format!("cat > {}", out.to_string_lossy());
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536, false));
+    (app, dir, out)
+}
+
+fn copied(out: &std::path::Path) -> Option<String> {
+    std::fs::read_to_string(out).ok()
+}
+
+#[test]
+fn copy_as_curl_copies_the_open_request_with_unsaved_edits() {
+    let (mut app, _dir, out) = copy_app();
+    app.update(Action::ForceOpenRequest("main/top".into()));
+    app.editor.url = LineInput::new("https://x/edited");
+    app.update(Action::CopyAsCurl(None));
+    assert_eq!(copied(&out).as_deref(), Some("curl 'https://x/edited'"));
+    assert_eq!(app.toasts.last_message(), Some("Copied as curl"));
+}
+
+#[test]
+fn copy_on_a_closed_request_reads_its_file_without_opening_it() {
+    let (mut app, _dir, out) = copy_app();
+    app.update(Action::ForceOpenRequest("main/top".into()));
+    app.update(Action::CopyAsCurl(Some("main/other".into())));
+    assert_eq!(
+        copied(&out).as_deref(),
+        Some("curl -X POST 'https://x/other' \\\n  -H 'X-A: 1'")
+    );
+    assert!(app.proj().held_request("main/other").is_none(), "not held");
+    assert_eq!(app.editor.slug.as_deref(), Some("main/top"), "editor untouched");
+}
+
+#[test]
+fn the_open_rows_copy_uses_the_live_editor() {
+    let (mut app, _dir, out) = copy_app();
+    app.update(Action::ForceOpenRequest("main/top".into()));
+    app.editor.url = LineInput::new("https://x/edited");
+    app.update(Action::CopyAsCurl(Some("main/top".into())));
+    assert_eq!(copied(&out).as_deref(), Some("curl 'https://x/edited'"));
+}
+
+#[test]
+fn an_empty_url_copies_nothing() {
+    let (mut app, _dir, out) = copy_app();
+    app.editor.url = LineInput::new("");
+    app.update(Action::CopyAsCurl(None));
+    assert_eq!(copied(&out), None);
+    assert_eq!(app.toasts.last_message(), Some("cannot copy: URL is empty"));
+}
+
+#[test]
+fn unresolved_variables_copy_nothing() {
+    let (mut app, _dir, out) = copy_app();
+    app.update(Action::ForceOpenRequest("main/top".into()));
+    app.editor.url = LineInput::new("https://x/{{missing}}");
+    app.update(Action::CopyAsCurl(None));
+    assert_eq!(copied(&out), None);
+    let (msg, kind) = *app.toasts.entries().last().unwrap();
+    assert!(msg.contains("missing"), "{msg}");
+    assert_eq!(*kind, crate::components::toast::ToastKind::Error);
+}
+
+#[test]
+fn a_resolved_secret_is_noted_on_the_toast() {
+    let dir = tempfile::tempdir().unwrap();
+    postui_core::fixtures::init_project(dir.path(), Some("demo")).unwrap();
+    postui_core::fixtures::ensure_project(dir.path()).unwrap(); // seeds the `main` space
+    std::fs::write(dir.path().join("variables.toml"), "[api_key]\ndescription = \"service key\"\nsecret = true\n").unwrap();
+    std::fs::write(dir.path().join("environments/qa.toml"), "").unwrap();
+    postui_core::fixtures::save_local_state(
+        dir.path(),
+        &postui_core::project::LocalState { environment: Some("qa".into()), ..Default::default() },
+    )
+    .unwrap();
+    let sec = postui_core::model::HttpRequest::from_toml_str(
+        "url = \"https://x\"\n[headers]\nAuthorization = \"Bearer {{api_key}}\"\n",
+    )
+    .unwrap();
+    postui_core::fixtures::save_request(dir.path(), "main/sec", &sec).unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::VarEdit(crate::components::varmanager::VarEditOp::SetSecretValue {
+        env: "qa".into(),
+        name: "api_key".into(),
+        value: "sk-1".into(),
+    }));
+    let out = dir.path().join("clip.txt");
+    let cmd = format!("cat > {}", out.to_string_lossy());
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536, false));
+    app.update(Action::CopyAsCurl(Some("main/sec".into())));
+    assert!(copied(&out).unwrap().contains("Bearer sk-1"), "fully resolved (D2)");
+    assert_eq!(app.toasts.last_message(), Some("Copied as curl \u{2014} includes secret values"));
+}
+
+#[test]
+fn the_palette_lists_copy_as_curl() {
+    let cmd = crate::components::palette::all_commands()
+        .into_iter()
+        .find(|c| c.id == "request-copy-curl")
+        .expect("palette command");
+    assert_eq!(cmd.name, "Request: copy as curl");
+    assert_eq!(cmd.action, Action::CopyAsCurl(None));
+}
+
+#[test]
+fn the_request_menu_offers_copy_as_curl_after_duplicate() {
+    let (mut app, _dir, _out) = copy_app();
+    let i = app.sidebar.row_of("main/other").expect("row");
+    let items = app.context_menu_for(&Hit::SidebarRow(i)).expect("menu");
+    let labels: Vec<&str> = items.iter().map(|m| m.label.as_str()).collect();
+    let dup = labels.iter().position(|l| *l == "Duplicate").unwrap();
+    assert_eq!(labels[dup + 1], "Copy as curl");
+    assert_eq!(items[dup + 1].action, Some(Action::CopyAsCurl(Some("main/other".into()))));
+}

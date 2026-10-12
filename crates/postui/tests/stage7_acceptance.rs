@@ -141,6 +141,7 @@ fn right_click_sidebar_row_opens_menu_and_duplicate_creates_copy() {
         vec![
             "Open",
             "Duplicate",
+            "Copy as curl",
             "Move up",
             "Move down",
             "Rename…",
@@ -217,7 +218,7 @@ fn broken_row_menu_offers_show_error() {
 #[test]
 fn click_away_closes_the_menu_without_activating_what_is_under_it() {
     let mut app = App::new_for_test();
-    let slugs: Vec<String> = (0..12).map(|i| format!("r{i:02}")).collect();
+    let slugs: Vec<String> = (0..14).map(|i| format!("r{i:02}")).collect();
     let refs: Vec<&str> = slugs.iter().map(String::as_str).collect();
     seed(&mut app, &refs);
 
@@ -228,7 +229,7 @@ fn click_away_closes_the_menu_without_activating_what_is_under_it() {
     // the click is unambiguously "outside" it.
     render(&mut app);
     let menu = app.hits.rect_of(&Hit::ModalBody).unwrap();
-    let under = (1..12)
+    let under = (1..14)
         .find(|i| {
             app.hits
                 .rect_of(&Hit::SidebarRow(*i))

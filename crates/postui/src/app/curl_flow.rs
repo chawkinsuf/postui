@@ -97,4 +97,55 @@ impl App {
             self.toasts.push(text, kind);
         }
     }
+
+    /// `Action::CopyAsCurl` (spec §5): Send's own resolution, then the
+    /// command on the clipboard. Unresolved variables copy nothing.
+    pub(super) fn copy_as_curl(&mut self, slug: Option<String>) -> bool {
+        let live = match &slug {
+            None => true,
+            Some(s) => self.editor.slug.as_deref() == Some(s.as_str()),
+        };
+        // As Send does: an open cell's text goes out, and the variables
+        // are read fresh (plan P6).
+        if live {
+            self.commit_table_edit();
+        }
+        self.apply(Action::ReloadProjectFiles);
+        let req = if live {
+            if self.editor.url.text().trim().is_empty() {
+                self.toasts
+                    .push("cannot copy: URL is empty", ToastKind::Warning);
+                return true;
+            }
+            self.editor.current_request()
+        } else {
+            let slug = slug.expect("a request that is not open has a slug");
+            match self.project_mut().map(|p| p.read_request(&slug)) {
+                Some(Ok(r)) => r,
+                Some(Err(e)) => {
+                    let msg = format!("could not read {}: {e}", self.request_display(&slug));
+                    self.toasts.push(msg, ToastKind::Error);
+                    return true;
+                }
+                None => return true,
+            }
+        };
+        let ctx = self.prepare_context();
+        match postui_core::prepare::prepare(&req, &ctx) {
+            Ok((prepared, _warnings)) => {
+                let text = postui_core::curl::to_curl(&prepared);
+                let msg = if postui_core::curl::includes_secrets(&req, &ctx, &prepared) {
+                    "Copied as curl \u{2014} includes secret values"
+                } else {
+                    "Copied as curl"
+                };
+                self.copy_text_with_toast(&text, msg.to_string());
+            }
+            Err(postui_core::prepare::PrepareError::Unresolved(causes)) => {
+                let msg = self.unresolved_message(&causes);
+                self.toasts.push(msg, ToastKind::Error);
+            }
+        }
+        true
+    }
 }

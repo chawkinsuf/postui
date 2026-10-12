@@ -352,6 +352,11 @@ pub enum Action {
     /// An import prompt's cancel (Esc, Cancel, a click outside): skips the
     /// current command and moves on.
     ImportCurlSkip(Box<crate::curl_import::CurlImportRun>),
+    /// "Copy as curl" (spec curl §5.1): `None` is the open request as the
+    /// editor holds it (the palette); `Some(slug)` is a sidebar row —
+    /// the live editor when it is the open request, its saved file
+    /// otherwise.
+    CopyAsCurl(Option<String>),
     /// Create a fresh request at `name` (a slug), then open it. If the
     /// editor is dirty this is intercepted into a `Modal::Confirm` rather
     /// than applied directly; see `App::update`.

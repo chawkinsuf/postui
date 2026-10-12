@@ -1411,6 +1411,31 @@ impl App {
         self.active_env().unwrap_or("no env").to_string()
     }
 
+    /// The toast for a request whose variables don't all resolve. Send
+    /// and Copy as curl say the same thing.
+    pub(crate) fn unresolved_message(
+        &self,
+        causes: &std::collections::BTreeMap<String, postui_core::prepare::UnresolvedCause>,
+    ) -> String {
+        let label = self.env_label();
+        let mut msg = format!(
+            "{} ({label})",
+            postui_core::prepare::PrepareError::Unresolved(causes.clone())
+        );
+        // Name the first (alphabetically — `causes` is a `BTreeMap`)
+        // variable that just needs a pick, not a fix, so `alt+v` is a
+        // visible next step rather than a dead end.
+        if let Some(name) = causes.iter().find_map(|(name, cause)| {
+            (*cause == postui_core::prepare::UnresolvedCause::NeedsSelection).then(|| name.clone())
+        }) {
+            msg.push_str(&format!(
+                " \u{2014} press {}+shift+v to select {name}",
+                crate::keys::alt_label()
+            ));
+        }
+        msg
+    }
+
     /// The active environment's display name, or `"no env"`.
     pub(crate) fn env_label_display(&self) -> String {
         match self.active_env() {
@@ -3586,6 +3611,7 @@ impl App {
                 self.advance_curl_import(*run);
                 true
             }
+            Action::CopyAsCurl(slug) => self.copy_as_curl(slug),
             Action::PromptNewRequestIn(folder) => {
                 if self.refuse_without_project() {
                     return true;
@@ -4245,24 +4271,7 @@ impl App {
                             });
                             return true;
                         }
-                        let label = self.env_label();
-                        let mut msg = format!(
-                            "{} ({label})",
-                            postui_core::prepare::PrepareError::Unresolved(causes.clone())
-                        );
-                        // Name the first (alphabetically — `causes` is a
-                        // `BTreeMap`) variable that just needs a pick, not
-                        // a fix, so `alt+v` is a visible next step
-                        // rather than a dead end.
-                        if let Some(name) = causes.iter().find_map(|(name, cause)| {
-                            (*cause == postui_core::prepare::UnresolvedCause::NeedsSelection)
-                                .then(|| name.clone())
-                        }) {
-                            msg.push_str(&format!(
-                                " \u{2014} press {}+shift+v to select {name}",
-                                crate::keys::alt_label()
-                            ));
-                        }
+                        let msg = self.unresolved_message(&causes);
                         self.toasts.push(msg, ToastKind::Error);
                         return true;
                     }
@@ -9240,6 +9249,7 @@ impl App {
                 let mut items = vec![
                     MenuItem::new("Open", Action::OpenRequest(slug.clone())),
                     MenuItem::new("Duplicate", Action::DuplicateRequest),
+                    MenuItem::new("Copy as curl", Action::CopyAsCurl(Some(slug.clone()))),
                     if first {
                         MenuItem::disabled("Move up")
                     } else {
