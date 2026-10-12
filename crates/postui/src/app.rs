@@ -504,14 +504,14 @@ enum StartupDisposition {
 }
 
 /// What `App::create_request_from` did.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum CreateOutcome {
     /// Nothing was written: no project, a taken or empty name, a write
     /// failure.
     Refused,
     /// The file landed but could not be opened; the editor still holds
-    /// the request it had.
-    Unopened,
+    /// the request it had. Carries the new request's display name.
+    Unopened(String),
     /// Written and open in the editor.
     Opened,
 }
@@ -9451,7 +9451,8 @@ impl App {
 
     /// Writes a new request built by `build` under `name` (relative to the
     /// active space) and opens it. Every outcome but `Opened` toasts why
-    /// and sets `last_action_failed`.
+    /// and sets `last_action_failed` — except no project at all, which is
+    /// refused silently: every caller refuses that up front, with its toast.
     fn create_request_from(
         &mut self,
         name: &str,
@@ -9488,7 +9489,7 @@ impl App {
                     // switch) does not run. `land` toasted why.
                     self.record_project_step(t, label);
                     self.last_action_failed = true;
-                    return CreateOutcome::Unopened;
+                    return CreateOutcome::Unopened(leaf);
                 }
                 self.editor.mark_saved();
                 self.toasts.push(format!("Saved {leaf}"), ToastKind::Success);

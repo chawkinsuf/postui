@@ -79,10 +79,10 @@ impl App {
         let name = match self.create_request_from(name, |_| import.request) {
             CreateOutcome::Refused => return true,
             CreateOutcome::Opened => self.editor.name.clone().unwrap_or_else(|| name.to_string()),
-            CreateOutcome::Unopened => {
+            CreateOutcome::Unopened(leaf) => {
                 // `land` toasted why; the prompt must not come back.
                 self.last_action_failed = false;
-                name.to_string()
+                leaf
             }
         };
         run.created.push(CreatedImport {
