@@ -155,10 +155,156 @@ fn a_batch_runs_one_prompt_per_command_and_each_create_is_its_own_undo() {
     let c = slug_named(&app, "GET c").expect("c created");
     assert!(slug_named(&app, "GET b").is_none(), "b was skipped");
     assert_eq!(app.editor.slug.as_deref(), Some(c.as_str()), "the last created is open");
-    assert_eq!(app.toasts.last_message(), Some("imported 2 of 3; skipped 1 non-curl line"));
+    // `export T=1` is read, not skipped; only `b` used T, and it was skipped.
+    assert_eq!(app.toasts.last_message(), Some("imported 2 of 3"));
     app.update(Action::Undo);
     assert!(!app.proj().request_exists(&c));
     assert!(app.proj().request_exists(&a));
+}
+
+#[test]
+fn an_exported_value_is_saved_as_a_secret_and_one_undo_takes_it_back() {
+    let mut app = app_with_clip("export TOKEN=abc123\ncurl -H \"Authorization: Bearer $TOKEN\" https://x/me");
+    let env = app.proj().active_env().map(|e| app.proj().env_name(e));
+    import(&mut app);
+    app.update(Action::ConfirmTopModal);
+    let p = app.proj();
+    assert!(p.variables().vars["TOKEN"].secret);
+    assert_eq!(p.resolved().values.get("TOKEN").map(String::as_str), Some("abc123"), "Send resolves it");
+    let mut expected = "converted $TOKEN \u{2192} {{TOKEN}}; saved TOKEN as a secret".to_string();
+    if let Some(env) = env {
+        expected.push_str(&format!(" in {env}"));
+    }
+    assert_eq!(app.toasts.last_message(), Some(expected.as_str()));
+    app.update(Action::Undo);
+    assert!(slug_named(&app, "GET me").is_none());
+    assert!(!app.proj().variables().vars.contains_key("TOKEN"), "the one undo took the variable too");
+    assert!(!app.proj().resolved().values.contains_key("TOKEN"));
+}
+
+#[test]
+fn a_value_the_paste_cannot_know_is_declared_with_none() {
+    let mut app = app_with_clip("export TOKEN=$(get-token)\ncurl -H \"Authorization: Bearer $TOKEN\" https://x/me");
+    import(&mut app);
+    app.update(Action::ConfirmTopModal);
+    let p = app.proj();
+    assert!(p.variables().vars["TOKEN"].secret);
+    assert_eq!(p.resolved().meta.get("TOKEN"), Some(&postui_core::varmodel::VarMeta::MissingSecret), "Send asks for it");
+    let (msg, kind) = *app.toasts.entries().last().unwrap();
+    assert_eq!(msg, "converted $TOKEN \u{2192} {{TOKEN}}; declared TOKEN as a secret with no value");
+    assert_eq!(*kind, crate::components::toast::ToastKind::Warning);
+    app.update(Action::Undo);
+    assert!(slug_named(&app, "GET me").is_none());
+    assert!(!app.proj().variables().vars.contains_key("TOKEN"), "the one undo took the variable too");
+}
+
+#[test]
+fn a_variable_the_paste_never_assigns_is_declared_with_none() {
+    let mut app = app_with_clip("curl -H \"Authorization: Bearer $TOKEN\" https://x/me");
+    import(&mut app);
+    app.update(Action::ConfirmTopModal);
+    let p = app.proj();
+    assert!(p.variables().vars["TOKEN"].secret);
+    assert_eq!(p.resolved().meta.get("TOKEN"), Some(&postui_core::varmodel::VarMeta::MissingSecret));
+    assert_eq!(
+        app.toasts.last_message(),
+        Some("converted $TOKEN \u{2192} {{TOKEN}}; declared TOKEN as a secret with no value")
+    );
+}
+
+#[test]
+fn a_later_value_for_a_name_declared_with_none_is_reported() {
+    let mut app = app_with_clip("export T=$(x)\ncurl -H \"A: $T\" https://x/a\nexport T=abc\ncurl -H \"A: $T\" https://x/b");
+    import(&mut app);
+    app.update(Action::ConfirmTopModal);
+    app.update(Action::ConfirmTopModal);
+    assert_eq!(app.proj().resolved().meta.get("T"), Some(&postui_core::varmodel::VarMeta::MissingSecret));
+    let msg = app.toasts.last_message().expect("a summary");
+    assert!(msg.ends_with("; declared T as a secret with no value; did not save a later value of T"), "{msg}");
+}
+
+#[test]
+fn a_variable_the_project_has_is_left_alone() {
+    let mut app = app_with_clip("export base=https://pasted\ncurl \"$base/me\"");
+    std::fs::write(app.proj().root().join("variables.toml"), "[base]\ndefault = \"https://mine\"\n").unwrap();
+    app.update(Action::ReloadProjectFiles);
+    import(&mut app);
+    app.update(Action::ConfirmTopModal);
+    assert!(slug_named(&app, "GET me").is_some());
+    assert_eq!(app.proj().resolved().values.get("base").map(String::as_str), Some("https://mine"));
+    assert!(!app.proj().variables().vars["base"].secret);
+    assert_eq!(
+        app.toasts.last_message(),
+        Some("converted $base \u{2192} {{base}}; kept the existing base, not the paste's value"),
+        "the request sends the project's value, not the curl's"
+    );
+    // The same value is no surprise.
+    let mut app = app_with_clip("export base=https://mine\ncurl \"$base/me\"");
+    std::fs::write(app.proj().root().join("variables.toml"), "[base]\ndefault = \"https://mine\"\n").unwrap();
+    app.update(Action::ReloadProjectFiles);
+    import(&mut app);
+    app.update(Action::ConfirmTopModal);
+    assert_eq!(
+        app.toasts.last_message(),
+        Some("converted $base \u{2192} {{base}}; kept the existing base")
+    );
+}
+
+#[test]
+fn a_selector_field_is_kept_and_the_import_still_lands() {
+    let mut app = app_with_clip("export user_id=5\ncurl \"https://x/users/$user_id\"");
+    std::fs::write(app.proj().root().join("variables.toml"), "[selectors.creds]\nfields = [\"user_id\"]\n").unwrap();
+    app.update(Action::ReloadProjectFiles);
+    let before = app.proj().requests().len();
+    import(&mut app);
+    app.update(Action::ConfirmTopModal);
+    assert!(app.modals.is_empty(), "the create was not refused");
+    assert_eq!(app.proj().requests().len(), before + 1);
+    assert!(!app.proj().variables().vars.contains_key("user_id"));
+    let msg = app.toasts.last_message().expect("a summary");
+    assert!(msg.ends_with("; kept the existing user_id, not the paste's value"), "{msg}");
+}
+
+#[test]
+fn a_value_only_an_environment_file_sets_is_kept() {
+    // Declared as a secret, TOKEN would hide `other`'s own value.
+    let mut app = app_with_clip("export TOKEN=old\ncurl -H \"A: $TOKEN\" https://x/me");
+    std::fs::create_dir_all(app.proj().root().join("environments")).unwrap();
+    std::fs::write(app.proj().root().join("environments/other.toml"), "TOKEN = \"real\"\n").unwrap();
+    app.update(Action::ReloadProjectFiles);
+    assert!(app.proj().environments().iter().any(|e| e == "other"));
+    import(&mut app);
+    app.update(Action::ConfirmTopModal);
+    assert!(slug_named(&app, "GET me").is_some());
+    assert!(!app.proj().variables().vars.contains_key("TOKEN"));
+    let msg = app.toasts.last_message().expect("a summary");
+    assert!(msg.contains("kept the existing TOKEN"), "{msg}");
+    assert!(!msg.contains("saved TOKEN"), "{msg}");
+}
+
+#[test]
+fn a_reserved_name_is_not_saved_and_not_called_existing() {
+    let mut app = app_with_clip("export entries=5 T=1\ncurl \"https://x/me?n=$entries&t=$T\"");
+    import(&mut app);
+    app.update(Action::ConfirmTopModal);
+    assert!(slug_named(&app, "GET me").is_some(), "the other secret still lands");
+    assert!(!app.proj().variables().vars.contains_key("entries"));
+    assert_eq!(app.proj().resolved().values.get("T").map(String::as_str), Some("1"));
+    let (msg, kind) = *app.toasts.entries().last().unwrap();
+    assert!(msg.ends_with("; did not save entries (a reserved name)"), "{msg}");
+    assert!(!msg.contains("kept"), "{msg}");
+    assert_eq!(*kind, crate::components::toast::ToastKind::Warning);
+}
+
+#[test]
+fn a_later_command_given_another_value_is_told_it_kept_the_first() {
+    let mut app = app_with_clip("export T=1\ncurl -H \"A: $T\" https://x/a\nexport T=2\ncurl -H \"A: $T\" https://x/b");
+    import(&mut app);
+    app.update(Action::ConfirmTopModal);
+    app.update(Action::ConfirmTopModal);
+    assert_eq!(app.proj().resolved().values.get("T").map(String::as_str), Some("1"));
+    let msg = app.toasts.last_message().expect("a summary");
+    assert!(msg.ends_with("; kept the first value of T"), "{msg}");
 }
 
 #[test]
@@ -186,18 +332,44 @@ fn a_clipboard_without_curl_says_so() {
 }
 
 #[test]
-fn import_over_unsaved_edits_asks_first_and_esc_keeps_them() {
+fn import_over_unsaved_edits_asks_first_and_discard_discards_even_if_every_prompt_is_skipped() {
     let mut app = app_with_clip("curl https://x/a");
     app.update(Action::ForceOpenRequest("main/top".into()));
     app.editor.url = LineInput::new("https://x/edited");
+    app.capture_undo();
     import(&mut app);
     assert!(matches!(app.modals.top(), Some(Modal::Confirm { title, .. }) if title == "Unsaved changes"));
     app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+    app.capture_undo();
     assert_eq!(prompt(&app).0, "Import curl");
+    assert_eq!(app.editor.url.text(), "https://x/top", "Discard discarded");
     app.update(Action::CancelTopModal);
     assert!(app.modals.is_empty());
     assert_eq!(app.editor.slug.as_deref(), Some("main/top"));
-    assert_eq!(app.editor.url.text(), "https://x/edited", "nothing replaced the edit");
+    assert!(!app.editor_holds_unsaved());
+    app.update(Action::Undo);
+    assert_eq!(app.editor.url.text(), "https://x/edited", "undo brings the edit back");
+}
+
+#[test]
+fn discarding_a_scratch_request_for_an_import_clears_it() {
+    let mut app = app_with_clip("curl https://x/a");
+    app.editor.url = LineInput::new("https://x/scratch");
+    app.capture_undo();
+    assert!(app.editor_holds_unsaved());
+    import(&mut app);
+    assert!(matches!(app.modals.top(), Some(Modal::Confirm { title, .. }) if title == "Unsaved request"));
+    app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+    app.capture_undo();
+    assert!(app.toasts.messages().iter().any(|m| m.starts_with("Request discarded")), "{:?}", app.toasts.messages());
+    app.update(Action::CancelTopModal);
+    assert!(app.modals.is_empty());
+    assert_eq!(app.editor.url.text(), "");
+    assert!(!app.editor_holds_unsaved());
+    assert!(app.editor.saved.is_none(), "a scratch again, with nothing saved to compare to");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.url.text(), "https://x/scratch", "undo brings the scratch back");
+    assert!(app.editor.is_scratch_dirty());
 }
 
 #[test]
@@ -260,6 +432,68 @@ fn the_cancel_button_skips_to_the_next_command() {
     click(&mut app, Hit::ModalCancel);
     assert_eq!(prompt(&app).0, "Import curl (2 of 2)");
     assert!(slug_named(&app, "GET a").is_none());
+}
+
+#[test]
+fn vims_command_line_reaches_import_by_verb_and_by_the_first_ctrl_n() {
+    for keys in [":import<CR>", ":imp<CR>", ":curl<C-n><CR>"] {
+        let mut app = app_with_clip("curl https://x/users");
+        app.use_profile(KeyProfile::Vim);
+        draw(&mut app);
+        feed(&mut app, keys);
+        assert_eq!(prompt(&app).0, "Import curl", "{keys}");
+    }
+}
+
+#[test]
+fn vims_copycurl_verb_copies_the_open_request() {
+    let (mut app, _dir, out) = copy_app();
+    app.use_profile(KeyProfile::Vim);
+    app.update(Action::ForceOpenRequest("main/top".into()));
+    draw(&mut app);
+    feed(&mut app, ":copycurl<CR>");
+    assert_eq!(copied(&out).as_deref(), Some("curl 'https://x/top'"));
+}
+
+fn footer_labels(app: &App) -> Vec<String> {
+    app.modals.footer_chips().unwrap().into_iter().map(|(_, l, _)| l).collect()
+}
+
+#[test]
+fn a_batch_prompt_says_skip_and_a_single_one_says_cancel() {
+    let mut app = app_with_clip("curl https://x/a\ncurl https://x/b");
+    import(&mut app);
+    let screen = super::tests::rendered_text_at(&mut app, 160, 45);
+    assert!(screen.contains("Skip") && !screen.contains("Cancel"), "{screen}");
+    assert!(footer_labels(&app).contains(&"skip".to_string()), "{:?}", footer_labels(&app));
+    let mut one = app_with_clip("curl https://x/a");
+    import(&mut one);
+    let screen = super::tests::rendered_text_at(&mut one, 160, 45);
+    assert!(screen.contains("Cancel") && !screen.contains("Skip"), "{screen}");
+    assert!(footer_labels(&one).contains(&"cancel".to_string()));
+}
+
+#[test]
+fn the_aimed_skip_button_is_named_skip() {
+    let mut app = app_with_clip("curl https://x/a\ncurl https://x/b");
+    import(&mut app);
+    // ↓ closes the field onto the button row (Confirm aimed); ← aims Skip.
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+    let labels = footer_labels(&app);
+    assert!(labels.iter().filter(|l| *l == "skip").count() == 2, "enter and esc both skip: {labels:?}");
+}
+
+#[test]
+fn the_prompt_shows_the_method_url_and_ignored_flags() {
+    let mut app = app_with_clip("curl --compressed -X POST https://x/items -d a=1");
+    import(&mut app);
+    let screen = super::tests::rendered_text_at(&mut app, 160, 45);
+    assert!(screen.contains("POST https://x/items"), "{screen}");
+    assert!(screen.contains("ignores --compressed"), "{screen}");
+    let mut clean = app_with_clip("curl https://x/items");
+    import(&mut clean);
+    assert!(!super::tests::rendered_text_at(&mut clean, 160, 45).contains("ignores"));
 }
 
 #[test]

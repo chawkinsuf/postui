@@ -3615,10 +3615,7 @@ impl App {
                 true
             }
             Action::ImportCurl { folder } => self.import_curl(folder),
-            Action::BeginCurlImport(run) => {
-                self.push_curl_prompt(*run);
-                true
-            }
+            Action::BeginCurlImport { run, discard } => self.begin_curl_import(*run, discard),
             Action::ImportCurlCreate { run, name } => self.import_curl_create(*run, &name),
             Action::ImportCurlSkip(run) => {
                 self.advance_curl_import(*run);
@@ -9365,6 +9362,13 @@ impl App {
     /// path goes through the Save-as prompt, with `then` deferred until
     /// that save succeeds.
     fn dirty_gate(&mut self, verb: &str, then: Action) {
+        self.dirty_gate_split(verb, then.clone(), then);
+    }
+
+    /// `dirty_gate` for a follow-on that does not replace the editor by
+    /// itself: Discard runs `discard_then`, which has to throw the edits
+    /// away on its own.
+    fn dirty_gate_split(&mut self, verb: &str, then: Action, discard_then: Action) {
         if self.editor.slug.is_none() {
             self.push_modal(Modal::Confirm {
                 title: "Unsaved request".into(),
@@ -9373,9 +9377,9 @@ impl App {
                     (
                         's',
                         format!("Save as… & {verb}"),
-                        vec![Action::PromptSaveScratch(Box::new(then.clone()))],
+                        vec![Action::PromptSaveScratch(Box::new(then))],
                     ),
-                    ('d', "Discard request".into(), vec![then]),
+                    ('d', "Discard request".into(), vec![discard_then]),
                 ],
             });
             return;
@@ -9391,9 +9395,9 @@ impl App {
                     // One action, not `[SaveRequest, then]`: a save that
                     // finds the file changed outside the app asks first,
                     // and the follow-on has to ride that answer.
-                    vec![Action::SaveRequestThen(Box::new(then.clone()))],
+                    vec![Action::SaveRequestThen(Box::new(then))],
                 ),
-                ('d', "Discard changes".into(), vec![then]),
+                ('d', "Discard changes".into(), vec![discard_then]),
             ],
         });
     }
@@ -9446,17 +9450,22 @@ impl App {
         name: &str,
         build: impl FnOnce(&str) -> postui_core::model::HttpRequest,
     ) -> bool {
-        self.create_request_from(name, build) == CreateOutcome::Opened
+        self.create_request_from(name, build, &[]) == CreateOutcome::Opened
     }
 
     /// Writes a new request built by `build` under `name` (relative to the
     /// active space) and opens it. Every outcome but `Opened` toasts why
     /// and sets `last_action_failed` — except no project at all, which is
     /// refused silently: every caller refuses that up front, with its toast.
+    /// `secrets` are declared as secret variables with their values, if
+    /// any, in the active environment, in the same undo step (a curl
+    /// import's `export` lines); the caller leaves out names the project
+    /// has.
     fn create_request_from(
         &mut self,
         name: &str,
         build: impl FnOnce(&str) -> postui_core::model::HttpRequest,
+        secrets: &[(String, Option<String>)],
     ) -> CreateOutcome {
         use postui_core::project::Error;
         // Every new request lands inside the active space — the name the
@@ -9473,7 +9482,7 @@ impl App {
         let p = self.project.as_mut().expect("checked above");
         // A read-back failure below must not leave the journal entry
         // without a marker to undo it: the file landed either way.
-        match p.create_request(name, req) {
+        match p.create_request_with_secrets(name, req, secrets) {
             Ok((slug, leaf)) => {
                 let label = crate::undo::StepLabel::create(leaf.clone());
                 // The editor holds exactly what was written (display name

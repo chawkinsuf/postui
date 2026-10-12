@@ -18,6 +18,24 @@ pub(crate) struct ShellCommand {
     pub converted: Vec<String>,
     /// `$(…)` and backtick substitutions, kept as literal text.
     pub substitutions: Vec<String>,
+    /// One per word of `words`: what quote removal hid.
+    pub marks: Vec<WordMark>,
+    /// The command is its line, alone: nothing before it (`a && b`,
+    /// `a; b`), ended by the line's end, not `;`, `&`, `&&` or `||`, and
+    /// no tail. Only such a line can assign a value (spec R7).
+    pub alone: bool,
+}
+
+/// What a word was before quote removal, for reading assignments (spec R7).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct WordMark {
+    /// The word opens with an unquoted `NAME=` or `NAME+=`: bash's
+    /// assignment word. `"T"=1` is a command, not an assignment.
+    pub assignment: bool,
+    /// The word is the text written, quotes aside: no `$` outside single
+    /// quotes (`$'…'` and `$"…"` are quotes too), no backticks, and no
+    /// unquoted `~` or `{` bash might expand.
+    pub literal: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,15 +55,20 @@ pub(crate) fn split(text: &str) -> Result<Vec<ShellCommand>, ShellError> {
         current: ShellCommand::default(),
         word: String::new(),
         in_word: false,
+        quoted: false,
+        mark: WordMark::default(),
+        expanded: false,
         in_tail: false,
         tail_words: Vec::new(),
+        line_start: true,
+        after_and_or: false,
     }
     .run()
 }
 
 /// A shell variable name: `[A-Za-z_][A-Za-z0-9_]*` — always a valid
 /// postui variable name too.
-fn is_name(s: &str) -> bool {
+pub(super) fn is_name(s: &str) -> bool {
     let mut chars = s.chars();
     chars.next().is_some_and(|c| c == '_' || c.is_ascii_alphabetic())
         && chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
@@ -80,9 +103,18 @@ struct Splitter<'a> {
     word: String,
     /// A word has begun, even an empty quoted one (`''`).
     in_word: bool,
+    /// Something quoted, escaped or expanded is in the word so far.
+    quoted: bool,
+    mark: WordMark,
+    /// The word so far is not `WordMark::literal`.
+    expanded: bool,
     /// Past a `|` or a redirect: words go to the tail.
     in_tail: bool,
     tail_words: Vec<String>,
+    /// The command being read began its line.
+    line_start: bool,
+    /// The last command was ended by `&&` or `||`.
+    after_and_or: bool,
 }
 
 impl Splitter<'_> {
@@ -95,24 +127,28 @@ impl Splitter<'_> {
         while let Some(c) = self.chars.next() {
             match c {
                 ' ' | '\t' => self.end_word(),
+                '\n' if self.line_continues() => {}
                 '\n' => {
                     if self.cmd_continuation() {
                         return Err(ShellError::CmdStyle);
                     }
-                    self.end_command();
+                    self.end_command(true);
                 }
-                ';' => self.end_command(),
+                ';' => self.end_command(false),
                 '&' => {
                     // `&&` and a lone `&` (background) both end the command.
-                    if self.chars.peek() == Some(&'&') {
+                    let and = self.chars.peek() == Some(&'&');
+                    if and {
                         self.chars.next();
                     }
-                    self.end_command();
+                    self.end_command(false);
+                    self.after_and_or = and;
                 }
                 '|' => {
                     if self.chars.peek() == Some(&'|') {
                         self.chars.next();
-                        self.end_command();
+                        self.end_command(false);
+                        self.after_and_or = true;
                     } else {
                         self.end_word();
                         self.start_tail("|".to_string());
@@ -122,11 +158,15 @@ impl Splitter<'_> {
                 '#' if !self.in_word => self.skip_comment(),
                 '\\' => match self.chars.next() {
                     Some('\n') => {} // a continuation
-                    Some(n) => self.push(n),
+                    Some(n) => {
+                        self.quoted = true;
+                        self.push(n);
+                    }
                     None => self.push('\\'),
                 },
                 '\'' => {
                     self.in_word = true;
+                    self.quoted = true;
                     self.single_quoted()?;
                 }
                 '"' => {
@@ -135,21 +175,39 @@ impl Splitter<'_> {
                         return Err(ShellError::CmdStyle);
                     }
                     self.in_word = true;
+                    self.quoted = true;
                     self.double_quoted()?;
                 }
                 '`' => {
                     self.in_word = true;
+                    self.quoted = true;
                     self.backtick()?;
                 }
-                '$' => self.dollar(false)?,
-                c => self.push(c),
+                '$' => {
+                    self.quoted = true;
+                    self.dollar(false)?;
+                }
+                c => self.push_unquoted(c),
             }
         }
         if self.cmd_continuation() {
             return Err(ShellError::CmdStyle);
         }
-        self.end_command();
+        self.end_command(true);
         Ok(self.commands)
+    }
+
+    /// The line so far ends in `&&`, `||` or `|`, so bash reads on into
+    /// the next line, blank lines and comments aside, as the same command
+    /// line.
+    fn line_continues(&self) -> bool {
+        if self.in_word {
+            false
+        } else if self.in_tail {
+            self.tail_words.last().is_some_and(|w| w == "|")
+        } else {
+            self.after_and_or && self.current.words.is_empty()
+        }
     }
 
     /// The line ends in cmd's ` ^` continuation: its last word is `^`.
@@ -169,17 +227,34 @@ impl Splitter<'_> {
         self.word.push(c);
     }
 
+    /// A char outside any quote: it may make the word an assignment, or
+    /// be a tilde or brace bash might expand.
+    fn push_unquoted(&mut self, c: char) {
+        let name = self.word.strip_suffix('+').unwrap_or(&self.word);
+        if c == '=' && !self.quoted && !self.mark.assignment && is_name(name) {
+            self.mark.assignment = true;
+        }
+        if c == '~' || c == '{' {
+            self.expanded = true;
+        }
+        self.push(c);
+    }
+
     fn end_word(&mut self) {
         if !self.in_word {
             return;
         }
         let w = std::mem::take(&mut self.word);
+        let mut mark = std::mem::take(&mut self.mark);
+        mark.literal = !std::mem::take(&mut self.expanded);
         if self.in_tail {
             self.tail_words.push(w);
         } else {
             self.current.words.push(w);
+            self.current.marks.push(mark);
         }
         self.in_word = false;
+        self.quoted = false;
     }
 
     fn start_tail(&mut self, op: String) {
@@ -187,7 +262,8 @@ impl Splitter<'_> {
         self.tail_words.push(op);
     }
 
-    fn end_command(&mut self) {
+    /// `ends_line`: a line break or the paste's end ended it.
+    fn end_command(&mut self, ends_line: bool) {
         self.end_word();
         if self.in_tail {
             self.current.tail = Some(self.tail_words.join(" "));
@@ -195,8 +271,13 @@ impl Splitter<'_> {
             self.in_tail = false;
         }
         let mut cmd = std::mem::take(&mut self.current);
+        cmd.alone = self.line_start && ends_line && cmd.tail.is_none();
+        // A blank command (`a;;`) still leaves the rest of the line shared.
+        self.line_start = ends_line;
+        self.after_and_or = false;
         if matches!(cmd.words.first().map(String::as_str), Some("$" | "%")) {
             cmd.words.remove(0);
+            cmd.marks.remove(0);
         }
         if !cmd.words.is_empty() {
             self.commands.push(cmd);
@@ -212,6 +293,9 @@ impl Splitter<'_> {
         if self.in_word && !self.word.is_empty() && self.word.chars().all(|d| d.is_ascii_digit()) {
             op = std::mem::take(&mut self.word);
             self.in_word = false;
+            self.quoted = false;
+            self.mark = WordMark::default();
+            self.expanded = false;
         } else {
             self.end_word();
         }
@@ -389,6 +473,16 @@ impl Splitter<'_> {
                 self.chars.next();
                 self.double_quoted()
             }
+            _ => {
+                self.expanded = true;
+                self.expansion()
+            }
+        }
+    }
+
+    /// A `$` that expands: a variable, a substitution, `$1` and the like.
+    fn expansion(&mut self) -> Result<(), ShellError> {
+        match self.chars.peek().copied() {
             Some('{') => {
                 self.chars.next();
                 let mut inner = String::new();
@@ -519,6 +613,7 @@ impl Splitter<'_> {
         }
         let literal = format!("`{inner}`");
         self.word.push_str(&literal);
+        self.expanded = true;
         self.current.substitutions.push(literal);
         Ok(())
     }
@@ -589,6 +684,27 @@ mod tests {
     }
 
     #[test]
+    fn a_command_is_alone_on_a_line_of_its_own_with_no_tail() {
+        let alone = |t| split(t).unwrap().iter().map(|c| c.alone).collect::<Vec<_>>();
+        assert_eq!(alone("a\\\n  b # note\n\nc\n"), [true, true]);
+        assert_eq!(alone("a; b\nc && d\ne || f\ng &\nh"), [false, false, false, false, false, false, false, true]);
+        assert_eq!(alone("a | b\nc > f\nd"), [false, false, true]);
+    }
+
+    #[test]
+    fn a_line_ending_in_and_or_or_a_pipe_goes_on_into_the_next() {
+        let cmds = split("a &&\n  b\nc ||  # note\n\n  d\ne |\n  jq .x\nf &\ng").unwrap();
+        let firsts: Vec<&str> = cmds.iter().map(|c| c.words[0].as_str()).collect();
+        assert_eq!(firsts, ["a", "b", "c", "d", "e", "f", "g"]);
+        let alone: Vec<bool> = cmds.iter().map(|c| c.alone).collect();
+        assert_eq!(alone, [false, false, false, false, false, false, true]);
+        assert_eq!(cmds[4].tail.as_deref(), Some("| jq .x"));
+        // A word after the operator ends the line as usual.
+        let cmds = split("a | b\nc").unwrap();
+        assert_eq!((cmds.len(), cmds[1].alone), (2, true));
+    }
+
+    #[test]
     fn blank_lines_and_comments_are_not_commands() {
         let cmds = split("# fetch it\n\ncurl https://x/#frag # trailing\n").unwrap();
         assert_eq!(cmds.len(), 1);
@@ -651,6 +767,34 @@ mod tests {
         assert_eq!(split("curl a\ncurl 'b"), Err(ShellError::Unclosed { command: 2 }));
         assert_eq!(split("curl \"a"), Err(ShellError::Unclosed { command: 1 }));
         assert_eq!(split("curl $'a"), Err(ShellError::Unclosed { command: 1 }));
+    }
+
+    fn marks(text: &str) -> Vec<(bool, bool)> {
+        let cmds = split(text).unwrap();
+        cmds[0].marks.iter().map(|m| (m.assignment, m.literal)).collect()
+    }
+
+    #[test]
+    fn an_assignment_word_opens_with_an_unquoted_name_and_equals() {
+        let m = |t| marks(t).into_iter().map(|(a, _)| a).collect::<Vec<_>>();
+        assert_eq!(m("A=1 B='x y' C= \"D\"=1 E\\=1 F$X=1 =1 1A=2"), [true, true, true, false, false, false, false, false]);
+        assert_eq!(m("A+=1 \"A\"+=1 A\\+=1 +=1 A++=1"), [true, false, false, false, false]);
+        // Quotes after the `=` are part of the value.
+        assert_eq!(m("A=\"$x\"=y"), [true]);
+        assert_eq!(m("$ A=1 curl"), [true, false], "the prompt's mark goes with it");
+    }
+
+    #[test]
+    fn a_word_is_literal_with_nothing_bash_might_expand() {
+        let l = |t| marks(t).into_iter().map(|(_, l)| l).collect::<Vec<_>>();
+        assert_eq!(
+            l("A=$X A=\"${X}\" A=$(id) A=`id` A=\"`id`\" A=$1 A=a$ A=~/x A=a~b A={a,b} A=x{"),
+            [false; 11]
+        );
+        assert_eq!(
+            l("A=abc A='$X' A='{a,b}' A=\\{a A=\"{\" A=\"~\" A=$'a\\tb' A=$\"x\" A=http://x?a=1"),
+            [true; 9]
+        );
     }
 
     #[test]

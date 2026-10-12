@@ -404,7 +404,8 @@ fn a_query_box_types_letters_and_esc_closes_it() {
 #[test]
 fn ctrl_n_and_ctrl_p_move_a_pickers_highlight() {
     let mut app = vim_app(Fixture::SidebarThree);
-    feed(&mut app, ":<C-n><C-n><C-p>");
+    // The first ctrl+n picks row 0 (Vim's wildmenu), then 1, 2, back to 1.
+    feed(&mut app, ":<C-n><C-n><C-n><C-p>");
     let Some(Modal::Palette(p)) = app.modals.top() else { panic!("the palette") };
     assert_eq!(p.selected(), 1);
 }

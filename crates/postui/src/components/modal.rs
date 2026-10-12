@@ -329,6 +329,24 @@ impl PromptKind {
     fn is_secret(&self) -> bool {
         matches!(self, PromptKind::SecretValue { .. })
     }
+
+    /// What this prompt's cancel does, as the footer and the button name
+    /// it: a prompt of a curl import batch only skips its command.
+    fn cancel_verb(&self) -> &'static str {
+        match self {
+            PromptKind::ImportCurl(run) if run.commands.len() > 1 => "skip",
+            _ => "cancel",
+        }
+    }
+}
+
+/// The top modal's cancel verb (`PromptKind::cancel_verb`); "cancel" for
+/// every other modal.
+fn cancel_verb_of(modal: Option<&Modal>) -> &'static str {
+    match modal {
+        Some(Modal::Prompt { kind, .. }) => kind.cancel_verb(),
+        _ => "cancel",
+    }
 }
 
 /// Kind-specific follow-up to cycling a choice field. For
@@ -1652,15 +1670,16 @@ impl ModalStack {
         {
             // Enter runs the aimed button, so the chip names it: every
             // form's row is Cancel and Confirm.
+            let cancel = cancel_verb_of(self.top());
             let verb = match aimed {
-                FormButton::Cancel => "cancel",
+                FormButton::Cancel => cancel,
                 FormButton::Confirm => "confirm",
             };
             return Some(
                 [
                     ("\u{2190}\u{2192}", "aim"),
                     ("enter", verb),
-                    ("esc", "cancel"),
+                    ("esc", cancel),
                     ("\u{2191}", "back"),
                 ]
                 .into_iter()
@@ -1827,9 +1846,9 @@ impl ModalStack {
                 (Key::Named("enter"), "confirm", Some(Action::ConfirmTopModal)),
                 (Key::Named("esc"), "cancel", Some(Action::CancelTopModal)),
             ],
-            Modal::Prompt { .. } => vec![
+            Modal::Prompt { kind, .. } => vec![
                 (Key::Named("enter"), "confirm", Some(Action::ConfirmTopModal)),
-                (Key::Named("esc"), "cancel", Some(Action::CancelTopModal)),
+                (Key::Named("esc"), kind.cancel_verb(), Some(Action::CancelTopModal)),
             ],
             Modal::NewProject { .. } => vec![
                 (Key::Named("alt+b"), "browse folder", None),
@@ -3114,7 +3133,35 @@ impl ModalStack {
                     }
                 }
 
-                draw_cancel_confirm_row(frame, hits, theme, area, buttons_y, hovered, button_focus);
+                // A curl import's prompt names only the request: what the
+                // command sends, and what it leaves out, sit under it.
+                if let PromptKind::ImportCurl(run) = kind {
+                    let import = run.current();
+                    let width = area.width.saturating_sub(4);
+                    let target = format!("{} {}", import.request.method.as_str(), import.request.url);
+                    let mut lines = vec![target];
+                    if !import.ignored.is_empty() {
+                        lines.push(format!("ignores {}", import.ignored.join(", ")));
+                    }
+                    for (y, line) in (field_area.y + FIELD_HEIGHT + 1..).zip(lines) {
+                        if y + 1 >= buttons_y {
+                            break;
+                        }
+                        paint::text(
+                            frame.buffer_mut(),
+                            area.x + 2,
+                            y,
+                            super::chooser::clip(&line, width),
+                            theme.text_muted,
+                            theme.panel,
+                            false,
+                        );
+                    }
+                }
+
+                let verb = kind.cancel_verb();
+                let cancel = format!("{}{}", verb[..1].to_ascii_uppercase(), &verb[1..]);
+                draw_cancel_confirm_row(frame, hits, theme, area, buttons_y, hovered, button_focus, &cancel);
             }
             Modal::Palette(state) => state.draw(frame, screen, theme, hits, hovered, keymap, t),
             Modal::Chooser(state) => state.draw(frame, screen, theme, hits, hovered, t),
@@ -3244,7 +3291,7 @@ impl ModalStack {
                 hits.register(browse_area, crate::hit::Hit::NewProjectBrowse);
 
                 let buttons_y = area.y + area.height.saturating_sub(1 + BUTTON_HEIGHT);
-                draw_cancel_confirm_row(frame, hits, theme, area, buttons_y, hovered, button_focus);
+                draw_cancel_confirm_row(frame, hits, theme, area, buttons_y, hovered, button_focus, "Cancel");
             }
             Modal::Dropdown(state) => draw_dropdown(frame, screen, theme, hits, hovered, state),
             Modal::MultiPrompt {
@@ -3407,7 +3454,7 @@ impl ModalStack {
                 }
 
                 let buttons_y = area.y + area.height.saturating_sub(1 + BUTTON_HEIGHT);
-                draw_cancel_confirm_row(frame, hits, theme, area, buttons_y, hovered, button_focus);
+                draw_cancel_confirm_row(frame, hits, theme, area, buttons_y, hovered, button_focus, "Cancel");
                 // The value popup's remove: only when the chosen Write-to
                 // scope actually stores a value to delete. Painted as the
                 // same one-row "✕ remove" accent control the variable
@@ -3572,7 +3619,7 @@ impl ModalStack {
                 hits.register(add_area, add_hit);
 
                 let buttons_y = area.y + area.height.saturating_sub(1 + BUTTON_HEIGHT);
-                draw_cancel_confirm_row(frame, hits, theme, area, buttons_y, hovered, button_focus);
+                draw_cancel_confirm_row(frame, hits, theme, area, buttons_y, hovered, button_focus, "Cancel");
             }
         }
     }
@@ -3768,7 +3815,9 @@ fn button_row_width(labels: &[impl AsRef<str>]) -> u16 {
 /// `aimed` is the keyboard's aim on the row (`ModalStack::button_focus`),
 /// and that button paints `Focused`: the row is a focus stop like any
 /// other, so it has to look like one. Hover still wins for the button
-/// under the pointer — the ladder every control here shares.
+/// under the pointer — the ladder every control here shares. `cancel` is
+/// the secondary button's label ("Skip" on a curl import batch's prompt).
+#[allow(clippy::too_many_arguments)]
 fn draw_cancel_confirm_row(
     frame: &mut Frame,
     hits: &mut crate::hit::HitMap,
@@ -3777,10 +3826,11 @@ fn draw_cancel_confirm_row(
     buttons_y: u16,
     hovered: Option<&crate::hit::Hit>,
     aimed: Option<FormButton>,
+    cancel: &str,
 ) {
     let buttons = [
         (
-            "Cancel",
+            cancel,
             ButtonKind::Secondary,
             crate::hit::Hit::ModalCancel,
         ),

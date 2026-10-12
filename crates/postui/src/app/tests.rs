@@ -7804,7 +7804,7 @@ fn rendered_text(app: &mut App) -> String {
 
 /// Finishes every animation, renders once at `w`×`h`, and returns the
 /// screen's debug text.
-fn rendered_text_at(app: &mut App, w: u16, h: u16) -> String {
+pub(super) fn rendered_text_at(app: &mut App, w: u16, h: u16) -> String {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     app.anims.finish_all();

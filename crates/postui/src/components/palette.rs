@@ -605,6 +605,14 @@ impl PaletteState {
         self.selected
     }
 
+    /// The row Enter runs, which is the one painted chosen. On the ex line
+    /// with no verb pinned, none until one is picked (Vim's `:` line
+    /// chooses no completion until one is asked for).
+    pub fn chosen_row(&self) -> Option<usize> {
+        let chosen = self.ex.is_none() || self.picked || self.pinned.is_some();
+        (chosen && self.selected < self.len()).then_some(self.selected)
+    }
+
     /// Moves the cursor to filtered row `i` (clamped in range) and asks the
     /// next draw to scroll it into view.
     pub fn select(&mut self, i: usize) {
@@ -633,10 +641,7 @@ impl PaletteState {
         // to, or clicked), as Vim's wildmenu runs only the completion
         // tabbed to: typed text no verb spells is Vim's E492, never
         // whichever row the filter ranked first (`:W`).
-        let chosen = self
-            .filtered
-            .get(self.selected - self.offset())
-            .filter(|_| self.ex.is_none() || self.picked);
+        let chosen = self.chosen_row().and_then(|row| self.filtered.get(row - self.offset()));
         match chosen {
             Some(chosen) => Some(ModalResult {
                 actions: vec![chosen.action.clone()],
@@ -735,8 +740,17 @@ impl PaletteState {
                 self.ensure_visible = true;
                 self.picked = true;
             }
+            // The list is always open, as Vim's wildmenu is only after Tab
+            // (Deviation 14). With no row chosen, the first ctrl+p or
+            // ctrl+n picks the last row or the first, as Vim's open
+            // wildmenu does from the typed text (`Tab ^P ^N` is the first
+            // match, `Tab ^P ^P` the last).
             KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.selected = self.selected.saturating_sub(1);
+                self.selected = if self.chosen_row().is_none() {
+                    self.len().saturating_sub(1)
+                } else {
+                    self.selected.saturating_sub(1)
+                };
                 self.ensure_visible = true;
                 self.picked = true;
             }
@@ -748,7 +762,9 @@ impl PaletteState {
                 self.picked = true;
             }
             KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if self.selected + 1 < self.len() {
+                if self.chosen_row().is_none() {
+                    self.selected = 0;
+                } else if self.selected + 1 < self.len() {
                     self.selected += 1;
                 }
                 self.ensure_visible = true;
@@ -917,7 +933,7 @@ impl PaletteState {
             };
             let title_row = list_area.y + ((i - self.scroll) as u16) * 2;
             let desc_row = title_row + 1;
-            let selected = i == self.selected;
+            let selected = self.chosen_row() == Some(i);
             let row_hovered = hovered == Some(&crate::hit::Hit::PaletteRow(i));
             let highlight = if selected {
                 RowHighlight::Selected
@@ -1555,6 +1571,35 @@ mod tests {
         type_in(&mut plain, "W");
         let res = plain.handle_key(key(KeyCode::Enter)).unwrap();
         assert_eq!(res.actions, vec![plain.filtered()[0].action.clone()], "ctrl+p's Enter runs the top row");
+    }
+
+    /// Vim's open wildmenu back at the typed text chooses no match, and
+    /// from there ctrl+n chooses the first and ctrl+p the last (probed
+    /// on Vim 9.1: `:A<Tab><C-P><C-N>` is `Aa`, `<C-P><C-P>` is `Ac`).
+    /// The list here is always open (Deviation 14), so on the ex line
+    /// with no verb pinned no row paints chosen, and the first ctrl+n
+    /// picks row 0 rather than stepping past it.
+    #[test]
+    fn the_ex_line_chooses_no_row_until_one_is_picked() {
+        let mut p = ex();
+        type_in(&mut p, "curl");
+        assert!(p.pinned().is_none() && p.filtered().len() > 1);
+        assert_eq!(p.chosen_row(), None, "Enter would run no row, so none is chosen");
+        p.handle_key(ctrl('n'));
+        assert_eq!(p.chosen_row(), Some(0), "the first ctrl+n picks the first row");
+        assert_eq!(p.confirm().unwrap().actions, vec![p.filtered()[0].action.clone()]);
+        p.handle_key(ctrl('n'));
+        assert_eq!(p.chosen_row(), Some(1));
+        let mut p = ex();
+        type_in(&mut p, "curl");
+        p.handle_key(ctrl('p'));
+        assert_eq!(p.chosen_row(), Some(p.len() - 1), "the first ctrl+p picks the last row");
+        let mut p = ex();
+        type_in(&mut p, "q");
+        assert_eq!(p.chosen_row(), Some(0), "a pinned verb is what Enter runs");
+        let mut plain = PaletteState::new(&crate::usage::UsageStore::default(), 0);
+        type_in(&mut plain, "curl");
+        assert_eq!(plain.chosen_row(), Some(0), "ctrl+p's Enter runs row 0");
     }
 
     /// Vim's `:<CR>` does nothing (the code review's third finding): with

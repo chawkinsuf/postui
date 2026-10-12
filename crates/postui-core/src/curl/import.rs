@@ -10,14 +10,20 @@ use std::fmt;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CurlImport {
     pub request: HttpRequest,
-    /// What did not make it into the request, in this order: dropped
-    /// flags as written with their value (`-F file=@a.png`; `-g`/`--globoff`
+    /// What did not make it into the request, in this order: assignments
+    /// leading the command, as `NAME=…` or `NAME+=…` (`TOKEN=abc curl …` sets curl's
+    /// environment, not its words); dropped flags as written with their value (`-F file=@a.png`; `-g`/`--globoff`
     /// is lossless and not listed), the earlier
     /// URLs a later one replaced, `$(…) kept as text` notes, then a
     /// pipeline tail or redirect (`| jq .`).
     pub ignored: Vec<String>,
     /// Shell variables converted to `{{NAME}}`, first-seen order.
     pub converted: Vec<String>,
+    /// One per `converted` variable, in its order, with the value the
+    /// paste's last assignment before this command gave it when that was
+    /// literal text (`export TOKEN=abc`); `None` for any other value
+    /// (`$(…)`, `$BASE/x`) and for a variable the paste never assigned.
+    pub variables: Vec<(String, Option<String>)>,
     /// `{METHOD} {last non-empty path segment, else host}`. Never holds a
     /// `/` (a `/` in a display path means a folder).
     pub suggested_name: String,
@@ -28,9 +34,13 @@ pub struct CurlImport {
 pub struct CurlBatch {
     /// One per curl command, in paste order; never empty.
     pub commands: Vec<CurlImport>,
-    /// Commands that were not curl (`export TOKEN=…`, `echo`). Blank lines
-    /// and comments are not commands and are not counted.
+    /// Commands that were not curl (`echo`, `cd`). Blank lines, comments
+    /// and assignments (`export TOKEN=…`, read into `variables`) are not
+    /// counted. Any at all leaves every variable with no value (spec R7).
     pub skipped_lines: usize,
+    /// The paste gave some command's variable a value, and a skipped line
+    /// took it away.
+    pub values_dropped: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,17 +99,46 @@ pub fn parse(text: &str) -> Result<CurlBatch, CurlError> {
     let mut batch = CurlBatch {
         commands: Vec::new(),
         skipped_lines: 0,
+        values_dropped: false,
     };
-    for (i, cmd) in commands.into_iter().enumerate() {
-        if !is_curl(&cmd.words[0]) {
-            batch.skipped_lines += 1;
+    // What each shell variable the paste assigned holds so far (spec R7):
+    // its literal text, or `None` when it was anything else.
+    let mut env: IndexMap<String, Option<String>> = IndexMap::new();
+    for (i, mut cmd) in commands.into_iter().enumerate() {
+        // `TOKEN=abc curl …` (or `TOKEN+=abc`): bash expands curl's words
+        // before the leading assignments take effect, and they do not
+        // outlive the command, so they change nothing here.
+        let lead = cmd.marks.iter().take_while(|m| m.assignment).count();
+        if !cmd.words.get(lead).is_some_and(|w| is_curl(w)) {
+            if !assign(&cmd, &mut env) {
+                batch.skipped_lines += 1;
+            }
             continue;
         }
-        let import = parse_command(cmd).map_err(|kind| CurlError {
+        let leading: Vec<String> = cmd
+            .words
+            .drain(..lead)
+            .map(|w| format!("{}=\u{2026}", w.split_once('=').map_or(w.as_str(), |(n, _)| n)))
+            .collect();
+        cmd.marks.drain(..lead);
+        let mut import = parse_command(cmd).map_err(|kind| CurlError {
             command: many.then_some(i + 1),
             kind,
         })?;
+        import.ignored.splice(0..0, leading);
+        import.variables = import
+            .converted
+            .iter()
+            .map(|n| (n.clone(), env.get(n).cloned().flatten()))
+            .collect();
         batch.commands.push(import);
+    }
+    // A skipped line might change any value (`if`, `source`, `[ … ] &&`),
+    // so a paste holding one gives no value at all (spec R7).
+    if batch.skipped_lines > 0 {
+        for (_, value) in batch.commands.iter_mut().flat_map(|c| &mut c.variables) {
+            batch.values_dropped |= value.take().is_some();
+        }
     }
     if batch.commands.is_empty() {
         return Err(CurlError {
@@ -108,6 +147,30 @@ pub fn parse(text: &str) -> Result<CurlBatch, CurlError> {
         });
     }
     Ok(batch)
+}
+
+/// An assignment line (spec R7): alone on its line, and only unquoted
+/// `NAME=value` words, after an optional `export`. `env` takes each value
+/// that is literal text, and `None` for any other. `false`, changing
+/// nothing, for any other line: it is skipped.
+fn assign(cmd: &ShellCommand, env: &mut IndexMap<String, Option<String>>) -> bool {
+    let start = usize::from(cmd.words[0] == "export");
+    let marks = &cmd.marks[start..];
+    // `T+=x` appends to what T held, so it is no plain assignment.
+    let plain = cmd.words[start..]
+        .iter()
+        .zip(marks)
+        .all(|(w, m)| m.assignment && w.split_once('=').is_some_and(|(n, _)| !n.ends_with('+')));
+    if !cmd.alone || marks.is_empty() || !plain {
+        return false;
+    }
+    for (w, mark) in cmd.words[start..].iter().zip(marks) {
+        let (name, value) = w.split_once('=').expect("an assignment word holds `=`");
+        // A `{{` would read as a postui variable wherever the value goes.
+        let literal = mark.literal && !value.contains("{{");
+        env.insert(name.to_string(), literal.then(|| value.to_string()));
+    }
+    true
 }
 
 fn is_curl(word: &str) -> bool {
@@ -365,6 +428,8 @@ fn parse_command(cmd: ShellCommand) -> Result<CurlImport, CurlErrorKind> {
         tail,
         converted,
         substitutions,
+        marks: _,
+        alone: _,
     } = cmd;
     let mut flags = Flags::default();
     let mut words = words.into_iter().skip(1);
@@ -580,6 +645,8 @@ fn build(
         },
         ignored,
         converted,
+        // Filled in by `parse`, which sees the lines before this one.
+        variables: Vec::new(),
         suggested_name,
     })
 }
@@ -975,12 +1042,132 @@ mod tests {
 
     #[test]
     fn several_commands_skip_the_rest_and_keep_order() {
-        let batch = parse("export TOKEN=abc\n# note\ncurl -H \"Authorization: Bearer $TOKEN\" https://x/me\ncurl -X POST https://x/b -d '{}'").unwrap();
-        assert_eq!(batch.skipped_lines, 1);
+        let batch = parse("export TOKEN=abc\necho hi\n# note\ncurl -H \"Authorization: Bearer $TOKEN\" https://x/me\ncurl -X POST https://x/b -d '{}'").unwrap();
+        assert_eq!(batch.skipped_lines, 1, "the echo; an assignment is not skipped");
+        assert!(batch.values_dropped, "the echo took TOKEN's value");
         let names: Vec<&str> = batch.commands.iter().map(|c| c.suggested_name.as_str()).collect();
         assert_eq!(names, ["GET me", "POST b"]);
         assert_eq!(batch.commands[0].converted, ["TOKEN"]);
         assert_eq!(header(&batch.commands[0], "Authorization"), Some("Bearer {{TOKEN}}"));
+    }
+
+    /// Each variable the command uses, `None` for no value.
+    fn vars(c: &CurlImport) -> Vec<(&str, Option<&str>)> {
+        c.variables.iter().map(|(n, v)| (n.as_str(), v.as_deref())).collect()
+    }
+
+    #[test]
+    fn every_variable_a_command_uses_rides_with_it() {
+        let b = parse("export TOKEN=abc123\nBASE=https://x\ncurl -H \"Authorization: Bearer $TOKEN\" \"$BASE/me\"\ncurl \"https://x/$OTHER\"").unwrap();
+        assert_eq!(b.skipped_lines, 0, "assignments are not skipped");
+        assert_eq!(vars(&b.commands[0]), [("TOKEN", Some("abc123")), ("BASE", Some("https://x"))]);
+        assert_eq!(vars(&b.commands[1]), [("OTHER", None)], "never assigned: no value");
+        let q = parse("export T='it''s \"q\"'\ncurl -H \"A: $T\" https://x").unwrap();
+        assert_eq!(vars(&q.commands[0]), [("T", Some("its \"q\""))]);
+    }
+
+    #[test]
+    fn a_value_is_the_last_one_assigned_before_the_command() {
+        let b = parse(concat!(
+            "curl -H \"A: $T\" https://x/a\n",
+            "export T=1\n",
+            "curl -H \"A: $T\" https://x/b\n",
+            "T=2 U=3\n",
+            "curl -H \"A: $T $U\" https://x/c",
+        ))
+        .unwrap();
+        assert_eq!(vars(&b.commands[0]), [("T", None)], "T was assigned after");
+        assert_eq!(vars(&b.commands[1]), [("T", Some("1"))]);
+        assert_eq!(vars(&b.commands[2]), [("T", Some("2")), ("U", Some("3"))]);
+    }
+
+    #[test]
+    fn only_literal_text_is_a_value() {
+        let b = parse(concat!(
+            "export T=1\n",
+            "export A=\"$T/x\" B=${T} C=$(cat f) D=`id -u` E=\"${X:-y}\" F=$1 G=~/k H={a,b} I='{{T}}'\n",
+            "curl -H \"X: $A $B $C $D $E $F $G $H $I\" https://x",
+        ))
+        .unwrap();
+        assert!(vars(&b.commands[0]).iter().all(|(_, v)| v.is_none()), "{:?}", vars(&b.commands[0]));
+        assert_eq!(b.skipped_lines, 0, "still an assignment");
+        // The same text quoted is what it says.
+        let q = parse("export A='$T/x' B='${X:-y}' C='~/k' D='{a,b}' E=$'a\\tb'\ncurl -H \"X: $A $B $C $D $E\" https://x").unwrap();
+        assert_eq!(
+            vars(&q.commands[0]),
+            [("A", Some("$T/x")), ("B", Some("${X:-y}")), ("C", Some("~/k")), ("D", Some("{a,b}")), ("E", Some("a\tb"))]
+        );
+    }
+
+    #[test]
+    fn any_skipped_line_leaves_every_variable_with_no_value() {
+        // Each line, and how many of its commands are skipped.
+        for (line, skipped) in [
+            ("echo hi", 1),
+            ("unset T", 1),
+            ("read T", 1),
+            ("source prod.env", 1),
+            ("export $(grep -v '^#' prod.env | xargs)", 1),
+            ("export T", 1),
+            ("declare T=new", 1),
+            ("export -n T=new", 1),
+            ("T+=2", 1),
+            ("export T+=2", 1),
+            ("\"T\"=1", 1),
+            ("export \"T\"=1", 1),
+            ("X=1 export T=ci", 1),
+            ("T=new ./run.sh", 1),
+            ("export T=ci > /dev/null", 1),
+            ("export T=ci | cat", 1),
+            ("export T=ci &", 1),
+            ("export T=ci; echo hi", 2),
+            ("[ -n \"$CI\" ] && export T=ci", 2),
+            ("if true; then export T=new; fi", 3),
+            ("if false; then\n  export T=new\nfi", 3),
+            ("f() {\n  export T=new\n}", 2),
+            ("[ -n \"$CI\" ] &&\n  export T=ci", 2),
+            ("echo |\n  export T=ci", 1),
+        ] {
+            let b = parse(&format!("export T=dev U=1\n{line}\ncurl -H \"A: $T $U\" https://x")).unwrap();
+            assert_eq!(vars(&b.commands[0]), [("T", None), ("U", None)], "{line}");
+            assert_eq!(b.skipped_lines, skipped, "{line}");
+            assert!(b.values_dropped, "{line}");
+        }
+        // Wherever the line is, and whatever it names.
+        let b = parse("export T=prod\ncurl -H \"A: $T\" https://x\necho done").unwrap();
+        assert_eq!(vars(&b.commands[0]), [("T", None)]);
+        // Nothing to drop: no value was given.
+        let b = parse("echo hi\ncurl -H \"A: $T\" https://x").unwrap();
+        assert!(!b.values_dropped);
+    }
+
+    #[test]
+    fn a_pipe_onto_the_next_line_is_still_the_curl_command() {
+        let b = parse("export T=1\ncurl -H \"A: $T\" https://x/me |\n  jq .name").unwrap();
+        assert_eq!(b.skipped_lines, 0);
+        assert_eq!(vars(&b.commands[0]), [("T", Some("1"))]);
+        assert_eq!(b.commands[0].ignored, ["| jq .name"]);
+    }
+
+    #[test]
+    fn leading_assignments_do_not_hide_the_curl_or_change_its_words() {
+        let b = parse("export T=old\nT=new X=1 curl -H \"A: $T\" https://x/me").unwrap();
+        assert_eq!(b.skipped_lines, 0);
+        let c = &b.commands[0];
+        assert_eq!(c.suggested_name, "GET me");
+        assert_eq!(vars(c), [("T", Some("old"))], "bash expands curl's words before T=new");
+        assert_eq!(c.ignored, ["T=\u{2026}", "X=\u{2026}"]);
+        let after = parse("T=new curl https://x\ncurl -H \"A: $T\" https://x").unwrap();
+        assert_eq!(vars(&after.commands[1]), [("T", None)], "T=new did not outlive its command");
+        // An appending one leads the command too.
+        let b = parse("export T=old\nT+=new curl -H \"A: $T\" https://x/me").unwrap();
+        assert_eq!(b.skipped_lines, 0);
+        assert_eq!(vars(&b.commands[0]), [("T", Some("old"))]);
+        assert_eq!(b.commands[0].ignored, ["T+=\u{2026}"]);
+        // What the leading words expand is not in the request: not reported.
+        let c = &parse("TOKEN=$(get-token) API=$KEY curl https://x/me").unwrap().commands[0];
+        assert!(c.converted.is_empty() && c.variables.is_empty());
+        assert_eq!(c.ignored, ["TOKEN=\u{2026}", "API=\u{2026}"]);
     }
 
     #[test]

@@ -19,17 +19,27 @@ pub enum Run {
     Verb(Verb),
 }
 
-/// One verb: every spelling (the full name first), what it runs, and the
-/// pinned row's title.
+/// One verb: every spelling (the full name first), what it runs, the
+/// pinned row's title, and the shortest prefix that reaches it.
 #[derive(Debug, Clone, Copy)]
 pub struct ExVerb {
     pub names: &'static [&'static str],
     pub run: Run,
     pub caption: &'static str,
+    pub least: usize,
 }
 
 const fn verb(names: &'static [&'static str], run: Run, caption: &'static str) -> ExVerb {
-    ExVerb { names, run, caption }
+    ExVerb { names, run, caption, least: 1 }
+}
+
+impl ExVerb {
+    /// A prefix shorter than `least` does not reach this verb, as Vim's
+    /// `:imp[ort]`: the shorter ones are Vim's own commands (`:c` change,
+    /// `:co` copy, `:i` insert, `:im` imap).
+    const fn least(self, least: usize) -> ExVerb {
+        ExVerb { least, ..self }
+    }
 }
 
 fn save() -> Action { Action::SaveRequest }
@@ -51,6 +61,8 @@ fn theme() -> Action { Action::OpenThemeChooser }
 fn split() -> Action { Action::CycleSplit }
 fn split_back() -> Action { Action::CycleSplitBack }
 fn nohl() -> Action { Action::NoHlSearch }
+fn import_curl() -> Action { Action::ImportCurl { folder: None } }
+fn copy_curl() -> Action { Action::CopyAsCurl(None) }
 
 /// Every verb, in the order a prefix tie is broken (Deviation 8): the
 /// file verbs, the request verbs, the app commands, the Variable Manager's.
@@ -74,6 +86,9 @@ pub static VERBS: &[ExVerb] = &[
     verb(&["rename"], Run::Verb(Verb::Rename), "Rename…"),
     verb(&["delete", "del"], Run::Verb(Verb::Delete { count: 1 }), "Delete"),
     verb(&["move"], Run::Verb(Verb::Move), "Move…"),
+    // Vim 9.1's `:imp[ort]`; `:co` up to `:copy` are Vim's `:copy`.
+    verb(&["import"], Run::Act(import_curl), "Import curl from clipboard").least(3),
+    verb(&["copycurl"], Run::Act(copy_curl), "Copy request as curl").least(5),
     verb(&["project"], Run::Act(project), "Choose project…"),
     verb(&["manage"], Run::Act(manage), "Manage"),
     verb(&["theme"], Run::Act(theme), "Change theme…"),
@@ -154,8 +169,12 @@ fn runs_in(v: &ExVerb, scope: &Scope) -> bool {
     }
 }
 
-/// The shortest of `v`'s names that `query` starts.
+/// The shortest of `v`'s names that `query` starts, when the query is at
+/// least `v.least` long.
 fn shortest_start(v: &ExVerb, query: &str) -> Option<usize> {
+    if query.len() < v.least {
+        return None;
+    }
     v.names.iter().filter(|n| n.starts_with(query)).map(|n| n.len()).min()
 }
 
@@ -315,6 +334,30 @@ mod tests {
         assert_eq!(pinned("re", &sidebar()).name, "rename", "rename is listed before reveal");
         assert_eq!(pinned("m", &sidebar()).name, "move", "shorter than manage");
         assert_eq!(pinned("del", &sidebar()).name, "delete");
+    }
+
+    #[test]
+    fn the_curl_verbs_resolve_by_name_and_prefix() {
+        let close = Action::CloseField;
+        for q in ["import", "impo", "imp"] {
+            assert_eq!(pinned(q, &sidebar()).actions, vec![close.clone(), Action::ImportCurl { folder: None }], "{q}");
+        }
+        for q in ["copycurl", "copyc"] {
+            assert_eq!(pinned(q, &sidebar()).actions, vec![close.clone(), Action::CopyAsCurl(None)], "{q}");
+        }
+        assert_eq!(pinned("import", &sidebar()).caption, "Import curl from clipboard");
+    }
+
+    /// Vim's own short commands are not prefixes of the curl verbs: `:c`
+    /// still meets `:clear`, as before they joined the table.
+    #[test]
+    fn vims_short_commands_do_not_reach_the_curl_verbs() {
+        assert!(matches!(resolve("c", &sidebar()), Resolved::Refused(t) if t == "Nothing to :clear here"));
+        for q in ["co", "cop", "copy", "i", "im"] {
+            assert!(matches!(resolve(q, &sidebar()), Resolved::Nothing), "{q}");
+        }
+        let grid = Scope { surface: Surface::VarGrid, verbs: vec![Verb::ClearValue] };
+        assert_eq!(pinned("c", &grid).name, "clear");
     }
 
     /// Spec §5.9's Out rows: the unsupported spellings and ranges are

@@ -209,7 +209,9 @@ const RESERVED_NAMES: [&str; 4] = ["options", "groups", "entries", "selectors"];
 /// rather than a field value — and so the one name an option may not have.
 pub const OPTION_DESCRIPTION: &str = "description";
 
-fn is_reserved(name: &str) -> bool {
+/// A table name of `variables.toml` or an environment file, which no
+/// variable may have.
+pub fn is_reserved(name: &str) -> bool {
     RESERVED_NAMES.contains(&name)
 }
 

@@ -341,8 +341,13 @@ pub enum Action {
     /// curl §4.1): reads and parses the clipboard, then runs the dirty
     /// gate once, before the first name prompt.
     ImportCurl { folder: Option<String> },
-    /// Past the dirty gate: opens the first command's name prompt.
-    BeginCurlImport(Box<crate::curl_import::CurlImportRun>),
+    /// Past the dirty gate: opens the first command's name prompt, after
+    /// throwing the editor's unsaved work away when the gate's answer was
+    /// Discard (`discard`).
+    BeginCurlImport {
+        run: Box<crate::curl_import::CurlImportRun>,
+        discard: bool,
+    },
     /// An import prompt's confirm: creates the current command's request
     /// as `name` (relative to the active space), then moves on.
     ImportCurlCreate {

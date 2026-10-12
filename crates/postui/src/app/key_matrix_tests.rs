@@ -529,7 +529,9 @@ const CASES: &[Case] = &[
     arrows_u("D.prompt", SidebarThree, "r<C-u>delta<CR>", &[NoModal, Requests(&["main/alpha", "main/delta", "main/gamma"])]),
     arrows("D.prompt", SidebarThree, "r<Esc>", &[NoModal, Requests(&["main/alpha", "main/beta", "main/gamma"])]),
     vim("D.picker", SidebarThree, ":xyz", &[PaletteQuery("xyz"), Mode("INSERT")]),
-    vim("D.picker", SidebarThree, ":<C-n>", &[PaletteRow(1)]),
+    // The first ctrl+n picks the first row (Vim's wildmenu); the next steps.
+    vim("D.picker", SidebarThree, ":<C-n>", &[PaletteRow(0)]),
+    vim("D.picker", SidebarThree, ":<C-n><C-n>", &[PaletteRow(1)]),
     vim("D.picker", SidebarThree, ":<Esc>", &[NoModal]),
     arrows("D.picker", SidebarThree, "<C-p>xyz", &[PaletteQuery("xyz")]),
     arrows("D.picker", SidebarThree, "<C-p><C-n>", &[PaletteRow(1)]),

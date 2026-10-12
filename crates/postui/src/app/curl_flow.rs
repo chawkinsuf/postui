@@ -26,13 +26,42 @@ impl App {
         };
         let run = Box::new(CurlImportRun::new(batch, folder));
         // Each create opens its request, replacing the editor: ask once,
-        // up front. Discard defers nothing — the first create replaces the
-        // edit, and Esc on every prompt leaves it where it was.
+        // up front. Discard discards there and then, so skipping every
+        // prompt afterwards still leaves what the answer said.
         if self.editor_holds_unsaved() {
-            self.dirty_gate("import", Action::BeginCurlImport(run));
+            self.dirty_gate_split(
+                "import",
+                Action::BeginCurlImport { run: run.clone(), discard: false },
+                Action::BeginCurlImport { run, discard: true },
+            );
         } else {
             self.push_curl_prompt(*run);
         }
+        true
+    }
+
+    /// `Action::BeginCurlImport`: the dirty gate's answer, then the first
+    /// prompt. A saved request's discard is `Action::DiscardChanges`; a
+    /// scratch request has nothing to go back to, so it becomes a blank
+    /// one: a fresh scratch, its body's engine state gone with the old
+    /// text, but with the shadow kept so the discard is an undo step.
+    pub(super) fn begin_curl_import(&mut self, run: CurlImportRun, discard: bool) -> bool {
+        if discard {
+            if self.editor.slug.is_some() {
+                self.update(Action::DiscardChanges);
+            } else {
+                self.flush_field_session();
+                self.no_coalesce = true;
+                self.reseed_editor(None, postui_core::model::HttpRequest::default());
+                self.editor.saved = None;
+                self.vim_drop_body();
+                self.toasts.push(
+                    format!("Request discarded{}", self.undo_hint()),
+                    ToastKind::Info,
+                );
+            }
+        }
+        self.push_curl_prompt(run);
         true
     }
 
@@ -76,7 +105,30 @@ impl App {
     /// asking again would only meet its own name as taken.
     pub(super) fn import_curl_create(&mut self, mut run: CurlImportRun, name: &str) -> bool {
         let import = run.current().clone();
-        let name = match self.create_request_from(name, |_| import.request) {
+        // The paste's values go in as secrets (spec R7), never over a
+        // variable the project already has, nor under a reserved name.
+        let (reserved, variables): (Vec<_>, Vec<_>) = import
+            .variables
+            .iter()
+            .cloned()
+            .partition(|(n, _)| postui_core::varmodel::is_reserved(n));
+        // An environment file that can't be read leaves the name to the
+        // create, which refuses it and says why.
+        let (secrets, kept): (Vec<_>, Vec<_>) = variables
+            .into_iter()
+            .partition(|(n, _)| !self.project_mut().is_some_and(|p| p.variable_exists(n).unwrap_or(false)));
+        // A paste's value not known is no news against the project's.
+        let kept: Vec<(String, bool)> = kept
+            .into_iter()
+            .map(|(n, v)| {
+                let same = v.as_ref().is_none_or(|v| {
+                    self.project().is_some_and(|p| p.resolved().values.get(&n) == Some(v))
+                });
+                (n, same)
+            })
+            .collect();
+        let env = self.project().and_then(|p| p.active_env().map(|e| p.env_name(e)));
+        let name = match self.create_request_from(name, |_| import.request, &secrets) {
             CreateOutcome::Refused => return true,
             CreateOutcome::Opened => self.editor.name.clone().unwrap_or_else(|| name.to_string()),
             CreateOutcome::Unopened(leaf) => {
@@ -85,10 +137,16 @@ impl App {
                 leaf
             }
         };
+        if secrets.iter().any(|(_, v)| v.is_some()) {
+            run.secrets_env = env;
+        }
         run.created.push(CreatedImport {
             name,
             ignored: import.ignored,
             converted: import.converted,
+            secrets,
+            kept,
+            reserved: reserved.into_iter().map(|(n, _)| n).collect(),
         });
         self.advance_curl_import(run);
         true
