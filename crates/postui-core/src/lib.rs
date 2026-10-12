@@ -33,6 +33,7 @@ pub mod journal;
 pub mod json;
 pub mod migrate;
 pub mod model;
+pub mod curl;
 pub mod order;
 pub mod prepare;
 /// The open project. `project::Project` owns every read and write of
