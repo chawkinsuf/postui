@@ -11,7 +11,8 @@ use std::fmt;
 pub struct CurlImport {
     pub request: HttpRequest,
     /// What did not make it into the request, in this order: dropped
-    /// flags as written with their value (`-F file=@a.png`), the earlier
+    /// flags as written with their value (`-F file=@a.png`; `-g`/`--globoff`
+    /// is lossless and not listed), the earlier
     /// URLs a later one replaced, `$(…) kept as text` notes, then a
     /// pipeline tail or redirect (`| jq .`).
     pub ignored: Vec<String>,
@@ -243,6 +244,8 @@ impl Flags {
             ("head", None) => self.head = true,
             ("get", None) => self.get = true,
             ("insecure", None) => self.insecure = true,
+            // Lossless: postui never globs a URL (D9).
+            ("globoff", None) => {}
             ("header", Some(v)) => self.header(display, v),
             ("data" | "data-ascii" | "data-binary" | "json", Some(v)) if v.starts_with('@') => {
                 self.ignore(display, Some(v))
@@ -634,6 +637,26 @@ mod tests {
     }
 
     #[test]
+    fn globoff_is_accepted_silently() {
+        for cmd in ["curl -g 'https://x/a?f[s]=1'", "curl --globoff 'https://x/a?f[s]=1'"] {
+            let c = one(cmd);
+            assert!(c.ignored.is_empty(), "{cmd}: {:?}", c.ignored);
+            assert_eq!(c.request.url, "https://x/a?f[s]=1");
+        }
+    }
+
+    #[test]
+    fn a_firefox_ansi_c_body_keeps_its_escapes_and_latin_1_bytes() {
+        let c = one(concat!(
+            r#"curl 'https://x/api' -X POST --data-raw $'{"name":"Jos"#,
+            r"\",
+            r#"xe9","q":"say \"hi\" c:\\dir"}'"#
+        ));
+        assert_eq!(body(&c), Some(r#"{"name":"José","q":"say "hi" c:\dir"}"#));
+        assert!(c.ignored.is_empty(), "{:?}", c.ignored);
+    }
+
+    #[test]
     fn the_last_url_wins() {
         let c = one("curl https://a/1 https://b/2");
         assert_eq!(c.request.url, "https://b/2");
@@ -839,6 +862,7 @@ mod tests {
             "method = \"PUT\"\nurl = \"https://x/1\"\n[headers]\nX-Empty = \"\"\n",
             "method = \"HEAD\"\nurl = \"https://x\"\n",
             "method = \"DELETE\"\nurl = \"https://x/1\"\ninsecure = true\n",
+            "url = \"https://x/items?page[size]=10&q={a,b}\"\n",
             "method = \"POST\"\nurl = \"https://x\"\n[body]\ntype = \"json\"\ntext = \"@not-a-file\"\n",
             "method = \"PATCH\"\nurl = \"https://x\"\n[headers]\nContent-Type = \"text/plain\"\n[body]\ntype = \"json\"\ntext = \"plain words\"\n",
         ];

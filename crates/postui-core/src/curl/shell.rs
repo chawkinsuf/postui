@@ -62,6 +62,28 @@ fn is_name(s: &str) -> bool {
         && chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
 }
 
+/// `$'…'` bytes as text: valid UTF-8 runs stay as they are, and each byte
+/// of an invalid sequence becomes the Latin-1 char U+00XX (Firefox writes
+/// `é` as `\xe9`).
+fn decode_bytes(mut bytes: &[u8]) -> String {
+    let mut out = String::new();
+    loop {
+        match std::str::from_utf8(bytes) {
+            Ok(s) => {
+                out.push_str(s);
+                return out;
+            }
+            Err(e) => {
+                let (valid, rest) = bytes.split_at(e.valid_up_to());
+                out.push_str(std::str::from_utf8(valid).unwrap_or_default());
+                let bad = e.error_len().unwrap_or(rest.len());
+                out.extend(rest[..bad].iter().map(|&b| char::from(b)));
+                bytes = &rest[bad..];
+            }
+        }
+    }
+}
+
 struct Splitter<'a> {
     chars: Peekable<Chars<'a>>,
     commands: Vec<ShellCommand>,
@@ -172,8 +194,9 @@ impl Splitter<'_> {
         }
     }
 
-    /// `>`, `>>`, `<`, `2>`, `2>&1`, `&>`…: the curl part ends here and
-    /// the rest of the command is tail.
+    /// `>`, `>>`, `<`, `2>`, `2>&1`: the curl part ends here and the rest
+    /// of the command is tail. `&>` and `|&` are not seen here: the `&` ends
+    /// the command first, and the redirect after it is dropped unlisted.
     fn redirect(&mut self, first: char) {
         let mut op = String::new();
         // A bare fd number glued to the operator (`2>`) belongs to it.
@@ -237,7 +260,10 @@ impl Splitter<'_> {
     }
 
     /// `$'…'` (bash ANSI-C quoting, what browsers emit): escapes decode to
-    /// bytes, and the bytes decode as UTF-8 once the quote closes.
+    /// bytes, and the bytes decode as UTF-8 once the quote closes; bytes
+    /// that are not valid UTF-8 are Latin-1 chars (`decode_bytes`). A
+    /// `😀` surrogate pair is one char; a lone surrogate stays
+    /// literal text.
     fn ansi_c(&mut self) -> Result<(), ShellError> {
         let mut bytes: Vec<u8> = Vec::new();
         loop {
@@ -268,7 +294,15 @@ impl Splitter<'_> {
                         'u' | 'U' => {
                             let max = if e == 'u' { 4 } else { 8 };
                             let digits = self.take_digits(16, max);
-                            match u32::from_str_radix(&digits, 16).ok().and_then(char::from_u32) {
+                            let mut code = u32::from_str_radix(&digits, 16).ok();
+                            // Firefox writes an emoji as two `\u` surrogates.
+                            if e == 'u'
+                                && code.is_some_and(|c| (0xD800..0xDC00).contains(&c))
+                                && let Some(low) = self.low_surrogate()
+                            {
+                                code = code.map(|h| 0x10000 + ((h - 0xD800) << 10) + (low - 0xDC00));
+                            }
+                            match code.and_then(char::from_u32) {
                                 Some(c) if !digits.is_empty() => {
                                     let mut buf = [0u8; 4];
                                     bytes.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
@@ -299,8 +333,24 @@ impl Splitter<'_> {
                 }
             }
         }
-        self.word.push_str(&String::from_utf8_lossy(&bytes));
+        self.word.push_str(&decode_bytes(&bytes));
         Ok(())
+    }
+
+    /// Consumes a directly following `\uDC00`..`\uDFFF` escape and returns
+    /// its value; consumes nothing otherwise.
+    fn low_surrogate(&mut self) -> Option<u32> {
+        let mut ahead = self.chars.clone();
+        if ahead.next() != Some('\\') || ahead.next() != Some('u') {
+            return None;
+        }
+        let digits: String = ahead.by_ref().take(4).collect();
+        let value = u32::from_str_radix(&digits, 16).ok()?;
+        if digits.len() != 4 || !(0xDC00..0xE000).contains(&value) {
+            return None;
+        }
+        self.chars = ahead;
+        Some(value)
     }
 
     fn take_digits(&mut self, radix: u32, max: usize) -> String {
@@ -470,6 +520,21 @@ mod tests {
         );
         // Bytes from `\x` decode as UTF-8 together.
         assert_eq!(words(r"curl $'\xc3\xa9'"), ["curl", "é"]);
+    }
+
+    #[test]
+    fn ansi_c_latin_1_bytes_and_surrogate_pairs_decode_as_firefox_meant() {
+        // A lone Latin-1 byte (Firefox's escape for e-acute) is U+00E9.
+        assert_eq!(words(concat!(r"curl $'Jos\", "xe9'")), ["curl", "José"]);
+        // Valid UTF-8 byte pairs still decode as UTF-8.
+        assert_eq!(words(concat!(r"curl $'\", "xc3", r"\", "xa9'")), ["curl", "é"]);
+        // Valid runs stay, only the invalid byte is Latin-1.
+        assert_eq!(words(concat!(r"curl $'é\", "xe9", r"\", "xc3", r"\", "xa9'")), ["curl", "ééé"]);
+        // A surrogate pair joins into one char.
+        assert_eq!(words(concat!(r"curl $'\", "ud83d", r"\", "ude00'")), ["curl", "\u{1F600}"]);
+        // A lone surrogate stays literal text.
+        assert_eq!(words(concat!(r"curl $'\", "ud83d'")), ["curl", concat!(r"\", "ud83d")]);
+        assert_eq!(words(concat!(r"curl $'\", "ude00'")), ["curl", concat!(r"\", "ude00")]);
     }
 
     #[test]

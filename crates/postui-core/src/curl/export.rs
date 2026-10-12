@@ -6,7 +6,9 @@ use crate::prepare::{PrepareContext, PreparedRequest};
 use crate::varmodel::VarMeta;
 
 /// `req` as a bash/zsh command line: one flag per line joined with ` \`
-/// continuations, every argument single-quoted (spec R4).
+/// continuations, every argument single-quoted (spec R4). The first line
+/// is `curl [-X METHOD | --head] 'URL' [-g] [-k]`: `-g` (D9) only when the
+/// URL holds any of `[ ] { }`, `-k` only for an insecure request.
 pub fn to_curl(req: &PreparedRequest) -> String {
     let mut head = String::from("curl");
     match req.method {
@@ -20,6 +22,10 @@ pub fn to_curl(req: &PreparedRequest) -> String {
     }
     head.push(' ');
     head.push_str(&quote(&req.url));
+    // curl reads `[…]` and `{…}` in a URL as globs; `-g` keeps them text.
+    if req.url.contains(['[', ']', '{', '}']) {
+        head.push_str(" -g");
+    }
     if req.insecure {
         head.push_str(" -k");
     }
@@ -115,6 +121,25 @@ mod tests {
         let mut p = prepared(Method::Delete, "https://x/1", &[], None);
         p.insecure = true;
         assert_eq!(to_curl(&p), "curl -X DELETE 'https://x/1' -k");
+    }
+
+    #[test]
+    fn brackets_or_braces_in_the_url_add_globoff_before_insecure() {
+        assert_eq!(
+            to_curl(&prepared(Method::Get, "https://x/items?page[size]=10", &[], None)),
+            "curl 'https://x/items?page[size]=10' -g"
+        );
+        for url in ["https://x/a]", "https://x/{a,b}", "https://x/a}", "https://x/{a"] {
+            assert!(to_curl(&prepared(Method::Get, url, &[], None)).ends_with("' -g"), "{url}");
+        }
+        let mut p = prepared(Method::Get, "https://x/items?page[size]=10", &[], None);
+        p.insecure = true;
+        assert_eq!(to_curl(&p), "curl 'https://x/items?page[size]=10' -g -k");
+    }
+
+    #[test]
+    fn a_url_without_brackets_has_no_globoff() {
+        assert!(!to_curl(&prepared(Method::Get, "https://x/a?b=(1)", &[], None)).contains("-g"));
     }
 
     #[test]
