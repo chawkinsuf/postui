@@ -503,6 +503,19 @@ enum StartupDisposition {
     OpenAsIs { register: bool },
 }
 
+/// What `App::create_request_from` did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CreateOutcome {
+    /// Nothing was written: no project, a taken or empty name, a write
+    /// failure.
+    Refused,
+    /// The file landed but could not be opened; the editor still holds
+    /// the request it had.
+    Unopened,
+    /// Written and open in the editor.
+    Opened,
+}
+
 /// Picks the startup root and what to do about it, given the registry, an
 /// optional CLI-supplied root, and the platform's default project
 /// directory. Only touches the filesystem via `is_project`'s single-file
@@ -9426,11 +9439,24 @@ impl App {
         self.editor.table.selected = Some(at);
     }
 
+    /// `create_request_from`, answering only whether the new request is
+    /// open in the editor.
     fn create_or_save_as(
         &mut self,
         name: &str,
         build: impl FnOnce(&str) -> postui_core::model::HttpRequest,
     ) -> bool {
+        self.create_request_from(name, build) == CreateOutcome::Opened
+    }
+
+    /// Writes a new request built by `build` under `name` (relative to the
+    /// active space) and opens it. Every outcome but `Opened` toasts why
+    /// and sets `last_action_failed`.
+    fn create_request_from(
+        &mut self,
+        name: &str,
+        build: impl FnOnce(&str) -> postui_core::model::HttpRequest,
+    ) -> CreateOutcome {
         use postui_core::project::Error;
         // Every new request lands inside the active space — the name the
         // user typed is relative to it.
@@ -9438,7 +9464,7 @@ impl App {
         let name = name.as_str();
         let req = build(name);
         if self.project.is_none() {
-            return false;
+            return CreateOutcome::Refused;
         }
         // Flushes the outgoing request's open field as its own step before
         // the create, and captures the view an undo returns to.
@@ -9462,12 +9488,12 @@ impl App {
                     // switch) does not run. `land` toasted why.
                     self.record_project_step(t, label);
                     self.last_action_failed = true;
-                    return false;
+                    return CreateOutcome::Unopened;
                 }
                 self.editor.mark_saved();
                 self.toasts.push(format!("Saved {leaf}"), ToastKind::Success);
                 self.record_project_step(t, label);
-                true
+                CreateOutcome::Opened
             }
             Err(Error::AlreadyExists(taken)) => {
                 self.toasts.push(
@@ -9475,19 +9501,19 @@ impl App {
                     ToastKind::Error,
                 );
                 self.last_action_failed = true;
-                false
+                CreateOutcome::Refused
             }
             Err(Error::BadName(_)) => {
                 self.toasts
                     .push("request name cannot be empty", ToastKind::Error);
                 self.last_action_failed = true;
-                false
+                CreateOutcome::Refused
             }
             Err(e) => {
                 self.toasts
                     .push(format!("could not save {name}: {e}"), ToastKind::Error);
                 self.last_action_failed = true;
-                false
+                CreateOutcome::Refused
             }
         }
     }

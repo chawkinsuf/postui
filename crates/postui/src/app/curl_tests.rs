@@ -239,6 +239,20 @@ fn a_click_outside_skips_to_the_next_command() {
 }
 
 #[test]
+fn a_click_outside_the_send_time_secret_prompt_cancels_the_send_like_esc() {
+    let mut app = app_with_clip("");
+    app.push_modal(Modal::Prompt {
+        title: "Secret".into(),
+        input: LineInput::new(""),
+        kind: PromptKind::SecretValue { name: "token".into(), env: "dev".into(), then_send: true },
+        revealed: false,
+    });
+    click(&mut app, Hit::ModalOutside);
+    assert!(app.modals.is_empty());
+    assert_eq!(app.toasts.last_message(), Some("send canceled"));
+}
+
+#[test]
 fn the_cancel_button_skips_to_the_next_command() {
     let mut app = app_with_clip("curl https://x/a\ncurl https://x/b");
     import(&mut app);

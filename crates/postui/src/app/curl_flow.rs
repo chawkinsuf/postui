@@ -71,14 +71,22 @@ impl App {
 
     /// `Action::ImportCurlCreate` (spec §4.2 step 4). A refused name toasts
     /// and sets `last_action_failed`, which brings the prompt back with
-    /// its run untouched (`apply_modal_result`).
+    /// its run untouched (`apply_modal_result`). A request that was written
+    /// but could not be opened counts as created and the run moves on:
+    /// asking again would only meet its own name as taken.
     pub(super) fn import_curl_create(&mut self, mut run: CurlImportRun, name: &str) -> bool {
         let import = run.current().clone();
-        if !self.create_or_save_as(name, |_| import.request) {
-            return true;
-        }
+        let name = match self.create_request_from(name, |_| import.request) {
+            CreateOutcome::Refused => return true,
+            CreateOutcome::Opened => self.editor.name.clone().unwrap_or_else(|| name.to_string()),
+            CreateOutcome::Unopened => {
+                // `land` toasted why; the prompt must not come back.
+                self.last_action_failed = false;
+                name.to_string()
+            }
+        };
         run.created.push(CreatedImport {
-            name: self.editor.name.clone().unwrap_or_else(|| name.to_string()),
+            name,
             ignored: import.ignored,
             converted: import.converted,
         });

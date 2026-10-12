@@ -1686,15 +1686,11 @@ impl App {
                     }
                     return true;
                 }
-                // A curl import prompt must skip its command like Esc does,
-                // or the rest of the batch dies with the bare pop below.
-                if matches!(
-                    self.modals.top(),
-                    Some(Modal::Prompt {
-                        kind: crate::components::modal::PromptKind::ImportCurl(_),
-                        ..
-                    })
-                ) {
+                // A one-field prompt cancels exactly as Esc does: a curl
+                // import prompt skips its command (the bare pop below would
+                // end the whole batch), the send-time secret prompt says
+                // the send was canceled.
+                if matches!(self.modals.top(), Some(Modal::Prompt { .. })) {
                     let Some(res) = self.modals.cancel_top() else {
                         return false;
                     };
