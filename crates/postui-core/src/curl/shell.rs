@@ -46,11 +46,12 @@ pub(crate) fn split(text: &str) -> Result<Vec<ShellCommand>, ShellError> {
     .run()
 }
 
-/// Browsers' "Copy as cURL (cmd)" quotes with `^"` and ends each
-/// continued line with ` ^`. Both must show up, so a bash body that merely
-/// contains `^"` still parses.
+/// Browsers' "Copy as cURL (cmd)" ends each continued line with ` ^` and
+/// quotes with `^"`. Either signal refuses the paste: a line ending in
+/// ` ^` here, a word opening with `^"` in `Splitter::run`. A bash body that
+/// merely contains `^"` inside quotes still parses.
 fn is_cmd_style(text: &str) -> bool {
-    text.contains("^\"") && text.lines().any(|l| l.trim_end().ends_with(" ^"))
+    text.lines().any(|l| l.trim_end().ends_with(" ^"))
 }
 
 /// A shell variable name: `[A-Za-z_][A-Za-z0-9_]*` — always a valid
@@ -107,6 +108,10 @@ impl Splitter<'_> {
                     self.single_quoted()?;
                 }
                 '"' => {
+                    // `^"` opening a word is Windows cmd quoting.
+                    if self.in_word && self.word == "^" {
+                        return Err(ShellError::CmdStyle);
+                    }
                     self.in_word = true;
                     self.double_quoted()?;
                 }
@@ -460,7 +465,7 @@ mod tests {
     #[test]
     fn ansi_c_escapes_decode() {
         assert_eq!(
-            words(r"curl $'a\nb\'c\x41é\101\\!'"),
+            words(concat!(r"curl $'a\nb\'c\x41\", "u00e9", r"\101\\\", "u0021'")),
             ["curl", "a\nb'cAéA\\!"]
         );
         // Bytes from `\x` decode as UTF-8 together.
@@ -536,5 +541,8 @@ mod tests {
         assert_eq!(split("curl ^\"https://x^\" ^\n  -H ^\"A: b^\""), Err(ShellError::CmdStyle));
         // A bash body that merely contains `^"` still parses.
         assert!(split("curl -d '^\"x' https://x").is_ok());
+        assert!(split("curl -d 'a ^\"x' https://x").is_ok());
+        // One line is enough when a word opens with `^"`.
+        assert_eq!(split("curl ^\"https://x/a^\""), Err(ShellError::CmdStyle));
     }
 }

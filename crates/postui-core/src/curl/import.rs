@@ -224,7 +224,8 @@ struct Flags {
     headers: Vec<(String, String)>,
     data: Vec<String>,
     json: bool,
-    user: Option<String>,
+    /// The flag as written, and its value.
+    user: Option<(String, String)>,
     cookies: Vec<String>,
     user_agent: Option<String>,
     referer: Option<String>,
@@ -255,7 +256,7 @@ impl Flags {
                 Some(d) => self.data.push(d),
                 None => self.ignore(display, Some(v)),
             },
-            ("user", Some(v)) => self.user = Some(v),
+            ("user", Some(v)) => self.user = Some((display.to_string(), v)),
             ("cookie", Some(v)) if v.contains('=') => self.cookies.push(v),
             ("user-agent", Some(v)) => self.user_agent = Some(v),
             ("referer", Some(v)) => self.referer = Some(v),
@@ -399,6 +400,15 @@ fn build(
         insecure,
         mut ignored,
     } = flags;
+    // A shell variable in the credentials would be encoded as the literal
+    // `{{NAME}}`; the flag is dropped instead (spec D8).
+    let user = match user {
+        Some((display, u)) if converted.iter().any(|n| u.contains(&format!("{{{{{n}}}}}"))) => {
+            ignored.push(format!("{display} {u}"));
+            None
+        }
+        other => other.map(|(_, u)| u),
+    };
     let url = urls.pop().ok_or(CurlErrorKind::NoUrl)?;
     ignored.extend(urls);
     // curl assumes http:// for a bare host (spec plan P3).
@@ -478,6 +488,17 @@ fn build(
         }
     }
 
+    // Only variables that reached the request count as converted: not
+    // those that sat in a dropped flag or the pipeline tail.
+    let converted: Vec<String> = converted
+        .into_iter()
+        .filter(|n| {
+            let mark = format!("{{{{{n}}}}}");
+            url.contains(&mark)
+                || headers.values().any(|e| e.value.contains(&mark))
+                || body_text.as_ref().is_some_and(|b| b.contains(&mark))
+        })
+        .collect();
     let substitute_body = body_text
         .as_ref()
         .is_some_and(|b| converted.iter().any(|n| b.contains(&format!("{{{{{n}}}}}"))));
@@ -707,6 +728,28 @@ mod tests {
         assert_eq!(header(&one("curl -u alice:secret https://x"), "Authorization"), Some("Basic YWxpY2U6c2VjcmV0"));
         let c = one("curl -u alice:secret -H 'Authorization: Bearer t' https://x");
         assert_eq!(header(&c, "Authorization"), Some("Bearer t"));
+    }
+
+    #[test]
+    fn a_user_holding_a_variable_is_ignored_not_encoded() {
+        let c = one(r#"curl -u "$USER:$PASS" https://x"#);
+        assert_eq!(header(&c, "Authorization"), None);
+        assert_eq!(c.ignored, ["-u {{USER}}:{{PASS}}"]);
+        assert!(c.converted.is_empty());
+        let d = one(r#"curl --user "$U:p" https://x"#);
+        assert_eq!(d.ignored, ["--user {{U}}:p"]);
+        let e = one(r#"curl -u "$U:" -H "X: $T" https://x"#);
+        assert_eq!(e.converted, ["T"]);
+        assert_eq!(header(&e, "Authorization"), None);
+        assert_eq!(header(&one("curl -u a:b https://x"), "Authorization"), Some("Basic YTpi"));
+    }
+
+    #[test]
+    fn converted_lists_only_variables_in_the_final_request() {
+        let c = one(r#"curl -o "$OUT" https://x | jq "$F""#);
+        assert!(c.converted.is_empty());
+        let d = one(r#"curl -o "$OUT" "$BASE/a" -H "A: $T""#);
+        assert_eq!(d.converted, ["BASE", "T"]);
     }
 
     #[test]
