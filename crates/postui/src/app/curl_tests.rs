@@ -216,6 +216,38 @@ fn the_folder_menu_offers_import_after_new_request_here() {
     assert_eq!(items[new_here + 1].action, Some(Action::ImportCurl { folder: Some("main/api".into()) }));
 }
 
+fn click(app: &mut App, hit: Hit) {
+    use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    draw(app);
+    let r = app.hits.rect_of(&hit).unwrap_or_else(|| panic!("no {hit:?}"));
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: r.x + 1,
+        row: r.y,
+        modifiers: KeyModifiers::NONE,
+    });
+}
+
+#[test]
+fn a_click_outside_skips_to_the_next_command() {
+    let mut app = app_with_clip("curl https://x/a\ncurl https://x/b");
+    import(&mut app);
+    assert_eq!(prompt(&app).0, "Import curl (1 of 2)");
+    click(&mut app, Hit::ModalOutside);
+    assert_eq!(prompt(&app).0, "Import curl (2 of 2)");
+    assert!(slug_named(&app, "GET a").is_none());
+}
+
+#[test]
+fn the_cancel_button_skips_to_the_next_command() {
+    let mut app = app_with_clip("curl https://x/a\ncurl https://x/b");
+    import(&mut app);
+    assert_eq!(prompt(&app).0, "Import curl (1 of 2)");
+    click(&mut app, Hit::ModalCancel);
+    assert_eq!(prompt(&app).0, "Import curl (2 of 2)");
+    assert!(slug_named(&app, "GET a").is_none());
+}
+
 #[test]
 fn esc_skips_to_the_next_command_in_both_profiles() {
     for profile in [KeyProfile::Arrows, KeyProfile::Vim] {

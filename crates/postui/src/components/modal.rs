@@ -1211,7 +1211,9 @@ impl ModalStack {
     }
 
     /// The top modal's cancel: closes with no actions — except the
-    /// send-time secret prompt, which cancels the whole send and says so.
+    /// send-time secret prompt, which cancels the whole send and says so,
+    /// and a curl import prompt, which skips its command and moves the run
+    /// on.
     pub fn cancel_top(&mut self) -> Option<ModalResult> {
         Some(match self.stack.last()? {
             Modal::Prompt { kind, .. } => Self::prompt_cancel(kind),
@@ -1247,7 +1249,8 @@ impl ModalStack {
     }
 
     /// A one-field prompt's cancel: the send-time secret prompt cancels
-    /// the whole send, and says so.
+    /// the whole send, and says so; a curl import prompt skips its command
+    /// (`ImportCurlSkip`).
     fn prompt_cancel(kind: &PromptKind) -> ModalResult {
         let actions = match kind {
             PromptKind::SecretValue { then_send: true, .. } => vec![Action::ShowToast(

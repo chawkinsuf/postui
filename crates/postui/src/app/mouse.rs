@@ -1686,6 +1686,20 @@ impl App {
                     }
                     return true;
                 }
+                // A curl import prompt must skip its command like Esc does,
+                // or the rest of the batch dies with the bare pop below.
+                if matches!(
+                    self.modals.top(),
+                    Some(Modal::Prompt {
+                        kind: crate::components::modal::PromptKind::ImportCurl(_),
+                        ..
+                    })
+                ) {
+                    let Some(res) = self.modals.cancel_top() else {
+                        return false;
+                    };
+                    return self.apply_modal_result(res);
+                }
                 self.update(Action::Close)
             }
             // A click on the modal's own chrome (body/borders/query line)
