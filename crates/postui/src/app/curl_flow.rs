@@ -121,6 +121,11 @@ impl App {
         } else {
             let slug = slug.expect("a request that is not open has a slug");
             match self.project_mut().map(|p| p.read_request(&slug)) {
+                Some(Ok(r)) if r.url.trim().is_empty() => {
+                    self.toasts
+                        .push("cannot copy: URL is empty", ToastKind::Warning);
+                    return true;
+                }
                 Some(Ok(r)) => r,
                 Some(Err(e)) => {
                     let msg = format!("could not read {}: {e}", self.request_display(&slug));

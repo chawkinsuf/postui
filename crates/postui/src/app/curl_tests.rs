@@ -337,6 +337,21 @@ fn an_empty_url_copies_nothing() {
 }
 
 #[test]
+fn a_closed_request_with_an_empty_url_copies_nothing() {
+    for url in ["", "   "] {
+        let (mut app, _dir, out) = copy_app();
+        postui_core::fixtures::save_request(app.proj().root(), "main/blank", &req(url)).unwrap();
+        app.update(Action::RefreshSidebar);
+        app.update(Action::ForceOpenRequest("main/top".into()));
+        app.update(Action::CopyAsCurl(Some("main/blank".into())));
+        assert_eq!(copied(&out), None, "{url:?}");
+        let (msg, kind) = *app.toasts.entries().last().unwrap();
+        assert_eq!(msg, "cannot copy: URL is empty");
+        assert_eq!(*kind, crate::components::toast::ToastKind::Warning);
+    }
+}
+
+#[test]
 fn unresolved_variables_copy_nothing() {
     let (mut app, _dir, out) = copy_app();
     app.update(Action::ForceOpenRequest("main/top".into()));
