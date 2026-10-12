@@ -382,7 +382,13 @@ impl Splitter<'_> {
                 self.convert(name);
                 Ok(())
             }
-            // `$1`, `$?`, `$$`, `$@`, a lone `$`: literal.
+            // `$$` (the pid) is literal, and so is the name after it.
+            Some('$') => {
+                self.chars.next();
+                self.word.push_str("$$");
+                Ok(())
+            }
+            // `$1`, `$?`, `$@`, a lone `$`: literal.
             _ => {
                 self.word.push('$');
                 Ok(())
@@ -501,6 +507,13 @@ mod tests {
     fn specials_and_single_quotes_stay_literal() {
         let cmds = split(r#"curl "$1 $? $$ ${X:-y} $" '$NOT' $'$ALSO' -u 'me:p@$$w0rd'"#).unwrap();
         assert_eq!(cmds[0].words, ["curl", "$1 $? $$ ${X:-y} $", "$NOT", "$ALSO", "-u", "me:p@$$w0rd"]);
+        assert!(cmds[0].converted.is_empty());
+    }
+
+    #[test]
+    fn a_double_dollar_keeps_the_name_after_it_literal() {
+        let cmds = split(r#"curl -u "me:p@$$w0rd" -H p@$$w0rd https://x"#).unwrap();
+        assert_eq!(cmds[0].words, ["curl", "-u", "me:p@$$w0rd", "-H", "p@$$w0rd", "https://x"]);
         assert!(cmds[0].converted.is_empty());
     }
 
