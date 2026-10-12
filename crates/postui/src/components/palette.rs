@@ -71,6 +71,12 @@ pub fn all_commands() -> Vec<Command> {
             action: Action::PromptNewRequest,
         },
         Command {
+            id: "request-import-curl",
+            name: "Request: import curl from clipboard",
+            description: "Create requests from the curl commands on the clipboard",
+            action: Action::ImportCurl { folder: None },
+        },
+        Command {
             id: "request-save",
             name: "Request: save",
             description: "Save the open request to disk",

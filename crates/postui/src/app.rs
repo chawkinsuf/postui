@@ -3576,6 +3576,16 @@ impl App {
                 });
                 true
             }
+            Action::ImportCurl { folder } => self.import_curl(folder),
+            Action::BeginCurlImport(run) => {
+                self.push_curl_prompt(*run);
+                true
+            }
+            Action::ImportCurlCreate { run, name } => self.import_curl_create(*run, &name),
+            Action::ImportCurlSkip(run) => {
+                self.advance_curl_import(*run);
+                true
+            }
             Action::PromptNewRequestIn(folder) => {
                 if self.refuse_without_project() {
                     return true;
@@ -9283,6 +9293,10 @@ impl App {
                     Action::PromptNewRequestIn(path.clone()),
                 ),
                 MenuItem::new(
+                    "Import curl here\u{2026}",
+                    Action::ImportCurl { folder: Some(path.clone()) },
+                ),
+                MenuItem::new(
                     if *expanded { "Collapse" } else { "Expand" },
                     Action::ToggleSelectedFolder,
                 ),
@@ -11614,12 +11628,15 @@ fn line_buf<'a>(
     }
 }
 
+mod curl_flow;
 mod landing;
 mod mouse;
 mod router;
 mod vim_seam;
 mod panes;
 mod verbs;
+#[cfg(test)]
+mod curl_tests;
 #[cfg(test)]
 mod dialog_tests;
 #[cfg(test)]

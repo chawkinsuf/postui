@@ -19,6 +19,10 @@ use ratatui::widgets::{Paragraph, Wrap};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PromptKind {
     NewRequest,
+    /// One command of a curl import (spec curl §4.2): confirming creates
+    /// it under the typed name, cancelling skips it; either way the run
+    /// moves to its next command.
+    ImportCurl(Box<crate::curl_import::CurlImportRun>),
     RenameRequest {
         from: String,
     },
@@ -1250,6 +1254,7 @@ impl ModalStack {
                 "send canceled".to_string(),
                 crate::components::toast::ToastKind::Warning,
             )],
+            PromptKind::ImportCurl(run) => vec![Action::ImportCurlSkip(run.clone())],
             _ => vec![],
         };
         ModalResult {
@@ -1464,6 +1469,10 @@ impl ModalStack {
         }
         let actions: Option<Vec<Action>> = match kind {
             PromptKind::NewRequest => Some(vec![Action::CreateRequest(text.to_string())]),
+            PromptKind::ImportCurl(run) => Some(vec![Action::ImportCurlCreate {
+                run: run.clone(),
+                name: text.to_string(),
+            }]),
             PromptKind::RenameRequest { from } => Some(vec![Action::RenameRequest {
                 from: from.clone(),
                 to: text.to_string(),
