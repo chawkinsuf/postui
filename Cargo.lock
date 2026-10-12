@@ -2069,6 +2069,7 @@ dependencies = [
 name = "postui-core"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "directories",
  "form_urlencoded",
  "indexmap",

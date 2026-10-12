@@ -6,6 +6,7 @@ pub mod clipboard;
 pub mod cmdline;
 pub mod components;
 pub mod config;
+pub mod curl_import;
 pub mod glyph;
 pub mod hint;
 pub mod hit;

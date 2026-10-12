@@ -1686,6 +1686,16 @@ impl App {
                     }
                     return true;
                 }
+                // A one-field prompt cancels exactly as Esc does: a curl
+                // import prompt skips its command (the bare pop below would
+                // end the whole batch), the send-time secret prompt says
+                // the send was canceled.
+                if matches!(self.modals.top(), Some(Modal::Prompt { .. })) {
+                    let Some(res) = self.modals.cancel_top() else {
+                        return false;
+                    };
+                    return self.apply_modal_result(res);
+                }
                 self.update(Action::Close)
             }
             // A click on the modal's own chrome (body/borders/query line)

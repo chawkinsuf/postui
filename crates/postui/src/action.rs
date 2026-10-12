@@ -336,6 +336,27 @@ pub enum Action {
     /// the folder context menu's "New request here…", so the typed name
     /// lands inside the folder that was right-clicked.
     PromptNewRequestIn(String),
+    /// The palette's "Request: import curl from clipboard" (`folder:
+    /// None`, the space root) and a folder's "Import curl here…" (spec
+    /// curl §4.1): reads and parses the clipboard, then runs the dirty
+    /// gate once, before the first name prompt.
+    ImportCurl { folder: Option<String> },
+    /// Past the dirty gate: opens the first command's name prompt.
+    BeginCurlImport(Box<crate::curl_import::CurlImportRun>),
+    /// An import prompt's confirm: creates the current command's request
+    /// as `name` (relative to the active space), then moves on.
+    ImportCurlCreate {
+        run: Box<crate::curl_import::CurlImportRun>,
+        name: String,
+    },
+    /// An import prompt's cancel (Esc, Cancel, a click outside): skips the
+    /// current command and moves on.
+    ImportCurlSkip(Box<crate::curl_import::CurlImportRun>),
+    /// "Copy as curl" (spec curl §5.1): `None` is the open request as the
+    /// editor holds it (the palette); `Some(slug)` is a sidebar row —
+    /// the live editor when it is the open request, its saved file
+    /// otherwise.
+    CopyAsCurl(Option<String>),
     /// Create a fresh request at `name` (a slug), then open it. If the
     /// editor is dirty this is intercepted into a `Modal::Confirm` rather
     /// than applied directly; see `App::update`.

@@ -503,6 +503,19 @@ enum StartupDisposition {
     OpenAsIs { register: bool },
 }
 
+/// What `App::create_request_from` did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CreateOutcome {
+    /// Nothing was written: no project, a taken or empty name, a write
+    /// failure.
+    Refused,
+    /// The file landed but could not be opened; the editor still holds
+    /// the request it had. Carries the new request's display name.
+    Unopened(String),
+    /// Written and open in the editor.
+    Opened,
+}
+
 /// Picks the startup root and what to do about it, given the registry, an
 /// optional CLI-supplied root, and the platform's default project
 /// directory. Only touches the filesystem via `is_project`'s single-file
@@ -1409,6 +1422,31 @@ impl App {
     /// see [`Self::env_label_display`] for what the user reads.
     pub(crate) fn env_label(&self) -> String {
         self.active_env().unwrap_or("no env").to_string()
+    }
+
+    /// The toast for a request whose variables don't all resolve. Send
+    /// and Copy as curl say the same thing.
+    pub(crate) fn unresolved_message(
+        &self,
+        causes: &std::collections::BTreeMap<String, postui_core::prepare::UnresolvedCause>,
+    ) -> String {
+        let label = self.env_label();
+        let mut msg = format!(
+            "{} ({label})",
+            postui_core::prepare::PrepareError::Unresolved(causes.clone())
+        );
+        // Name the first (alphabetically — `causes` is a `BTreeMap`)
+        // variable that just needs a pick, not a fix, so `alt+v` is a
+        // visible next step rather than a dead end.
+        if let Some(name) = causes.iter().find_map(|(name, cause)| {
+            (*cause == postui_core::prepare::UnresolvedCause::NeedsSelection).then(|| name.clone())
+        }) {
+            msg.push_str(&format!(
+                " \u{2014} press {}+shift+v to select {name}",
+                crate::keys::alt_label()
+            ));
+        }
+        msg
     }
 
     /// The active environment's display name, or `"no env"`.
@@ -3576,6 +3614,17 @@ impl App {
                 });
                 true
             }
+            Action::ImportCurl { folder } => self.import_curl(folder),
+            Action::BeginCurlImport(run) => {
+                self.push_curl_prompt(*run);
+                true
+            }
+            Action::ImportCurlCreate { run, name } => self.import_curl_create(*run, &name),
+            Action::ImportCurlSkip(run) => {
+                self.advance_curl_import(*run);
+                true
+            }
+            Action::CopyAsCurl(slug) => self.copy_as_curl(slug),
             Action::PromptNewRequestIn(folder) => {
                 if self.refuse_without_project() {
                     return true;
@@ -4235,24 +4284,7 @@ impl App {
                             });
                             return true;
                         }
-                        let label = self.env_label();
-                        let mut msg = format!(
-                            "{} ({label})",
-                            postui_core::prepare::PrepareError::Unresolved(causes.clone())
-                        );
-                        // Name the first (alphabetically — `causes` is a
-                        // `BTreeMap`) variable that just needs a pick, not
-                        // a fix, so `alt+v` is a visible next step
-                        // rather than a dead end.
-                        if let Some(name) = causes.iter().find_map(|(name, cause)| {
-                            (*cause == postui_core::prepare::UnresolvedCause::NeedsSelection)
-                                .then(|| name.clone())
-                        }) {
-                            msg.push_str(&format!(
-                                " \u{2014} press {}+shift+v to select {name}",
-                                crate::keys::alt_label()
-                            ));
-                        }
+                        let msg = self.unresolved_message(&causes);
                         self.toasts.push(msg, ToastKind::Error);
                         return true;
                     }
@@ -9230,6 +9262,7 @@ impl App {
                 let mut items = vec![
                     MenuItem::new("Open", Action::OpenRequest(slug.clone())),
                     MenuItem::new("Duplicate", Action::DuplicateRequest),
+                    MenuItem::new("Copy as curl", Action::CopyAsCurl(Some(slug.clone()))),
                     if first {
                         MenuItem::disabled("Move up")
                     } else {
@@ -9281,6 +9314,10 @@ impl App {
                 MenuItem::new(
                     "New request here…",
                     Action::PromptNewRequestIn(path.clone()),
+                ),
+                MenuItem::new(
+                    "Import curl here\u{2026}",
+                    Action::ImportCurl { folder: Some(path.clone()) },
                 ),
                 MenuItem::new(
                     if *expanded { "Collapse" } else { "Expand" },
@@ -9402,11 +9439,25 @@ impl App {
         self.editor.table.selected = Some(at);
     }
 
+    /// `create_request_from`, answering only whether the new request is
+    /// open in the editor.
     fn create_or_save_as(
         &mut self,
         name: &str,
         build: impl FnOnce(&str) -> postui_core::model::HttpRequest,
     ) -> bool {
+        self.create_request_from(name, build) == CreateOutcome::Opened
+    }
+
+    /// Writes a new request built by `build` under `name` (relative to the
+    /// active space) and opens it. Every outcome but `Opened` toasts why
+    /// and sets `last_action_failed` — except no project at all, which is
+    /// refused silently: every caller refuses that up front, with its toast.
+    fn create_request_from(
+        &mut self,
+        name: &str,
+        build: impl FnOnce(&str) -> postui_core::model::HttpRequest,
+    ) -> CreateOutcome {
         use postui_core::project::Error;
         // Every new request lands inside the active space — the name the
         // user typed is relative to it.
@@ -9414,7 +9465,7 @@ impl App {
         let name = name.as_str();
         let req = build(name);
         if self.project.is_none() {
-            return false;
+            return CreateOutcome::Refused;
         }
         // Flushes the outgoing request's open field as its own step before
         // the create, and captures the view an undo returns to.
@@ -9438,12 +9489,12 @@ impl App {
                     // switch) does not run. `land` toasted why.
                     self.record_project_step(t, label);
                     self.last_action_failed = true;
-                    return false;
+                    return CreateOutcome::Unopened(leaf);
                 }
                 self.editor.mark_saved();
                 self.toasts.push(format!("Saved {leaf}"), ToastKind::Success);
                 self.record_project_step(t, label);
-                true
+                CreateOutcome::Opened
             }
             Err(Error::AlreadyExists(taken)) => {
                 self.toasts.push(
@@ -9451,19 +9502,19 @@ impl App {
                     ToastKind::Error,
                 );
                 self.last_action_failed = true;
-                false
+                CreateOutcome::Refused
             }
             Err(Error::BadName(_)) => {
                 self.toasts
                     .push("request name cannot be empty", ToastKind::Error);
                 self.last_action_failed = true;
-                false
+                CreateOutcome::Refused
             }
             Err(e) => {
                 self.toasts
                     .push(format!("could not save {name}: {e}"), ToastKind::Error);
                 self.last_action_failed = true;
-                false
+                CreateOutcome::Refused
             }
         }
     }
@@ -11614,12 +11665,15 @@ fn line_buf<'a>(
     }
 }
 
+mod curl_flow;
 mod landing;
 mod mouse;
 mod router;
 mod vim_seam;
 mod panes;
 mod verbs;
+#[cfg(test)]
+mod curl_tests;
 #[cfg(test)]
 mod dialog_tests;
 #[cfg(test)]

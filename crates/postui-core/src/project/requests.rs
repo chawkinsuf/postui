@@ -194,6 +194,20 @@ impl Project {
         self.open_requests.shift_remove(slug);
     }
 
+    /// Parses the request without holding it — a one-off read (the
+    /// sidebar's Copy as curl on a request that is not open).
+    pub fn read_request(&mut self, slug: &str) -> Result<HttpRequest, Error> {
+        let path = request_rel(slug)?;
+        let text = self
+            .disk
+            .read(&path)?
+            .ok_or_else(|| Error::NotFound(slug.to_string()))?;
+        HttpRequest::from_toml_str(&text).map_err(|e| Error::Parse {
+            file: path.to_string(),
+            error: e.to_string(),
+        })
+    }
+
     /// Writes the request, refreshes the held copy and its listing row.
     /// Not journaled: undoing past a save is the editor's memory-only
     /// step, as today.
@@ -774,6 +788,15 @@ mod tests {
         p.close_request("main/ping");
         assert!(p.held_request("main/ping").is_none());
         assert!(matches!(p.open_request("main/nope"), Err(Error::NotFound(_))));
+    }
+
+    #[test]
+    fn read_request_parses_without_holding() {
+        let (_d, mut p) = fixture();
+        let r = p.read_request("main/ping").unwrap();
+        assert_eq!(r.url, "https://{{host}}/ping");
+        assert!(p.held_request("main/ping").is_none(), "a one-off read holds nothing");
+        assert!(matches!(p.read_request("main/nope"), Err(Error::NotFound(_))));
     }
 
     #[test]
