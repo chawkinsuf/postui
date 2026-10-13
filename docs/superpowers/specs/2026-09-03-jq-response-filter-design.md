@@ -124,20 +124,22 @@ data[]
 - `name[]` is an array; the lines under it describe its elements, merged
   across every element. A key some of the merged objects lack is `key?`.
 - An object with more than 20 distinct keys whose values all hold the
-  same kinds (a value that is only ever null aside) and whose keys all look
-  like data — not a plain identifier (`2026-01-01`, `en-US`), holding a
-  digit (`K00`, hex ids), or a code in capitals (`USD`) — is a lookup table
-  keyed by data, also when each array element carries its own key, not a
-  record. Past 200 same-kind keys it is one whatever the keys look like
-  (user names as keys). It is one line,
-  `rates: map, 2000 keys like "USD"` (the first key, cut at 40 chars), with
-  every value merged under a `[]` line. Listing each key would fill the
-  byte cap and hide the keys after it. The user chose folding lookup
-  tables on 2026-10-13, after a review; the thresholds, the same-kinds test
-  and the data-key test are my defaults (the key test came from the second
-  review: without it a record of 21+ counters lost every field name). A
-  record with mixed kinds, or with field-like names under 200 keys, is
-  listed in full.
+  same kinds (a value that is only ever null aside) is folded into one
+  line naming its keys, with every value merged under a `[]` line:
+  `rates: object, 2000 keys (AED, AFN, ALL, … 1960 more)`. Keys are
+  written as in the outline (bare identifiers, others quoted), whole keys
+  up to 400 bytes, then `… N more`; a first key longer than that is cut
+  with `…`. This covers lookup tables keyed by data (currency codes,
+  dates, ids, also when each array element carries its own key), which
+  listed one per line would fill the byte cap and hide the keys after
+  them, and wide records of same-kind fields (25 counters), which keep
+  every name the model has to write. The example path goes through a
+  folded object by its first key (`.stats.views`). A record with mixed
+  kinds is listed in full however wide. History: the user chose folding
+  lookup tables on 2026-10-13; the first version showed only one example
+  key and lost a wide record's field names, a data-looking-keys test was
+  tried and dropped, and the user chose listing the names instead. The
+  20-key and 400-byte limits are my defaults.
 - Scalars are type names; a position holding several types is
   `a | b` in the order object, array, string, number, boolean, null. A
   container that holds both an object and an array lists the object's
@@ -348,8 +350,9 @@ typing, using the existing coalescing).
   `nosuchfn(1)` → name/arity), runtime error message, output cap, and
   `JqDocument::parse` rejecting non-JSON.
 - `shape` tests: unlimited nesting as indentation, array elements merged
-  with `key?` for keys some lack, lookup tables folded into one `map`
-  line (and records of mixed kinds not), type unions, root naming, quoted keys,
+  with `key?` for keys some lack, wide same-kind objects folded into one
+  line naming their keys (cut at a whole key with `… N more`; records of
+  mixed kinds not folded), type unions, root naming, quoted keys,
   the byte cap's "N more lines" note, the example path, scalar type names
   and the date/url tags.
 - `JsonTree` tests: per-line path for nested keys, indexes, odd keys

@@ -11,17 +11,18 @@ no code fences, no backticks. Prefer `map(select(...))` over
 current filter is given and the request refines it, extend that filter with
 ` | `; the structure describes the document before any filter. If the request
 is ambiguous, pick the most literal reading.
-The structure lists every key in the document once, one per line; a line
-indented under another is a key inside it. `name[]` is an array, and the
+The structure lists every key in the document once, mostly one per line; a
+line indented under another is a key inside it. `name[]` is an array, and the
 lines under it are the keys of its elements, merged across all elements.
 `key?` means some of the objects lack that key. A key with several types
 (`a: object | array`) lists its object's keys under it plus a `[]` line for its
-array's elements, reached with `.a[]`. `name: map, N keys like \"k\"`
-is an object used as a lookup table: its keys are data, and the lines under its
-`[]` describe every value, merged. Reach the values with `.name[]`, one of them
-with `.name[\"k\"]`, the keys with `keys` or `to_entries`. Values are shown as
-their type name; `a | b` means both types occur. Keys that are not plain
-identifiers are quoted. The request may name only the last key of a path: find that key in the
+array's elements, reached with `.a[]`. `name: object, N keys (k1, k2, … M more)`
+is an object with many keys whose values all share one structure: its keys are
+named on that line (`… M more` when they are too many to list), and the lines
+under its `[]` describe every value, merged. Reach one value with `.name.k1`,
+all of them with `.name[]`, the keys with `keys` or `to_entries`. Values are
+shown as their type name; `a | b` means both types occur. Keys that are not
+plain identifiers are quoted. The request may name only the last key of a path: find that key in the
 structure and write its whole path from the root, through every array with
 `[]`. Never write a bare `.key` unless that key is at the top level.";
 
@@ -107,8 +108,8 @@ mod tests {
             "a bare leaf name must be turned into a path: {p}"
         );
         assert!(
-            p.contains("`name: map, N keys like \"k\"`"),
-            "the map line is explained: {p}"
+            p.contains("`name: object, N keys (k1, k2, … M more)`"),
+            "the folded object line is explained: {p}"
         );
         assert!(
             p.contains("a `[]` line for its\narray's elements, reached with `.a[]`"),

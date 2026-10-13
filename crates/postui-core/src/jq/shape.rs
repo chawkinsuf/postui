@@ -26,8 +26,9 @@ pub struct Shape {
 /// The whole structure, one key per line, indented under its parent:
 /// scalars become type names, every element of an array is merged into
 /// one description (a key some elements lack is marked `key?`), and an
-/// array is `name[]`. An object keyed by data rather than field names (see
-/// `MAP_KEYS`) is one `map` line with its values merged under `[]`. No
+/// array is `name[]`. A wide object whose values all share their kinds
+/// (`FOLD_KEYS`) is one line listing its key names, with its values merged
+/// under `[]`. No
 /// depth limit; only the total size is capped, and a cut says how many
 /// lines it dropped. Non-JSON → `None`.
 pub fn shape(body: &str, limits: ShapeLimits) -> Option<Shape> {
@@ -64,19 +65,14 @@ struct Schema {
 }
 
 /// An object with more distinct keys than this, every value of the same
-/// kinds (null aside) and every key shaped like data (`is_data_key`), is a
-/// lookup table keyed by data — currency codes, dates, ids — not a record:
-/// listing each key would bury everything after it under thousands of
-/// lines. Keys named like fields (`views`, `likes`) keep a record listed,
-/// since folding would hide the names the model has to write.
-const MAP_KEYS: usize = 20;
+/// kinds (null aside), is folded: its key names go on one line and its
+/// values merge under one `[]`. Listed one per line, a lookup table keyed by
+/// data (currency codes, dates, ids) would bury everything after it; folded,
+/// a wide record still shows every name it can.
+const FOLD_KEYS: usize = 20;
 
-/// Past this many keys of the same kinds the object folds whatever its keys
-/// look like (user names as keys): no record has this many fields.
-const MAP_KEYS_ANY: usize = 200;
-
-/// The longest example key a `map` line shows before cutting it.
-const MAP_EXAMPLE_CHARS: usize = 40;
+/// The most bytes a folded object's key list takes before `… N more`.
+const FOLD_LIST_BYTES: usize = 400;
 
 #[derive(Default)]
 struct Object {
@@ -84,8 +80,8 @@ struct Object {
     seen: usize,
     fields: Vec<Field>,
     index: std::collections::HashMap<String, usize>,
-    /// Set by `collapse` in place of `fields` for a lookup table.
-    map: Option<KeyMap>,
+    /// Set by `collapse` in place of `fields` (`FOLD_KEYS`).
+    folded: Option<Folded>,
 }
 
 struct Field {
@@ -94,11 +90,10 @@ struct Field {
     schema: Schema,
 }
 
-/// A lookup table's fields folded into one description of every value.
-struct KeyMap {
-    keys: usize,
-    /// The first key, to show what the keys look like.
-    example: String,
+/// A wide object's fields folded into their names and one description of
+/// every value.
+struct Folded {
+    names: Vec<String>,
     values: Box<Schema>,
 }
 
@@ -120,7 +115,7 @@ impl Object {
 
     /// Never had a key.
     fn is_empty(&self) -> bool {
-        self.fields.is_empty() && self.map.is_none()
+        self.fields.is_empty() && self.folded.is_none()
     }
 
     /// Lists its keys one per line.
@@ -129,7 +124,7 @@ impl Object {
     }
 
     /// Folds `other` in as if its objects had been added here. Runs before
-    /// `collapse`, so neither side has a `map` yet.
+    /// `collapse`, so neither side is `folded` yet.
     fn absorb(&mut self, other: Object) {
         self.seen += other.seen;
         for field in other.fields {
@@ -147,20 +142,17 @@ impl Object {
             .map(|f| f.schema.kind_bits())
             .filter(|&bits| bits != 0);
         let first = kinds.next();
-        let keys = self.fields.len();
-        let table_sized = keys > MAP_KEYS_ANY
-            || keys > MAP_KEYS && self.fields.iter().all(|f| is_data_key(&f.name));
-        if table_sized && kinds.all(|bits| Some(bits) == first) {
-            let example = self.fields[0].name.clone();
+        if self.fields.len() > FOLD_KEYS && kinds.all(|bits| Some(bits) == first) {
+            let mut names = Vec::with_capacity(self.fields.len());
             let mut values = Schema::default();
             for field in std::mem::take(&mut self.fields) {
+                names.push(field.name);
                 values.absorb(field.schema);
             }
             self.index = Default::default();
             values.collapse();
-            self.map = Some(KeyMap {
-                keys,
-                example,
+            self.folded = Some(Folded {
+                names,
                 values: Box::new(values),
             });
             return;
@@ -171,13 +163,43 @@ impl Object {
     }
 }
 
-/// A key that is a value rather than a field name: not a plain identifier
-/// (`2026-01-01`, `123`, `en-US`), holding a digit (`K00`, hex ids), or a
-/// code in capitals (`USD`, `US`).
-fn is_data_key(key: &str) -> bool {
-    !crate::jq::path::is_identifier(key)
-        || key.bytes().any(|b| b.is_ascii_digit())
-        || key.len() >= 2 && key.bytes().all(|b| b.is_ascii_uppercase())
+/// A key as the outline writes it: bare when it is an identifier, quoted
+/// otherwise.
+fn key_label(name: &str) -> String {
+    if crate::jq::path::is_identifier(name) {
+        name.to_string()
+    } else {
+        serde_json::to_string(name).expect("strings always encode")
+    }
+}
+
+/// `a, "b c", d` in whole keys up to `FOLD_LIST_BYTES`, then `… N more`.
+/// The first key always shows, cut with `…` when it alone is too long.
+fn key_list(names: &[String]) -> String {
+    let mut out = String::new();
+    for (i, name) in names.iter().enumerate() {
+        let label = key_label(name);
+        if i == 0 {
+            if label.len() > FOLD_LIST_BYTES {
+                let mut end = FOLD_LIST_BYTES;
+                while !label.is_char_boundary(end) {
+                    end -= 1;
+                }
+                out.push_str(&label[..end]);
+                out.push('…');
+            } else {
+                out.push_str(&label);
+            }
+            continue;
+        }
+        if out.len() + 2 + label.len() > FOLD_LIST_BYTES {
+            out.push_str(&format!(", … {} more", names.len() - i));
+            break;
+        }
+        out.push_str(", ");
+        out.push_str(&label);
+    }
+    out
 }
 
 impl Schema {
@@ -231,8 +253,7 @@ impl Schema {
         }
     }
 
-    /// Turns every lookup table (`MAP_KEYS`) into a `KeyMap`, all the way
-    /// down.
+    /// Folds every wide object (`FOLD_KEYS`), all the way down.
     fn collapse(&mut self) {
         if let Some(object) = &mut self.object {
             object.collapse();
@@ -276,20 +297,16 @@ impl Schema {
 
     /// `object | array | string (url) | null`; a container that was always
     /// empty is spelled `{}` / `[]`, since nothing is listed under it, and a
-    /// lookup table `map, 2000 keys like "USD"`.
+    /// folded object `object, 2000 keys (AED, AFN, … 1998 more)`.
     fn kinds(&self) -> String {
         let mut kinds: Vec<String> = Vec::new();
         if let Some(object) = &self.object {
-            kinds.push(match &object.map {
-                Some(map) => {
-                    let mut example: String = map.example.chars().take(MAP_EXAMPLE_CHARS).collect();
-                    let cut = example.len() < map.example.len();
-                    example = serde_json::to_string(&example).expect("strings always encode");
-                    if cut {
-                        example.push('…');
-                    }
-                    format!("map, {} keys like {example}", map.keys)
-                }
+            kinds.push(match &object.folded {
+                Some(folded) => format!(
+                    "object, {} keys ({})",
+                    folded.names.len(),
+                    key_list(&folded.names)
+                ),
                 None if object.is_empty() => "{}".into(),
                 None => "object".into(),
             });
@@ -341,11 +358,7 @@ impl Outline {
 
     fn fields(&mut self, object: &Object, indent: usize, path: &mut Vec<Seg>) {
         for field in &object.fields {
-            let mut label = if crate::jq::path::is_identifier(&field.name) {
-                field.name.clone()
-            } else {
-                serde_json::to_string(&field.name).expect("strings always encode")
-            };
+            let mut label = key_label(&field.name);
             if field.seen < object.seen {
                 label.push('?');
             }
@@ -378,9 +391,11 @@ impl Outline {
         self.line(indent, format!("{label}: {}", schema.kinds()));
         let mut nested = false;
         if let Some(object) = &schema.object {
-            if let Some(map) = &object.map {
-                path.push(Seg::Each);
-                self.render("[]".into(), &map.values, indent + 1, path);
+            if let Some(folded) = &object.folded {
+                // The example reaches one value by its first key, the
+                // way the model reaches a named one.
+                path.push(Seg::Key(folded.names[0].clone()));
+                self.render("[]".into(), &folded.values, indent + 1, path);
                 path.pop();
                 nested = true;
             } else if object.is_record() {
@@ -612,59 +627,28 @@ data[]
         format!("{{{}}}", pairs.join(", "))
     }
 
+    /// `K00, K01, …` for the first `n` keys `keyed` makes.
+    fn key_names(n: usize) -> String {
+        (0..n).map(|i| format!("K{i:02}")).collect::<Vec<_>>().join(", ")
+    }
+
     #[test]
-    fn a_lookup_table_is_one_map_line_so_the_keys_after_it_still_show() {
+    fn a_wide_object_is_one_line_naming_its_keys_so_the_keys_after_it_still_show() {
         let body = format!(
             r#"{{"rates": {}, "data": [{{"id": 1}}]}}"#,
-            keyed(MAP_KEYS + 1, "1.5")
+            keyed(FOLD_KEYS + 1, "1.5")
         );
         assert_eq!(
             outline(&body),
-            "rates: map, 21 keys like \"K00\"\n  []: number\ndata[]\n  id: number"
+            format!(
+                "rates: object, 21 keys ({})\n  []: number\ndata[]\n  id: number",
+                key_names(21)
+            )
         );
     }
 
     #[test]
-    fn a_map_merges_its_values_and_null_does_not_stop_the_fold() {
-        let mut body = keyed(MAP_KEYS, r#"{"name": "x"}"#);
-        body.insert_str(
-            body.len() - 1,
-            r#", "L01": {"name": "y", "extra": 1}, "G01": null"#,
-        );
-        assert_eq!(
-            outline(&body),
-            ".: map, 22 keys like \"K00\"\n  []: object | null\n    name: string\n    extra?: number"
-        );
-    }
-
-    #[test]
-    fn element_keys_that_are_ids_fold_into_one_map() {
-        let elements: Vec<String> = (0..MAP_KEYS + 5)
-            .map(|i| format!(r#"{{"123e4567-e89b-12d3-a456-4266141740{i:02}": {{"n": {i}}}}}"#))
-            .collect();
-        let s = shape(&format!("[{}]", elements.join(",")), ShapeLimits::default()).unwrap();
-        assert_eq!(
-            s.outline,
-            ".[]: map, 25 keys like \"123e4567-e89b-12d3-a456-426614174000\"\n  []\n    n: number"
-        );
-        assert_eq!(s.example_path.as_deref(), Some(".[][].n"));
-    }
-
-    #[test]
-    fn a_record_stays_listed_key_by_key() {
-        // Exactly MAP_KEYS same-kind keys is still a record.
-        let lines = outline(&keyed(MAP_KEYS, "1"));
-        assert_eq!(lines.lines().count(), MAP_KEYS, "{lines}");
-        // Many keys of mixed kinds is a record, however many.
-        let mut body = keyed(MAP_KEYS + 10, "1");
-        body.insert_str(body.len() - 1, r#", "name": "x""#);
-        let lines = outline(&body);
-        assert_eq!(lines.lines().count(), MAP_KEYS + 11, "{lines}");
-        assert!(!lines.contains("map"), "{lines}");
-    }
-
-    #[test]
-    fn many_same_kind_fields_named_like_fields_stay_a_record() {
+    fn a_wide_record_keeps_every_field_name() {
         let names = [
             "views", "likes", "shares", "saves", "clicks", "opens", "replies", "reposts",
             "follows", "mentions", "quotes", "bookmarks", "impressions", "reach", "visits",
@@ -672,45 +656,88 @@ data[]
         ];
         let pairs: Vec<String> = names.iter().map(|n| format!(r#""{n}": 1"#)).collect();
         let body = format!(r#"{{"stats": {{{}}}}}"#, pairs.join(", "));
+        let s = shape(&body, ShapeLimits::default()).unwrap();
+        assert_eq!(
+            s.outline,
+            format!("stats: object, 22 keys ({})\n  []: number", names.join(", "))
+        );
+        // The example reaches one value by name, as the model will.
+        assert_eq!(s.example_path.as_deref(), Some(".stats.views"));
+    }
+
+    #[test]
+    fn a_folded_object_merges_its_values_and_null_does_not_stop_the_fold() {
+        let mut body = keyed(FOLD_KEYS, r#"{"name": "x"}"#);
+        body.insert_str(
+            body.len() - 1,
+            r#", "late": {"name": "y", "extra": 1}, "gone": null"#,
+        );
+        assert_eq!(
+            outline(&body),
+            format!(
+                ".: object, 22 keys ({}, late, gone)\n  []: object | null\n    name: string\n    extra?: number",
+                key_names(FOLD_KEYS)
+            )
+        );
+    }
+
+    #[test]
+    fn element_keys_that_are_ids_fold_into_one_line_of_quoted_keys() {
+        let id = |i: usize| format!("123e4567-e89b-12d3-a456-4266141740{i:02}");
+        let elements: Vec<String> = (0..FOLD_KEYS + 5)
+            .map(|i| format!(r#"{{"{}": {{"n": {i}}}}}"#, id(i)))
+            .collect();
+        let s = shape(&format!("[{}]", elements.join(",")), ShapeLimits::default()).unwrap();
+        // A quoted id is 38 bytes and each after the first 40: ten fit in 400.
+        let shown: Vec<String> = (0..10).map(|i| format!("\"{}\"", id(i))).collect();
+        assert_eq!(
+            s.outline,
+            format!(
+                ".[]: object, 25 keys ({}, … 15 more)\n  []\n    n: number",
+                shown.join(", ")
+            )
+        );
+        assert_eq!(
+            s.example_path,
+            Some(format!(r#".[]["{}"].n"#, id(0)))
+        );
+    }
+
+    #[test]
+    fn a_long_key_list_is_cut_at_a_whole_key_and_counts_the_rest() {
+        // K00 is 3 bytes and each next key 5 (`, K01`): 80 keys make 398.
+        assert_eq!(
+            outline(&keyed(300, "1")),
+            format!(".: object, 300 keys ({}, … 220 more)\n  []: number", key_names(80))
+        );
+    }
+
+    #[test]
+    fn a_first_key_longer_than_the_list_is_cut() {
+        let key = "9".repeat(FOLD_LIST_BYTES + 50);
+        let mut body = keyed(FOLD_KEYS, "true");
+        body.insert_str(1, &format!(r#""{key}": false, "#));
+        let label = format!("\"{key}\"");
+        assert_eq!(
+            outline(&body),
+            format!(
+                ".: object, 21 keys ({}…, … 20 more)\n  []: boolean",
+                &label[..FOLD_LIST_BYTES]
+            )
+        );
+    }
+
+    #[test]
+    fn a_record_stays_listed_key_by_key() {
+        // Exactly FOLD_KEYS same-kind keys is still a record.
+        let lines = outline(&keyed(FOLD_KEYS, "1"));
+        assert_eq!(lines.lines().count(), FOLD_KEYS, "{lines}");
+        // Many keys of mixed kinds is a record, however many.
+        let mut body = keyed(FOLD_KEYS + 10, "1");
+        body.insert_str(body.len() - 1, r#", "name": "x""#);
         let lines = outline(&body);
-        assert!(!lines.contains("map"), "{lines}");
-        assert!(lines.contains("\n  likes: number\n"), "{lines}");
-    }
-
-    #[test]
-    fn codes_dates_and_ids_as_keys_fold() {
-        let codes: Vec<String> = (0..MAP_KEYS + 1)
-            .map(|i| format!(r#""U{}D": 1.5"#, char::from(b'A' + i as u8)))
-            .collect();
-        assert_eq!(
-            outline(&format!("{{{}}}", codes.join(", "))),
-            ".: map, 21 keys like \"UAD\"\n  []: number"
-        );
-        let dates: Vec<String> = (1..=MAP_KEYS + 1)
-            .map(|d| format!(r#""2026-01-{d:02}": 3"#))
-            .collect();
-        assert!(
-            outline(&format!("{{{}}}", dates.join(", "))).starts_with(".: map, 21 keys"),
-            "date keys"
-        );
-    }
-
-    #[test]
-    fn a_huge_same_kind_object_folds_whatever_its_keys_look_like() {
-        let names: Vec<String> = (0..MAP_KEYS_ANY + 1)
-            .map(|i| {
-                // Lowercase words only: user names, not codes.
-                let word: String = format!("{i:03}")
-                    .bytes()
-                    .map(|d| char::from(b'a' + (d - b'0')))
-                    .collect();
-                format!(r#""user{word}": 1"#)
-            })
-            .collect();
-        assert_eq!(
-            outline(&format!("{{{}}}", names.join(", "))),
-            ".: map, 201 keys like \"useraaa\"\n  []: number"
-        );
+        assert_eq!(lines.lines().count(), FOLD_KEYS + 11, "{lines}");
+        assert!(!lines.contains("keys ("), "{lines}");
     }
 
     #[test]
@@ -723,18 +750,6 @@ data[]
         assert_eq!(s.example_path.as_deref(), Some(".data[].id"));
         let s = shape(r#"{"a": {"b": []}}"#, ShapeLimits::default()).unwrap();
         assert_eq!(s.example_path, None);
-    }
-
-    #[test]
-    fn a_long_example_key_is_cut() {
-        let key = "9".repeat(MAP_EXAMPLE_CHARS + 10);
-        let mut body = keyed(MAP_KEYS, "true");
-        body.insert_str(1, &format!(r#""{key}": false, "#));
-        let shown = format!("\"{}\"…", "9".repeat(MAP_EXAMPLE_CHARS));
-        assert_eq!(
-            outline(&body),
-            format!(".: map, 21 keys like {shown}\n  []: boolean")
-        );
     }
 
     #[test]
