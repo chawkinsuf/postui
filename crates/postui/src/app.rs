@@ -244,11 +244,8 @@ pub struct App {
     /// Sender for background tasks (e.g. in-flight requests) to push
     /// `Action`s back into the main loop without blocking on it.
     pub tx: UnboundedSender<Action>,
-    /// The outstanding "describe a filter" AI task, if any: its request
-    /// counter (matched against `JqAiFinished::request`) and join handle
-    /// (aborted by `CancelJqDescribe`, and by a new `RunJqDescribe`, which
-    /// kills the command; the prompt-building job is not part of it).
-    pub ai_task: Option<(u64, tokio::task::JoinHandle<()>)>,
+    /// The outstanding "describe a filter" AI task, if any.
+    pub ai_task: Option<AiTask>,
     /// Counts every AI request ever started, so a finished background task
     /// can be matched to the request it was started for (and only that
     /// one — a cancelled or superseded one is dropped).
@@ -1856,6 +1853,28 @@ impl App {
     #[cfg(any(test, feature = "test-util"))]
     pub fn set_clipboard_for_test(&mut self, c: crate::clipboard::Clipboard) {
         self.clipboard = c;
+    }
+}
+
+/// An in-flight "describe a filter" request: the command task, and the
+/// flag its separate prompt-building job reads.
+pub struct AiTask {
+    /// Matched against `JqAiFinished::request`.
+    pub request: u64,
+    /// The command task, for tests to await. `cancel` aborts it, which
+    /// kills the command.
+    pub handle: tokio::task::JoinHandle<()>,
+    /// Set by `cancel`: the prompt-building job, which is not part of the
+    /// task so a prompt still reaches the `--debug-ai` log, skips the
+    /// whole-body walk when nothing will read its result.
+    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl AiTask {
+    fn cancel(self) {
+        self.cancelled
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        self.handle.abort();
     }
 }
 
@@ -5086,8 +5105,8 @@ impl App {
                 // still reaches the `--debug-ai` log). Bumping the counter
                 // invalidates any reply still in flight — `JqAiFinished`
                 // compares against it, not against `ai_task` (cleared here).
-                if let Some((_, task)) = self.ai_task.take() {
-                    task.abort();
+                if let Some(task) = self.ai_task.take() {
+                    task.cancel();
                 }
                 self.ai_request += 1;
                 self.session.response.jq_bar_mut().ai_pending = false;
@@ -5159,8 +5178,8 @@ impl App {
                 // Aborting the superseded task kills its command (the child
                 // is `kill_on_drop`); its reply, if one slipped through, is
                 // dropped by request number (`JqAiFinished`).
-                if let Some((_, task)) = self.ai_task.take() {
-                    task.abort();
+                if let Some(task) = self.ai_task.take() {
+                    task.cancel();
                 }
                 self.ai_request += 1;
                 let request = self.ai_request;
@@ -5170,16 +5189,22 @@ impl App {
                 let cmd = self.ui_settings.ai_cmd.clone();
                 let log = self.ai_log.clone();
                 let tx = self.tx.clone();
+                let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                 // The outline walks the whole body and the log is file I/O:
                 // both on the blocking pool, so a large response or a slow
                 // disk never stalls the UI thread. This job is queued here
                 // and never aborted, so the prompt reaches the log even when
-                // the request is cancelled before its task first runs.
+                // the request is cancelled before its task first runs; with
+                // no log, a cancelled request skips the walk instead.
                 let built = {
                     let cmd = cmd.clone();
                     let log = log.clone();
                     let tx = tx.clone();
+                    let cancelled = std::sync::Arc::clone(&cancelled);
                     handle.spawn_blocking(move || {
+                        if log.is_none() && cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+                            return None;
+                        }
                         let shape = postui_core::jq::shape::shape(&body, Default::default())?;
                         let stdin = postui_core::jq::ai::prompt(&shape, &current, &sentence);
                         if let Some(path) = log {
@@ -5222,7 +5247,11 @@ impl App {
                         result,
                     });
                 });
-                self.ai_task = Some((request, task));
+                self.ai_task = Some(AiTask {
+                    request,
+                    handle: task,
+                    cancelled,
+                });
                 let bar = self.session.response.jq_bar_mut();
                 bar.ai_pending = true;
                 bar.ai_started = Instant::now();

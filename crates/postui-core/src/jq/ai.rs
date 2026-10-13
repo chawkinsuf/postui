@@ -20,13 +20,15 @@ array's elements, reached with `.a[]`. `name: object, N keys (k1, k2, … M more
 is an object with many keys whose values all share one structure: its keys are
 named on that line (`… M more` when they are too many to list; `k?` when some
 of the objects lack it), and the lines under its `[]` describe every value,
-merged. Reach one value with `.name.k1`, all of them with `.name[]`, the keys
-with `keys` or `to_entries`. Values are shown as their type name; `a | b`
-means both types occur. `name: {}` and `name: [] (always empty)` are
-containers that never held anything. Keys that are not plain identifiers are
-quoted. The request may name only the last key of a path: find that key in
-the structure and write its whole path from the root, through every array
-with `[]`. Never write a bare `.key` unless that key is at the top level.";
+merged. Reach one value with `.name.k1` (`.k1` when the folded object is the
+top level, `.`), all of them with `.name[]`, the keys with `keys` or
+`to_entries`. `… N more keys` ends a key list too long to show in full.
+Values are shown as their type name; `a | b` means both types occur.
+`name: {}` and `name: [] (always empty)` are containers that never held
+anything. Keys that are not plain identifiers are quoted. The request may
+name only the last key of a path: find that key in the structure and
+write its whole path from the root, through every array with `[]`. Never
+write a bare `.key` unless that key is at the top level.";
 
 /// The whole stdin text for the AI command: system section, structure,
 /// example path, current filter, and the user's sentence.
@@ -46,26 +48,33 @@ pub fn prompt(shape: &Shape, current_filter: &str, request: &str) -> String {
     )
 }
 
-/// Trims, skips ``` fence lines, and takes the first line that has
-/// something left once its backticks are unwrapped: a line that is only
-/// backticks falls through to the next.
+/// Trims, skips fence lines (``` with at most a language word), and takes
+/// the first line that has something left once its backticks are
+/// unwrapped: a line that is only backticks falls through to the next.
 pub fn extract_filter(reply: &str) -> Option<String> {
     reply
         .lines()
         .map(str::trim)
-        .filter(|l| !l.starts_with("```"))
+        .filter(|l| !is_fence(l))
         .map(inside_backticks)
         .find(|l| !l.is_empty())
 }
 
+/// ```` ``` ```` or ```` ```jq ````: a fence line, not a quoted filter.
+fn is_fence(line: &str) -> bool {
+    line.strip_prefix("```")
+        .is_some_and(|rest| rest.chars().all(|c| c.is_ascii_alphanumeric()))
+}
+
 /// What a line's backticks quote: `` `.a` and more `` → `.a`, so prose
-/// around a quoted filter is dropped. One filter quoted piecewise and
-/// joined by `|` (`` `.a` | `.b` ``) is put back together; several quoted
-/// spans with words between them are prose, and the first span wins. A line
-/// with no backticks, or nothing inside them (`.a``), comes back with the
-/// backticks trimmed. Backticks are not jq syntax, but they are legal
-/// inside a string literal (`test("`")`): only a backtick outside quotes
-/// counts.
+/// around a quoted filter is dropped. One filter quoted piecewise around
+/// its operators (`` `.a` | `.b` ``, `` `.x` // `.y` ``) is put back
+/// together; several quoted spans with words between or after them are
+/// prose, and the first span wins. A line with no backticks, or nothing inside them
+/// (`.a``), comes back with the backticks trimmed; a one-line
+/// ```` ```.a``` ```` unwraps like any other. Backticks are not jq syntax,
+/// but they are legal inside a string literal (`test("`")`): only a
+/// backtick outside quotes counts.
 fn inside_backticks(line: &str) -> String {
     let segments = split_on_backticks(line);
     // Even segments are between the quoted spans (odd); [0] is before the
@@ -76,7 +85,9 @@ fn inside_backticks(line: &str) -> String {
         return line.trim_matches('`').trim().to_string();
     }
     let gaps = segments.iter().skip(2).step_by(2).take(quoted.len() - 1);
-    if quoted.len() > 1 && gaps.clone().all(|g| g.trim() == "|") {
+    // Nothing after the last span: pieces of one filter, not a sentence.
+    let tail = segments.get(2 * quoted.len()).map_or("", |s| s.trim());
+    if quoted.len() > 1 && tail.is_empty() && gaps.clone().all(|g| is_operator(g.trim())) {
         return quoted
             .iter()
             .zip(gaps.map(|g| g.trim()).chain(std::iter::once("")))
@@ -91,6 +102,13 @@ fn inside_backticks(line: &str) -> String {
             });
     }
     first.to_string()
+}
+
+/// A jq binary operator on its own: what may sit between two quoted
+/// pieces of one filter.
+fn is_operator(gap: &str) -> bool {
+    matches!(gap, "and" | "or")
+        || (!gap.is_empty() && gap.chars().all(|c| "|/+-*<>=!,".contains(c)))
 }
 
 /// `s` cut at every run of backticks outside a jq string literal — one
@@ -255,6 +273,26 @@ mod tests {
             Some(".a".into()),
             "words between spans: prose, first span wins"
         );
+        assert_eq!(extract_filter("`.x` // `.y`"), Some(".x // .y".into()));
+        assert_eq!(
+            extract_filter("`.items | length` > `0`"),
+            Some(".items | length > 0".into())
+        );
+        assert_eq!(
+            extract_filter("`.a` and `.b`"),
+            Some(".a and .b".into()),
+            "a word operator with nothing else between the spans joins"
+        );
+    }
+
+    #[test]
+    fn a_one_line_triple_backtick_reply_is_unwrapped_but_fence_lines_are_skipped() {
+        assert_eq!(
+            extract_filter("```.data[] | .name```"),
+            Some(".data[] | .name".into())
+        );
+        assert_eq!(extract_filter("```jq\n.a\n```"), Some(".a".into()));
+        assert_eq!(extract_filter("```\n```"), None);
     }
 
     #[test]

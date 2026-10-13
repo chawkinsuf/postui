@@ -40,12 +40,7 @@ pub fn shape(body: &str, limits: ShapeLimits) -> Option<Shape> {
     schema.collapse();
     let mut outline = Outline::default();
     let mut path = Vec::new();
-    match &schema.object {
-        Some(object) if schema.is_only_object() && object.is_record() => {
-            outline.fields(object, 0, &mut path)
-        }
-        _ => outline.render(".".into(), &schema, 0, &mut path),
-    }
+    outline.render(None, &schema, 0, &mut path);
     let (text, kept) = cap(&outline.lines, limits.max_bytes);
     // The example must name keys the model can see: the deepest leaf among
     // the lines that survived the cut, first found on a tie.
@@ -86,6 +81,11 @@ const FOLD_KEYS: usize = 20;
 
 /// The most bytes a folded object's key list takes before `… N more`.
 const FOLD_LIST_BYTES: usize = 400;
+
+/// The most keys an object lists one per line before `… N more keys`: a
+/// wide object the fold rule passes over (values of several kinds) would
+/// otherwise push every key after it past the byte cap.
+const LIST_KEYS: usize = 100;
 
 #[derive(Default)]
 struct Object {
@@ -149,18 +149,18 @@ impl Object {
         }
     }
 
-    /// Whether the object values under this object's keys mostly share
-    /// their keys: on average, a key of the merged value is present in at
-    /// least half of the values. A table of records is (one odd extra field
-    /// does not break it); a set of config sections, each with its own
-    /// keys, is not — merged, nobody could tell `logging.level` from
-    /// `db.level`.
+    /// Whether the object values under this object's keys (or the objects
+    /// in its array values) mostly share their keys: on average, a key of
+    /// the merged value is present in at least half of the values. A table
+    /// of records is (one odd extra field does not break it); a set of
+    /// config sections, each with its own keys, is not — merged, nobody
+    /// could tell `logging.level` from `db.level`.
     fn values_share_keys(&self) -> bool {
         let mut union = std::collections::HashSet::new();
         let mut occurrences = 0;
         let mut values = 0;
         for field in &self.fields {
-            if let Some(object) = &field.schema.object {
+            if let Some(object) = field.schema.value_object() {
                 values += object.seen;
                 for inner in &object.fields {
                     union.insert(&*inner.name);
@@ -288,6 +288,13 @@ impl Schema {
         }
     }
 
+    /// The object here, or the one the array elements here are.
+    fn value_object(&self) -> Option<&Object> {
+        self.object
+            .as_ref()
+            .or_else(|| self.array.as_deref().and_then(|a| a.object.as_ref()))
+    }
+
     /// Strings of format `tag` were seen here: the format they all share,
     /// or `None` once two disagree.
     fn note_string(&mut self, tag: Option<&'static str>) {
@@ -298,10 +305,10 @@ impl Schema {
     }
 
     /// Folds every wide object (`FOLD_KEYS`), all the way down. A key that
-    /// is also a non-empty array keeps its object listed: folded values and
-    /// array elements would both sit under a `[]` line.
+    /// is also an array keeps its object listed: folded values and array
+    /// elements would both read as the `[]` line under it.
     fn collapse(&mut self) {
-        let may_fold = self.array.as_deref().is_none_or(Schema::is_empty);
+        let may_fold = self.array.is_none();
         if let Some(object) = &mut self.object {
             object.collapse(may_fold);
         }
@@ -404,19 +411,46 @@ impl Outline {
         }
     }
 
+    /// One line per key, up to `LIST_KEYS`, then a line counting the rest.
     fn fields(&mut self, object: &Object, indent: usize, path: &mut Vec<Seg>) {
-        for field in &object.fields {
+        for (i, field) in object.fields.iter().enumerate() {
+            if i == LIST_KEYS {
+                self.line(indent, format!("… {} more keys", object.fields.len() - i));
+                return;
+            }
             let mut label = key_label(&field.name);
             if field.seen < object.seen {
                 label.push('?');
             }
             path.push(Seg::Key(field.name.to_string()));
-            self.render(label, &field.schema, indent, path);
+            self.render(Some(label), &field.schema, indent, path);
             path.pop();
         }
     }
 
-    fn render(&mut self, label: String, schema: &Schema, indent: usize, path: &mut Vec<Seg>) {
+    /// `label` is `None` at the root: a root record lists its keys with no
+    /// header line, and anything else at the root is labelled `.`.
+    fn render(
+        &mut self,
+        label: Option<String>,
+        schema: &Schema,
+        indent: usize,
+        path: &mut Vec<Seg>,
+    ) {
+        if let Some(object) = &schema.object
+            && schema.is_only_object()
+            && object.is_record()
+        {
+            match label {
+                Some(label) => {
+                    self.line(indent, label);
+                    self.fields(object, indent + 1, path);
+                }
+                None => self.fields(object, indent, path),
+            }
+            return;
+        }
+        let label = label.unwrap_or_else(|| ".".into());
         if schema.is_only_array() {
             let elements = schema.array.as_deref().expect("only array");
             if elements.is_empty() {
@@ -424,16 +458,8 @@ impl Outline {
                 return;
             }
             path.push(Seg::Each);
-            self.render(format!("{label}[]"), elements, indent, path);
+            self.render(Some(format!("{label}[]")), elements, indent, path);
             path.pop();
-            return;
-        }
-        if let Some(object) = &schema.object
-            && schema.is_only_object()
-            && object.is_record()
-        {
-            self.line(indent, label);
-            self.fields(object, indent + 1, path);
             return;
         }
         self.line(indent, format!("{label}: {}", schema.kinds()));
@@ -443,7 +469,7 @@ impl Outline {
                 // The example reaches one value by its first key, the
                 // way the model reaches a named one.
                 path.push(Seg::Key(folded.names[0].0.to_string()));
-                self.render("[]".into(), &folded.values, indent + 1, path);
+                self.render(Some("[]".into()), &folded.values, indent + 1, path);
                 path.pop();
                 nested = true;
             } else if object.is_record() {
@@ -455,7 +481,7 @@ impl Outline {
             && !elements.is_empty()
         {
             path.push(Seg::Each);
-            self.render("[]".into(), elements, indent + 1, path);
+            self.render(Some("[]".into()), elements, indent + 1, path);
             path.pop();
             nested = true;
         }
@@ -858,6 +884,34 @@ data[]
         assert!(lines.starts_with(".[]\n  a: object | array\n    K00: number\n"), "{lines}");
         assert_eq!(lines.matches("[]: string").count(), 1, "{lines}");
         assert!(!lines.contains("keys ("), "{lines}");
+        // An always-empty array beside it is the same `[]` ambiguity.
+        let body = format!(r#"[{{"a": {}}}, {{"a": []}}]"#, keyed(FOLD_KEYS + 1, "1"));
+        let lines = outline(&body);
+        assert!(lines.starts_with(".[]\n  a: object | []\n    K00: number\n"), "{lines}");
+        assert!(!lines.contains("keys ("), "{lines}");
+    }
+
+    #[test]
+    fn sections_of_arrays_with_their_own_record_types_stay_listed() {
+        let sections: Vec<String> = (0..FOLD_KEYS + 1)
+            .map(|i| format!(r#""s{i:02}": [{{"a{i:02}": 1}}]"#))
+            .collect();
+        let lines = outline(&format!("{{{}}}", sections.join(", ")));
+        assert!(!lines.contains("keys ("), "{lines}");
+        assert!(lines.contains("s07[]\n  a07: number\n"), "{lines}");
+    }
+
+    #[test]
+    fn a_wide_object_of_mixed_kinds_lists_a_hundred_keys_then_counts_the_rest() {
+        // Mixed kinds, so the fold passes it over; the keys after it must
+        // still reach the model.
+        let pairs: Vec<String> = (0..LIST_KEYS + 50)
+            .map(|i| format!(r#""k{i:03}": {}"#, if i % 2 == 0 { "1" } else { "\"x\"" }))
+            .collect();
+        let body = format!(r#"{{"prices": {{{}}}, "total": 7}}"#, pairs.join(", "));
+        let lines = outline(&body);
+        assert_eq!(lines.lines().count(), 1 + LIST_KEYS + 1 + 1, "{lines}");
+        assert!(lines.contains("  k099: string\n  … 50 more keys\ntotal: number"), "{lines}");
     }
 
     #[test]

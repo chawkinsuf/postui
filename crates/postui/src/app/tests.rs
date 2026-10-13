@@ -24091,8 +24091,8 @@ async fn drain_ai(app: &mut App) -> Action {
     // The AI task is a tokio task; await its JoinHandle then read the action
     // it sent. Every jq run goes to the blocking pool too, so its finished
     // result may be queued ahead of the reply: apply anything else first.
-    let (_, handle) = app.ai_task.take().expect("an AI request is in flight");
-    handle.await.unwrap();
+    let task = app.ai_task.take().expect("an AI request is in flight");
+    task.handle.await.unwrap();
     loop {
         let action = app
             ._test_rx

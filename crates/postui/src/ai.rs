@@ -77,20 +77,10 @@ pub async fn run_command(cmd: String, stdin: String) -> Result<CommandOutput, St
     })
 }
 
-/// Where `--debug-ai` writes: `$XDG_STATE_HOME/postui/ai.log` (default
-/// `~/.local/state`) on every Unix — macOS too, like `config_dir` — and the
-/// local data directory elsewhere.
+/// Where `--debug-ai` writes: `ai.log` in the app's state directory
+/// (`postui_core::state_dir`).
 pub fn debug_log_path() -> Option<PathBuf> {
-    #[cfg(target_os = "macos")]
-    let dir = postui_core::xdg_app_dir("XDG_STATE_HOME", &[".local", "state"])?;
-    #[cfg(not(target_os = "macos"))]
-    let dir = {
-        let dirs = directories::BaseDirs::new()?;
-        dirs.state_dir()
-            .unwrap_or(dirs.data_local_dir())
-            .join(postui_core::APP_NAME)
-    };
-    Some(dir.join("ai.log"))
+    Some(postui_core::state_dir()?.join("ai.log"))
 }
 
 /// The first half of a `--debug-ai` log entry, written before the command
