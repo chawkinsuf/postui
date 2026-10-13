@@ -85,18 +85,21 @@ pub fn debug_log_path() -> Option<PathBuf> {
     Some(base.join("postui").join("ai.log"))
 }
 
-/// One `--debug-ai` log entry: when, the command, the whole prompt, what
-/// came back, and the filter that was taken from it.
-pub fn log_entry(
-    when: SystemTime,
-    cmd: &str,
-    prompt: &str,
-    outcome: &Result<CommandOutput, String>,
-) -> String {
+/// The first half of a `--debug-ai` log entry, written before the command
+/// runs so a reply that never comes (cancelled, superseded, hung) still
+/// leaves its prompt behind: when, the command, and the whole prompt.
+pub fn log_prompt(when: SystemTime, cmd: &str, prompt: &str) -> String {
     let mut out = format!("=== {}  {cmd}\n--- prompt\n{prompt}", utc_timestamp(when));
     if !prompt.ends_with('\n') {
         out.push('\n');
     }
+    out
+}
+
+/// The second half, appended when the command finishes: what came back,
+/// and the filter that was taken from it.
+pub fn log_reply(outcome: &Result<CommandOutput, String>) -> String {
+    let mut out = String::new();
     match outcome {
         Ok(output) => {
             for (name, text) in [("stdout", &output.stdout), ("stderr", &output.stderr)] {
@@ -124,7 +127,7 @@ pub fn log_entry(
     out
 }
 
-/// `2026-10-13T16:44:58Z`.
+/// `2026-10-14T16:44:58Z`.
 fn utc_timestamp(when: SystemTime) -> String {
     let secs = when
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -203,12 +206,8 @@ mod tests {
             stdout: "`.a | length`\n".into(),
             stderr: String::new(),
         });
-        let entry = log_entry(
-            SystemTime::UNIX_EPOCH,
-            "claude -p",
-            "PROMPT\nLINES\n",
-            &outcome,
-        );
+        let entry = log_prompt(SystemTime::UNIX_EPOCH, "claude -p", "PROMPT\nLINES\n")
+            + &log_reply(&outcome);
         assert_eq!(
             entry,
             "\
@@ -234,13 +233,21 @@ LINES
             stdout: String::new(),
             stderr: "not logged in".into(),
         });
-        let entry = log_entry(SystemTime::UNIX_EPOCH, "c", "p", &failed);
+        let entry = log_reply(&failed);
         assert!(
             entry.contains("--- stdout: (empty)\n--- stderr\nnot logged in\n--- exit status: 1\n"),
             "{entry}"
         );
         assert!(!entry.contains("filter:"), "{entry}");
-        let entry = log_entry(SystemTime::UNIX_EPOCH, "c", "p", &Err("no sh".into()));
+        let entry = log_reply(&Err("no sh".into()));
         assert!(entry.contains("--- could not run: no sh\n"), "{entry}");
+    }
+
+    #[test]
+    fn the_prompt_half_ends_in_a_newline_on_its_own() {
+        assert_eq!(
+            log_prompt(SystemTime::UNIX_EPOCH, "c", "p"),
+            "=== 1970-01-01T00:00:00Z  c\n--- prompt\np\n"
+        );
     }
 }

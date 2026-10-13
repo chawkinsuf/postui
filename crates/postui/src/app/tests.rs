@@ -24184,6 +24184,26 @@ async fn debug_ai_logs_the_prompt_and_the_raw_reply() {
 }
 
 #[tokio::test]
+async fn debug_ai_logs_the_prompt_of_a_request_that_is_cancelled() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("ai.log");
+    let mut app = App::new_for_test();
+    ready_response(&mut app, JQ_BODY);
+    app.ai_log = Some(log.clone());
+    stub_ai(&mut app, "sleep 30");
+    app.update(Action::RunJqDescribe("just the total".into()));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !std::fs::read_to_string(&log).is_ok_and(|t| t.contains("Request: just the total")) {
+        assert!(Instant::now() < deadline, "the prompt is logged before the reply");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    app.update(Action::CancelJqDescribe);
+    let text = std::fs::read_to_string(&log).unwrap();
+    assert!(text.contains("--- prompt\nYou write jq 1.7 filters"), "{text}");
+    assert!(!text.contains("--- stdout"), "no reply came: {text}");
+}
+
+#[tokio::test]
 async fn a_fenced_reply_is_unwrapped_and_a_bad_reply_lands_with_its_error() {
     let mut app = App::new_for_test();
     ready_response(&mut app, JQ_BODY);

@@ -5142,20 +5142,28 @@ impl App {
                 let tx = self.tx.clone();
                 let log = self.ai_log.clone();
                 let task = handle.spawn(async move {
-                    let outcome = crate::ai::run_command(cmd.clone(), stdin.clone()).await;
-                    if let Some(path) = log {
-                        let entry = crate::ai::log_entry(
+                    let append = |text: String| {
+                        let path = log.as_ref()?;
+                        let e = crate::hostfs::append_log(path, &text).err()?;
+                        let _ = tx.send(Action::ShowToast(
+                            format!("could not write {}: {e}", path.display()),
+                            ToastKind::Warning,
+                        ));
+                        Some(())
+                    };
+                    // The prompt goes in before the command runs: a reply
+                    // that never comes (cancelled, superseded) still leaves
+                    // its prompt in the log.
+                    if log.is_some() {
+                        append(crate::ai::log_prompt(
                             std::time::SystemTime::now(),
                             &cmd,
                             &stdin,
-                            &outcome,
-                        );
-                        if let Err(e) = crate::hostfs::append_log(&path, &entry) {
-                            let _ = tx.send(Action::ShowToast(
-                                format!("could not write {}: {e}", path.display()),
-                                ToastKind::Warning,
-                            ));
-                        }
+                        ));
+                    }
+                    let outcome = crate::ai::run_command(cmd, stdin).await;
+                    if log.is_some() {
+                        append(crate::ai::log_reply(&outcome));
                     }
                     let result = outcome.and_then(crate::ai::CommandOutput::into_reply);
                     let _ = tx.send(Action::JqAiFinished {

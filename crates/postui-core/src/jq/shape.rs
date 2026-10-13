@@ -281,7 +281,10 @@ fn cap(lines: &[String], max_bytes: usize) -> String {
     for (i, line) in lines.iter().enumerate() {
         let sep = usize::from(!out.is_empty());
         if out.len() + sep + line.len() > max_bytes {
-            out.push_str(&format!("\n… {} more lines not shown", lines.len() - i));
+            if sep == 1 {
+                out.push('\n');
+            }
+            out.push_str(&format!("… {} more lines not shown", lines.len() - i));
             return out;
         }
         if sep == 1 {
@@ -453,6 +456,12 @@ data[]
             s.outline,
             "alpha: number\nbeta: number\n… 2 more lines not shown"
         );
+    }
+
+    #[test]
+    fn a_first_line_past_the_cap_leaves_only_the_count_with_no_blank_line() {
+        let s = shape(r#"{"alpha": 1, "beta": 2}"#, ShapeLimits { max_bytes: 5 }).unwrap();
+        assert_eq!(s.outline, "… 2 more lines not shown");
     }
 
     #[test]
