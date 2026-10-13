@@ -5153,6 +5153,13 @@ impl App {
                 let Some(view) = self.session.response.view() else {
                     return true;
                 };
+                // The gate above passes a body whose tree is still being
+                // parsed; it may yet turn out not to be JSON.
+                if view.parsing {
+                    self.toasts
+                        .push("The response is still being parsed", ToastKind::Info);
+                    return true;
+                }
                 // No ambient runtime happens only in a plain `#[test]` that
                 // reaches an already-confirmed `ConfirmJqDescribe` — the
                 // real main loop, and every async test, always has one.
@@ -5214,8 +5221,8 @@ impl App {
                 };
                 let task = handle.spawn(async move {
                     let result = match built.await {
-                        // `jq_blocked_reason` only lets a JSON view get this
-                        // far, so this is a fallback, not a path.
+                        // Gated on a parsed tree, so this is a fallback for a
+                        // body the tree builder and jaq disagree on.
                         Ok(None) => Err("The response is not JSON".to_string()),
                         Ok(Some(stdin)) => {
                             let outcome = crate::ai::run_command(cmd, stdin).await;

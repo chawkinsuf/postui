@@ -4,7 +4,6 @@
 use crate::jq::JqDocument;
 use crate::jq::path::key_label;
 use jaq_json::Val;
-use serde_json::Value;
 use std::rc::Rc;
 
 #[derive(Debug, Clone, Copy)]
@@ -36,14 +35,12 @@ pub struct Shape {
 /// lines past the cap are counted out, and top-level keys always show
 /// (`Outline`). Non-JSON → `None`.
 pub fn shape(body: &str, limits: ShapeLimits) -> Option<Shape> {
-    let value: Value = serde_json::from_str(body).ok()?;
-    let mut schema = Schema::default();
-    schema.add(&value);
-    Some(build(schema, limits))
+    let doc = JqDocument::parse(body).ok()?;
+    Some(shape_of(&doc, limits))
 }
 
-/// `shape` of a body the jq engine already parsed: no second parse, no
-/// copy of the text.
+/// `shape` of a body the jq engine already parsed — the one walker; the
+/// text form parses with the same engine first.
 pub fn shape_of(doc: &JqDocument, limits: ShapeLimits) -> Shape {
     let mut schema = Schema::default();
     schema.add_val(&doc.0);
@@ -257,33 +254,8 @@ fn key_list(names: &[(Rc<str>, bool)]) -> String {
 }
 
 impl Schema {
-    fn add(&mut self, value: &Value) {
-        match value {
-            Value::Null => self.null = true,
-            Value::Bool(_) => self.boolean = true,
-            Value::Number(_) => self.number = true,
-            Value::String(s) => self.note_string(string_tag(s)),
-            Value::Array(items) => {
-                let elements = self.array.get_or_insert_default();
-                for item in items {
-                    elements.add(item);
-                }
-            }
-            Value::Object(map) => {
-                let object = self.object.get_or_insert_default();
-                object.seen += 1;
-                for (key, value) in map {
-                    let at = object.slot(key);
-                    let field = &mut object.fields[at];
-                    field.seen += 1;
-                    field.schema.add(value);
-                }
-            }
-        }
-    }
-
-    /// `add`, for a value jaq parsed. A non-string key cannot come out of
-    /// JSON; one is skipped.
+    /// Merges one value in. A non-string key cannot come out of JSON; one
+    /// is skipped.
     fn add_val(&mut self, value: &Val) {
         match value {
             Val::Null => self.null = true,
@@ -856,15 +828,6 @@ data[]
         let body = format!("[{{{}}}, {{{}}}]", sections.join(", "), sections.join(", "));
         let lines = outline(&body);
         assert!(!lines.contains("keys ("), "{lines}");
-    }
-
-    #[test]
-    fn a_parsed_document_shapes_the_same_as_its_text() {
-        let body = r#"{"data": [{"id": 1, "tags": ["a"], "when": "2026-01-02T00:00:00Z"}, {"id": 2, "extra": null}], "none": {}}"#;
-        let from_text = shape(body, ShapeLimits::default()).unwrap();
-        let doc = JqDocument::parse(body).unwrap();
-        assert_eq!(shape_of(&doc, ShapeLimits::default()), from_text);
-        assert!(from_text.outline.contains("when?: string (date-time)"), "{}", from_text.outline);
     }
 
     #[test]

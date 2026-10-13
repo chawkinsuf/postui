@@ -6,11 +6,13 @@ use std::process::Stdio;
 use std::time::SystemTime;
 use tokio::io::AsyncWriteExt as _;
 
-/// Whether `cmd`'s first word resolves on `PATH` (or is an existing path).
+/// Whether `cmd`'s program (`program_name`) resolves on `PATH` (or is an
+/// existing path).
 pub fn program_available(cmd: &str) -> bool {
-    let Some(program) = cmd.split_whitespace().next() else {
+    let program = program_name(cmd);
+    if program.is_empty() {
         return false;
-    };
+    }
     if program.contains('/') {
         return std::path::Path::new(program).is_file();
     }
@@ -19,9 +21,54 @@ pub fn program_available(cmd: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// The first word of `cmd` — the program name, for toasts and menu hints.
+/// The program in `cmd`: its first word past any leading `NAME=value`
+/// environment assignments — for toasts, menu hints, and the log, which
+/// never sees the rest of the command (a key may be in it).
 pub fn program_name(cmd: &str) -> &str {
-    cmd.split_whitespace().next().unwrap_or("")
+    shell_words(cmd)
+        .into_iter()
+        .find(|word| !is_assignment(word))
+        .unwrap_or("")
+}
+
+/// `cmd` split at whitespace the way a shell sees words: a quoted stretch
+/// (`"a b"`, `'a b'`) stays inside its word, so `KEY="sk abc" llm` is two
+/// words and `llm` is the program.
+fn shell_words(cmd: &str) -> Vec<&str> {
+    let mut words = Vec::new();
+    let mut start = None;
+    let mut quote = None;
+    for (i, c) in cmd.char_indices() {
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => {}
+            None if c == '"' || c == '\'' => {
+                quote = Some(c);
+                start.get_or_insert(i);
+            }
+            None if c.is_whitespace() => {
+                if let Some(s) = start.take() {
+                    words.push(&cmd[s..i]);
+                }
+            }
+            None => {
+                start.get_or_insert(i);
+            }
+        }
+    }
+    if let Some(s) = start {
+        words.push(&cmd[s..]);
+    }
+    words
+}
+
+/// `NAME=…` as a shell reads it: an identifier, then `=`.
+fn is_assignment(word: &str) -> bool {
+    word.split_once('=').is_some_and(|(name, _)| {
+        !name.is_empty()
+            && !name.starts_with(|c: char| c.is_ascii_digit())
+            && name.chars().all(|c| c == '_' || c.is_ascii_alphanumeric())
+    })
 }
 
 /// Everything a finished command left behind.
@@ -102,55 +149,15 @@ pub fn log_not_json(request: u64, when: SystemTime, cmd: &str) -> String {
     format!("{}--- not JSON: nothing sent\n\n", entry_header(request, when, cmd))
 }
 
-/// `=== #N <when>  <cmd>\n`, the command with any `NAME=value` word's
-/// value hidden: an inline environment assignment may carry a key, and the
-/// log is plain text.
+/// `=== #N <when>  <program>\n`. Only the program's name: the rest of the
+/// command may carry a key (`KEY=… llm`, `llm --key …`), the log is plain
+/// text, and the full command is in config.toml anyway.
 fn entry_header(request: u64, when: SystemTime, cmd: &str) -> String {
-    let shown: Vec<String> = shell_words(cmd)
-        .into_iter()
-        .map(|word| match word.split_once('=') {
-            Some((name, _))
-                if !name.is_empty()
-                    && !name.starts_with(|c: char| c.is_ascii_digit())
-                    && name.chars().all(|c| c == '_' || c.is_ascii_alphanumeric()) =>
-            {
-                format!("{name}=…")
-            }
-            _ => word.to_string(),
-        })
-        .collect();
-    format!("=== #{request} {}  {}\n", utc_timestamp(when), shown.join(" "))
-}
-
-/// `cmd` split at whitespace the way a shell would see words: a quoted
-/// stretch (`"sk-abc def"`, `'a b'`) stays one word, so a secret with a
-/// space in it is redacted whole.
-fn shell_words(cmd: &str) -> Vec<&str> {
-    let mut words = Vec::new();
-    let mut start = None;
-    let mut quote = None;
-    for (i, c) in cmd.char_indices() {
-        match quote {
-            Some(q) if c == q => quote = None,
-            Some(_) => {}
-            None if c == '"' || c == '\'' => {
-                quote = Some(c);
-                start.get_or_insert(i);
-            }
-            None if c.is_whitespace() => {
-                if let Some(s) = start.take() {
-                    words.push(&cmd[s..i]);
-                }
-            }
-            None => {
-                start.get_or_insert(i);
-            }
-        }
-    }
-    if let Some(s) = start {
-        words.push(&cmd[s..]);
-    }
-    words
+    format!(
+        "=== #{request} {}  {}\n",
+        utc_timestamp(when),
+        program_name(cmd)
+    )
 }
 
 /// The second half, appended when the command finishes: what came back,
@@ -215,11 +222,15 @@ mod tests {
     use std::time::Duration;
 
     #[test]
-    fn program_available_looks_at_the_first_word() {
+    fn program_available_looks_at_the_program_word() {
         assert!(program_available("sh -c 'echo hi'"));
         assert!(program_available("/bin/sh"));
+        assert!(program_available("FOO=1 BAR_2=x sh"), "assignments are skipped");
         assert!(!program_available("definitely-not-a-program-42 --flag"));
         assert!(!program_available(""));
+        assert!(!program_available("FOO=1"), "nothing but assignments");
+        assert_eq!(program_name("A=1 llm --key k"), "llm");
+        assert_eq!(program_name("1X=1 llm"), "1X=1", "not an identifier: a program");
     }
 
     #[tokio::test]
@@ -268,7 +279,7 @@ mod tests {
         assert_eq!(
             entry,
             "\
-=== #7 1970-01-01T00:00:00Z  claude -p
+=== #7 1970-01-01T00:00:00Z  claude
 --- prompt
 PROMPT
 LINES
@@ -305,17 +316,19 @@ LINES
     }
 
     #[test]
-    fn inline_environment_values_are_hidden_in_the_log_but_flags_are_not() {
-        let entry = log_prompt(1, SystemTime::UNIX_EPOCH, "API_KEY=sk-123 llm --model=gpt", "p");
-        assert!(entry.starts_with("=== #1 1970-01-01T00:00:00Z  API_KEY=… llm --model=gpt\n"), "{entry}");
-        assert!(!entry.contains("sk-123"), "{entry}");
-        let entry = log_prompt(2, SystemTime::UNIX_EPOCH, "KEY=\"sk-abc def\"\tllm 'x y'", "p");
-        assert!(entry.starts_with("=== #2 1970-01-01T00:00:00Z  KEY=… llm 'x y'\n"), "{entry}");
-        assert!(!entry.contains("def"), "a quoted value with a space is one word: {entry}");
+    fn the_log_names_the_program_and_nothing_else_of_the_command() {
+        let entry = log_prompt(
+            1,
+            SystemTime::UNIX_EPOCH,
+            "API_KEY=\"sk-abc def\" llm --key sk-9 -m gpt",
+            "p",
+        );
+        assert!(entry.starts_with("=== #1 1970-01-01T00:00:00Z  llm\n"), "{entry}");
+        assert!(!entry.contains("sk-"), "{entry}");
         let entry = log_not_json(4, SystemTime::UNIX_EPOCH, "claude -p");
         assert_eq!(
             entry,
-            "=== #4 1970-01-01T00:00:00Z  claude -p\n--- not JSON: nothing sent\n\n"
+            "=== #4 1970-01-01T00:00:00Z  claude\n--- not JSON: nothing sent\n\n"
         );
     }
 
