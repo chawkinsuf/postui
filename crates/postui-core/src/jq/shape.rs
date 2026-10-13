@@ -45,9 +45,18 @@ pub fn shape(body: &str, limits: ShapeLimits) -> Option<Shape> {
         }
         _ => outline.render(".".into(), &schema, 0, &mut path),
     }
+    let (text, kept) = cap(&outline.lines, limits.max_bytes);
+    // The example must name keys the model can see: the deepest leaf among
+    // the lines that survived the cut, first found on a tie.
+    let example_path = outline
+        .leaves
+        .iter()
+        .filter(|(line, _)| *line < kept)
+        .max_by(|(la, a), (lb, b)| a.len().cmp(&b.len()).then(lb.cmp(la)))
+        .map(|(_, segs)| jq_path(segs));
     Some(Shape {
-        outline: cap(&outline.lines, limits.max_bytes),
-        example_path: outline.deepest.map(|segs| jq_path(&segs)),
+        outline: text,
+        example_path,
     })
 }
 
@@ -66,7 +75,8 @@ struct Schema {
 }
 
 /// An object with more distinct keys than this, every value of the same
-/// kinds (null aside), is folded: its key names go on one line and its
+/// kinds (null aside) and, for object values, mostly the same keys
+/// (`values_share_keys`), is folded: its key names go on one line and its
 /// values merge under one `[]`. Listed one per line, a lookup table keyed by
 /// data (currency codes, dates, ids) would bury everything after it; folded,
 /// a wide record still shows every name it can.
@@ -135,6 +145,28 @@ impl Object {
         }
     }
 
+    /// Whether the object values under this object's keys mostly share
+    /// their keys: on average, a key of the merged value is present in at
+    /// least half of the values. A table of records is (one odd extra field
+    /// does not break it); a set of config sections, each with its own
+    /// keys, is not — merged, nobody could tell `logging.level` from
+    /// `db.level`.
+    fn values_share_keys(&self) -> bool {
+        let mut union = std::collections::HashSet::new();
+        let mut occurrences = 0;
+        let mut values = 0;
+        for field in &self.fields {
+            if let Some(object) = &field.schema.object {
+                values += object.seen;
+                for inner in &object.fields {
+                    union.insert(inner.name.as_str());
+                    occurrences += inner.seen;
+                }
+            }
+        }
+        2 * occurrences >= union.len() * values
+    }
+
     fn collapse(&mut self) {
         // A value that is only ever null says nothing about the kind.
         let mut kinds = self
@@ -143,7 +175,10 @@ impl Object {
             .map(|f| f.schema.kind_bits())
             .filter(|&bits| bits != 0);
         let first = kinds.next();
-        if self.fields.len() > FOLD_KEYS && kinds.all(|bits| Some(bits) == first) {
+        if self.fields.len() > FOLD_KEYS
+            && kinds.all(|bits| Some(bits) == first)
+            && self.values_share_keys()
+        {
             let mut names = Vec::with_capacity(self.fields.len());
             let mut values = Schema::default();
             for field in std::mem::take(&mut self.fields) {
@@ -332,8 +367,8 @@ enum Seg {
 #[derive(Default)]
 struct Outline {
     lines: Vec<String>,
-    /// The longest path to a leaf, first found on a tie.
-    deepest: Option<Vec<Seg>>,
+    /// Every leaf's path, with the index of the line that shows it.
+    leaves: Vec<(usize, Vec<Seg>)>,
 }
 
 impl Outline {
@@ -341,9 +376,10 @@ impl Outline {
         self.lines.push(format!("{}{text}", "  ".repeat(indent)));
     }
 
+    /// Records the leaf the last line pushed describes.
     fn leaf(&mut self, path: &[Seg]) {
-        if !path.is_empty() && self.deepest.as_ref().is_none_or(|d| path.len() > d.len()) {
-            self.deepest = Some(path.to_vec());
+        if !path.is_empty() {
+            self.leaves.push((self.lines.len() - 1, path.to_vec()));
         }
     }
 
@@ -423,8 +459,9 @@ fn jq_path(segs: &[Seg]) -> String {
     out
 }
 
-/// Whole lines up to `max_bytes`, then a line counting the rest.
-fn cap(lines: &[String], max_bytes: usize) -> String {
+/// Whole lines up to `max_bytes`, then a line counting the rest; and how
+/// many lines were kept.
+fn cap(lines: &[String], max_bytes: usize) -> (String, usize) {
     let mut out = String::new();
     for (i, line) in lines.iter().enumerate() {
         let sep = usize::from(!out.is_empty());
@@ -433,14 +470,14 @@ fn cap(lines: &[String], max_bytes: usize) -> String {
                 out.push('\n');
             }
             out.push_str(&format!("… {} more lines not shown", lines.len() - i));
-            return out;
+            return (out, i);
         }
         if sep == 1 {
             out.push('\n');
         }
         out.push_str(line);
     }
-    out
+    (out, lines.len())
 }
 
 fn string_tag(s: &str) -> Option<&'static str> {
@@ -716,6 +753,39 @@ data[]
                 &label[..FOLD_LIST_BYTES]
             )
         );
+    }
+
+    #[test]
+    fn sections_with_their_own_keys_stay_listed_so_each_field_keeps_its_owner() {
+        // 21 config sections, all objects, no two sharing a key.
+        let sections: Vec<String> = (0..FOLD_KEYS + 1)
+            .map(|i| format!(r#""s{i:02}": {{"a{i:02}": 1, "b{i:02}": "x"}}"#))
+            .collect();
+        let lines = outline(&format!("{{{}}}", sections.join(", ")));
+        assert!(!lines.contains("keys ("), "{lines}");
+        assert!(lines.contains("s07\n  a07: number\n  b07: string\n"), "{lines}");
+    }
+
+    #[test]
+    fn the_example_path_names_a_leaf_the_cut_outline_still_shows() {
+        // A wide first record (mixed kinds, so it is not folded) fills the
+        // budget; the deepest leaf is after it.
+        let body = format!(
+            r#"{{"wide": {{{}}}, "z": {{"a": {{"b": {{"c": 1}}}}}}}}"#,
+            (0..60)
+                .map(|i| format!(
+                    r#""key_number_{i:02}": {}"#,
+                    if i % 2 == 0 { "\"v\"" } else { "1" }
+                ))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        let s = shape(&body, ShapeLimits { max_bytes: 600 }).unwrap();
+        assert!(s.outline.ends_with("more lines not shown"), "{}", s.outline);
+        assert!(!s.outline.contains("\nz\n"), "{}", s.outline);
+        assert_eq!(s.example_path.as_deref(), Some(".wide.key_number_00"));
+        let s = shape(&body, ShapeLimits::default()).unwrap();
+        assert_eq!(s.example_path.as_deref(), Some(".z.a.b.c"));
     }
 
     #[test]

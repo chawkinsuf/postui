@@ -246,8 +246,8 @@ pub struct App {
     pub tx: UnboundedSender<Action>,
     /// The outstanding "describe a filter" AI task, if any: its request
     /// counter (matched against `JqAiFinished::request`) and join handle
-    /// (for tests to await; `CancelJqDescribe` and a new `RunJqDescribe`
-    /// drop it and let the task run out, never abort it).
+    /// (aborted by `CancelJqDescribe`, and by a new `RunJqDescribe`, which
+    /// kills the command; the prompt-building job is not part of it).
     pub ai_task: Option<(u64, tokio::task::JoinHandle<()>)>,
     /// Counts every AI request ever started, so a finished background task
     /// can be matched to the request it was started for (and only that
@@ -1856,6 +1856,17 @@ impl App {
     #[cfg(any(test, feature = "test-util"))]
     pub fn set_clipboard_for_test(&mut self, c: crate::clipboard::Clipboard) {
         self.clipboard = c;
+    }
+}
+
+/// Appends to the `--debug-ai` log from a background job, and tells the
+/// main loop (as a warning toast) when the write fails.
+fn append_log_or_toast(path: &std::path::Path, text: &str, tx: &UnboundedSender<Action>) {
+    if let Err(e) = crate::hostfs::append_log(path, text) {
+        let _ = tx.send(Action::ShowToast(
+            format!("could not write {}: {e}", path.display()),
+            ToastKind::Warning,
+        ));
     }
 }
 
@@ -5049,11 +5060,13 @@ impl App {
                 true
             }
             Action::CancelJqDescribe => {
-                // The task runs out on its own (so a prompt it is still
-                // building reaches the `--debug-ai` log); bumping the counter
-                // invalidates its reply — `JqAiFinished` compares against
-                // this counter, not against `ai_task` (cleared here).
-                self.ai_task = None;
+                // Kills the command (the prompt-building job is separate and
+                // still reaches the `--debug-ai` log). Bumping the counter
+                // invalidates any reply still in flight — `JqAiFinished`
+                // compares against it, not against `ai_task` (cleared here).
+                if let Some((_, task)) = self.ai_task.take() {
+                    task.abort();
+                }
                 self.ai_request += 1;
                 self.session.response.jq_bar_mut().ai_pending = false;
                 true
@@ -5121,10 +5134,12 @@ impl App {
                 let Ok(handle) = tokio::runtime::Handle::try_current() else {
                     return true;
                 };
-                // A superseded task is left to run out, never aborted: its
-                // reply is dropped by request number (`JqAiFinished`), and
-                // the prompt it may still be building reaches the log.
-                self.ai_task = None;
+                // Aborting the superseded task kills its command (the child
+                // is `kill_on_drop`); its reply, if one slipped through, is
+                // dropped by request number (`JqAiFinished`).
+                if let Some((_, task)) = self.ai_task.take() {
+                    task.abort();
+                }
                 self.ai_request += 1;
                 let request = self.ai_request;
                 let generation = view.generation;
@@ -5133,45 +5148,35 @@ impl App {
                 let cmd = self.ui_settings.ai_cmd.clone();
                 let log = self.ai_log.clone();
                 let tx = self.tx.clone();
+                // The outline walks the whole body and the log is file I/O:
+                // both on the blocking pool, so a large response or a slow
+                // disk never stalls the UI thread. This job is queued here
+                // and never aborted, so the prompt reaches the log even when
+                // the request is cancelled before its task first runs.
+                let built = {
+                    let cmd = cmd.clone();
+                    let log = log.clone();
+                    let tx = tx.clone();
+                    handle.spawn_blocking(move || {
+                        let shape = postui_core::jq::shape::shape(&body, Default::default())?;
+                        let stdin = postui_core::jq::ai::prompt(&shape, &current, &sentence);
+                        if let Some(path) = log {
+                            let when = std::time::SystemTime::now();
+                            let text = crate::ai::log_prompt(request, when, &cmd, &stdin);
+                            append_log_or_toast(&path, &text, &tx);
+                        }
+                        Some(stdin)
+                    })
+                };
                 let task = handle.spawn(async move {
-                    // The outline walks the whole body and the log is file
-                    // I/O: both on the blocking pool, so a large response or
-                    // a slow disk never stalls the UI thread.
-                    let built = {
-                        let cmd = cmd.clone();
-                        let log = log.clone();
-                        let tx = tx.clone();
-                        tokio::task::spawn_blocking(move || {
-                            let shape =
-                                postui_core::jq::shape::shape(&body, Default::default())?;
-                            let stdin = postui_core::jq::ai::prompt(&shape, &current, &sentence);
-                            if let Some(path) = log {
-                                let when = std::time::SystemTime::now();
-                                let text = crate::ai::log_prompt(request, when, &cmd, &stdin);
-                                if let Err(e) = crate::hostfs::append_log(&path, &text) {
-                                    let _ = tx.send(Action::ShowToast(
-                                        format!("could not write {}: {e}", path.display()),
-                                        ToastKind::Warning,
-                                    ));
-                                }
-                            }
-                            Some(stdin)
-                        })
-                        .await
-                    };
-                    let result = match built {
+                    let result = match built.await {
                         Ok(Some(stdin)) => {
                             let outcome = crate::ai::run_command(cmd, stdin).await;
                             if let Some(path) = log {
                                 let text = crate::ai::log_reply(request, &outcome);
                                 let tx = tx.clone();
                                 let _ = tokio::task::spawn_blocking(move || {
-                                    if let Err(e) = crate::hostfs::append_log(&path, &text) {
-                                        let _ = tx.send(Action::ShowToast(
-                                            format!("could not write {}: {e}", path.display()),
-                                            ToastKind::Warning,
-                                        ));
-                                    }
+                                    append_log_or_toast(&path, &text, &tx);
                                 })
                                 .await;
                             }

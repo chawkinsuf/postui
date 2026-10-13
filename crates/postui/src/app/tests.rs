@@ -24197,8 +24197,8 @@ async fn debug_ai_logs_the_prompt_of_a_request_that_is_cancelled() {
     stub_ai(&mut app, "sleep 5");
     app.update(Action::RunJqDescribe("just the total".into()));
     // Cancelled before the spawned task is ever polled (this runtime is
-    // single-threaded and nothing has awaited yet): the task is left to
-    // run, so the prompt still gets written.
+    // single-threaded and nothing has awaited yet): the command task is
+    // aborted, but the prompt-building job is separate and still writes.
     app.update(Action::CancelJqDescribe);
     assert!(app.ai_task.is_none());
     let mut text = String::new();

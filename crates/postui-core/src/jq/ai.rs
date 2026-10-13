@@ -61,17 +61,18 @@ pub fn extract_filter(reply: &str) -> Option<String> {
 /// `` `.a` and more `` → `.a`, so prose around a quoted filter is dropped;
 /// a line with no backticks, or nothing after its first run of them
 /// (`.a``), comes back with the backticks trimmed. Backticks are not jq
-/// syntax, but they are legal inside a string literal (`test("`")`): a
-/// first backtick that sits inside quotes leaves the line alone.
+/// syntax, but they are legal inside a string literal (`test("`")`): only
+/// a backtick outside quotes opens or closes the pair.
 fn inside_backticks(line: &str) -> &str {
-    let Some(open) = line.find('`') else {
+    let Some(open) = backtick_outside_literal(line) else {
         return line;
     };
-    if inside_string_literal(&line[..open]) {
-        return line;
-    }
     let rest = line[open..].trim_start_matches('`');
-    let quoted = rest.split('`').next().unwrap_or("").trim();
+    let quoted = match backtick_outside_literal(rest) {
+        Some(close) => &rest[..close],
+        None => rest,
+    }
+    .trim();
     if quoted.is_empty() {
         line.trim_matches('`').trim()
     } else {
@@ -79,21 +80,23 @@ fn inside_backticks(line: &str) -> &str {
     }
 }
 
-/// Whether `prefix` ends inside a jq string literal: an odd number of
-/// unescaped `"` so far.
-fn inside_string_literal(prefix: &str) -> bool {
+/// The first backtick in `s` that is not inside a jq string literal — one
+/// preceded by an even number of unescaped `"`. A `"` inside a `\(…)`
+/// interpolation counts like any other; that nesting is not tracked.
+fn backtick_outside_literal(s: &str) -> Option<usize> {
     let mut open = false;
-    let mut chars = prefix.chars();
-    while let Some(c) = chars.next() {
+    let mut chars = s.char_indices();
+    while let Some((i, c)) = chars.next() {
         match c {
             '\\' if open => {
                 chars.next();
             }
             '"' => open = !open,
+            '`' if !open => return Some(i),
             _ => {}
         }
     }
-    open
+    None
 }
 
 #[cfg(test)]
@@ -207,6 +210,11 @@ mod tests {
             extract_filter(".x == \"say \\\"hi\\\"\" | `.y`"),
             Some(".y".into()),
             "escaped quotes do not open a literal"
+        );
+        assert_eq!(
+            extract_filter("`.items[] | select(.code | test(\"`\"))` matches"),
+            Some(".items[] | select(.code | test(\"`\"))".into()),
+            "the closing backtick is outside the literal too"
         );
     }
 
