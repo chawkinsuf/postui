@@ -52,7 +52,7 @@ pub fn prompt(shape: &Shape, current_filter: &str, request: &str) -> String {
 }
 
 /// The filter in a reply. Lines are trimmed and fence lines skipped; then
-/// the first line carrying a backtick span wins (prose often sits on its
+/// the first line that opens with a backtick wins (prose often sits on its
 /// own line above a quoted filter), else the first non-empty line. What a
 /// line yields is `Line::filter`.
 pub fn extract_filter(reply: &str) -> Option<String> {
@@ -62,7 +62,7 @@ pub fn extract_filter(reply: &str) -> Option<String> {
         .map(Line::parse)
         .filter(|line| !line.is_fence())
         .collect();
-    let quoted = lines.iter().filter(|line| !line.spans.is_empty());
+    let quoted = lines.iter().filter(|line| line.is_quoted());
     quoted
         .chain(lines.iter())
         .map(Line::filter)
@@ -110,28 +110,35 @@ impl<'a> Line<'a> {
         out
     }
 
+    /// A line that opens with a backtick: it quotes its filter.
+    fn is_quoted(&self) -> bool {
+        self.raw.starts_with('`') && !self.spans.is_empty()
+    }
+
     /// A line that is a code fence: it starts with three or more backticks
-    /// that nothing closes, followed by at most an info string (```` ``` ````,
-    /// ```` ```jq ````, ```` ``` jq filter ````). Anything else after the
-    /// run (```` ```jq .a ````) is a filter the model forgot to put on its
-    /// own line.
+    /// that nothing closes, followed by at most a language word
+    /// (```` ``` ````, ```` ```jq ````, ```` ``` jq ````). Anything more
+    /// after the run (```` ```jq .a ````, ```` ```jq length ````) is a filter
+    /// the model forgot to put on its own line.
     fn is_fence(&self) -> bool {
         self.raw.starts_with('`')
             && !self.last_closed
             && matches!(
                 self.spans.as_slice(),
                 [(n, content)] if *n >= 3
-                    && content.chars().all(|c| c.is_ascii_alphanumeric() || " _-".contains(c))
+                    && content.trim().chars().all(|c| c.is_ascii_alphanumeric() || "_-".contains(c))
             )
     }
 
-    /// The filter this line carries: with no backticks, the line itself;
-    /// otherwise the first span with text in it (`` `.a` and more `` →
-    /// `.a`: prose around a quoted filter is dropped, and so is a leading
-    /// `jq ` language word); when no span has any (`.a``), the line with
-    /// its backticks dropped.
+    /// The filter this line carries. A line that opens with a backtick is
+    /// quoting it: the first span with text in it (`` `.a` and more `` →
+    /// `.a`, so what follows the quote is dropped, and so is a leading `jq `
+    /// language word; `.a``: the line with its backticks dropped). Any other
+    /// line stands as it is — a backtick later in a sentence is prose, and
+    /// a sentence lands for repair rather than a fragment of it landing as
+    /// a filter.
     fn filter(&self) -> String {
-        if self.spans.is_empty() {
+        if !self.is_quoted() {
             return self.raw.to_string();
         }
         self.spans
@@ -291,18 +298,23 @@ mod tests {
         );
         assert_eq!(extract_filter("`` .a ``"), Some(".a".into()));
         assert_eq!(extract_filter("``"), None);
-        assert_eq!(extract_filter(".a`"), Some(".a".into()));
+        assert_eq!(
+            extract_filter(".a`"),
+            Some(".a`".into()),
+            "a stray backtick at the end is not a quote; the line lands for repair"
+        );
     }
 
     #[test]
-    fn prose_around_a_backticked_filter_is_dropped() {
+    fn prose_after_a_quoted_filter_is_dropped_but_a_sentence_stands() {
         assert_eq!(
             extract_filter("`.data[] | .name` returns the names"),
             Some(".data[] | .name".into())
         );
         assert_eq!(
             extract_filter("Use `map(.id)` here."),
-            Some("map(.id)".into())
+            Some("Use `map(.id)` here.".into()),
+            "a backtick mid-sentence is prose; the sentence lands for repair"
         );
         assert_eq!(extract_filter("`.a"), Some(".a".into()), "unclosed");
     }
@@ -319,8 +331,8 @@ mod tests {
         );
         assert_eq!(
             extract_filter(".x == \"say \\\"hi\\\"\" | `.y`"),
-            Some(".y".into()),
-            "escaped quotes do not open a literal"
+            Some(".x == \"say \\\"hi\\\"\" | `.y`".into()),
+            "a line that does not open with a backtick stands as it is"
         );
         assert_eq!(
             extract_filter("`.items[] | select(.code | test(\"`\"))` matches"),
@@ -330,23 +342,24 @@ mod tests {
     }
 
     #[test]
-    fn among_several_spans_the_first_wins_whatever_sits_between_them() {
+    fn among_several_spans_the_first_wins_and_a_sentence_is_never_cut_to_one() {
         // The prompt asks for one filter and no backticks; two quoted
-        // pieces are read as alternatives, never glued into one filter.
-        for (reply, first) in [
+        // pieces are read as alternatives, never glued into one filter, and
+        // a sentence that quotes pieces lands whole.
+        for (reply, filter) in [
             ("`.data[] | select(.active)` | `.name`", ".data[] | select(.active)"),
             ("`.a` and `.b` are both fine", ".a"),
             ("`.x` // `.y`", ".x"),
             ("`.a` or `.b`", ".a"),
-            ("Either `.a`, `.b`", ".a"),
-            ("Use `.a` | `.b`", ".a"),
+            ("Either `.a`, `.b`", "Either `.a`, `.b`"),
+            ("Use `.a` | `.b`", "Use `.a` | `.b`"),
         ] {
-            assert_eq!(extract_filter(reply), Some(first.into()), "{reply}");
+            assert_eq!(extract_filter(reply), Some(filter.into()), "{reply}");
         }
     }
 
     #[test]
-    fn a_quoted_filter_on_a_later_line_beats_prose_on_the_first() {
+    fn a_quoted_line_beats_prose_but_a_mention_inside_prose_does_not() {
         assert_eq!(
             extract_filter("Here is the filter:\n`.data[] | .name`"),
             Some(".data[] | .name".into())
@@ -354,15 +367,21 @@ mod tests {
         assert_eq!(
             extract_filter("Here is the filter:\n.data[] | .name"),
             Some("Here is the filter:".into()),
-            "with no span anywhere, the first line stands (lands for hand repair)"
+            "with no quoted line, the first line stands (lands for hand repair)"
+        );
+        assert_eq!(
+            extract_filter("Starting from `.data[]`, the filter is:\n.data[] | .name"),
+            Some("Starting from `.data[]`, the filter is:".into()),
+            "a mention mid-sentence must not land as a wrong-but-valid filter"
         );
     }
 
     #[test]
-    fn an_escaped_quote_in_prose_does_not_open_a_literal() {
+    fn quotes_in_a_quoted_line_are_read_as_a_filter_reads_them() {
         assert_eq!(
-            extract_filter("Match a literal quote with \\\" like this: `.a | test(\"\\\\\\\"\")`"),
-            Some(".a | test(\"\\\\\\\"\")".into())
+            extract_filter("`.a | test(\"\\\\\\\"\")` matches a quote"),
+            Some(".a | test(\"\\\\\\\"\")".into()),
+            "an escaped quote inside the literal"
         );
         assert_eq!(
             extract_filter("`.name == \"x` is wrong; use `.name == \"x\"`"),
@@ -384,9 +403,13 @@ mod tests {
             "a filter on the opener's line is not an info string"
         );
         assert_eq!(extract_filter("```.a"), Some(".a".into()));
+        assert_eq!(
+            extract_filter("```jq length\n```"),
+            Some("length".into()),
+            "a one-word filter after the language word is not an info string"
+        );
         assert_eq!(extract_filter("```jq\n.a\n```"), Some(".a".into()));
         assert_eq!(extract_filter("``` jq\n.data[].name\n```"), Some(".data[].name".into()));
-        assert_eq!(extract_filter("```jq filter\n.a\n```"), Some(".a".into()));
         assert_eq!(extract_filter("```\n```"), None);
     }
 
@@ -398,9 +421,8 @@ mod tests {
 
     #[test]
     fn span_edge_cases_hold() {
-        assert_eq!(extract_filter("Try `.a"), Some(".a".into()), "unclosed after prose");
         assert_eq!(extract_filter("`.a`."), Some(".a".into()), "punctuation after");
-        assert_eq!(extract_filter("`.a` `.b`"), Some(".a".into()), "no operator between");
+        assert_eq!(extract_filter("`.a` `.b`"), Some(".a".into()), "two spans");
         assert_eq!(
             extract_filter("`select(.x == \"a`b\")`"),
             Some("select(.x == \"a`b\")".into()),
@@ -409,18 +431,14 @@ mod tests {
         assert_eq!(extract_filter("` `"), None, "a blank span is nothing");
         assert_eq!(extract_filter("```"), None);
         assert_eq!(
-            extract_filter("Use the \"name field: `.data[].name`"),
-            Some(".data[].name".into()),
-            "a stray quote in prose is not a string literal"
-        );
-        assert_eq!(
             extract_filter("`select(.x == \"a)` | `.b`"),
             Some("select(.x == \"a)".into()),
             "a stray quote inside a span does not swallow its closer"
         );
         assert_eq!(
-            extract_filter("Use `.a` (the \"id` field)"),
-            Some(".a".into())
+            extract_filter("Try \"the simple form: `.data[].name`\" first."),
+            Some("Try \"the simple form: `.data[].name`\" first.".into()),
+            "prose stands whole, quotes or not"
         );
     }
 

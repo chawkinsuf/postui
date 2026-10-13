@@ -5095,6 +5095,14 @@ impl App {
                     self.toasts.push(why, ToastKind::Info);
                     return true;
                 }
+                // The gate passes a body whose tree is still being parsed
+                // (it may yet turn out not to be JSON): refuse here, before
+                // a sentence is typed that would be thrown away.
+                if self.session.response.view().is_some_and(|v| v.parsing) {
+                    self.toasts
+                        .push("The response is still being parsed", ToastKind::Info);
+                    return true;
+                }
                 if !crate::ai::program_available(&self.ui_settings.ai_cmd) {
                     self.toasts.push(
                         format!(
@@ -5153,8 +5161,8 @@ impl App {
                 let Some(view) = self.session.response.view() else {
                     return true;
                 };
-                // The gate above passes a body whose tree is still being
-                // parsed; it may yet turn out not to be JSON.
+                // `OpenJqDescribe` refused this already; the view can have
+                // changed under the confirm dialog since.
                 if view.parsing {
                     self.toasts
                         .push("The response is still being parsed", ToastKind::Info);

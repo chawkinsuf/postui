@@ -8,6 +8,10 @@ use std::rc::Rc;
 
 #[derive(Debug, Clone, Copy)]
 pub struct ShapeLimits {
+    /// The budget for the outline's detail. The top-level keys (at most
+    /// `LIST_KEYS` lines) are always listed, so a document whose top level
+    /// alone is wider than this exceeds it by that much; everything under
+    /// them is counted out to fit (`Outline`).
     pub max_bytes: usize,
 }
 
@@ -238,6 +242,10 @@ fn key_list(names: &[(Rc<str>, bool)]) -> String {
                 }
                 out.push_str(&label[..end]);
                 out.push('…');
+                // A quoted key is cut inside its quotes; close them.
+                if label.starts_with('"') {
+                    out.push('"');
+                }
             } else {
                 out.push_str(&label);
             }
@@ -458,7 +466,10 @@ impl Outline {
             return;
         }
         let line = format!("{}{}", "  ".repeat(indent), text());
-        let add = line.len() + usize::from(!self.lines.is_empty());
+        // A pending run is counted out before this line: that marker is
+        // what this line's newline follows.
+        let first = self.lines.is_empty() && self.pending == 0;
+        let add = line.len() + usize::from(!first);
         if self.used + add + DROP_MARKER_RESERVE > self.budget {
             self.exhausted = true;
             if droppable {
@@ -939,9 +950,10 @@ data[]
         assert_eq!(
             outline(&body),
             format!(
-                ".: object, 21 keys ({}…, … 20 more)\n  []: boolean",
+                ".: object, 21 keys ({}…\", … 20 more)\n  []: boolean",
                 &label[..FOLD_LIST_BYTES]
-            )
+            ),
+            "the cut key is closed with its quote"
         );
     }
 
