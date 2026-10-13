@@ -18,14 +18,15 @@ lines under it are the keys of its elements, merged across all elements.
 (`a: object | array`) lists its object's keys under it plus a `[]` line for its
 array's elements, reached with `.a[]`. `name: object, N keys (k1, k2, … M more)`
 is an object with many keys whose values all share one structure: its keys are
-named on that line (`… M more` when they are too many to list), and the lines
-under its `[]` describe every value, merged. Reach one value with `.name.k1`,
-all of them with `.name[]`, the keys with `keys` or `to_entries`. Values are
-shown as their type name; `a | b` means both types occur. `name: {}` and
-`name: [] (always empty)` are containers that never held anything. Keys that
-are not plain identifiers are quoted. The request may name only the last key of a path: find that key in the
-structure and write its whole path from the root, through every array with
-`[]`. Never write a bare `.key` unless that key is at the top level.";
+named on that line (`… M more` when they are too many to list; `k?` when some
+of the objects lack it), and the lines under its `[]` describe every value,
+merged. Reach one value with `.name.k1`, all of them with `.name[]`, the keys
+with `keys` or `to_entries`. Values are shown as their type name; `a | b`
+means both types occur. `name: {}` and `name: [] (always empty)` are
+containers that never held anything. Keys that are not plain identifiers are
+quoted. The request may name only the last key of a path: find that key in
+the structure and write its whole path from the root, through every array
+with `[]`. Never write a bare `.key` unless that key is at the top level.";
 
 /// The whole stdin text for the AI command: system section, structure,
 /// example path, current filter, and the user's sentence.
@@ -55,48 +56,73 @@ pub fn extract_filter(reply: &str) -> Option<String> {
         .filter(|l| !l.starts_with("```"))
         .map(inside_backticks)
         .find(|l| !l.is_empty())
-        .map(str::to_string)
 }
 
-/// `` `.a` and more `` → `.a`, so prose around a quoted filter is dropped;
-/// a line with no backticks, or nothing after its first run of them
-/// (`.a``), comes back with the backticks trimmed. Backticks are not jq
-/// syntax, but they are legal inside a string literal (`test("`")`): only
-/// a backtick outside quotes opens or closes the pair.
-fn inside_backticks(line: &str) -> &str {
-    let Some(open) = backtick_outside_literal(line) else {
-        return line;
-    };
-    let rest = line[open..].trim_start_matches('`');
-    let quoted = match backtick_outside_literal(rest) {
-        Some(close) => &rest[..close],
-        None => rest,
+/// What a line's backticks quote: `` `.a` and more `` → `.a`, so prose
+/// around a quoted filter is dropped. One filter quoted piecewise and
+/// joined by `|` (`` `.a` | `.b` ``) is put back together; several quoted
+/// spans with words between them are prose, and the first span wins. A line
+/// with no backticks, or nothing inside them (`.a``), comes back with the
+/// backticks trimmed. Backticks are not jq syntax, but they are legal
+/// inside a string literal (`test("`")`): only a backtick outside quotes
+/// counts.
+fn inside_backticks(line: &str) -> String {
+    let segments = split_on_backticks(line);
+    // Even segments are between the quoted spans (odd); [0] is before the
+    // first backtick.
+    let quoted: Vec<&str> = segments.iter().skip(1).step_by(2).map(|s| s.trim()).collect();
+    let first = quoted.first().copied().unwrap_or("");
+    if first.is_empty() {
+        return line.trim_matches('`').trim().to_string();
     }
-    .trim();
-    if quoted.is_empty() {
-        line.trim_matches('`').trim()
-    } else {
-        quoted
+    let gaps = segments.iter().skip(2).step_by(2).take(quoted.len() - 1);
+    if quoted.len() > 1 && gaps.clone().all(|g| g.trim() == "|") {
+        return quoted
+            .iter()
+            .zip(gaps.map(|g| g.trim()).chain(std::iter::once("")))
+            .fold(String::new(), |mut out, (span, gap)| {
+                out.push_str(span);
+                if !gap.is_empty() {
+                    out.push(' ');
+                    out.push_str(gap);
+                    out.push(' ');
+                }
+                out
+            });
     }
+    first.to_string()
 }
 
-/// The first backtick in `s` that is not inside a jq string literal — one
-/// preceded by an even number of unescaped `"`. A `"` inside a `\(…)`
-/// interpolation counts like any other; that nesting is not tracked.
-fn backtick_outside_literal(s: &str) -> Option<usize> {
+/// `s` cut at every run of backticks outside a jq string literal — one
+/// preceded by an even number of unescaped `"` (a `"` inside a `\(…)`
+/// interpolation counts like any other; that nesting is not tracked).
+/// Always at least one segment; a run of backticks makes one cut.
+fn split_on_backticks(s: &str) -> Vec<&str> {
+    let mut segments = Vec::new();
+    let mut start = 0;
     let mut open = false;
+    let mut in_run = false;
     let mut chars = s.char_indices();
     while let Some((i, c)) = chars.next() {
+        if c == '`' && !open {
+            if !in_run {
+                segments.push(&s[start..i]);
+                in_run = true;
+            }
+            start = i + 1;
+            continue;
+        }
+        in_run = false;
         match c {
             '\\' if open => {
                 chars.next();
             }
             '"' => open = !open,
-            '`' if !open => return Some(i),
             _ => {}
         }
     }
-    None
+    segments.push(&s[start..]);
+    segments
 }
 
 #[cfg(test)]
@@ -143,7 +169,7 @@ mod tests {
             "the `[]` line under a key of several types is explained: {p}"
         );
         assert!(
-            p.contains("`name: {}` and\n`name: [] (always empty)`"),
+            p.contains("`name: {}` and `name: [] (always empty)` are"),
             "the always-empty containers are explained: {p}"
         );
     }
@@ -215,6 +241,19 @@ mod tests {
             extract_filter("`.items[] | select(.code | test(\"`\"))` matches"),
             Some(".items[] | select(.code | test(\"`\"))".into()),
             "the closing backtick is outside the literal too"
+        );
+    }
+
+    #[test]
+    fn a_filter_quoted_piecewise_is_joined_and_prose_between_spans_is_not() {
+        assert_eq!(
+            extract_filter("`.data[] | select(.active)` | `.name`"),
+            Some(".data[] | select(.active) | .name".into())
+        );
+        assert_eq!(
+            extract_filter("`.a` and `.b` are both fine"),
+            Some(".a".into()),
+            "words between spans: prose, first span wins"
         );
     }
 

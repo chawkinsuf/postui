@@ -1110,6 +1110,14 @@ pub enum Action {
         request: u64,
         result: Result<String, String>,
     },
+    /// A `RunJqDescribe` request ended before any command ran (the body
+    /// turned out not to be JSON): same matching as `JqAiFinished`, then an
+    /// informational toast rather than a command failure.
+    JqAiSkipped {
+        generation: u64,
+        request: u64,
+        reason: String,
+    },
     /// Structural menu's "Pluck field…" on an array: opens a chooser of
     /// `keys`; picking `k` applies `compose(bar, path, "map(.k)")`.
     JqPluckPrompt {

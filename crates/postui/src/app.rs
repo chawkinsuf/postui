@@ -1937,6 +1937,28 @@ pub(crate) fn jq_complete_worker(
 }
 
 impl App {
+    /// Whether an AI task's result is for the current request and view, and
+    /// if so, lands its end: the task and the bar's pending state are
+    /// cleared. Dropped (`false`) when superseded by a newer request (or
+    /// cancelled — `CancelJqDescribe` bumps `ai_request` too) or when the
+    /// response it was shaped from is gone. Compared against the counter,
+    /// not `ai_task`'s handle: a caller that already took the handle to
+    /// await it (tests) still gets a valid reply landed.
+    fn settle_ai_request(&mut self, generation: u64, request: u64) -> bool {
+        if request != self.ai_request
+            || self
+                .session
+                .response
+                .view()
+                .is_none_or(|v| v.generation != generation)
+        {
+            return false;
+        }
+        self.ai_task = None;
+        self.session.response.jq_bar_mut().ai_pending = false;
+        true
+    }
+
     /// Applies `action` to app state, then reconciles the jq filter bar
     /// with the editor and view (see [`Self::sync_jq`]) — the one place
     /// every action, key, mouse hit, and background result passes through,
@@ -5170,6 +5192,16 @@ impl App {
                 };
                 let task = handle.spawn(async move {
                     let result = match built.await {
+                        // `jq_blocked_reason` only lets a JSON view get this
+                        // far, so this is a fallback, not a path.
+                        Ok(None) => {
+                            let _ = tx.send(Action::JqAiSkipped {
+                                generation,
+                                request,
+                                reason: "The response is not JSON".to_string(),
+                            });
+                            return;
+                        }
                         Ok(Some(stdin)) => {
                             let outcome = crate::ai::run_command(cmd, stdin).await;
                             if let Some(path) = log {
@@ -5182,9 +5214,6 @@ impl App {
                             }
                             outcome.and_then(crate::ai::CommandOutput::into_reply)
                         }
-                        // `jq_blocked_reason` only lets a JSON view get this
-                        // far, so this is a fallback, not a path.
-                        Ok(None) => Err("the response is not JSON".to_string()),
                         Err(e) => Err(e.to_string()),
                     };
                     let _ = tx.send(Action::JqAiFinished {
@@ -5201,28 +5230,25 @@ impl App {
                 self.session.response.set_jq_focus(true);
                 true
             }
+            Action::JqAiSkipped {
+                generation,
+                request,
+                reason,
+            } => {
+                if !self.settle_ai_request(generation, request) {
+                    return false;
+                }
+                self.toasts.push(reason, ToastKind::Info);
+                true
+            }
             Action::JqAiFinished {
                 generation,
                 request,
                 result,
             } => {
-                // Dropped when superseded by a newer request (or cancelled
-                // — `CancelJqDescribe` bumps `ai_request` too) or when the
-                // response it was shaped from is gone. Compared against the
-                // counter, not `ai_task`'s handle: a caller that already
-                // took the handle to await it (tests) still gets a valid
-                // reply landed.
-                if request != self.ai_request
-                    || self
-                        .session
-                        .response
-                        .view()
-                        .is_none_or(|v| v.generation != generation)
-                {
+                if !self.settle_ai_request(generation, request) {
                     return false;
                 }
-                self.ai_task = None;
-                self.session.response.jq_bar_mut().ai_pending = false;
                 match result.map(|reply| postui_core::jq::ai::extract_filter(&reply)) {
                     Ok(Some(filter)) => {
                         let cursor = filter.chars().count();

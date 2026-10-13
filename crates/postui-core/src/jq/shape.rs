@@ -3,6 +3,7 @@
 
 use crate::jq::path::key_label;
 use serde_json::Value;
+use std::rc::Rc;
 
 #[derive(Debug, Clone, Copy)]
 pub struct ShapeLimits {
@@ -75,8 +76,9 @@ struct Schema {
 }
 
 /// An object with more distinct keys than this, every value of the same
-/// kinds (null aside) and, for object values, mostly the same keys
-/// (`values_share_keys`), is folded: its key names go on one line and its
+/// kinds (null aside; string formats included) and, for object values,
+/// mostly the same keys (`values_share_keys`), is folded: its key names go
+/// on one line (`key?` when some of the merged objects lack it) and its
 /// values merge under one `[]`. Listed one per line, a lookup table keyed by
 /// data (currency codes, dates, ids) would bury everything after it; folded,
 /// a wide record still shows every name it can.
@@ -90,21 +92,22 @@ struct Object {
     /// How many objects were merged, to tell which keys some lack.
     seen: usize,
     fields: Vec<Field>,
-    index: std::collections::HashMap<String, usize>,
+    index: std::collections::HashMap<Rc<str>, usize>,
     /// Set by `collapse` in place of `fields` (`FOLD_KEYS`).
     folded: Option<Folded>,
 }
 
 struct Field {
-    name: String,
+    /// Shared with `Object::index`: one allocation per distinct key.
+    name: Rc<str>,
     seen: usize,
     schema: Schema,
 }
 
-/// A wide object's fields folded into their names and one description of
-/// every value.
+/// A wide object's fields folded into their names (and whether some of the
+/// merged objects lack each) and one description of every value.
 struct Folded {
-    names: Vec<String>,
+    names: Vec<(Rc<str>, bool)>,
     values: Box<Schema>,
 }
 
@@ -114,13 +117,14 @@ impl Object {
         if let Some(&at) = self.index.get(name) {
             return at;
         }
+        let name: Rc<str> = Rc::from(name);
         self.fields.push(Field {
-            name: name.to_string(),
+            name: Rc::clone(&name),
             seen: 0,
             schema: Schema::default(),
         });
         let at = self.fields.len() - 1;
-        self.index.insert(name.to_string(), at);
+        self.index.insert(name, at);
         at
     }
 
@@ -159,7 +163,7 @@ impl Object {
             if let Some(object) = &field.schema.object {
                 values += object.seen;
                 for inner in &object.fields {
-                    union.insert(inner.name.as_str());
+                    union.insert(&*inner.name);
                     occurrences += inner.seen;
                 }
             }
@@ -167,22 +171,26 @@ impl Object {
         2 * occurrences >= union.len() * values
     }
 
-    fn collapse(&mut self) {
+    /// Folds (`FOLD_KEYS`) when `may_fold`, then collapses whatever is
+    /// listed under it.
+    fn collapse(&mut self, may_fold: bool) {
         // A value that is only ever null says nothing about the kind.
         let mut kinds = self
             .fields
             .iter()
-            .map(|f| f.schema.kind_bits())
-            .filter(|&bits| bits != 0);
+            .map(Field::kind)
+            .filter(|&(bits, _)| bits != 0);
         let first = kinds.next();
-        if self.fields.len() > FOLD_KEYS
-            && kinds.all(|bits| Some(bits) == first)
+        if may_fold
+            && self.fields.len() > FOLD_KEYS
+            && kinds.all(|kind| Some(kind) == first)
             && self.values_share_keys()
         {
+            let seen = self.seen;
             let mut names = Vec::with_capacity(self.fields.len());
             let mut values = Schema::default();
             for field in std::mem::take(&mut self.fields) {
-                names.push(field.name);
+                names.push((field.name, field.seen < seen));
                 values.absorb(field.schema);
             }
             self.index = Default::default();
@@ -199,12 +207,22 @@ impl Object {
     }
 }
 
-/// `a, "b c", d` in whole keys up to `FOLD_LIST_BYTES`, then `… N more`.
+impl Field {
+    /// What the fold compares: the kinds, with the strings' shared format.
+    fn kind(&self) -> (u8, Option<Option<&'static str>>) {
+        (self.schema.kind_bits(), self.schema.string)
+    }
+}
+
+/// `a, "b c"?, d` in whole keys up to `FOLD_LIST_BYTES`, then `… N more`.
 /// The first key always shows, cut with `…` when it alone is too long.
-fn key_list(names: &[String]) -> String {
+fn key_list(names: &[(Rc<str>, bool)]) -> String {
     let mut out = String::new();
-    for (i, name) in names.iter().enumerate() {
-        let label = key_label(name);
+    for (i, (name, optional)) in names.iter().enumerate() {
+        let mut label = key_label(name);
+        if *optional {
+            label.push('?');
+        }
         if i == 0 {
             if label.len() > FOLD_LIST_BYTES {
                 let mut end = FOLD_LIST_BYTES;
@@ -234,13 +252,7 @@ impl Schema {
             Value::Null => self.null = true,
             Value::Bool(_) => self.boolean = true,
             Value::Number(_) => self.number = true,
-            Value::String(s) => {
-                let tag = string_tag(s);
-                self.string = Some(match self.string {
-                    Some(seen) if seen != tag => None,
-                    _ => tag,
-                });
-            }
+            Value::String(s) => self.note_string(string_tag(s)),
             Value::Array(items) => {
                 let elements = self.array.get_or_insert_default();
                 for item in items {
@@ -266,10 +278,7 @@ impl Schema {
         self.boolean |= other.boolean;
         self.number |= other.number;
         if let Some(tag) = other.string {
-            self.string = Some(match self.string {
-                Some(seen) if seen != tag => None,
-                _ => tag,
-            });
+            self.note_string(tag);
         }
         if let Some(object) = other.object {
             self.object.get_or_insert_default().absorb(object);
@@ -279,10 +288,22 @@ impl Schema {
         }
     }
 
-    /// Folds every wide object (`FOLD_KEYS`), all the way down.
+    /// Strings of format `tag` were seen here: the format they all share,
+    /// or `None` once two disagree.
+    fn note_string(&mut self, tag: Option<&'static str>) {
+        self.string = Some(match self.string {
+            Some(seen) if seen != tag => None,
+            _ => tag,
+        });
+    }
+
+    /// Folds every wide object (`FOLD_KEYS`), all the way down. A key that
+    /// is also a non-empty array keeps its object listed: folded values and
+    /// array elements would both sit under a `[]` line.
     fn collapse(&mut self) {
+        let may_fold = self.array.as_deref().is_none_or(Schema::is_empty);
         if let Some(object) = &mut self.object {
-            object.collapse();
+            object.collapse(may_fold);
         }
         if let Some(elements) = &mut self.array {
             elements.collapse();
@@ -389,7 +410,7 @@ impl Outline {
             if field.seen < object.seen {
                 label.push('?');
             }
-            path.push(Seg::Key(field.name.clone()));
+            path.push(Seg::Key(field.name.to_string()));
             self.render(label, &field.schema, indent, path);
             path.pop();
         }
@@ -421,7 +442,7 @@ impl Outline {
             if let Some(folded) = &object.folded {
                 // The example reaches one value by its first key, the
                 // way the model reaches a named one.
-                path.push(Seg::Key(folded.names[0].clone()));
+                path.push(Seg::Key(folded.names[0].0.to_string()));
                 self.render("[]".into(), &folded.values, indent + 1, path);
                 path.pop();
                 nested = true;
@@ -459,25 +480,36 @@ fn jq_path(segs: &[Seg]) -> String {
     out
 }
 
-/// Whole lines up to `max_bytes`, then a line counting the rest; and how
-/// many lines were kept.
+/// Whole lines, then a line counting the rest, together within `max_bytes`
+/// (only the count line alone may exceed a tiny cap); and how many lines
+/// were kept.
 fn cap(lines: &[String], max_bytes: usize) -> (String, usize) {
-    let mut out = String::new();
-    for (i, line) in lines.iter().enumerate() {
-        let sep = usize::from(!out.is_empty());
-        if out.len() + sep + line.len() > max_bytes {
-            if sep == 1 {
+    let mut kept = 0;
+    let mut used = 0;
+    while kept < lines.len() {
+        let add = lines[kept].len() + usize::from(kept > 0);
+        if used + add > max_bytes {
+            break;
+        }
+        used += add;
+        kept += 1;
+    }
+    if kept == lines.len() {
+        return (lines.join("\n"), kept);
+    }
+    loop {
+        let trailer = format!("… {} more lines not shown", lines.len() - kept);
+        if kept == 0 || used + 1 + trailer.len() <= max_bytes {
+            let mut out = lines[..kept].join("\n");
+            if kept > 0 {
                 out.push('\n');
             }
-            out.push_str(&format!("… {} more lines not shown", lines.len() - i));
-            return (out, i);
+            out.push_str(&trailer);
+            return (out, kept);
         }
-        if sep == 1 {
-            out.push('\n');
-        }
-        out.push_str(line);
+        kept -= 1;
+        used -= lines[kept].len() + usize::from(kept > 0);
     }
-    (out, lines.len())
 }
 
 fn string_tag(s: &str) -> Option<&'static str> {
@@ -632,15 +664,18 @@ data[]
 
     #[test]
     fn output_past_the_byte_cap_is_cut_at_a_line_and_says_how_much_is_missing() {
-        let s = shape(
-            r#"{"alpha": 1, "beta": 2, "gamma": 3, "delta": 4}"#,
-            ShapeLimits { max_bytes: 30 },
-        )
-        .unwrap();
+        let body = r#"{"alpha": 1, "beta": 2, "gamma": 3, "delta": 4}"#;
+        // The four lines take 54 bytes; one short of that cuts.
+        let s = shape(body, ShapeLimits { max_bytes: 53 }).unwrap();
         assert_eq!(
             s.outline,
             "alpha: number\nbeta: number\n… 2 more lines not shown"
         );
+        assert_eq!(s.outline.len(), 53);
+        // The count line is inside the cap too: a line is given up for it.
+        let s = shape(body, ShapeLimits { max_bytes: 40 }).unwrap();
+        assert_eq!(s.outline, "alpha: number\n… 3 more lines not shown");
+        assert_eq!(s.outline.len(), 40);
     }
 
     #[test]
@@ -716,12 +751,14 @@ data[]
             .map(|i| format!(r#"{{"{}": {{"n": {i}}}}}"#, id(i)))
             .collect();
         let s = shape(&format!("[{}]", elements.join(",")), ShapeLimits::default()).unwrap();
-        // A quoted id is 38 bytes and each after the first 40: ten fit in 400.
-        let shown: Vec<String> = (0..10).map(|i| format!("\"{}\"", id(i))).collect();
+        // Each element has one of the keys, so every key is marked `?`. A
+        // quoted id is 39 bytes with it and each after the first 41: nine
+        // fit in 400.
+        let shown: Vec<String> = (0..9).map(|i| format!("\"{}\"?", id(i))).collect();
         assert_eq!(
             s.outline,
             format!(
-                ".[]: object, 25 keys ({}, … 15 more)\n  []\n    n: number",
+                ".[]: object, 25 keys ({}, … 16 more)\n  []\n    n: number",
                 shown.join(", ")
             )
         );
@@ -786,6 +823,41 @@ data[]
         assert_eq!(s.example_path.as_deref(), Some(".wide.key_number_00"));
         let s = shape(&body, ShapeLimits::default()).unwrap();
         assert_eq!(s.example_path.as_deref(), Some(".z.a.b.c"));
+    }
+
+    #[test]
+    fn a_fold_keeps_which_keys_are_missing_and_needs_one_string_format() {
+        // Three records; `nickname` is in one, `email` in all.
+        let row = |extra: &str| {
+            let mut pairs: Vec<String> = (0..FOLD_KEYS)
+                .map(|i| format!(r#""c{i:02}": "v""#))
+                .collect();
+            pairs.push(r#""email": "a@b.co""#.into());
+            if !extra.is_empty() {
+                pairs.push(extra.into());
+            }
+            format!("{{{}}}", pairs.join(", "))
+        };
+        let body = format!("[{}, {}, {}]", row(""), row(""), row(r#""nickname": "n""#));
+        let lines = outline(&body);
+        // `email` is a formatted string, the columns are plain: no fold.
+        assert!(!lines.contains("keys ("), "{lines}");
+        assert!(lines.contains("\n  email: string (email)\n"), "{lines}");
+        assert!(lines.contains("\n  nickname?: string"), "{lines}");
+        // Plain strings throughout: folded, and the missing key is marked.
+        let body = body.replace("a@b.co", "plain");
+        let lines = outline(&body);
+        assert!(lines.contains(", email, nickname?)\n  []: string"), "{lines}");
+    }
+
+    #[test]
+    fn a_key_that_is_also_an_array_keeps_its_wide_object_listed() {
+        // Folded values and the array's elements would both be a `[]` line.
+        let body = format!(r#"[{{"a": {}}}, {{"a": ["x"]}}]"#, keyed(FOLD_KEYS + 1, "1"));
+        let lines = outline(&body);
+        assert!(lines.starts_with(".[]\n  a: object | array\n    K00: number\n"), "{lines}");
+        assert_eq!(lines.matches("[]: string").count(), 1, "{lines}");
+        assert!(!lines.contains("keys ("), "{lines}");
     }
 
     #[test]
