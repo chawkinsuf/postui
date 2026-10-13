@@ -24150,7 +24150,16 @@ async fn describe_a_filter_sends_the_shape_and_lands_the_reply_in_the_bar() {
     settle_jq(&mut app).await;
     assert_eq!(app.session.response.view().unwrap().view_text(), "2");
     let sent = std::fs::read_to_string(&seen).unwrap();
-    assert!(sent.contains(r#"Structure: {"data": {"items": [{"id": number, "status": string}] /* 2 items */, "total": number}}"#), "{sent}");
+    assert!(
+        sent.contains(
+            "Structure:\ndata\n  items[]\n    id: number\n    status: string\n  total: number\n"
+        ),
+        "{sent}"
+    );
+    assert!(
+        sent.contains("A full path in this document: .data.items[].id"),
+        "{sent}"
+    );
     assert!(sent.contains("Request: just the total"), "{sent}");
     assert!(!sent.contains("active"), "values are never sent: {sent}");
 }
@@ -24164,6 +24173,16 @@ async fn a_fenced_reply_is_unwrapped_and_a_bad_reply_lands_with_its_error() {
     let a = drain_ai(&mut app).await;
     app.update(a);
     assert_eq!(app.session.response.jq_text(), ".data.total");
+
+    stub_ai(&mut app, "echo '`.data.items`'");
+    app.update(Action::RunJqDescribe("x".into()));
+    let a = drain_ai(&mut app).await;
+    app.update(a);
+    assert_eq!(
+        app.session.response.jq_text(),
+        ".data.items",
+        "backticks around the reply are dropped"
+    );
 
     stub_ai(&mut app, "echo 'this is not jq'");
     app.update(Action::RunJqDescribe("x".into()));

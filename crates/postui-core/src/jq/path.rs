@@ -6,7 +6,7 @@ pub enum PathSeg {
     Index(usize),
 }
 
-fn is_identifier(key: &str) -> bool {
+pub(crate) fn is_identifier(key: &str) -> bool {
     let mut chars = key.chars();
     match chars.next() {
         Some(c) if c == '_' || c.is_ascii_alphabetic() => {}

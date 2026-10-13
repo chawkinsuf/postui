@@ -5117,8 +5117,11 @@ impl App {
                         .push("The response is not JSON", ToastKind::Info);
                     return true;
                 };
-                let stdin =
-                    postui_core::jq::ai::prompt(&shape, self.session.response.jq_text(), &sentence);
+                let stdin = postui_core::jq::ai::prompt(
+                    &shape,
+                    self.session.response.jq_text(),
+                    &sentence,
+                );
                 // No ambient runtime happens only in a plain `#[test]` that
                 // reaches an already-confirmed `ConfirmJqDescribe` — the
                 // real main loop, and every async test, always has one.
