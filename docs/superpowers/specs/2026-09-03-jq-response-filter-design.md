@@ -123,6 +123,16 @@ data[]
   are not identifiers are JSON-quoted.
 - `name[]` is an array; the lines under it describe its elements, merged
   across every element. A key some of the merged objects lack is `key?`.
+- An object with more than 20 distinct keys whose values all hold the
+  same kinds (a value that is only ever null aside) is a lookup table keyed
+  by data — currency codes, dates, ids, also when each array element
+  carries its own key — not a record. It is one line,
+  `rates: map, 2000 keys like "USD"` (the first key, cut at 40 chars), with
+  every value merged under a `[]` line. Listing each key would fill the
+  byte cap and hide the keys after it. The user chose folding lookup
+  tables on 2026-10-13, after a review; the 20-key threshold and the
+  same-kinds test are my defaults. A record with mixed kinds is listed in
+  full however wide.
 - Scalars are type names; a position holding several types is
   `a | b` in the order object, array, string, number, boolean, null. A
   container that holds both an object and an array lists the object's
@@ -326,7 +336,8 @@ typing, using the existing coalescing).
   `nosuchfn(1)` → name/arity), runtime error message, output cap, and
   `JqDocument::parse` rejecting non-JSON.
 - `shape` tests: unlimited nesting as indentation, array elements merged
-  with `key?` for keys some lack, type unions, root naming, quoted keys,
+  with `key?` for keys some lack, lookup tables folded into one `map`
+  line (and records of mixed kinds not), type unions, root naming, quoted keys,
   the byte cap's "N more lines" note, the example path, scalar type names
   and the date/url tags.
 - `JsonTree` tests: per-line path for nested keys, indexes, odd keys

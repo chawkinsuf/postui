@@ -14,9 +14,12 @@ is ambiguous, pick the most literal reading.
 The structure lists every key in the document once, one per line; a line
 indented under another is a key inside it. `name[]` is an array, and the
 lines under it are the keys of its elements, merged across all elements.
-`key?` means some of the objects lack that key. Values are shown as their type
-name; `a | b` means both types occur. Keys that are not plain identifiers are
-quoted. The request may name only the last key of a path: find that key in the
+`key?` means some of the objects lack that key. `name: map, N keys like \"k\"`
+is an object used as a lookup table: its keys are data, and the lines under its
+`[]` describe every value, merged. Reach the values with `.name[]`, one of them
+with `.name[\"k\"]`, the keys with `keys` or `to_entries`. Values are shown as
+their type name; `a | b` means both types occur. Keys that are not plain
+identifiers are quoted. The request may name only the last key of a path: find that key in the
 structure and write its whole path from the root, through every array with
 `[]`. Never write a bare `.key` unless that key is at the top level.";
 
@@ -84,6 +87,10 @@ mod tests {
         assert!(
             p.contains("write its whole path from the root"),
             "a bare leaf name must be turned into a path: {p}"
+        );
+        assert!(
+            p.contains("`name: map, N keys like \"k\"`"),
+            "the map line is explained: {p}"
         );
     }
 

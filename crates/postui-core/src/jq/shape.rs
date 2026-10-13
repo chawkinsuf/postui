@@ -26,16 +26,19 @@ pub struct Shape {
 /// The whole structure, one key per line, indented under its parent:
 /// scalars become type names, every element of an array is merged into
 /// one description (a key some elements lack is marked `key?`), and an
-/// array is `name[]`. No depth limit; only the total size is capped, and a
-/// cut says how many lines it dropped. Non-JSON → `None`.
+/// array is `name[]`. An object keyed by data rather than field names (see
+/// `MAP_KEYS`) is one `map` line with its values merged under `[]`. No
+/// depth limit; only the total size is capped, and a cut says how many
+/// lines it dropped. Non-JSON → `None`.
 pub fn shape(body: &str, limits: ShapeLimits) -> Option<Shape> {
     let value: Value = serde_json::from_str(body).ok()?;
     let mut schema = Schema::default();
     schema.add(&value);
+    schema.collapse();
     let mut outline = Outline::default();
     let mut path = Vec::new();
     match &schema.object {
-        Some(object) if schema.is_only_object() && !object.fields.is_empty() => {
+        Some(object) if schema.is_only_object() && object.is_record() => {
             outline.fields(object, 0, &mut path)
         }
         _ => outline.render(".".into(), &schema, 0, &mut path),
@@ -60,18 +63,100 @@ struct Schema {
     array: Option<Box<Schema>>,
 }
 
+/// An object with more distinct keys than this, every value of the same
+/// kinds (null aside), is a lookup table keyed by data — currency codes,
+/// dates, ids — not a record: listing each key would bury everything after
+/// it under thousands of lines.
+const MAP_KEYS: usize = 20;
+
+/// The longest example key a `map` line shows before cutting it.
+const MAP_EXAMPLE_CHARS: usize = 40;
+
 #[derive(Default)]
 struct Object {
     /// How many objects were merged, to tell which keys some lack.
     seen: usize,
     fields: Vec<Field>,
     index: std::collections::HashMap<String, usize>,
+    /// Set by `collapse` in place of `fields` for a lookup table.
+    map: Option<KeyMap>,
 }
 
 struct Field {
     name: String,
     seen: usize,
     schema: Schema,
+}
+
+/// A lookup table's fields folded into one description of every value.
+struct KeyMap {
+    keys: usize,
+    /// The first key, to show what the keys look like.
+    example: String,
+    values: Box<Schema>,
+}
+
+impl Object {
+    fn slot(&mut self, name: &str) -> usize {
+        *self.index.entry(name.to_string()).or_insert_with(|| {
+            self.fields.push(Field {
+                name: name.to_string(),
+                seen: 0,
+                schema: Schema::default(),
+            });
+            self.fields.len() - 1
+        })
+    }
+
+    /// Never had a key.
+    fn is_empty(&self) -> bool {
+        self.fields.is_empty() && self.map.is_none()
+    }
+
+    /// Lists its keys one per line.
+    fn is_record(&self) -> bool {
+        !self.fields.is_empty()
+    }
+
+    /// Folds `other` in as if its objects had been added here. Runs before
+    /// `collapse`, so neither side has a `map` yet.
+    fn absorb(&mut self, other: Object) {
+        self.seen += other.seen;
+        for field in other.fields {
+            let at = self.slot(&field.name);
+            self.fields[at].seen += field.seen;
+            self.fields[at].schema.absorb(field.schema);
+        }
+    }
+
+    fn collapse(&mut self) {
+        // A value that is only ever null says nothing about the kind.
+        let mut kinds = self
+            .fields
+            .iter()
+            .map(|f| f.schema.kind_bits())
+            .filter(|&bits| bits != 0);
+        let first = kinds.next();
+        if self.fields.len() > MAP_KEYS && kinds.all(|bits| Some(bits) == first) {
+            let keys = self.fields.len();
+            let example = self.fields[0].name.clone();
+            let mut values = Schema::default();
+            for field in std::mem::take(&mut self.fields) {
+                values.absorb(field.schema);
+            }
+            self.index = Default::default();
+            values.collapse();
+            self.map = Some(KeyMap {
+                keys,
+                example,
+                values: Box::new(values),
+            });
+            return;
+        }
+        for field in &mut self.fields {
+            field.schema.collapse();
+        }
+    }
 }
 
 impl Schema {
@@ -97,20 +182,52 @@ impl Schema {
                 let object = self.object.get_or_insert_default();
                 object.seen += 1;
                 for (key, value) in map {
-                    let at = *object.index.entry(key.clone()).or_insert_with(|| {
-                        object.fields.push(Field {
-                            name: key.clone(),
-                            seen: 0,
-                            schema: Schema::default(),
-                        });
-                        object.fields.len() - 1
-                    });
+                    let at = object.slot(key);
                     let field = &mut object.fields[at];
                     field.seen += 1;
                     field.schema.add(value);
                 }
             }
         }
+    }
+
+    /// Folds `other` in as if its values had been added here.
+    fn absorb(&mut self, other: Schema) {
+        self.null |= other.null;
+        self.boolean |= other.boolean;
+        self.number |= other.number;
+        if let Some(tag) = other.string {
+            self.string = Some(match self.string {
+                Some(seen) if seen != tag => None,
+                _ => tag,
+            });
+        }
+        if let Some(object) = other.object {
+            self.object.get_or_insert_default().absorb(object);
+        }
+        if let Some(elements) = other.array {
+            self.array.get_or_insert_default().absorb(*elements);
+        }
+    }
+
+    /// Turns every lookup table (`MAP_KEYS`) into a `KeyMap`, all the way
+    /// down.
+    fn collapse(&mut self) {
+        if let Some(object) = &mut self.object {
+            object.collapse();
+        }
+        if let Some(elements) = &mut self.array {
+            elements.collapse();
+        }
+    }
+
+    /// Which kinds occur here, null aside.
+    fn kind_bits(&self) -> u8 {
+        u8::from(self.object.is_some())
+            | u8::from(self.array.is_some()) << 1
+            | u8::from(self.string.is_some()) << 2
+            | u8::from(self.number) << 3
+            | u8::from(self.boolean) << 4
     }
 
     fn is_empty(&self) -> bool {
@@ -130,18 +247,24 @@ impl Schema {
     }
 
     /// `object | array | string (url) | null`; a container that was always
-    /// empty is spelled `{}` / `[]`, since nothing is listed under it.
+    /// empty is spelled `{}` / `[]`, since nothing is listed under it, and a
+    /// lookup table `map, 2000 keys like "USD"`.
     fn kinds(&self) -> String {
         let mut kinds: Vec<String> = Vec::new();
         if let Some(object) = &self.object {
-            kinds.push(
-                if object.fields.is_empty() {
-                    "{}"
-                } else {
-                    "object"
+            kinds.push(match &object.map {
+                Some(map) => {
+                    let mut example: String = map.example.chars().take(MAP_EXAMPLE_CHARS).collect();
+                    let cut = example.len() < map.example.len();
+                    example = serde_json::to_string(&example).expect("strings always encode");
+                    if cut {
+                        example.push('…');
+                    }
+                    format!("map, {} keys like {example}", map.keys)
                 }
-                .into(),
-            );
+                None if object.is_empty() => "{}".into(),
+                None => "object".into(),
+            });
         }
         if let Some(elements) = &self.array {
             kinds.push(if elements.is_empty() { "[]" } else { "array" }.into());
@@ -219,7 +342,7 @@ impl Outline {
         }
         if let Some(object) = &schema.object
             && schema.is_only_object()
-            && !object.fields.is_empty()
+            && object.is_record()
         {
             self.line(indent, label);
             self.fields(object, indent + 1, path);
@@ -227,11 +350,16 @@ impl Outline {
         }
         self.line(indent, format!("{label}: {}", schema.kinds()));
         let mut nested = false;
-        if let Some(object) = &schema.object
-            && !object.fields.is_empty()
-        {
-            self.fields(object, indent + 1, path);
-            nested = true;
+        if let Some(object) = &schema.object {
+            if let Some(map) = &object.map {
+                path.push(Seg::Each);
+                self.render("[]".into(), &map.values, indent + 1, path);
+                path.pop();
+                nested = true;
+            } else if object.is_record() {
+                self.fields(object, indent + 1, path);
+                nested = true;
+            }
         }
         if let Some(elements) = schema.array.as_deref()
             && !elements.is_empty()
@@ -462,6 +590,75 @@ data[]
     fn a_first_line_past_the_cap_leaves_only_the_count_with_no_blank_line() {
         let s = shape(r#"{"alpha": 1, "beta": 2}"#, ShapeLimits { max_bytes: 5 }).unwrap();
         assert_eq!(s.outline, "… 2 more lines not shown");
+    }
+
+    /// `{"K00": <value>, "K01": <value>, …}` with `n` keys.
+    fn keyed(n: usize, value: &str) -> String {
+        let pairs: Vec<String> = (0..n).map(|i| format!(r#""K{i:02}": {value}"#)).collect();
+        format!("{{{}}}", pairs.join(", "))
+    }
+
+    #[test]
+    fn a_lookup_table_is_one_map_line_so_the_keys_after_it_still_show() {
+        let body = format!(
+            r#"{{"rates": {}, "data": [{{"id": 1}}]}}"#,
+            keyed(MAP_KEYS + 1, "1.5")
+        );
+        assert_eq!(
+            outline(&body),
+            "rates: map, 21 keys like \"K00\"\n  []: number\ndata[]\n  id: number"
+        );
+    }
+
+    #[test]
+    fn a_map_merges_its_values_and_null_does_not_stop_the_fold() {
+        let mut body = keyed(MAP_KEYS, r#"{"name": "x"}"#);
+        body.insert_str(
+            body.len() - 1,
+            r#", "late": {"name": "y", "extra": 1}, "gone": null"#,
+        );
+        assert_eq!(
+            outline(&body),
+            ".: map, 22 keys like \"K00\"\n  []: object | null\n    name: string\n    extra?: number"
+        );
+    }
+
+    #[test]
+    fn element_keys_that_are_ids_fold_into_one_map() {
+        let elements: Vec<String> = (0..MAP_KEYS + 5)
+            .map(|i| format!(r#"{{"123e4567-e89b-12d3-a456-4266141740{i:02}": {{"n": {i}}}}}"#))
+            .collect();
+        let s = shape(&format!("[{}]", elements.join(",")), ShapeLimits::default()).unwrap();
+        assert_eq!(
+            s.outline,
+            ".[]: map, 25 keys like \"123e4567-e89b-12d3-a456-426614174000\"\n  []\n    n: number"
+        );
+        assert_eq!(s.example_path.as_deref(), Some(".[][].n"));
+    }
+
+    #[test]
+    fn a_record_stays_listed_key_by_key() {
+        // Exactly MAP_KEYS same-kind keys is still a record.
+        let lines = outline(&keyed(MAP_KEYS, "1"));
+        assert_eq!(lines.lines().count(), MAP_KEYS, "{lines}");
+        // Many keys of mixed kinds is a record, however many.
+        let mut body = keyed(MAP_KEYS + 10, "1");
+        body.insert_str(body.len() - 1, r#", "name": "x""#);
+        let lines = outline(&body);
+        assert_eq!(lines.lines().count(), MAP_KEYS + 11, "{lines}");
+        assert!(!lines.contains("map"), "{lines}");
+    }
+
+    #[test]
+    fn a_long_example_key_is_cut() {
+        let key = "k".repeat(MAP_EXAMPLE_CHARS + 10);
+        let mut body = keyed(MAP_KEYS, "true");
+        body.insert_str(1, &format!(r#""{key}": false, "#));
+        let shown = format!("\"{}\"…", "k".repeat(MAP_EXAMPLE_CHARS));
+        assert_eq!(
+            outline(&body),
+            format!(".: map, 21 keys like {shown}\n  []: boolean")
+        );
     }
 
     #[test]
