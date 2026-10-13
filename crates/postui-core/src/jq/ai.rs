@@ -14,7 +14,9 @@ is ambiguous, pick the most literal reading.
 The structure lists every key in the document once, one per line; a line
 indented under another is a key inside it. `name[]` is an array, and the
 lines under it are the keys of its elements, merged across all elements.
-`key?` means some of the objects lack that key. `name: map, N keys like \"k\"`
+`key?` means some of the objects lack that key. A key with several types
+(`a: object | array`) lists its object's keys under it plus a `[]` line for its
+array's elements, reached with `.a[]`. `name: map, N keys like \"k\"`
 is an object used as a lookup table: its keys are data, and the lines under its
 `[]` describe every value, merged. Reach the values with `.name[]`, one of them
 with `.name[\"k\"]`, the keys with `keys` or `to_entries`. Values are shown as
@@ -41,16 +43,32 @@ pub fn prompt(shape: &Shape, current_filter: &str, request: &str) -> String {
     )
 }
 
-/// Trims, skips ``` fence lines, takes the first non-empty line, and drops
-/// backticks wrapped around it (never jq syntax).
+/// Trims, skips ``` fence lines, takes the first non-empty line, and keeps
+/// what is inside its first backtick pair (backticks are never jq syntax),
+/// so prose around a quoted filter is dropped too.
 pub fn extract_filter(reply: &str) -> Option<String> {
     reply
         .lines()
         .map(str::trim)
         .find(|l| !l.is_empty() && !l.starts_with("```"))
-        .map(|l| l.trim_matches('`').trim())
+        .map(inside_backticks)
         .filter(|l| !l.is_empty())
         .map(str::to_string)
+}
+
+/// `` `.a` and more `` → `.a`; a line with no backticks, or nothing after
+/// its first run of them (`.a``), comes back with the backticks trimmed.
+fn inside_backticks(line: &str) -> &str {
+    let Some(open) = line.find('`') else {
+        return line;
+    };
+    let rest = line[open..].trim_start_matches('`');
+    let quoted = rest.split('`').next().unwrap_or("").trim();
+    if quoted.is_empty() {
+        line.trim_matches('`').trim()
+    } else {
+        quoted
+    }
 }
 
 #[cfg(test)]
@@ -92,6 +110,10 @@ mod tests {
             p.contains("`name: map, N keys like \"k\"`"),
             "the map line is explained: {p}"
         );
+        assert!(
+            p.contains("a `[]` line for its\narray's elements, reached with `.a[]`"),
+            "the `[]` line under a key of several types is explained: {p}"
+        );
     }
 
     #[test]
@@ -126,5 +148,19 @@ mod tests {
         );
         assert_eq!(extract_filter("`` .a ``"), Some(".a".into()));
         assert_eq!(extract_filter("``"), None);
+        assert_eq!(extract_filter(".a`"), Some(".a".into()));
+    }
+
+    #[test]
+    fn prose_around_a_backticked_filter_is_dropped() {
+        assert_eq!(
+            extract_filter("`.data[] | .name` returns the names"),
+            Some(".data[] | .name".into())
+        );
+        assert_eq!(
+            extract_filter("Use `map(.id)` here."),
+            Some("map(.id)".into())
+        );
+        assert_eq!(extract_filter("`.a"), Some(".a".into()), "unclosed");
     }
 }

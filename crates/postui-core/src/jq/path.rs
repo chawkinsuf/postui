@@ -23,32 +23,34 @@ pub fn render_path(path: &[PathSeg]) -> String {
     let mut out = String::new();
     for seg in path {
         match seg {
-            PathSeg::Key(k) if is_identifier(k) => {
-                out.push('.');
-                out.push_str(k);
-            }
-            PathSeg::Key(k) => {
-                // A leading "." is jq's identity before an index; bracket
-                // indexing after another segment applies directly.
-                if out.is_empty() {
-                    out.push('.');
-                }
-                // serde_json's string encoding is exactly jq's.
-                out.push('[');
-                out.push_str(&serde_json::to_string(k).expect("strings always encode"));
-                out.push(']');
-            }
-            PathSeg::Index(i) => {
-                if out.is_empty() {
-                    out.push('.');
-                }
-                out.push('[');
-                out.push_str(&i.to_string());
-                out.push(']');
-            }
+            PathSeg::Key(k) => push_key(&mut out, k),
+            PathSeg::Index(i) => push_bracket(&mut out, &i.to_string()),
         }
     }
     out
+}
+
+/// Appends `.key`, or `["odd key"]` for a key that is not an identifier.
+pub(crate) fn push_key(out: &mut String, key: &str) {
+    if is_identifier(key) {
+        out.push('.');
+        out.push_str(key);
+    } else {
+        // serde_json's string encoding is exactly jq's.
+        push_bracket(out, &serde_json::to_string(key).expect("strings always encode"));
+    }
+}
+
+/// Appends `[inner]`: `[3]`, `["k"]`, `[]`.
+pub(crate) fn push_bracket(out: &mut String, inner: &str) {
+    // A leading "." is jq's identity before an index; bracket indexing
+    // after another segment applies directly.
+    if out.is_empty() {
+        out.push('.');
+    }
+    out.push('[');
+    out.push_str(inner);
+    out.push(']');
 }
 
 /// Appends `path` and `expr` to `current` as one pipeline; see rules below.

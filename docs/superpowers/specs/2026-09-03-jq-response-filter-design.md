@@ -124,15 +124,20 @@ data[]
 - `name[]` is an array; the lines under it describe its elements, merged
   across every element. A key some of the merged objects lack is `key?`.
 - An object with more than 20 distinct keys whose values all hold the
-  same kinds (a value that is only ever null aside) is a lookup table keyed
-  by data — currency codes, dates, ids, also when each array element
-  carries its own key — not a record. It is one line,
+  same kinds (a value that is only ever null aside) and whose keys all look
+  like data — not a plain identifier (`2026-01-01`, `en-US`), holding a
+  digit (`K00`, hex ids), or a code in capitals (`USD`) — is a lookup table
+  keyed by data, also when each array element carries its own key, not a
+  record. Past 200 same-kind keys it is one whatever the keys look like
+  (user names as keys). It is one line,
   `rates: map, 2000 keys like "USD"` (the first key, cut at 40 chars), with
   every value merged under a `[]` line. Listing each key would fill the
   byte cap and hide the keys after it. The user chose folding lookup
-  tables on 2026-10-13, after a review; the 20-key threshold and the
-  same-kinds test are my defaults. A record with mixed kinds is listed in
-  full however wide.
+  tables on 2026-10-13, after a review; the thresholds, the same-kinds test
+  and the data-key test are my defaults (the key test came from the second
+  review: without it a record of 21+ counters lost every field name). A
+  record with mixed kinds, or with field-like names under 200 keys, is
+  listed in full.
 - Scalars are type names; a position holding several types is
   `a | b` in the order object, array, string, number, boolean, null. A
   container that holds both an object and an array lists the object's
@@ -145,7 +150,9 @@ data[]
 - Past `max_bytes` the outline is cut at a whole line and ends with
   `… N more lines not shown`.
 - `example_path` is the deepest leaf as a jq path
-  (`.data[].address.geo.lat`), shown to the model as a template.
+  (`.data[].address.geo.lat`), shown to the model as a template. An
+  always-empty `{}`/`[]` is never the leaf; with nothing else there is no
+  example.
 
 ## Response component
 
@@ -283,7 +290,9 @@ while a request is pending `Esc` in the bar cancels it (kills the child)
 instead of blurring, and a stale reply is dropped.
 
 Reply handling: trim; strip a surrounding ``` fence if present; take the
-first non-empty line; drop backticks wrapped around it. `JqFilter::compile` it: on success the text lands
+first non-empty line; when it holds backticks, keep what is inside the
+first pair (backticks are never jq, so prose around a quoted filter goes
+too). `JqFilter::compile` it: on success the text lands
 in the bar and applies; on failure the text still lands in the bar with
 the jaq error under it so the user can repair it by hand. A non-zero exit
 or empty output toasts the last line of stderr ("claude: not logged in").
@@ -298,10 +307,13 @@ ai_confirmed = true           # written by the one-time confirm
 ```
 
 `postui --debug-ai [directory]` (added 2026-10-13) appends every exchange
-to `$XDG_STATE_HOME/postui/ai.log` (the platform's local data directory
-off Linux): timestamp and command, the whole prompt, raw stdout, stderr,
-exit status, and the filter taken from the reply. A startup toast names
-the file. The write goes through `hostfs::append_log`.
+to `$XDG_STATE_HOME/postui/ai.log` (default `~/.local/state`, on macOS
+too like the config dir; the local data directory on Windows): timestamp
+and command, the whole prompt, raw stdout, stderr, exit status, and the
+filter taken from the reply. A startup toast names the file. The writes go
+through `hostfs::append_log`: the prompt synchronously before the task is
+spawned (so a request cancelled before it ever runs still logs it), the
+reply on the blocking pool.
 
 First use shows a modal: "Send the response's structure (key names and
 types, no values) to `claude -p`?" with Send / Cancel and a "don't ask

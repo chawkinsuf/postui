@@ -5139,31 +5139,36 @@ impl App {
                 let request = self.ai_request;
                 let generation = view.generation;
                 let cmd = self.ui_settings.ai_cmd.clone();
+                // The prompt goes in here, before the task exists: a reply
+                // that never comes (cancelled or superseded, even before the
+                // task first runs) still leaves its prompt in the log.
+                if let Some(path) = &self.ai_log {
+                    let text = crate::ai::log_prompt(std::time::SystemTime::now(), &cmd, &stdin);
+                    if let Err(e) = crate::hostfs::append_log(path, &text) {
+                        self.toasts.push(
+                            format!("could not write {}: {e}", path.display()),
+                            ToastKind::Warning,
+                        );
+                    }
+                }
                 let tx = self.tx.clone();
                 let log = self.ai_log.clone();
                 let task = handle.spawn(async move {
-                    let append = |text: String| {
-                        let path = log.as_ref()?;
-                        let e = crate::hostfs::append_log(path, &text).err()?;
-                        let _ = tx.send(Action::ShowToast(
-                            format!("could not write {}: {e}", path.display()),
-                            ToastKind::Warning,
-                        ));
-                        Some(())
-                    };
-                    // The prompt goes in before the command runs: a reply
-                    // that never comes (cancelled, superseded) still leaves
-                    // its prompt in the log.
-                    if log.is_some() {
-                        append(crate::ai::log_prompt(
-                            std::time::SystemTime::now(),
-                            &cmd,
-                            &stdin,
-                        ));
-                    }
                     let outcome = crate::ai::run_command(cmd, stdin).await;
-                    if log.is_some() {
-                        append(crate::ai::log_reply(&outcome));
+                    if let Some(path) = log {
+                        let text = crate::ai::log_reply(&outcome);
+                        let tx = tx.clone();
+                        // Off the async workers: a slow disk stalls only
+                        // the blocking pool.
+                        let _ = tokio::task::spawn_blocking(move || {
+                            if let Err(e) = crate::hostfs::append_log(&path, &text) {
+                                let _ = tx.send(Action::ShowToast(
+                                    format!("could not write {}: {e}", path.display()),
+                                    ToastKind::Warning,
+                                ));
+                            }
+                        })
+                        .await;
                     }
                     let result = outcome.and_then(crate::ai::CommandOutput::into_reply);
                     let _ = tx.send(Action::JqAiFinished {

@@ -64,10 +64,16 @@ struct Schema {
 }
 
 /// An object with more distinct keys than this, every value of the same
-/// kinds (null aside), is a lookup table keyed by data — currency codes,
-/// dates, ids — not a record: listing each key would bury everything after
-/// it under thousands of lines.
+/// kinds (null aside) and every key shaped like data (`is_data_key`), is a
+/// lookup table keyed by data — currency codes, dates, ids — not a record:
+/// listing each key would bury everything after it under thousands of
+/// lines. Keys named like fields (`views`, `likes`) keep a record listed,
+/// since folding would hide the names the model has to write.
 const MAP_KEYS: usize = 20;
+
+/// Past this many keys of the same kinds the object folds whatever its keys
+/// look like (user names as keys): no record has this many fields.
+const MAP_KEYS_ANY: usize = 200;
 
 /// The longest example key a `map` line shows before cutting it.
 const MAP_EXAMPLE_CHARS: usize = 40;
@@ -98,14 +104,18 @@ struct KeyMap {
 
 impl Object {
     fn slot(&mut self, name: &str) -> usize {
-        *self.index.entry(name.to_string()).or_insert_with(|| {
-            self.fields.push(Field {
-                name: name.to_string(),
-                seen: 0,
-                schema: Schema::default(),
-            });
-            self.fields.len() - 1
-        })
+        // Looked up before allocating: most keys repeat across elements.
+        if let Some(&at) = self.index.get(name) {
+            return at;
+        }
+        self.fields.push(Field {
+            name: name.to_string(),
+            seen: 0,
+            schema: Schema::default(),
+        });
+        let at = self.fields.len() - 1;
+        self.index.insert(name.to_string(), at);
+        at
     }
 
     /// Never had a key.
@@ -137,8 +147,10 @@ impl Object {
             .map(|f| f.schema.kind_bits())
             .filter(|&bits| bits != 0);
         let first = kinds.next();
-        if self.fields.len() > MAP_KEYS && kinds.all(|bits| Some(bits) == first) {
-            let keys = self.fields.len();
+        let keys = self.fields.len();
+        let table_sized = keys > MAP_KEYS_ANY
+            || keys > MAP_KEYS && self.fields.iter().all(|f| is_data_key(&f.name));
+        if table_sized && kinds.all(|bits| Some(bits) == first) {
             let example = self.fields[0].name.clone();
             let mut values = Schema::default();
             for field in std::mem::take(&mut self.fields) {
@@ -157,6 +169,15 @@ impl Object {
             field.schema.collapse();
         }
     }
+}
+
+/// A key that is a value rather than a field name: not a plain identifier
+/// (`2026-01-01`, `123`, `en-US`), holding a digit (`K00`, hex ids), or a
+/// code in capitals (`USD`, `US`).
+fn is_data_key(key: &str) -> bool {
+    !crate::jq::path::is_identifier(key)
+        || key.bytes().any(|b| b.is_ascii_digit())
+        || key.len() >= 2 && key.bytes().all(|b| b.is_ascii_uppercase())
 }
 
 impl Schema {
@@ -246,6 +267,13 @@ impl Schema {
         self.array.is_some() && self.object.is_none() && !self.has_scalar()
     }
 
+    /// Only ever `{}` or `[]`.
+    fn is_only_empty_containers(&self) -> bool {
+        !self.has_scalar()
+            && self.object.as_ref().is_none_or(Object::is_empty)
+            && self.array.as_deref().is_none_or(Schema::is_empty)
+    }
+
     /// `object | array | string (url) | null`; a container that was always
     /// empty is spelled `{}` / `[]`, since nothing is listed under it, and a
     /// lookup table `map, 2000 keys like "USD"`.
@@ -332,7 +360,6 @@ impl Outline {
             let elements = schema.array.as_deref().expect("only array");
             if elements.is_empty() {
                 self.line(indent, format!("{label}: [] (always empty)"));
-                self.leaf(path);
                 return;
             }
             path.push(Seg::Each);
@@ -369,7 +396,9 @@ impl Outline {
             path.pop();
             nested = true;
         }
-        if !nested {
+        // An always-empty `{}`/`[]` holds nothing to reach, so it never
+        // becomes the example.
+        if !nested && !schema.is_only_empty_containers() {
             self.leaf(path);
         }
     }
@@ -377,27 +406,12 @@ impl Outline {
 
 /// `.data[].address.city`, `.[]["odd key"]`.
 fn jq_path(segs: &[Seg]) -> String {
+    use crate::jq::path::{push_bracket, push_key};
     let mut out = String::new();
     for seg in segs {
         match seg {
-            Seg::Key(k) if crate::jq::path::is_identifier(k) => {
-                out.push('.');
-                out.push_str(k);
-            }
-            Seg::Key(k) => {
-                if out.is_empty() {
-                    out.push('.');
-                }
-                out.push('[');
-                out.push_str(&serde_json::to_string(k).expect("strings always encode"));
-                out.push(']');
-            }
-            Seg::Each => {
-                if out.is_empty() {
-                    out.push('.');
-                }
-                out.push_str("[]");
-            }
+            Seg::Key(k) => push_key(&mut out, k),
+            Seg::Each => push_bracket(&mut out, ""),
         }
     }
     out
@@ -615,7 +629,7 @@ data[]
         let mut body = keyed(MAP_KEYS, r#"{"name": "x"}"#);
         body.insert_str(
             body.len() - 1,
-            r#", "late": {"name": "y", "extra": 1}, "gone": null"#,
+            r#", "L01": {"name": "y", "extra": 1}, "G01": null"#,
         );
         assert_eq!(
             outline(&body),
@@ -650,11 +664,73 @@ data[]
     }
 
     #[test]
+    fn many_same_kind_fields_named_like_fields_stay_a_record() {
+        let names = [
+            "views", "likes", "shares", "saves", "clicks", "opens", "replies", "reposts",
+            "follows", "mentions", "quotes", "bookmarks", "impressions", "reach", "visits",
+            "downloads", "installs", "signups", "logins", "purchases", "refunds", "votes",
+        ];
+        let pairs: Vec<String> = names.iter().map(|n| format!(r#""{n}": 1"#)).collect();
+        let body = format!(r#"{{"stats": {{{}}}}}"#, pairs.join(", "));
+        let lines = outline(&body);
+        assert!(!lines.contains("map"), "{lines}");
+        assert!(lines.contains("\n  likes: number\n"), "{lines}");
+    }
+
+    #[test]
+    fn codes_dates_and_ids_as_keys_fold() {
+        let codes: Vec<String> = (0..MAP_KEYS + 1)
+            .map(|i| format!(r#""U{}D": 1.5"#, char::from(b'A' + i as u8)))
+            .collect();
+        assert_eq!(
+            outline(&format!("{{{}}}", codes.join(", "))),
+            ".: map, 21 keys like \"UAD\"\n  []: number"
+        );
+        let dates: Vec<String> = (1..=MAP_KEYS + 1)
+            .map(|d| format!(r#""2026-01-{d:02}": 3"#))
+            .collect();
+        assert!(
+            outline(&format!("{{{}}}", dates.join(", "))).starts_with(".: map, 21 keys"),
+            "date keys"
+        );
+    }
+
+    #[test]
+    fn a_huge_same_kind_object_folds_whatever_its_keys_look_like() {
+        let names: Vec<String> = (0..MAP_KEYS_ANY + 1)
+            .map(|i| {
+                // Lowercase words only: user names, not codes.
+                let word: String = format!("{i:03}")
+                    .bytes()
+                    .map(|d| char::from(b'a' + (d - b'0')))
+                    .collect();
+                format!(r#""user{word}": 1"#)
+            })
+            .collect();
+        assert_eq!(
+            outline(&format!("{{{}}}", names.join(", "))),
+            ".: map, 201 keys like \"useraaa\"\n  []: number"
+        );
+    }
+
+    #[test]
+    fn the_example_path_never_ends_at_an_always_empty_container() {
+        let s = shape(
+            r#"{"data": [{"id": 1, "meta": {"tags": {}, "refs": {"list": []}}}]}"#,
+            ShapeLimits::default(),
+        )
+        .unwrap();
+        assert_eq!(s.example_path.as_deref(), Some(".data[].id"));
+        let s = shape(r#"{"a": {"b": []}}"#, ShapeLimits::default()).unwrap();
+        assert_eq!(s.example_path, None);
+    }
+
+    #[test]
     fn a_long_example_key_is_cut() {
-        let key = "k".repeat(MAP_EXAMPLE_CHARS + 10);
+        let key = "9".repeat(MAP_EXAMPLE_CHARS + 10);
         let mut body = keyed(MAP_KEYS, "true");
         body.insert_str(1, &format!(r#""{key}": false, "#));
-        let shown = format!("\"{}\"…", "k".repeat(MAP_EXAMPLE_CHARS));
+        let shown = format!("\"{}\"…", "9".repeat(MAP_EXAMPLE_CHARS));
         assert_eq!(
             outline(&body),
             format!(".: map, 21 keys like {shown}\n  []: boolean")

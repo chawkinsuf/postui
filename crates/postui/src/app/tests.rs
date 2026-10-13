@@ -24192,11 +24192,8 @@ async fn debug_ai_logs_the_prompt_of_a_request_that_is_cancelled() {
     app.ai_log = Some(log.clone());
     stub_ai(&mut app, "sleep 30");
     app.update(Action::RunJqDescribe("just the total".into()));
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !std::fs::read_to_string(&log).is_ok_and(|t| t.contains("Request: just the total")) {
-        assert!(Instant::now() < deadline, "the prompt is logged before the reply");
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    // Cancelled before the spawned task is ever polled (this runtime is
+    // single-threaded and nothing has awaited yet).
     app.update(Action::CancelJqDescribe);
     let text = std::fs::read_to_string(&log).unwrap();
     assert!(text.contains("--- prompt\nYou write jq 1.7 filters"), "{text}");
