@@ -24165,6 +24165,25 @@ async fn describe_a_filter_sends_the_shape_and_lands_the_reply_in_the_bar() {
 }
 
 #[tokio::test]
+async fn debug_ai_logs_the_prompt_and_the_raw_reply() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("state/ai.log");
+    let mut app = App::new_for_test();
+    ready_response(&mut app, JQ_BODY);
+    app.ai_log = Some(log.clone());
+    stub_ai(&mut app, "echo '`.data.total`'; echo 'warming up' >&2");
+    app.update(Action::RunJqDescribe("just the total".into()));
+    let a = drain_ai(&mut app).await;
+    app.update(a);
+    let text = std::fs::read_to_string(&log).unwrap();
+    assert!(text.contains("--- prompt\nYou write jq 1.7 filters"), "{text}");
+    assert!(text.contains("Request: just the total\n"), "{text}");
+    assert!(text.contains("--- stdout\n`.data.total`\n"), "raw reply: {text}");
+    assert!(text.contains("--- stderr\nwarming up\n"), "{text}");
+    assert!(text.contains("--- filter: .data.total\n"), "{text}");
+}
+
+#[tokio::test]
 async fn a_fenced_reply_is_unwrapped_and_a_bad_reply_lands_with_its_error() {
     let mut app = App::new_for_test();
     ready_response(&mut app, JQ_BODY);

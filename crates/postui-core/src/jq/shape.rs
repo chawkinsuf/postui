@@ -10,7 +10,9 @@ pub struct ShapeLimits {
 
 impl Default for ShapeLimits {
     fn default() -> Self {
-        Self { max_bytes: 16 * 1024 }
+        Self {
+            max_bytes: 16 * 1024,
+        }
     }
 }
 
@@ -132,7 +134,14 @@ impl Schema {
     fn kinds(&self) -> String {
         let mut kinds: Vec<String> = Vec::new();
         if let Some(object) = &self.object {
-            kinds.push(if object.fields.is_empty() { "{}" } else { "object" }.into());
+            kinds.push(
+                if object.fields.is_empty() {
+                    "{}"
+                } else {
+                    "object"
+                }
+                .into(),
+            );
         }
         if let Some(elements) = &self.array {
             kinds.push(if elements.is_empty() { "[]" } else { "array" }.into());

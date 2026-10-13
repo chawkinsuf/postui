@@ -16,10 +16,11 @@ use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let cli = postui::config::parse_cli(std::env::args().nth(1));
-    let cli_root = match cli {
+    let cli = postui::config::parse_cli(std::env::args().skip(1).collect());
+    let (cli_root, debug_ai) = match cli {
         postui::config::CliParse::Usage => {
-            println!("usage: postui [directory]");
+            println!("usage: postui [--debug-ai] [directory]");
+            println!("       --debug-ai        log every AI filter prompt and reply to a file");
             println!("       postui --setup    terminal keyboard setup (macOS opt/cmd keys)");
             println!(
                 "       postui --keydump[=BITS]  echo raw key and mouse events (kitty flag bits; 0=none)"
@@ -39,7 +40,7 @@ async fn main() -> anyhow::Result<()> {
             );
             return Ok(());
         }
-        postui::config::CliParse::Root(root) => root,
+        postui::config::CliParse::Root { root, debug_ai } => (root, debug_ai),
     };
 
     let mut terminal = ratatui::init(); // installs a panic hook that restores the terminal
@@ -47,7 +48,7 @@ async fn main() -> anyhow::Result<()> {
     // The app name lives in the window title, not the header bar.
     let _ = execute!(std::io::stdout(), SetTitle("postui"));
 
-    let result = run(&mut terminal, cli_root).await;
+    let result = run(&mut terminal, cli_root, debug_ai).await;
     reset_pointer_shape();
     let _ = execute!(
         std::io::stdout(),
@@ -185,6 +186,7 @@ fn enable_mouse_and_wrap_panic_hook() {
 async fn run(
     terminal: &mut ratatui::DefaultTerminal,
     cli_root: Option<std::path::PathBuf>,
+    debug_ai: bool,
 ) -> anyhow::Result<()> {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Action>();
     let mut app = App::new(tx, cli_root);
@@ -201,6 +203,20 @@ async fn run(
         "Welcome to postui".into(),
         ToastKind::Info,
     ));
+    if debug_ai {
+        let toast = match postui::ai::debug_log_path() {
+            Some(path) => {
+                let toast = (format!("AI debug log: {}", path.display()), ToastKind::Info);
+                app.ai_log = Some(path);
+                toast
+            }
+            None => (
+                "--debug-ai: no state directory for this platform".to_string(),
+                ToastKind::Error,
+            ),
+        };
+        app.update(Action::ShowToast(toast.0, toast.1));
+    }
 
     let mut redraw = true;
     while !app.should_quit {

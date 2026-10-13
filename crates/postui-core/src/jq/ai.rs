@@ -63,20 +63,23 @@ mod tests {
 
     #[test]
     fn the_prompt_carries_the_structure_the_example_the_filter_and_the_request_in_order() {
-        let p = prompt(
-            &shape("a\n  b: number", Some(".a.b")),
-            ".a",
-            "double it",
-        );
-        let shape_at = p.find("Structure:\na\n  b: number\n").expect("structure block");
-        let example_at = p.find("A full path in this document: .a.b").expect("example line");
+        let p = prompt(&shape("a\n  b: number", Some(".a.b")), ".a", "double it");
+        let shape_at = p
+            .find("Structure:\na\n  b: number\n")
+            .expect("structure block");
+        let example_at = p
+            .find("A full path in this document: .a.b")
+            .expect("example line");
         let filter_at = p.find("Current filter: .a").expect("filter line");
         let req_at = p.find("Request: double it").expect("request line");
         assert!(
             shape_at < example_at && example_at < filter_at && filter_at < req_at,
             "{p}"
         );
-        assert!(p.contains("jq 1.7"), "system section names the dialect: {p}");
+        assert!(
+            p.contains("jq 1.7"),
+            "system section names the dialect: {p}"
+        );
         assert!(p.contains("no backticks"), "{p}");
         assert!(
             p.contains("write its whole path from the root"),

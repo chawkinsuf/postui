@@ -252,6 +252,9 @@ pub struct App {
     /// can be matched to the request it was started for (and only that
     /// one — a cancelled or superseded one is dropped).
     ai_request: u64,
+    /// Where `--debug-ai` logs every AI exchange (prompt, raw reply,
+    /// status); `None` without the flag.
+    pub ai_log: Option<PathBuf>,
     /// An action that can only be applied by suspending the terminal, parked
     /// here by `update` for the main loop to take and run. Keeps `update`
     /// itself terminal-free (and therefore testable without a TTY).
@@ -1755,6 +1758,7 @@ impl App {
             tx,
             ai_task: None,
             ai_request: 0,
+            ai_log: None,
             pending_terminal_action: None,
             resumed_config_edit: None,
             hits: HitMap::default(),
@@ -5136,8 +5140,24 @@ impl App {
                 let generation = view.generation;
                 let cmd = self.ui_settings.ai_cmd.clone();
                 let tx = self.tx.clone();
+                let log = self.ai_log.clone();
                 let task = handle.spawn(async move {
-                    let result = crate::ai::run_command(cmd, stdin).await;
+                    let outcome = crate::ai::run_command(cmd.clone(), stdin.clone()).await;
+                    if let Some(path) = log {
+                        let entry = crate::ai::log_entry(
+                            std::time::SystemTime::now(),
+                            &cmd,
+                            &stdin,
+                            &outcome,
+                        );
+                        if let Err(e) = crate::hostfs::append_log(&path, &entry) {
+                            let _ = tx.send(Action::ShowToast(
+                                format!("could not write {}: {e}", path.display()),
+                                ToastKind::Warning,
+                            ));
+                        }
+                    }
+                    let result = outcome.and_then(crate::ai::CommandOutput::into_reply);
                     let _ = tx.send(Action::JqAiFinished {
                         generation,
                         request,
