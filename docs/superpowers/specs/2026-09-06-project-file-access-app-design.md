@@ -149,7 +149,9 @@ around the user's unsaved edits, it is not a discard.
 A `hostfs` module in the TUI crate owns the three sites that touch files
 outside any project: writing an export to a user-chosen path, listing a
 directory for the file picker, and the external-editor temp-file
-round-trip. Nothing else in either crate names `std::fs`.
+round-trip. (A fourth joined later: the `--debug-ai` log, appended to
+under the platform state directory.) Nothing else in either crate names
+`std::fs`.
 
 The lint is one test per crate. It reads every source file under `src/`
 and fails, naming the file and line, if `std::fs` (or `use std::fs`)

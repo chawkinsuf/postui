@@ -94,24 +94,67 @@ pub fn run(filter: &JqFilter, doc: &JqDocument) -> Result<Vec<String>, JqError>;
 ### Shape summary (`postui-core::jq::shape`)
 
 ```rust
-pub fn shape(body: &str, limits: ShapeLimits) -> String;
-pub struct ShapeLimits { pub max_depth: usize /* 6 */, pub max_bytes: usize /* 4096 */, pub max_keys: usize /* 40 */ }
+pub fn shape(body: &str, limits: ShapeLimits) -> Option<Shape>;
+pub struct ShapeLimits { pub max_bytes: usize /* 16 KiB */ }
+pub struct Shape { pub outline: String, pub example_path: Option<String> }
 ```
 
-Produces a JSON-ish text describing structure:
+**Revised 2026-10-13.** The first cut sent one JSON-ish line capped at six
+levels (arrays counted), sampled only the first array element and cut at
+4096 bytes. Nested keys the user named were often missing, so the model
+wrote a bare `.leaf`. The user chose an indented outline over a full-path
+list (too many repeated prefixes) and a TypeScript type (one nested line
+again):
 
-- Objects keep their keys (first `max_keys`, then `"…": "+N more keys"`),
-  each value replaced by its shape.
-- Arrays become a one-element array holding the shape of the first
-  element (`[]` for empty), followed by a length hint: `[{...}] /* 200 items */`.
-  Where elements disagree in type, the first element still wins — the
-  model gets a representative, not a union.
-- Scalars become their type name: `"string"`, `"number"`, `"boolean"`,
-  `"null"`. Strings that look like ISO dates, URLs, emails or UUIDs are
-  labelled `"string (date-time)"` etc. — cheap and it helps the model pick
-  `sort_by(.created_at)` correctly.
-- Depth beyond `max_depth` is `"…"`. Output beyond `max_bytes` is
-  truncated at a token boundary with a trailing `…`.
+```
+page: number
+next: string (url)
+data[]
+  id: string (uuid)
+  roles[]: string
+  address
+    city: string
+  manager_id: string (uuid) | null
+  meta?
+    code: string
+```
+
+- One key per line, indented under its parent; no depth limit. Keys that
+  are not identifiers are JSON-quoted.
+- `name[]` is an array; the lines under it describe its elements, merged
+  across every element. A key some of the merged objects lack is `key?`.
+- An object with more than 20 distinct keys whose values all hold the
+  same kinds (a value that is only ever null aside) is folded into one
+  line naming its keys, with every value merged under a `[]` line:
+  `rates: object, 2000 keys (AED, AFN, ALL, … 1960 more)`. Keys are
+  written as in the outline (bare identifiers, others quoted), whole keys
+  up to 400 bytes, then `… N more`; a first key longer than that is cut
+  with `…`. This covers lookup tables keyed by data (currency codes,
+  dates, ids, also when each array element carries its own key), which
+  listed one per line would fill the byte cap and hide the keys after
+  them, and wide records of same-kind fields (25 counters), which keep
+  every name the model has to write. The example path goes through a
+  folded object by its first key (`.stats.views`). A record with mixed
+  kinds is listed in full however wide. History: the user chose folding
+  lookup tables on 2026-10-13; the first version showed only one example
+  key and lost a wide record's field names, a data-looking-keys test was
+  tried and dropped, and the user chose listing the names instead. The
+  20-key and 400-byte limits are my defaults.
+- Scalars are type names; a position holding several types is
+  `a | b` in the order object, array, string, number, boolean, null. A
+  container that holds both an object and an array lists the object's
+  keys and a `[]` line under the union. Always-empty containers are
+  `[] (always empty)` / `{}`.
+- Strings that look like ISO dates, URLs, emails or UUIDs are labelled
+  `string (date-time)` etc. while every string at that position agrees.
+- The root is named by its jq path when it is not an object (`.[]`,
+  `.: number`).
+- Past `max_bytes` the outline is cut at a whole line and ends with
+  `… N more lines not shown`.
+- `example_path` is the deepest leaf as a jq path
+  (`.data[].address.geo.lat`), shown to the model as a template. An
+  always-empty `{}`/`[]` is never the leaf; with nothing else there is no
+  example.
 
 ## Response component
 
@@ -223,22 +266,22 @@ Entry points: the structural menu, the palette, and a `✦` button at the
 right end of the bar. Opens a one-line prompt modal, "What do you want to
 see?".
 
-On confirm the app builds one text on stdin:
+On confirm the app builds one text on stdin (there is no separate system
+prompt; the command sees it all as one message):
 
 ```
-<system section>
-You write jq 1.7 filters for a JSON document whose structure is given
-below. Reply with exactly one jq filter on a single line and nothing else:
-no prose, no code fences. Prefer `map(select(…))` over `.[] | select(…)`
-so results stay arrays. Prefer `sort_by`, `group_by`, `unique_by`,
-`to_entries`, `length`, `keys` over hand-rolled reductions. If the
-request is ambiguous, pick the most literal reading.
+<system section — the SYSTEM text in postui-core/src/jq/ai.rs: one-line
+reply, no prose/fences/backticks, preferred builtins, how to read the
+outline, "write its whole path from the root … never a bare .key unless
+that key is at the top level", the structure is the document before any
+filter>
 
-<shape section>
-Structure: <shape(body)>
+Structure:
+<shape.outline>
+
+A full path in this document: <shape.example_path>   (when there is one)
 Current filter: <bar text, or "(none)">
 
-<request section>
 Request: <user's sentence>
 ```
 
@@ -249,7 +292,9 @@ while a request is pending `Esc` in the bar cancels it (kills the child)
 instead of blurring, and a stale reply is dropped.
 
 Reply handling: trim; strip a surrounding ``` fence if present; take the
-first non-empty line. `JqFilter::compile` it: on success the text lands
+first non-empty line; when it holds backticks, keep what is inside the
+first pair (backticks are never jq, so prose around a quoted filter goes
+too). `JqFilter::compile` it: on success the text lands
 in the bar and applies; on failure the text still lands in the bar with
 the jaq error under it so the user can repair it by hand. A non-zero exit
 or empty output toasts the last line of stderr ("claude: not logged in").
@@ -262,6 +307,15 @@ Config (`config.toml`, top level, beside `clipboard_cmd`):
 ai_cmd = "claude -p"          # default; any command that reads stdin, prints a reply
 ai_confirmed = true           # written by the one-time confirm
 ```
+
+`postui --debug-ai [directory]` (added 2026-10-13) appends every exchange
+to `$XDG_STATE_HOME/postui/ai.log` (default `~/.local/state`, on macOS
+too like the config dir; the local data directory on Windows): timestamp
+and command, the whole prompt, raw stdout, stderr, exit status, and the
+filter taken from the reply. A startup toast names the file. The writes go
+through `hostfs::append_log`: the prompt synchronously before the task is
+spawned (so a request cancelled before it ever runs still logs it), the
+reply on the blocking pool.
 
 First use shows a modal: "Send the response's structure (key names and
 types, no values) to `claude -p`?" with Send / Cancel and a "don't ask
@@ -295,8 +349,12 @@ typing, using the existing coalescing).
   `JqError` variant with its span (`.foo | select(` → span on `(`;
   `nosuchfn(1)` → name/arity), runtime error message, output cap, and
   `JqDocument::parse` rejecting non-JSON.
-- `shape` tests: key cap, depth cap, byte cap with trailing `…`, array
-  sampling with length hint, scalar type names and the date/url tags.
+- `shape` tests: unlimited nesting as indentation, array elements merged
+  with `key?` for keys some lack, wide same-kind objects folded into one
+  line naming their keys (cut at a whole key with `… N more`; records of
+  mixed kinds not folded), type unions, root naming, quoted keys,
+  the byte cap's "N more lines" note, the example path, scalar type names
+  and the date/url tags.
 - `JsonTree` tests: per-line path for nested keys, indexes, odd keys
   needing bracket quoting, closing-line path, `nearest_array_ancestor`,
   `first_element_keys`, `parse_many` separator lines.

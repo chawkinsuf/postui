@@ -11,17 +11,49 @@ pub const APP_NAME: &str = "postui";
 pub fn config_dir() -> Option<std::path::PathBuf> {
     #[cfg(target_os = "macos")]
     {
-        use std::path::PathBuf;
-        let base = std::env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .filter(|p| p.is_absolute())
-            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
-        Some(base.join(APP_NAME))
+        xdg_app_dir("XDG_CONFIG_HOME", &[".config"])
     }
     #[cfg(not(target_os = "macos"))]
     {
         directories::ProjectDirs::from("", "", APP_NAME).map(|d| d.config_dir().to_path_buf())
     }
+}
+
+/// Where the app keeps state that is neither config nor project data (the
+/// `--debug-ai` log): `$XDG_STATE_HOME/postui` (default `~/.local/state`)
+/// on every Unix — macOS too, like `config_dir` — and the local data
+/// directory elsewhere.
+pub fn state_dir() -> Option<std::path::PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        xdg_app_dir("XDG_STATE_HOME", &[".local", "state"])
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let dirs = directories::BaseDirs::new()?;
+        Some(
+            dirs.state_dir()
+                .unwrap_or(dirs.data_local_dir())
+                .join(APP_NAME),
+        )
+    }
+}
+
+/// The XDG answer for one base directory on macOS, where `directories`
+/// would say `~/Library`: `$VAR/postui` when `VAR` is set to an absolute
+/// path, else `~/<default…>/postui`. The one place that policy lives, for
+/// `config_dir` and `state_dir` alike.
+#[cfg(target_os = "macos")]
+fn xdg_app_dir(var: &str, default: &[&str]) -> Option<std::path::PathBuf> {
+    use std::path::PathBuf;
+    let base = std::env::var_os(var)
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| {
+            let home = PathBuf::from(std::env::var_os("HOME")?);
+            Some(default.iter().fold(home, |p, part| p.join(part)))
+        })?;
+    Some(base.join(APP_NAME))
 }
 
 pub mod jq;
@@ -57,6 +89,15 @@ mod tests {
     #[test]
     fn config_dir_ends_with_the_app_folder() {
         let dir = super::config_dir().expect("a config dir resolves");
+        assert_eq!(
+            dir.file_name().and_then(|n| n.to_str()),
+            Some(super::APP_NAME)
+        );
+    }
+
+    #[test]
+    fn state_dir_ends_with_the_app_folder() {
+        let dir = super::state_dir().expect("a state dir resolves");
         assert_eq!(
             dir.file_name().and_then(|n| n.to_str()),
             Some(super::APP_NAME)

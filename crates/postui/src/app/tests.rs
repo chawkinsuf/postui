@@ -24091,8 +24091,8 @@ async fn drain_ai(app: &mut App) -> Action {
     // The AI task is a tokio task; await its JoinHandle then read the action
     // it sent. Every jq run goes to the blocking pool too, so its finished
     // result may be queued ahead of the reply: apply anything else first.
-    let (_, handle) = app.ai_task.take().expect("an AI request is in flight");
-    handle.await.unwrap();
+    let task = app.ai_task.take().expect("an AI request is in flight");
+    task.handle.await.unwrap();
     loop {
         let action = app
             ._test_rx
@@ -24150,9 +24150,97 @@ async fn describe_a_filter_sends_the_shape_and_lands_the_reply_in_the_bar() {
     settle_jq(&mut app).await;
     assert_eq!(app.session.response.view().unwrap().view_text(), "2");
     let sent = std::fs::read_to_string(&seen).unwrap();
-    assert!(sent.contains(r#"Structure: {"data": {"items": [{"id": number, "status": string}] /* 2 items */, "total": number}}"#), "{sent}");
+    assert!(
+        sent.contains(
+            "Structure:\ndata\n  items[]\n    id: number\n    status: string\n  total: number\n"
+        ),
+        "{sent}"
+    );
+    assert!(
+        sent.contains("A full path in this document: .data.items[].id"),
+        "{sent}"
+    );
     assert!(sent.contains("Request: just the total"), "{sent}");
     assert!(!sent.contains("active"), "values are never sent: {sent}");
+}
+
+#[tokio::test]
+async fn a_debug_ai_log_that_cannot_be_written_is_switched_off_with_one_warning() {
+    let dir = tempfile::tempdir().unwrap();
+    // A file where the log's directory would go: create_dir_all fails.
+    let blocker = dir.path().join("state");
+    std::fs::write(&blocker, "").unwrap();
+    let mut app = App::new_for_test();
+    ready_response(&mut app, JQ_BODY);
+    app.ai_log = Some(blocker.join("ai.log"));
+    stub_ai(&mut app, "echo '.data.total'");
+    app.update(Action::RunJqDescribe("just the total".into()));
+    // Both halves (prompt and reply) fail to write; drain_ai lands their
+    // reports before the reply.
+    let a = drain_ai(&mut app).await;
+    app.update(a);
+    assert_eq!(app.session.response.jq_text(), ".data.total", "the reply still lands");
+    assert!(app.ai_log.is_none(), "logging is off for the session");
+    let warnings: Vec<_> = app
+        .toasts
+        .messages()
+        .into_iter()
+        .filter(|m| m.contains("could not write"))
+        .collect();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains("--debug-ai logging stopped"), "{warnings:?}");
+}
+
+#[tokio::test]
+async fn debug_ai_logs_the_prompt_and_the_raw_reply() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("state/ai.log");
+    let mut app = App::new_for_test();
+    ready_response(&mut app, JQ_BODY);
+    app.ai_log = Some(log.clone());
+    stub_ai(&mut app, "echo '`.data.total`'; echo 'warming up' >&2");
+    app.update(Action::RunJqDescribe("just the total".into()));
+    let a = drain_ai(&mut app).await;
+    app.update(a);
+    let text = std::fs::read_to_string(&log).unwrap();
+    assert!(text.contains("=== #1 "), "{text}");
+    assert!(text.contains("--- prompt\nYou write jq 1.7 filters"), "{text}");
+    assert!(text.contains("Request: just the total\n"), "{text}");
+    assert!(
+        text.contains("--- reply #1\n--- stdout\n`.data.total`\n"),
+        "raw reply: {text}"
+    );
+    assert!(text.contains("--- stderr\nwarming up\n"), "{text}");
+    assert!(text.contains("--- filter: .data.total\n"), "{text}");
+}
+
+#[tokio::test]
+async fn debug_ai_logs_the_prompt_of_a_request_that_is_cancelled() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("ai.log");
+    let mut app = App::new_for_test();
+    ready_response(&mut app, JQ_BODY);
+    app.ai_log = Some(log.clone());
+    stub_ai(&mut app, "sleep 5");
+    app.update(Action::RunJqDescribe("just the total".into()));
+    // Cancelled before the spawned task is ever polled (this runtime is
+    // single-threaded and nothing has awaited yet): the command task is
+    // aborted, but the prompt-building job is separate and still writes.
+    app.update(Action::CancelJqDescribe);
+    assert!(app.ai_task.is_none());
+    let mut text = String::new();
+    for _ in 0..400 {
+        text = std::fs::read_to_string(&log).unwrap_or_default();
+        if text.contains("--- prompt\n") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    assert!(
+        text.contains("=== #1 ") && text.contains("--- prompt\nYou write jq 1.7 filters"),
+        "{text}"
+    );
+    assert!(!text.contains("--- reply"), "no reply came: {text}");
 }
 
 #[tokio::test]
@@ -24164,6 +24252,16 @@ async fn a_fenced_reply_is_unwrapped_and_a_bad_reply_lands_with_its_error() {
     let a = drain_ai(&mut app).await;
     app.update(a);
     assert_eq!(app.session.response.jq_text(), ".data.total");
+
+    stub_ai(&mut app, "echo '`.data.items`'");
+    app.update(Action::RunJqDescribe("x".into()));
+    let a = drain_ai(&mut app).await;
+    app.update(a);
+    assert_eq!(
+        app.session.response.jq_text(),
+        ".data.items",
+        "backticks around the reply are dropped"
+    );
 
     stub_ai(&mut app, "echo 'this is not jq'");
     app.update(Action::RunJqDescribe("x".into()));

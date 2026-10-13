@@ -1042,11 +1042,12 @@ pub fn expand_tilde(s: &str) -> PathBuf {
     }
 }
 
-/// Result of parsing the single optional CLI argument `postui` accepts.
+/// Result of parsing `postui`'s command-line arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CliParse {
-    /// A project directory (or none), tilde-expanded.
-    Root(Option<PathBuf>),
+    /// Run the app: a project directory (or none), tilde-expanded, and
+    /// whether `--debug-ai` asked for the AI command's log.
+    Root { root: Option<PathBuf>, debug_ai: bool },
     /// A leading-dash argument (`--help`, `-x`, ...): print usage and exit.
     Usage,
     /// `--setup`: print terminal keyboard-config guidance and exit.
@@ -1059,21 +1060,38 @@ pub enum CliParse {
     Keydump { flags: Option<u8> },
 }
 
-/// Parses `postui`'s single optional argument. Any value starting with `-`
-/// (e.g. `--help`, `-x`) is treated as a request for usage rather than a
-/// project directory, since no real path starts with a dash without `./`.
-pub fn parse_cli(arg: Option<String>) -> CliParse {
-    match arg {
-        Some(s) if s == "--setup" => CliParse::Setup,
-        Some(s) if s == "--keydump" => CliParse::Keydump { flags: None },
-        Some(s) if s.starts_with("--keydump=") => match s["--keydump=".len()..].parse::<u8>() {
-            Ok(bits) => CliParse::Keydump { flags: Some(bits) },
-            Err(_) => CliParse::Usage,
-        },
-        Some(s) if s.starts_with('-') => CliParse::Usage,
-        Some(s) => CliParse::Root(Some(expand_tilde(&s))),
-        None => CliParse::Root(None),
+/// Parses `postui`'s arguments (without the program name). `--setup` and
+/// `--keydump` run alone; otherwise at most one project directory and at
+/// most one `--debug-ai`, in either order. Any other value starting with `-` (e.g.
+/// `--help`, `-x`) is treated as a request for usage rather than a project
+/// directory, since no real path starts with a dash without `./`.
+pub fn parse_cli(args: Vec<String>) -> CliParse {
+    if let [only] = args.as_slice() {
+        if only == "--setup" {
+            return CliParse::Setup;
+        }
+        if only == "--keydump" {
+            return CliParse::Keydump { flags: None };
+        }
+        if let Some(bits) = only.strip_prefix("--keydump=") {
+            return match bits.parse::<u8>() {
+                Ok(bits) => CliParse::Keydump { flags: Some(bits) },
+                Err(_) => CliParse::Usage,
+            };
+        }
     }
+    let mut root = None;
+    let mut debug_ai = false;
+    for arg in args {
+        if arg == "--debug-ai" && !debug_ai {
+            debug_ai = true;
+        } else if arg.starts_with('-') || root.is_some() {
+            return CliParse::Usage;
+        } else {
+            root = Some(expand_tilde(&arg));
+        }
+    }
+    CliParse::Root { root, debug_ai }
 }
 
 #[cfg(test)]
@@ -1810,46 +1828,76 @@ osc52_limit = 1024
         assert!(warnings[0].contains("hover"));
     }
 
+    fn cli(args: &[&str]) -> CliParse {
+        parse_cli(args.iter().map(|a| a.to_string()).collect())
+    }
+
     #[test]
     fn parse_cli_leading_dash_is_usage() {
-        assert_eq!(parse_cli(Some("--help".into())), CliParse::Usage);
-        assert_eq!(parse_cli(Some("-x".into())), CliParse::Usage);
+        assert_eq!(cli(&["--help"]), CliParse::Usage);
+        assert_eq!(cli(&["-x"]), CliParse::Usage);
+        assert_eq!(cli(&["/abs/x", "-x"]), CliParse::Usage);
     }
 
     #[test]
     fn parse_cli_setup_flag() {
-        assert_eq!(parse_cli(Some("--setup".into())), CliParse::Setup);
+        assert_eq!(cli(&["--setup"]), CliParse::Setup);
         // Not a prefix match: anything else dashed is still usage.
-        assert_eq!(parse_cli(Some("--setup-x".into())), CliParse::Usage);
+        assert_eq!(cli(&["--setup-x"]), CliParse::Usage);
+        // It runs alone.
+        assert_eq!(cli(&["--setup", "/abs/x"]), CliParse::Usage);
+        assert_eq!(cli(&["--debug-ai", "--setup"]), CliParse::Usage);
     }
 
     #[test]
     fn parse_cli_keydump_flag_with_optional_bitmask() {
-        assert_eq!(
-            parse_cli(Some("--keydump".into())),
-            CliParse::Keydump { flags: None }
-        );
-        assert_eq!(
-            parse_cli(Some("--keydump=0".into())),
-            CliParse::Keydump { flags: Some(0) }
-        );
-        assert_eq!(
-            parse_cli(Some("--keydump=5".into())),
-            CliParse::Keydump { flags: Some(5) }
-        );
+        assert_eq!(cli(&["--keydump"]), CliParse::Keydump { flags: None });
+        assert_eq!(cli(&["--keydump=0"]), CliParse::Keydump { flags: Some(0) });
+        assert_eq!(cli(&["--keydump=5"]), CliParse::Keydump { flags: Some(5) });
         // A malformed bitmask is usage, not a silent default.
-        assert_eq!(parse_cli(Some("--keydump=x".into())), CliParse::Usage);
-        assert_eq!(parse_cli(Some("--keydump=".into())), CliParse::Usage);
-        assert_eq!(parse_cli(Some("--keydump-x".into())), CliParse::Usage);
+        assert_eq!(cli(&["--keydump=x"]), CliParse::Usage);
+        assert_eq!(cli(&["--keydump="]), CliParse::Usage);
+        assert_eq!(cli(&["--keydump-x"]), CliParse::Usage);
+        assert_eq!(cli(&["--keydump", "/abs/x"]), CliParse::Usage);
     }
 
     #[test]
     fn parse_cli_normal_path_and_none() {
         assert_eq!(
-            parse_cli(Some("/abs/x".into())),
-            CliParse::Root(Some(PathBuf::from("/abs/x")))
+            cli(&["/abs/x"]),
+            CliParse::Root {
+                root: Some(PathBuf::from("/abs/x")),
+                debug_ai: false
+            }
         );
-        assert_eq!(parse_cli(None), CliParse::Root(None));
+        assert_eq!(
+            cli(&[]),
+            CliParse::Root {
+                root: None,
+                debug_ai: false
+            }
+        );
+        // One directory at most.
+        assert_eq!(cli(&["/abs/x", "/abs/y"]), CliParse::Usage);
+    }
+
+    #[test]
+    fn parse_cli_debug_ai_goes_either_side_of_the_directory() {
+        let with_root = CliParse::Root {
+            root: Some(PathBuf::from("/abs/x")),
+            debug_ai: true,
+        };
+        assert_eq!(cli(&["--debug-ai", "/abs/x"]), with_root);
+        assert_eq!(cli(&["/abs/x", "--debug-ai"]), with_root);
+        assert_eq!(
+            cli(&["--debug-ai"]),
+            CliParse::Root {
+                root: None,
+                debug_ai: true
+            }
+        );
+        // Once, like the directory.
+        assert_eq!(cli(&["--debug-ai", "--debug-ai"]), CliParse::Usage);
     }
 
     #[test]

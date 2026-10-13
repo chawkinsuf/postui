@@ -1,7 +1,8 @@
 //! The only place in the TUI crate that touches files outside a project
 //! or the config dir: an export to a user-chosen path, the file picker's
-//! directory listing, and the external editor's temp file. Everything
-//! else goes through `postui_core::disk::Disk` (see CLAUDE.md).
+//! directory listing, the external editor's temp file, and the
+//! `--debug-ai` log. Everything else goes through
+//! `postui_core::disk::Disk` (see CLAUDE.md).
 
 use std::path::{Path, PathBuf};
 
@@ -91,9 +92,31 @@ pub fn remove_tempfile(path: &Path) {
     let _ = std::fs::remove_file(path);
 }
 
+/// Appends `text` to the log at `path`, creating it and its parents.
+pub fn append_log(path: &Path, text: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    file.write_all(text.as_bytes())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn append_log_creates_parents_and_appends() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("state/postui/ai.log");
+        append_log(&p, "one\n").unwrap();
+        append_log(&p, "two\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "one\ntwo\n");
+    }
 
     #[test]
     fn write_user_file_creates_parents_and_overwrites() {

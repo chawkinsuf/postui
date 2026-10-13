@@ -1,14 +1,18 @@
 //! The "describe a filter" shell-out: a configurable command (default
 //! `claude -p`) that reads the whole prompt on stdin and prints a reply.
 
+use std::path::PathBuf;
 use std::process::Stdio;
+use std::time::SystemTime;
 use tokio::io::AsyncWriteExt as _;
 
-/// Whether `cmd`'s first word resolves on `PATH` (or is an existing path).
+/// Whether `cmd`'s program (`program_name`) resolves on `PATH` (or is an
+/// existing path).
 pub fn program_available(cmd: &str) -> bool {
-    let Some(program) = cmd.split_whitespace().next() else {
+    let program = program_name(cmd);
+    if program.is_empty() {
         return false;
-    };
+    }
     if program.contains('/') {
         return std::path::Path::new(program).is_file();
     }
@@ -17,14 +21,85 @@ pub fn program_available(cmd: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// The first word of `cmd` — the program name, for toasts and menu hints.
+/// The program in `cmd`: its first word past any leading `NAME=value`
+/// environment assignments — for toasts, menu hints, and the log, which
+/// never sees the rest of the command (a key may be in it).
 pub fn program_name(cmd: &str) -> &str {
-    cmd.split_whitespace().next().unwrap_or("")
+    shell_words(cmd)
+        .into_iter()
+        .find(|word| !is_assignment(word))
+        .unwrap_or("")
 }
 
-/// Runs `sh -c cmd` with `stdin` piped in; `Ok(stdout)` on exit 0, `Err(last
-/// stderr line or status)` otherwise.
-pub async fn run_command(cmd: String, stdin: String) -> Result<String, String> {
+/// `cmd` split at whitespace the way a shell sees words: a quoted stretch
+/// (`"a b"`, `'a b'`) stays inside its word, so `KEY="sk abc" llm` is two
+/// words and `llm` is the program.
+fn shell_words(cmd: &str) -> Vec<&str> {
+    let mut words = Vec::new();
+    let mut start = None;
+    let mut quote = None;
+    for (i, c) in cmd.char_indices() {
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => {}
+            None if c == '"' || c == '\'' => {
+                quote = Some(c);
+                start.get_or_insert(i);
+            }
+            None if c.is_whitespace() => {
+                if let Some(s) = start.take() {
+                    words.push(&cmd[s..i]);
+                }
+            }
+            None => {
+                start.get_or_insert(i);
+            }
+        }
+    }
+    if let Some(s) = start {
+        words.push(&cmd[s..]);
+    }
+    words
+}
+
+/// `NAME=…` as a shell reads it: an identifier, then `=`.
+fn is_assignment(word: &str) -> bool {
+    word.split_once('=').is_some_and(|(name, _)| {
+        !name.is_empty()
+            && !name.starts_with(|c: char| c.is_ascii_digit())
+            && name.chars().all(|c| c == '_' || c.is_ascii_alphanumeric())
+    })
+}
+
+/// Everything a finished command left behind.
+#[derive(Debug, Clone)]
+pub struct CommandOutput {
+    pub success: bool,
+    /// `exit status: 0`, `signal: 9 (SIGKILL)`, …
+    pub status: String,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+impl CommandOutput {
+    /// `Ok(stdout)` on exit 0, `Err(last stderr line or status)` otherwise.
+    pub fn into_reply(self) -> Result<String, String> {
+        if self.success {
+            return Ok(self.stdout);
+        }
+        let last = self
+            .stderr
+            .lines()
+            .rev()
+            .find(|l| !l.trim().is_empty())
+            .map(str::trim);
+        Err(last.map(str::to_string).unwrap_or(self.status))
+    }
+}
+
+/// Runs `sh -c cmd` with `stdin` piped in. `Err` only when the command
+/// could not be started or waited on.
+pub async fn run_command(cmd: String, stdin: String) -> Result<CommandOutput, String> {
     let mut child = tokio::process::Command::new("sh")
         .arg("-c")
         .arg(&cmd)
@@ -41,47 +116,227 @@ pub async fn run_command(cmd: String, stdin: String) -> Result<String, String> {
         drop(pipe);
     }
     let out = child.wait_with_output().await.map_err(|e| e.to_string())?;
-    if out.status.success() {
-        return Ok(String::from_utf8_lossy(&out.stdout).into_owned());
+    Ok(CommandOutput {
+        success: out.status.success(),
+        status: out.status.to_string(),
+        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+    })
+}
+
+/// Where `--debug-ai` writes: `ai.log` in the app's state directory
+/// (`postui_core::state_dir`).
+pub fn debug_log_path() -> Option<PathBuf> {
+    Some(postui_core::state_dir()?.join("ai.log"))
+}
+
+/// The first half of a `--debug-ai` log entry, written before the command
+/// runs so a reply that never comes (cancelled, superseded, hung) still
+/// leaves its prompt behind: the request number, when, the command, and
+/// the whole prompt. The number pairs it with its reply half, since a
+/// superseded request's reply can land after the next request's prompt.
+pub fn log_prompt(request: u64, when: SystemTime, cmd: &str, prompt: &str) -> String {
+    let mut out = format!("{}--- prompt\n{prompt}", entry_header(request, when, cmd));
+    if !prompt.ends_with('\n') {
+        out.push('\n');
     }
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    let last = stderr
-        .lines()
-        .rev()
-        .find(|l| !l.trim().is_empty())
-        .map(str::trim);
-    Err(last
-        .map(str::to_string)
-        .unwrap_or_else(|| out.status.to_string()))
+    out
+}
+
+/// A whole entry for a request that sent nothing because the body was not
+/// JSON, so the log's request numbers stay unbroken.
+pub fn log_not_json(request: u64, when: SystemTime, cmd: &str) -> String {
+    format!("{}--- not JSON: nothing sent\n\n", entry_header(request, when, cmd))
+}
+
+/// `=== #N <when>  <program>\n`. Only the program's name: the rest of the
+/// command may carry a key (`KEY=… llm`, `llm --key …`), the log is plain
+/// text, and the full command is in config.toml anyway.
+fn entry_header(request: u64, when: SystemTime, cmd: &str) -> String {
+    format!(
+        "=== #{request} {}  {}\n",
+        utc_timestamp(when),
+        program_name(cmd)
+    )
+}
+
+/// The second half, appended when the command finishes: what came back,
+/// and the filter that was taken from it.
+pub fn log_reply(request: u64, outcome: &Result<CommandOutput, String>) -> String {
+    let mut out = format!("--- reply #{request}\n");
+    match outcome {
+        Ok(output) => {
+            for (name, text) in [("stdout", &output.stdout), ("stderr", &output.stderr)] {
+                if text.is_empty() {
+                    out.push_str(&format!("--- {name}: (empty)\n"));
+                } else {
+                    out.push_str(&format!("--- {name}\n{text}"));
+                    if !text.ends_with('\n') {
+                        out.push('\n');
+                    }
+                }
+            }
+            out.push_str(&format!("--- {}\n", output.status));
+            if output.success {
+                let filter = postui_core::jq::ai::extract_filter(&output.stdout);
+                out.push_str(&format!(
+                    "--- filter: {}\n",
+                    filter.as_deref().unwrap_or("(none)")
+                ));
+            }
+        }
+        Err(e) => out.push_str(&format!("--- could not run: {e}\n")),
+    }
+    out.push('\n');
+    out
+}
+
+/// `2026-10-14T16:44:58Z`.
+fn utc_timestamp(when: SystemTime) -> String {
+    let secs = when
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let (days, rem) = (secs / 86_400, secs % 86_400);
+    // Howard Hinnant's civil_from_days.
+    let z = days as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        rem / 3600,
+        rem % 3600 / 60,
+        rem % 60
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
-    fn program_available_looks_at_the_first_word() {
+    fn program_available_looks_at_the_program_word() {
         assert!(program_available("sh -c 'echo hi'"));
         assert!(program_available("/bin/sh"));
+        assert!(program_available("FOO=1 BAR_2=x sh"), "assignments are skipped");
         assert!(!program_available("definitely-not-a-program-42 --flag"));
         assert!(!program_available(""));
+        assert!(!program_available("FOO=1"), "nothing but assignments");
+        assert_eq!(program_name("A=1 llm --key k"), "llm");
+        assert_eq!(program_name("1X=1 llm"), "1X=1", "not an identifier: a program");
     }
 
     #[tokio::test]
     async fn run_command_pipes_stdin_and_returns_stdout() {
         let out = run_command("cat".into(), "hello".into()).await.unwrap();
-        assert_eq!(out, "hello");
+        assert_eq!(out.into_reply().unwrap(), "hello");
     }
 
     #[tokio::test]
     async fn run_command_reports_the_last_stderr_line_on_failure() {
-        let err = run_command("echo one >&2; echo two >&2; exit 3".into(), String::new())
+        let out = run_command("echo one >&2; echo two >&2; exit 3".into(), String::new())
             .await
-            .unwrap_err();
-        assert_eq!(err, "two");
+            .unwrap();
+        assert_eq!(out.stderr, "one\ntwo\n", "the whole stderr is kept");
+        assert_eq!(out.into_reply().unwrap_err(), "two");
         let err = run_command("exit 4".into(), String::new())
             .await
+            .unwrap()
+            .into_reply()
             .unwrap_err();
         assert!(err.contains("4"), "{err}");
+    }
+
+    #[test]
+    fn timestamps_are_utc_iso() {
+        assert_eq!(
+            utc_timestamp(SystemTime::UNIX_EPOCH),
+            "1970-01-01T00:00:00Z"
+        );
+        let when = SystemTime::UNIX_EPOCH + Duration::from_secs(1_791_996_298);
+        assert_eq!(utc_timestamp(when), "2026-10-14T16:44:58Z");
+        let leap = SystemTime::UNIX_EPOCH + Duration::from_secs(951_782_400);
+        assert_eq!(utc_timestamp(leap), "2000-02-29T00:00:00Z");
+    }
+
+    #[test]
+    fn a_log_entry_holds_the_prompt_the_raw_reply_and_the_filter_taken() {
+        let outcome = Ok(CommandOutput {
+            success: true,
+            status: "exit status: 0".into(),
+            stdout: "`.a | length`\n".into(),
+            stderr: String::new(),
+        });
+        let entry = log_prompt(7, SystemTime::UNIX_EPOCH, "claude -p", "PROMPT\nLINES\n")
+            + &log_reply(7, &outcome);
+        assert_eq!(
+            entry,
+            "\
+=== #7 1970-01-01T00:00:00Z  claude
+--- prompt
+PROMPT
+LINES
+--- reply #7
+--- stdout
+`.a | length`
+--- stderr: (empty)
+--- exit status: 0
+--- filter: .a | length
+
+"
+        );
+    }
+
+    #[test]
+    fn a_log_entry_records_failures() {
+        let failed = Ok(CommandOutput {
+            success: false,
+            status: "exit status: 1".into(),
+            stdout: String::new(),
+            stderr: "not logged in".into(),
+        });
+        let entry = log_reply(2, &failed);
+        assert!(
+            entry.contains("--- stdout: (empty)\n--- stderr\nnot logged in\n--- exit status: 1\n"),
+            "{entry}"
+        );
+        assert!(!entry.contains("filter:"), "{entry}");
+        let entry = log_reply(3, &Err("no sh".into()));
+        assert!(
+            entry.contains("--- reply #3\n--- could not run: no sh\n"),
+            "{entry}"
+        );
+    }
+
+    #[test]
+    fn the_log_names_the_program_and_nothing_else_of_the_command() {
+        let entry = log_prompt(
+            1,
+            SystemTime::UNIX_EPOCH,
+            "API_KEY=\"sk-abc def\" llm --key sk-9 -m gpt",
+            "p",
+        );
+        assert!(entry.starts_with("=== #1 1970-01-01T00:00:00Z  llm\n"), "{entry}");
+        assert!(!entry.contains("sk-"), "{entry}");
+        let entry = log_not_json(4, SystemTime::UNIX_EPOCH, "claude -p");
+        assert_eq!(
+            entry,
+            "=== #4 1970-01-01T00:00:00Z  claude\n--- not JSON: nothing sent\n\n"
+        );
+    }
+
+    #[test]
+    fn the_prompt_half_ends_in_a_newline_on_its_own() {
+        assert_eq!(
+            log_prompt(1, SystemTime::UNIX_EPOCH, "c", "p"),
+            "=== #1 1970-01-01T00:00:00Z  c\n--- prompt\np\n"
+        );
     }
 }
