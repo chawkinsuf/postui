@@ -24361,6 +24361,26 @@ async fn esc_while_asking_cancels_and_a_late_reply_is_dropped() {
     assert_eq!(app.session.response.jq_text(), "");
 }
 
+/// The bar's "asking…" spinner is drawn on ticks, so ticks must keep
+/// redrawing while the AI request is outstanding — the same way they do
+/// for a send.
+#[tokio::test]
+async fn ticks_keep_redrawing_while_the_ai_is_asked() {
+    let mut app = App::new_for_test();
+    ready_response(&mut app, JQ_BODY);
+    stub_ai(&mut app, "sleep 5; echo .x");
+    assert!(
+        !app.update(Action::Tick),
+        "idle: a tick has nothing to redraw"
+    );
+    app.update(Action::RunJqDescribe("x".into()));
+    assert!(app.session.response.jq_bar().ai_pending);
+    assert!(
+        app.update(Action::Tick),
+        "an outstanding AI request keeps ticks redrawing"
+    );
+}
+
 /// A big response that sat in the cache past `Session::KEEP_WARM` newer big
 /// ones comes back without its tree; the switch restarts the background
 /// parse (inline here), and once the tree lands the filter the editor

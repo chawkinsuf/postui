@@ -9920,9 +9920,11 @@ impl App {
         !self.session.in_flight.is_empty()
             // A background pretty-print animates its own spinner, so ticks
             // must keep coming while one is running — and so does the jq
-            // bar's, once a background run outlives its grace period.
+            // bar's, once a background run outlives its grace period, and
+            // its "asking…" while an AI request is outstanding.
             || self.session.response.view().is_some_and(|v| v.parsing)
             || self.session.response.jq_bar().pending.is_some()
+            || self.session.response.jq_bar().ai_pending
     }
 
     /// Whether any tracked animation is still easing toward its target right
