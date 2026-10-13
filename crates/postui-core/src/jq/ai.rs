@@ -48,99 +48,210 @@ pub fn prompt(shape: &Shape, current_filter: &str, request: &str) -> String {
     )
 }
 
-/// Trims, skips fence lines (``` with at most a language word), and takes
-/// the first line that has something left once its backticks are
-/// unwrapped: a line that is only backticks falls through to the next.
+/// Trims, skips fence lines, and takes the first line that has something
+/// left once its backticks are unwrapped (`Line::filter`): a line that is
+/// only backticks falls through to the next.
 pub fn extract_filter(reply: &str) -> Option<String> {
     reply
         .lines()
         .map(str::trim)
-        .filter(|l| !is_fence(l))
-        .map(inside_backticks)
+        .map(Line::parse)
+        .filter(|line| !line.is_fence())
+        .map(|line| line.filter())
         .find(|l| !l.is_empty())
 }
 
-/// ```` ``` ```` or ```` ```jq ````: a fence line, not a quoted filter.
-fn is_fence(line: &str) -> bool {
-    line.strip_prefix("```")
-        .is_some_and(|rest| rest.chars().all(|c| c.is_ascii_alphanumeric()))
+/// One reply line, cut at its backticks the way Markdown reads them. A run
+/// of N backticks opens a span that the next run of exactly N closes (or
+/// the end of the line does), so `` `` `.a` `` `` quotes `` `.a` ``.
+/// Backticks are not jq syntax, but they are legal inside a string literal
+/// (`test("`")`): a backtick inside quotes is text. (A `"` inside a `\(…)`
+/// interpolation counts like any other; that nesting is not tracked.)
+struct Line<'a> {
+    raw: &'a str,
+    /// Text before the first span.
+    head: &'a str,
+    /// Whether a run closed the last span (else the line's end did).
+    last_closed: bool,
+    /// Each span with the length of the run that opened it.
+    spans: Vec<(usize, String)>,
+    /// Text between consecutive spans: `spans.len() - 1` of them.
+    gaps: Vec<&'a str>,
+    /// Text after the last span (empty when the last span is unclosed).
+    tail: &'a str,
 }
 
-/// What a line's backticks quote: `` `.a` and more `` → `.a`, so prose
-/// around a quoted filter is dropped. One filter quoted piecewise around
-/// its operators (`` `.a` | `.b` ``, `` `.x` // `.y` ``) is put back
-/// together; several quoted spans with words between or after them are
-/// prose, and the first span wins. A line with no backticks, or nothing inside them
-/// (`.a``), comes back with the backticks trimmed; a one-line
-/// ```` ```.a``` ```` unwraps like any other. Backticks are not jq syntax,
-/// but they are legal inside a string literal (`test("`")`): only a
-/// backtick outside quotes counts.
-fn inside_backticks(line: &str) -> String {
-    let segments = split_on_backticks(line);
-    // Even segments are between the quoted spans (odd); [0] is before the
-    // first backtick.
-    let quoted: Vec<&str> = segments.iter().skip(1).step_by(2).map(|s| s.trim()).collect();
-    let first = quoted.first().copied().unwrap_or("");
-    if first.is_empty() {
-        return line.trim_matches('`').trim().to_string();
-    }
-    let gaps = segments.iter().skip(2).step_by(2).take(quoted.len() - 1);
-    // Nothing after the last span: pieces of one filter, not a sentence.
-    let tail = segments.get(2 * quoted.len()).map_or("", |s| s.trim());
-    if quoted.len() > 1 && tail.is_empty() && gaps.clone().all(|g| is_operator(g.trim())) {
-        return quoted
-            .iter()
-            .zip(gaps.map(|g| g.trim()).chain(std::iter::once("")))
-            .fold(String::new(), |mut out, (span, gap)| {
-                out.push_str(span);
-                if !gap.is_empty() {
-                    out.push(' ');
-                    out.push_str(gap);
-                    out.push(' ');
+/// A piece of a line: a run of backticks outside any string literal, or
+/// the text between runs.
+enum Piece<'a> {
+    Run(usize),
+    Text(&'a str),
+}
+
+impl<'a> Line<'a> {
+    fn parse(line: &'a str) -> Self {
+        let pieces = pieces(line);
+        let mut out = Line {
+            raw: line,
+            head: "",
+            last_closed: false,
+            spans: Vec::new(),
+            gaps: Vec::new(),
+            tail: "",
+        };
+        let mut since_close = "";
+        let mut i = 0;
+        while i < pieces.len() {
+            match pieces[i] {
+                Piece::Text(text) => {
+                    since_close = text;
+                    i += 1;
                 }
-                out
-            });
-    }
-    first.to_string()
-}
-
-/// A jq binary operator on its own: what may sit between two quoted
-/// pieces of one filter.
-fn is_operator(gap: &str) -> bool {
-    matches!(gap, "and" | "or")
-        || (!gap.is_empty() && gap.chars().all(|c| "|/+-*<>=!,".contains(c)))
-}
-
-/// `s` cut at every run of backticks outside a jq string literal — one
-/// preceded by an even number of unescaped `"` (a `"` inside a `\(…)`
-/// interpolation counts like any other; that nesting is not tracked).
-/// Always at least one segment; a run of backticks makes one cut.
-fn split_on_backticks(s: &str) -> Vec<&str> {
-    let mut segments = Vec::new();
-    let mut start = 0;
-    let mut open = false;
-    let mut in_run = false;
-    let mut chars = s.char_indices();
-    while let Some((i, c)) = chars.next() {
-        if c == '`' && !open {
-            if !in_run {
-                segments.push(&s[start..i]);
-                in_run = true;
+                Piece::Run(open) => {
+                    if out.spans.is_empty() {
+                        out.head = since_close;
+                    } else {
+                        out.gaps.push(since_close);
+                    }
+                    since_close = "";
+                    let mut content = String::new();
+                    out.last_closed = false;
+                    i += 1;
+                    while i < pieces.len() {
+                        match pieces[i] {
+                            Piece::Run(close) if close == open => {
+                                out.last_closed = true;
+                                break;
+                            }
+                            Piece::Run(n) => content.push_str(&"`".repeat(n)),
+                            Piece::Text(text) => content.push_str(text),
+                        }
+                        i += 1;
+                    }
+                    i += 1;
+                    out.spans.push((open, content));
+                }
             }
-            start = i + 1;
+        }
+        if out.spans.is_empty() {
+            out.head = since_close;
+        } else {
+            out.tail = since_close;
+        }
+        out
+    }
+
+    /// A line that is a code fence: it starts with three or more backticks
+    /// that nothing closes (```` ``` ````, ```` ```jq ````, ```` ``` jq ````).
+    fn is_fence(&self) -> bool {
+        self.head.is_empty()
+            && !self.last_closed
+            && matches!(self.spans.as_slice(), [(n, content)] if *n >= 3 && !content.contains('`'))
+    }
+
+    /// The filter this line carries. No backticks: the line itself. One
+    /// quoted span: its text (`` `.a` and more `` → `.a`, so prose around
+    /// a quoted filter is dropped; a one-line ```` ```jq .a``` ```` loses the
+    /// language word). Several spans and nothing but jq operators between
+    /// them: one filter quoted piecewise, put back together. Several spans
+    /// with words anywhere: prose, and the first non-empty span wins.
+    /// Nothing inside any span (`.a``, ``` `` ```): the line with its
+    /// backticks dropped.
+    fn filter(&self) -> String {
+        if self.spans.is_empty() {
+            return self.head.to_string();
+        }
+        let texts: Vec<String> = self
+            .spans
+            .iter()
+            .map(|(run, content)| {
+                let content = Self::without_backticks(content);
+                let content = content.trim();
+                match content.strip_prefix("jq ") {
+                    Some(rest) if *run >= 3 => rest.trim().to_string(),
+                    _ => content.to_string(),
+                }
+            })
+            .collect();
+        let piecewise = texts.len() > 1
+            && self.head.trim().is_empty()
+            && self.tail.trim().is_empty()
+            && texts.iter().all(|t| !t.is_empty())
+            && self.gaps.iter().all(|gap| is_operator(gap.trim()));
+        if piecewise {
+            let mut out = texts[0].clone();
+            for (gap, text) in self.gaps.iter().zip(&texts[1..]) {
+                out.push(' ');
+                out.push_str(gap.trim());
+                out.push(' ');
+                out.push_str(text);
+            }
+            return out;
+        }
+        texts
+            .into_iter()
+            .find(|t| !t.is_empty())
+            .unwrap_or_else(|| Self::without_backticks(self.raw).trim().to_string())
+    }
+
+    /// `s` with every backtick outside a string literal removed.
+    fn without_backticks(s: &str) -> String {
+        pieces(s)
+            .into_iter()
+            .filter_map(|p| match p {
+                Piece::Text(t) => Some(t),
+                Piece::Run(_) => None,
+            })
+            .collect()
+    }
+}
+
+/// `line` as runs of backticks (outside string literals) and the text
+/// between them.
+fn pieces(line: &str) -> Vec<Piece<'_>> {
+    let mut out = Vec::new();
+    let mut text_from = 0;
+    let mut run = 0;
+    let mut in_literal = false;
+    let mut chars = line.char_indices();
+    while let Some((i, c)) = chars.next() {
+        if c == '`' && !in_literal {
+            if run == 0 && i > text_from {
+                out.push(Piece::Text(&line[text_from..i]));
+            }
+            run += 1;
             continue;
         }
-        in_run = false;
+        if run > 0 {
+            out.push(Piece::Run(run));
+            run = 0;
+            text_from = i;
+        }
         match c {
-            '\\' if open => {
+            '\\' if in_literal => {
                 chars.next();
             }
-            '"' => open = !open,
+            '"' => in_literal = !in_literal,
             _ => {}
         }
     }
-    segments.push(&s[start..]);
-    segments
+    if run > 0 {
+        out.push(Piece::Run(run));
+    } else if text_from < line.len() {
+        out.push(Piece::Text(&line[text_from..]));
+    }
+    out
+}
+
+/// A jq binary operator on its own: what may sit between two quoted
+/// pieces of one filter. Not `,`: two filters either side of a comma are
+/// as likely two alternatives as one expression.
+fn is_operator(gap: &str) -> bool {
+    matches!(
+        gap,
+        "|" | "//" | "+" | "-" | "*" | "/" | "%" | "<" | ">" | "<=" | ">=" | "==" | "!=" | "and"
+            | "or"
+    )
 }
 
 #[cfg(test)]
@@ -283,6 +394,16 @@ mod tests {
             Some(".a and .b".into()),
             "a word operator with nothing else between the spans joins"
         );
+        assert_eq!(
+            extract_filter("Either `.a`, `.b`"),
+            Some(".a".into()),
+            "a comma lists alternatives"
+        );
+        assert_eq!(
+            extract_filter("Use `.a` | `.b`"),
+            Some(".a".into()),
+            "words before the spans are prose like words between them"
+        );
     }
 
     #[test]
@@ -291,8 +412,31 @@ mod tests {
             extract_filter("```.data[] | .name```"),
             Some(".data[] | .name".into())
         );
+        assert_eq!(extract_filter("```jq .a```"), Some(".a".into()));
         assert_eq!(extract_filter("```jq\n.a\n```"), Some(".a".into()));
+        assert_eq!(extract_filter("``` jq\n.data[].name\n```"), Some(".data[].name".into()));
+        assert_eq!(extract_filter("```jq filter\n.a\n```"), Some(".a".into()));
         assert_eq!(extract_filter("```\n```"), None);
+    }
+
+    #[test]
+    fn a_double_backtick_span_quotes_single_backticks_which_are_then_dropped() {
+        assert_eq!(extract_filter("`` `.a` ``"), Some(".a".into()));
+        assert_eq!(extract_filter("`` .a ``"), Some(".a".into()));
+    }
+
+    #[test]
+    fn span_edge_cases_hold() {
+        assert_eq!(extract_filter("Try `.a"), Some(".a".into()), "unclosed after prose");
+        assert_eq!(extract_filter("`.a`."), Some(".a".into()), "punctuation after");
+        assert_eq!(extract_filter("`.a` `.b`"), Some(".a".into()), "no operator between");
+        assert_eq!(
+            extract_filter("`select(.x == \"a`b\")`"),
+            Some("select(.x == \"a`b\")".into()),
+            "a backtick inside the literal stays"
+        );
+        assert_eq!(extract_filter("` `"), None, "a blank span is nothing");
+        assert_eq!(extract_filter("```"), None);
     }
 
     #[test]

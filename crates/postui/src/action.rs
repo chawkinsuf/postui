@@ -1105,18 +1105,18 @@ pub enum Action {
     /// A `RunJqDescribe` background task finished: `generation` and
     /// `request` must both still match the current view/task, or the
     /// result is dropped (a superseded response, or a cancelled request).
+    /// `Err` is the whole message to show, whichever stage failed.
     JqAiFinished {
         generation: u64,
         request: u64,
         result: Result<String, String>,
     },
-    /// A `RunJqDescribe` request ended before any command ran (the body
-    /// turned out not to be JSON): same matching as `JqAiFinished`, then an
-    /// informational toast rather than a command failure.
-    JqAiSkipped {
-        generation: u64,
-        request: u64,
-        reason: String,
+    /// A `--debug-ai` log write failed: the log is switched off for the
+    /// rest of the session, with one warning, rather than a warning per
+    /// prompt and per reply for every request.
+    AiLogFailed {
+        path: std::path::PathBuf,
+        error: String,
     },
     /// Structural menu's "Pluck field…" on an array: opens a chooser of
     /// `keys`; picking `k` applies `compose(bar, path, "map(.k)")`.

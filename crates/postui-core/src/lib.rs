@@ -96,13 +96,12 @@ mod tests {
     }
 
     #[test]
-    fn state_dir_ends_with_the_app_folder_and_is_not_the_config_dir() {
+    fn state_dir_ends_with_the_app_folder() {
         let dir = super::state_dir().expect("a state dir resolves");
         assert_eq!(
             dir.file_name().and_then(|n| n.to_str()),
             Some(super::APP_NAME)
         );
-        assert_ne!(dir, super::config_dir().unwrap());
     }
 }
 

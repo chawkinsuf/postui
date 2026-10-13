@@ -38,10 +38,10 @@ pub fn shape(body: &str, limits: ShapeLimits) -> Option<Shape> {
     let mut schema = Schema::default();
     schema.add(&value);
     schema.collapse();
-    let mut outline = Outline::default();
+    let mut outline = Outline::new(limits.max_bytes);
     let mut path = Vec::new();
     outline.render(None, &schema, 0, &mut path);
-    let (text, kept) = cap(&outline.lines, limits.max_bytes);
+    let (text, kept) = outline.text();
     // The example must name keys the model can see: the deepest leaf among
     // the lines that survived the cut, first found on a tie.
     let example_path = outline
@@ -392,22 +392,74 @@ enum Seg {
     Each,
 }
 
-#[derive(Default)]
+/// The lines within the byte budget, built as the structure is walked: a
+/// line past the budget, and every line after it, is only counted, so a
+/// huge structure costs its kept lines, not its whole size.
 struct Outline {
+    budget: usize,
+    /// What `lines` take, joined by `\n`.
+    used: usize,
     lines: Vec<String>,
-    /// Every leaf's path, with the index of the line that shows it.
+    /// Lines past the budget.
+    dropped: usize,
+    /// Every kept leaf's path, with the index of the line that shows it.
     leaves: Vec<(usize, Vec<Seg>)>,
 }
 
 impl Outline {
-    fn line(&mut self, indent: usize, text: String) {
-        self.lines.push(format!("{}{text}", "  ".repeat(indent)));
+    fn new(budget: usize) -> Self {
+        Self {
+            budget,
+            used: 0,
+            lines: Vec::new(),
+            dropped: 0,
+            leaves: Vec::new(),
+        }
     }
 
-    /// Records the leaf the last line pushed describes.
+    fn line(&mut self, indent: usize, text: String) {
+        if self.dropped > 0 {
+            self.dropped += 1;
+            return;
+        }
+        let line = format!("{}{text}", "  ".repeat(indent));
+        let add = line.len() + usize::from(!self.lines.is_empty());
+        if self.used + add > self.budget {
+            self.dropped = 1;
+            return;
+        }
+        self.used += add;
+        self.lines.push(line);
+    }
+
+    /// Records the leaf the last line describes, if that line was kept.
     fn leaf(&mut self, path: &[Seg]) {
-        if !path.is_empty() {
+        if self.dropped == 0 && !path.is_empty() {
             self.leaves.push((self.lines.len() - 1, path.to_vec()));
+        }
+    }
+
+    /// The kept lines, then (when some were dropped) a line counting the
+    /// rest, together within the budget — only that count line alone may
+    /// exceed a tiny one; and how many lines were kept.
+    fn text(&mut self) -> (String, usize) {
+        if self.dropped == 0 {
+            return (self.lines.join("\n"), self.lines.len());
+        }
+        loop {
+            let trailer = format!("… {} more lines not shown", self.dropped);
+            let kept = self.lines.len();
+            if kept == 0 || self.used + 1 + trailer.len() <= self.budget {
+                let mut out = self.lines.join("\n");
+                if kept > 0 {
+                    out.push('\n');
+                }
+                out.push_str(&trailer);
+                return (out, kept);
+            }
+            let line = self.lines.pop().expect("kept > 0");
+            self.used -= line.len() + usize::from(!self.lines.is_empty());
+            self.dropped += 1;
         }
     }
 
@@ -504,38 +556,6 @@ fn jq_path(segs: &[Seg]) -> String {
         }
     }
     out
-}
-
-/// Whole lines, then a line counting the rest, together within `max_bytes`
-/// (only the count line alone may exceed a tiny cap); and how many lines
-/// were kept.
-fn cap(lines: &[String], max_bytes: usize) -> (String, usize) {
-    let mut kept = 0;
-    let mut used = 0;
-    while kept < lines.len() {
-        let add = lines[kept].len() + usize::from(kept > 0);
-        if used + add > max_bytes {
-            break;
-        }
-        used += add;
-        kept += 1;
-    }
-    if kept == lines.len() {
-        return (lines.join("\n"), kept);
-    }
-    loop {
-        let trailer = format!("… {} more lines not shown", lines.len() - kept);
-        if kept == 0 || used + 1 + trailer.len() <= max_bytes {
-            let mut out = lines[..kept].join("\n");
-            if kept > 0 {
-                out.push('\n');
-            }
-            out.push_str(&trailer);
-            return (out, kept);
-        }
-        kept -= 1;
-        used -= lines[kept].len() + usize::from(kept > 0);
-    }
 }
 
 fn string_tag(s: &str) -> Option<&'static str> {

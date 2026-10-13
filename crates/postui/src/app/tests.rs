@@ -24165,6 +24165,33 @@ async fn describe_a_filter_sends_the_shape_and_lands_the_reply_in_the_bar() {
 }
 
 #[tokio::test]
+async fn a_debug_ai_log_that_cannot_be_written_is_switched_off_with_one_warning() {
+    let dir = tempfile::tempdir().unwrap();
+    // A file where the log's directory would go: create_dir_all fails.
+    let blocker = dir.path().join("state");
+    std::fs::write(&blocker, "").unwrap();
+    let mut app = App::new_for_test();
+    ready_response(&mut app, JQ_BODY);
+    app.ai_log = Some(blocker.join("ai.log"));
+    stub_ai(&mut app, "echo '.data.total'");
+    app.update(Action::RunJqDescribe("just the total".into()));
+    // Both halves (prompt and reply) fail to write; drain_ai lands their
+    // reports before the reply.
+    let a = drain_ai(&mut app).await;
+    app.update(a);
+    assert_eq!(app.session.response.jq_text(), ".data.total", "the reply still lands");
+    assert!(app.ai_log.is_none(), "logging is off for the session");
+    let warnings: Vec<_> = app
+        .toasts
+        .messages()
+        .into_iter()
+        .filter(|m| m.contains("could not write"))
+        .collect();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains("--debug-ai logging stopped"), "{warnings:?}");
+}
+
+#[tokio::test]
 async fn debug_ai_logs_the_prompt_and_the_raw_reply() {
     let dir = tempfile::tempdir().unwrap();
     let log = dir.path().join("state/ai.log");

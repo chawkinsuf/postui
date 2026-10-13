@@ -1879,13 +1879,13 @@ impl AiTask {
 }
 
 /// Appends to the `--debug-ai` log from a background job, and tells the
-/// main loop (as a warning toast) when the write fails.
-fn append_log_or_toast(path: &std::path::Path, text: &str, tx: &UnboundedSender<Action>) {
+/// main loop (`AiLogFailed`) when the write fails.
+fn append_log_or_report(path: &std::path::Path, text: &str, tx: &UnboundedSender<Action>) {
     if let Err(e) = crate::hostfs::append_log(path, text) {
-        let _ = tx.send(Action::ShowToast(
-            format!("could not write {}: {e}", path.display()),
-            ToastKind::Warning,
-        ));
+        let _ = tx.send(Action::AiLogFailed {
+            path: path.to_path_buf(),
+            error: e.to_string(),
+        });
     }
 }
 
@@ -5210,7 +5210,7 @@ impl App {
                         if let Some(path) = log {
                             let when = std::time::SystemTime::now();
                             let text = crate::ai::log_prompt(request, when, &cmd, &stdin);
-                            append_log_or_toast(&path, &text, &tx);
+                            append_log_or_report(&path, &text, &tx);
                         }
                         Some(stdin)
                     })
@@ -5219,27 +5219,22 @@ impl App {
                     let result = match built.await {
                         // `jq_blocked_reason` only lets a JSON view get this
                         // far, so this is a fallback, not a path.
-                        Ok(None) => {
-                            let _ = tx.send(Action::JqAiSkipped {
-                                generation,
-                                request,
-                                reason: "The response is not JSON".to_string(),
-                            });
-                            return;
-                        }
+                        Ok(None) => Err("The response is not JSON".to_string()),
                         Ok(Some(stdin)) => {
                             let outcome = crate::ai::run_command(cmd, stdin).await;
                             if let Some(path) = log {
                                 let text = crate::ai::log_reply(request, &outcome);
                                 let tx = tx.clone();
                                 let _ = tokio::task::spawn_blocking(move || {
-                                    append_log_or_toast(&path, &text, &tx);
+                                    append_log_or_report(&path, &text, &tx);
                                 })
                                 .await;
                             }
-                            outcome.and_then(crate::ai::CommandOutput::into_reply)
+                            outcome
+                                .and_then(crate::ai::CommandOutput::into_reply)
+                                .map_err(|e| format!("AI command failed: {e}"))
                         }
-                        Err(e) => Err(e.to_string()),
+                        Err(e) => Err(format!("AI command failed: {e}")),
                     };
                     let _ = tx.send(Action::JqAiFinished {
                         generation,
@@ -5259,15 +5254,17 @@ impl App {
                 self.session.response.set_jq_focus(true);
                 true
             }
-            Action::JqAiSkipped {
-                generation,
-                request,
-                reason,
-            } => {
-                if !self.settle_ai_request(generation, request) {
-                    return false;
+            Action::AiLogFailed { path, error } => {
+                // Once: the flag is dropped, so no later write can fail.
+                if self.ai_log.take().is_some() {
+                    self.toasts.push(
+                        format!(
+                            "could not write {}: {error}; --debug-ai logging stopped",
+                            path.display()
+                        ),
+                        ToastKind::Warning,
+                    );
                 }
-                self.toasts.push(reason, ToastKind::Info);
                 true
             }
             Action::JqAiFinished {
@@ -5289,9 +5286,7 @@ impl App {
                     Ok(None) => self
                         .toasts
                         .push("The AI command returned nothing", ToastKind::Warning),
-                    Err(e) => self
-                        .toasts
-                        .push(format!("AI command failed: {e}"), ToastKind::Error),
+                    Err(e) => self.toasts.push(e, ToastKind::Error),
                 }
                 true
             }
