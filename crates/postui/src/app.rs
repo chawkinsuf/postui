@@ -5144,6 +5144,12 @@ impl App {
                 true
             }
             Action::RunJqDescribe(sentence) => {
+                // The view may have changed under a confirm dialog since the
+                // prompt was gated: the same check, the same Info toast.
+                if let Some(why) = self.session.response.jq_blocked_reason() {
+                    self.toasts.push(why, ToastKind::Info);
+                    return true;
+                }
                 let Some(view) = self.session.response.view() else {
                     return true;
                 };
@@ -5162,7 +5168,10 @@ impl App {
                 self.ai_request += 1;
                 let request = self.ai_request;
                 let generation = view.generation;
-                let body = view.body_text();
+                // Shared, not copied: the join (when no parsed document is
+                // cached) happens on the blocking pool.
+                let lines = view.body_lines();
+                let doc = view.jq_document();
                 let current = self.session.response.jq_text().to_string();
                 let cmd = self.ui_settings.ai_cmd.clone();
                 let log = self.ai_log.clone();
@@ -5184,8 +5193,11 @@ impl App {
                             return None;
                         }
                         let when = std::time::SystemTime::now();
-                        let Some(shape) = postui_core::jq::shape::shape(&body, Default::default())
-                        else {
+                        let shape = match &doc {
+                            Some(doc) => Some(postui_core::jq::shape::shape_of(doc, Default::default())),
+                            None => postui_core::jq::shape::shape(&lines.join("\n"), Default::default()),
+                        };
+                        let Some(shape) = shape else {
                             if let Some(path) = log {
                                 let text = crate::ai::log_not_json(request, when, &cmd);
                                 append_log_or_report(&path, &text, &tx);

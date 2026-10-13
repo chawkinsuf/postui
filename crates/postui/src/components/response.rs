@@ -9,6 +9,7 @@ use crate::theme::Theme;
 use crate::vim::engine::SearchMemory;
 use postui_core::jq::complete::{self, Candidate, Context, Kind};
 use postui_core::jq::{JqDocument, JqError};
+use std::sync::Arc;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
@@ -673,8 +674,9 @@ pub struct ReadyView {
     awaiting_filter: bool,
     /// When the background parse started, so the wait can animate.
     parse_started: Instant,
-    /// Verbatim body lines — never reformatted, never re-wrapped.
-    raw_lines: Vec<String>,
+    /// Verbatim body lines — never reformatted, never re-wrapped. Shared,
+    /// so a background job can read the body without copying it.
+    raw_lines: Arc<Vec<String>>,
     /// The Headers tab's lines, one per `header_rows` entry: the response
     /// headers, the `sent` divider, then the headers the request went out
     /// with (secrets masked — the real values live in `ResponseData`).
@@ -860,7 +862,7 @@ impl ReadyView {
             shed: false,
             awaiting_filter: false,
             parse_started: Instant::now(),
-            raw_lines: data.body.split('\n').map(|l| l.to_string()).collect(),
+            raw_lines: Arc::new(data.body.split('\n').map(|l| l.to_string()).collect()),
             header_lines,
             header_rows,
             cursor: 0,
@@ -1058,7 +1060,7 @@ impl ReadyView {
         use std::borrow::Cow;
         match self.mode {
             ViewMode::Pretty => Cow::Owned(self.active_tree().map(|t| t.full_text_lines()).unwrap_or_default()),
-            ViewMode::Raw => Cow::Borrowed(&self.raw_lines),
+            ViewMode::Raw => Cow::Borrowed(&self.raw_lines[..]),
             ViewMode::Headers => Cow::Borrowed(&self.header_lines),
         }
     }
@@ -1074,6 +1076,17 @@ impl ReadyView {
     /// "describe a filter" prompt shapes.
     pub fn body_text(&self) -> String {
         self.raw_lines.join("\n")
+    }
+
+    /// The body's lines, shared: for a background job that must not copy
+    /// the body on the UI thread.
+    pub fn body_lines(&self) -> Arc<Vec<String>> {
+        Arc::clone(&self.raw_lines)
+    }
+
+    /// The body as jq parsed it, when a run already did.
+    pub fn jq_document(&self) -> Option<JqDocument> {
+        self.jq_doc.clone()
     }
 
     fn clamp_cursor(&mut self) {

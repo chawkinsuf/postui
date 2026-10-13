@@ -106,8 +106,8 @@ pub fn log_not_json(request: u64, when: SystemTime, cmd: &str) -> String {
 /// value hidden: an inline environment assignment may carry a key, and the
 /// log is plain text.
 fn entry_header(request: u64, when: SystemTime, cmd: &str) -> String {
-    let shown: Vec<String> = cmd
-        .split(' ')
+    let shown: Vec<String> = shell_words(cmd)
+        .into_iter()
         .map(|word| match word.split_once('=') {
             Some((name, _))
                 if !name.is_empty()
@@ -120,6 +120,37 @@ fn entry_header(request: u64, when: SystemTime, cmd: &str) -> String {
         })
         .collect();
     format!("=== #{request} {}  {}\n", utc_timestamp(when), shown.join(" "))
+}
+
+/// `cmd` split at whitespace the way a shell would see words: a quoted
+/// stretch (`"sk-abc def"`, `'a b'`) stays one word, so a secret with a
+/// space in it is redacted whole.
+fn shell_words(cmd: &str) -> Vec<&str> {
+    let mut words = Vec::new();
+    let mut start = None;
+    let mut quote = None;
+    for (i, c) in cmd.char_indices() {
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => {}
+            None if c == '"' || c == '\'' => {
+                quote = Some(c);
+                start.get_or_insert(i);
+            }
+            None if c.is_whitespace() => {
+                if let Some(s) = start.take() {
+                    words.push(&cmd[s..i]);
+                }
+            }
+            None => {
+                start.get_or_insert(i);
+            }
+        }
+    }
+    if let Some(s) = start {
+        words.push(&cmd[s..]);
+    }
+    words
 }
 
 /// The second half, appended when the command finishes: what came back,
@@ -278,6 +309,9 @@ LINES
         let entry = log_prompt(1, SystemTime::UNIX_EPOCH, "API_KEY=sk-123 llm --model=gpt", "p");
         assert!(entry.starts_with("=== #1 1970-01-01T00:00:00Z  API_KEY=… llm --model=gpt\n"), "{entry}");
         assert!(!entry.contains("sk-123"), "{entry}");
+        let entry = log_prompt(2, SystemTime::UNIX_EPOCH, "KEY=\"sk-abc def\"\tllm 'x y'", "p");
+        assert!(entry.starts_with("=== #2 1970-01-01T00:00:00Z  KEY=… llm 'x y'\n"), "{entry}");
+        assert!(!entry.contains("def"), "a quoted value with a space is one word: {entry}");
         let entry = log_not_json(4, SystemTime::UNIX_EPOCH, "claude -p");
         assert_eq!(
             entry,

@@ -22,7 +22,9 @@ named on that line (`… M more` when they are too many to list; `k?` when some
 of the objects lack it), and the lines under its `[]` describe every value,
 merged. Reach one value with `.name.k1` (`.k1` when the folded object is the
 top level, `.`), all of them with `.name[]`, the keys with `keys` or
-`to_entries`. `… N more keys` ends a key list too long to show in full.
+`to_entries`. `… N more keys` ends a key list too long to show in full, and
+`… N more lines not shown` stands for lines cut from the structure at that
+point and below it.
 Values are shown as their type name; `a | b` means both types occur.
 `{} (always empty)` and `[] (always empty)`, alone or in such a list, are
 containers that never held anything. Keys that are not plain identifiers are
@@ -114,18 +116,15 @@ impl<'a> Line<'a> {
                 out.gaps.push(text);
             }
             let content_from = start + open;
-            let mut from = content_from;
-            let (content_to, after) = loop {
-                match next_run(line, from, true) {
-                    Some((at, len)) if len == open => break (at, Some(at + len)),
-                    Some((at, len)) => from = at + len,
-                    None => break (line.len(), None),
-                }
-            };
+            // A span whose quotes do not balance (`` `the "id` field ``) is
+            // prose: its closer is found with quotes read as characters.
+            let close = closing_run(line, content_from, open, true)
+                .or_else(|| closing_run(line, content_from, open, false));
+            let content_to = close.unwrap_or(line.len());
             out.spans.push((open, &line[content_from..content_to]));
-            out.last_closed = after.is_some();
-            match after {
-                Some(next) => pos = next,
+            out.last_closed = close.is_some();
+            match close {
+                Some(at) => pos = at + open,
                 None => return out,
             }
         }
@@ -218,6 +217,19 @@ fn quotes_balanced(s: &str) -> bool {
         }
     }
     !open
+}
+
+/// Where the run of exactly `open` backticks that closes a span starting
+/// at `from` begins, if any.
+fn closing_run(line: &str, from: usize, open: usize, in_filter: bool) -> Option<usize> {
+    let mut from = from;
+    loop {
+        match next_run(line, from, in_filter) {
+            Some((at, len)) if len == open => return Some(at),
+            Some((at, len)) => from = at + len,
+            None => return None,
+        }
+    }
 }
 
 /// The next run of backticks in `s` at or after `from`: where it starts
@@ -446,6 +458,15 @@ mod tests {
             extract_filter("Use the \"name field: `.data[].name`"),
             Some(".data[].name".into()),
             "a stray quote in prose is not a string literal"
+        );
+        assert_eq!(
+            extract_filter("`select(.x == \"a)` | `.b`"),
+            Some("select(.x == \"a) | .b".into()),
+            "a stray quote inside a span does not swallow its closer"
+        );
+        assert_eq!(
+            extract_filter("Use `.a` (the \"id` field)"),
+            Some(".a".into())
         );
     }
 

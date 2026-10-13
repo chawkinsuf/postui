@@ -1,7 +1,9 @@
 //! A structure-only outline of a JSON body for the AI prompt: key names
 //! and types, never values.
 
+use crate::jq::JqDocument;
 use crate::jq::path::key_label;
+use jaq_json::Val;
 use serde_json::Value;
 use std::rc::Rc;
 
@@ -37,17 +39,32 @@ pub fn shape(body: &str, limits: ShapeLimits) -> Option<Shape> {
     let value: Value = serde_json::from_str(body).ok()?;
     let mut schema = Schema::default();
     schema.add(&value);
+    Some(build(schema, limits))
+}
+
+/// `shape` of a body the jq engine already parsed: no second parse, no
+/// copy of the text.
+pub fn shape_of(doc: &JqDocument, limits: ShapeLimits) -> Shape {
+    let mut schema = Schema::default();
+    schema.add_val(&doc.0);
+    build(schema, limits)
+}
+
+fn build(mut schema: Schema, limits: ShapeLimits) -> Shape {
     schema.collapse();
-    let mut outline = Outline::new(limits.max_bytes);
+    // The keys a request names sit at the top level — or, for a document
+    // that is an array (or several things), one level under it.
+    let root_is_record = schema.is_only_object() && schema.object.as_ref().is_some_and(Object::is_record);
+    let mut outline = Outline::new(limits.max_bytes, if root_is_record { 0 } else { 1 });
     let mut path = Vec::new();
     outline.render(None, &schema, 0, &mut path);
     // The example names keys the model can see: the deepest leaf among the
     // lines kept.
     let (outline, deepest) = outline.text();
-    Some(Shape {
+    Shape {
         outline,
         example_path: deepest.map(|segs| jq_path(&segs)),
-    })
+    }
 }
 
 /// Everything seen at one position of the document, merged.
@@ -154,7 +171,9 @@ impl Object {
         let mut occurrences = 0;
         let mut values = 0;
         for field in &self.fields {
-            if let Some(object) = field.schema.value_object() {
+            let direct = field.schema.object.as_ref();
+            let in_arrays = field.schema.array.as_deref().and_then(|a| a.object.as_ref());
+            for object in [direct, in_arrays].into_iter().flatten() {
                 values += object.seen;
                 for inner in &object.fields {
                     union.insert(&*inner.name);
@@ -177,7 +196,9 @@ impl Object {
             .map(|f| f.schema.kind_bits())
             .filter(|&bits| bits != 0);
         let first = kinds.next();
+        // (`first` is `None` when every value is null: nothing to fold on.)
         if may_fold
+            && first.is_some()
             && self.fields.len() > FOLD_KEYS
             && kinds.all(|bits| Some(bits) == first)
             && self.values_share_keys()
@@ -261,6 +282,37 @@ impl Schema {
         }
     }
 
+    /// `add`, for a value jaq parsed. A non-string key cannot come out of
+    /// JSON; one is skipped.
+    fn add_val(&mut self, value: &Val) {
+        match value {
+            Val::Null => self.null = true,
+            Val::Bool(_) => self.boolean = true,
+            Val::Num(_) => self.number = true,
+            Val::BStr(_) => self.note_string(None),
+            Val::TStr(s) => self.note_string(string_tag(&String::from_utf8_lossy(s))),
+            Val::Arr(items) => {
+                let elements = self.array.get_or_insert_default();
+                for item in items.iter() {
+                    elements.add_val(item);
+                }
+            }
+            Val::Obj(map) => {
+                let object = self.object.get_or_insert_default();
+                object.seen += 1;
+                for (key, value) in map.iter() {
+                    let Val::TStr(key) = key else {
+                        continue;
+                    };
+                    let at = object.slot(&String::from_utf8_lossy(key));
+                    let field = &mut object.fields[at];
+                    field.seen += 1;
+                    field.schema.add_val(value);
+                }
+            }
+        }
+    }
+
     /// Folds `other` in as if its values had been added here.
     fn absorb(&mut self, other: Schema) {
         self.null |= other.null;
@@ -275,13 +327,6 @@ impl Schema {
         if let Some(elements) = other.array {
             self.array.get_or_insert_default().absorb(*elements);
         }
-    }
-
-    /// The object here, or the one the array elements here are.
-    fn value_object(&self) -> Option<&Object> {
-        self.object
-            .as_ref()
-            .or_else(|| self.array.as_deref().and_then(|a| a.object.as_ref()))
     }
 
     /// Strings of format `tag` were seen here: the format they all share,
@@ -390,23 +435,27 @@ enum Seg {
 }
 
 /// Held back from the budget so the line counting a dropped run fits.
-const DROP_MARKER_RESERVE: usize = "  … 999999 more lines not shown".len();
+const DROP_MARKER_RESERVE: usize = "        … 999999 more lines not shown".len();
 
 /// The lines within the byte budget, built as the structure is walked.
-/// Once the budget is reached, nested lines are only counted — a run of
-/// them becomes one `  … N more lines not shown` line — so a huge
-/// structure costs its kept lines, not its whole size. Top-level keys are
-/// always shown, breadth before depth: a request names a key the model
-/// must be able to find, and a deep subtree must not hide `total` after it.
+/// Once the budget is reached, deeper lines are only counted — never
+/// formatted — and a run of them becomes one `… N more lines not shown`
+/// line at the indent where it began, so a huge structure costs its kept
+/// lines, not its whole size. Lines at `shown_indent` or above are always
+/// kept, breadth before depth: a request names a key the model must be
+/// able to find, and a deep subtree must not hide `total` after it.
 struct Outline {
     budget: usize,
+    shown_indent: usize,
     /// What `lines` take, joined by `\n`.
     used: usize,
-    /// Set once a line did not fit; nested lines are dropped from then on.
+    /// Set once a line did not fit; deeper lines are dropped from then on.
     exhausted: bool,
     lines: Vec<String>,
-    /// Nested lines dropped since the last kept line, not yet counted out.
+    /// Lines dropped since the last kept line, not yet counted out, and
+    /// the indent of the first of them.
     pending: usize,
+    pending_indent: usize,
     /// Whether the last line offered was kept (so its leaf counts).
     last_kept: bool,
     /// The deepest kept leaf's path, first found on a tie.
@@ -414,28 +463,36 @@ struct Outline {
 }
 
 impl Outline {
-    fn new(budget: usize) -> Self {
+    fn new(budget: usize, shown_indent: usize) -> Self {
         Self {
             budget,
+            shown_indent,
             used: 0,
             exhausted: false,
             lines: Vec::new(),
             pending: 0,
+            pending_indent: 0,
             last_kept: false,
             deepest: None,
         }
     }
 
-    fn line(&mut self, indent: usize, text: String) {
-        let line = format!("{}{text}", "  ".repeat(indent));
+    /// Adds a line, or counts it out. `text` is only built for a line that
+    /// may be kept.
+    fn line(&mut self, indent: usize, text: impl FnOnce() -> String) {
+        let droppable = indent > self.shown_indent;
+        if droppable && self.exhausted {
+            self.drop(indent);
+            return;
+        }
+        let line = format!("{}{}", "  ".repeat(indent), text());
         let add = line.len() + usize::from(!self.lines.is_empty());
         if self.used + add + DROP_MARKER_RESERVE > self.budget {
             self.exhausted = true;
-        }
-        if indent > 0 && self.exhausted {
-            self.pending += 1;
-            self.last_kept = false;
-            return;
+            if droppable {
+                self.drop(indent);
+                return;
+            }
         }
         self.count_out_pending();
         self.used += add;
@@ -443,10 +500,23 @@ impl Outline {
         self.last_kept = true;
     }
 
-    /// Writes the line counting the nested lines dropped so far, if any.
+    fn drop(&mut self, indent: usize) {
+        if self.pending == 0 {
+            self.pending_indent = indent;
+        }
+        self.pending += 1;
+        self.last_kept = false;
+    }
+
+    /// Writes the line counting the lines dropped so far, if any, where
+    /// the first of them would have been.
     fn count_out_pending(&mut self) {
         if self.pending > 0 {
-            let marker = format!("  … {} more lines not shown", self.pending);
+            let marker = format!(
+                "{}… {} more lines not shown",
+                "  ".repeat(self.pending_indent),
+                self.pending
+            );
             self.used += marker.len() + 1;
             self.lines.push(marker);
             self.pending = 0;
@@ -473,7 +543,8 @@ impl Outline {
     fn fields(&mut self, object: &Object, indent: usize, path: &mut Vec<Seg>) {
         for (i, field) in object.fields.iter().enumerate() {
             if i == LIST_KEYS {
-                self.line(indent, format!("… {} more keys", object.fields.len() - i));
+                let rest = object.fields.len() - i;
+                self.line(indent, || format!("… {rest} more keys"));
                 return;
             }
             let mut label = key_label(&field.name);
@@ -501,7 +572,7 @@ impl Outline {
         {
             match label {
                 Some(label) => {
-                    self.line(indent, label);
+                    self.line(indent, || label);
                     self.fields(object, indent + 1, path);
                 }
                 None => self.fields(object, indent, path),
@@ -518,7 +589,7 @@ impl Outline {
             path.pop();
             return;
         }
-        self.line(indent, format!("{label}: {}", schema.kinds()));
+        self.line(indent, || format!("{label}: {}", schema.kinds()));
         let mut nested = false;
         if let Some(object) = &schema.object {
             if let Some(folded) = &object.folded {
@@ -720,8 +791,11 @@ data[]
 
     #[test]
     fn nested_lines_past_the_byte_cap_are_counted_and_top_level_keys_still_show() {
-        // `items` fills the budget; `total` and `next` show anyway.
-        let fields: Vec<String> = (0..30).map(|i| format!(r#""field_{i:02}": 1"#)).collect();
+        // `items` (mixed kinds, so not folded) fills the budget; `total`
+        // and `next` show anyway.
+        let fields: Vec<String> = (0..30)
+            .map(|i| format!(r#""field_{i:02}": {}"#, if i % 2 == 0 { "1" } else { "\"s\"" }))
+            .collect();
         let body = format!(
             r#"{{"items": [{{{}}}], "total": 7, "next": "x"}}"#,
             fields.join(", ")
@@ -729,7 +803,9 @@ data[]
         let s = shape(&body, ShapeLimits { max_bytes: 200 }).unwrap();
         // `items[]` is 7 bytes and each field line 18 (+1 newline); with the
         // marker's reserve held back, eight fields fit in 200.
-        let kept: Vec<String> = (0..8).map(|i| format!("  field_{i:02}: number")).collect();
+        let kept: Vec<String> = (0..8)
+            .map(|i| format!("  field_{i:02}: {}", if i % 2 == 0 { "number" } else { "string" }))
+            .collect();
         assert_eq!(
             s.outline,
             format!(
@@ -740,6 +816,55 @@ data[]
         let before_top_level = s.outline.rfind("\ntotal").unwrap();
         assert!(before_top_level <= 200, "{before_top_level}");
         assert_eq!(s.example_path.as_deref(), Some(".items[].field_00"));
+    }
+
+    #[test]
+    fn under_a_root_array_the_element_keys_are_the_ones_always_shown() {
+        // `meta` has mixed kinds, so it is listed, not folded.
+        let fields: Vec<String> = (0..30)
+            .map(|i| format!(r#""f{i:02}": {}"#, if i % 2 == 0 { "1" } else { "\"s\"" }))
+            .collect();
+        let body = format!(
+            r#"[{{"id": 1, "meta": {{{}}}, "total": 1}}]"#,
+            fields.join(", ")
+        );
+        let s = shape(&body, ShapeLimits { max_bytes: 120 }).unwrap();
+        assert!(s.outline.starts_with(".[]\n  id: number\n  meta\n    f00: number\n"), "{}", s.outline);
+        // The marker sits where the dropped lines were (indent 2), and
+        // `total` (indent 1) still shows after it.
+        assert!(
+            s.outline.ends_with("\n    … 27 more lines not shown\n  total: number"),
+            "{}",
+            s.outline
+        );
+    }
+
+    #[test]
+    fn an_all_null_wide_object_is_not_folded() {
+        let lines = outline(&keyed(FOLD_KEYS + 1, "null"));
+        assert!(!lines.contains("keys ("), "{lines}");
+        assert_eq!(lines.lines().count(), FOLD_KEYS + 1, "{lines}");
+    }
+
+    #[test]
+    fn a_key_that_is_an_object_or_an_array_of_other_records_is_not_folded() {
+        // The object halves share a key; the array halves each have their
+        // own, which the shared-keys check must see too.
+        let sections: Vec<String> = (0..FOLD_KEYS + 1)
+            .map(|i| format!(r#""s{i:02}": {{"a": 1}}, "t{i:02}": [{{"x{i:02}": 1}}]"#))
+            .collect();
+        let body = format!("[{{{}}}, {{{}}}]", sections.join(", "), sections.join(", "));
+        let lines = outline(&body);
+        assert!(!lines.contains("keys ("), "{lines}");
+    }
+
+    #[test]
+    fn a_parsed_document_shapes_the_same_as_its_text() {
+        let body = r#"{"data": [{"id": 1, "tags": ["a"], "when": "2026-01-02T00:00:00Z"}, {"id": 2, "extra": null}], "none": {}}"#;
+        let from_text = shape(body, ShapeLimits::default()).unwrap();
+        let doc = JqDocument::parse(body).unwrap();
+        assert_eq!(shape_of(&doc, ShapeLimits::default()), from_text);
+        assert!(from_text.outline.contains("when?: string (date-time)"), "{}", from_text.outline);
     }
 
     #[test]
@@ -937,7 +1062,10 @@ data[]
         // An always-empty array beside it is the same `[]` ambiguity.
         let body = format!(r#"[{{"a": {}}}, {{"a": []}}]"#, keyed(FOLD_KEYS + 1, "1"));
         let lines = outline(&body);
-        assert!(lines.starts_with(".[]\n  a: object | []\n    K00: number\n"), "{lines}");
+        assert!(
+            lines.starts_with(".[]\n  a: object | [] (always empty)\n    K00: number\n"),
+            "{lines}"
+        );
         assert!(!lines.contains("keys ("), "{lines}");
     }
 
