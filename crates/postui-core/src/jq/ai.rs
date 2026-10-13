@@ -24,8 +24,9 @@ merged. Reach one value with `.name.k1` (`.k1` when the folded object is the
 top level, `.`), all of them with `.name[]`, the keys with `keys` or
 `to_entries`. `… N more keys` ends a key list too long to show in full.
 Values are shown as their type name; `a | b` means both types occur.
-`name: {}` and `name: [] (always empty)` are containers that never held
-anything. Keys that are not plain identifiers are quoted. The request may
+`{} (always empty)` and `[] (always empty)`, alone or in such a list, are
+containers that never held anything. Keys that are not plain identifiers are
+quoted. The request may
 name only the last key of a path: find that key in the structure and
 write its whole path from the root, through every array with `[]`. Never
 write a bare `.key` unless that key is at the top level.";
@@ -65,8 +66,11 @@ pub fn extract_filter(reply: &str) -> Option<String> {
 /// of N backticks opens a span that the next run of exactly N closes (or
 /// the end of the line does), so `` `` `.a` `` `` quotes `` `.a` ``.
 /// Backticks are not jq syntax, but they are legal inside a string literal
-/// (`test("`")`): a backtick inside quotes is text. (A `"` inside a `\(…)`
-/// interpolation counts like any other; that nesting is not tracked.)
+/// (`test("`")`): a backtick inside quotes is text — inside a span always,
+/// and outside one when the line's quotes balance (a bare filter); a line
+/// with a stray `"` is prose, where a quote is just a character. (A `"`
+/// inside a `\(…)` interpolation counts like any other; that nesting is
+/// not tracked.)
 struct Line<'a> {
     raw: &'a str,
     /// Text before the first span.
@@ -74,23 +78,15 @@ struct Line<'a> {
     /// Whether a run closed the last span (else the line's end did).
     last_closed: bool,
     /// Each span with the length of the run that opened it.
-    spans: Vec<(usize, String)>,
+    spans: Vec<(usize, &'a str)>,
     /// Text between consecutive spans: `spans.len() - 1` of them.
     gaps: Vec<&'a str>,
     /// Text after the last span (empty when the last span is unclosed).
     tail: &'a str,
 }
 
-/// A piece of a line: a run of backticks outside any string literal, or
-/// the text between runs.
-enum Piece<'a> {
-    Run(usize),
-    Text(&'a str),
-}
-
 impl<'a> Line<'a> {
     fn parse(line: &'a str) -> Self {
-        let pieces = pieces(line);
         let mut out = Line {
             raw: line,
             head: "",
@@ -99,54 +95,55 @@ impl<'a> Line<'a> {
             gaps: Vec::new(),
             tail: "",
         };
-        let mut since_close = "";
-        let mut i = 0;
-        while i < pieces.len() {
-            match pieces[i] {
-                Piece::Text(text) => {
-                    since_close = text;
-                    i += 1;
+        let balanced = quotes_balanced(line);
+        let mut pos = 0;
+        loop {
+            let Some((start, open)) = next_run(line, pos, balanced) else {
+                let text = &line[pos..];
+                if out.spans.is_empty() {
+                    out.head = text;
+                } else {
+                    out.tail = text;
                 }
-                Piece::Run(open) => {
-                    if out.spans.is_empty() {
-                        out.head = since_close;
-                    } else {
-                        out.gaps.push(since_close);
-                    }
-                    since_close = "";
-                    let mut content = String::new();
-                    out.last_closed = false;
-                    i += 1;
-                    while i < pieces.len() {
-                        match pieces[i] {
-                            Piece::Run(close) if close == open => {
-                                out.last_closed = true;
-                                break;
-                            }
-                            Piece::Run(n) => content.push_str(&"`".repeat(n)),
-                            Piece::Text(text) => content.push_str(text),
-                        }
-                        i += 1;
-                    }
-                    i += 1;
-                    out.spans.push((open, content));
+                return out;
+            };
+            let text = &line[pos..start];
+            if out.spans.is_empty() {
+                out.head = text;
+            } else {
+                out.gaps.push(text);
+            }
+            let content_from = start + open;
+            let mut from = content_from;
+            let (content_to, after) = loop {
+                match next_run(line, from, true) {
+                    Some((at, len)) if len == open => break (at, Some(at + len)),
+                    Some((at, len)) => from = at + len,
+                    None => break (line.len(), None),
                 }
+            };
+            out.spans.push((open, &line[content_from..content_to]));
+            out.last_closed = after.is_some();
+            match after {
+                Some(next) => pos = next,
+                None => return out,
             }
         }
-        if out.spans.is_empty() {
-            out.head = since_close;
-        } else {
-            out.tail = since_close;
-        }
-        out
     }
 
     /// A line that is a code fence: it starts with three or more backticks
-    /// that nothing closes (```` ``` ````, ```` ```jq ````, ```` ``` jq ````).
+    /// that nothing closes, followed by at most an info string (```` ``` ````,
+    /// ```` ```jq ````, ```` ``` jq filter ````). Anything that is not plain
+    /// words after the run (```` ```jq .a ````) is a filter the model forgot
+    /// to put on its own line.
     fn is_fence(&self) -> bool {
         self.head.is_empty()
             && !self.last_closed
-            && matches!(self.spans.as_slice(), [(n, content)] if *n >= 3 && !content.contains('`'))
+            && matches!(
+                self.spans.as_slice(),
+                [(n, content)] if *n >= 3
+                    && content.chars().all(|c| c.is_ascii_alphanumeric() || " _-".contains(c))
+            )
     }
 
     /// The filter this line carries. No backticks: the line itself. One
@@ -196,51 +193,53 @@ impl<'a> Line<'a> {
 
     /// `s` with every backtick outside a string literal removed.
     fn without_backticks(s: &str) -> String {
-        pieces(s)
-            .into_iter()
-            .filter_map(|p| match p {
-                Piece::Text(t) => Some(t),
-                Piece::Run(_) => None,
-            })
-            .collect()
+        let mut out = String::new();
+        let mut pos = 0;
+        while let Some((at, len)) = next_run(s, pos, true) {
+            out.push_str(&s[pos..at]);
+            pos = at + len;
+        }
+        out.push_str(&s[pos..]);
+        out
     }
 }
 
-/// `line` as runs of backticks (outside string literals) and the text
-/// between them.
-fn pieces(line: &str) -> Vec<Piece<'_>> {
-    let mut out = Vec::new();
-    let mut text_from = 0;
-    let mut run = 0;
-    let mut in_literal = false;
-    let mut chars = line.char_indices();
-    while let Some((i, c)) = chars.next() {
-        if c == '`' && !in_literal {
-            if run == 0 && i > text_from {
-                out.push(Piece::Text(&line[text_from..i]));
-            }
-            run += 1;
-            continue;
-        }
-        if run > 0 {
-            out.push(Piece::Run(run));
-            run = 0;
-            text_from = i;
-        }
+/// Whether every unescaped `"` in `s` has its partner.
+fn quotes_balanced(s: &str) -> bool {
+    let mut open = false;
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
         match c {
-            '\\' if in_literal => {
+            '\\' => {
                 chars.next();
             }
-            '"' => in_literal = !in_literal,
+            '"' => open = !open,
             _ => {}
         }
     }
-    if run > 0 {
-        out.push(Piece::Run(run));
-    } else if text_from < line.len() {
-        out.push(Piece::Text(&line[text_from..]));
+    !open
+}
+
+/// The next run of backticks in `s` at or after `from`: where it starts
+/// and how long it is. With `in_filter`, a backtick inside a jq string
+/// literal (an odd number of unescaped `"` since `from`) is text.
+fn next_run(s: &str, from: usize, in_filter: bool) -> Option<(usize, usize)> {
+    let mut in_literal = false;
+    let mut chars = s[from..].char_indices().map(|(i, c)| (from + i, c));
+    while let Some((i, c)) = chars.next() {
+        match c {
+            '`' if !in_literal => {
+                let len = s[i..].chars().take_while(|&c| c == '`').count();
+                return Some((i, len));
+            }
+            '\\' if in_literal => {
+                chars.next();
+            }
+            '"' if in_filter => in_literal = !in_literal,
+            _ => {}
+        }
     }
-    out
+    None
 }
 
 /// A jq binary operator on its own: what may sit between two quoted
@@ -298,7 +297,7 @@ mod tests {
             "the `[]` line under a key of several types is explained: {p}"
         );
         assert!(
-            p.contains("`name: {}` and `name: [] (always empty)` are"),
+            p.contains("`{} (always empty)` and `[] (always empty)`, alone or in such a list"),
             "the always-empty containers are explained: {p}"
         );
     }
@@ -413,6 +412,12 @@ mod tests {
             Some(".data[] | .name".into())
         );
         assert_eq!(extract_filter("```jq .a```"), Some(".a".into()));
+        assert_eq!(
+            extract_filter("```jq .data[] | .name\n```"),
+            Some(".data[] | .name".into()),
+            "a filter on the opener's line is not an info string"
+        );
+        assert_eq!(extract_filter("```.a"), Some(".a".into()));
         assert_eq!(extract_filter("```jq\n.a\n```"), Some(".a".into()));
         assert_eq!(extract_filter("``` jq\n.data[].name\n```"), Some(".data[].name".into()));
         assert_eq!(extract_filter("```jq filter\n.a\n```"), Some(".a".into()));
@@ -437,6 +442,11 @@ mod tests {
         );
         assert_eq!(extract_filter("` `"), None, "a blank span is nothing");
         assert_eq!(extract_filter("```"), None);
+        assert_eq!(
+            extract_filter("Use the \"name field: `.data[].name`"),
+            Some(".data[].name".into()),
+            "a stray quote in prose is not a string literal"
+        );
     }
 
     #[test]

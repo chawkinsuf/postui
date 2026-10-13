@@ -89,14 +89,37 @@ pub fn debug_log_path() -> Option<PathBuf> {
 /// the whole prompt. The number pairs it with its reply half, since a
 /// superseded request's reply can land after the next request's prompt.
 pub fn log_prompt(request: u64, when: SystemTime, cmd: &str, prompt: &str) -> String {
-    let mut out = format!(
-        "=== #{request} {}  {cmd}\n--- prompt\n{prompt}",
-        utc_timestamp(when)
-    );
+    let mut out = format!("{}--- prompt\n{prompt}", entry_header(request, when, cmd));
     if !prompt.ends_with('\n') {
         out.push('\n');
     }
     out
+}
+
+/// A whole entry for a request that sent nothing because the body was not
+/// JSON, so the log's request numbers stay unbroken.
+pub fn log_not_json(request: u64, when: SystemTime, cmd: &str) -> String {
+    format!("{}--- not JSON: nothing sent\n\n", entry_header(request, when, cmd))
+}
+
+/// `=== #N <when>  <cmd>\n`, the command with any `NAME=value` word's
+/// value hidden: an inline environment assignment may carry a key, and the
+/// log is plain text.
+fn entry_header(request: u64, when: SystemTime, cmd: &str) -> String {
+    let shown: Vec<String> = cmd
+        .split(' ')
+        .map(|word| match word.split_once('=') {
+            Some((name, _))
+                if !name.is_empty()
+                    && !name.starts_with(|c: char| c.is_ascii_digit())
+                    && name.chars().all(|c| c == '_' || c.is_ascii_alphanumeric()) =>
+            {
+                format!("{name}=…")
+            }
+            _ => word.to_string(),
+        })
+        .collect();
+    format!("=== #{request} {}  {}\n", utc_timestamp(when), shown.join(" "))
 }
 
 /// The second half, appended when the command finishes: what came back,
@@ -247,6 +270,18 @@ LINES
         assert!(
             entry.contains("--- reply #3\n--- could not run: no sh\n"),
             "{entry}"
+        );
+    }
+
+    #[test]
+    fn inline_environment_values_are_hidden_in_the_log_but_flags_are_not() {
+        let entry = log_prompt(1, SystemTime::UNIX_EPOCH, "API_KEY=sk-123 llm --model=gpt", "p");
+        assert!(entry.starts_with("=== #1 1970-01-01T00:00:00Z  API_KEY=… llm --model=gpt\n"), "{entry}");
+        assert!(!entry.contains("sk-123"), "{entry}");
+        let entry = log_not_json(4, SystemTime::UNIX_EPOCH, "claude -p");
+        assert_eq!(
+            entry,
+            "=== #4 1970-01-01T00:00:00Z  claude -p\n--- not JSON: nothing sent\n\n"
         );
     }
 

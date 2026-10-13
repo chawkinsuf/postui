@@ -30,9 +30,9 @@ pub struct Shape {
 /// one description (a key some elements lack is marked `key?`), and an
 /// array is `name[]`. A wide object whose values all share their kinds
 /// (`FOLD_KEYS`) is one line listing its key names, with its values merged
-/// under `[]`. No
-/// depth limit; only the total size is capped, and a cut says how many
-/// lines it dropped. Non-JSON → `None`.
+/// under `[]`. No depth limit; the size is capped (`ShapeLimits`), nested
+/// lines past the cap are counted out, and top-level keys always show
+/// (`Outline`). Non-JSON → `None`.
 pub fn shape(body: &str, limits: ShapeLimits) -> Option<Shape> {
     let value: Value = serde_json::from_str(body).ok()?;
     let mut schema = Schema::default();
@@ -41,18 +41,12 @@ pub fn shape(body: &str, limits: ShapeLimits) -> Option<Shape> {
     let mut outline = Outline::new(limits.max_bytes);
     let mut path = Vec::new();
     outline.render(None, &schema, 0, &mut path);
-    let (text, kept) = outline.text();
-    // The example must name keys the model can see: the deepest leaf among
-    // the lines that survived the cut, first found on a tie.
-    let example_path = outline
-        .leaves
-        .iter()
-        .filter(|(line, _)| *line < kept)
-        .max_by(|(la, a), (lb, b)| a.len().cmp(&b.len()).then(lb.cmp(la)))
-        .map(|(_, segs)| jq_path(segs));
+    // The example names keys the model can see: the deepest leaf among the
+    // lines kept.
+    let (outline, deepest) = outline.text();
     Some(Shape {
-        outline: text,
-        example_path,
+        outline,
+        example_path: deepest.map(|segs| jq_path(&segs)),
     })
 }
 
@@ -71,7 +65,7 @@ struct Schema {
 }
 
 /// An object with more distinct keys than this, every value of the same
-/// kinds (null aside; string formats included) and, for object values,
+/// kinds (null aside) and, for object values,
 /// mostly the same keys (`values_share_keys`), is folded: its key names go
 /// on one line (`key?` when some of the merged objects lack it) and its
 /// values merge under one `[]`. Listed one per line, a lookup table keyed by
@@ -174,16 +168,18 @@ impl Object {
     /// Folds (`FOLD_KEYS`) when `may_fold`, then collapses whatever is
     /// listed under it.
     fn collapse(&mut self, may_fold: bool) {
-        // A value that is only ever null says nothing about the kind.
+        // A value that is only ever null says nothing about the kind. String
+        // formats are not compared: one value that happens to look like an
+        // email must not unfold a table of 2000 names.
         let mut kinds = self
             .fields
             .iter()
-            .map(Field::kind)
-            .filter(|&(bits, _)| bits != 0);
+            .map(|f| f.schema.kind_bits())
+            .filter(|&bits| bits != 0);
         let first = kinds.next();
         if may_fold
             && self.fields.len() > FOLD_KEYS
-            && kinds.all(|kind| Some(kind) == first)
+            && kinds.all(|bits| Some(bits) == first)
             && self.values_share_keys()
         {
             let seen = self.seen;
@@ -204,13 +200,6 @@ impl Object {
         for field in &mut self.fields {
             field.schema.collapse();
         }
-    }
-}
-
-impl Field {
-    /// What the fold compares: the kinds, with the strings' shared format.
-    fn kind(&self) -> (u8, Option<Option<&'static str>>) {
-        (self.schema.kind_bits(), self.schema.string)
     }
 }
 
@@ -350,8 +339,9 @@ impl Schema {
     }
 
     /// `object | array | string (url) | null`; a container that was always
-    /// empty is spelled `{}` / `[]`, since nothing is listed under it, and a
-    /// folded object `object, 2000 keys (AED, AFN, … 1998 more)`.
+    /// empty is spelled `{} (always empty)` / `[] (always empty)`, since
+    /// nothing is listed under it, and a folded object
+    /// `object, 2000 keys (AED, AFN, … 1998 more)`.
     fn kinds(&self) -> String {
         let mut kinds: Vec<String> = Vec::new();
         if let Some(object) = &self.object {
@@ -361,12 +351,19 @@ impl Schema {
                     folded.names.len(),
                     key_list(&folded.names)
                 ),
-                None if object.is_empty() => "{}".into(),
+                None if object.is_empty() => "{} (always empty)".into(),
                 None => "object".into(),
             });
         }
         if let Some(elements) = &self.array {
-            kinds.push(if elements.is_empty() { "[]" } else { "array" }.into());
+            kinds.push(
+                if elements.is_empty() {
+                    "[] (always empty)"
+                } else {
+                    "array"
+                }
+                .into(),
+            );
         }
         match self.string {
             Some(Some(tag)) => kinds.push(format!("string ({tag})")),
@@ -388,22 +385,32 @@ impl Schema {
 
 #[derive(Clone)]
 enum Seg {
-    Key(String),
+    Key(Rc<str>),
     Each,
 }
 
-/// The lines within the byte budget, built as the structure is walked: a
-/// line past the budget, and every line after it, is only counted, so a
-/// huge structure costs its kept lines, not its whole size.
+/// Held back from the budget so the line counting a dropped run fits.
+const DROP_MARKER_RESERVE: usize = "  … 999999 more lines not shown".len();
+
+/// The lines within the byte budget, built as the structure is walked.
+/// Once the budget is reached, nested lines are only counted — a run of
+/// them becomes one `  … N more lines not shown` line — so a huge
+/// structure costs its kept lines, not its whole size. Top-level keys are
+/// always shown, breadth before depth: a request names a key the model
+/// must be able to find, and a deep subtree must not hide `total` after it.
 struct Outline {
     budget: usize,
     /// What `lines` take, joined by `\n`.
     used: usize,
+    /// Set once a line did not fit; nested lines are dropped from then on.
+    exhausted: bool,
     lines: Vec<String>,
-    /// Lines past the budget.
-    dropped: usize,
-    /// Every kept leaf's path, with the index of the line that shows it.
-    leaves: Vec<(usize, Vec<Seg>)>,
+    /// Nested lines dropped since the last kept line, not yet counted out.
+    pending: usize,
+    /// Whether the last line offered was kept (so its leaf counts).
+    last_kept: bool,
+    /// The deepest kept leaf's path, first found on a tie.
+    deepest: Option<Vec<Seg>>,
 }
 
 impl Outline {
@@ -411,56 +418,55 @@ impl Outline {
         Self {
             budget,
             used: 0,
+            exhausted: false,
             lines: Vec::new(),
-            dropped: 0,
-            leaves: Vec::new(),
+            pending: 0,
+            last_kept: false,
+            deepest: None,
         }
     }
 
     fn line(&mut self, indent: usize, text: String) {
-        if self.dropped > 0 {
-            self.dropped += 1;
-            return;
-        }
         let line = format!("{}{text}", "  ".repeat(indent));
         let add = line.len() + usize::from(!self.lines.is_empty());
-        if self.used + add > self.budget {
-            self.dropped = 1;
+        if self.used + add + DROP_MARKER_RESERVE > self.budget {
+            self.exhausted = true;
+        }
+        if indent > 0 && self.exhausted {
+            self.pending += 1;
+            self.last_kept = false;
             return;
         }
+        self.count_out_pending();
         self.used += add;
         self.lines.push(line);
+        self.last_kept = true;
+    }
+
+    /// Writes the line counting the nested lines dropped so far, if any.
+    fn count_out_pending(&mut self) {
+        if self.pending > 0 {
+            let marker = format!("  … {} more lines not shown", self.pending);
+            self.used += marker.len() + 1;
+            self.lines.push(marker);
+            self.pending = 0;
+        }
     }
 
     /// Records the leaf the last line describes, if that line was kept.
     fn leaf(&mut self, path: &[Seg]) {
-        if self.dropped == 0 && !path.is_empty() {
-            self.leaves.push((self.lines.len() - 1, path.to_vec()));
+        if self.last_kept
+            && !path.is_empty()
+            && self.deepest.as_ref().is_none_or(|d| path.len() > d.len())
+        {
+            self.deepest = Some(path.to_vec());
         }
     }
 
-    /// The kept lines, then (when some were dropped) a line counting the
-    /// rest, together within the budget — only that count line alone may
-    /// exceed a tiny one; and how many lines were kept.
-    fn text(&mut self) -> (String, usize) {
-        if self.dropped == 0 {
-            return (self.lines.join("\n"), self.lines.len());
-        }
-        loop {
-            let trailer = format!("… {} more lines not shown", self.dropped);
-            let kept = self.lines.len();
-            if kept == 0 || self.used + 1 + trailer.len() <= self.budget {
-                let mut out = self.lines.join("\n");
-                if kept > 0 {
-                    out.push('\n');
-                }
-                out.push_str(&trailer);
-                return (out, kept);
-            }
-            let line = self.lines.pop().expect("kept > 0");
-            self.used -= line.len() + usize::from(!self.lines.is_empty());
-            self.dropped += 1;
-        }
+    /// The outline, and the deepest leaf it shows.
+    fn text(mut self) -> (String, Option<Vec<Seg>>) {
+        self.count_out_pending();
+        (self.lines.join("\n"), self.deepest)
     }
 
     /// One line per key, up to `LIST_KEYS`, then a line counting the rest.
@@ -474,7 +480,7 @@ impl Outline {
             if field.seen < object.seen {
                 label.push('?');
             }
-            path.push(Seg::Key(field.name.to_string()));
+            path.push(Seg::Key(Rc::clone(&field.name)));
             self.render(Some(label), &field.schema, indent, path);
             path.pop();
         }
@@ -503,12 +509,10 @@ impl Outline {
             return;
         }
         let label = label.unwrap_or_else(|| ".".into());
-        if schema.is_only_array() {
-            let elements = schema.array.as_deref().expect("only array");
-            if elements.is_empty() {
-                self.line(indent, format!("{label}: [] (always empty)"));
-                return;
-            }
+        if let Some(elements) = schema.array.as_deref()
+            && schema.is_only_array()
+            && !elements.is_empty()
+        {
             path.push(Seg::Each);
             self.render(Some(format!("{label}[]")), elements, indent, path);
             path.pop();
@@ -518,9 +522,15 @@ impl Outline {
         let mut nested = false;
         if let Some(object) = &schema.object {
             if let Some(folded) = &object.folded {
-                // The example reaches one value by its first key, the
-                // way the model reaches a named one.
-                path.push(Seg::Key(folded.names[0].0.to_string()));
+                // The example reaches one value by a key every object has
+                // (the first, failing that), the way the model reaches a
+                // named one.
+                let (key, _) = folded
+                    .names
+                    .iter()
+                    .find(|(_, optional)| !optional)
+                    .unwrap_or(&folded.names[0]);
+                path.push(Seg::Key(Rc::clone(key)));
                 self.render(Some("[]".into()), &folded.values, indent + 1, path);
                 path.pop();
                 nested = true;
@@ -709,25 +719,34 @@ data[]
     }
 
     #[test]
-    fn output_past_the_byte_cap_is_cut_at_a_line_and_says_how_much_is_missing() {
-        let body = r#"{"alpha": 1, "beta": 2, "gamma": 3, "delta": 4}"#;
-        // The four lines take 54 bytes; one short of that cuts.
-        let s = shape(body, ShapeLimits { max_bytes: 53 }).unwrap();
+    fn nested_lines_past_the_byte_cap_are_counted_and_top_level_keys_still_show() {
+        // `items` fills the budget; `total` and `next` show anyway.
+        let fields: Vec<String> = (0..30).map(|i| format!(r#""field_{i:02}": 1"#)).collect();
+        let body = format!(
+            r#"{{"items": [{{{}}}], "total": 7, "next": "x"}}"#,
+            fields.join(", ")
+        );
+        let s = shape(&body, ShapeLimits { max_bytes: 200 }).unwrap();
+        // `items[]` is 7 bytes and each field line 18 (+1 newline); with the
+        // marker's reserve held back, eight fields fit in 200.
+        let kept: Vec<String> = (0..8).map(|i| format!("  field_{i:02}: number")).collect();
         assert_eq!(
             s.outline,
-            "alpha: number\nbeta: number\n… 2 more lines not shown"
+            format!(
+                "items[]\n{}\n  … 22 more lines not shown\ntotal: number\nnext: string",
+                kept.join("\n")
+            )
         );
-        assert_eq!(s.outline.len(), 53);
-        // The count line is inside the cap too: a line is given up for it.
-        let s = shape(body, ShapeLimits { max_bytes: 40 }).unwrap();
-        assert_eq!(s.outline, "alpha: number\n… 3 more lines not shown");
-        assert_eq!(s.outline.len(), 40);
+        let before_top_level = s.outline.rfind("\ntotal").unwrap();
+        assert!(before_top_level <= 200, "{before_top_level}");
+        assert_eq!(s.example_path.as_deref(), Some(".items[].field_00"));
     }
 
     #[test]
-    fn a_first_line_past_the_cap_leaves_only_the_count_with_no_blank_line() {
-        let s = shape(r#"{"alpha": 1, "beta": 2}"#, ShapeLimits { max_bytes: 5 }).unwrap();
-        assert_eq!(s.outline, "… 2 more lines not shown");
+    fn a_tiny_cap_keeps_the_top_level_keys_and_counts_the_rest() {
+        let s = shape(r#"{"a": {"b": 1, "c": 2}}"#, ShapeLimits { max_bytes: 5 }).unwrap();
+        assert_eq!(s.outline, "a\n  … 2 more lines not shown");
+        assert_eq!(s.example_path, None, "no kept leaf");
     }
 
     /// `{"K00": <value>, "K01": <value>, …}` with `n` keys.
@@ -864,16 +883,21 @@ data[]
                 .join(", ")
         );
         let s = shape(&body, ShapeLimits { max_bytes: 600 }).unwrap();
-        assert!(s.outline.ends_with("more lines not shown"), "{}", s.outline);
-        assert!(!s.outline.contains("\nz\n"), "{}", s.outline);
+        // `z` itself shows (top level), its subtree is counted out.
+        assert!(
+            s.outline.ends_with("more lines not shown\nz\n  … 3 more lines not shown"),
+            "{}",
+            s.outline
+        );
         assert_eq!(s.example_path.as_deref(), Some(".wide.key_number_00"));
         let s = shape(&body, ShapeLimits::default()).unwrap();
         assert_eq!(s.example_path.as_deref(), Some(".z.a.b.c"));
     }
 
     #[test]
-    fn a_fold_keeps_which_keys_are_missing_and_needs_one_string_format() {
-        // Three records; `nickname` is in one, `email` in all.
+    fn a_fold_keeps_which_keys_are_missing_and_one_odd_string_format_does_not_stop_it() {
+        // Three records; `nickname` is in one, `email` (a formatted string
+        // among plain ones) in all.
         let row = |extra: &str| {
             let mut pairs: Vec<String> = (0..FOLD_KEYS)
                 .map(|i| format!(r#""c{i:02}": "v""#))
@@ -886,14 +910,20 @@ data[]
         };
         let body = format!("[{}, {}, {}]", row(""), row(""), row(r#""nickname": "n""#));
         let lines = outline(&body);
-        // `email` is a formatted string, the columns are plain: no fold.
-        assert!(!lines.contains("keys ("), "{lines}");
-        assert!(lines.contains("\n  email: string (email)\n"), "{lines}");
-        assert!(lines.contains("\n  nickname?: string"), "{lines}");
-        // Plain strings throughout: folded, and the missing key is marked.
-        let body = body.replace("a@b.co", "plain");
-        let lines = outline(&body);
         assert!(lines.contains(", email, nickname?)\n  []: string"), "{lines}");
+    }
+
+    #[test]
+    fn the_example_through_a_fold_uses_a_key_every_object_has() {
+        // `_debug` leads the first record only; `views` is in every record.
+        let mut records = vec![format!(
+            r#"{{"_debug": 1, {}}}"#,
+            keyed(FOLD_KEYS, "1").trim_matches(['{', '}'])
+        )];
+        records.extend((0..3).map(|_| keyed(FOLD_KEYS, "1")));
+        let s = shape(&format!("[{}]", records.join(",")), ShapeLimits::default()).unwrap();
+        assert!(s.outline.contains("keys (_debug?, K00"), "{}", s.outline);
+        assert_eq!(s.example_path.as_deref(), Some(".[].K00"));
     }
 
     #[test]

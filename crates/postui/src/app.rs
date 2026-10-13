@@ -1956,28 +1956,6 @@ pub(crate) fn jq_complete_worker(
 }
 
 impl App {
-    /// Whether an AI task's result is for the current request and view, and
-    /// if so, lands its end: the task and the bar's pending state are
-    /// cleared. Dropped (`false`) when superseded by a newer request (or
-    /// cancelled — `CancelJqDescribe` bumps `ai_request` too) or when the
-    /// response it was shaped from is gone. Compared against the counter,
-    /// not `ai_task`'s handle: a caller that already took the handle to
-    /// await it (tests) still gets a valid reply landed.
-    fn settle_ai_request(&mut self, generation: u64, request: u64) -> bool {
-        if request != self.ai_request
-            || self
-                .session
-                .response
-                .view()
-                .is_none_or(|v| v.generation != generation)
-        {
-            return false;
-        }
-        self.ai_task = None;
-        self.session.response.jq_bar_mut().ai_pending = false;
-        true
-    }
-
     /// Applies `action` to app state, then reconciles the jq filter bar
     /// with the editor and view (see [`Self::sync_jq`]) — the one place
     /// every action, key, mouse hit, and background result passes through,
@@ -5205,10 +5183,17 @@ impl App {
                         if log.is_none() && cancelled.load(std::sync::atomic::Ordering::Relaxed) {
                             return None;
                         }
-                        let shape = postui_core::jq::shape::shape(&body, Default::default())?;
+                        let when = std::time::SystemTime::now();
+                        let Some(shape) = postui_core::jq::shape::shape(&body, Default::default())
+                        else {
+                            if let Some(path) = log {
+                                let text = crate::ai::log_not_json(request, when, &cmd);
+                                append_log_or_report(&path, &text, &tx);
+                            }
+                            return None;
+                        };
                         let stdin = postui_core::jq::ai::prompt(&shape, &current, &sentence);
                         if let Some(path) = log {
-                            let when = std::time::SystemTime::now();
                             let text = crate::ai::log_prompt(request, when, &cmd, &stdin);
                             append_log_or_report(&path, &text, &tx);
                         }
@@ -5272,9 +5257,23 @@ impl App {
                 request,
                 result,
             } => {
-                if !self.settle_ai_request(generation, request) {
+                // Dropped when superseded by a newer request (or cancelled
+                // — `CancelJqDescribe` bumps `ai_request` too) or when the
+                // response it was shaped from is gone. Compared against the
+                // counter, not `ai_task`'s handle: a caller that already
+                // took the handle to await it (tests) still gets a valid
+                // reply landed.
+                if request != self.ai_request
+                    || self
+                        .session
+                        .response
+                        .view()
+                        .is_none_or(|v| v.generation != generation)
+                {
                     return false;
                 }
+                self.ai_task = None;
+                self.session.response.jq_bar_mut().ai_pending = false;
                 match result.map(|reply| postui_core::jq::ai::extract_filter(&reply)) {
                     Ok(Some(filter)) => {
                         let cursor = filter.chars().count();
