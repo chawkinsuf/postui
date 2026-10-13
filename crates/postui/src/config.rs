@@ -1061,8 +1061,8 @@ pub enum CliParse {
 }
 
 /// Parses `postui`'s arguments (without the program name). `--setup` and
-/// `--keydump` run alone; otherwise at most one project directory and
-/// `--debug-ai`, in either order. Any other value starting with `-` (e.g.
+/// `--keydump` run alone; otherwise at most one project directory and at
+/// most one `--debug-ai`, in either order. Any other value starting with `-` (e.g.
 /// `--help`, `-x`) is treated as a request for usage rather than a project
 /// directory, since no real path starts with a dash without `./`.
 pub fn parse_cli(args: Vec<String>) -> CliParse {
@@ -1083,7 +1083,7 @@ pub fn parse_cli(args: Vec<String>) -> CliParse {
     let mut root = None;
     let mut debug_ai = false;
     for arg in args {
-        if arg == "--debug-ai" {
+        if arg == "--debug-ai" && !debug_ai {
             debug_ai = true;
         } else if arg.starts_with('-') || root.is_some() {
             return CliParse::Usage;
@@ -1896,6 +1896,8 @@ osc52_limit = 1024
                 debug_ai: true
             }
         );
+        // Once, like the directory.
+        assert_eq!(cli(&["--debug-ai", "--debug-ai"]), CliParse::Usage);
     }
 
     #[test]

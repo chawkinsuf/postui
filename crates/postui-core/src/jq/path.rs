@@ -30,14 +30,23 @@ pub fn render_path(path: &[PathSeg]) -> String {
     out
 }
 
+/// A key as jq spells it: bare when it is an identifier, a quoted string
+/// otherwise (serde_json's string encoding is exactly jq's).
+pub(crate) fn key_label(key: &str) -> String {
+    if is_identifier(key) {
+        key.to_string()
+    } else {
+        serde_json::to_string(key).expect("strings always encode")
+    }
+}
+
 /// Appends `.key`, or `["odd key"]` for a key that is not an identifier.
 pub(crate) fn push_key(out: &mut String, key: &str) {
     if is_identifier(key) {
         out.push('.');
         out.push_str(key);
     } else {
-        // serde_json's string encoding is exactly jq's.
-        push_bracket(out, &serde_json::to_string(key).expect("strings always encode"));
+        push_bracket(out, &key_label(key));
     }
 }
 

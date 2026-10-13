@@ -24176,9 +24176,13 @@ async fn debug_ai_logs_the_prompt_and_the_raw_reply() {
     let a = drain_ai(&mut app).await;
     app.update(a);
     let text = std::fs::read_to_string(&log).unwrap();
+    assert!(text.contains("=== #1 "), "{text}");
     assert!(text.contains("--- prompt\nYou write jq 1.7 filters"), "{text}");
     assert!(text.contains("Request: just the total\n"), "{text}");
-    assert!(text.contains("--- stdout\n`.data.total`\n"), "raw reply: {text}");
+    assert!(
+        text.contains("--- reply #1\n--- stdout\n`.data.total`\n"),
+        "raw reply: {text}"
+    );
     assert!(text.contains("--- stderr\nwarming up\n"), "{text}");
     assert!(text.contains("--- filter: .data.total\n"), "{text}");
 }
@@ -24190,14 +24194,26 @@ async fn debug_ai_logs_the_prompt_of_a_request_that_is_cancelled() {
     let mut app = App::new_for_test();
     ready_response(&mut app, JQ_BODY);
     app.ai_log = Some(log.clone());
-    stub_ai(&mut app, "sleep 30");
+    stub_ai(&mut app, "sleep 5");
     app.update(Action::RunJqDescribe("just the total".into()));
     // Cancelled before the spawned task is ever polled (this runtime is
-    // single-threaded and nothing has awaited yet).
+    // single-threaded and nothing has awaited yet): the task is left to
+    // run, so the prompt still gets written.
     app.update(Action::CancelJqDescribe);
-    let text = std::fs::read_to_string(&log).unwrap();
-    assert!(text.contains("--- prompt\nYou write jq 1.7 filters"), "{text}");
-    assert!(!text.contains("--- stdout"), "no reply came: {text}");
+    assert!(app.ai_task.is_none());
+    let mut text = String::new();
+    for _ in 0..400 {
+        text = std::fs::read_to_string(&log).unwrap_or_default();
+        if text.contains("--- prompt\n") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    assert!(
+        text.contains("=== #1 ") && text.contains("--- prompt\nYou write jq 1.7 filters"),
+        "{text}"
+    );
+    assert!(!text.contains("--- reply"), "no reply came: {text}");
 }
 
 #[tokio::test]

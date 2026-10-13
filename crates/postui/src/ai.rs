@@ -82,25 +82,27 @@ pub async fn run_command(cmd: String, stdin: String) -> Result<CommandOutput, St
 /// local data directory elsewhere.
 pub fn debug_log_path() -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
-    let base = std::env::var_os("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .or_else(|| {
-            std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("state"))
-        })?;
+    let dir = postui_core::xdg_app_dir("XDG_STATE_HOME", &[".local", "state"])?;
     #[cfg(not(target_os = "macos"))]
-    let base = {
+    let dir = {
         let dirs = directories::BaseDirs::new()?;
-        dirs.state_dir().unwrap_or(dirs.data_local_dir()).to_path_buf()
+        dirs.state_dir()
+            .unwrap_or(dirs.data_local_dir())
+            .join(postui_core::APP_NAME)
     };
-    Some(base.join(postui_core::APP_NAME).join("ai.log"))
+    Some(dir.join("ai.log"))
 }
 
 /// The first half of a `--debug-ai` log entry, written before the command
 /// runs so a reply that never comes (cancelled, superseded, hung) still
-/// leaves its prompt behind: when, the command, and the whole prompt.
-pub fn log_prompt(when: SystemTime, cmd: &str, prompt: &str) -> String {
-    let mut out = format!("=== {}  {cmd}\n--- prompt\n{prompt}", utc_timestamp(when));
+/// leaves its prompt behind: the request number, when, the command, and
+/// the whole prompt. The number pairs it with its reply half, since a
+/// superseded request's reply can land after the next request's prompt.
+pub fn log_prompt(request: u64, when: SystemTime, cmd: &str, prompt: &str) -> String {
+    let mut out = format!(
+        "=== #{request} {}  {cmd}\n--- prompt\n{prompt}",
+        utc_timestamp(when)
+    );
     if !prompt.ends_with('\n') {
         out.push('\n');
     }
@@ -109,8 +111,8 @@ pub fn log_prompt(when: SystemTime, cmd: &str, prompt: &str) -> String {
 
 /// The second half, appended when the command finishes: what came back,
 /// and the filter that was taken from it.
-pub fn log_reply(outcome: &Result<CommandOutput, String>) -> String {
-    let mut out = String::new();
+pub fn log_reply(request: u64, outcome: &Result<CommandOutput, String>) -> String {
+    let mut out = format!("--- reply #{request}\n");
     match outcome {
         Ok(output) => {
             for (name, text) in [("stdout", &output.stdout), ("stderr", &output.stderr)] {
@@ -217,15 +219,16 @@ mod tests {
             stdout: "`.a | length`\n".into(),
             stderr: String::new(),
         });
-        let entry = log_prompt(SystemTime::UNIX_EPOCH, "claude -p", "PROMPT\nLINES\n")
-            + &log_reply(&outcome);
+        let entry = log_prompt(7, SystemTime::UNIX_EPOCH, "claude -p", "PROMPT\nLINES\n")
+            + &log_reply(7, &outcome);
         assert_eq!(
             entry,
             "\
-=== 1970-01-01T00:00:00Z  claude -p
+=== #7 1970-01-01T00:00:00Z  claude -p
 --- prompt
 PROMPT
 LINES
+--- reply #7
 --- stdout
 `.a | length`
 --- stderr: (empty)
@@ -244,21 +247,24 @@ LINES
             stdout: String::new(),
             stderr: "not logged in".into(),
         });
-        let entry = log_reply(&failed);
+        let entry = log_reply(2, &failed);
         assert!(
             entry.contains("--- stdout: (empty)\n--- stderr\nnot logged in\n--- exit status: 1\n"),
             "{entry}"
         );
         assert!(!entry.contains("filter:"), "{entry}");
-        let entry = log_reply(&Err("no sh".into()));
-        assert!(entry.contains("--- could not run: no sh\n"), "{entry}");
+        let entry = log_reply(3, &Err("no sh".into()));
+        assert!(
+            entry.contains("--- reply #3\n--- could not run: no sh\n"),
+            "{entry}"
+        );
     }
 
     #[test]
     fn the_prompt_half_ends_in_a_newline_on_its_own() {
         assert_eq!(
-            log_prompt(SystemTime::UNIX_EPOCH, "c", "p"),
-            "=== 1970-01-01T00:00:00Z  c\n--- prompt\np\n"
+            log_prompt(1, SystemTime::UNIX_EPOCH, "c", "p"),
+            "=== #1 1970-01-01T00:00:00Z  c\n--- prompt\np\n"
         );
     }
 }

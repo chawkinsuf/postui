@@ -246,7 +246,8 @@ pub struct App {
     pub tx: UnboundedSender<Action>,
     /// The outstanding "describe a filter" AI task, if any: its request
     /// counter (matched against `JqAiFinished::request`) and join handle
-    /// (aborted by `CancelJqDescribe`, and by a new `RunJqDescribe`).
+    /// (for tests to await; `CancelJqDescribe` and a new `RunJqDescribe`
+    /// drop it and let the task run out, never abort it).
     pub ai_task: Option<(u64, tokio::task::JoinHandle<()>)>,
     /// Counts every AI request ever started, so a finished background task
     /// can be matched to the request it was started for (and only that
@@ -5048,12 +5049,11 @@ impl App {
                 true
             }
             Action::CancelJqDescribe => {
-                if let Some((_, task)) = self.ai_task.take() {
-                    task.abort();
-                }
-                // Invalidates any reply still in flight for the cancelled
-                // request — `JqAiFinished` compares against this counter,
-                // not against `ai_task` (already cleared above).
+                // The task runs out on its own (so a prompt it is still
+                // building reaches the `--debug-ai` log); bumping the counter
+                // invalidates its reply — `JqAiFinished` compares against
+                // this counter, not against `ai_task` (cleared here).
+                self.ai_task = None;
                 self.ai_request += 1;
                 self.session.response.jq_bar_mut().ai_pending = false;
                 true
@@ -5115,62 +5115,73 @@ impl App {
                 let Some(view) = self.session.response.view() else {
                     return true;
                 };
-                let body = view.body_text();
-                let Some(shape) = postui_core::jq::shape::shape(&body, Default::default()) else {
-                    self.toasts
-                        .push("The response is not JSON", ToastKind::Info);
-                    return true;
-                };
-                let stdin = postui_core::jq::ai::prompt(
-                    &shape,
-                    self.session.response.jq_text(),
-                    &sentence,
-                );
                 // No ambient runtime happens only in a plain `#[test]` that
                 // reaches an already-confirmed `ConfirmJqDescribe` — the
                 // real main loop, and every async test, always has one.
                 let Ok(handle) = tokio::runtime::Handle::try_current() else {
                     return true;
                 };
-                if let Some((_, task)) = self.ai_task.take() {
-                    task.abort();
-                }
+                // A superseded task is left to run out, never aborted: its
+                // reply is dropped by request number (`JqAiFinished`), and
+                // the prompt it may still be building reaches the log.
+                self.ai_task = None;
                 self.ai_request += 1;
                 let request = self.ai_request;
                 let generation = view.generation;
+                let body = view.body_text();
+                let current = self.session.response.jq_text().to_string();
                 let cmd = self.ui_settings.ai_cmd.clone();
-                // The prompt goes in here, before the task exists: a reply
-                // that never comes (cancelled or superseded, even before the
-                // task first runs) still leaves its prompt in the log.
-                if let Some(path) = &self.ai_log {
-                    let text = crate::ai::log_prompt(std::time::SystemTime::now(), &cmd, &stdin);
-                    if let Err(e) = crate::hostfs::append_log(path, &text) {
-                        self.toasts.push(
-                            format!("could not write {}: {e}", path.display()),
-                            ToastKind::Warning,
-                        );
-                    }
-                }
-                let tx = self.tx.clone();
                 let log = self.ai_log.clone();
+                let tx = self.tx.clone();
                 let task = handle.spawn(async move {
-                    let outcome = crate::ai::run_command(cmd, stdin).await;
-                    if let Some(path) = log {
-                        let text = crate::ai::log_reply(&outcome);
+                    // The outline walks the whole body and the log is file
+                    // I/O: both on the blocking pool, so a large response or
+                    // a slow disk never stalls the UI thread.
+                    let built = {
+                        let cmd = cmd.clone();
+                        let log = log.clone();
                         let tx = tx.clone();
-                        // Off the async workers: a slow disk stalls only
-                        // the blocking pool.
-                        let _ = tokio::task::spawn_blocking(move || {
-                            if let Err(e) = crate::hostfs::append_log(&path, &text) {
-                                let _ = tx.send(Action::ShowToast(
-                                    format!("could not write {}: {e}", path.display()),
-                                    ToastKind::Warning,
-                                ));
+                        tokio::task::spawn_blocking(move || {
+                            let shape =
+                                postui_core::jq::shape::shape(&body, Default::default())?;
+                            let stdin = postui_core::jq::ai::prompt(&shape, &current, &sentence);
+                            if let Some(path) = log {
+                                let when = std::time::SystemTime::now();
+                                let text = crate::ai::log_prompt(request, when, &cmd, &stdin);
+                                if let Err(e) = crate::hostfs::append_log(&path, &text) {
+                                    let _ = tx.send(Action::ShowToast(
+                                        format!("could not write {}: {e}", path.display()),
+                                        ToastKind::Warning,
+                                    ));
+                                }
                             }
+                            Some(stdin)
                         })
-                        .await;
-                    }
-                    let result = outcome.and_then(crate::ai::CommandOutput::into_reply);
+                        .await
+                    };
+                    let result = match built {
+                        Ok(Some(stdin)) => {
+                            let outcome = crate::ai::run_command(cmd, stdin).await;
+                            if let Some(path) = log {
+                                let text = crate::ai::log_reply(request, &outcome);
+                                let tx = tx.clone();
+                                let _ = tokio::task::spawn_blocking(move || {
+                                    if let Err(e) = crate::hostfs::append_log(&path, &text) {
+                                        let _ = tx.send(Action::ShowToast(
+                                            format!("could not write {}: {e}", path.display()),
+                                            ToastKind::Warning,
+                                        ));
+                                    }
+                                })
+                                .await;
+                            }
+                            outcome.and_then(crate::ai::CommandOutput::into_reply)
+                        }
+                        // `jq_blocked_reason` only lets a JSON view get this
+                        // far, so this is a fallback, not a path.
+                        Ok(None) => Err("the response is not JSON".to_string()),
+                        Err(e) => Err(e.to_string()),
+                    };
                     let _ = tx.send(Action::JqAiFinished {
                         generation,
                         request,

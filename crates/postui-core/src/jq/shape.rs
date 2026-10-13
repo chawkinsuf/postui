@@ -1,6 +1,7 @@
 //! A structure-only outline of a JSON body for the AI prompt: key names
 //! and types, never values.
 
+use crate::jq::path::key_label;
 use serde_json::Value;
 
 #[derive(Debug, Clone, Copy)]
@@ -160,16 +161,6 @@ impl Object {
         for field in &mut self.fields {
             field.schema.collapse();
         }
-    }
-}
-
-/// A key as the outline writes it: bare when it is an identifier, quoted
-/// otherwise.
-fn key_label(name: &str) -> String {
-    if crate::jq::path::is_identifier(name) {
-        name.to_string()
-    } else {
-        serde_json::to_string(name).expect("strings always encode")
     }
 }
 

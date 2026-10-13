@@ -21,8 +21,9 @@ is an object with many keys whose values all share one structure: its keys are
 named on that line (`… M more` when they are too many to list), and the lines
 under its `[]` describe every value, merged. Reach one value with `.name.k1`,
 all of them with `.name[]`, the keys with `keys` or `to_entries`. Values are
-shown as their type name; `a | b` means both types occur. Keys that are not
-plain identifiers are quoted. The request may name only the last key of a path: find that key in the
+shown as their type name; `a | b` means both types occur. `name: {}` and
+`name: [] (always empty)` are containers that never held anything. Keys that
+are not plain identifiers are quoted. The request may name only the last key of a path: find that key in the
 structure and write its whole path from the root, through every array with
 `[]`. Never write a bare `.key` unless that key is at the top level.";
 
@@ -44,25 +45,31 @@ pub fn prompt(shape: &Shape, current_filter: &str, request: &str) -> String {
     )
 }
 
-/// Trims, skips ``` fence lines, takes the first non-empty line, and keeps
-/// what is inside its first backtick pair (backticks are never jq syntax),
-/// so prose around a quoted filter is dropped too.
+/// Trims, skips ``` fence lines, and takes the first line that has
+/// something left once its backticks are unwrapped: a line that is only
+/// backticks falls through to the next.
 pub fn extract_filter(reply: &str) -> Option<String> {
     reply
         .lines()
         .map(str::trim)
-        .find(|l| !l.is_empty() && !l.starts_with("```"))
+        .filter(|l| !l.starts_with("```"))
         .map(inside_backticks)
-        .filter(|l| !l.is_empty())
+        .find(|l| !l.is_empty())
         .map(str::to_string)
 }
 
-/// `` `.a` and more `` → `.a`; a line with no backticks, or nothing after
-/// its first run of them (`.a``), comes back with the backticks trimmed.
+/// `` `.a` and more `` → `.a`, so prose around a quoted filter is dropped;
+/// a line with no backticks, or nothing after its first run of them
+/// (`.a``), comes back with the backticks trimmed. Backticks are not jq
+/// syntax, but they are legal inside a string literal (`test("`")`): a
+/// first backtick that sits inside quotes leaves the line alone.
 fn inside_backticks(line: &str) -> &str {
     let Some(open) = line.find('`') else {
         return line;
     };
+    if inside_string_literal(&line[..open]) {
+        return line;
+    }
     let rest = line[open..].trim_start_matches('`');
     let quoted = rest.split('`').next().unwrap_or("").trim();
     if quoted.is_empty() {
@@ -70,6 +77,23 @@ fn inside_backticks(line: &str) -> &str {
     } else {
         quoted
     }
+}
+
+/// Whether `prefix` ends inside a jq string literal: an odd number of
+/// unescaped `"` so far.
+fn inside_string_literal(prefix: &str) -> bool {
+    let mut open = false;
+    let mut chars = prefix.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' if open => {
+                chars.next();
+            }
+            '"' => open = !open,
+            _ => {}
+        }
+    }
+    open
 }
 
 #[cfg(test)]
@@ -114,6 +138,10 @@ mod tests {
         assert!(
             p.contains("a `[]` line for its\narray's elements, reached with `.a[]`"),
             "the `[]` line under a key of several types is explained: {p}"
+        );
+        assert!(
+            p.contains("`name: {}` and\n`name: [] (always empty)`"),
+            "the always-empty containers are explained: {p}"
         );
     }
 
@@ -163,5 +191,31 @@ mod tests {
             Some("map(.id)".into())
         );
         assert_eq!(extract_filter("`.a"), Some(".a".into()), "unclosed");
+    }
+
+    #[test]
+    fn a_backtick_inside_a_string_literal_is_part_of_the_filter() {
+        assert_eq!(
+            extract_filter(".items[] | select(.code | test(\"`\"))"),
+            Some(".items[] | select(.code | test(\"`\"))".into())
+        );
+        assert_eq!(
+            extract_filter(".name == \"a`b\""),
+            Some(".name == \"a`b\"".into())
+        );
+        assert_eq!(
+            extract_filter(".x == \"say \\\"hi\\\"\" | `.y`"),
+            Some(".y".into()),
+            "escaped quotes do not open a literal"
+        );
+    }
+
+    #[test]
+    fn a_line_of_only_backticks_falls_through_to_the_next() {
+        assert_eq!(
+            extract_filter("``\n.data[] | .name\n"),
+            Some(".data[] | .name".into())
+        );
+        assert_eq!(extract_filter("``\n\n"), None);
     }
 }

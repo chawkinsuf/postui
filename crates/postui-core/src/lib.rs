@@ -11,17 +11,29 @@ pub const APP_NAME: &str = "postui";
 pub fn config_dir() -> Option<std::path::PathBuf> {
     #[cfg(target_os = "macos")]
     {
-        use std::path::PathBuf;
-        let base = std::env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .filter(|p| p.is_absolute())
-            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
-        Some(base.join(APP_NAME))
+        xdg_app_dir("XDG_CONFIG_HOME", &[".config"])
     }
     #[cfg(not(target_os = "macos"))]
     {
         directories::ProjectDirs::from("", "", APP_NAME).map(|d| d.config_dir().to_path_buf())
     }
+}
+
+/// The XDG answer for one base directory on macOS, where `directories`
+/// would say `~/Library`: `$VAR/postui` when `VAR` is set to an absolute
+/// path, else `~/<default…>/postui`. The one place that policy lives, for
+/// `config_dir` and the `--debug-ai` log alike.
+#[cfg(target_os = "macos")]
+pub fn xdg_app_dir(var: &str, default: &[&str]) -> Option<std::path::PathBuf> {
+    use std::path::PathBuf;
+    let base = std::env::var_os(var)
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| {
+            let home = PathBuf::from(std::env::var_os("HOME")?);
+            Some(default.iter().fold(home, |p, part| p.join(part)))
+        })?;
+    Some(base.join(APP_NAME))
 }
 
 pub mod jq;
