@@ -480,21 +480,36 @@ reopens R; redo opens the neighbour again.
 
 ### 4.7 Telling "open" from "cursor here"
 
-- **Who:** `mine`, accepted by the user 2026-09-27 (OQ3).
+- **Who:** `mine`, accepted by the user 2026-09-27 (OQ3); reversed by
+  `you` 2026-10-14 (task #7, the amendment below).
 - **Today:** the open row gets a `selection` fill and a `▌` bar. A
   cursor on another row gets a steady `control_hover` fill, drawn only
   while the sidebar is focused. When the cursor sits on the open row,
   the band wins and nothing marks the cursor (sidebar.rs l.904–948).
   Before R6, a cleared cursor looked identical to a cursor on the open
   row, which is how sweep 7 moved the wrong request.
-- **Proposal:** R6 makes the cursor always present, so no new state
+- **Proposal (superseded 2026-10-14, see the amendment below):** R6
+  makes the cursor always present, so no new state
   needs showing. Add one cue: while the sidebar is focused and the
   cursor is on the open row, that row's fill is
   `mix(selection, control_hover, 0.5)` instead of plain `selection`.
   With the sidebar unfocused, it paints as today.
-- **Tests:**
+- **Tests (superseded 2026-10-14, see the amendment below):**
   - update `cursor_on_the_open_row_shows_plain_selection_not_accent_name`;
   - add `the_open_row_lifts_while_the_focused_cursor_is_on_it`.
+- **Amended 2026-10-14 (task #7, `you`): the lift is dropped.** Because
+  the lift belonged to the cursor, it left the open row whenever the
+  cursor did. A right-click on another row moves the cursor there so
+  the menu acts on that row, so the open row changed colour although
+  nothing had happened to it. Arrow browsing did the same. The open row
+  now always paints plain `selection`, whatever the cursor does: it
+  shows which request is open, and nothing else. The cursor's only
+  marker is the `control_hover` fill when it sits on a different row,
+  drawn as before: only while the sidebar is focused.
+  The tests are now
+  `cursor_on_the_open_row_paints_the_plain_band_and_keeps_the_name_plain`,
+  `the_open_row_paints_the_same_wherever_the_cursor_is` and
+  `right_click_on_another_row_leaves_the_open_row_unchanged`.
 
 ## 5 What is copied from vim-mode, and what is rewritten
 
@@ -713,6 +728,9 @@ on it (§4.7)?**
   cheap, and sweep 7 listed the identical fill as a finding. Rejecting
   it leaves R6's invariant as the only fix, which already removes the
   harmful case (a cursor that is not there).
+- **Reversed 2026-10-14 (task #7, `you`): no lift.** The open row
+  shows which request is open and does not change with the cursor (see
+  the amendment in §4.7).
 
 **OQ4. Should deleting a space still stop for unsaved changes?** Today
 deleting the space that holds the open, unsaved request raises the
