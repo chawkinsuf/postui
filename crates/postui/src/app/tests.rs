@@ -22824,12 +22824,11 @@ fn tooltip_for_an_undefined_token_has_no_value_row() {
     );
 }
 
-/// A selector field's tip describes the option that filled it, in place
-/// of the selector's description (#11, the user's ruling) — and the
-/// selector's comes back for an option that has none (a blank one is
-/// none).
+/// A selector field's tip stacks its selector's description, then the
+/// description of the option that filled it (#19, the user's ruling) —
+/// the selector's alone for an option that has none (a blank one is none).
 #[test]
-fn tooltip_shows_the_selected_options_description_over_its_selectors() {
+fn tooltip_stacks_the_selectors_description_then_the_selected_options() {
     let (mut app, dir, _out) = tooltip_app("user");
     std::fs::write(
         dir.path().join("environments/qa.toml"),
@@ -22841,8 +22840,9 @@ fn tooltip_shows_the_selected_options_description_over_its_selectors() {
     hover_token(&mut app, "user");
     let text = tooltip_text(&mut app);
     assert!(text.contains("option = alice"), "{text}");
-    assert!(text.contains("the premium one"), "{text}");
-    assert!(!text.contains("acting user"), "the option's replaces the selector's: {text}");
+    let selector = text.find("acting user").unwrap_or_else(|| panic!("selector's: {text}"));
+    let option = text.find("the premium one").unwrap_or_else(|| panic!("option's: {text}"));
+    assert!(selector < option, "the selector's first: {text}");
 
     app.proj_mut().set_selection_for("qa", "user", "bob");
     app.update(Action::ReloadProjectFiles);
@@ -22871,6 +22871,7 @@ fn tooltip_shows_a_shared_selectors_option_description() {
     hover_token(&mut app, "user");
     let text = tooltip_text(&mut app);
     assert!(text.contains("option = carol"), "{text}");
+    assert!(text.contains("acting user"), "{text}");
     assert!(text.contains("the shared one"), "{text}");
 }
 

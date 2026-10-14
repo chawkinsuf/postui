@@ -70,11 +70,11 @@ pub struct TokenInfo {
     /// the real value.
     pub secret: bool,
     pub source: TokenSource,
-    /// The declaration's description, when one is written — the tooltip's
-    /// optional last section. A selector field carries its selected
-    /// option's own description, or its selector's when the option has
-    /// none (or the request overlay filled the field instead).
-    pub description: Option<String>,
+    /// The declared descriptions, the tooltip's last section, stacked in
+    /// order: a variable's own; for a selector field its selector's, then
+    /// the selected option's — the option's left out when the request
+    /// overlay filled the field instead. Empty when none is written.
+    pub descriptions: Vec<String>,
 }
 
 impl TokenInfo {
@@ -123,8 +123,8 @@ pub struct VarView {
     /// the owning selector's.
     descriptions: IndexMap<String, String>,
     /// A selector field's selected option's own description, when it has
-    /// one: it replaces the selector's in the tooltip. (The parser already
-    /// drops a blank description, so neither map holds one.)
+    /// one: the tooltip stacks it under the selector's. (The parser
+    /// already drops a blank description, so neither map holds one.)
     option_descriptions: IndexMap<String, String>,
 }
 
@@ -194,7 +194,7 @@ impl VarView {
                 value: Some(value.clone()),
                 secret: false,
                 source: TokenSource::Request,
-                description: self.descriptions.get(name).cloned(),
+                descriptions: self.descriptions.get(name).cloned().into_iter().collect(),
             };
         }
         let value = self.resolved.values.get(name).cloned();
@@ -226,11 +226,11 @@ impl VarView {
                 Some(VarMeta::Secret) | Some(VarMeta::MissingSecret)
             ),
             source,
-            description: self
-                .option_descriptions
-                .get(name)
-                .or_else(|| self.descriptions.get(name))
-                .cloned(),
+            descriptions: [self.descriptions.get(name), self.option_descriptions.get(name)]
+                .into_iter()
+                .flatten()
+                .cloned()
+                .collect(),
         }
     }
 
@@ -337,31 +337,31 @@ mod tests {
     fn describe_carries_the_declared_description() {
         let mut v = view();
         v.descriptions.insert("base_url".into(), "API root".into());
-        assert_eq!(v.describe("base_url").description.as_deref(), Some("API root"));
-        assert_eq!(v.describe("user").description, None);
+        assert_eq!(v.describe("base_url").descriptions, ["API root"]);
+        assert!(v.describe("user").descriptions.is_empty());
     }
 
-    /// A selector field describes the option that filled it when that
-    /// option has a description of its own (#11, the user's ruling: the
-    /// option's replaces the selector's), and the selector's otherwise.
+    /// A selector field is described by its selector, then by the option
+    /// that filled it (#19, the user's ruling: both, stacked, selector
+    /// first — reversing #11's "the option's replaces the selector's").
     /// The request overlay fills the field with no option in play, so it
-    /// keeps the selector's.
+    /// keeps the selector's alone.
     #[test]
-    fn a_selector_field_describes_its_selected_option_over_its_selector() {
+    fn a_selector_field_describes_its_selector_then_its_selected_option() {
         let mut v = view();
         v.resolved.values.insert("uid".into(), "1001".into());
         v.resolved.meta.insert(
             "uid".into(),
             VarMeta::SelectorMember { selector: "user".into(), selected: "user 2".into() },
         );
-        v.descriptions.insert("uid".into(), "acting user".into());
-        assert_eq!(v.describe("uid").description.as_deref(), Some("acting user"));
-
         v.option_descriptions.insert("uid".into(), "the premium one".into());
-        assert_eq!(v.describe("uid").description.as_deref(), Some("the premium one"));
+        assert_eq!(v.describe("uid").descriptions, ["the premium one"], "no selector's");
+
+        v.descriptions.insert("uid".into(), "acting user".into());
+        assert_eq!(v.describe("uid").descriptions, ["acting user", "the premium one"]);
 
         v.request.insert("uid".into(), "7".into());
-        assert_eq!(v.describe("uid").description.as_deref(), Some("acting user"));
+        assert_eq!(v.describe("uid").descriptions, ["acting user"]);
     }
 
     #[test]

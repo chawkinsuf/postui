@@ -391,9 +391,10 @@ const TOOLTIP_MAX_TEXT_W: usize = 56;
 ///   the scope its value came from in muted text (`this request`,
 ///   `env = qa`, `default`, `option = user 2`, `needs selection`,
 ///   `missing secret`, `not defined`);
-/// - the **description**, when written, word-wrapped in muted text (a
-///   selector field's is its selected option's, see
-///   [`crate::components::var_tokens::TokenInfo::description`]).
+/// - the **descriptions**, when written, each word-wrapped in muted text
+///   and stacked (a selector field's selector's, then its selected
+///   option's, see
+///   [`crate::components::var_tokens::TokenInfo::descriptions`]).
 ///
 /// The top row — the value's first, or the name row when there is no
 /// value — carries the icon pills right-aligned: `󰈈` reveal / `󰈉` hide
@@ -456,8 +457,9 @@ fn draw_var_tooltip(
         None => Vec::new(),
     };
     let source = info.source.label();
-    let mut desc_lines =
-        info.description.as_deref().map_or_else(Vec::new, |d| wrap_words(d, wrap_w));
+    // The descriptions stack, each starting a row of its own.
+    let mut desc_lines: Vec<String> =
+        info.descriptions.iter().flat_map(|d| wrap_words(d, wrap_w)).collect();
     // The name row: the name, two cells, then the source. With no value
     // it is the top row, beside the pills.
     let has_value = !value_lines.is_empty();
@@ -913,8 +915,22 @@ mod tests {
             value: value.map(str::to_string),
             secret: false,
             source: TokenSource::Env("qa".into()),
-            description: description.map(str::to_string),
+            descriptions: description.into_iter().map(str::to_string).collect(),
         }
+    }
+
+    /// A selector field's two descriptions stack, each wrapped on its own:
+    /// the selector's, then the option's, with no row between (#19).
+    #[test]
+    fn a_tooltips_descriptions_stack_each_wrapped_on_its_own() {
+        let option = "the premium one, with an active subscription and a linked customer";
+        let info = TokenInfo {
+            descriptions: vec!["acting user".into(), option.into()],
+            ..tip_info(Some("1001"), None)
+        };
+        let rows = tip_rows(120, 40, &info);
+        assert_eq!(rows[4], "acting user", "{rows:?}");
+        assert_eq!(rows[5..].join(" "), option, "{rows:?}");
     }
 
     /// Draws the `x` tooltip alone on a `w`×`h` screen, anchored at the
@@ -1095,7 +1111,7 @@ mod tests {
             value: Some(String::new()),
             secret: true,
             source: TokenSource::Env("a".into()),
-            description: None,
+            descriptions: Vec::new(),
         };
         let (masked, _) = draw_tip_revealed(120, 40, 0, &info, false).unwrap();
         let (clear, _) = draw_tip_revealed(120, 40, 0, &info, true).unwrap();
