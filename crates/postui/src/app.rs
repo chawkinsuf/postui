@@ -1193,6 +1193,8 @@ impl App {
                 .response
                 .view()
                 .is_some_and(|v| v.mode == crate::components::response::ViewMode::Headers),
+            // Pressed while the bar shows, and a click then closes it.
+            Hit::ResponseJqButton => self.session.response.jq_open(),
             Hit::TipReveal(name) => self.tip_revealed.as_ref().is_some_and(|(n, _)| n == name),
             Hit::VmRevealToggle => self.varmanager.form.revealed,
             Hit::ModalRevealToggle => {
@@ -4817,8 +4819,12 @@ impl App {
                 // Open ⇄ closed, regardless of focus: an open bar closes
                 // (filter off, text kept) whether or not the caret is in
                 // it; a closed one opens switched on and focused. The
-                // switch, not the way in — alt+q is `OpenJqBar`.
+                // switch, not the way in — alt+q is `OpenJqBar`. Closing
+                // ends an AI request outstanding for the bar too, as Esc
+                // does: the bar shows while one is, so it could not
+                // otherwise close.
                 if self.session.response.jq_open() {
+                    self.cancel_ai();
                     self.session.response.close_jq();
                 } else {
                     self.dispatch(Action::FocusPane(PaneId::Response));

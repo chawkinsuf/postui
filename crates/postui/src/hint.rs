@@ -439,6 +439,8 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         Hit::ResponseSearchNext => text("Go to the next match"),
         Hit::ResponseSearchPrev => text("Go to the previous match"),
         Hit::HeaderCopy(_) => text("Copy this header's value"),
+        // A toggle: pressed (the bar showing), a click closes it.
+        Hit::ResponseJqButton if ctx.on => of(Action::ToggleJqBar),
         Hit::ResponseJqButton => of(Action::OpenJqBar),
         Hit::ResponseJqAiButton => of(Action::OpenJqDescribe),
 
