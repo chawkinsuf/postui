@@ -614,10 +614,17 @@ fn wrap_cells(s: &str, max: usize) -> Vec<String> {
     lines
 }
 
+/// Prose `s` as it reads on one row: every run of whitespace, newlines
+/// included, folded to one space, none at either end. The one rule every
+/// description drawer follows — [`wrap_words`] folds the same way.
+pub(crate) fn one_line(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// Prose `s` wrapped into lines of at most `max` display cells, breaking
-/// between words; every run of whitespace, newlines included, folds to
-/// one space. A word wider than a line is hard-broken as [`wrap_cells`]
-/// does. A blank `s` yields no lines at all.
+/// between words; whitespace folds as [`one_line`] folds it. A word wider
+/// than a line is hard-broken as [`wrap_cells`] does. A blank `s` yields
+/// no lines at all.
 fn wrap_words(s: &str, max: usize) -> Vec<String> {
     use unicode_width::UnicodeWidthStr;
     let mut lines = Vec::new();

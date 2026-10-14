@@ -6,6 +6,7 @@ use crate::components::toast::ToastKind;
 use crate::components::varmanager::VarEditOp;
 use crate::paint::{self, ControlState, FIELD_HEIGHT, ListRow, RowHighlight, TextField};
 use crate::theme::Theme;
+use crate::ui::one_line;
 use indexmap::IndexMap;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -807,12 +808,6 @@ impl VarPickerState {
             }
         }
     }
-}
-
-/// A description as it is drawn on one row: every run of whitespace,
-/// newlines included, folded to one space — as the hover tooltip folds it.
-fn one_line(desc: &str) -> String {
-    desc.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// How many lines [`VarPickerState::draw`]'s detail pane needs for one

@@ -14,6 +14,7 @@
 
 use crate::hit::{Hit, HitMap};
 use crate::theme::Theme;
+use crate::ui::one_line;
 use indexmap::IndexMap;
 use postui_core::model::Entry;
 use postui_core::prepare::SECRET_MASK;
@@ -229,8 +230,10 @@ impl VarView {
             descriptions: {
                 let own = self.descriptions.get(name);
                 // An option repeating its selector's description word for
-                // word adds nothing: shown once.
-                let option = self.option_descriptions.get(name).filter(|d| Some(*d) != own);
+                // word (as drawn, whitespace folded) adds nothing: shown once.
+                let same = |a: &String, b: &String| one_line(a) == one_line(b);
+                let option =
+                    self.option_descriptions.get(name).filter(|d| !own.is_some_and(|o| same(o, d)));
                 [own, option].into_iter().flatten().cloned().collect()
             },
         }
@@ -378,6 +381,9 @@ mod tests {
         );
         v.descriptions.insert("uid".into(), "acting user".into());
         v.option_descriptions.insert("uid".into(), "acting user".into());
+        assert_eq!(v.describe("uid").descriptions, ["acting user"]);
+        // The same words spaced or broken differently still read the same.
+        v.option_descriptions.insert("uid".into(), "acting\n  user ".into());
         assert_eq!(v.describe("uid").descriptions, ["acting user"]);
     }
 
