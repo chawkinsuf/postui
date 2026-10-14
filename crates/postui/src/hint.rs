@@ -223,7 +223,9 @@ fn fallback_description(action: &Action) -> Option<String> {
         Action::CycleSplitBack => "Step the split back".to_string(),
         Action::DeleteTableRow(_) => "Delete this row".to_string(),
         Action::ToggleVarReveal => "Reveal or hide the secret value".to_string(),
-        Action::ToggleJqBar => "Turn the jq filter off".to_string(),
+        // Closing switches the filter off — when there is one: an empty
+        // bar, or one still asking the AI, just closes.
+        Action::ToggleJqBar => "Close the jq filter".to_string(),
         Action::ResponseViewMode(ViewMode::Raw) => "Show the raw response body".to_string(),
         Action::ResponseViewMode(ViewMode::Headers) => "Show the response headers".to_string(),
         Action::ResponseViewMode(ViewMode::Pretty) => "Show the body as a JSON tree".to_string(),

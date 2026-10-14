@@ -4820,9 +4820,9 @@ impl App {
                 // (filter off, text kept) whether or not the caret is in
                 // it; a closed one opens switched on and focused. The
                 // switch, not the way in — alt+q is `OpenJqBar`. Closing
-                // ends an AI request outstanding for the bar too, as Esc
-                // does: the bar shows while one is, so it could not
-                // otherwise close.
+                // ends an AI request outstanding for the bar too (Esc
+                // ends it and stays): the bar shows while one is, so it
+                // could not otherwise close.
                 if self.session.response.jq_open() {
                     self.cancel_ai();
                     self.session.response.close_jq();

@@ -4023,6 +4023,7 @@ impl Component for Response {
             data,
             view,
             &self.jq,
+            jq_open,
             self.collapsed,
             self.split,
             ctx,
@@ -4178,6 +4179,7 @@ fn draw_header_strip(
     data: &crate::http::ResponseData,
     view: &ReadyView,
     bar: &JqBar,
+    jq_open: bool,
     collapsed: bool,
     split: crate::split::SplitState,
     ctx: &DrawCtx,
@@ -4243,7 +4245,6 @@ fn draw_header_strip(
     // Row 2 (left): the icon actions, on the stretch of the underline row
     // the tabs' rule doesn't reach.
     let jq_available = view.has_tree_view() && view.mode == ViewMode::Pretty;
-    let jq_open = jq_available && bar.is_open();
     draw_header_actions(frame, hits, area, jq_available, jq_open, ctx);
 
     let buf = frame.buffer_mut();
