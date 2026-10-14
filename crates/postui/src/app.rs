@@ -9219,8 +9219,7 @@ impl App {
                     return self.update(Action::Render);
                 }
                 Some(crate::components::modal::Modal::Chooser(c)) => {
-                    c.paste(text);
-                    return self.update(Action::Render);
+                    return c.paste(text) && self.update(Action::Render);
                 }
                 Some(crate::components::modal::Modal::FilePicker(p)) => {
                     p.paste(text);

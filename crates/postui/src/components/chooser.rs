@@ -24,8 +24,10 @@ pub struct ChooserItem {
 /// An optional two-state switch on a chooser (the theme picker's
 /// dark/light filter): `label` renders right-aligned on the title row,
 /// and Tab/BackTab (Left/Right too without a filter box, or a click on the
-/// label) dispatch `action` without closing the modal — the action's handler is expected to swap the
-/// chooser's items via [`ChooserState::set_items`].
+/// label) dispatch `action` without closing the modal — the action's
+/// handler is expected to swap the chooser's items via
+/// [`ChooserState::set_items`]. An empty label is an inert toggle: not
+/// painted, not advertised, and no key or click fires it.
 pub struct ChooserToggle {
     pub label: String,
     pub action: Action,
@@ -38,11 +40,10 @@ pub struct ChooserToggle {
 /// [`ChooserState::without_filter`] drops the filter box.
 pub struct ChooserState {
     pub(crate) title: String,
-    input: LineInput,
-    /// Whether the filter box is there: typed keys filter `items`. Off for
-    /// the theme picker (task #6), whose few rows need no search; its
-    /// arrows are then free for the toggle.
-    filter: bool,
+    /// The filter box, whose typed text filters `items`. `None` for the
+    /// theme picker (task #6), whose few rows need no search; its arrows
+    /// are then free for the toggle.
+    input: Option<LineInput>,
     selected: usize,
     pub(crate) items: Vec<ChooserItem>,
     filtered: Vec<usize>,
@@ -62,8 +63,7 @@ impl ChooserState {
         let filtered = (0..items.len()).collect();
         Self {
             title: title.to_string(),
-            input: LineInput::new(""),
-            filter: true,
+            input: Some(LineInput::new("")),
             selected: 0,
             items,
             filtered,
@@ -73,11 +73,15 @@ impl ChooserState {
         }
     }
 
-    /// Whether a title-row toggle is attached and showing — the footer
-    /// advertises its keys only then. An empty label is an inert toggle
-    /// (see `draw`).
+    /// The toggle while it is live: attached with a label showing.
+    fn live_toggle(&self) -> Option<&ChooserToggle> {
+        self.toggle.as_ref().filter(|t| !t.label.is_empty())
+    }
+
+    /// Whether a live title-row toggle is attached — the footer advertises
+    /// its keys only then.
     pub fn has_toggle(&self) -> bool {
-        self.toggle.as_ref().is_some_and(|t| !t.label.is_empty())
+        self.live_toggle().is_some()
     }
 
     /// Attaches a [`ChooserToggle`] (builder-style, for construction).
@@ -90,13 +94,13 @@ impl ChooserState {
     /// keys and pastes do nothing, and the keys a caret would take are the
     /// list's (Home, End) and the toggle's (Left, Right).
     pub fn without_filter(mut self) -> Self {
-        self.filter = false;
+        self.input = None;
         self
     }
 
     /// Whether the chooser has a filter box — a field with the caret.
     pub fn has_filter(&self) -> bool {
-        self.filter
+        self.input.is_some()
     }
 
     /// Updates the toggle's displayed label (e.g. after its action flipped
@@ -107,10 +111,10 @@ impl ChooserState {
         }
     }
 
-    /// The toggle's action, if a toggle is attached — what a click on the
-    /// toggle label dispatches.
+    /// The live toggle's action — what a click on the toggle label, or a
+    /// key that flips it, dispatches.
     pub fn toggle_action(&self) -> Option<&Action> {
-        self.toggle.as_ref().map(|t| &t.action)
+        self.live_toggle().map(|t| &t.action)
     }
 
     /// Replaces the item list wholesale (the toggle's handler swapping in
@@ -134,25 +138,30 @@ impl ChooserState {
     }
 
     /// Pastes into the filter query (the bracketed-paste/ctrl+v path),
-    /// flattened to one line like every single-line surface.
-    pub fn paste(&mut self, text: &str) {
-        if self.filter {
-            self.input.paste(text);
-            self.refilter();
-        }
+    /// flattened to one line like every single-line surface. Returns
+    /// whether there was a filter box to take it.
+    pub fn paste(&mut self, text: &str) -> bool {
+        let Some(input) = &mut self.input else {
+            return false;
+        };
+        input.paste(text);
+        self.refilter();
+        true
     }
 
     pub fn title(&self) -> &str {
         &self.title
     }
 
+    /// The filter text; "" without a filter box.
     pub fn input(&self) -> &str {
-        self.input.text()
+        self.input.as_ref().map_or("", LineInput::text)
     }
 
     /// The query, for the vim engine (plan M3b): it edits it in place.
-    pub(crate) fn input_mut(&mut self) -> &mut LineInput {
-        &mut self.input
+    /// `None` without a filter box.
+    pub(crate) fn input_mut(&mut self) -> Option<&mut LineInput> {
+        self.input.as_mut()
     }
 
     /// The query changed outside this picker's own keys (the vim engine
@@ -207,6 +216,7 @@ impl ChooserState {
     }
 
     fn refilter(&mut self) {
+        let query = self.input.as_ref().map_or("", LineInput::text);
         self.filtered = self
             .items
             .iter()
@@ -216,7 +226,7 @@ impl ChooserState {
                     Some(detail) => format!("{} {}", item.label, detail),
                     None => item.label.clone(),
                 };
-                fuzzy_match(self.input.text(), &haystack)
+                fuzzy_match(query, &haystack)
             })
             .map(|(i, _)| i)
             .collect();
@@ -239,9 +249,11 @@ impl ChooserState {
             // With a filter box the arrows move its caret; without one they
             // fire the toggle too (the label's `◂ ▸`).
             KeyCode::Tab | KeyCode::BackTab => return self.fire_toggle(),
-            KeyCode::Left | KeyCode::Right if !self.filter => return self.fire_toggle(),
-            KeyCode::Home if !self.filter => self.select(0),
-            KeyCode::End if !self.filter => self.select(self.filtered.len().saturating_sub(1)),
+            KeyCode::Left | KeyCode::Right if !self.has_filter() => return self.fire_toggle(),
+            KeyCode::Home if !self.has_filter() => self.select(0),
+            KeyCode::End if !self.has_filter() => {
+                self.select(self.filtered.len().saturating_sub(1))
+            }
             KeyCode::Up => {
                 self.selected = self.selected.saturating_sub(1);
                 self.ensure_visible = true;
@@ -262,20 +274,21 @@ impl ChooserState {
                 }
                 self.ensure_visible = true;
             }
-            _ if self.filter => {
-                let before = self.input.text().to_string();
-                self.input.handle_key(key);
-                if self.input.text() != before {
-                    self.refilter();
+            _ => {
+                if let Some(input) = &mut self.input {
+                    let before = input.text().to_string();
+                    input.handle_key(key);
+                    if input.text() != before {
+                        self.refilter();
+                    }
                 }
             }
-            _ => {}
         }
         None
     }
 
-    /// The toggle's action as a result that keeps the chooser open —
-    /// `None` when no toggle is attached.
+    /// The live toggle's action as a result that keeps the chooser open —
+    /// `None` when no toggle is live.
     fn fire_toggle(&self) -> Option<super::modal::ModalResult> {
         self.toggle_action().map(|a| super::modal::ModalResult {
             actions: vec![a.clone()],
@@ -287,14 +300,17 @@ impl ChooserState {
     /// Whether the filter box has keystrokes of its own to step — what
     /// the app's undo routing asks before handing it the key.
     pub(crate) fn filter_edited(&self) -> bool {
-        self.input.edited()
+        self.input.as_ref().is_some_and(LineInput::edited)
     }
 
     /// Steps the filter's edit history one place (back, or forward when
     /// `redo`) and re-runs the filter, mirroring what typing that step
     /// forward did. Returns whether there was a step to take.
     pub(crate) fn undo_filter(&mut self, redo: bool) -> bool {
-        let stepped = if redo { self.input.redo() } else { self.input.undo() };
+        let Some(input) = &mut self.input else {
+            return false;
+        };
+        let stepped = if redo { input.redo() } else { input.undo() };
         if stepped {
             self.refilter();
         }
@@ -314,7 +330,7 @@ impl ChooserState {
         // Chrome (everything but the list): above it, 1 pad + 1 title + 1
         // gap, then with a filter box its 3-row field + 2 gap rows; below
         // it, 2 bottom pad rows.
-        let above: u16 = if self.filter { 3 + FIELD_HEIGHT + 2 } else { 3 };
+        let above: u16 = if self.has_filter() { 3 + FIELD_HEIGHT + 2 } else { 3 };
         let chrome = above + 2;
         let content_rows = (self.filtered.len() as u16).clamp(1, 10);
         let height = (chrome + content_rows).clamp(chrome + 3, chrome + 16).min(screen.height);
@@ -338,7 +354,7 @@ impl ChooserState {
         // An empty toggle label means the control is currently inert (the
         // theme picker hides it while an unpaired theme is highlighted):
         // paint nothing and register no hit.
-        if let Some(t) = self.toggle.as_ref().filter(|t| !t.label.is_empty()) {
+        if let Some(t) = self.live_toggle() {
             // Right-aligned on the title row, clickable and flippable with
             // the keys `handle_key` gives it.
             let w = t.label.chars().count() as u16;
@@ -350,15 +366,14 @@ impl ChooserState {
             );
         }
 
-        if self.filter {
+        if let Some(input) = &self.input {
             let field_area = Rect {
                 x: area.x + 1,
                 y: title_y + 2,
                 width: area.width.saturating_sub(2),
                 height: FIELD_HEIGHT,
             };
-            let content =
-                self.input.draw_line_windowed(true, theme, field_area.width.saturating_sub(2));
+            let content = input.draw_line_windowed(true, theme, field_area.width.saturating_sub(2));
             TextField { content, state: ControlState::Focused }.paint(
                 frame.buffer_mut(),
                 field_area,
@@ -535,13 +550,19 @@ mod tests {
             assert!(!res.close, "{code:?}");
         }
         c.handle_key(key(KeyCode::Char('c')));
-        c.paste("c");
+        assert!(!c.paste("c"), "no box to take a paste");
         assert_eq!(c.input(), "", "nothing types or pastes");
         assert_eq!(c.selected_label(), Some("a"), "every row still listed");
         c.handle_key(key(KeyCode::End));
         assert_eq!(c.selected_label(), Some("c"));
         c.handle_key(key(KeyCode::Home));
         assert_eq!(c.selected_label(), Some("a"));
+        // An inert toggle (label hidden) fires on no key, as it takes no
+        // click and shows no chip.
+        c.set_toggle_label("");
+        for code in [KeyCode::Left, KeyCode::Right, KeyCode::Tab] {
+            assert!(c.handle_key(key(code)).is_none(), "{code:?}");
+        }
     }
 
     /// The filterless chooser paints no field: the list sits right under

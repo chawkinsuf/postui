@@ -18323,6 +18323,7 @@ mod undo_tests {
             app.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
         }
         assert_eq!(app.theme_name, "terminal", "no filter, the highlight never moved");
+        assert!(!app.paste_text("mocha"), "a paste has nowhere to go");
         let Some(crate::components::modal::Modal::Chooser(c)) = app.modals.top() else {
             panic!("theme chooser modal expected");
         };

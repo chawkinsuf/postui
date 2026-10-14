@@ -793,7 +793,7 @@ impl ModalStack {
     pub(crate) fn query_input_mut(&mut self) -> Option<&mut LineInput> {
         match self.stack.last_mut()? {
             Modal::Palette(s) => Some(s.input_mut()),
-            Modal::Chooser(s) if s.has_filter() => Some(s.input_mut()),
+            Modal::Chooser(s) => s.input_mut(),
             Modal::VarPicker(s) if s.mode == crate::components::var_picker::PickerMode::Insert => {
                 Some(s.input_mut())
             }
@@ -1757,23 +1757,19 @@ impl ModalStack {
                 chips
             }
             // A chooser with a filter box types its letters, so its moves
-            // are the picker's (`^N/^P` in vim); without one (the theme
-            // picker) they are a list's, and Left/Right flip the toggle.
-            Modal::Chooser(state) if !state.has_filter() => {
-                let mut chips = vec![(Key::Nav(Nav::UpDown), "navigate", None)];
-                if state.has_toggle() {
-                    chips.push((Key::Nav(Nav::LeftRight), "toggle", None));
-                }
-                chips.push((Key::Named("enter"), "select", None));
-                chips.push((Key::Named("esc"), "close", None));
-                chips
-            }
+            // are the picker's (`^N/^P` in vim) and Tab flips a toggle;
+            // without one (the theme picker) they are a list's, and
+            // Left/Right flip the toggle (the title-row label is its mouse
+            // twin).
             Modal::Chooser(state) => {
-                let mut chips = vec![(Key::Pick, "navigate", None)];
-                // A dark/light-style switch: Tab flips it (the label on the
-                // title row is its mouse twin).
+                let (moves, flip) = if state.has_filter() {
+                    (Key::Pick, Key::Named("tab"))
+                } else {
+                    (Key::Nav(Nav::UpDown), Key::Nav(Nav::LeftRight))
+                };
+                let mut chips = vec![(moves, "navigate", None)];
                 if state.has_toggle() {
-                    chips.push((Key::Named("tab"), "toggle", None));
+                    chips.push((flip, "toggle", None));
                 }
                 chips.push((Key::Named("enter"), "select", None));
                 chips.push((Key::Named("esc"), "close", None));
