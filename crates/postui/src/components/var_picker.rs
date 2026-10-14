@@ -632,7 +632,7 @@ impl VarPickerState {
                     );
                     x += name_w;
                     if let Some(desc) = &entry.description {
-                        let desc = format!(" {desc}");
+                        let desc = format!(" {}", one_line(desc));
                         let w = right.saturating_sub(x);
                         let clipped = clip(&desc, w);
                         paint::text(
@@ -720,7 +720,7 @@ impl VarPickerState {
                     // option's values live in the detail pane below, which
                     // follows the highlight.
                     if let Some(desc) = &entry.description {
-                        let desc = format!(" {desc}");
+                        let desc = format!(" {}", one_line(desc));
                         let w = right.saturating_sub(x);
                         paint::text(
                             frame.buffer_mut(),
@@ -796,7 +796,7 @@ impl VarPickerState {
                         // A plain single-value option: its description (if
                         // any) then its value.
                         if let Some(desc) = &entry.description {
-                            line(y, desc, list_area.width.saturating_sub(2), "");
+                            line(y, &one_line(desc), list_area.width.saturating_sub(2), "");
                             y += 1;
                         }
                         if let Some(value) = &entry.value {
@@ -807,6 +807,12 @@ impl VarPickerState {
             }
         }
     }
+}
+
+/// A description as it is drawn on one row: every run of whitespace,
+/// newlines included, folded to one space — as the hover tooltip folds it.
+fn one_line(desc: &str) -> String {
+    desc.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// How many lines [`VarPickerState::draw`]'s detail pane needs for one
@@ -997,6 +1003,23 @@ mod tests {
         assert!(content.contains("api root"));
         assert!(content.contains("http://x"));
         assert!(content.contains("unset"));
+    }
+
+    /// A description written across lines is drawn on its one row with
+    /// its whitespace folded, as the hover tooltip folds it.
+    #[test]
+    fn draw_folds_a_multi_line_description_onto_its_row() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut p =
+            VarPickerState::new(vec![var_entry("base", Some("api\n  root"), Some("x"))], false);
+        let theme = Theme::dark();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal.draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0)).unwrap();
+        let content = format!("{:?}", terminal.backend().buffer());
+        assert!(content.contains("base api root = x"), "{content}");
     }
 
     fn entries(names: &[&str]) -> Vec<VarEntry> {

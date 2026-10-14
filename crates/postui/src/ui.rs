@@ -485,7 +485,9 @@ fn draw_var_tooltip(
     cut_rows(&mut desc_lines, room.saturating_sub(value_lines.len()).max(1), wrap_w);
     // Display cells throughout (a wide glyph is one char but two cells).
     let widest = |lines: &[String]| lines.iter().map(|l| l.width()).max().unwrap_or(0);
-    let top_text_w = if has_value { widest(&value_lines) } else { name_w };
+    // At least one cell, as a mask always shows one dot: an empty value
+    // revealed keeps its masked footprint (and the guard below its tip).
+    let top_text_w = if has_value { widest(&value_lines) } else { name_w }.max(1);
     let below_top_w = widest(&desc_lines).max(if has_value { name_w } else { 0 });
     let text_w = (top_text_w + 1 + pills_w).max(below_top_w) as u16;
     let mut rows: Vec<TipRow> = value_lines.into_iter().map(TipRow::Value).collect();
@@ -500,9 +502,9 @@ fn draw_var_tooltip(
     let height = rows.len() as u16 + 2;
     // 2 columns of padding each side, plus a column for the drop shadow.
     let width = (text_w + 4).min(screen.width.saturating_sub(1));
-    // Too narrow for the padding, the pills, and at least one cell of
-    // header before them: no tip at all, rather than pills painted over
-    // the border (or placed off a u16 underflow).
+    // Too narrow for the padding, the pills, and at least one cell of the
+    // top row's text before them: no tip at all, rather than pills painted
+    // over the border (or placed off a u16 underflow).
     if (width as usize) < 6 + pills_w || side_room < height {
         return;
     }
@@ -917,7 +919,8 @@ mod tests {
 
     /// Draws the `x` tooltip alone on a `w`×`h` screen, anchored at the
     /// top-left, and returns its text rows between the panel's borders
-    /// (padding columns dropped, trailing spaces trimmed), header first.
+    /// (padding columns dropped, pill icons dropped, trailing spaces
+    /// trimmed), top row first.
     fn tip_rows(w: u16, h: u16, info: &TokenInfo) -> Vec<String> {
         draw_tip(w, h, 0, info).expect("a tip is drawn").1
     }
@@ -926,6 +929,17 @@ mod tests {
     /// `anchor_y`: its panel and [`tip_rows`]'s rows, or `None` when no
     /// tip fits.
     fn draw_tip(w: u16, h: u16, anchor_y: u16, info: &TokenInfo) -> Option<(Rect, Vec<String>)> {
+        draw_tip_revealed(w, h, anchor_y, info, false)
+    }
+
+    /// [`draw_tip`], with a secret shown in clear when `revealed`.
+    fn draw_tip_revealed(
+        w: u16,
+        h: u16,
+        anchor_y: u16,
+        info: &TokenInfo,
+        revealed: bool,
+    ) -> Option<(Rect, Vec<String>)> {
         let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
         let mut hits = crate::hit::HitMap::default();
         let tip = crate::app::TokenTip { name: "x".into(), anchor: Rect::new(0, anchor_y, 5, 1) };
@@ -937,7 +951,7 @@ mod tests {
                     &crate::theme::Theme::dark(),
                     &tip,
                     info,
-                    false,
+                    revealed,
                     None,
                     &mut hits,
                 )
@@ -1071,6 +1085,21 @@ mod tests {
         // 7 a value and a description need — no tip, rather than one over
         // its token (the user's ruling).
         assert_eq!(draw_tip(120, 9, 4, &info), None);
+    }
+
+    /// Reveal / hide moves nothing, even for a secret whose value is
+    /// empty: its mask shows one dot, and the clear value keeps that cell.
+    #[test]
+    fn revealing_an_empty_secret_keeps_the_tips_footprint() {
+        let info = TokenInfo {
+            value: Some(String::new()),
+            secret: true,
+            source: TokenSource::Env("a".into()),
+            description: None,
+        };
+        let (masked, _) = draw_tip_revealed(120, 40, 0, &info, false).unwrap();
+        let (clear, _) = draw_tip_revealed(120, 40, 0, &info, true).unwrap();
+        assert_eq!(masked, clear);
     }
 
     /// A description of nothing but whitespace is no description: no
