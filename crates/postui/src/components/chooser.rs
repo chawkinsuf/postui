@@ -56,6 +56,10 @@ pub struct ChooserState {
     /// `draw` scrolls it back into view; wheel scrolling clears it so a free
     /// scroll survives the following draw untouched.
     ensure_visible: bool,
+    /// The screen behind is the chooser's live preview (the theme picker,
+    /// task #16): it stays undimmed, and the panel stands off it with the
+    /// accent ring instead. See [`ChooserState::previewing`].
+    previewing: bool,
 }
 
 impl ChooserState {
@@ -70,6 +74,7 @@ impl ChooserState {
             scroll: 0,
             ensure_visible: true,
             toggle: None,
+            previewing: false,
         }
     }
 
@@ -101,6 +106,20 @@ impl ChooserState {
     /// Whether the chooser has a filter box — a field with the caret.
     pub fn has_filter(&self) -> bool {
         self.input.is_some()
+    }
+
+    /// Marks the screen behind as the chooser's live preview
+    /// (builder-style): dimming it would misrepresent what is being
+    /// previewed, so the backdrop stays as it is and the panel is ringed
+    /// in accent to stand off it, as the undimmed dropdown is.
+    pub fn previewing(mut self) -> Self {
+        self.previewing = true;
+        self
+    }
+
+    /// Whether the screen behind is this chooser's live preview.
+    pub fn is_previewing(&self) -> bool {
+        self.previewing
     }
 
     /// Updates the toggle's displayed label (e.g. after its action flipped
@@ -345,6 +364,9 @@ impl ChooserState {
         paint::floating_panel_settling(frame.buffer_mut(), area, screen, theme, t);
         if t < 1.0 {
             return;
+        }
+        if self.previewing {
+            paint::ring(frame.buffer_mut(), area, theme.accent, theme.panel);
         }
 
         let title_y = area.y + 1;

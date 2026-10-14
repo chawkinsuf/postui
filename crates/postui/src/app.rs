@@ -4375,8 +4375,11 @@ impl App {
                 // No filter box: a handful of rows needs no search, and it
                 // leaves the arrows to the toggle (task #6, you).
                 self.theme_picker_dark = self.theme.is_dark();
+                // Previewing: the screen behind stays undimmed, since it
+                // is what the highlighted theme looks like (task #16, you).
                 let mut state = ChooserState::new("Theme", self.theme_picker_items())
                     .without_filter()
+                    .previewing()
                     .with_toggle(
                         theme_picker_toggle_label(self.theme_picker_dark),
                         Action::ToggleThemePickerPolarity,
@@ -9514,19 +9517,6 @@ impl App {
         self.anims.retarget(AnimKey::FocusFade, 1.0, self.ui_settings.anim_ms.focus, now);
     }
 
-    /// Pushes `modal` onto the modal stack, driving `AnimKey::ModalOpen`
-    /// (the panel-style shell's open-settle): an empty→non-empty push
-    /// retargets it from 0 to 1 over `ui_settings.anim_ms.modal_open`
-    /// (100ms by default, config-tunable) so the panel fades/settles in;
-    /// pushing an additional modal onto an already non-empty stack snaps it
-    /// straight to 1 instead — no re-animation for a modal opened on top of
-    /// another, and likewise for a handoff push (`modal_handoff`), where
-    /// the stack is only momentarily empty between two modals of one
-    /// flow. A `Modal::Dropdown` push is exempted entirely: dropdowns
-    /// have no open transition (they paint whole on their first frame),
-    /// and often land on top of an existing modal stack, so touching
-    /// `ModalOpen` for them would wrongly snap a panel modal's own
-    /// baseline mid-flight.
     /// Opens the save picker in the Downloads folder (else home) with a
     /// suggested filename; confirming routes through `PickerConfirm`.
     fn open_save_picker(
@@ -9545,8 +9535,21 @@ impl App {
         true
     }
 
+    /// Pushes `modal` onto the modal stack, driving `AnimKey::ModalOpen`
+    /// (the panel-style shell's open-settle): an empty→non-empty push
+    /// retargets it from 0 to 1 over `ui_settings.anim_ms.modal_open`
+    /// (100ms by default, config-tunable) so the panel fades/settles in;
+    /// pushing an additional modal onto an already non-empty stack snaps it
+    /// straight to 1 instead — no re-animation for a modal opened on top of
+    /// another, and likewise for a handoff push (`modal_handoff`), where
+    /// the stack is only momentarily empty between two modals of one
+    /// flow. A modal that doesn't dim (`Modal::dims_backdrop`: a dropdown,
+    /// the theme picker) is exempted entirely: it has no open transition
+    /// (it paints whole on its first frame), and a dropdown often lands on
+    /// top of an existing modal stack, so touching `ModalOpen` for it
+    /// would wrongly snap a panel modal's own baseline mid-flight.
     pub(crate) fn push_modal(&mut self, modal: Modal) {
-        if !matches!(modal, Modal::Dropdown(_)) {
+        if modal.dims_backdrop() {
             let now = Instant::now();
             if self.modals.is_empty() && !self.modal_handoff {
                 self.anims.snap(AnimKey::ModalOpen, 0.0);

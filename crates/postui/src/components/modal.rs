@@ -702,6 +702,20 @@ impl Modal {
                 | Modal::FieldsEditor(_)
         )
     }
+
+    /// Whether the modal dims the screen behind it, and with it whether it
+    /// has the open settle that fades the dim in (`AnimKey::ModalOpen`).
+    /// Two never do, and open whole on their first frame: the Dropdown,
+    /// a small anchored popup rather than a screen-owning modal, and a
+    /// previewing chooser (the theme picker, task #16), whose backdrop is
+    /// the preview itself.
+    pub fn dims_backdrop(&self) -> bool {
+        match self {
+            Modal::Dropdown(_) => false,
+            Modal::Chooser(c) => !c.is_previewing(),
+            _ => true,
+        }
+    }
 }
 
 /// One field close on the top form modal's stack (spec 2026-09-16):
@@ -2624,20 +2638,13 @@ impl ModalStack {
         let Some(top) = self.stack.last_mut() else {
             return;
         };
-        // Every variant dims the backdrop except Dropdown: it's a small
-        // anchored popup (e.g. the method selector), not a screen-owning
-        // modal, so dimming everything behind it would be jarring.
-        let is_dropdown = matches!(top, Modal::Dropdown(_));
-        // `AnimKey::ModalOpen` is the panel-style shell's own open-settle —
-        // a `Dropdown` has no open transition at all (see `App::push_modal`,
-        // which never retargets `ModalOpen` for a `Dropdown` push), so it
-        // always reads as fully open here.
-        let t = if is_dropdown {
-            1.0
-        } else {
-            anims.value_or(crate::anim::AnimKey::ModalOpen, now, 1.0)
-        };
-        if !is_dropdown {
+        // `AnimKey::ModalOpen` is the dimming shell's own open-settle — an
+        // undimmed modal has no open transition at all (see
+        // `App::push_modal`, which never retargets `ModalOpen` for one),
+        // so it always reads as fully open here.
+        let dims = top.dims_backdrop();
+        let t = if dims { anims.value_or(crate::anim::AnimKey::ModalOpen, now, 1.0) } else { 1.0 };
+        if dims {
             paint::dim_backdrop(frame.buffer_mut(), backdrop, t);
         }
         // Registered before the modal's own hits so any click landing
@@ -4474,6 +4481,48 @@ mod tests {
         let panel = hits.rect_of(&crate::hit::Hit::ModalBody).unwrap();
         let center = (panel.x + panel.width / 2, panel.y + panel.height / 2);
         assert_eq!(buffer[center].bg, theme.panel, "the panel's own fill must be theme.panel");
+    }
+
+    /// Task #16: the theme picker's backdrop is the preview, so it stays
+    /// undimmed, and the panel takes the accent ring the undimmed dropdown
+    /// wears to stand off the live screen. It opens whole: a mid-settle
+    /// `ModalOpen` still paints the full panel.
+    #[test]
+    fn a_previewing_chooser_leaves_the_backdrop_undimmed_and_rings_in_accent() {
+        use crate::components::chooser::{ChooserItem, ChooserState};
+        let mut m = ModalStack::default();
+        let item = ChooserItem { label: "Dark".into(), ..Default::default() };
+        m.push(Modal::Chooser(
+            ChooserState::new("Theme", vec![item]).without_filter().previewing(),
+        ));
+        let theme = Theme::dark();
+        let keymap = crate::keys::Keymap::default_bindings();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        let now = std::time::Instant::now();
+        let mut anims = crate::anim::Anims::new(true);
+        anims.snap(crate::anim::AnimKey::ModalOpen, 0.0);
+        anims.retarget(
+            crate::anim::AnimKey::ModalOpen,
+            1.0,
+            std::time::Duration::from_secs(1),
+            now,
+        );
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                crate::paint::fill(f.buffer_mut(), area, theme.page);
+                m.draw(f, area, &theme, &mut hits, None, &keymap, &anims, now)
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(0, 0)].bg, theme.page, "the backdrop must stay undimmed");
+        let panel = hits.rect_of(&crate::hit::Hit::ModalBody).unwrap();
+        let top = &buffer[(panel.x + panel.width / 2, panel.y)];
+        assert_eq!(top.symbol(), "─");
+        assert_eq!(top.fg, theme.accent, "the panel's ring is the accent");
+        let content = format!("{buffer:?}");
+        assert!(content.contains("Theme") && content.contains("Dark"), "opens whole");
     }
 
     #[test]
