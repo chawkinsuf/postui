@@ -382,27 +382,28 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 const TOOLTIP_MAX_TEXT_W: usize = 56;
 
 /// Draws the hover/caret tooltip for one `{{token}}` (spec §7). Three
-/// parts, top to bottom:
+/// parts, top to bottom, a blank row between each:
 ///
-/// - a **header** row: the variable's name in the token's own tint, the
-///   scope its value came from in muted text (`this request`, `env = qa`,
-///   `default`, `option = user 2`, `needs selection`, `missing secret`,
-///   `not defined`), and the icon pills right-aligned — `󰈈` reveal /
-///   `󰈉` hide for a secret, `󰆏` copy (the real value, a secret's
-///   included) when there is a value, and `󰏫` edit always. Right-anchored
-///   in that order: edit is the primary verb and holds the anchor edge,
-///   reveal is the rare, dynamic one and comes and goes at the far end
-///   without moving the other two;
 /// - the **value**, when there is one — one mask dot per cell for a
 ///   secret unless `revealed` — wrapped onto further rows rather than
 ///   truncated so the whole value is readable;
+/// - the **name** row: the variable's name in the token's own tint, and
+///   the scope its value came from in muted text (`this request`,
+///   `env = qa`, `default`, `option = user 2`, `needs selection`,
+///   `missing secret`, `not defined`);
 /// - the **description**, when written, word-wrapped in muted text (a
 ///   selector field's is its selected option's, see
 ///   [`crate::components::var_tokens::TokenInfo::description`]).
 ///
-/// The value and the description each sit behind a blank row, and both
-/// wrap to [`TOOLTIP_MAX_TEXT_W`] or the screen's room, whichever is
-/// narrower.
+/// The top row — the value's first, or the name row when there is no
+/// value — carries the icon pills right-aligned: `󰈈` reveal / `󰈉` hide
+/// for a secret, `󰆏` copy (the real value, a secret's included) when
+/// there is a value, and `󰏫` edit always. Right-anchored in that order:
+/// edit is the primary verb and holds the anchor edge, reveal is the
+/// rare, dynamic one and comes and goes at the far end without moving the
+/// other two. Rows wrap to [`TOOLTIP_MAX_TEXT_W`] or the screen's room,
+/// whichever is narrower; the value's a pill strip narrower, so its rows
+/// stay clear of the pills.
 ///
 /// It sits under the token it belongs to, or above when it doesn't fit
 /// below and there is more room above, cut to fit the roomier side so it
@@ -423,24 +424,6 @@ fn draw_var_tooltip(
     use crate::hit::Hit;
     use ratatui::layout::Rect;
     use unicode_width::UnicodeWidthStr;
-    // Value and description wrap to one width: the max, or what the
-    // screen has room for inside the padding and the drop shadow.
-    let wrap_w = TOOLTIP_MAX_TEXT_W.min(screen.width.saturating_sub(5) as usize).max(1);
-    // Wrap the real value, then mask row by row (one dot per cell of
-    // that row): the masked and revealed tips then have the same row
-    // structure and widths whatever mix of narrow, wide, or control
-    // characters the secret holds, so reveal / hide moves nothing.
-    let masked = info.secret && !revealed;
-    let mut value_lines: Vec<String> = match &info.value {
-        Some(value) => wrap_cells(value, wrap_w)
-            .into_iter()
-            .map(|row| if masked { "\u{25cf}".repeat(row.width().max(1)) } else { row })
-            .collect(),
-        None => Vec::new(),
-    };
-    let source = info.source.label();
-    let mut desc_lines =
-        info.description.as_deref().map_or_else(Vec::new, |d| wrap_words(d, wrap_w));
     // The icon pills: three cells each (` 󰆏 `) so the hover fill
     // surrounds the glyph.
     let mut pills: Vec<(&str, Hit)> = Vec::new();
@@ -453,8 +436,33 @@ fn draw_var_tooltip(
     }
     pills.push((crate::glyph::PENCIL_PILL, Hit::TipEdit(tip.name.clone())));
     let pills_w = 3 * pills.len();
-    // The header: name, two cells, source, a gap, then the pills.
-    let header_w = (tip.name.width() + 2 + source.width()).min(wrap_w) + 1 + pills_w;
+    // Rows wrap to the max width, or what the screen has room for inside
+    // the padding and the drop shadow. The top row carries the pills, so
+    // the value — whose block starts there — wraps a pill strip (and a
+    // cell of gap) narrower, every row alike, so the pills sit in a
+    // column of their own.
+    let wrap_w = TOOLTIP_MAX_TEXT_W.min(screen.width.saturating_sub(5) as usize).max(1);
+    let top_w = wrap_w.saturating_sub(1 + pills_w).max(1);
+    // Wrap the real value, then mask row by row (one dot per cell of
+    // that row): the masked and revealed tips then have the same row
+    // structure and widths whatever mix of narrow, wide, or control
+    // characters the secret holds, so reveal / hide moves nothing.
+    let masked = info.secret && !revealed;
+    let mut value_lines: Vec<String> = match &info.value {
+        Some(value) => wrap_cells(value, top_w)
+            .into_iter()
+            .map(|row| if masked { "\u{25cf}".repeat(row.width().max(1)) } else { row })
+            .collect(),
+        None => Vec::new(),
+    };
+    let source = info.source.label();
+    let mut desc_lines =
+        info.description.as_deref().map_or_else(Vec::new, |d| wrap_words(d, wrap_w));
+    // The name row: the name, two cells, then the source. With no value
+    // it is the top row, beside the pills.
+    let has_value = !value_lines.is_empty();
+    let name_w =
+        (tip.name.width() + 2 + source.width()).min(if has_value { wrap_w } else { top_w });
     // The tip goes below its token when it fits there, else above when
     // there is more room above; it is cut to the roomier side, so it
     // never covers the token it describes. It sits flush against the
@@ -464,27 +472,32 @@ fn draw_var_tooltip(
     let below_room = screen.bottom().saturating_sub(tip.anchor.bottom());
     let above_room = tip.anchor.y.saturating_sub(screen.y);
     let side_room = below_room.max(above_room);
-    // Padding rows top and bottom, the header, then each section present
-    // behind a blank row of its own. With too little room for it all,
-    // the value gives up rows first, then the description, the last
-    // surviving row of a cut section ellipsized to say so. Each keeps at
-    // least one row: with no room for that, there is no tip at all.
-    let gaps = usize::from(!value_lines.is_empty()) + usize::from(!desc_lines.is_empty());
-    let room = (side_room as usize).saturating_sub(3 + gaps);
-    cut_rows(&mut value_lines, room.saturating_sub(desc_lines.len()).max(1), wrap_w);
+    // Top to bottom: the value (when there is one), the name row, the
+    // description (when written), a blank row between each, padding rows
+    // top and bottom. With too little room for it all, the value gives up
+    // rows first, then the description, the last surviving row of a cut
+    // section ellipsized to say so. Each keeps at least one row: with no
+    // room for that, there is no tip at all.
+    let has_desc = !desc_lines.is_empty();
+    let fixed = 3 + usize::from(has_value) + usize::from(has_desc);
+    let room = (side_room as usize).saturating_sub(fixed);
+    cut_rows(&mut value_lines, room.saturating_sub(desc_lines.len()).max(1), top_w);
     cut_rows(&mut desc_lines, room.saturating_sub(value_lines.len()).max(1), wrap_w);
-    // Cutting keeps a row of each, so the sections present are the ones
-    // `gaps` counted.
-    let sections: Vec<(&Vec<String>, _)> =
-        [(&value_lines, theme.text), (&desc_lines, theme.text_muted)]
-            .into_iter()
-            .filter(|(lines, _)| !lines.is_empty())
-            .collect();
-    let height = (3 + sections.iter().map(|(lines, _)| 1 + lines.len()).sum::<usize>()) as u16;
     // Display cells throughout (a wide glyph is one char but two cells).
-    let text_w =
-        value_lines.iter().chain(&desc_lines).map(|l| l.width()).max().unwrap_or(0).max(header_w)
-            as u16;
+    let widest = |lines: &[String]| lines.iter().map(|l| l.width()).max().unwrap_or(0);
+    let top_text_w = if has_value { widest(&value_lines) } else { name_w };
+    let below_top_w = widest(&desc_lines).max(if has_value { name_w } else { 0 });
+    let text_w = (top_text_w + 1 + pills_w).max(below_top_w) as u16;
+    let mut rows: Vec<TipRow> = value_lines.into_iter().map(TipRow::Value).collect();
+    if has_value {
+        rows.push(TipRow::Gap);
+    }
+    rows.push(TipRow::Name);
+    if has_desc {
+        rows.push(TipRow::Gap);
+        rows.extend(desc_lines.into_iter().map(TipRow::Description));
+    }
+    let height = rows.len() as u16 + 2;
     // 2 columns of padding each side, plus a column for the drop shadow.
     let width = (text_w + 4).min(screen.width.saturating_sub(1));
     // Too narrow for the padding, the pills, and at least one cell of
@@ -499,39 +512,44 @@ fn draw_var_tooltip(
     let buf = frame.buffer_mut();
     crate::paint::floating_panel(buf, area, screen, theme);
     let inner = width.saturating_sub(4) as usize;
-    // The header keeps room for the pills after its text: the name in
-    // the token's tint (so the panel reads as that token's), the source
-    // muted after it — cut from the source first, the name last.
-    let header_room = inner.saturating_sub(1 + pills_w);
-    let name = ellipsize(&tip.name, header_room);
-    let source_room = header_room.saturating_sub(name.width() + 2);
-    let mut row = y + 1;
-    crate::paint::text(
-        buf,
-        x + 2,
-        row,
-        &name,
-        crate::components::var_tokens::token_color(theme, info),
-        theme.panel,
-        true,
-    );
-    if source_room > 0 {
-        crate::paint::text(
-            buf,
-            x + 2 + name.width() as u16 + 2,
-            row,
-            &ellipsize(&source, source_room),
-            theme.text_muted,
-            theme.panel,
-            false,
-        );
-    }
-    for (lines, fg) in sections {
-        row += 1; // the section's blank row
-        for line in lines {
-            row += 1;
-            crate::paint::text(buf, x + 2, row, &ellipsize(line, inner), fg, theme.panel, false);
-        }
+    for (i, tip_row) in rows.iter().enumerate() {
+        let row = y + 1 + i as u16;
+        // The top row keeps room for the pills after its text.
+        let room = if i == 0 { inner.saturating_sub(1 + pills_w) } else { inner };
+        let (text, fg) = match tip_row {
+            TipRow::Value(line) => (line, theme.text),
+            TipRow::Description(line) => (line, theme.text_muted),
+            TipRow::Gap => continue,
+            TipRow::Name => {
+                // The name in the token's tint (so the panel reads as
+                // that token's), the source muted after it — cut from the
+                // source first, the name last.
+                let name = ellipsize(&tip.name, room);
+                let source_room = room.saturating_sub(name.width() + 2);
+                crate::paint::text(
+                    buf,
+                    x + 2,
+                    row,
+                    &name,
+                    crate::components::var_tokens::token_color(theme, info),
+                    theme.panel,
+                    true,
+                );
+                if source_room > 0 {
+                    crate::paint::text(
+                        buf,
+                        x + 2 + name.width() as u16 + 2,
+                        row,
+                        &ellipsize(&source, source_room),
+                        theme.text_muted,
+                        theme.panel,
+                        false,
+                    );
+                }
+                continue;
+            }
+        };
+        crate::paint::text(buf, x + 2, row, &ellipsize(text, room), fg, theme.panel, false);
     }
     // The panel first: later registrations win a hit lookup, so the
     // pills painted next sit on top of it.
@@ -544,6 +562,16 @@ fn draw_var_tooltip(
         hits.register(rect, hit);
         cx += 3;
     }
+}
+
+/// One row of the variable tooltip, top to bottom.
+enum TipRow {
+    Value(String),
+    /// The variable's name and where its value came from.
+    Name,
+    Description(String),
+    /// The blank row between two sections.
+    Gap,
 }
 
 /// `s` hard-wrapped into lines of at most `max` display cells — values
@@ -917,10 +945,15 @@ mod tests {
             .unwrap();
         let panel = hits.rect_of(&crate::hit::Hit::TipPanel("x".into()))?;
         let buf = terminal.backend().buffer();
+        // The pills' icons (Private Use Area glyphs) are dropped, so the
+        // top row reads as its text alone.
         let rows = (panel.y + 1..panel.bottom() - 1)
             .map(|y| {
                 (panel.x + 2..panel.right() - 2)
                     .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<String>()
+                    .chars()
+                    .filter(|c| !('\u{F0000}'..='\u{FFFFD}').contains(c))
                     .collect::<String>()
                     .trim_end()
                     .to_string()
@@ -945,36 +978,39 @@ mod tests {
         assert_eq!(wrapped.join(" "), desc, "breaks fall between words");
     }
 
-    /// Value only: header, a blank row, the value. No description, no
+    /// Value only: the value, a blank row, the name. No description, no
     /// second blank row.
     #[test]
-    fn a_tooltip_without_a_description_ends_at_its_value() {
+    fn a_tooltip_without_a_description_ends_at_its_name() {
         let rows = tip_rows(120, 40, &tip_info(Some("v"), None));
-        assert_eq!(rows.len(), 3, "{rows:?}");
-        assert_eq!(rows[1], "");
-        assert_eq!(rows[2], "v");
+        assert_eq!(rows, ["v", "", "x  env = qa"]);
     }
 
-    /// Description only (no value): header, a blank row, the description.
+    /// Description only (no value): the name row on top, a blank row, the
+    /// description.
     #[test]
-    fn a_tooltip_without_a_value_goes_straight_to_its_description() {
+    fn a_tooltip_without_a_value_tops_with_its_name() {
         let rows = tip_rows(120, 40, &tip_info(None, Some("about x")));
-        assert_eq!(rows.len(), 3, "{rows:?}");
-        assert_eq!(rows[1], "");
-        assert_eq!(rows[2], "about x");
+        assert_eq!(rows, ["x  env = qa", "", "about x"]);
     }
 
     /// On a terminal narrower than the max width, value and description
-    /// wrap to the room there is rather than being ellipsized at the edge.
+    /// wrap to the room there is rather than being ellipsized at the edge
+    /// — the value a pill strip narrower, so it never runs under them.
     #[test]
     fn a_tooltip_wraps_to_a_narrow_screen() {
         let value = "https://qa.example.com/a/rather/long/path";
         let desc = "the root every request in the qa space starts from";
         let rows = tip_rows(30, 40, &tip_info(Some(value), Some(desc)));
-        let blank = rows.iter().skip(2).position(String::is_empty).unwrap() + 2;
-        assert_eq!(rows[2..blank].concat(), value, "{rows:?}");
-        assert_eq!(rows[blank + 1..].join(" "), desc, "{rows:?}");
-        for row in &rows[2..] {
+        let gap = rows.iter().position(String::is_empty).unwrap();
+        assert_eq!(rows[..gap].concat(), value, "{rows:?}");
+        assert_eq!(rows[gap + 1], "x  env = qa");
+        assert_eq!(rows[gap + 3..].join(" "), desc, "{rows:?}");
+        for row in &rows[..gap] {
+            // 25 cells inside the 30-wide screen, less a gap and two pills.
+            assert!(row.width() <= 18, "clear of the pills: {row:?}");
+        }
+        for row in &rows {
             assert!(row.width() <= 25, "inside the 30-wide screen: {row:?}");
             assert!(!row.contains('\u{2026}'), "{row:?}");
         }
@@ -989,16 +1025,17 @@ mod tests {
         let desc = "one two three four five six seven eight nine ten eleven twelve \
                     thirteen fourteen fifteen sixteen";
         let info = tip_info(Some(&value), Some(desc));
-        // 8 rows below the token; borders, header and two gaps take 5,
-        // leaving 3: the description's two, and one for the value.
+        // 8 rows below the token; borders, the name row and two gaps take
+        // 5, leaving 3: the description's two, and one for the value.
         let rows = tip_rows(120, 9, &info);
         assert_eq!(rows.len(), 6, "{rows:?}");
-        assert!(rows[2].ends_with('\u{2026}'), "the value is cut: {rows:?}");
+        assert!(rows[0].ends_with('\u{2026}'), "the value is cut: {rows:?}");
+        assert_eq!(rows[2], "x  env = qa");
         assert_eq!(rows[4..].join(" "), desc, "the description is whole: {rows:?}");
         // Two rows left: the value keeps one, the description the other.
         let rows = tip_rows(120, 8, &info);
         assert_eq!(rows.len(), 5, "{rows:?}");
-        assert!(rows[2].ends_with('\u{2026}'), "{rows:?}");
+        assert!(rows[0].ends_with('\u{2026}'), "{rows:?}");
         assert!(rows[4].ends_with('\u{2026}'), "the description is cut too: {rows:?}");
         // One row left: each section keeps at least one row, so no tip
         // fits — never a tip that silently drops its description.
@@ -1017,12 +1054,14 @@ mod tests {
             (0, 10),
             "above, flush against the token so the pointer can cross to it: {panel:?}"
         );
-        // 10 rows above: borders, header and two gaps take 5, the
-        // description 1, the value keeps the other 4 — cut.
-        assert_eq!(rows[2..], {
-            let mut v = vec!["a".repeat(TOOLTIP_MAX_TEXT_W); 3];
-            v.push("a".repeat(TOOLTIP_MAX_TEXT_W - 1) + "\u{2026}");
-            v.extend([String::new(), "about x".into()]);
+        // 10 rows above: borders, the name row and two gaps take 5, the
+        // description 1, the value keeps the other 4 — cut. Its rows are
+        // the max width less a gap and two pills.
+        let value_w = TOOLTIP_MAX_TEXT_W - 1 - 6;
+        assert_eq!(rows, {
+            let mut v = vec!["a".repeat(value_w); 3];
+            v.push("a".repeat(value_w - 1) + "\u{2026}");
+            v.extend(["", "x  env = qa", "", "about x"].map(String::from));
             v
         });
         // Token on row 9: 9 above, 10 below — the tip goes below.
