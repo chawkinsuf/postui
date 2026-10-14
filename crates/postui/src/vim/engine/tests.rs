@@ -1344,6 +1344,22 @@ fn a_click_off_an_unused_autoindent_strips_it() {
     assert_eq!(b.text(), "  a\n\nZb");
 }
 
+/// Review of task #15: a double click on the caret's own cell in Insert,
+/// on a line holding only an unused autoindent. `ctrl+o` strips it, and
+/// the word is taken where the caret is after, on the emptied line.
+#[test]
+fn a_double_click_on_an_unused_autoindent_selects_on_the_emptied_line() {
+    let mut b = Body::new("  a\nb", 0, 0);
+    b.keys("o");
+    assert_eq!(b.caret(), Pos::new(1, 2));
+    b.mouse(1, 2, Mouse::Press(2));
+    assert_eq!(b.text(), "  a\n\nb");
+    assert_eq!(
+        (b.engine.mode(), b.engine.visual_anchor(), b.caret()),
+        (Mode::Visual(Shape::Char), Some(Pos::new(1, 0)), Pos::new(1, 0))
+    );
+}
+
 /// A mouse selection made in Insert off an unused autoindent: the indent
 /// goes where the caret was (Vim's `tpos`), and Visual starts at the press.
 #[test]

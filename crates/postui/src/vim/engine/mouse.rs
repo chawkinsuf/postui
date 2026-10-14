@@ -40,27 +40,19 @@ impl Engine {
         buf: &mut B,
         st: &mut BufState,
     ) {
-        let from = buf.cursor();
         let at = Pos::new(at.row.min(buf.line_count() - 1), at.col);
         match how {
-            Mouse::Press(clicks) => self.mouse_press(at, clicks, from, buf, st),
-            Mouse::Drag => self.mouse_drag(at, from, buf, st),
-            Mouse::Extend => self.mouse_extend(at, from, buf, st),
+            Mouse::Press(clicks) => self.mouse_press(at, clicks, buf, st),
+            Mouse::Drag => self.mouse_drag(at, buf, st),
+            Mouse::Extend => self.mouse_extend(at, buf, st),
         }
     }
 
-    fn mouse_press<B: TextBuf>(
-        &mut self,
-        at: Pos,
-        clicks: u8,
-        from: Pos,
-        buf: &mut B,
-        st: &mut BufState,
-    ) {
+    fn mouse_press<B: TextBuf>(&mut self, at: Pos, clicks: u8, buf: &mut B, st: &mut BufState) {
         // A left press ends Visual (`MOUSE_MAY_STOP_VIS`); one opened inside
-        // `ctrl+o` gives Insert back.
+        // `ctrl+o` gives Insert back, where the caret then is.
         if matches!(self.mode, Mode::Visual(_)) {
-            self.end_visual(from, &*buf, st);
+            self.end_visual(buf.cursor(), &*buf, st);
             if matches!(self.mode, Mode::InsertNormal { .. }) {
                 self.resume_after_ctrl_o(buf, st);
             }
@@ -68,7 +60,7 @@ impl Engine {
         // Under Insert `ins_mouse()` passes no operator, so no block is
         // matched there.
         let insert = self.in_insert();
-        let at = self.move_to(at, from, buf, st);
+        let at = self.move_to(at, buf, st);
         // Vim's fourth press is blockwise, which the engine does not have: it
         // is a plain press, as Vim's fifth is.
         let clicks = if clicks > 3 { 1 } else { clicks };
@@ -77,6 +69,9 @@ impl Engine {
             2 => {
                 let block = if insert { None } else { block_end(buf, at) };
                 self.start_mouse_visual(Shape::Char, at, buf, st);
+                // Where the caret is now, should `ctrl+o` have stripped an
+                // unused autoindent under it.
+                let at = buf.cursor();
                 let caret = match block {
                     Some(end) => end,
                     None => {
@@ -91,8 +86,8 @@ impl Engine {
         }
     }
 
-    fn mouse_drag<B: TextBuf>(&mut self, at: Pos, from: Pos, buf: &mut B, st: &mut BufState) {
-        let pressed = self.pressed.unwrap_or(Pressed { at: from, clicks: 1 });
+    fn mouse_drag<B: TextBuf>(&mut self, at: Pos, buf: &mut B, st: &mut BufState) {
+        let pressed = self.pressed.unwrap_or(Pressed { at: buf.cursor(), clicks: 1 });
         match (self.mode, self.visual) {
             // After a double click the ends go to whole words.
             (Mode::Visual(Shape::Char), Some(anchor)) if pressed.clicks == 2 => {
@@ -108,18 +103,19 @@ impl Engine {
             }
             (Mode::Visual(_), _) => buf.set_cursor(self.clamped(buf, at)),
             // Visual starts where the press left the caret (`MOUSE_MAY_VIS`).
-            _ => self.mouse_visual_to(at, from, buf, st),
+            _ => self.mouse_visual_to(at, buf, st),
         }
     }
 
-    fn mouse_extend<B: TextBuf>(&mut self, at: Pos, from: Pos, buf: &mut B, st: &mut BufState) {
+    fn mouse_extend<B: TextBuf>(&mut self, at: Pos, buf: &mut B, st: &mut BufState) {
         self.pressed = None;
         let (Mode::Visual(_), Some(anchor)) = (self.mode, self.visual) else {
-            return self.mouse_visual_to(at, from, buf, st);
+            return self.mouse_visual_to(at, buf, st);
         };
         // The end nearer the pointer moves: by columns on one line, else by
         // lines, and on the middle line by the columns' midpoint.
-        let (start, end) = if from < anchor { (from, anchor) } else { (anchor, from) };
+        let caret = buf.cursor();
+        let (start, end) = if caret < anchor { (caret, anchor) } else { (anchor, caret) };
         let at = self.clamped(buf, at);
         let nearer_end = if at < start {
             false
@@ -138,17 +134,19 @@ impl Engine {
         buf.set_cursor(at);
     }
 
-    /// Charwise Visual from `from` to the pointer, which may be on a line's
-    /// end once Visual is on.
-    fn mouse_visual_to<B: TextBuf>(&mut self, at: Pos, from: Pos, buf: &mut B, st: &mut BufState) {
-        self.move_to(at, from, buf, st);
+    /// Charwise Visual from the caret to the pointer, which may be on a
+    /// line's end once Visual is on.
+    fn mouse_visual_to<B: TextBuf>(&mut self, at: Pos, buf: &mut B, st: &mut BufState) {
+        let from = buf.cursor();
+        self.move_to(at, buf, st);
         self.start_mouse_visual(Shape::Char, from, buf, st);
         buf.set_cursor(self.clamped(buf, at));
     }
 
     /// Puts the caret on `at` as the mode allows (`jump_to_mouse()`). In
     /// Insert the move splits the session (`ins_mouse()`'s `start_arrow()`).
-    fn move_to<B: TextBuf>(&mut self, at: Pos, from: Pos, buf: &mut B, st: &mut BufState) -> Pos {
+    fn move_to<B: TextBuf>(&mut self, at: Pos, buf: &mut B, st: &mut BufState) -> Pos {
+        let from = buf.cursor();
         let at = self.clamped(buf, at);
         buf.set_cursor(at);
         if self.in_insert() && at != from {
@@ -159,6 +157,8 @@ impl Engine {
 
     /// Visual from `anchor`, the caret kept. Under Insert it opens inside
     /// `ctrl+o`; the caret stays on a line's end there, since Visual may.
+    /// Both ends are clamped after, as `ctrl+o` may strip an unused
+    /// autoindent from under them.
     fn start_mouse_visual<B: TextBuf>(
         &mut self,
         shape: Shape,
@@ -169,10 +169,11 @@ impl Engine {
         if self.in_insert() {
             let caret = buf.cursor();
             self.ctrl_o(buf, st);
-            buf.set_cursor(caret);
+            buf.set_cursor(self.clamped(buf, caret));
         }
         self.visual = Some(anchor);
         self.mode = Mode::Visual(shape);
+        self.clamp(buf);
     }
 }
 

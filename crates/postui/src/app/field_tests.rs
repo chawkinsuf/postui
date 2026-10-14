@@ -472,17 +472,20 @@ fn a_press_counts_both_ways() {
     use super::mouse::{Clicks, count_clicks};
     let t0 = std::time::Instant::now();
     let mut last = None;
-    let mut press = |cell: (u16, u16), ms: u64| {
-        let rec = count_clicks(
-            last.as_ref(),
-            &Hit::UrlBar,
-            cell,
-            t0 + std::time::Duration::from_millis(ms),
-        );
+    let mut press_on = |hit: Hit, cell: (u16, u16), ms: u64| {
+        let rec =
+            count_clicks(last.as_ref(), &hit, cell, t0 + std::time::Duration::from_millis(ms));
         let clicks = rec.clicks;
         last = Some(rec);
         clicks
     };
+    assert_eq!(press_on(Hit::SendButton, (5, 1), 0), Clicks { gui: 1, vim: 1 });
+    assert_eq!(
+        press_on(Hit::UrlBar, (5, 1), 50),
+        Clicks { gui: 1, vim: 1 },
+        "the same cell under another control: a first click"
+    );
+    let mut press = |cell: (u16, u16), ms: u64| press_on(Hit::UrlBar, cell, ms + 1000);
     assert_eq!(press((5, 1), 0), Clicks { gui: 1, vim: 1 });
     assert_eq!(press((5, 1), 100), Clicks { gui: 2, vim: 2 });
     assert_eq!(press((5, 1), 200), Clicks { gui: 1, vim: 3 }, "arrows pairs, Vim counts on");

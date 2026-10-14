@@ -39,7 +39,7 @@ not change.
 | R9 | right press on the field being edited | Extends Visual: the end nearer the pointer moves and the shape stays. Outside Visual it is charwise Visual from the caret. | Vim, `you` |
 | R10 | right press elsewhere (a closed field, the response, a query box) | The Copy/Paste menu, as now. | `mine` |
 | R11 | any selection made under Insert | Runs inside `ctrl+o`: Esc, an operator or a click gives Insert back. | Vim |
-| R12 | click count, on a field's text | Counts on for a press on the same cell within 500 ms (`'mousetime'`), and starts over after four. Lists and buttons keep arrows' count in vim too. | Vim, `you` (Q1) |
+| R12 | click count, on a field's text | Counts on for a press on the same cell within 500 ms (`'mousetime'`), and starts over after four. Lists and buttons keep arrows' count in vim too. The cell must be on the same control as the last press, since a press can open a field under it (`mine`, review round 1 of the rework). | Vim, `you` (Q1) |
 | R13 | a query box (jq bar, search, pickers) | Keeps the field's own GUI selection; it has no Visual. | earlier |
 
 The engine half (`vim/engine/mouse.rs`: `Settled::Mouse(at, Press(n) | Drag |

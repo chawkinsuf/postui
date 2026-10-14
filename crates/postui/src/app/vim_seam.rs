@@ -1011,8 +1011,14 @@ impl App {
         self.vim_text_mouse(field, at, Mouse::Extend)
     }
 
+    /// Only on the field with the caret: the arm has opened it, and the
+    /// end of the event settles there. Any other field's press stays the
+    /// field's own (the file picker's path box is a query box's).
     fn vim_text_mouse(&mut self, field: FieldId, (row, col): (usize, usize), how: Mouse) -> bool {
-        if self.profile() != KeyProfile::Vim || field.insert_only() {
+        if self.profile() != KeyProfile::Vim
+            || field.insert_only()
+            || self.field_caret() != FieldCaret::Live(field)
+        {
             return false;
         }
         self.vim.text_mouse = Some((field, Pos::new(row, col), how));

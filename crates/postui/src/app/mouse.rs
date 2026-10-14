@@ -40,7 +40,10 @@ pub(super) fn count_clicks(
         _ => 1,
     };
     let vim = match last {
-        Some(l) if l.cell == cell && l.clicks.vim < 4 && within(500) => l.clicks.vim + 1,
+        // The cell, of the same control: a press can open a field under it.
+        Some(l) if l.hit == *hit && l.cell == cell && l.clicks.vim < 4 && within(500) => {
+            l.clicks.vim + 1
+        }
         _ => 1,
     };
     LastClick { hit: hit.clone(), cell, at, clicks: Clicks { gui, vim } }
@@ -52,7 +55,7 @@ fn field_hit(field: FieldId) -> Option<Hit> {
         FieldId::Url => Hit::UrlBar,
         FieldId::Body => Hit::BodyEditor,
         FieldId::Jq => Hit::ResponseJqBar,
-        FieldId::TableCell { row, col } => Hit::TableCell { row, col: u8::from(col == 1) },
+        FieldId::TableCell { row, col } => Hit::TableCell { row, col: u8::try_from(col).ok()? },
         FieldId::VmForm(field) => Hit::VmFormField(field),
         FieldId::VmGrid { row, col } => Hit::VmEntryCell { row, col },
         FieldId::Settings(field) => Hit::SettingsControl(field),
@@ -905,19 +908,19 @@ impl App {
     }
 
     /// The open one-line field `field`'s input: the very cell or field
-    /// named, not another one under edit.
+    /// named, not another one under edit. A dialog's box is the one its
+    /// click focused (the file picker's path box included).
     fn field_input_mut(&mut self, field: FieldId) -> Option<&mut LineInput> {
-        use crate::components::table_editor::Col;
         match field {
             FieldId::Url => Some(&mut self.editor.url),
             FieldId::Jq => Some(&mut self.session.response.jq_bar_mut().input),
-            FieldId::ModalInput(i) => self.modals.text_input_mut(i),
+            FieldId::ModalInput(i) => self.modals.focus_input(i),
             FieldId::TableCell { row, col } => self
                 .editor
                 .table
                 .editing
                 .as_mut()
-                .filter(|e| e.row == row && usize::from(e.col == Col::Value) == col)
+                .filter(|e| e.row == row && usize::from(e.col.index()) == col)
                 .map(|e| &mut e.input),
             FieldId::VmForm(f) => {
                 self.varmanager.form.editing.as_mut().filter(|e| e.field == f).map(|e| &mut e.input)
@@ -939,8 +942,10 @@ impl App {
     /// The char at screen cell `(x, y)` in `field`'s text, as `(row, col)`.
     /// A one-line field maps the column through the window it drew with
     /// (`open`: from its caret, else from char 0); a sweep (`drag`) is
-    /// clamped into the text, a press only from the left. The body maps
-    /// through the editor.
+    /// clamped into the text, a press only from the left, and a press on a
+    /// squeezed field still maps to its window's start. The body maps
+    /// through the editor. `None` when the field is not open, or a sweep
+    /// has no text to cover.
     fn text_at(
         &mut self,
         field: FieldId,
@@ -953,19 +958,22 @@ impl App {
             return self.editor.body_char_at(x, y, drag);
         }
         let (left, width) = self.text_box(field)?;
-        if width == 0 {
-            return None;
-        }
-        let col =
-            if drag { x.clamp(left, left + width - 1) - left } else { x.saturating_sub(left) };
-        let start = self.field_input_mut(field)?.window_start(open, width);
+        let col = match drag {
+            true if width == 0 => return None,
+            true => x.clamp(left, left + width - 1) - left,
+            false => x.saturating_sub(left),
+        };
+        let start = self.field_input_mut(field)?.window_start(open, width.max(1));
         Some((0, start + usize::from(col)))
     }
 
     /// A left press on `field`'s text, which the field's arm has opened.
     /// Vim's mouse takes it in vim (spec 2026-10-14). Otherwise the caret
     /// goes to the char and anchors a sweep, or a double click selects the
-    /// word and the sweep goes by words. Either way a sweep is armed.
+    /// word and the sweep goes by words. A sweep is armed when the press
+    /// maps to a char (the body arms one anyway; its own mouse code
+    /// decides); a field that is not open, which a commit can leave so,
+    /// places and arms nothing.
     fn press_text(
         &mut self,
         field: FieldId,
@@ -977,12 +985,14 @@ impl App {
         if field == FieldId::Body || at.is_some() {
             self.text_drag = Some(TextDrag::Field(field));
         }
+        // A press on the body's text gives it the caret, as its own mouse
+        // code does: vim takes the press only on the field with the caret.
+        if field == FieldId::Body && at.is_some() {
+            self.editor.sub_focus = SubFocus::Content;
+        }
         if let Some(at) = at
             && self.vim_text_press(field, at, clicks.vim)
         {
-            if field == FieldId::Body {
-                self.editor.sub_focus = SubFocus::Content;
-            }
             return;
         }
         if field == FieldId::Body {
@@ -1531,11 +1541,12 @@ impl App {
                 // sweep armed. Nothing when a commit collapsed rows out
                 // from under the click: the edit then isn't the cell the
                 // pointer was on, so the seeded caret-at-end stays.
-                let field = FieldId::TableCell {
-                    row,
-                    col: usize::from(cell_col == crate::components::table_editor::Col::Value),
-                };
-                self.press_text(field, m, clicks, already_editing);
+                self.press_text(
+                    FieldId::TableCell { row, col: usize::from(col) },
+                    m,
+                    clicks,
+                    already_editing,
+                );
                 self.update(Action::Render)
             }
             Hit::TableCopy(i) => {
