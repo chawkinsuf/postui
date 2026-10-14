@@ -30,6 +30,9 @@ pub(crate) struct Landing {
     pub open: Option<Open>,
     pub cursor: Option<CursorAim>,
     pub row: Option<ListRow>,
+    /// Once the cursor is placed, open the request under it over what
+    /// `open` seated (a removal's scratch, §4.5).
+    pub open_cursor: bool,
 }
 
 /// Proof that an op captured its before-view: `record_project_step` takes
@@ -389,37 +392,7 @@ impl App {
         let mut landed = true;
         let asked_open = l.open.is_some();
         match l.open {
-            Some(Open::Request { slug, buffer }) => {
-                self.flush_field_session();
-                let outgoing = self.editor.slug.clone();
-                let Some(p) = self.project.as_mut() else { return false };
-                match p.open_request(&slug).cloned() {
-                    Ok(req) => {
-                        // Only one request is held at a time, as only one
-                        // is open. The outgoing one is released only now
-                        // that the open succeeded: on failure the editor
-                        // keeps showing it, so the project must keep
-                        // holding it or the drift check goes blind.
-                        if let Some(prev) = outgoing.as_deref().filter(|s| *s != slug) {
-                            p.close_request(prev);
-                        }
-                        self.editor.load(Some(slug.clone()), req);
-                        if let Some(buf) = buffer {
-                            self.editor.apply_snapshot(&buf);
-                            self.shadow = Some((Some(slug.clone()), *buf));
-                        }
-                        // After the buffer: its method, not the saved
-                        // one's, says whether Body can show.
-                        self.sync_active_tab();
-                    }
-                    Err(e) => {
-                        // Seat nothing: the editor stays exactly where it
-                        // was (05a3b4d).
-                        self.toasts.push(format!("could not open {slug}: {e}"), ToastKind::Error);
-                        landed = false;
-                    }
-                }
-            }
+            Some(Open::Request { slug, buffer }) => landed = self.open_in_editor(slug, buffer),
             Some(Open::Scratch { buffer }) => {
                 self.flush_field_session();
                 if let Some(prev) = self.editor.slug.clone()
@@ -465,6 +438,13 @@ impl App {
             Some(CursorAim::Neighbour(i)) => self.sidebar.select_nearest_request(i),
             None => {}
         }
+        // The editor follows the cursor: the scratch `open` seated stays
+        // when no request is under it, or that one fails to open.
+        if l.open_cursor
+            && let Some(slug) = self.sidebar.selected_slug()
+        {
+            self.open_in_editor(slug, None);
+        }
 
         // 6. The Manage/Variables row, in its own list even when parked.
         if let Some(row) = l.row {
@@ -491,9 +471,6 @@ impl App {
     /// sits on a request the panel does not show. A scratch only when the
     /// cursor is on no request, or that one fails to open.
     ///
-    /// Two landings: the cursor's request is known only once the first has
-    /// rebuilt the sidebar, and the first's scratch is what a failed open
-    /// leaves behind.
     pub(super) fn land_after_removal(
         &mut self,
         from_row: Option<usize>,
@@ -506,13 +483,46 @@ impl App {
                 .map(CursorAim::Neighbour)
                 .or_else(|| self.sidebar.selected_key().map(CursorAim::On))
                 .filter(|_| was_open || cursor_on),
+            open_cursor: was_open,
             ..Landing::default()
         });
-        if was_open && let Some(slug) = self.sidebar.selected_slug() {
-            self.land(Landing {
-                open: Some(Open::Request { slug, buffer: None }),
-                ..Landing::default()
-            });
+    }
+
+    /// Opens `slug` in the editor and seats `buffer` over it (§4.2 step
+    /// 3). `false` when it fails to open: toasted, and the editor stays
+    /// exactly where it was (05a3b4d).
+    fn open_in_editor(
+        &mut self,
+        slug: String,
+        buffer: Option<Box<postui_core::model::HttpRequest>>,
+    ) -> bool {
+        self.flush_field_session();
+        let outgoing = self.editor.slug.clone();
+        let Some(p) = self.project.as_mut() else { return false };
+        match p.open_request(&slug).cloned() {
+            Ok(req) => {
+                // Only one request is held at a time, as only one is open.
+                // The outgoing one is released only now that the open
+                // succeeded: on failure the editor keeps showing it, so the
+                // project must keep holding it or the drift check goes
+                // blind.
+                if let Some(prev) = outgoing.as_deref().filter(|s| *s != slug) {
+                    p.close_request(prev);
+                }
+                self.editor.load(Some(slug.clone()), req);
+                if let Some(buf) = buffer {
+                    self.editor.apply_snapshot(&buf);
+                    self.shadow = Some((Some(slug), *buf));
+                }
+                // After the buffer: its method, not the saved one's, says
+                // whether Body can show.
+                self.sync_active_tab();
+                true
+            }
+            Err(e) => {
+                self.toasts.push(format!("could not open {slug}: {e}"), ToastKind::Error);
+                false
+            }
         }
     }
 

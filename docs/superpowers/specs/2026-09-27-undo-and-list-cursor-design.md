@@ -425,7 +425,9 @@ batch holding it, or moving it to another space used to leave the
 editor on a scratch while the cursor sat on the neighbour, so the
 cursor's row looked selected but the panel was empty. The editor now
 opens the request the cursor lands on (`App::land_after_removal`), and
-falls to a scratch only when the cursor is on no request. Undo still
+falls to a scratch only when the cursor is on no request or it fails to
+open. It is one landing: `Landing::open_cursor` opens the cursor's
+request after step 5, over the scratch step 3 seated. Undo still
 reopens R; redo opens the neighbour again.
 
 | Event | Open afterwards | Sidebar cursor afterwards |

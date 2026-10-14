@@ -6227,7 +6227,7 @@ impl App {
                     space: Some(name),
                     open: Some(open),
                     cursor: Some(CursorAim::OnOpen),
-                    row: None,
+                    ..Landing::default()
                 });
                 true
             }

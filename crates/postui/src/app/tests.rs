@@ -25992,6 +25992,31 @@ fn undo_and_redo_of_deleting_the_open_request_swap_it_with_the_neighbour() {
 }
 
 #[test]
+fn deleting_the_open_request_fades_the_band_from_its_row() {
+    let (mut app, _dir) = three_row_app();
+    app.update(Action::ForceOpenRequest("main/gamma".into()));
+    let gamma_row = app.sidebar.row_of("main/gamma");
+    app.update(Action::DeleteRequest("main/gamma".into()));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/beta"));
+    assert_eq!(app.sidebar.band_fade_from, gamma_row, "one landing, from the deleted row");
+}
+
+#[test]
+fn deleting_the_open_request_leaves_a_scratch_when_the_neighbour_fails_to_open() {
+    let (mut app, dir) = three_row_app();
+    app.update(Action::ForceOpenRequest("main/beta".into()));
+    std::fs::write(dir.path().join("requests/main/gamma.toml"), "this = = not toml\n").unwrap();
+    app.update(Action::DeleteRequest("main/beta".into()));
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/gamma"));
+    assert!(app.editor.slug.is_none(), "never the deleted request; a scratch");
+    assert!(
+        app.toasts.messages().iter().any(|m| m.starts_with("could not open main/gamma")),
+        "{:?}",
+        app.toasts.messages()
+    );
+}
+
+#[test]
 fn deleting_the_only_open_request_leaves_a_scratch() {
     let mut app = App::new_for_test();
     app.update(Action::CreateRequest("only".into()));
