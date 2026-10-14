@@ -493,7 +493,7 @@ reopens R; redo opens the neighbour again.
   cursor is on the open row, that row's fill is
   `mix(selection, control_hover, 0.5)` instead of plain `selection`.
   With the sidebar unfocused, it paints as today.
-- **Tests:**
+- **Tests (superseded 2026-10-14, see the amendment below):**
   - update `cursor_on_the_open_row_shows_plain_selection_not_accent_name`;
   - add `the_open_row_lifts_while_the_focused_cursor_is_on_it`.
 - **Amended 2026-10-14 (task #7, `you`): the lift is dropped.** Because
@@ -503,7 +503,8 @@ reopens R; redo opens the neighbour again.
   nothing had happened to it. Arrow browsing did the same. The open row
   now always paints plain `selection`, whatever the cursor does: it
   shows which request is open, and nothing else. The cursor's only
-  marker is the `control_hover` fill when it sits on a different row.
+  marker is the `control_hover` fill when it sits on a different row,
+  drawn as before: only while the sidebar is focused.
   The tests are now
   `cursor_on_the_open_row_paints_the_plain_band_and_keeps_the_name_plain`,
   `the_open_row_paints_the_same_wherever_the_cursor_is` and

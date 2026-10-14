@@ -5719,12 +5719,18 @@ fn right_click_on_another_row_leaves_the_open_row_unchanged() {
         buf[(row.x + row.width - 2, row.y)].bg
     };
     assert_eq!(row_fill(&mut app, 0), app.theme.selection, "the opened row paints the band");
+    let open = app.sidebar.open_slug.clone();
+    assert!(open.is_some());
 
     let r = app.hits.rect_of(&crate::hit::Hit::SidebarRow(1)).unwrap();
     app.handle_mouse(right_down(r.x, r.y));
     assert_eq!(app.sidebar.selected, Some(1), "the cursor moved to the clicked row");
     assert!(matches!(app.modals.top(), Some(Modal::Dropdown(_))), "its menu is open");
+    assert_eq!(app.sidebar.open_slug, open, "the open request did not change");
     assert_eq!(row_fill(&mut app, 0), app.theme.selection, "the open row's fill did not change");
+    let buf = super::field_tests::draw_buffer(&mut app);
+    let row0 = app.hits.rect_of(&crate::hit::Hit::SidebarRow(0)).unwrap();
+    assert_eq!(buf[(row0.x, row0.y)].symbol(), "\u{258c}", "and it keeps its bar");
     assert_eq!(row_fill(&mut app, 1), app.theme.control_hover, "the menu's row shows the cursor");
 }
 
