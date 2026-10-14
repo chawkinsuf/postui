@@ -482,6 +482,36 @@ impl App {
         landed
     }
 
+    /// The landing after a request left this space (deleted, or moved away
+    /// without following), from the sidebar row `from_row` it had (§4.5).
+    /// The cursor goes to the neighbour when it was on the row or the row
+    /// was open; no row (the folder is collapsed) means no neighbour, and
+    /// the cursor keeps its row. When the request was open, the editor
+    /// then opens the request the cursor landed on, so the cursor never
+    /// sits on a request the panel does not show. A scratch only when the
+    /// cursor is on no request, or that one fails to open.
+    pub(super) fn land_after_removal(
+        &mut self,
+        from_row: Option<usize>,
+        was_open: bool,
+        cursor_on: bool,
+    ) {
+        self.land(Landing {
+            open: was_open.then_some(Open::Scratch { buffer: None }),
+            cursor: from_row
+                .map(CursorAim::Neighbour)
+                .or_else(|| self.sidebar.selected_key().map(CursorAim::On))
+                .filter(|_| was_open || cursor_on),
+            ..Landing::default()
+        });
+        if was_open && let Some(slug) = self.sidebar.selected_slug() {
+            self.land(Landing {
+                open: Some(Open::Request { slug, buffer: None }),
+                ..Landing::default()
+            });
+        }
+    }
+
     /// Whether local state names another open request than the editor's.
     /// The active space's memory counts only while the editor holds one
     /// of its requests (or nothing): see [`App::editor_in_active_space`].

@@ -5463,8 +5463,8 @@ fn request_context_menu_has_no_move_row_in_a_single_space_project() {
 fn move_request_to_space_moves_the_file_stays_put_and_undoes() {
     // User feedback: following the request into its new space made moving
     // several in a row a chore (each move switched spaces). The move
-    // leaves the sidebar where it was, on the neighbor, with the editor
-    // cleared — the same shape as delete from this space's point of view.
+    // leaves the sidebar where it was, on the neighbor, which the editor
+    // opens — the same shape as delete from this space's point of view.
     let (mut app, dir) = spaced_app();
     app.update(Action::ForceOpenRequest("main/alpha".into()));
     render_once(&mut app);
@@ -5473,12 +5473,12 @@ fn move_request_to_space_moves_the_file_stays_put_and_undoes() {
     app.update(Action::MoveRequestToSpace { slug: "main/alpha".into(), space: "auth".into() });
     assert!(dir.path().join("requests/auth/alpha.toml").is_file());
     assert_eq!(app.proj().local().active_space, "main");
-    assert_eq!(app.editor.slug, None, "the editor clears");
     assert_eq!(
         app.sidebar.selected_slug().as_deref(),
         Some("main/beta"),
         "the selection lands on the neighbor so the next `m` works"
     );
+    assert_eq!(app.editor.slug.as_deref(), Some("main/beta"), "the editor opens the neighbor");
 
     assert!(!app.capture_undo(), "the move itself is not an edit");
     assert_eq!(app.history.undo_len(), steps_before + 1);
@@ -17271,7 +17271,11 @@ mod undo_tests {
         let path = dir.path().join("requests/main/alpha.toml");
         assert!(!path.exists());
         assert!(postui_core::fixtures::trash_dir(dir.path()).is_dir());
-        assert!(app.editor.slug.is_none(), "deleting the open request clears the editor");
+        assert_eq!(
+            app.editor.slug.as_deref(),
+            Some("main/beta"),
+            "deleting the open request opens its neighbour"
+        );
         assert!(matches!(
             app.history_top_kind_for_test(),
             Some(crate::undo::StepKind::Project { label, .. })
@@ -18442,11 +18446,15 @@ mod undo_tests {
         app.editor.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
         let dirty_url = app.editor.url.text().to_string();
         app.update(Action::DeleteRequest("main/alpha".into()));
-        assert!(app.editor.slug.is_none(), "deleting the open request closes it");
+        assert_eq!(app.editor.slug.as_deref(), Some("main/beta"), "the neighbour opens");
+        assert!(!app.editor.is_dirty(), "alpha's edit went with it, not onto beta");
         app.update(Action::Undo);
         assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"));
         assert_eq!(app.editor.url.text(), dirty_url);
         assert!(app.editor.is_dirty());
+        app.update(Action::Redo);
+        assert_eq!(app.editor.slug.as_deref(), Some("main/beta"));
+        assert!(!app.editor.is_dirty());
     }
 
     #[test]
@@ -23246,7 +23254,9 @@ fn undo_of_a_request_delete_reopens_it_in_the_editor() {
     let (mut app, _dir) = spaced_app();
     app.update(Action::ForceOpenRequest("main/alpha".into()));
     app.update(Action::DeleteRequest("main/alpha".into()));
-    assert!(app.editor.slug.is_none(), "deleting the open request closes it");
+    assert_eq!(app.editor.slug.as_deref(), Some("main/beta"), "the neighbour opens");
+    let state = postui_core::fixtures::load_local_state(app.proj().root()).unwrap();
+    assert_eq!(state.open_request.as_deref(), Some("main/beta"));
 
     app.update(Action::Undo);
     assert_eq!(
@@ -23259,7 +23269,7 @@ fn undo_of_a_request_delete_reopens_it_in_the_editor() {
     assert_eq!(state.open_request.as_deref(), Some("main/alpha"));
 
     app.update(Action::Redo);
-    assert!(app.editor.slug.is_none());
+    assert_eq!(app.editor.slug.as_deref(), Some("main/beta"));
     app.update(Action::Undo);
     assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"));
 }
@@ -25956,7 +25966,7 @@ fn undoing_a_create_names_the_created_request() {
 }
 
 #[test]
-fn deleting_the_open_request_selects_the_neighbour_row_without_opening_it() {
+fn deleting_the_open_request_opens_the_neighbour() {
     let mut app = App::new_for_test();
     for n in ["a", "b", "c"] {
         app.update(Action::CreateRequest(n.into()));
@@ -25964,7 +25974,29 @@ fn deleting_the_open_request_selects_the_neighbour_row_without_opening_it() {
     app.update(Action::OpenRequest("main/b".into()));
     app.update(Action::DeleteRequest("main/b".into()));
     assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/c"));
-    assert!(app.editor.slug.is_none(), "editor is a scratch, not c");
+    assert_eq!(app.editor.slug.as_deref(), Some("main/c"), "the panel shows the cursor's row");
+}
+
+#[test]
+fn undo_and_redo_of_deleting_the_open_request_swap_it_with_the_neighbour() {
+    let (mut app, _dir) = three_row_app();
+    app.update(Action::ForceOpenRequest("main/beta".into()));
+    app.update(Action::DeleteRequest("main/beta".into()));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/gamma"));
+    app.update(Action::Undo);
+    assert_eq!(app.editor.slug.as_deref(), Some("main/beta"), "undo reopens the deleted request");
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/beta"));
+    app.update(Action::Redo);
+    assert_eq!(app.editor.slug.as_deref(), Some("main/gamma"), "redo opens the neighbour again");
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/gamma"));
+}
+
+#[test]
+fn deleting_the_only_open_request_leaves_a_scratch() {
+    let mut app = App::new_for_test();
+    app.update(Action::CreateRequest("only".into()));
+    app.update(Action::DeleteRequest("main/only".into()));
+    assert!(app.editor.slug.is_none(), "no request is left to open");
 }
 
 #[test]
@@ -26090,8 +26122,12 @@ fn moving_a_request_to_another_space_lands_on_the_neighbour() {
     app.update(Action::ForceOpenRequest("main/beta".into()));
     app.sidebar.select_slug("main/beta");
     app.update(Action::ForceMoveRequestToSpace { slug: "main/beta".into(), space: "auth".into() });
-    assert!(app.editor.slug.is_none(), "the moved request left with its space");
     assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/gamma"));
+    assert_eq!(
+        app.editor.slug.as_deref(),
+        Some("main/gamma"),
+        "the moved request left with its space; its neighbour opens"
+    );
 }
 
 #[test]
@@ -26209,12 +26245,31 @@ fn deleting_the_open_request_in_a_collapsed_folder_leaves_the_cursor_alone() {
     assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/beta"));
 
     app.update(Action::DeleteRequest("main/deep/inner".into()));
-    assert!(app.editor.slug.is_none(), "the open request is gone; a scratch");
     assert_eq!(
         app.sidebar.selected_slug().as_deref(),
         Some("main/beta"),
         "no row to take a neighbour from, so the cursor stays put"
     );
+    assert_eq!(app.editor.slug.as_deref(), Some("main/beta"), "the editor follows the cursor");
+}
+
+/// The open request's folder is collapsed and the cursor sits on that
+/// folder's row: no request is under the cursor to open, so a scratch.
+#[test]
+fn deleting_the_open_request_with_the_cursor_on_a_folder_leaves_a_scratch() {
+    let (mut app, dir) = spaced_app();
+    for slug in ["main/deep/inner", "main/deep/other"] {
+        postui_core::fixtures::save_request(dir.path(), slug, &req("https://x/9")).unwrap();
+    }
+    app.update(Action::RefreshSidebar);
+    app.update(Action::ForceOpenRequest("main/deep/inner".into()));
+    app.proj_mut().set_expanded(Default::default());
+    app.refresh_sidebar();
+    let folder = app.sidebar.rows.iter().position(|r| matches!(r, Row::Folder { .. })).unwrap();
+    app.sidebar.selected = Some(folder);
+
+    app.update(Action::DeleteRequest("main/deep/inner".into()));
+    assert!(app.editor.slug.is_none(), "the open request is gone; a scratch");
 }
 
 /// Review finding 4: extract-to-request journals nothing, so it must not
@@ -27550,15 +27605,16 @@ fn delete_requests_deletes_the_batch_as_one_undo_step() {
     assert!(dir.path().join("requests/main/gamma.toml").exists());
 }
 
-/// A batch holding the open request leaves the editor on a scratch, as a
+/// A batch holding the open request opens the batch's neighbour, as a
 /// single delete does.
 #[test]
-fn deleting_a_batch_that_holds_the_open_request_leaves_a_scratch() {
+fn deleting_a_batch_that_holds_the_open_request_opens_the_neighbour() {
     let (mut app, _dir) = sidebar_test_app_three_flat_rows();
     render_once(&mut app);
     app.update(Action::ForceOpenRequest("main/gamma".into()));
     app.update(Action::DeleteRequests(vec!["main/beta".into(), "main/gamma".into()]));
-    assert_eq!(app.editor.slug, None);
+    assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"));
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/alpha"));
 }
 
 /// Spec §5.3: N table rows go as one editor undo step.
