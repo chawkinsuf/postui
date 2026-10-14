@@ -1,0 +1,4 @@
+# A call, struct literal or chain that fits in `max_width` (100) stays on
+# one line. rustfmt's defaults split them at much shorter widths, which
+# made the code about 10% longer without reading any better.
+use_small_heuristics = "Max"

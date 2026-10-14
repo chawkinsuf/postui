@@ -581,6 +581,7 @@ fn m_bottom(n: Option<usize>) -> ResponseMotion {
 
 /// Every row. Order does not matter: no complete row is a prefix of
 /// another on a shared surface (`no_two_rows_collide`).
+#[rustfmt::skip]
 pub static TABLE: &[Binding] = &[
     // Key list §6 and §7: moving.
     row("j", Surfaces::LISTS, Intent::Key(DOWN), CountRule::Repeat),

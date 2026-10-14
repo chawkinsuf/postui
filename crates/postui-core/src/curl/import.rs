@@ -181,6 +181,7 @@ fn is_curl(word: &str) -> bool {
 /// curl's long options that take a value — enough of curl's own list
 /// that an unknown flag's value is never mistaken for the URL. A flag
 /// not here is taken as valueless.
+#[rustfmt::skip]
 const VALUE_FLAGS: &[&str] = &[
     "abstract-unix-socket", "alt-svc", "aws-sigv4", "cacert", "capath", "cert", "cert-type",
     "ciphers", "config", "connect-timeout", "connect-to", "continue-at", "cookie", "cookie-jar",

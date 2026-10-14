@@ -173,20 +173,24 @@ struct Case {
     undo: bool,
 }
 
+#[rustfmt::skip]
 const fn vim(id: &'static str, fixture: Fixture, keys: &'static str, expect: &'static [Expect]) -> Case {
     Case { id, profile: KeyProfile::Vim, fixture, keys, expect, undo: false }
 }
 
+#[rustfmt::skip]
 const fn arrows(id: &'static str, fixture: Fixture, keys: &'static str, expect: &'static [Expect]) -> Case {
     Case { id, profile: KeyProfile::Arrows, fixture, keys, expect, undo: false }
 }
 
 /// A case that changes data: after its checks, one undo (`u` in vim,
 /// ctrl+z in arrows) must restore the snapshot taken before its keys.
+#[rustfmt::skip]
 const fn vim_u(id: &'static str, fixture: Fixture, keys: &'static str, expect: &'static [Expect]) -> Case {
     Case { id, profile: KeyProfile::Vim, fixture, keys, expect, undo: true }
 }
 
+#[rustfmt::skip]
 const fn arrows_u(id: &'static str, fixture: Fixture, keys: &'static str, expect: &'static [Expect]) -> Case {
     Case { id, profile: KeyProfile::Arrows, fixture, keys, expect, undo: true }
 }
@@ -194,6 +198,7 @@ const fn arrows_u(id: &'static str, fixture: Fixture, keys: &'static str, expect
 use Expect::*;
 use Fixture::*;
 
+#[rustfmt::skip]
 const CASES: &[Case] = &[
     vim("L.move", SidebarThree, "j", &[SidebarSel("main/gamma")]),
     vim("L.move", SidebarThree, "k", &[SidebarSel("main/alpha")]),

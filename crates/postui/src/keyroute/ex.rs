@@ -42,30 +42,39 @@ impl ExVerb {
     }
 }
 
-fn save() -> Action { Action::SaveRequest }
-fn close() -> Action { Action::CloseWindow { write: false, force: false } }
-fn force_close() -> Action { Action::CloseWindow { write: false, force: true } }
-fn write_close() -> Action { Action::CloseWindow { write: true, force: false } }
-fn force_write_close() -> Action { Action::CloseWindow { write: true, force: true } }
-fn quit() -> Action { Action::GatedQuit }
-fn force_quit() -> Action { Action::ForceQuit }
-fn write_quit() -> Action { Action::WriteQuit }
-fn force_write() -> Action { Action::ForceWrite { quit: false } }
-fn force_write_quit() -> Action { Action::ForceWrite { quit: true } }
-fn reload() -> Action { Action::ReloadFromDisk }
-fn discard() -> Action { Action::DiscardChanges }
-fn send() -> Action { Action::Send }
-fn project() -> Action { Action::OpenProjectChooser }
-fn manage() -> Action { Action::OpenManage { tab: None } }
-fn theme() -> Action { Action::OpenThemeChooser }
-fn split() -> Action { Action::CycleSplit }
-fn split_back() -> Action { Action::CycleSplitBack }
-fn nohl() -> Action { Action::NoHlSearch }
-fn import_curl() -> Action { Action::ImportCurl { folder: None } }
-fn copy_curl() -> Action { Action::CopyAsCurl(None) }
+use act::*;
+
+/// What the `Run::Act` rows run, one per line beside the table.
+#[rustfmt::skip]
+mod act {
+    use crate::action::Action;
+
+    pub fn save() -> Action { Action::SaveRequest }
+    pub fn close() -> Action { Action::CloseWindow { write: false, force: false } }
+    pub fn force_close() -> Action { Action::CloseWindow { write: false, force: true } }
+    pub fn write_close() -> Action { Action::CloseWindow { write: true, force: false } }
+    pub fn force_write_close() -> Action { Action::CloseWindow { write: true, force: true } }
+    pub fn quit() -> Action { Action::GatedQuit }
+    pub fn force_quit() -> Action { Action::ForceQuit }
+    pub fn write_quit() -> Action { Action::WriteQuit }
+    pub fn force_write() -> Action { Action::ForceWrite { quit: false } }
+    pub fn force_write_quit() -> Action { Action::ForceWrite { quit: true } }
+    pub fn reload() -> Action { Action::ReloadFromDisk }
+    pub fn discard() -> Action { Action::DiscardChanges }
+    pub fn send() -> Action { Action::Send }
+    pub fn project() -> Action { Action::OpenProjectChooser }
+    pub fn manage() -> Action { Action::OpenManage { tab: None } }
+    pub fn theme() -> Action { Action::OpenThemeChooser }
+    pub fn split() -> Action { Action::CycleSplit }
+    pub fn split_back() -> Action { Action::CycleSplitBack }
+    pub fn nohl() -> Action { Action::NoHlSearch }
+    pub fn import_curl() -> Action { Action::ImportCurl { folder: None } }
+    pub fn copy_curl() -> Action { Action::CopyAsCurl(None) }
+}
 
 /// Every verb, in the order a prefix tie is broken (Deviation 8): the
 /// file verbs, the request verbs, the app commands, the Variable Manager's.
+#[rustfmt::skip]
 pub static VERBS: &[ExVerb] = &[
     verb(&["write", "w", "update", "up", "wa"], Run::Act(save), "Save request"),
     // The window verbs quit on the main screen and close Manage; their `a`
@@ -109,6 +118,7 @@ pub static VERBS: &[ExVerb] = &[
 /// exact spellings. A query that starts a range is refused the same way.
 /// `:u` and `:red` are Vim's undo and redo: listed so `:u` never reaches
 /// `:up` by prefix and saves instead.
+#[rustfmt::skip]
 pub const UNSUPPORTED: &[&str] = &[
     "s", "substitute", "g", "global", "v", "vglobal", "se", "set", "sor", "sort", "norm", "normal", "r", "read", "!",
     "u", "undo", "red", "redo",

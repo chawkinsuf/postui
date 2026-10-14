@@ -155,6 +155,8 @@ pub struct StepLabel {
     pub subject: String,
 }
 
+/// The constructors, one per line.
+#[rustfmt::skip]
 impl StepLabel {
     fn of(verb: Verb, subject: impl Into<String>) -> Self {
         Self { verb, subject: subject.into() }
@@ -181,7 +183,9 @@ impl StepLabel {
     pub fn delete_option(name: &str, env: &str) -> Self {
         Self::delete(format!("option \"{name}\" in {env}"))
     }
+}
 
+impl StepLabel {
     /// The toast an undo (`redo == false`) or redo of this step shows.
     pub fn toast(&self, redo: bool) -> String {
         let done = if redo { "Redid" } else { "Undid" };
