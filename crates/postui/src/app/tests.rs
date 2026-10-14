@@ -5718,7 +5718,10 @@ fn right_click_on_another_row_leaves_the_open_row_unchanged() {
         let row = app.hits.rect_of(&crate::hit::Hit::SidebarRow(i)).unwrap();
         buf[(row.x + row.width - 2, row.y)].bg
     };
-    assert_eq!(row_fill(&mut app, 0), app.theme.selection, "the opened row paints the band");
+    // Before the fix, this was the lifted fill (the cursor sat on the
+    // open row), and the right-click below dropped it.
+    let before = row_fill(&mut app, 0);
+    assert_eq!(before, app.theme.selection, "the opened row paints the band");
     let open = app.sidebar.open_slug.clone();
     assert!(open.is_some());
 
@@ -5727,7 +5730,7 @@ fn right_click_on_another_row_leaves_the_open_row_unchanged() {
     assert_eq!(app.sidebar.selected, Some(1), "the cursor moved to the clicked row");
     assert!(matches!(app.modals.top(), Some(Modal::Dropdown(_))), "its menu is open");
     assert_eq!(app.sidebar.open_slug, open, "the open request did not change");
-    assert_eq!(row_fill(&mut app, 0), app.theme.selection, "the open row's fill did not change");
+    assert_eq!(row_fill(&mut app, 0), before, "the open row's fill did not change");
     let buf = super::field_tests::draw_buffer(&mut app);
     let row0 = app.hits.rect_of(&crate::hit::Hit::SidebarRow(0)).unwrap();
     assert_eq!(buf[(row0.x, row0.y)].symbol(), "\u{258c}", "and it keeps its bar");

@@ -1194,8 +1194,7 @@ impl Component for Sidebar {
             // with the `▌` bar's accent likewise faded against that fill —
             // the bar keeps its half-cell width through the whole fade.
             let row_fill = if let Some(a) = band_alpha {
-                let base = Self::resolve_fill(theme, RowHighlight::None, theme.panel, hover_t);
-                let blended = crate::theme::mix(base, theme.selection, a);
+                let blended = crate::theme::mix(theme.panel, theme.selection, a);
                 fill(buf, Rect::new(list_area.x, text_row, list_area.width, 1), blended);
                 if let Some(cell) = buf.cell_mut((list_area.x, text_row)) {
                     cell.set_symbol("\u{258c}");
@@ -1212,7 +1211,7 @@ impl Component for Sidebar {
                     hover_t,
                     theme,
                 );
-                Self::resolve_fill(theme, highlight, theme.panel, hover_t)
+                ListRow::resolve_fill(theme, highlight, theme.panel, hover_t)
             };
 
             self.paint_row(buf, row, text_row, list_area, row_fill, is_open, is_dragged, theme);
@@ -1257,19 +1256,6 @@ impl Sidebar {
             Method::Delete => "DEL",
             Method::Head => "HEAD",
             Method::Options => "OPT",
-        }
-    }
-
-    /// Replicates [`ListRow::paint`]'s own fill computation, so a row
-    /// painted through it can be asked separately what color its content
-    /// (text) should sit on — needed because `paint_row` sits *outside*
-    /// `ListRow`, painted as a second pass on top of it.
-    fn resolve_fill(theme: &Theme, highlight: RowHighlight, base: Color, hover_t: f32) -> Color {
-        match highlight {
-            RowHighlight::None => base,
-            RowHighlight::Hover => crate::theme::mix(base, theme.control, hover_t),
-            RowHighlight::Cursor => theme.control_hover,
-            RowHighlight::Selected => theme.selection,
         }
     }
 

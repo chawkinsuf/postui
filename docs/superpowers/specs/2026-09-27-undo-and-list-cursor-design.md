@@ -480,7 +480,8 @@ reopens R; redo opens the neighbour again.
 
 ### 4.7 Telling "open" from "cursor here"
 
-- **Who:** `mine`, accepted by the user 2026-09-27 (OQ3).
+- **Who:** `mine`, accepted by the user 2026-09-27 (OQ3); reversed by
+  `you` 2026-10-14 (task #7, the amendment below).
 - **Today:** the open row gets a `selection` fill and a `▌` bar. A
   cursor on another row gets a steady `control_hover` fill, drawn only
   while the sidebar is focused. When the cursor sits on the open row,
