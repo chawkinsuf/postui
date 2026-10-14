@@ -108,6 +108,10 @@ fn a_name_comment_prefills_the_prompt_and_its_folder_is_a_folder() {
     let mut app = app_with_clip("# @name api/ping\ncurl https://x/p");
     app.update(Action::ImportCurl { folder: Some("main".into()) });
     assert_eq!(prompt(&app).1, "api/ping 2");
+    // The folder is read as the create reads it: slugged, the leaf trimmed.
+    let mut app = app_with_clip("# @name API// ping\ncurl https://x/p");
+    import(&mut app);
+    assert_eq!(prompt(&app).1, "API//ping 2");
 }
 
 #[test]

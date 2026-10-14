@@ -65,6 +65,7 @@ pub(crate) fn split(text: &str) -> Result<Vec<ShellCommand>, ShellError> {
         tail_words: Vec::new(),
         line_start: true,
         after_and_or: false,
+        line_blank: true,
         name: None,
     }
     .run()
@@ -119,6 +120,8 @@ struct Splitter<'a> {
     line_start: bool,
     /// The last command was ended by `&&` or `||`.
     after_and_or: bool,
+    /// Nothing but spaces so far on this line of text.
+    line_blank: bool,
     /// A `# @name …` line waiting for the next command.
     name: Option<String>,
 }
@@ -131,6 +134,8 @@ impl Splitter<'_> {
     /// parses.
     fn run(mut self) -> Result<Vec<ShellCommand>, ShellError> {
         while let Some(c) = self.chars.next() {
+            let blank = c == '\n' || (self.line_blank && matches!(c, ' ' | '\t'));
+            let line_blank = std::mem::replace(&mut self.line_blank, blank);
             match c {
                 ' ' | '\t' => self.end_word(),
                 '\n' if self.line_continues() => {}
@@ -161,7 +166,7 @@ impl Splitter<'_> {
                     }
                 }
                 '>' | '<' => self.redirect(c),
-                '#' if !self.in_word => self.skip_comment(),
+                '#' if !self.in_word => self.skip_comment(line_blank && !self.in_tail),
                 '\\' => match self.chars.next() {
                     Some('\n') => {} // a continuation
                     Some(n) => {
@@ -317,21 +322,19 @@ impl Splitter<'_> {
         self.start_tail(op);
     }
 
-    /// A comment that is its own line and reads `# @name …` names the next
-    /// command.
-    fn skip_comment(&mut self) {
+    /// A comment that is its own line between commands (`own_line`) and
+    /// reads `# @name …` names the next command, its spaces folded.
+    fn skip_comment(&mut self, own_line: bool) {
         let mut text = String::new();
-        while let Some(&n) = self.chars.peek() {
-            if n == '\n' {
-                break;
+        while let Some(n) = self.chars.next_if(|&n| n != '\n') {
+            if own_line {
+                text.push(n);
             }
-            text.push(n);
-            self.chars.next();
         }
-        let own_line = self.line_start && self.current.words.is_empty() && !self.in_tail;
         let name = text.trim_start().strip_prefix("@name").filter(|r| r.starts_with([' ', '\t']));
-        if let Some(name) = name.map(str::trim).filter(|n| !n.is_empty() && own_line) {
-            self.name = Some(name.to_string());
+        let name = name.map(|n| n.split_whitespace().collect::<Vec<_>>().join(" "));
+        if let Some(name) = name.filter(|n| !n.is_empty()) {
+            self.name = Some(name);
         }
     }
 
@@ -748,6 +751,12 @@ mod tests {
         assert_eq!(names("curl a # @name x\ncurl b"), [None, None]);
         assert_eq!(names("curl a; # @name x\ncurl b"), [None, None]);
         assert_eq!(names("curl a \\\n# @name x\ncurl b"), [None, None]);
+        assert_eq!(names("curl a |\n  # @name x\n jq .\ncurl b"), [None, None]);
+        // A line ending in `&&` goes on, but a comment line still sits
+        // between its commands.
+        assert_eq!(names("curl a &&\n  # @name x\ncurl b"), [None, named("x")]);
+        // Spaces inside fold to one.
+        assert_eq!(names("# @name a \t  b\ncurl a"), [named("a b")]);
         // An empty name, another tag, or a name left at the end names nothing.
         assert_eq!(names("# @name\ncurl a\n# @names x\ncurl b\n# @name z"), [None, None]);
         // The text is kept as written: a `/` is a folder for the prompt.

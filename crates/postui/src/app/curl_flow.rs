@@ -81,19 +81,21 @@ impl App {
 
     /// `base`, else `base 2`, `base 3`, …: the first name no request in
     /// `folder` answers to (spec R8). A `base` with folders in it
-    /// (`api/List`) numbers its leaf, in the folder it points into.
+    /// (`api/List`) numbers its leaf, in the folder it points into, read as
+    /// the create will read it; one the create refuses is left as it is,
+    /// for the prompt to say why.
     fn free_request_name(&self, folder: &str, base: &str) -> String {
         let Some(p) = self.project() else {
             return base.to_string();
         };
-        let (dirs, leaf) = base.split_at(base.rfind('/').map_or(0, |i| i + 1));
-        let folder = match dirs.strip_suffix('/') {
-            Some(d) => format!("{folder}/{d}"),
-            None => folder.to_string(),
+        let Some((sub, leaf)) = postui_core::storage::split_display_path(base) else {
+            return base.to_string();
         };
-        if !p.sibling_name_taken(&folder, leaf, None) {
+        let folder = if sub.is_empty() { folder.to_string() } else { format!("{folder}/{sub}") };
+        if !p.sibling_name_taken(&folder, &leaf, None) {
             return base.to_string();
         }
+        let dirs = &base[..base.rfind('/').map_or(0, |i| i + 1)];
         (2..)
             .map(|n| format!("{leaf} {n}"))
             .find(|c| !p.sibling_name_taken(&folder, c, None))

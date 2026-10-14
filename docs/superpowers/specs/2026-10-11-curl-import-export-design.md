@@ -188,11 +188,11 @@ Commands: an unquoted line break (not a continuation), `;`, `&&`,
 goes on into the next, as in bash. An unquoted `|` or a redirect (`>`, `>>`, `<`,
 `2>`, …) ends the curl part of a command; the rest up to the command's
 end is listed in `ignored`. `#` at the start of a word starts a comment
-to the end of the line. A comment that is its own line and reads
-`# @name <text>` (D18; `#@name` too, the text trimmed, never empty)
-names the next command, with comment and blank lines between allowed;
-a later one before that command replaces it, and whatever command comes
-next takes it, curl or not (2026-10-14). A leading `$ ` or `% ` prompt on a command is
+to the end of the line. A comment alone on its line of text (spaces
+aside; not inside a pipeline) that reads `# @name <text>` (D18;
+`#@name` too, runs of spaces in the text folded to one, never empty)
+names the next curl command, past any other lines; a later one before
+that command replaces it (2026-10-14). A leading `$ ` or `% ` prompt on a command is
 stripped. An assignment line (`export TOKEN=…`, `BASE=…`, alone on
 its line) is read (R7). A command whose first word after any leading assignments is
 `curl` is a curl command. Any other command (an `echo`, a `cd`) is
