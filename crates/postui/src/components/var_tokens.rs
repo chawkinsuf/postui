@@ -14,7 +14,6 @@
 
 use crate::hit::{Hit, HitMap};
 use crate::theme::Theme;
-use crate::ui::one_line;
 use indexmap::IndexMap;
 use postui_core::model::Entry;
 use postui_core::prepare::SECRET_MASK;
@@ -231,7 +230,7 @@ impl VarView {
                 let own = self.descriptions.get(name);
                 // An option repeating its selector's description word for
                 // word (as drawn, whitespace folded) adds nothing: shown once.
-                let same = |a: &String, b: &String| one_line(a) == one_line(b);
+                let same = |a: &String, b: &String| a.split_whitespace().eq(b.split_whitespace());
                 let option =
                     self.option_descriptions.get(name).filter(|d| !own.is_some_and(|o| same(o, d)));
                 [own, option].into_iter().flatten().cloned().collect()

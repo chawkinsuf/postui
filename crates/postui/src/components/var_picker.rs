@@ -360,7 +360,7 @@ impl VarPickerState {
                 .enumerate()
                 .filter(|(_, entry)| {
                     let haystack = match &entry.description {
-                        Some(desc) => format!("{} {}", entry.name, desc),
+                        Some(desc) => format!("{} {}", entry.name, one_line(desc)),
                         None => entry.name.clone(),
                     };
                     fuzzy_match(self.input.text(), &haystack)
