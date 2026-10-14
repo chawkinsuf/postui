@@ -417,6 +417,50 @@ fn ctrl_n_and_ctrl_p_move_a_pickers_highlight() {
     assert_eq!(p.selected(), 1);
 }
 
+/// Task #6 (you, 2026-10-14): the theme picker has no search box. Its
+/// arrows are the picker's in both profiles: ↑↓ move, ←→ and Tab flip
+/// dark/light. Vim moves it with `j`/`k` and flips it with `h`/`l`, as a
+/// field-less picker; typed letters filter nothing.
+#[test]
+fn the_theme_picker_has_no_search_box_and_its_arrows_flip() {
+    for profile in [KeyProfile::Arrows, KeyProfile::Vim] {
+        let mut app = app_in(Fixture::SidebarThree, profile);
+        app.update(Action::ApplyTheme("gruvbox-dark".into()));
+        app.update(Action::OpenThemeChooser);
+        draw(&mut app);
+        assert!(
+            !matches!(app.field_caret(), crate::keyroute::FieldCaret::Live(_)),
+            "{profile:?}: no field has the caret"
+        );
+        feed(&mut app, "<Right>");
+        assert_eq!(app.theme_name, "gruvbox-light", "{profile:?}: Right flips");
+        feed(&mut app, "<Left>");
+        assert_eq!(app.theme_name, "gruvbox-dark", "{profile:?}: Left flips back");
+        feed(&mut app, "<Tab>");
+        assert_eq!(app.theme_name, "gruvbox-light", "{profile:?}: Tab still flips");
+        feed(&mut app, "<S-Tab><Down>");
+        assert_eq!(app.theme_name, "catppuccin-mocha", "{profile:?}: Down moves");
+        feed(&mut app, "<Up>w");
+        assert_eq!(app.theme_name, "gruvbox-dark", "{profile:?}: Up moves, w types nothing");
+        let Some(Modal::Chooser(c)) = app.modals.top() else { panic!("the theme picker") };
+        assert_eq!(c.input(), "", "{profile:?}: no filter text");
+    }
+    let mut vim = vim_app(Fixture::SidebarThree);
+    vim.update(Action::ApplyTheme("gruvbox-dark".into()));
+    vim.update(Action::OpenThemeChooser);
+    draw(&mut vim);
+    feed(&mut vim, "l");
+    assert_eq!(vim.theme_name, "gruvbox-light", "l flips");
+    feed(&mut vim, "h");
+    assert_eq!(vim.theme_name, "gruvbox-dark", "h flips back");
+    feed(&mut vim, "j");
+    assert_eq!(vim.theme_name, "catppuccin-mocha", "j moves down");
+    feed(&mut vim, "k");
+    assert_eq!(vim.theme_name, "gruvbox-dark", "k moves up");
+    feed(&mut vim, "G");
+    assert_eq!(vim.theme_name, "solarized-dark", "G goes to the last row");
+}
+
 /// Review Focus 5, plan M3b Deviation 5. Enter on a filtered folder
 /// rebuilds the filter from "inn" to "": the session rebases on the new
 /// text, and must stay Insert-only so Esc is still the picker's.

@@ -133,7 +133,10 @@ way existing config writes do.
   and repaints. Esc restores the snapshot's theme. Enter keeps the
   highlighted theme, writes the config, closes.
 - Filtering is the chooser's existing fuzzy filter; live apply follows the
-  highlight wherever filtering moves it.
+  highlight wherever filtering moves it. *Superseded 2026-10-14 (task #6,
+  `you`): the theme picker has no filter box; the highlight moves only by
+  ↑/↓, ctrl+n/ctrl+p, Home/End (vim `j`/`k`/`gg`/`G`), the mouse and the
+  dark/light flip.*
 - The existing 256-color downgrade path applies to every applied theme,
   as today.
 

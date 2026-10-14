@@ -601,20 +601,18 @@ impl App {
     }
 
     /// The engine changed a query box's text: the box follows, as after a
-    /// typed key (its rows, its theme preview, its filter).
+    /// typed key (its rows, its filter). The theme picker has no query box
+    /// (task #6), so no edit here moves its preview.
     fn query_edited(&mut self, id: FieldId) {
         match id {
             FieldId::Jq => {
                 self.session.response.mark_jq_typed();
                 self.sync_jq();
             }
-            FieldId::ChooserFilter => {
-                self.modals.query_changed();
-                self.sync_theme_preview();
-            }
-            FieldId::Palette | FieldId::VarPickerFilter | FieldId::FilePicker => {
-                self.modals.query_changed()
-            }
+            FieldId::ChooserFilter
+            | FieldId::Palette
+            | FieldId::VarPickerFilter
+            | FieldId::FilePicker => self.modals.query_changed(),
             _ => {}
         }
     }

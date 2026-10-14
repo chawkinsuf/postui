@@ -125,6 +125,16 @@ and one-press Esc is the fuzzy-finder convention everyone knows. They
 keep one-press close. Their footer chip reads `esc close`, never
 `esc cancel`, and they get no button row.
 
+Amended 2026-10-14 (task #6, `you`): the theme picker drops its filter
+box. Its handful of rows need no search, and when the filter became a
+`LineInput` here, its caret took Left/Right from the dark/light switch
+(the plan's Step 4 moved the flip to Tab), which read as the arrows
+breaking. Without the box, ↑/↓ (Home/End) move the list, Left/Right and
+Tab/BackTab flip the set, and typed keys and pastes do nothing. The
+label reads `◂ dark ▸` again; the footer reads `↑↓ navigate`, `←→
+toggle`, `enter select`, `esc close`. Every other chooser keeps its
+filter box and Tab for a toggle.
+
 ### Footer
 
 The footer is what makes the two-press cancel legible:

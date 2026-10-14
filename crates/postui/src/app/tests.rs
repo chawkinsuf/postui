@@ -1562,8 +1562,10 @@ fn paste_reaches_the_palette_and_chooser_filter_queries() {
     };
     assert_eq!(p.input(), "send re quest", "flattened like a LineInput");
 
+    // The project chooser keeps its filter box (the theme picker has none,
+    // task #6).
     let mut app = App::new_for_test();
-    app.update(Action::OpenThemeChooser);
+    app.update(Action::OpenProjectChooser);
     assert!(app.paste_text("gruv"));
     let Some(Modal::Chooser(c)) = app.modals.top() else {
         panic!("chooser open");
@@ -18142,7 +18144,7 @@ mod undo_tests {
 
     /// The picker opens filtered to the applied theme's polarity: on the
     /// (dark) default, light themes are not reachable by browsing, so no
-    /// bright flashes. Tab/BackTab flips to the light set, the preview
+    /// bright flashes. Tab/BackTab (or ←/→) flips to the light set, the preview
     /// follows, and Esc still restores the original theme.
     #[test]
     fn theme_picker_polarity_toggle_flips_sets_and_esc_still_reverts() {
@@ -18152,24 +18154,18 @@ mod undo_tests {
         let original_name = app.theme_name.clone();
         app.update(Action::OpenThemeChooser);
         {
-            // Dark set only: fuzzy-typing a light theme's name matches
-            // nothing.
+            // Dark set only: no light theme is listed.
             let Some(crate::components::modal::Modal::Chooser(c)) = app.modals.top() else {
                 panic!("theme chooser modal expected");
             };
             assert_eq!(c.selected_id(), Some("terminal"));
-        }
-        for ch in "light".chars() {
-            app.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
-        }
-        {
-            let Some(crate::components::modal::Modal::Chooser(c)) = app.modals.top() else {
-                panic!("theme chooser modal expected");
-            };
-            assert_eq!(c.selected_id(), None, "no light themes in the dark set");
-        }
-        for _ in 0..5 {
-            app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+            assert!(
+                !c.items.iter().any(|i| matches!(
+                    i.id.as_deref(),
+                    Some("light" | "gruvbox-light" | "catppuccin-latte" | "solarized-light")
+                )),
+                "no light themes in the dark set"
+            );
         }
         // Terminal has no light/dark counterpart: the switch is inert
         // while it's highlighted.
@@ -18316,15 +18312,22 @@ mod undo_tests {
         assert!(app.theme_preview.is_none(), "preview state cleared on close");
     }
 
+    /// Task #6 (you, 2026-10-14): the theme picker has no search box, so
+    /// typing neither filters nor moves the live preview.
     #[test]
-    fn filter_typing_moves_the_live_preview_with_the_highlight() {
+    fn typing_in_the_theme_picker_leaves_the_preview_alone() {
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let mut app = App::new_for_test();
         app.update(Action::OpenThemeChooser);
         for ch in "mocha".chars() {
             app.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
         }
-        assert_eq!(app.theme_name, "catppuccin-mocha", "refilter re-selects row 0 and previews it");
+        assert_eq!(app.theme_name, "terminal", "no filter, the highlight never moved");
+        assert!(!app.paste_text("mocha"), "a paste has nowhere to go");
+        let Some(crate::components::modal::Modal::Chooser(c)) = app.modals.top() else {
+            panic!("theme chooser modal expected");
+        };
+        assert_eq!(c.input(), "");
     }
 
     fn sidebar_on(app: &mut App, slug: &str) {

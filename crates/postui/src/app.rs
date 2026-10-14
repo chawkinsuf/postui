@@ -557,10 +557,10 @@ fn resolve_startup(
 }
 
 /// The theme picker's title-row toggle label for the given polarity —
-/// names the set currently shown; the swap glyph says it flips (Tab, or
-/// a click — the footer's `tab` chip names the key).
+/// names the set currently shown; the `◂ ▸` say Left/Right flip it (so
+/// do Tab and a click; the footer's `←→` chip names the keys).
 fn theme_picker_toggle_label(dark: bool) -> String {
-    if dark { "⇄ dark".into() } else { "⇄ light".into() }
+    if dark { "◂ dark ▸".into() } else { "◂ light ▸".into() }
 }
 
 impl App {
@@ -1140,8 +1140,8 @@ impl App {
         let Some(Modal::Chooser(c)) = self.modals.top() else {
             return;
         };
-        // Filter matched nothing: keep the last previewed theme (and the
-        // toggle label — the highlight hasn't actually moved anywhere).
+        // Nothing highlighted (an empty set): keep the last previewed theme
+        // (and the toggle label — the highlight hasn't moved anywhere).
         let Some(id) = c.selected_id().map(str::to_string) else {
             return;
         };
@@ -4370,13 +4370,17 @@ impl App {
                 }
                 // The picker opens filtered to the current theme's
                 // polarity: browsing themes must not flash the opposite
-                // polarity's (much brighter/darker) palettes. Tab/BackTab
-                // or the title-row toggle flips to the other set.
+                // polarity's (much brighter/darker) palettes. Left/Right,
+                // Tab/BackTab or the title-row toggle flips to the other set.
+                // No filter box: a handful of rows needs no search, and it
+                // leaves the arrows to the toggle (task #6, you).
                 self.theme_picker_dark = self.theme.is_dark();
-                let mut state = ChooserState::new("Theme", self.theme_picker_items()).with_toggle(
-                    theme_picker_toggle_label(self.theme_picker_dark),
-                    Action::ToggleThemePickerPolarity,
-                );
+                let mut state = ChooserState::new("Theme", self.theme_picker_items())
+                    .without_filter()
+                    .with_toggle(
+                        theme_picker_toggle_label(self.theme_picker_dark),
+                        Action::ToggleThemePickerPolarity,
+                    );
                 // Open on the currently-applied theme, not row 0 — the
                 // highlight drives the live preview, so starting anywhere
                 // else would instantly re-theme the app on open.
@@ -9215,8 +9219,7 @@ impl App {
                     return self.update(Action::Render);
                 }
                 Some(crate::components::modal::Modal::Chooser(c)) => {
-                    c.paste(text);
-                    return self.update(Action::Render);
+                    return c.paste(text) && self.update(Action::Render);
                 }
                 Some(crate::components::modal::Modal::FilePicker(p)) => {
                     p.paste(text);

@@ -1,7 +1,7 @@
 use super::line_input::LineInput;
 use crate::action::{Action, ConfigStartupChoice, ExtractDestination};
 use crate::components::varmanager::VarStructOp;
-use crate::keyroute::spell::Key;
+use crate::keyroute::spell::{Key, Nav};
 use crate::paint::{
     self, BUTTON_HEIGHT, Button, ButtonKind, ControlState, FIELD_HEIGHT, TextField,
 };
@@ -793,7 +793,7 @@ impl ModalStack {
     pub(crate) fn query_input_mut(&mut self) -> Option<&mut LineInput> {
         match self.stack.last_mut()? {
             Modal::Palette(s) => Some(s.input_mut()),
-            Modal::Chooser(s) => Some(s.input_mut()),
+            Modal::Chooser(s) => s.input_mut(),
             Modal::VarPicker(s) if s.mode == crate::components::var_picker::PickerMode::Insert => {
                 Some(s.input_mut())
             }
@@ -1756,12 +1756,20 @@ impl ModalStack {
                 chips.push((Key::Named("esc"), "close", None));
                 chips
             }
+            // A chooser with a filter box types its letters, so its moves
+            // are the picker's (`^N/^P` in vim) and Tab flips a toggle;
+            // without one (the theme picker) they are a list's, and
+            // Left/Right flip the toggle (the title-row label is its mouse
+            // twin).
             Modal::Chooser(state) => {
-                let mut chips = vec![(Key::Pick, "navigate", None)];
-                // The theme picker's dark/light switch: Tab flips it (the
-                // label on the title row is its mouse twin).
+                let (moves, flip) = if state.has_filter() {
+                    (Key::Pick, Key::Named("tab"))
+                } else {
+                    (Key::Nav(Nav::UpDown), Key::Nav(Nav::LeftRight))
+                };
+                let mut chips = vec![(moves, "navigate", None)];
                 if state.has_toggle() {
-                    chips.push((Key::Named("tab"), "toggle", None));
+                    chips.push((flip, "toggle", None));
                 }
                 chips.push((Key::Named("enter"), "select", None));
                 chips.push((Key::Named("esc"), "close", None));
@@ -4133,6 +4141,55 @@ mod tests {
         assert!(chips.iter().any(|(k, l, a)| k == "d" && l == "discard changes" && a.is_none()));
         assert!(chips.iter().any(|(k, l, _)| k == "k" && l == "keep"));
         assert!(chips.iter().any(|(k, l, _)| k == "esc" && l == "cancel"));
+    }
+
+    /// Task #6: a filterless chooser (the theme picker) advertises its
+    /// arrows, `←→ toggle` beside `↑↓ navigate`; a chooser with a filter
+    /// box keeps `tab toggle`. An inert toggle (label hidden, e.g. the
+    /// theme picker on Terminal) advertises no key.
+    #[test]
+    fn chooser_toggle_chip_names_the_keys_that_flip_it() {
+        use crate::components::chooser::ChooserState;
+        let chips = |c: ChooserState| {
+            let mut m = ModalStack::default();
+            m.push(Modal::Chooser(c));
+            spelled(m.footer_chips().unwrap())
+                .into_iter()
+                .map(|(k, l, _)| format!("{k} {l}"))
+                .collect::<Vec<_>>()
+        };
+        let theme = ChooserState::new("Theme", vec![]).without_filter();
+        let shown = chips(theme.with_toggle("◂ dark ▸", Action::Render));
+        assert!(shown.contains(&"↑↓ navigate".to_string()), "{shown:?}");
+        assert!(shown.contains(&"←→ toggle".to_string()), "{shown:?}");
+        let hidden = chips(
+            ChooserState::new("Theme", vec![]).without_filter().with_toggle("", Action::Render),
+        );
+        assert!(!hidden.iter().any(|c| c.ends_with("toggle")), "{hidden:?}");
+        let filtered = chips(ChooserState::new("Pick", vec![]).with_toggle("x", Action::Render));
+        assert!(filtered.contains(&"tab toggle".to_string()), "{filtered:?}");
+        // Vim spells the theme picker's moves as a list's, j/k and h/l.
+        let mut m = ModalStack::default();
+        m.push(Modal::Chooser(
+            ChooserState::new("Theme", vec![])
+                .without_filter()
+                .with_toggle("◂ dark ▸", Action::Render),
+        ));
+        let at = crate::keyroute::SpellCtx {
+            profile: crate::config::KeyProfile::Vim,
+            surface: crate::keyroute::Surface::Picker,
+            ..Default::default()
+        };
+        let vim: Vec<String> = crate::keyroute::spell::resolve(
+            m.footer_chips().unwrap(),
+            at,
+            &crate::keys::Keymap::default_bindings(),
+        )
+        .into_iter()
+        .map(|(k, l, _)| format!("{k} {l}"))
+        .collect();
+        assert!(vim.contains(&"j/k navigate".to_string()), "{vim:?}");
+        assert!(vim.contains(&"h/l toggle".to_string()), "{vim:?}");
     }
 
     /// The SelectOption picker has no filter, so its footer must not

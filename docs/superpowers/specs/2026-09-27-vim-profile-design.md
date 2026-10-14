@@ -878,6 +878,8 @@ away once `u` and `:` are vim table rows.
 
 Amended by plan M3b: the rows are `<CR>` on `PROMPT` and `FIELD_PROMPT` (confirm, or the aimed button), `<Esc>` on `FIELD_PROMPT` (cancel, idle Normal), `j k h l` on prompts, forms and dialogs, `G` on dialogs and field-less pickers, `gg` on field-less pickers, and `i a I A o` reopening a selected form field. `modal.rs`'s aliases are gone in both profiles. The `{{` variable picker's option list gained Home and End in both profiles, as the dropdown has them, so vim `gg` and `G` work there (`you`, 2026-10-04); End and `G` land on the last row, the "+ add new option…" row, as the dropdown's End and Down reach it (`mine`). This is a fourth arrows change, additive: nothing arrows already had moves. Down from the new-selector prompt's open name field lands on its toggle, not the button row, in both profiles (`you`, 2026-10-04, final review M-1; a fifth arrows change, which moves arrows' Down in that one prompt; vim `j` already did).
 
+Amended 2026-10-14 (task #6): the theme picker has no filter box (`you`), so it is a field-less picker: `j`/`k`/`gg`/`G` move it, and `h`/`l` join `j`/`k` on field-less pickers as Left/Right, which flip its dark/light set (`mine`, from your ruling that the arrows flip it). The footer reads `j/k navigate` and `h/l toggle` there. On the dropdown and the `{{` option list Left/Right do nothing, so `h`/`l` stay inert there as before.
+
 Amended by plan M1 (Deviations 22, 7): "prefixes and counts are not taken"
 holds as written, because a digit builds a count only where a row takes one
 (§5.1). `modal.rs` keeps its own `j k h l g G` aliases until M3's prompt
