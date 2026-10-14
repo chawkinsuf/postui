@@ -3834,22 +3834,10 @@ impl App {
                         // The move doesn't follow the request into its
                         // new space (user feedback: that made moving
                         // several in a row a chore). From this space's
-                        // point of view it's a delete: the editor is left
-                        // on a scratch if it held the request, and the
-                        // cursor lands on the neighbour when it was on the
-                        // row or the row was open (§4.5), so the next `m`
-                        // has something to act on. No row (the folder is
-                        // collapsed) means no neighbour: the cursor keeps
-                        // its row.
+                        // point of view it's a delete, so the next `m`
+                        // has the neighbour to act on.
                         self.follow_slug(&slug, &new_slug);
-                        self.land(Landing {
-                            open: was_open.then_some(Open::Scratch { buffer: None }),
-                            cursor: from_row
-                                .map(CursorAim::Neighbour)
-                                .or_else(|| self.sidebar.selected_key().map(CursorAim::On))
-                                .filter(|_| was_open || cursor_on),
-                            ..Landing::default()
-                        });
+                        self.land_after_removal(from_row, was_open, cursor_on);
                         self.toasts.push(
                             format!(
                                 "Moved {} to {}",
@@ -3976,19 +3964,7 @@ impl App {
                             format!("Deleted {display}{}", self.undo_hint()),
                             ToastKind::Info,
                         );
-                        // The editor is left on a scratch when it held the
-                        // request (R9 marks it); the cursor lands on the
-                        // neighbour when it was on the row or the row was
-                        // open (§4.5). No row (the folder is collapsed)
-                        // means no neighbour: the cursor keeps its row.
-                        self.land(Landing {
-                            open: was_open.then_some(Open::Scratch { buffer: None }),
-                            cursor: from_row
-                                .map(CursorAim::Neighbour)
-                                .or_else(|| self.sidebar.selected_key().map(CursorAim::On))
-                                .filter(|_| was_open || cursor_on),
-                            ..Landing::default()
-                        });
+                        self.land_after_removal(from_row, was_open, cursor_on);
                         self.record_project_step(t, crate::undo::StepLabel::delete(display));
                     }
                     Err(e) => {
@@ -4014,13 +3990,9 @@ impl App {
                             format!("Deleted {n} {noun}{}", self.undo_hint()),
                             ToastKind::Info,
                         );
-                        // As a single delete: a scratch where the open
-                        // request was, the cursor on the batch's neighbour.
-                        self.land(Landing {
-                            open: was_open.then_some(Open::Scratch { buffer: None }),
-                            cursor: from_row.map(CursorAim::Neighbour),
-                            ..Landing::default()
-                        });
+                        // As a single delete; the batch is the cursor's
+                        // rows, so the cursor always moves.
+                        self.land_after_removal(from_row, was_open, true);
                         self.record_project_step(
                             t,
                             crate::undo::StepLabel::delete(format!("{n} {noun}")),
@@ -6255,7 +6227,7 @@ impl App {
                     space: Some(name),
                     open: Some(open),
                     cursor: Some(CursorAim::OnOpen),
-                    row: None,
+                    ..Landing::default()
                 });
                 true
             }

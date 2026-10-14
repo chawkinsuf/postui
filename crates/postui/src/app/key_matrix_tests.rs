@@ -101,8 +101,6 @@ enum Expect {
     /// Whether a field has the caret.
     FieldLive(bool),
     EditorSlug(&'static str),
-    /// No request is open (a scratch).
-    NoEditorSlug,
     Mode(&'static str),
     NoMode,
     Echo(&'static str),
@@ -487,10 +485,10 @@ const CASES: &[Case] = &[
     // Review Focus 1: counted deletes, clamped, one undo step.
     vim_u("L.Ndd", SidebarThree, "2dd", &[Requests(&["main/alpha"]), Toast("Deleted 2 requests")]),
     vim_u("L.Ndd", SidebarThree, "9dd", &[Requests(&["main/alpha"])]),
-    // The batch holds the open request: it becomes a scratch, and one undo
+    // The batch holds the open request: the neighbour opens, and one undo
     // brings back the files, the open request and its field exactly.
-    vim_u("L.Ndd", SidebarThreeBetaOpen, "2dd", &[Requests(&["main/alpha"]), NoEditorSlug]),
-    arrows_u("L.dd", SidebarThreeBetaOpen, "d", &[Requests(&["main/alpha", "main/gamma"]), NoEditorSlug]),
+    vim_u("L.Ndd", SidebarThreeBetaOpen, "2dd", &[Requests(&["main/alpha"]), SidebarSel("main/alpha"), EditorSlug("main/alpha")]),
+    arrows_u("L.dd", SidebarThreeBetaOpen, "d", &[Requests(&["main/alpha", "main/gamma"]), SidebarSel("main/gamma"), EditorSlug("main/gamma")]),
     vim_u("L.Ndd", TableThreeHeaders, "2dd", &[Headers(&["a"])]),
     // Sweep backlog item 2: Vim's `dd` on the last line lands on the new
     // last line, so a table's never parks on the add row; arrows the same
@@ -848,7 +846,6 @@ fn check(app: &App, e: Expect) -> Result<(), String> {
         PromptOpen => matches!(app.modals.top(), Some(Modal::Prompt { .. })),
         FieldLive(live) => app.field_caret().is_live() == live,
         EditorSlug(slug) => app.editor.slug.as_deref() == Some(slug),
-        NoEditorSlug => app.editor.slug.is_none(),
         Mode(m) => app.mode_indicator() == Some(m),
         NoMode => app.mode_indicator().is_none(),
         Echo(s) => app.key_echo() == s,

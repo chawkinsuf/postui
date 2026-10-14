@@ -420,6 +420,16 @@ replacing `after_undone` (l.8132):
 "Neighbour" means the request row that now holds the old row's index,
 else the nearest one below, else the nearest one above.
 
+Amended 2026-10-14 (task #5, `you`): deleting the open request, a
+batch holding it, or moving it to another space used to leave the
+editor on a scratch while the cursor sat on the neighbour, so the
+cursor's row looked selected but the panel was empty. The editor now
+opens the request the cursor lands on (`App::land_after_removal`), and
+falls to a scratch only when the cursor is on no request or it fails to
+open. It is one landing: `Landing::open_cursor` opens the cursor's
+request after step 5, over the scratch step 3 seated. Undo still
+reopens R; redo opens the neighbour again.
+
 | Event | Open afterwards | Sidebar cursor afterwards |
 |---|---|---|
 | Open R (click, Enter, palette, cross-space) | R; switches space if needed | R (folders expanded) |
@@ -430,13 +440,13 @@ else the nearest one below, else the nearest one above.
 | Redo create / save-as | N | N |
 | Duplicate R | the copy (the dirty gate may intervene) | the copy |
 | Undo duplicate | `before.open` (+ buffer) | `before.cursor` (R) |
-| Delete R, R open | scratch (R9 marker) | neighbour of R |
+| Delete R, R open | the request under the cursor afterwards; scratch (R9 marker) when the cursor is on no request | neighbour of R |
 | Delete R, R not open | unchanged | neighbour if the cursor was on R, else kept |
 | Undo delete R | R reopened (+ buffer) if it was open, else unchanged | `before.cursor`: R when the delete came from the list (the cursor was on R); wherever it was otherwise (rule 1) |
 | Redo delete R | as the forward delete | as the forward delete |
 | Rename R to R2 (re-sort or not) | R2 if R was open | R2 if it was on R (bug b) |
 | Undo / redo rename | follows R2 → R / R → R2 | R / R2 |
-| Move R to space T (no follow) | scratch if R was open, else unchanged | neighbour of R |
+| Move R to space T (no follow) | as a delete if R was open, else unchanged | neighbour of R |
 | Undo move R to T | R back in its space; reopened if it was open | R, in R's space (bug a) |
 | Move all S to T | the open request follows into T | the open row |
 | Undo / redo move all | follows back / forth | the open row |
