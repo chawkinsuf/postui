@@ -4168,6 +4168,28 @@ mod tests {
         assert!(!hidden.iter().any(|c| c.ends_with("toggle")), "{hidden:?}");
         let filtered = chips(ChooserState::new("Pick", vec![]).with_toggle("x", Action::Render));
         assert!(filtered.contains(&"tab toggle".to_string()), "{filtered:?}");
+        // Vim spells the theme picker's moves as a list's, j/k and h/l.
+        let mut m = ModalStack::default();
+        m.push(Modal::Chooser(
+            ChooserState::new("Theme", vec![])
+                .without_filter()
+                .with_toggle("◂ dark ▸", Action::Render),
+        ));
+        let at = crate::keyroute::SpellCtx {
+            profile: crate::config::KeyProfile::Vim,
+            surface: crate::keyroute::Surface::Picker,
+            ..Default::default()
+        };
+        let vim: Vec<String> = crate::keyroute::spell::resolve(
+            m.footer_chips().unwrap(),
+            at,
+            &crate::keys::Keymap::default_bindings(),
+        )
+        .into_iter()
+        .map(|(k, l, _)| format!("{k} {l}"))
+        .collect();
+        assert!(vim.contains(&"j/k navigate".to_string()), "{vim:?}");
+        assert!(vim.contains(&"h/l toggle".to_string()), "{vim:?}");
     }
 
     /// The SelectOption picker has no filter, so its footer must not

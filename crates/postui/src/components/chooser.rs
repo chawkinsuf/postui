@@ -216,20 +216,23 @@ impl ChooserState {
     }
 
     fn refilter(&mut self) {
-        let query = self.input.as_ref().map_or("", LineInput::text);
-        self.filtered = self
-            .items
-            .iter()
-            .enumerate()
-            .filter(|(_, item)| {
-                let haystack = match &item.detail {
-                    Some(detail) => format!("{} {}", item.label, detail),
-                    None => item.label.clone(),
-                };
-                fuzzy_match(query, &haystack)
-            })
-            .map(|(i, _)| i)
-            .collect();
+        // Without a filter box every row stays listed.
+        self.filtered = match &self.input {
+            None => (0..self.items.len()).collect(),
+            Some(input) => self
+                .items
+                .iter()
+                .enumerate()
+                .filter(|(_, item)| {
+                    let haystack = match &item.detail {
+                        Some(detail) => format!("{} {}", item.label, detail),
+                        None => item.label.clone(),
+                    };
+                    fuzzy_match(input.text(), &haystack)
+                })
+                .map(|(i, _)| i)
+                .collect(),
+        };
         self.selected = 0;
         self.scroll = 0;
         self.ensure_visible = true;
@@ -246,10 +249,13 @@ impl ChooserState {
             }
             KeyCode::Enter => return self.confirm(),
             // Tab fires the toggle (when one is attached) without closing.
-            // With a filter box the arrows move its caret; without one they
-            // fire the toggle too (the label's `◂ ▸`).
+            // With a filter box the arrows move its caret; without one the
+            // bare arrows fire the toggle too (the label's `◂ ▸`), and a
+            // modified one (a word move or selection chord) does nothing.
             KeyCode::Tab | KeyCode::BackTab => return self.fire_toggle(),
-            KeyCode::Left | KeyCode::Right if !self.has_filter() => return self.fire_toggle(),
+            KeyCode::Left | KeyCode::Right if !self.has_filter() => {
+                return if key.modifiers.is_empty() { self.fire_toggle() } else { None };
+            }
             KeyCode::Home if !self.has_filter() => self.select(0),
             KeyCode::End if !self.has_filter() => {
                 self.select(self.filtered.len().saturating_sub(1))
@@ -548,6 +554,10 @@ mod tests {
             let res = c.handle_key(key(code)).expect("fires the toggle");
             assert_eq!(res.actions, vec![Action::ToggleThemePickerPolarity], "{code:?}");
             assert!(!res.close, "{code:?}");
+        }
+        for mods in [KeyModifiers::SHIFT, KeyModifiers::CONTROL, KeyModifiers::ALT] {
+            let ev = KeyEvent::new(KeyCode::Left, mods);
+            assert!(c.handle_key(ev).is_none(), "a modified arrow flips nothing: {mods:?}");
         }
         c.handle_key(key(KeyCode::Char('c')));
         assert!(!c.paste("c"), "no box to take a paste");
