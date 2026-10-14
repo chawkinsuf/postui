@@ -17,7 +17,7 @@ use crate::theme::Theme;
 use indexmap::IndexMap;
 use postui_core::model::Entry;
 use postui_core::prepare::SECRET_MASK;
-use postui_core::varmodel::{Resolved, VarMeta};
+use postui_core::varmodel::{Resolved, VarMeta, options_of};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
@@ -70,9 +70,10 @@ pub struct TokenInfo {
     /// the real value.
     pub secret: bool,
     pub source: TokenSource,
-    /// The declaration's description (a selector field carries its
-    /// selector's), when one is written — the tooltip's optional third
-    /// line.
+    /// The declaration's description, when one is written — the tooltip's
+    /// optional last section. A selector field carries its selected
+    /// option's own description, or its selector's when the option has
+    /// none (or the request overlay filled the field instead).
     pub description: Option<String>,
 }
 
@@ -121,6 +122,10 @@ pub struct VarView {
     /// Declared descriptions: a variable's own, or — for a selector field —
     /// the owning selector's.
     descriptions: IndexMap<String, String>,
+    /// A selector field's selected option's own description, when it has
+    /// one: it replaces the selector's in the tooltip. Neither map holds a
+    /// blank description (see [`written`]).
+    option_descriptions: IndexMap<String, String>,
 }
 
 impl VarView {
@@ -150,10 +155,12 @@ impl VarView {
                     .variables()
                     .vars
                     .iter()
-                    .filter_map(|(n, decl)| decl.description.clone().map(|desc| (n.clone(), desc)))
+                    .filter_map(|(n, decl)| {
+                        written(&decl.description).map(|desc| (n.clone(), desc))
+                    })
                     .collect();
                 for decl in project.variables().selectors.values() {
-                    if let Some(desc) = &decl.description {
+                    if let Some(desc) = written(&decl.description) {
                         for field in &decl.fields {
                             d.insert(field.clone(), desc.clone());
                         }
@@ -161,6 +168,20 @@ impl VarView {
                 }
                 d
             },
+            option_descriptions: project
+                .resolved()
+                .meta
+                .iter()
+                .filter_map(|(field, meta)| match meta {
+                    VarMeta::SelectorMember { selector, selected } => written(
+                        &options_of(project.variables(), project.env_data(), selector)?
+                            .get(selected)?
+                            .description,
+                    )
+                    .map(|desc| (field.clone(), desc)),
+                    _ => None,
+                })
+                .collect(),
         }
     }
 
@@ -206,7 +227,11 @@ impl VarView {
                 Some(VarMeta::Secret) | Some(VarMeta::MissingSecret)
             ),
             source,
-            description: self.descriptions.get(name).cloned(),
+            description: self
+                .option_descriptions
+                .get(name)
+                .or_else(|| self.descriptions.get(name))
+                .cloned(),
         }
     }
 
@@ -218,6 +243,12 @@ impl VarView {
             None => TokenSource::Undefined,
         }
     }
+}
+
+/// A declared description, unless it is blank: a blank one is none, so it
+/// never hides a fallback or draws an empty section.
+fn written(description: &Option<String>) -> Option<String> {
+    description.clone().filter(|d| !d.trim().is_empty())
 }
 
 /// The color a token's braces and name are tinted: the accent when it
@@ -305,6 +336,7 @@ mod tests {
             default_names: HashSet::new(),
             env_label: Some("qa".into()),
             descriptions: IndexMap::new(),
+            option_descriptions: IndexMap::new(),
         }
     }
 
@@ -314,6 +346,38 @@ mod tests {
         v.descriptions.insert("base_url".into(), "API root".into());
         assert_eq!(v.describe("base_url").description.as_deref(), Some("API root"));
         assert_eq!(v.describe("user").description, None);
+    }
+
+    /// A blank description is no description, wherever it was written.
+    #[test]
+    fn a_blank_description_is_none() {
+        assert_eq!(written(&Some(" \n ".into())), None);
+        assert_eq!(written(&Some(String::new())), None);
+        assert_eq!(written(&None), None);
+        assert_eq!(written(&Some(" API root ".into())).as_deref(), Some(" API root "));
+    }
+
+    /// A selector field describes the option that filled it when that
+    /// option has a description of its own (#11, the user's ruling: the
+    /// option's replaces the selector's), and the selector's otherwise.
+    /// The request overlay fills the field with no option in play, so it
+    /// keeps the selector's.
+    #[test]
+    fn a_selector_field_describes_its_selected_option_over_its_selector() {
+        let mut v = view();
+        v.resolved.values.insert("uid".into(), "1001".into());
+        v.resolved.meta.insert(
+            "uid".into(),
+            VarMeta::SelectorMember { selector: "user".into(), selected: "user 2".into() },
+        );
+        v.descriptions.insert("uid".into(), "acting user".into());
+        assert_eq!(v.describe("uid").description.as_deref(), Some("acting user"));
+
+        v.option_descriptions.insert("uid".into(), "the premium one".into());
+        assert_eq!(v.describe("uid").description.as_deref(), Some("the premium one"));
+
+        v.request.insert("uid".into(), "7".into());
+        assert_eq!(v.describe("uid").description.as_deref(), Some("acting user"));
     }
 
     #[test]

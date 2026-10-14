@@ -617,12 +617,8 @@ pub fn resolve_env(
     }
 
     for (selector_name, selector_decl) in &model.selectors {
-        // A shared selector's options live in the model itself; everyone
-        // else's in the environment.
-        let options_home = if selector_decl.shared { &model.options } else { &env.options };
         let selected = selections.get(selector_name).and_then(|name| {
-            options_home
-                .get(selector_name)
+            options_of(model, env, selector_name)
                 .and_then(|options| options.get(name))
                 .map(|option| (name, option))
         });
