@@ -111,6 +111,17 @@ cell and time) and gives two counts: arrows' (same hit, 400 ms, a pair), which e
 list and button reads in both profiles, and Vim's (R12), which only vim's text takes
 (Q1). `on_hit` gets both as `Clicks { gui, vim }`. `LastPress` and `vim_clicks` go.
 
+**As built** (amended after the rework's review round 3, `mine`, for your review).
+The shape is the one above, with these differences from its names:
+- `text_box` returns `(left, width)`.
+- `text_char` and `body_char` became one `text_at(field, x, y, open, drag)`, which
+  calls the editor's `body_char_at` for the body.
+- `TextDrag` is `Response | Field(FieldId)`, with the body as `Field(FieldId::Body)`
+  rather than a variant of its own.
+- `field_input_mut` reads a screen field through `line_buf` behind an identity check,
+  and never focuses.
+- Vim takes a text event only on the field that has the caret at that moment.
+
 **Removed:** `LineInput::mouse_at`, `Editor::body_mouse_at`, `hit_field`,
 `MouseEdge`'s nested `Option`, `LastPress`, the right arm's left-press re-run, and the
 seven `drag_*_to` fns. In the engine, `mouse()` no longer resets the caret to `rested`
