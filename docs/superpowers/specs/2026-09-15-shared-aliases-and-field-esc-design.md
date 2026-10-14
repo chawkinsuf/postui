@@ -125,6 +125,16 @@ and one-press Esc is the fuzzy-finder convention everyone knows. They
 keep one-press close. Their footer chip reads `esc close`, never
 `esc cancel`, and they get no button row.
 
+Amended 2026-10-14 (task #6, `you`): a chooser with a title-row toggle
+(the theme picker's dark/light switch) gives plain Left/Right to the
+toggle, not to its filter's caret, in both profiles; Tab and BackTab
+still flip it too. The label reads `◂ dark ▸` again and the footer chip
+`←→ toggle`. The plan's Step 4 had moved the flip to Tab when the filter
+became a `LineInput`, which read as the arrows breaking. A chooser
+without a toggle keeps arrow caret moves. In vim the arrows are the
+box's own keys before the engine (`mine`), like the file picker's
+Backspace.
+
 ### Footer
 
 The footer is what makes the two-press cancel legible:

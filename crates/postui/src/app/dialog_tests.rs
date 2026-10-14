@@ -417,6 +417,29 @@ fn ctrl_n_and_ctrl_p_move_a_pickers_highlight() {
     assert_eq!(p.selected(), 1);
 }
 
+/// Task #6 (you, 2026-10-14): Left and Right flip the theme picker's
+/// dark/light set in both profiles, typed filter or not, ahead of vim's
+/// Insert caret; Tab still flips.
+#[test]
+fn left_and_right_flip_the_theme_picker_in_both_profiles() {
+    for profile in [KeyProfile::Arrows, KeyProfile::Vim] {
+        let mut app = app_in(Fixture::SidebarThree, profile);
+        app.update(Action::ApplyTheme("gruvbox-dark".into()));
+        app.update(Action::OpenThemeChooser);
+        draw(&mut app);
+        feed(&mut app, "<Right>");
+        assert_eq!(app.theme_name, "gruvbox-light", "{profile:?}: Right flips");
+        feed(&mut app, "<Left>");
+        assert_eq!(app.theme_name, "gruvbox-dark", "{profile:?}: Left flips back");
+        feed(&mut app, "gruv<Right>");
+        assert_eq!(app.theme_name, "gruvbox-light", "{profile:?}: Right flips with a filter");
+        let Some(Modal::Chooser(c)) = app.modals.top() else { panic!("the theme picker") };
+        assert_eq!(c.input(), "gruv", "{profile:?}: the filter is untouched");
+        feed(&mut app, "<Tab>");
+        assert_eq!(app.theme_name, "gruvbox-dark", "{profile:?}: Tab still flips");
+    }
+}
+
 /// Review Focus 5, plan M3b Deviation 5. Enter on a filtered folder
 /// rebuilds the filter from "inn" to "": the session rebases on the new
 /// text, and must stay Insert-only so Esc is still the picker's.

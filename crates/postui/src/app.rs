@@ -557,10 +557,10 @@ fn resolve_startup(
 }
 
 /// The theme picker's title-row toggle label for the given polarity —
-/// names the set currently shown; the swap glyph says it flips (Tab, or
-/// a click — the footer's `tab` chip names the key).
+/// names the set currently shown; the `◂ ▸` say Left/Right flip it (so
+/// do Tab and a click; the footer's `←→` chip names the keys).
 fn theme_picker_toggle_label(dark: bool) -> String {
-    if dark { "⇄ dark".into() } else { "⇄ light".into() }
+    if dark { "◂ dark ▸".into() } else { "◂ light ▸".into() }
 }
 
 impl App {
@@ -4370,8 +4370,8 @@ impl App {
                 }
                 // The picker opens filtered to the current theme's
                 // polarity: browsing themes must not flash the opposite
-                // polarity's (much brighter/darker) palettes. Tab/BackTab
-                // or the title-row toggle flips to the other set.
+                // polarity's (much brighter/darker) palettes. Left/Right,
+                // Tab/BackTab or the title-row toggle flips to the other set.
                 self.theme_picker_dark = self.theme.is_dark();
                 let mut state = ChooserState::new("Theme", self.theme_picker_items()).with_toggle(
                     theme_picker_toggle_label(self.theme_picker_dark),

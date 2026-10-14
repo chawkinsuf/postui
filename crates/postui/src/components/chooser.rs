@@ -23,8 +23,8 @@ pub struct ChooserItem {
 
 /// An optional two-state switch on a chooser (the theme picker's
 /// dark/light filter): `label` renders right-aligned on the title row,
-/// and Tab/BackTab (or a click on the label) dispatch `action` without
-/// closing the modal — the action's handler is expected to swap the
+/// and Left/Right, Tab/BackTab (or a click on the label) dispatch `action`
+/// without closing the modal — the action's handler is expected to swap the
 /// chooser's items via [`ChooserState::set_items`].
 pub struct ChooserToggle {
     pub label: String,
@@ -85,6 +85,19 @@ impl ChooserState {
         if let Some(t) = &mut self.toggle {
             t.label = label.into();
         }
+    }
+
+    /// Whether `key` fires the attached toggle without closing: Tab,
+    /// BackTab, or a plain Left/Right (the label's `◂ ▸`; task #6, you,
+    /// 2026-10-14). With a toggle the arrows never move the filter's
+    /// caret; without one, none of these keys is the toggle's.
+    pub(crate) fn fires_toggle(&self, key: &KeyEvent) -> bool {
+        self.toggle.is_some()
+            && match key.code {
+                KeyCode::Tab | KeyCode::BackTab => true,
+                KeyCode::Left | KeyCode::Right => key.modifiers.is_empty(),
+                _ => false,
+            }
     }
 
     /// The toggle's action, if a toggle is attached — what a click on the
@@ -213,17 +226,12 @@ impl ChooserState {
                 });
             }
             KeyCode::Enter => return self.confirm(),
-            // Tab fires the toggle (when one is attached) without closing;
-            // the arrows move the caret now that the filter is a real
-            // input.
-            KeyCode::Tab | KeyCode::BackTab => {
-                if let Some(t) = &self.toggle {
-                    return Some(super::modal::ModalResult {
-                        actions: vec![t.action.clone()],
-                        close: false,
-                        ..Default::default()
-                    });
-                }
+            _ if self.fires_toggle(&key) => {
+                return self.toggle.as_ref().map(|t| super::modal::ModalResult {
+                    actions: vec![t.action.clone()],
+                    close: false,
+                    ..Default::default()
+                });
             }
             KeyCode::Up => {
                 self.selected = self.selected.saturating_sub(1);
@@ -311,7 +319,7 @@ impl ChooserState {
         // paint nothing and register no hit.
         if let Some(t) = self.toggle.as_ref().filter(|t| !t.label.is_empty()) {
             // Right-aligned on the title row, clickable and flippable with
-            // Tab/BackTab — mirrored by `handle_key`.
+            // the keys `fires_toggle` names.
             let w = t.label.chars().count() as u16;
             let x = (area.x + area.width).saturating_sub(w + 2);
             paint::text(frame.buffer_mut(), x, title_y, &t.label, theme.accent, theme.panel, false);
@@ -474,19 +482,30 @@ mod tests {
         assert!(!content.contains("esc cancel"), "{content}");
     }
 
+    /// Task #6 (you, 2026-10-14): with a toggle attached, Left, Right, Tab
+    /// and BackTab all fire it and the caret stays put; without one, Left
+    /// and Right move the caret.
     #[test]
-    fn left_and_right_move_the_caret_and_tab_fires_the_toggle() {
+    fn left_and_right_fire_the_toggle_and_move_the_caret_without_one() {
         let mut c = ChooserState::new("Pick", vec![])
             .with_toggle("dark", Action::ToggleThemePickerPolarity);
         for ch in "ab".chars() {
             c.handle_key(key(KeyCode::Char(ch)));
         }
-        assert!(c.handle_key(key(KeyCode::Left)).is_none(), "Left moves the caret, fires nothing");
+        for code in [KeyCode::Left, KeyCode::Right, KeyCode::Tab, KeyCode::BackTab] {
+            let res = c.handle_key(key(code)).expect("fires the toggle");
+            assert_eq!(res.actions, vec![Action::ToggleThemePickerPolarity], "{code:?}");
+            assert!(!res.close, "{code:?}");
+        }
         c.handle_key(key(KeyCode::Char('X')));
-        assert_eq!(c.input(), "aXb");
-        let res = c.handle_key(key(KeyCode::Tab)).expect("tab fires the toggle");
-        assert_eq!(res.actions, vec![Action::ToggleThemePickerPolarity]);
-        assert!(!res.close);
+        assert_eq!(c.input(), "abX", "the caret never moved");
+        let mut plain = ChooserState::new("Pick", vec![]);
+        for ch in "ab".chars() {
+            plain.handle_key(key(KeyCode::Char(ch)));
+        }
+        assert!(plain.handle_key(key(KeyCode::Left)).is_none(), "no toggle: Left moves the caret");
+        plain.handle_key(key(KeyCode::Char('X')));
+        assert_eq!(plain.input(), "aXb");
     }
 
     #[test]

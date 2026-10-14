@@ -571,7 +571,8 @@ impl App {
     /// climbs a folder; the jq bar's Tab and shift+Tab are its completion's
     /// (menu mode rewrites a quoted key through the input's own keys, which
     /// a declined key's quiet input would mute: amendment R4), and its
-    /// Right and End accept an offered completion.
+    /// Right and End accept an offered completion; a chooser's toggle keys
+    /// are its toggle's.
     fn box_claims(&self, id: FieldId, ev: &KeyEvent) -> bool {
         let plain = ev.modifiers.is_empty();
         match id {
@@ -589,6 +590,11 @@ impl App {
                 }
                 _ => false,
             },
+            // A chooser's toggle keys flip it (the theme picker's Left and
+            // Right, task #6) rather than move Insert's caret.
+            FieldId::ChooserFilter => {
+                matches!(self.modals.top(), Some(Modal::Chooser(c)) if c.fires_toggle(ev))
+            }
             // The ex line's Backspace on an empty query closes it (spec
             // §5.9, plan M4b Deviation 15).
             FieldId::Palette => {

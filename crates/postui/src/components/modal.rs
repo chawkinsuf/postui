@@ -1758,10 +1758,11 @@ impl ModalStack {
             }
             Modal::Chooser(state) => {
                 let mut chips = vec![(Key::Pick, "navigate", None)];
-                // The theme picker's dark/light switch: Tab flips it (the
-                // label on the title row is its mouse twin).
+                // The theme picker's dark/light switch: Left/Right flip it
+                // (so does Tab; the label on the title row is its mouse
+                // twin).
                 if state.has_toggle() {
-                    chips.push((Key::Named("tab"), "toggle", None));
+                    chips.push((Key::Named("←→"), "toggle", None));
                 }
                 chips.push((Key::Named("enter"), "select", None));
                 chips.push((Key::Named("esc"), "close", None));
