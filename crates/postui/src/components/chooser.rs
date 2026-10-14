@@ -23,8 +23,8 @@ pub struct ChooserItem {
 
 /// An optional two-state switch on a chooser (the theme picker's
 /// dark/light filter): `label` renders right-aligned on the title row,
-/// and Left/Right, Tab/BackTab (or a click on the label) dispatch `action`
-/// without closing the modal — the action's handler is expected to swap the
+/// and Tab/BackTab (Left/Right too without a filter box, or a click on the
+/// label) dispatch `action` without closing the modal — the action's handler is expected to swap the
 /// chooser's items via [`ChooserState::set_items`].
 pub struct ChooserToggle {
     pub label: String,
@@ -35,9 +35,14 @@ pub struct ChooserToggle {
 /// `PaletteState`: typed input filters `items` by fuzzy-matching against
 /// `label + " " + detail`; arrows move the selection; `Enter` dispatches the
 /// selected item's actions and closes; `Esc` closes with no actions.
+/// [`ChooserState::without_filter`] drops the filter box.
 pub struct ChooserState {
     pub(crate) title: String,
     input: LineInput,
+    /// Whether the filter box is there: typed keys filter `items`. Off for
+    /// the theme picker (task #6), whose few rows need no search; its
+    /// arrows are then free for the toggle.
+    filter: bool,
     selected: usize,
     pub(crate) items: Vec<ChooserItem>,
     filtered: Vec<usize>,
@@ -58,6 +63,7 @@ impl ChooserState {
         Self {
             title: title.to_string(),
             input: LineInput::new(""),
+            filter: true,
             selected: 0,
             items,
             filtered,
@@ -80,25 +86,25 @@ impl ChooserState {
         self
     }
 
+    /// Drops the filter box (builder-style): every row stays listed, typed
+    /// keys and pastes do nothing, and the keys a caret would take are the
+    /// list's (Home, End) and the toggle's (Left, Right).
+    pub fn without_filter(mut self) -> Self {
+        self.filter = false;
+        self
+    }
+
+    /// Whether the chooser has a filter box — a field with the caret.
+    pub fn has_filter(&self) -> bool {
+        self.filter
+    }
+
     /// Updates the toggle's displayed label (e.g. after its action flipped
     /// the state it names). A no-op when no toggle is attached.
     pub fn set_toggle_label(&mut self, label: impl Into<String>) {
         if let Some(t) = &mut self.toggle {
             t.label = label.into();
         }
-    }
-
-    /// Whether `key` fires the attached toggle without closing: Tab,
-    /// BackTab, or a plain Left/Right (the label's `◂ ▸`; task #6, you,
-    /// 2026-10-14). With a toggle the arrows never move the filter's
-    /// caret; without one, none of these keys is the toggle's.
-    pub(crate) fn fires_toggle(&self, key: &KeyEvent) -> bool {
-        self.toggle.is_some()
-            && match key.code {
-                KeyCode::Tab | KeyCode::BackTab => true,
-                KeyCode::Left | KeyCode::Right => key.modifiers.is_empty(),
-                _ => false,
-            }
     }
 
     /// The toggle's action, if a toggle is attached — what a click on the
@@ -130,8 +136,10 @@ impl ChooserState {
     /// Pastes into the filter query (the bracketed-paste/ctrl+v path),
     /// flattened to one line like every single-line surface.
     pub fn paste(&mut self, text: &str) {
-        self.input.paste(text);
-        self.refilter();
+        if self.filter {
+            self.input.paste(text);
+            self.refilter();
+        }
     }
 
     pub fn title(&self) -> &str {
@@ -227,13 +235,13 @@ impl ChooserState {
                 });
             }
             KeyCode::Enter => return self.confirm(),
-            _ if self.fires_toggle(&key) => {
-                return self.toggle_action().map(|a| super::modal::ModalResult {
-                    actions: vec![a.clone()],
-                    close: false,
-                    ..Default::default()
-                });
-            }
+            // Tab fires the toggle (when one is attached) without closing.
+            // With a filter box the arrows move its caret; without one they
+            // fire the toggle too (the label's `◂ ▸`).
+            KeyCode::Tab | KeyCode::BackTab => return self.fire_toggle(),
+            KeyCode::Left | KeyCode::Right if !self.filter => return self.fire_toggle(),
+            KeyCode::Home if !self.filter => self.select(0),
+            KeyCode::End if !self.filter => self.select(self.filtered.len().saturating_sub(1)),
             KeyCode::Up => {
                 self.selected = self.selected.saturating_sub(1);
                 self.ensure_visible = true;
@@ -254,15 +262,26 @@ impl ChooserState {
                 }
                 self.ensure_visible = true;
             }
-            _ => {
+            _ if self.filter => {
                 let before = self.input.text().to_string();
                 self.input.handle_key(key);
                 if self.input.text() != before {
                     self.refilter();
                 }
             }
+            _ => {}
         }
         None
+    }
+
+    /// The toggle's action as a result that keeps the chooser open —
+    /// `None` when no toggle is attached.
+    fn fire_toggle(&self) -> Option<super::modal::ModalResult> {
+        self.toggle_action().map(|a| super::modal::ModalResult {
+            actions: vec![a.clone()],
+            close: false,
+            ..Default::default()
+        })
     }
 
     /// Whether the filter box has keystrokes of its own to step — what
@@ -292,12 +311,13 @@ impl ChooserState {
         t: f32,
     ) {
         let width = 60.min(screen.width);
-        // Chrome (everything but the list): 1 pad + 1 title + 1 ring-margin
-        // gap + 3-row field + 1 ring-margin gap + 3 bottom pad (the old
-        // hint-row space, kept so the shell doesn't crowd the list).
-        const CHROME: u16 = 10;
+        // Chrome (everything but the list): above it, 1 pad + 1 title + 1
+        // gap, then with a filter box its 3-row field + 2 gap rows; below
+        // it, 2 bottom pad rows.
+        let above: u16 = if self.filter { 3 + FIELD_HEIGHT + 2 } else { 3 };
+        let chrome = above + 2;
         let content_rows = (self.filtered.len() as u16).clamp(1, 10);
-        let height = (CHROME + content_rows).clamp(13, 26).min(screen.height);
+        let height = (chrome + content_rows).clamp(chrome + 3, chrome + 16).min(screen.height);
         let area = super::modal::centered_rect(screen, width, height);
         hits.register(area, crate::hit::Hit::ModalBody);
         paint::floating_panel_settling(frame.buffer_mut(), area, screen, theme, t);
@@ -320,7 +340,7 @@ impl ChooserState {
         // paint nothing and register no hit.
         if let Some(t) = self.toggle.as_ref().filter(|t| !t.label.is_empty()) {
             // Right-aligned on the title row, clickable and flippable with
-            // the keys `fires_toggle` names.
+            // the keys `handle_key` gives it.
             let w = t.label.chars().count() as u16;
             let x = (area.x + area.width).saturating_sub(w + 2);
             paint::text(frame.buffer_mut(), x, title_y, &t.label, theme.accent, theme.panel, false);
@@ -330,25 +350,27 @@ impl ChooserState {
             );
         }
 
-        let field_area = Rect {
-            x: area.x + 1,
-            y: title_y + 2,
-            width: area.width.saturating_sub(2),
-            height: FIELD_HEIGHT,
-        };
-        let content =
-            self.input.draw_line_windowed(true, theme, field_area.width.saturating_sub(2));
-        TextField { content, state: ControlState::Focused }.paint(
-            frame.buffer_mut(),
-            field_area,
-            theme,
-        );
+        if self.filter {
+            let field_area = Rect {
+                x: area.x + 1,
+                y: title_y + 2,
+                width: area.width.saturating_sub(2),
+                height: FIELD_HEIGHT,
+            };
+            let content =
+                self.input.draw_line_windowed(true, theme, field_area.width.saturating_sub(2));
+            TextField { content, state: ControlState::Focused }.paint(
+                frame.buffer_mut(),
+                field_area,
+                theme,
+            );
+        }
 
         let list_area = Rect {
             x: area.x + 1,
-            y: field_area.y + FIELD_HEIGHT + 2,
+            y: area.y + above,
             width: area.width.saturating_sub(2),
-            height: area.height.saturating_sub(CHROME),
+            height: area.height.saturating_sub(chrome),
         };
         let list_h = list_area.height as usize;
         if self.ensure_visible {
@@ -483,30 +505,63 @@ mod tests {
         assert!(!content.contains("esc cancel"), "{content}");
     }
 
-    /// Task #6 (you, 2026-10-14): with a toggle attached, Left, Right, Tab
-    /// and BackTab all fire it and the caret stays put; without one, Left
-    /// and Right move the caret.
     #[test]
-    fn left_and_right_fire_the_toggle_and_move_the_caret_without_one() {
+    fn left_and_right_move_the_caret_and_tab_fires_the_toggle() {
         let mut c = ChooserState::new("Pick", vec![])
             .with_toggle("dark", Action::ToggleThemePickerPolarity);
         for ch in "ab".chars() {
             c.handle_key(key(KeyCode::Char(ch)));
         }
+        assert!(c.handle_key(key(KeyCode::Left)).is_none(), "Left moves the caret, fires nothing");
+        c.handle_key(key(KeyCode::Char('X')));
+        assert_eq!(c.input(), "aXb");
+        let res = c.handle_key(key(KeyCode::Tab)).expect("tab fires the toggle");
+        assert_eq!(res.actions, vec![Action::ToggleThemePickerPolarity]);
+        assert!(!res.close);
+    }
+
+    /// Task #6 (you, 2026-10-14): a chooser without a filter box (the
+    /// theme picker) types nothing; Left and Right fire its toggle beside
+    /// Tab and BackTab, and Home and End move the highlight.
+    #[test]
+    fn a_filterless_chooser_gives_the_arrows_to_its_toggle() {
+        let mut c = ChooserState::new("Theme", items(&["a", "b", "c"]))
+            .without_filter()
+            .with_toggle("◂ dark ▸", Action::ToggleThemePickerPolarity);
+        assert!(!c.has_filter());
         for code in [KeyCode::Left, KeyCode::Right, KeyCode::Tab, KeyCode::BackTab] {
             let res = c.handle_key(key(code)).expect("fires the toggle");
             assert_eq!(res.actions, vec![Action::ToggleThemePickerPolarity], "{code:?}");
             assert!(!res.close, "{code:?}");
         }
-        c.handle_key(key(KeyCode::Char('X')));
-        assert_eq!(c.input(), "abX", "the caret never moved");
-        let mut plain = ChooserState::new("Pick", vec![]);
-        for ch in "ab".chars() {
-            plain.handle_key(key(KeyCode::Char(ch)));
-        }
-        assert!(plain.handle_key(key(KeyCode::Left)).is_none(), "no toggle: Left moves the caret");
-        plain.handle_key(key(KeyCode::Char('X')));
-        assert_eq!(plain.input(), "aXb");
+        c.handle_key(key(KeyCode::Char('c')));
+        c.paste("c");
+        assert_eq!(c.input(), "", "nothing types or pastes");
+        assert_eq!(c.selected_label(), Some("a"), "every row still listed");
+        c.handle_key(key(KeyCode::End));
+        assert_eq!(c.selected_label(), Some("c"));
+        c.handle_key(key(KeyCode::Home));
+        assert_eq!(c.selected_label(), Some("a"));
+    }
+
+    /// The filterless chooser paints no field: the list sits right under
+    /// the title row, and the box is that much shorter.
+    #[test]
+    fn a_filterless_chooser_draws_its_list_under_the_title() {
+        let theme = Theme::dark();
+        let draw = |c: &mut ChooserState| {
+            let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+            let mut hits = crate::hit::HitMap::default();
+            terminal.draw(|f| c.draw(f, f.area(), &theme, &mut hits, None, 1.0)).unwrap();
+            let body = hits.rect_of(&crate::hit::Hit::ModalBody).unwrap();
+            let row0 = hits.rect_of(&crate::hit::Hit::ChooserRow(0)).unwrap();
+            (body, row0)
+        };
+        let (body, row0) =
+            draw(&mut ChooserState::new("Theme", items(&["a", "b"])).without_filter());
+        assert_eq!(row0.y, body.y + 3, "pad, title, gap, then the list");
+        let (filtered, _) = draw(&mut ChooserState::new("Theme", items(&["a", "b"])));
+        assert!(body.height < filtered.height, "no field, a shorter box");
     }
 
     #[test]

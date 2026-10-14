@@ -1140,8 +1140,8 @@ impl App {
         let Some(Modal::Chooser(c)) = self.modals.top() else {
             return;
         };
-        // Filter matched nothing: keep the last previewed theme (and the
-        // toggle label — the highlight hasn't actually moved anywhere).
+        // Nothing highlighted (an empty set): keep the last previewed theme
+        // (and the toggle label — the highlight hasn't moved anywhere).
         let Some(id) = c.selected_id().map(str::to_string) else {
             return;
         };
@@ -4372,11 +4372,15 @@ impl App {
                 // polarity: browsing themes must not flash the opposite
                 // polarity's (much brighter/darker) palettes. Left/Right,
                 // Tab/BackTab or the title-row toggle flips to the other set.
+                // No filter box: a handful of rows needs no search, and it
+                // leaves the arrows to the toggle (task #6, you).
                 self.theme_picker_dark = self.theme.is_dark();
-                let mut state = ChooserState::new("Theme", self.theme_picker_items()).with_toggle(
-                    theme_picker_toggle_label(self.theme_picker_dark),
-                    Action::ToggleThemePickerPolarity,
-                );
+                let mut state = ChooserState::new("Theme", self.theme_picker_items())
+                    .without_filter()
+                    .with_toggle(
+                        theme_picker_toggle_label(self.theme_picker_dark),
+                        Action::ToggleThemePickerPolarity,
+                    );
                 // Open on the currently-applied theme, not row 0 — the
                 // highlight drives the live preview, so starting anywhere
                 // else would instantly re-theme the app on open.

@@ -831,12 +831,14 @@ pub static TABLE: &[Binding] = &[
     row("<CR>", Surfaces::PROMPT.or(Surfaces::FIELD_PROMPT), Intent::Act(confirm_top), CountRule::Ignore),
     row("<Esc>", Surfaces::FIELD_PROMPT, Intent::Act(cancel_top), CountRule::Ignore),
     // Spec §5.10 and §4.5: a dialog's stops, its buttons and a field-less
-    // picker (the dropdown) move with vim's keys; modal.rs no longer
-    // aliases them. A dialog's own answer letters come first (`answers`).
+    // picker (the dropdown, the theme picker) move with vim's keys;
+    // modal.rs no longer aliases them. A dialog's own answer letters come
+    // first (`answers`). `h`/`l` on a picker flip the theme picker's
+    // dark/light set (task #6).
     row("j", Surfaces::FORMS.or(Surfaces::DIALOG).or(Surfaces::PICKER), Intent::Key(DOWN), CountRule::Ignore),
     row("k", Surfaces::FORMS.or(Surfaces::DIALOG).or(Surfaces::PICKER), Intent::Key(UP), CountRule::Ignore),
-    row("h", Surfaces::FORMS.or(Surfaces::DIALOG), Intent::Key(LEFT), CountRule::Ignore),
-    row("l", Surfaces::FORMS.or(Surfaces::DIALOG), Intent::Key(RIGHT), CountRule::Ignore),
+    row("h", Surfaces::FORMS.or(Surfaces::DIALOG).or(Surfaces::PICKER), Intent::Key(LEFT), CountRule::Ignore),
+    row("l", Surfaces::FORMS.or(Surfaces::DIALOG).or(Surfaces::PICKER), Intent::Key(RIGHT), CountRule::Ignore),
     row("G", Surfaces::DIALOG.or(Surfaces::PICKER), Intent::Key(END), CountRule::Ignore),
     row("gg", Surfaces::PICKER, Intent::Key(HOME), CountRule::Ignore),
     // Spec §5.6 (plan M3b Deviation 3): a selected dialog field reopens,

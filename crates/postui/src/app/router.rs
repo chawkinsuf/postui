@@ -309,7 +309,7 @@ impl App {
         };
         let own = match top {
             Modal::Palette(_) => Some(FieldId::Palette),
-            Modal::Chooser(_) => Some(FieldId::ChooserFilter),
+            Modal::Chooser(c) if c.has_filter() => Some(FieldId::ChooserFilter),
             Modal::VarPicker(s) if s.mode == crate::components::var_picker::PickerMode::Insert => {
                 Some(FieldId::VarPickerFilter)
             }
