@@ -98,6 +98,19 @@ fn a_taken_name_prefills_the_next_free_one() {
 }
 
 #[test]
+fn a_name_comment_prefills_the_prompt_and_its_folder_is_a_folder() {
+    let mut app = app_with_clip("# @name api/List users\ncurl https://x/users");
+    import(&mut app);
+    assert_eq!(prompt(&app).1, "api/List users");
+    app.update(Action::ConfirmTopModal);
+    assert!(slug_named(&app, "List users").unwrap().starts_with("main/api/"));
+    // R8 numbers the leaf, in the folder the name points into.
+    let mut app = app_with_clip("# @name api/ping\ncurl https://x/p");
+    app.update(Action::ImportCurl { folder: Some("main".into()) });
+    assert_eq!(prompt(&app).1, "api/ping 2");
+}
+
+#[test]
 fn one_undo_removes_the_import() {
     let mut app = app_with_clip("curl https://x/users");
     import(&mut app);

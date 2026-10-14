@@ -24,8 +24,10 @@ pub struct CurlImport {
     /// literal text (`export TOKEN=abc`); `None` for any other value
     /// (`$(…)`, `$BASE/x`) and for a variable the paste never assigned.
     pub variables: Vec<(String, Option<String>)>,
-    /// `{METHOD} {last non-empty path segment, else host}`. Never holds a
-    /// `/` (a `/` in a display path means a folder).
+    /// The text of a `# @name …` comment line above the command, as
+    /// written (a `/` in it means a folder, as typed into the prompt).
+    /// Else `{METHOD} {last non-empty path segment, else host}`, which
+    /// never holds a `/`.
     pub suggested_name: String,
 }
 
@@ -114,8 +116,12 @@ pub fn parse(text: &str) -> Result<CurlBatch, CurlError> {
             .map(|w| format!("{}=\u{2026}", w.split_once('=').map_or(w.as_str(), |(n, _)| n)))
             .collect();
         cmd.marks.drain(..lead);
+        let name = cmd.name.take();
         let mut import = parse_command(cmd)
             .map_err(|kind| CurlError { command: many.then_some(i + 1), kind })?;
+        if let Some(name) = name {
+            import.suggested_name = name;
+        }
         import.ignored.splice(0..0, leading);
         import.variables =
             import.converted.iter().map(|n| (n.clone(), env.get(n).cloned().flatten())).collect();
@@ -411,7 +417,7 @@ fn percent_encode(s: &str) -> String {
 }
 
 fn parse_command(cmd: ShellCommand) -> Result<CurlImport, CurlErrorKind> {
-    let ShellCommand { words, tail, converted, substitutions, marks: _, alone: _ } = cmd;
+    let ShellCommand { words, tail, converted, substitutions, marks: _, alone: _, name: _ } = cmd;
     let mut flags = Flags::default();
     let mut words = words.into_iter().skip(1);
     let mut options_done = false;
@@ -689,6 +695,17 @@ mod tests {
         assert_eq!(body(&c), None);
         assert!(c.ignored.is_empty());
         assert_eq!(c.suggested_name, "GET users");
+    }
+
+    #[test]
+    fn a_name_comment_is_the_suggested_name() {
+        let batch =
+            parse("# @name List users\ncurl https://api.x/users\ncurl https://api.x/me").unwrap();
+        let names: Vec<&str> = batch.commands.iter().map(|c| c.suggested_name.as_str()).collect();
+        assert_eq!(names, ["List users", "GET me"]);
+        // A name comment is not a skipped line: values still land.
+        let c = one("export T=abc\n# @name Me\ncurl -H \"X: $T\" https://api.x/me");
+        assert_eq!((c.suggested_name.as_str(), c.variables[0].1.as_deref()), ("Me", Some("abc")));
     }
 
     #[test]

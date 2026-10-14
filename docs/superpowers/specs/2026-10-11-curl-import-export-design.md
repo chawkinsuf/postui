@@ -46,6 +46,12 @@ The user's, from the brainstorm (2026-10-11):
   is listed as ignored, yet the method is still the one curl would
   send — POST, or PUT for `-T` — unless `-X`, `-I` or `-G` says
   otherwise. The request reaches the same endpoint, with no body.
+- **D18 A `# @name` comment names the import** (task #2, 2026-10-14).
+  A comment line `# @name List users` above a curl command prefills
+  its name prompt with `List users` instead of the URL's suggestion, as
+  in VS Code REST Client and JetBrains `.http` files. Other comments
+  stay ignored. Import only: Copy as curl writes no name. (The details
+  in §3.1 and R8 are mine.)
 
 Mine, approved with the design sections:
 
@@ -122,6 +128,8 @@ Mine, proposed in the spec review (user may override):
     create removes the declarations and values with the request.
 - **R8** A suggested name already taken (in the folder, or by an earlier
   import of the same batch) prefills as `GET users 2`, `GET users 3`, ….
+  A `# @name` with folders in it (`api/ping`, D18) numbers its leaf in
+  the folder it points into: `api/ping 2` (2026-10-14).
 
 ## 3. Core module: `crates/postui-core/src/curl.rs`
 
@@ -139,8 +147,9 @@ pub struct CurlImport {
     /// One per `converted` variable, with its value (R7); `None` for no
     /// value.
     pub variables: Vec<(String, Option<String>)>,
-    /// `{METHOD} {last non-empty path segment, else host}`, never
-    /// containing `/` (a `/` in a display path means a folder).
+    /// A `# @name` comment's text as written (D18; a `/` in it means a
+    /// folder, as typed into the prompt), else `{METHOD} {last non-empty
+    /// path segment, else host}`, never containing `/`.
     pub suggested_name: String,
 }
 
@@ -179,7 +188,11 @@ Commands: an unquoted line break (not a continuation), `;`, `&&`,
 goes on into the next, as in bash. An unquoted `|` or a redirect (`>`, `>>`, `<`,
 `2>`, …) ends the curl part of a command; the rest up to the command's
 end is listed in `ignored`. `#` at the start of a word starts a comment
-to the end of the line. A leading `$ ` or `% ` prompt on a command is
+to the end of the line. A comment that is its own line and reads
+`# @name <text>` (D18; `#@name` too, the text trimmed, never empty)
+names the next command, with comment and blank lines between allowed;
+a later one before that command replaces it, and whatever command comes
+next takes it, curl or not (2026-10-14). A leading `$ ` or `% ` prompt on a command is
 stripped. An assignment line (`export TOKEN=…`, `BASE=…`, alone on
 its line) is read (R7). A command whose first word after any leading assignments is
 `curl` is a curl command. Any other command (an `echo`, a `cd`) is
@@ -220,7 +233,7 @@ need a project (`refuse_without_project`, like New request).
    first command: title "Import curl" (one command) or
    "Import curl (1 of 3)", prefilled with `folder/` (when given, space
    segment stripped as `PromptNewRequestIn` does) plus the command's
-   `suggested_name`, made unique per R8. Under the field, muted: the
+   `suggested_name` (its `# @name`, D18), made unique per R8. Under the field, muted: the
    command's method and URL, and `ignores …` with its ignored list when
    there is one. In a batch the cancel button reads "Skip" and the
    footer says `esc skip`, since it only skips this command (added

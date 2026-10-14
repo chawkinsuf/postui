@@ -80,17 +80,24 @@ impl App {
     }
 
     /// `base`, else `base 2`, `base 3`, …: the first name no request in
-    /// `folder` answers to (spec R8).
+    /// `folder` answers to (spec R8). A `base` with folders in it
+    /// (`api/List`) numbers its leaf, in the folder it points into.
     fn free_request_name(&self, folder: &str, base: &str) -> String {
         let Some(p) = self.project() else {
             return base.to_string();
         };
-        if !p.sibling_name_taken(folder, base, None) {
+        let (dirs, leaf) = base.split_at(base.rfind('/').map_or(0, |i| i + 1));
+        let folder = match dirs.strip_suffix('/') {
+            Some(d) => format!("{folder}/{d}"),
+            None => folder.to_string(),
+        };
+        if !p.sibling_name_taken(&folder, leaf, None) {
             return base.to_string();
         }
         (2..)
-            .map(|n| format!("{base} {n}"))
-            .find(|c| !p.sibling_name_taken(folder, c, None))
+            .map(|n| format!("{leaf} {n}"))
+            .find(|c| !p.sibling_name_taken(&folder, c, None))
+            .map(|c| format!("{dirs}{c}"))
             .expect("some suffix is free")
     }
 
