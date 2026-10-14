@@ -559,24 +559,23 @@ fn wrap_cells(s: &str, max: usize) -> Vec<String> {
 }
 
 /// Prose `s` wrapped into lines of at most `max` display cells, breaking
-/// between words (runs of whitespace fold to one space); a word wider
-/// than a line is hard-broken as [`wrap_cells`] does. A newline inside
-/// `s` always starts a new line; whitespace around it is dropped, so a
-/// blank `s` yields no lines at all.
+/// between words; every run of whitespace, newlines included, folds to
+/// one space. A word wider than a line is hard-broken as [`wrap_cells`]
+/// does. A blank `s` yields no lines at all.
 fn wrap_words(s: &str, max: usize) -> Vec<String> {
     use unicode_width::UnicodeWidthStr;
     let mut lines = Vec::new();
-    for para in s.trim().lines() {
-        let mut line = String::new();
-        for piece in para.split_whitespace().flat_map(|word| wrap_cells(word, max)) {
-            if !line.is_empty() && line.width() + 1 + piece.width() > max {
-                lines.push(std::mem::take(&mut line));
-            }
-            if !line.is_empty() {
-                line.push(' ');
-            }
-            line.push_str(&piece);
+    let mut line = String::new();
+    for piece in s.split_whitespace().flat_map(|word| wrap_cells(word, max)) {
+        if !line.is_empty() && line.width() + 1 + piece.width() > max {
+            lines.push(std::mem::take(&mut line));
         }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(&piece);
+    }
+    if !line.is_empty() {
         lines.push(line);
     }
     lines
@@ -1002,6 +1001,14 @@ mod tests {
         assert_eq!(tip_rows(120, 40, &tip_info(Some("v"), Some(" \n "))), bare);
         let rows = tip_rows(120, 40, &tip_info(Some("v"), Some("\nabout x\n")));
         assert_eq!(rows[3..], ["", "about x"], "{rows:?}");
+    }
+
+    /// A description is prose: its newlines fold like any other space, so
+    /// a blank line inside it can't pass for the gap before a section.
+    #[test]
+    fn a_tooltip_description_folds_its_newlines() {
+        let rows = tip_rows(120, 40, &tip_info(Some("v"), Some("Bearer token\n\nRotated weekly")));
+        assert_eq!(rows[3..], ["", "Bearer token Rotated weekly"], "{rows:?}");
     }
 
     /// The final review's D-1 (plan M4b Deviation 20): the header's

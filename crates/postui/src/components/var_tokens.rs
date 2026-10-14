@@ -123,7 +123,7 @@ pub struct VarView {
     /// the owning selector's.
     descriptions: IndexMap<String, String>,
     /// A selector field's selected option's own description, when it has
-    /// one: it replaces the selector's in the tooltip.
+    /// a non-blank one: it replaces the selector's in the tooltip.
     option_descriptions: IndexMap<String, String>,
 }
 
@@ -175,6 +175,7 @@ impl VarView {
                             .get(selected)?
                             .description
                             .clone()
+                            .filter(|desc| !desc.trim().is_empty())
                             .map(|desc| (field.clone(), desc))
                     }
                     _ => None,

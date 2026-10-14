@@ -22830,13 +22830,14 @@ fn tooltip_for_an_undefined_token_has_no_value_row() {
 
 /// A selector field's tip describes the option that filled it, in place
 /// of the selector's description (#11, the user's ruling) — and the
-/// selector's comes back for an option that has none.
+/// selector's comes back for an option that has none (a blank one is
+/// none).
 #[test]
 fn tooltip_shows_the_selected_options_description_over_its_selectors() {
     let (mut app, dir, _out) = tooltip_app("user");
     std::fs::write(
         dir.path().join("environments/qa.toml"),
-        "[options.user.alice]\ndescription = \"the premium one\"\nuser = \"1001\"\n\n[options.user.bob]\nuser = \"2002\"\n",
+        "[options.user.alice]\ndescription = \"the premium one\"\nuser = \"1001\"\n\n[options.user.bob]\ndescription = \" \"\nuser = \"2002\"\n",
     )
     .unwrap();
     app.proj_mut().set_selection_for("qa", "user", "alice");
