@@ -260,10 +260,17 @@ fn check_unknown_fields(
     Ok(())
 }
 
+/// A declaration's `description`, unless it is blank: a blank one is no
+/// description, so no reader shows an empty one or lets it hide a
+/// fallback.
+fn written(description: Option<String>) -> Option<String> {
+    description.filter(|d| !d.trim().is_empty())
+}
+
 fn parse_var_decl(value: &toml::Value, var_name: &str) -> Result<VarDecl, ModelError> {
     let table = as_table(value, var_name)?;
     check_unknown_fields(table, &["description", "default", "secret"], var_name)?;
-    let description = get_string(table, "description", var_name)?;
+    let description = written(get_string(table, "description", var_name)?);
     let default = get_string(table, "default", var_name)?;
     let secret = get_bool(table, "secret", var_name)?;
     if secret && default.is_some() {
@@ -279,7 +286,7 @@ fn parse_selector_decl(
     let table_path = format!("selectors.{selector_name}");
     let table = as_table(value, &table_path)?;
     check_unknown_fields(table, &["description", "fields", "shared"], &table_path)?;
-    let description = get_string(table, "description", &table_path)?;
+    let description = written(get_string(table, "description", &table_path)?);
     let shared = get_bool(table, "shared", &table_path)?;
     let fields_value = table
         .get("fields")
@@ -414,7 +421,7 @@ fn parse_option(
         }
         values.insert(field.clone(), s.to_string());
     }
-    Ok(OptionDecl { description, values })
+    Ok(OptionDecl { description: written(description), values })
 }
 
 /// One selector's `[options.<selector>.*]` tables — the same shape in
@@ -1086,6 +1093,28 @@ customer_id = "cust-91"
             err.to_string().contains("[options.user] has an option with an empty name"),
             "{err}"
         );
+    }
+
+    /// A blank description is no description, wherever it is written: a
+    /// variable's, a selector's, an option's in an environment file or a
+    /// shared selector's in `variables.toml`.
+    #[test]
+    fn a_blank_description_parses_as_none() {
+        let m = parse_variables(
+            "[base_url]\ndescription = \"\"\n\n\
+             [selectors.user]\ndescription = \"  \"\nfields = [\"uid\"]\n\n\
+             [selectors.locale]\ndescription = \"\\n\"\nfields = [\"lang\"]\nshared = true\n\n\
+             [options.locale.en]\ndescription = \" \"\nlang = \"en\"\n",
+        )
+        .unwrap();
+        assert_eq!(m.vars["base_url"].description, None);
+        assert_eq!(m.selectors["user"].description, None);
+        assert_eq!(m.selectors["locale"].description, None);
+        assert_eq!(m.options["locale"]["en"].description, None);
+        let e =
+            parse_environment("[options.user.alice]\ndescription = \"\"\nuid = \"1\"\n").unwrap();
+        assert_eq!(e.options["user"]["alice"].description, None);
+        assert!(!e.options["user"]["alice"].values.contains_key("description"));
     }
 
     #[test]

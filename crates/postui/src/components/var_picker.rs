@@ -6,6 +6,7 @@ use crate::components::toast::ToastKind;
 use crate::components::varmanager::VarEditOp;
 use crate::paint::{self, ControlState, FIELD_HEIGHT, ListRow, RowHighlight, TextField};
 use crate::theme::Theme;
+use crate::ui::one_line;
 use indexmap::IndexMap;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -51,9 +52,9 @@ pub struct VarEntry {
 
 /// Builds the Insert-mode picker's entries (spec §6: "autocomplete over
 /// all defined names") from every source that declares one: project
-/// variables (`model.vars`, minus names that are actually selector fields —
-/// a field may carry its own top-level table for a description, but it's
-/// listed once, as `Group`), selector fields (`model.selectors`), and the open
+/// variables (`model.vars`), selector fields (`model.selectors`, each
+/// described by its selector — the parser keeps fields and variables
+/// apart, so a field has no declaration of its own), and the open
 /// request's own `[variables]` (`request_vars`; `None`/disabled entries
 /// show as unset rather than being dropped). A name defined at more than
 /// one scope (a request entry shadowing a project variable) appears once,
@@ -63,15 +64,9 @@ pub fn insert_entries(
     resolved: &indexmap::IndexMap<String, String>,
     request_vars: &indexmap::IndexMap<String, postui_core::model::Entry>,
 ) -> Vec<VarEntry> {
-    let group_fields: std::collections::HashSet<&str> =
-        model.selectors.values().flat_map(|g| g.fields.iter().map(String::as_str)).collect();
-
     let mut entries: Vec<VarEntry> = Vec::new();
 
     for (name, decl) in &model.vars {
-        if group_fields.contains(name.as_str()) {
-            continue;
-        }
         entries.push(VarEntry {
             name: name.clone(),
             description: decl.description.clone(),
@@ -83,10 +78,9 @@ pub fn insert_entries(
 
     for selector in model.selectors.values() {
         for field in &selector.fields {
-            let description = model.vars.get(field).and_then(|d| d.description.clone());
             entries.push(VarEntry {
                 name: field.clone(),
-                description,
+                description: selector.description.clone(),
                 value: resolved.get(field).cloned(),
                 scope: VarScope::Group,
                 secret: false,
@@ -366,7 +360,7 @@ impl VarPickerState {
                 .enumerate()
                 .filter(|(_, entry)| {
                     let haystack = match &entry.description {
-                        Some(desc) => format!("{} {}", entry.name, desc),
+                        Some(desc) => format!("{} {}", entry.name, one_line(desc)),
                         None => entry.name.clone(),
                     };
                     fuzzy_match(self.input.text(), &haystack)
@@ -639,7 +633,7 @@ impl VarPickerState {
                     );
                     x += name_w;
                     if let Some(desc) = &entry.description {
-                        let desc = format!(" {desc}");
+                        let desc = format!(" {}", one_line(desc));
                         let w = right.saturating_sub(x);
                         let clipped = clip(&desc, w);
                         paint::text(
@@ -727,7 +721,7 @@ impl VarPickerState {
                     // option's values live in the detail pane below, which
                     // follows the highlight.
                     if let Some(desc) = &entry.description {
-                        let desc = format!(" {desc}");
+                        let desc = format!(" {}", one_line(desc));
                         let w = right.saturating_sub(x);
                         paint::text(
                             frame.buffer_mut(),
@@ -803,7 +797,7 @@ impl VarPickerState {
                         // A plain single-value option: its description (if
                         // any) then its value.
                         if let Some(desc) = &entry.description {
-                            line(y, desc, list_area.width.saturating_sub(2), "");
+                            line(y, &one_line(desc), list_area.width.saturating_sub(2), "");
                             y += 1;
                         }
                         if let Some(value) = &entry.value {
@@ -899,6 +893,27 @@ mod tests {
         assert!(!entry.secret);
     }
 
+    /// A selector field's row carries its selector's description, the
+    /// same one the hover tooltip falls back to: a field has no
+    /// declaration of its own (the parser rejects a variable that is also
+    /// a field).
+    #[test]
+    fn insert_entries_describe_a_selector_field_by_its_selector() {
+        let model = postui_core::varmodel::parse_variables(
+            "[selectors.user]\ndescription = \"acting user\"\nfields = [\"uid\", \"cid\"]\n\n\
+             [selectors.page]\nfields = [\"page\"]\n",
+        )
+        .unwrap();
+        let entries =
+            insert_entries(&model, &indexmap::IndexMap::new(), &indexmap::IndexMap::new());
+        let desc = |name: &str| {
+            entries.iter().find(|e| e.name == name).and_then(|e| e.description.clone())
+        };
+        assert_eq!(desc("uid").as_deref(), Some("acting user"));
+        assert_eq!(desc("cid").as_deref(), Some("acting user"));
+        assert_eq!(desc("page"), None, "a selector without one: none");
+    }
+
     #[test]
     fn enter_emits_completion_or_full_token() {
         let entries = vec![var_entry("base_url", None, Some("x"))];
@@ -983,6 +998,23 @@ mod tests {
         assert!(content.contains("api root"));
         assert!(content.contains("http://x"));
         assert!(content.contains("unset"));
+    }
+
+    /// A description written across lines is drawn on its one row with
+    /// its whitespace folded, as the hover tooltip folds it.
+    #[test]
+    fn draw_folds_a_multi_line_description_onto_its_row() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut p =
+            VarPickerState::new(vec![var_entry("base", Some("api\n  root"), Some("x"))], false);
+        let theme = Theme::dark();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal.draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0)).unwrap();
+        let content = format!("{:?}", terminal.backend().buffer());
+        assert!(content.contains("base api root = x"), "{content}");
     }
 
     fn entries(names: &[&str]) -> Vec<VarEntry> {

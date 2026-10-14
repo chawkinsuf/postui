@@ -22762,33 +22762,29 @@ fn panel_row(app: &mut App, panel: ratatui::layout::Rect, row: u16) -> String {
         .to_string()
 }
 
-/// The tip's layout: a header row naming the variable and its source
-/// with the pills on the right, the value on its own full-width row
-/// beneath, then the description — a blank row before each section (#11,
-/// the user's ruling).
+/// The tip's layout: the value on top with the pills on its right, then
+/// the variable's name and its source, then the description — a blank
+/// row between sections (#11 and #19, the user's rulings).
 #[test]
-fn tooltip_lays_out_a_header_row_then_the_value_then_the_description() {
+fn tooltip_lays_out_the_value_then_the_name_then_the_description() {
     let (mut app, _dir, _out) = tooltip_app("base_url");
     hover_token(&mut app, "base_url");
     let panel = app.hits.rect_of(&Hit::TipPanel("base_url".into())).unwrap();
-    assert_eq!(panel.height, 7, "padding, header, gap, value, gap, description, padding");
+    assert_eq!(panel.height, 7, "padding, value, gap, name, gap, description, padding");
     assert_eq!(
         panel_row(&mut app, panel, panel.y + 1),
-        "\u{2502} base_url  env = qa  \u{F018F}  \u{F03EB}  \u{2502}",
-        "header: name, source, then copy and edit pills at the right edge"
+        "\u{2502} https://qa.example.com  \u{F018F}  \u{F03EB}  \u{2502}",
+        "the value on top, copy and edit pills at its right edge"
     );
-    let blank = format!("\u{2502}{}\u{2502}", " ".repeat(panel.width as usize - 2));
-    assert_eq!(panel_row(&mut app, panel, panel.y + 2), blank);
+    let line = |text: &str| format!("\u{2502} {text:<w$}\u{2502}", w = panel.width as usize - 3);
+    assert_eq!(panel_row(&mut app, panel, panel.y + 2), line(""));
     assert_eq!(
         panel_row(&mut app, panel, panel.y + 3),
-        "\u{2502} https://qa.example.com    \u{2502}",
-        "the value takes its own row, with no pills crowding it"
+        line("base_url  env = qa"),
+        "the name and where its value came from"
     );
-    assert_eq!(panel_row(&mut app, panel, panel.y + 4), blank);
-    assert_eq!(
-        panel_row(&mut app, panel, panel.y + 5),
-        "\u{2502} API root                  \u{2502}"
-    );
+    assert_eq!(panel_row(&mut app, panel, panel.y + 4), line(""));
+    assert_eq!(panel_row(&mut app, panel, panel.y + 5), line("API root"));
     // Right-anchored pills: edit holds the anchor edge, copy before it.
     assert_eq!(
         app.hits.rect_of(&Hit::TipEdit("base_url".into())),
@@ -22828,12 +22824,11 @@ fn tooltip_for_an_undefined_token_has_no_value_row() {
     );
 }
 
-/// A selector field's tip describes the option that filled it, in place
-/// of the selector's description (#11, the user's ruling) — and the
-/// selector's comes back for an option that has none (a blank one is
-/// none).
+/// A selector field's tip stacks its selector's description, then the
+/// description of the option that filled it (#19, the user's ruling) —
+/// the selector's alone for an option that has none (a blank one is none).
 #[test]
-fn tooltip_shows_the_selected_options_description_over_its_selectors() {
+fn tooltip_stacks_the_selectors_description_then_the_selected_options() {
     let (mut app, dir, _out) = tooltip_app("user");
     std::fs::write(
         dir.path().join("environments/qa.toml"),
@@ -22845,8 +22840,9 @@ fn tooltip_shows_the_selected_options_description_over_its_selectors() {
     hover_token(&mut app, "user");
     let text = tooltip_text(&mut app);
     assert!(text.contains("option = alice"), "{text}");
-    assert!(text.contains("the premium one"), "{text}");
-    assert!(!text.contains("acting user"), "the option's replaces the selector's: {text}");
+    let selector = text.find("acting user").unwrap_or_else(|| panic!("selector's: {text}"));
+    let option = text.find("the premium one").unwrap_or_else(|| panic!("option's: {text}"));
+    assert!(selector < option, "the selector's first: {text}");
 
     app.proj_mut().set_selection_for("qa", "user", "bob");
     app.update(Action::ReloadProjectFiles);
@@ -22875,6 +22871,7 @@ fn tooltip_shows_a_shared_selectors_option_description() {
     hover_token(&mut app, "user");
     let text = tooltip_text(&mut app);
     assert!(text.contains("option = carol"), "{text}");
+    assert!(text.contains("acting user"), "{text}");
     assert!(text.contains("the shared one"), "{text}");
 }
 
@@ -22929,11 +22926,10 @@ fn tooltip_copy_puts_the_value_on_the_clipboard() {
     let text = tooltip_text(&mut app);
     assert!(text.contains("\u{F018F}"), "copy control: {text}");
     assert!(!text.contains("\u{F06D0}"), "no reveal for a plain value: {text}");
-    // Icons only: the header is the name, two cells, the source, a gap,
-    // two 3-cell pills (copy, edit), and 2 columns of padding each side
-    // — the value row underneath is exactly as wide.
+    // Icons only: the top row is the value, a gap, two 3-cell pills
+    // (copy, edit), and 2 columns of padding each side.
     let panel = app.hits.rect_of(&Hit::TipPanel("base_url".into())).unwrap();
-    assert_eq!(panel.width, ("base_url".len() + 2 + "env = qa".len() + 1 + 6 + 4) as u16);
+    assert_eq!(panel.width, ("https://qa.example.com".len() + 1 + 6 + 4) as u16);
     click_hit(&mut app, Hit::TipCopy("base_url".into()));
     assert_eq!(std::fs::read_to_string(&out).unwrap(), "https://qa.example.com");
 }
@@ -22957,10 +22953,10 @@ fn tooltip_reveal_shows_the_secret_until_the_tip_moves_on() {
     hover_token(&mut app, "api_key");
     let text = tooltip_text(&mut app);
     assert!(text.contains("\u{F06D0}"), "reveal control: {text}");
-    // Icons only: the header (name, two cells, source, a gap, three
-    // 3-cell pills) sets the width here; the masked value is narrower.
+    // Icons only: the top row (the masked value, one dot per char, a
+    // gap, three 3-cell pills) sets the width here.
     let panel = app.hits.rect_of(&Hit::TipPanel("api_key".into())).unwrap();
-    assert_eq!(panel.width, ("api_key".len() + 2 + "env = qa".len() + 1 + 9 + 4) as u16);
+    assert_eq!(panel.width, ("sk-super-secret".len() + 1 + 9 + 4) as u16);
     assert!(text.contains(&"\u{25cf}".repeat(15)), "{text}");
     click_hit(&mut app, Hit::TipReveal("api_key".into()));
     let text = tooltip_text(&mut app);
