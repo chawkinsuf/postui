@@ -5654,11 +5654,9 @@ fn sidebar_test_app_three_flat_rows() -> (App, tempfile::TempDir) {
 /// Regression test for the mouse-click travel-desync bug: keyboard-nav to
 /// one row, then click a *different* row, must SNAP the travel band to the
 /// clicked row instantly rather than leaving it animating (or frozen) on
-/// wherever the keyboard cursor last settled. Also exercises the lifted-fill
-/// ruling (§4.7): the clicked request becomes both the cursor row and the
-/// open row, and while the pane is focused that lifts the band's fill half
-/// a step toward the cursor fill, with a normal-colored (not `theme.accent`)
-/// name.
+/// wherever the keyboard cursor last settled. The clicked request becomes
+/// both the cursor row and the open row, and paints the plain band (#7:
+/// the cursor adds no lift on top of it).
 #[test]
 fn click_after_keyboard_nav_snaps_the_travel_band_to_the_clicked_row() {
     let (mut app, _dir) = sidebar_test_app_three_flat_rows();
@@ -5686,10 +5684,9 @@ fn click_after_keyboard_nav_snaps_the_travel_band_to_the_clicked_row() {
          animating (or frozen) on the keyboard cursor's old row"
     );
 
-    // Drawn: row 2 carries the accent bar and the lifted fill (cursor ==
-    // clicked == now-open row, focused pane, so §4.7's lift applies —
-    // open's accent-name styling still doesn't layer on top); row 0 (the
-    // stale keyboard position) carries neither.
+    // Drawn: row 2 carries the accent bar and the band's fill (cursor ==
+    // clicked == now-open row); row 0 (the stale keyboard position)
+    // carries neither.
     render_once(&mut app);
     let backend = ratatui::backend::TestBackend::new(120, 40);
     let mut terminal = ratatui::Terminal::new(backend).unwrap();
@@ -5698,15 +5695,37 @@ fn click_after_keyboard_nav_snaps_the_travel_band_to_the_clicked_row() {
     let row0 = app.hits.rect_of(&crate::hit::Hit::SidebarRow(0)).unwrap();
     let row2 = app.hits.rect_of(&crate::hit::Hit::SidebarRow(2)).unwrap();
     assert_eq!(buf[(row2.x, row2.y)].symbol(), "\u{258c}", "accent bar on the clicked row");
-    assert_eq!(
-        buf[(row2.x + row2.width - 2, row2.y)].bg,
-        crate::theme::mix(app.theme.selection, app.theme.control_hover, 0.5)
-    );
+    assert_eq!(buf[(row2.x + row2.width - 2, row2.y)].bg, app.theme.selection);
     assert_ne!(
         buf[(row0.x, row0.y)].symbol(),
         "\u{258c}",
         "no bar left behind on the stale keyboard-cursor row"
     );
+}
+
+/// #7: right-clicking another request moves the cursor there (so the menu
+/// acts on it) but does nothing to the open request, so the open row
+/// paints exactly as it did before the click.
+#[test]
+fn right_click_on_another_row_leaves_the_open_row_unchanged() {
+    let (mut app, _dir) = sidebar_test_app_three_flat_rows();
+    render_once(&mut app);
+    let r = app.hits.rect_of(&crate::hit::Hit::SidebarRow(0)).unwrap();
+    app.handle_mouse(left_down(r.x, r.y));
+    let open_fill = |app: &mut App| {
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
+        let row0 = app.hits.rect_of(&crate::hit::Hit::SidebarRow(0)).unwrap();
+        terminal.backend().buffer()[(row0.x + row0.width - 2, row0.y)].bg
+    };
+    let before = open_fill(&mut app);
+
+    let r = app.hits.rect_of(&crate::hit::Hit::SidebarRow(1)).unwrap();
+    app.handle_mouse(right_down(r.x, r.y));
+    assert_eq!(app.sidebar.selected, Some(1), "the cursor moved to the clicked row");
+    assert!(matches!(app.modals.top(), Some(Modal::Dropdown(_))), "its menu is open");
+    assert_eq!(open_fill(&mut app), before, "the open row's fill did not change");
 }
 
 /// Same regression, for the folder-arrow click path (which sets

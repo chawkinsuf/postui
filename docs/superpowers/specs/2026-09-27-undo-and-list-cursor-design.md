@@ -495,6 +495,18 @@ reopens R; redo opens the neighbour again.
 - **Tests:**
   - update `cursor_on_the_open_row_shows_plain_selection_not_accent_name`;
   - add `the_open_row_lifts_while_the_focused_cursor_is_on_it`.
+- **Amended 2026-10-14 (task #7, `you`): the lift is dropped.** Because
+  the lift belonged to the cursor, it left the open row whenever the
+  cursor did. A right-click on another row moves the cursor there so
+  the menu acts on that row, so the open row changed colour although
+  nothing had happened to it. Arrow browsing did the same. The open row
+  now always paints plain `selection`, whatever the cursor does. The
+  cursor's only marker is the `control_hover` fill on a different row.
+  R6 means no marker anywhere tells you the cursor is on the open row.
+  The tests are now
+  `cursor_on_the_open_row_paints_the_plain_band_and_keeps_the_name_plain`,
+  `the_open_row_paints_the_same_wherever_the_cursor_is` and
+  `right_click_on_another_row_leaves_the_open_row_unchanged`.
 
 ## 5 What is copied from vim-mode, and what is rewritten
 
@@ -713,6 +725,8 @@ on it (§4.7)?**
   cheap, and sweep 7 listed the identical fill as a finding. Rejecting
   it leaves R6's invariant as the only fix, which already removes the
   harmful case (a cursor that is not there).
+- **Reversed 2026-10-14 (task #7, `you`): no lift.** R6's invariant is
+  now the only cue (see the amendment in §4.7).
 
 **OQ4. Should deleting a space still stop for unsaved changes?** Today
 deleting the space that holds the open, unsaved request raises the
