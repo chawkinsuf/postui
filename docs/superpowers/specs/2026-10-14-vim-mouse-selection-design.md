@@ -1,6 +1,7 @@
 # The vim mouse on a field's text: design
 
-Task #15, branch `vim-mouse-selection`. Status: **draft for your approval.**
+Task #15, branch `vim-mouse-selection`. Status: **approved** (`you`, 2026-10-14,
+with Q1 as (b), and R3, R8 and R10 kept).
 It reworks the branch's first commit (`f9d7b1b`) after review round 1.
 
 ## 1. Findings
@@ -38,7 +39,7 @@ not change.
 | R9 | right press on the field being edited | Extends Visual: the end nearer the pointer moves and the shape stays. Outside Visual it is charwise Visual from the caret. | Vim, `you` |
 | R10 | right press elsewhere (a closed field, the response, a query box) | The Copy/Paste menu, as now. | `mine` |
 | R11 | any selection made under Insert | Runs inside `ctrl+o`: Esc, an operator or a click gives Insert back. | Vim |
-| R12 | click count | Counts on for a press on the same cell within 500 ms (`'mousetime'`), and starts over after four. | Vim |
+| R12 | click count, on a field's text | Counts on for a press on the same cell within 500 ms (`'mousetime'`), and starts over after four. Lists and buttons keep arrows' count in vim too. | Vim, `you` (Q1) |
 | R13 | a query box (jq bar, search, pickers) | Keeps the field's own GUI selection; it has no Visual. | earlier |
 
 The engine half (`vim/engine/mouse.rs`: `Settled::Mouse(at, Press(n) | Drag |
@@ -105,9 +106,10 @@ how)` and settles `Settled::Mouse`. A left press with none recorded settles
 `Settled::Click` (a press off the text), and so does nothing else. `MouseEdge` becomes
 a plain "a button event" flag, and the `text_drag` gating goes.
 
-**One click counter.** The app's `last_click` counts by the profile's rule: arrows'
-(same hit, 400 ms, a pair) or Vim's (R12). Every `on_hit` consumer reads it.
-`LastPress` and `vim_clicks` go. See Q1.
+**One click counter.** The app's `last_click` records each left press once (its hit,
+cell and time) and gives two counts: arrows' (same hit, 400 ms, a pair), which every
+list and button reads in both profiles, and Vim's (R12), which only vim's text takes
+(Q1). `on_hit` gets both as `Clicks { gui, vim }`. `LastPress` and `vim_clicks` go.
 
 **Removed:** `LineInput::mouse_at`, `Editor::body_mouse_at`, `hit_field`,
 `MouseEdge`'s nested `Option`, `LastPress`, the right arm's left-press re-run, and the
@@ -132,13 +134,11 @@ seven `drag_*_to` fns. In the engine, `mouse()` no longer resets the caret to `r
   `double_clicking_a_settings_field…`, and the body and response ones) must pass
   unchanged.
 
-## 6. For your veto
+## 6. Decisions (you approved R3, R8 and R10 as written)
 
-- **Q1 (recommended: yes).** In vim the one counter uses Vim's rule for every press,
-  not only text. A sidebar or list double click must then land on the same cell
-  within 500 ms. Today it is anywhere on the same row within 400 ms. The alternative
-  keeps arrows' rule for everything but the text of an engine field, which means one
-  counter with two rules picked per hit.
+- **Q1, decided (b)** (`you`, 2026-10-14). Vim's count applies only on a field's
+  text. Lists and buttons keep arrows' count in vim (same row, 400 ms), so a sidebar
+  double click works as before.
 - **R8**, a fourth press is a plain press (`mine`).
 - **R10**, the menu stays everywhere but the field being edited (`mine`).
 - **R3** changes three tests that pinned arrows' sweep width in vim. A vim drag now
@@ -156,7 +156,7 @@ seven `drag_*_to` fns. In the engine, `mouse()` no longer resets the caret to `r
    `body_mouse_at`, `hit_field`, `LastPress` and the nested `MouseEdge`.
 4. Add the body's `body_char` path.
 5. Make the right press one decision.
-6. Make one counter (as Q1 decides).
+6. Make one counter giving `Clicks { gui, vim }` (Q1 (b)).
 7. Engine: drop the `rested` reset, and clear `pressed` on `leave`/`enter`.
 8. Amend the vim profile spec's 2026-10-14 paragraph to point here. Run the full
    suite, clippy and fmt, check in the TUI in both profiles, and commit.
