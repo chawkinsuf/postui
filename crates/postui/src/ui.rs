@@ -406,9 +406,9 @@ const TOOLTIP_MAX_TEXT_W: usize = 56;
 ///
 /// It sits under the token it belongs to, or above when it doesn't fit
 /// below and there is more room above, cut to fit the roomier side so it
-/// never covers the token, and is
-/// clamped to stay inside `screen`; nothing is drawn when not even one
-/// row of each section fits. Registers the panel and its pills in `hits`.
+/// never covers the token, and clamped to stay inside `screen`; nothing
+/// is drawn when not even one row of each section fits. Registers the
+/// panel and its pills in `hits`.
 #[allow(clippy::too_many_arguments)]
 fn draw_var_tooltip(
     frame: &mut Frame,
@@ -457,10 +457,10 @@ fn draw_var_tooltip(
     let header_w = (tip.name.width() + 2 + source.width()).min(wrap_w) + 1 + pills_w;
     // The tip goes below its token when it fits there, else above when
     // there is more room above; it is cut to the roomier side, so it
-    // never covers the token it describes. It sits flush against the token on both sides:
-    // the pointer must cross from token to panel without leaving either,
-    // or the tip closes before its pills can be reached (above, its drop
-    // shadow falls on the token's row).
+    // never covers the token it describes. It sits flush against the
+    // token on both sides: the pointer must cross from token to panel
+    // without leaving either, or the tip closes before its pills can be
+    // reached (so above, its drop shadow falls on the token's row).
     let below_room = screen.bottom().saturating_sub(tip.anchor.bottom());
     let above_room = tip.anchor.y.saturating_sub(screen.y);
     let side_room = below_room.max(above_room);

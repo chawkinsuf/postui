@@ -22856,6 +22856,28 @@ fn tooltip_shows_the_selected_options_description_over_its_selectors() {
     assert!(text.contains("acting user"), "no option description: the selector's: {text}");
 }
 
+/// A shared selector keeps its options in `variables.toml`, not the
+/// environment: its field's tip still finds the selected option's
+/// description there.
+#[test]
+fn tooltip_shows_a_shared_selectors_option_description() {
+    let (mut app, dir, _out) = tooltip_app("user");
+    std::fs::write(
+        dir.path().join("variables.toml"),
+        "[selectors.user]\ndescription = \"acting user\"\nfields = [\"user\"]\nshared = true\n\n\
+         [options.user.carol]\ndescription = \"the shared one\"\nuser = \"3003\"\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("environments/qa.toml"), "").unwrap();
+    app.update(Action::ReloadProjectFiles);
+    app.proj_mut().set_selection_for("qa", "user", "carol");
+    app.update(Action::ReloadProjectFiles);
+    hover_token(&mut app, "user");
+    let text = tooltip_text(&mut app);
+    assert!(text.contains("option = carol"), "{text}");
+    assert!(text.contains("the shared one"), "{text}");
+}
+
 /// The hint context reads the edit pill's verb off the same declaration
 /// `OpenVarTokenPopup` dispatches on, per token kind.
 #[test]
