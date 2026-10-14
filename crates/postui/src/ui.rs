@@ -453,15 +453,16 @@ fn draw_var_tooltip(
     pills.push((crate::glyph::PENCIL_PILL, Hit::TipEdit(tip.name.clone())));
     let pills_w = 3 * pills.len();
     // The header: name, two cells, source, a gap, then the pills.
-    let header_w = (tip.name.width() + 2 + source.width()).min(TOOLTIP_MAX_TEXT_W) + 1 + pills_w;
+    let header_w = (tip.name.width() + 2 + source.width()).min(wrap_w) + 1 + pills_w;
     // Padding rows top and bottom, the header, then each section present
     // behind a blank row of its own. On a terminal too short for it all,
-    // the value gives up rows first (down to one), then the description,
-    // the last surviving row of a cut section ellipsized to say so.
+    // the value gives up rows first, then the description, the last
+    // surviving row of a cut section ellipsized to say so. Each keeps at
+    // least one row: with no room for that, there is no tip at all.
     let gaps = usize::from(!value_lines.is_empty()) + usize::from(!desc_lines.is_empty());
     let room = (screen.height as usize).saturating_sub(3 + gaps);
     cut_rows(&mut value_lines, room.saturating_sub(desc_lines.len()).max(1), wrap_w);
-    cut_rows(&mut desc_lines, room.saturating_sub(value_lines.len()), wrap_w);
+    cut_rows(&mut desc_lines, room.saturating_sub(value_lines.len()).max(1), wrap_w);
     let sections = [(&value_lines, theme.text), (&desc_lines, theme.text_muted)];
     let height = (3 + sections
         .iter()
@@ -519,7 +520,7 @@ fn draw_var_tooltip(
         row += 1; // the section's blank row
         for line in lines {
             row += 1;
-            crate::paint::text(buf, x + 2, row, line, fg, theme.panel, false);
+            crate::paint::text(buf, x + 2, row, &ellipsize(line, inner), fg, theme.panel, false);
         }
     }
     // The panel first: later registrations win a hit lookup, so the
@@ -559,12 +560,13 @@ fn wrap_cells(s: &str, max: usize) -> Vec<String> {
 
 /// Prose `s` wrapped into lines of at most `max` display cells, breaking
 /// between words (runs of whitespace fold to one space); a word wider
-/// than a line is hard-broken as [`wrap_cells`] does. A newline in `s`
-/// always starts a new line. Empty for an empty `s`.
+/// than a line is hard-broken as [`wrap_cells`] does. A newline inside
+/// `s` always starts a new line; whitespace around it is dropped, so a
+/// blank `s` yields no lines at all.
 fn wrap_words(s: &str, max: usize) -> Vec<String> {
     use unicode_width::UnicodeWidthStr;
     let mut lines = Vec::new();
-    for para in s.lines() {
+    for para in s.trim().lines() {
         let mut line = String::new();
         for piece in para.split_whitespace().flat_map(|word| wrap_cells(word, max)) {
             if !line.is_empty() && line.width() + 1 + piece.width() > max {
@@ -880,6 +882,11 @@ mod tests {
     /// top-left, and returns its text rows between the panel's borders
     /// (padding columns dropped, trailing spaces trimmed), header first.
     fn tip_rows(w: u16, h: u16, info: &TokenInfo) -> Vec<String> {
+        drawn_tip_rows(w, h, info).expect("a tip is drawn")
+    }
+
+    /// [`tip_rows`], or `None` when no tip fits.
+    fn drawn_tip_rows(w: u16, h: u16, info: &TokenInfo) -> Option<Vec<String>> {
         let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
         let mut hits = crate::hit::HitMap::default();
         let tip = crate::app::TokenTip { name: "x".into(), anchor: Rect::new(0, 0, 5, 1) };
@@ -897,17 +904,19 @@ mod tests {
                 )
             })
             .unwrap();
-        let panel = hits.rect_of(&crate::hit::Hit::TipPanel("x".into())).expect("a tip is drawn");
+        let panel = hits.rect_of(&crate::hit::Hit::TipPanel("x".into()))?;
         let buf = terminal.backend().buffer();
-        (panel.y + 1..panel.bottom() - 1)
-            .map(|y| {
-                (panel.x + 2..panel.right() - 2)
-                    .map(|x| buf[(x, y)].symbol().to_string())
-                    .collect::<String>()
-                    .trim_end()
-                    .to_string()
-            })
-            .collect()
+        Some(
+            (panel.y + 1..panel.bottom() - 1)
+                .map(|y| {
+                    (panel.x + 2..panel.right() - 2)
+                        .map(|x| buf[(x, y)].symbol().to_string())
+                        .collect::<String>()
+                        .trim_end()
+                        .to_string()
+                })
+                .collect(),
+        )
     }
 
     /// #11: a long description word-wraps at the tooltip's max width
@@ -980,6 +989,19 @@ mod tests {
         assert_eq!(rows.len(), 5, "{rows:?}");
         assert!(rows[2].ends_with('\u{2026}'), "{rows:?}");
         assert!(rows[4].ends_with('\u{2026}'), "the description is cut too: {rows:?}");
+        // One row left: each section keeps at least one row, so no tip
+        // fits — never a tip that silently drops its description.
+        assert_eq!(drawn_tip_rows(120, 6, &info), None);
+    }
+
+    /// A description of nothing but whitespace is no description: no
+    /// blank section, and surrounding blank lines are not drawn either.
+    #[test]
+    fn a_blank_tooltip_description_draws_no_section() {
+        let bare = tip_rows(120, 40, &tip_info(Some("v"), None));
+        assert_eq!(tip_rows(120, 40, &tip_info(Some("v"), Some(" \n "))), bare);
+        let rows = tip_rows(120, 40, &tip_info(Some("v"), Some("\nabout x\n")));
+        assert_eq!(rows[3..], ["", "about x"], "{rows:?}");
     }
 
     /// The final review's D-1 (plan M4b Deviation 20): the header's
