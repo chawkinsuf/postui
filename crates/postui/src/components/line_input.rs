@@ -51,6 +51,10 @@ pub struct LineInput {
     /// word-by-word (the body editor's word-sweep behavior). Cleared by
     /// any plain caret placement or edit.
     word_anchor: Option<(usize, usize)>,
+    /// The char the mouse last pointed at, in chars: where a click, a
+    /// double click or a sweep landed, before any word snapping. The vim
+    /// engine makes its own selection from it.
+    mouse_at: usize,
     /// The vim engine's Visual selection (piece 3 §3.3): its anchor, in
     /// chars, and its shape. Paint only, set by `OneLineBuf::show`; kept
     /// apart from the GUI `anchor` because the engine owns the Visual
@@ -108,6 +112,7 @@ impl LineInput {
             cursor,
             anchor: None,
             word_anchor: None,
+            mouse_at: 0,
             vim_visual: None,
             undo: Vec::new(),
             redo: Vec::new(),
@@ -323,6 +328,7 @@ impl LineInput {
         } else {
             self.set_cursor(idx);
         }
+        self.mouse_at = idx;
         self.break_run();
     }
 
@@ -332,6 +338,7 @@ impl LineInput {
     pub fn begin_mouse_selection(&mut self) {
         self.anchor = Some(self.cursor);
         self.word_anchor = None;
+        self.mouse_at = self.cursor;
         self.break_run();
     }
 
@@ -341,11 +348,17 @@ impl LineInput {
         self.anchor.is_some() && self.word_anchor.is_none() && self.selection().is_none()
     }
 
+    /// The char the mouse last pointed at (see the field's doc).
+    pub(crate) fn mouse_at(&self) -> usize {
+        self.mouse_at
+    }
+
     /// Extends the live mouse selection to char index `idx`: word-wise
     /// when the sweep began with a double-click word select (the selection
     /// is the union of the anchored word and the word under the pointer —
     /// the body editor's word-sweep behavior), by character otherwise.
     pub fn extend_mouse_selection_to(&mut self, idx: usize) {
+        self.mouse_at = idx.min(self.len_chars());
         let Some((ws, we)) = self.word_anchor else {
             self.set_cursor_extending(idx);
             return;

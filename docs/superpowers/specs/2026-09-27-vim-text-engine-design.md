@@ -627,7 +627,10 @@ happen.
   never rests past the last char. A selection the mouse or a GUI key made
   is adopted as Visual with Vim's inclusive shape (field.rs's
   `adopt_selection`). `Settled` is `Key`, `Click`, `Sweep` or `Release`, as
-  in field.rs.
+  in field.rs. Amended 2026-10-14 (task #15): it is `Key`, `Click` (a press
+  off the text) or `Mouse(at, Press(n) | Drag | Extend)`, from which the
+  engine makes Vim's own mouse selection; see the vim profile spec's §3.7
+  amendment of that date.
 - **`leave(t)`**: the buffer loses the caret. An open Insert session ends
   as one undo step (the caret does not step back), Visual and pending keys
   are dropped, and the mode becomes Normal.

@@ -399,7 +399,8 @@ fn a_right_button_drag_does_not_sync_the_session() {
 }
 
 /// Final review I-3: a press-drag that opens a closed field selects, as it
-/// does on an open one (and as arrows does).
+/// does on an open one (and as arrows does). Task #15: from the pressed
+/// char to the one under the pointer, both taken, as Vim's Visual is.
 #[test]
 fn a_press_drag_over_the_closed_url_selects() {
     use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
@@ -416,7 +417,7 @@ fn a_press_drag_over_the_closed_url_selects() {
     app.handle_mouse(at(MouseEventKind::Drag(MouseButton::Left), 8));
     app.handle_mouse(at(MouseEventKind::Up(MouseButton::Left), 8));
     assert_eq!(app.mode_indicator(), Some("VISUAL"));
-    assert_eq!(app.editor.url.paint_span(), Some((2, 8)), "`tps://`, as arrows selects it");
+    assert_eq!(app.editor.url.paint_span(), Some((2, 9)), "`tps://x`");
 }
 
 /// I-3's body twin: the body opened by a press from another pane.
@@ -441,6 +442,103 @@ fn a_press_drag_into_the_body_from_another_pane_selects() {
     assert_eq!(app.mode_indicator(), Some("VISUAL"));
     let span = app.editor.body_visual.map(|(a, b)| ((a.row, a.col), (b.row, b.col)));
     assert_eq!(span, Some(((1, 2), (1, 4))), "`\"a\"`");
+}
+
+/// The URL line's mouse at char `col` (it draws from char 0 while short).
+fn url_mouse(app: &mut App, kind: ratatui::crossterm::event::MouseEventKind, col: u16) {
+    let area = app.editor.last_url_text_area.expect("the URL line is drawn");
+    app.handle_mouse(ratatui::crossterm::event::MouseEvent {
+        kind,
+        column: area.x + col,
+        row: area.y,
+        modifiers: KeyModifiers::NONE,
+    });
+    draw(app);
+}
+
+/// A left click (press and release) on the URL line's char `col`.
+fn url_click(app: &mut App, col: u16) {
+    use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+    url_mouse(app, MouseEventKind::Down(MouseButton::Left), col);
+    url_mouse(app, MouseEventKind::Up(MouseButton::Left), col);
+}
+
+/// Task #15: Vim's double click selects the word, and the release keeps it
+/// (it used to settle as a click, which ended the Visual).
+#[test]
+fn a_double_click_selects_vims_word_and_the_release_keeps_it() {
+    let mut app = url_line("foo bar.baz qux");
+    url_click(&mut app, 5);
+    url_click(&mut app, 5);
+    assert_eq!(app.mode_indicator(), Some("VISUAL"));
+    assert_eq!(app.editor.url.paint_span(), Some((4, 7)), "`bar`: the `.` is a word of its own");
+    assert_eq!(app.active_selection_text().as_deref(), Some("bar"), "what ctrl+c copies");
+}
+
+/// Task #15: Vim counts a double click on one cell only.
+#[test]
+fn presses_on_two_cells_are_two_clicks() {
+    let mut app = url_line("foo bar.baz qux");
+    url_click(&mut app, 5);
+    url_click(&mut app, 9);
+    assert_eq!((app.mode_indicator(), url(&app).1), (Some("NORMAL"), 9));
+}
+
+/// Task #15: a drag after a double click goes by Vim's words, in a
+/// one-line field too (its word anchor used to go with the press).
+#[test]
+fn a_drag_after_a_double_click_goes_by_words() {
+    use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+    let mut app = url_line("foo bar.baz qux");
+    url_click(&mut app, 5);
+    url_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 5);
+    url_mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), 9);
+    url_mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), 13);
+    url_mouse(&mut app, MouseEventKind::Up(MouseButton::Left), 13);
+    assert_eq!(app.mode_indicator(), Some("VISUAL"));
+    assert_eq!(app.editor.url.paint_span(), Some((4, 15)), "`bar.baz qux`");
+}
+
+/// Task #15: Vim's triple click selects the line.
+#[test]
+fn a_triple_click_selects_the_line() {
+    let mut app = url_line("foo bar.baz qux");
+    for _ in 0..3 {
+        url_click(&mut app, 5);
+    }
+    assert_eq!(app.mode_indicator(), Some("V-LINE"));
+    assert_eq!(app.editor.url.paint_span(), Some((0, 15)));
+}
+
+/// Task #15 (the user's ruling): in vim a right press on the field being
+/// edited extends its selection, as Vim's `'mousemodel'` `extend` does,
+/// rather than opening the Copy/Paste menu.
+#[test]
+fn a_right_press_on_the_open_field_extends() {
+    use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+    let mut app = url_line("foo bar.baz qux");
+    url_click(&mut app, 2);
+    url_mouse(&mut app, MouseEventKind::Down(MouseButton::Right), 9);
+    url_mouse(&mut app, MouseEventKind::Up(MouseButton::Right), 9);
+    assert!(app.modals.is_empty(), "no menu");
+    assert_eq!(app.mode_indicator(), Some("VISUAL"));
+    assert_eq!(app.editor.url.paint_span(), Some((2, 10)));
+    url_mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), 12);
+    assert_eq!(app.editor.url.paint_span(), Some((2, 10)), "the right press armed no sweep");
+}
+
+/// Task #15: a mouse selection made in Insert runs inside `ctrl+o`, so Esc
+/// gives Insert back, as in Vim.
+#[test]
+fn esc_after_a_mouse_selection_in_insert_goes_back_to_insert() {
+    let mut app = url_line("foo bar.baz qux");
+    url_click(&mut app, 2);
+    feed(&mut app, "i");
+    url_click(&mut app, 5);
+    url_click(&mut app, 5);
+    assert_eq!(app.mode_indicator(), Some("VISUAL"));
+    feed(&mut app, "<Esc>");
+    assert_eq!((app.mode_indicator(), url(&app).1), (Some("INSERT"), 6));
 }
 
 /// Final review I-4: a one-line field has no prompt row, so the footer
@@ -1172,8 +1270,8 @@ fn a_paste_over_a_mouse_selection_replaces_it() {
         modifiers: KeyModifiers::NONE,
     };
     app.handle_mouse(at(MouseEventKind::Down(MouseButton::Left), 2));
-    app.handle_mouse(at(MouseEventKind::Drag(MouseButton::Left), 8));
-    app.handle_mouse(at(MouseEventKind::Up(MouseButton::Left), 8));
+    app.handle_mouse(at(MouseEventKind::Drag(MouseButton::Left), 7));
+    app.handle_mouse(at(MouseEventKind::Up(MouseButton::Left), 7));
     assert_eq!(app.mode_indicator(), Some("VISUAL"));
     app.paste_text("XY");
     assert_eq!(url(&app), ("htXYx.test/ab", 3));
@@ -1245,8 +1343,8 @@ fn ctrl_c_copies_a_mouse_selection_in_an_open_url() {
         modifiers: KeyModifiers::NONE,
     };
     app.handle_mouse(at(MouseEventKind::Down(MouseButton::Left), 2));
-    app.handle_mouse(at(MouseEventKind::Drag(MouseButton::Left), 8));
-    app.handle_mouse(at(MouseEventKind::Up(MouseButton::Left), 8));
+    app.handle_mouse(at(MouseEventKind::Drag(MouseButton::Left), 7));
+    app.handle_mouse(at(MouseEventKind::Up(MouseButton::Left), 7));
     assert_eq!(app.mode_indicator(), Some("VISUAL"));
     ctrl_c(&mut app);
     assert!(

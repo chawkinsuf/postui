@@ -24,6 +24,7 @@ mod keys;
 /// one cap, [`settings::MAX_COUNT`], for every count typed anywhere.
 pub(crate) use keys::accumulate_count;
 mod motion;
+mod mouse;
 mod number;
 mod object;
 mod op;
@@ -36,6 +37,7 @@ mod view;
 mod visual;
 
 pub use buf::{BodyBuf, BodyVisual, GuiSel, OneLineBuf, Paint, Pos, TextBuf};
+pub use mouse::Mouse;
 pub use register::{RegKind, Register, Registers};
 pub use search::Dir;
 /// The search the response viewer shares with the body, its notes included
@@ -113,12 +115,10 @@ pub enum Seat {
 pub enum Settled {
     /// A key piece 4 handled itself.
     Key,
-    /// A click, or a release with no sweep live.
+    /// A left press off the buffer's text: Visual ends.
     Click,
-    /// A text sweep is in progress: the mouse owns the selection.
-    Sweep,
-    /// The sweep just ended.
-    Release,
+    /// The mouse on the buffer's text, at a char (Vim's `do_mouse()`).
+    Mouse(Pos, Mouse),
 }
 
 /// Footer text: a key a vim user expects but the engine does not do
@@ -381,6 +381,8 @@ pub struct Engine {
     /// that a click or a key piece 4 handled moved the caret in Insert,
     /// which splits the session as Vim's `ins_mouse()` does.
     rested: Option<Pos>,
+    /// The last left press on the text, which a drag extends from.
+    pressed: Option<mouse::Pressed>,
     /// Insert `ctrl+r` waiting for its register name.
     reg_pending: Option<RegPending>,
     /// Insert `ctrl+o` in progress: Insert resumes after one command.
@@ -733,25 +735,37 @@ impl Engine {
     }
 
     /// Rests the caret and the mode after an event the engine did not
-    /// handle: a click, a mouse sweep, a key piece 4 handled (spec §4.2).
-    /// A GUI selection (mouse, double-click, shift+arrow, select-all) is
-    /// adopted as charwise Visual on `Click`, `Release`, or a `Key` from
-    /// Normal or Insert; during a `Sweep` only the mode flips, and the
-    /// geometry and paint stay the mouse's. A `Click` with no selection
-    /// ends Visual. A query box has no Visual layer, so its GUI selection
-    /// stays (typing replaces it). A click drops a half-typed command. In
-    /// Insert, a caret the event moved splits the session as a cursor key
-    /// does (Vim's `ins_mouse()`). Then the caret is clamped and becomes
-    /// the wanted column.
+    /// handle: the mouse, a key piece 4 handled (spec §4.2). The mouse on
+    /// the text makes Vim's selection from the pointer (`mouse.rs`). A GUI
+    /// selection (shift+arrow, select-all) is adopted as charwise Visual on
+    /// a `Click`, or a `Key` from Normal or Insert. A `Click` with no
+    /// selection ends Visual. A query box has no Visual layer, so its GUI
+    /// selection stays (typing replaces it). A press drops a half-typed
+    /// command. In Insert, a caret the event moved splits the session as a
+    /// cursor key does (Vim's `ins_mouse()`). Then the caret is clamped and
+    /// becomes the wanted column.
     pub fn settle<B: TextBuf>(&mut self, t: Target<'_, B>, how: Settled) {
         let Target { buf, state } = t;
         self.note = None;
         self.request = None;
-        if matches!(how, Settled::Click | Settled::Release) {
+        if matches!(how, Settled::Click | Settled::Mouse(_, Mouse::Press(_) | Mouse::Extend)) {
             self.clear_pending();
         }
         if matches!(self.mode, Mode::InsertNormal { .. }) && !self.pending() {
             self.resume_after_ctrl_o(buf, state);
+        }
+        // Vim's selection is made from the pointer, and the field's own goes.
+        // A query box has no Visual: there the field's mouse stands.
+        if let Settled::Mouse(at, mouse) = how
+            && !self.insert_only
+        {
+            self.mouse(at, mouse, buf, state);
+            buf.clear_gui_selection();
+            self.rest(buf, state);
+            return;
+        }
+        if how == Settled::Click {
+            self.pressed = None;
         }
         let caret = self.clamped(buf, buf.cursor());
         if self.in_insert()
@@ -766,13 +780,7 @@ impl Engine {
         }
         if !self.insert_only {
             match buf.gui_selection() {
-                Some(sel) if how == Settled::Sweep => {
-                    self.enter_visual_from(sel.anchor, buf, state);
-                    // No `rest`: the caret, the paint and the wanted column
-                    // stay the mouse's until the `Release` settle rests them.
-                    return;
-                }
-                Some(sel) if how != Settled::Key || !matches!(self.mode, Mode::Visual(_)) => {
+                Some(sel) if how == Settled::Click || !matches!(self.mode, Mode::Visual(_)) => {
                     self.enter_visual_from(sel.anchor, buf, state);
                     buf.clear_gui_selection();
                     buf.set_cursor(sel.head);

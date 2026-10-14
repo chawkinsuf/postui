@@ -7,8 +7,8 @@ use super::router::Ran;
 use super::*;
 use crate::config::KeyProfile;
 use crate::keyroute::engine_glue::{
-    self, AppRequest, Edge, FieldBuf, FieldSession, Glue, Mode, Note, OpenAs, OpenSeat, Outcome,
-    Pos, Settled, Shape, Start, ViewCtx,
+    self, AppRequest, Edge, FieldBuf, FieldSession, Glue, Mode, Mouse, Note, OpenAs, OpenSeat,
+    Outcome, Pos, Settled, Shape, Start, ViewCtx,
 };
 use crate::keyroute::notation::Tok;
 use crate::keyroute::table::{self, Intent, Match};
@@ -56,7 +56,22 @@ pub(crate) struct VimState {
     /// once every dialog is closed, as Vim's Visual has ended when its
     /// `:'<,'>` line does (`end_visual_off_response`).
     ex_over_visual: bool,
+    /// The last left press, for Vim's click count.
+    last_press: Option<LastPress>,
 }
+
+/// A left press as Vim counts multi-clicks (`check_termcode()`): one on
+/// the cell of the last, within `'mousetime'` of it, counts on, and after
+/// a fourth the count starts over.
+#[derive(Debug, Clone, Copy)]
+struct LastPress {
+    cell: (u16, u16),
+    at: std::time::Instant,
+    clicks: u8,
+}
+
+/// Vim's `'mousetime'` default.
+const MOUSE_TIME: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// The change `.` repeats (spec §5.12) and the history's change count
 /// right after it: any change since makes it stale (plan M5b Deviation 6).
@@ -385,8 +400,9 @@ impl App {
     /// plan M3a Deviation 12). A keyboard open drops a GUI selection (the
     /// Settings field selects all for arrows). A press that opened a
     /// one-line field keeps the anchor it planted, which seating the caret
-    /// drops, so a drag that follows selects (final review I-3; the body's
-    /// anchor lives apart from its caret).
+    /// drops, so a drag that follows selects in a query box, whose GUI
+    /// selection stands (final review I-3). Elsewhere the press settles
+    /// after the open, and the engine selects from it.
     fn open_session(&mut self, id: FieldId, open: Option<OpenAs>, keyboard: bool, default: Start) {
         let (glue, buf) = self.session_parts(id);
         let Some(mut buf) = buf else { return };
@@ -916,8 +932,23 @@ impl App {
 
 /// Where a mouse event stands for the field session, between
 /// [`App::vim_mouse_start`] and [`App::vim_mouse_end`]: `None` for an event
-/// that is not a button's, else how the engine settles after it.
-pub(super) struct MouseEdge(Option<Option<Settled>>);
+/// that is not a button's, else what it does on the field's text, if
+/// anything.
+pub(super) struct MouseEdge(Option<Option<Mouse>>);
+
+/// The text field a hit lands on, for a right press.
+fn hit_field(hit: &Hit) -> Option<FieldId> {
+    Some(match *hit {
+        Hit::UrlBar => FieldId::Url,
+        Hit::BodyEditor => FieldId::Body,
+        Hit::TableCell { row, col } => FieldId::TableCell { row, col: usize::from(col) },
+        Hit::VmFormField(field) => FieldId::VmForm(field),
+        Hit::VmEntryCell { row, col } => FieldId::VmGrid { row, col },
+        Hit::SettingsControl(field) => FieldId::Settings(field),
+        Hit::ModalInput(i) => FieldId::ModalInput(i),
+        _ => return None,
+    })
+}
 
 /// The rest of the App calls these, and only these, to reach vim: each is
 /// a whole operation, or answers `None` (or `false`) when vim has no part
@@ -941,7 +972,8 @@ impl App {
     /// motion and the wheel cannot, so only a button event syncs the
     /// session (spec §3.1). Of the drags only the left button's sweeps a
     /// selection: some terminals (Ghostty) report hover as `Drag(Right)`,
-    /// and each sync reads the whole body (final review T4).
+    /// and each sync reads the whole body (final review T4). A release
+    /// does nothing on the text, as in Vim.
     pub(super) fn vim_mouse_start(
         &mut self,
         m: &ratatui::crossterm::event::MouseEvent,
@@ -957,24 +989,79 @@ impl App {
             return MouseEdge(None);
         }
         self.sync_session(None, Cause::Before);
-        // The sweep in flight is the live field's own engine's: a dialog
-        // field runs on the dialog engine (plan M3b Deviation 1).
-        let sweeping = self.live_engine_field().is_some_and(|id| self.glue_of(id).sweeping());
         MouseEdge(Some(match m.kind {
-            MouseEventKind::Down(MouseButton::Left) => Some(Settled::Click),
-            MouseEventKind::Drag(MouseButton::Left) => Some(Settled::Sweep),
-            MouseEventKind::Up(MouseButton::Left) => {
-                Some(if sweeping { Settled::Release } else { Settled::Click })
+            MouseEventKind::Down(MouseButton::Left) => Some(Mouse::Press(self.vim_clicks(m))),
+            MouseEventKind::Drag(MouseButton::Left) => Some(Mouse::Drag),
+            MouseEventKind::Down(_) => {
+                self.vim.last_press = None;
+                let hit = self.hits.hit_at_ignoring_overlays(m.column, m.row).cloned();
+                (m.kind == MouseEventKind::Down(MouseButton::Right)
+                    && hit.is_some_and(|hit| self.vim_right_press_extends(&hit)))
+                .then_some(Mouse::Extend)
             }
             _ => None,
         }))
     }
 
-    /// After a mouse event: a button's settles the session.
+    /// Vim's click count for a left press (see [`LastPress`]).
+    fn vim_clicks(&mut self, m: &ratatui::crossterm::event::MouseEvent) -> u8 {
+        let (cell, at) = ((m.column, m.row), std::time::Instant::now());
+        let clicks = match self.vim.last_press {
+            Some(last)
+                if last.cell == cell
+                    && at.duration_since(last.at) < MOUSE_TIME
+                    && last.clicks < 4 =>
+            {
+                last.clicks + 1
+            }
+            _ => 1,
+        };
+        self.vim.last_press = Some(LastPress { cell, at, clicks });
+        clicks
+    }
+
+    /// After a mouse event: a button's settles the session. The mouse on
+    /// the text settles with the char it pointed at, which the field's own
+    /// mouse code put there during the event; a press anywhere else is a
+    /// plain click.
     pub(super) fn vim_mouse_end(&mut self, edge: MouseEdge) {
-        if let MouseEdge(Some(how)) = edge {
-            self.sync_session(None, Cause::Mouse(how));
+        let MouseEdge(Some(mouse)) = edge else { return };
+        // A press or a sweep on a field's text arms `text_drag`; a right
+        // press disarms it, the right button sweeping nothing.
+        let on_text = self.text_drag.is_some() || mouse == Some(Mouse::Extend);
+        let at = match self.field_caret() {
+            FieldCaret::Live(id) if on_text => self.mouse_at(id),
+            _ => None,
+        };
+        let how = match (mouse, at) {
+            (Some(mouse), Some(at)) => Some(Settled::Mouse(at, mouse)),
+            (Some(Mouse::Press(_)), None) => Some(Settled::Click),
+            _ => None,
+        };
+        self.sync_session(None, Cause::Mouse(how));
+    }
+
+    /// Where the mouse last pointed in `id`'s text.
+    fn mouse_at(&mut self, id: FieldId) -> Option<Pos> {
+        if id == FieldId::Body {
+            let at = self.editor.body_mouse_at();
+            return Some(Pos::new(at.row, at.col));
         }
+        match self.session_parts(id).1? {
+            FieldBuf::Line(input) => Some(Pos::new(0, input.mouse_at())),
+            FieldBuf::Body(..) => None,
+        }
+    }
+
+    /// In vim a right press on the field being edited extends its
+    /// selection (Vim's `'mousemodel'` `extend`): the caller runs it as a
+    /// left press on `hit`, which puts the pointer on its char, and the
+    /// engine extends. Elsewhere, and in a query box, the menu stands.
+    pub(super) fn vim_right_press_extends(&self, hit: &Hit) -> bool {
+        self.profile() == KeyProfile::Vim
+            && self
+                .live_engine_field()
+                .is_some_and(|id| !id.insert_only() && hit_field(hit) == Some(id))
     }
 
     /// The end of a key or mouse event: a V selection the keyboard left

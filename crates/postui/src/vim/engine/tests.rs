@@ -74,6 +74,19 @@ impl Field {
     pub fn col(&self) -> usize {
         self.input.cursor()
     }
+
+    /// The mouse at char `col` (the field's own mouse code already ran).
+    pub fn mouse(&mut self, col: usize, how: Mouse) {
+        self.engine.settle(
+            Target { buf: &mut OneLineBuf::new(&mut self.input), state: &mut self.state },
+            Settled::Mouse(Pos::new(0, col), how),
+        );
+    }
+
+    /// The Visual anchor's column and the caret's.
+    pub fn visual(&self) -> Option<(usize, usize)> {
+        self.engine.visual_anchor().map(|a| (a.col, self.col()))
+    }
 }
 
 /// A body buffer with its own engine.
@@ -124,6 +137,17 @@ impl Body {
 
     pub fn caret(&self) -> Pos {
         Pos::new(self.ed.cursor.row, self.ed.cursor.col)
+    }
+
+    /// The mouse at `(row, col)` (the editor's own mouse code already ran).
+    pub fn mouse(&mut self, row: usize, col: usize, how: Mouse) {
+        self.engine.settle(
+            Target {
+                buf: &mut BodyBuf::new(&mut self.ed, &mut self.visual),
+                state: &mut self.state,
+            },
+            Settled::Mouse(Pos::new(row, col), how),
+        );
     }
 }
 
@@ -1061,27 +1085,171 @@ fn a_query_box_session_never_records_for_dot() {
     assert_eq!(f.text(), "cd", "`.` still repeats the x");
 }
 
+/// Vim's drag (probed, 9.1 `mouse=a`): Visual starts where the press left
+/// the caret and follows the pointer, either way, past a line's end too.
+/// The field's own sweep selection is dropped: the engine paints its own.
 #[test]
-fn a_mouse_sweep_is_adopted_as_visual_on_release() {
+fn a_drag_makes_visual_from_the_press() {
     let mut f = Field::new("abcdef", 0);
-    f.input.set_cursor(1);
+    f.mouse(1, Mouse::Press(1));
+    assert_eq!((f.engine.mode(), f.col()), (Mode::Normal, 1));
     f.input.begin_mouse_selection();
     f.input.extend_mouse_selection_to(4);
-    f.engine.settle(
-        Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state },
-        Settled::Sweep,
-    );
-    assert_eq!(f.engine.mode(), Mode::Visual(Shape::Char));
-    assert_eq!(f.input.selection(), Some((1, 4)), "mid-sweep the mouse owns the geometry");
-    f.engine.settle(
-        Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state },
-        Settled::Release,
-    );
-    assert_eq!((f.engine.visual_anchor(), f.col()), (Some(Pos::new(0, 1)), 3));
-    assert_eq!(f.input.selection(), None);
-    assert_eq!(f.input.paint_span(), Some((1, 4)), "the same chars, now painted as Visual");
+    f.mouse(4, Mouse::Drag);
+    assert_eq!((f.engine.mode(), f.visual()), (Mode::Visual(Shape::Char), Some((1, 4))));
+    assert_eq!(f.input.selection(), None, "the GUI selection goes");
+    assert_eq!(f.input.paint_span(), Some((1, 5)), "Visual takes the char under the pointer");
+    f.mouse(0, Mouse::Drag);
+    assert_eq!(f.visual(), Some((1, 0)), "leftward, the press stays the anchor");
+    f.mouse(9, Mouse::Drag);
+    assert_eq!(f.visual(), Some((1, 6)), "past the end: the line's end, as Visual allows");
+    f.mouse(2, Mouse::Drag);
     f.keys("d");
-    assert_eq!(f.text(), "aef");
+    assert_eq!(f.text(), "adef");
+}
+
+/// Vim's `2-LeftMouse` (probed): the word under the pointer by
+/// `get_mouse_class()`: punctuation stands alone but for the operator
+/// chars, which go together; blanks are a run; past the end of the line
+/// (Normal) the last word. The press's release does nothing.
+#[test]
+fn a_double_click_selects_vims_mouse_word() {
+    for (col, want) in [
+        (5, (4, 6)),    // bar
+        (7, (7, 7)),    // .
+        (15, (15, 16)), // ->
+        (18, (18, 19)), // two blanks
+        (3, (3, 3)),    // one blank
+        (40, (20, 22)), // past the end: the caret's on `end`
+    ] {
+        let mut f = Field::new("foo bar.baz qux->x  end", 0);
+        f.mouse(col, Mouse::Press(1));
+        f.mouse(col, Mouse::Press(2));
+        assert_eq!((f.engine.mode(), f.visual()), (Mode::Visual(Shape::Char), Some(want)), "{col}");
+    }
+    let mut f = Field::new("ab   ", 0);
+    f.mouse(3, Mouse::Press(2));
+    assert_eq!(f.visual(), Some((2, 5)), "a blank run at the end takes the line's end");
+}
+
+/// Vim's word-wise drag after a double click (probed): the end beyond the
+/// press goes to the pointer's word's far side, and leftward the anchor
+/// moves to the pressed word's end, so the word stays selected.
+#[test]
+fn a_drag_after_a_double_click_extends_by_words() {
+    let line = "foo bar.baz qux->x  end";
+    let mut f = Field::new(line, 0);
+    f.mouse(5, Mouse::Press(2));
+    f.mouse(9, Mouse::Drag);
+    f.mouse(13, Mouse::Drag);
+    assert_eq!(f.visual(), Some((4, 14)), "bar.baz qux");
+    f.mouse(9, Mouse::Drag);
+    assert_eq!(f.visual(), Some((4, 10)), "back to baz");
+
+    let mut f = Field::new(line, 0);
+    f.mouse(9, Mouse::Press(2));
+    f.mouse(5, Mouse::Drag);
+    f.mouse(1, Mouse::Drag);
+    assert_eq!(f.visual(), Some((10, 0)), "foo bar.baz");
+
+    let mut f = Field::new(line, 0);
+    f.mouse(5, Mouse::Press(2));
+    f.mouse(3, Mouse::Drag);
+    assert_eq!(f.visual(), Some((6, 3)), "the blank is a word of its own");
+    f.mouse(30, Mouse::Drag);
+    assert_eq!(f.visual(), Some((4, 23)), "past the end: the line's end");
+
+    let mut b = Body::new("foo bar\nhello world", 0, 0);
+    b.mouse(0, 5, Mouse::Press(2));
+    b.mouse(1, 2, Mouse::Drag);
+    assert_eq!(
+        (b.engine.visual_anchor(), b.caret()),
+        (Some(Pos::new(0, 4)), Pos::new(1, 4)),
+        "onto the next line: its word whole"
+    );
+}
+
+/// Vim's double click on a char that is not a word char (blanks skipped)
+/// selects to its `%` match, from where the pointer landed (probed). With
+/// no bracket on the line, the word rule. Under Insert there is no match
+/// (`ins_mouse()` passes no operator), so `{` is a word of its own.
+#[test]
+fn a_double_click_on_a_bracket_selects_its_block() {
+    for (col, want) in [(2, (2, 6)), (1, (1, 6)), (6, (6, 2))] {
+        let mut f = Field::new("a {b c} d", 0);
+        f.mouse(col, Mouse::Press(2));
+        assert_eq!(f.visual(), Some(want), "{col}");
+    }
+    let mut f = Field::new("a \"b\" d", 0);
+    f.mouse(2, Mouse::Press(2));
+    assert_eq!(f.visual(), Some((2, 2)), "no bracket: the quote alone");
+
+    let mut f = Field::new("a {b c} d", 0);
+    f.mouse(2, Mouse::Press(2));
+    f.mouse(8, Mouse::Drag);
+    assert_eq!(f.visual(), Some((2, 8)), "a drag after it goes by words");
+
+    let mut f = Field::start("a {b c} d", 0, Start::Insert);
+    f.mouse(2, Mouse::Press(2));
+    assert_eq!(f.visual(), Some((2, 2)));
+
+    let mut b = Body::new("a (b\nc) d", 0, 0);
+    b.mouse(0, 2, Mouse::Press(2));
+    assert_eq!(
+        (b.engine.visual_anchor(), b.caret()),
+        (Some(Pos::new(0, 2)), Pos::new(1, 1)),
+        "the match can be on another line"
+    );
+}
+
+/// Vim's `3-LeftMouse` (probed): linewise Visual from the press, and a
+/// drag after it goes by lines. Vim's fourth is blockwise, which the
+/// engine does not have: it is a plain press, as Vim's fifth is.
+#[test]
+fn a_triple_click_selects_the_line() {
+    let mut b = Body::new("foo bar\nhello world", 0, 0);
+    b.mouse(0, 5, Mouse::Press(1));
+    b.mouse(0, 5, Mouse::Press(2));
+    b.mouse(0, 5, Mouse::Press(3));
+    assert_eq!(
+        (b.engine.mode(), b.engine.visual_anchor(), b.caret()),
+        (Mode::Visual(Shape::Line), Some(Pos::new(0, 5)), Pos::new(0, 5))
+    );
+    b.mouse(1, 2, Mouse::Drag);
+    assert_eq!((b.engine.mode(), b.caret()), (Mode::Visual(Shape::Line), Pos::new(1, 2)));
+    b.mouse(1, 2, Mouse::Press(4));
+    assert_eq!((b.engine.mode(), b.caret()), (Mode::Normal, Pos::new(1, 2)));
+    b.mouse(1, 4, Mouse::Drag);
+    assert_eq!(b.engine.mode(), Mode::Visual(Shape::Char), "a drag after it goes by chars");
+}
+
+/// Vim's mouse in Insert (probed): a selection runs inside `ctrl+o`, so
+/// Esc and a later click give Insert back where the caret is.
+#[test]
+fn a_mouse_selection_in_insert_runs_inside_ctrl_o() {
+    let mut f = Field::start("foo bar.baz qux", 0, Start::Insert);
+    f.mouse(5, Mouse::Press(2));
+    assert_eq!((f.engine.mode(), f.visual()), (Mode::Visual(Shape::Char), Some((4, 6))));
+    f.key(esc());
+    assert_eq!((f.engine.mode(), f.col()), (Mode::Insert, 6));
+
+    let mut f = Field::start("foo bar.baz qux", 0, Start::Insert);
+    f.mouse(5, Mouse::Press(2));
+    f.mouse(13, Mouse::Press(1));
+    assert_eq!((f.engine.mode(), f.col()), (Mode::Insert, 13), "a click: Insert at the click");
+
+    let mut f = Field::start("foo bar.baz qux", 0, Start::Insert);
+    f.mouse(1, Mouse::Press(1));
+    f.mouse(5, Mouse::Drag);
+    assert_eq!(f.visual(), Some((1, 5)));
+    f.key(esc());
+    assert_eq!((f.engine.mode(), f.col()), (Mode::Insert, 5));
+
+    let mut f = Field::start("foo bar.baz qux", 0, Start::Insert);
+    f.mouse(5, Mouse::Press(3));
+    assert_eq!(f.engine.mode(), Mode::Visual(Shape::Line));
+    f.keys("y");
+    assert_eq!(f.engine.mode(), Mode::Insert, "an operator gives Insert back");
 }
 
 #[test]
@@ -1181,20 +1349,13 @@ fn a_click_off_an_unused_autoindent_strips_it() {
 }
 
 /// A mouse selection made in Insert off an unused autoindent: the indent
-/// goes where the caret was (Vim's `tpos`), and the selection is adopted.
+/// goes where the caret was (Vim's `tpos`), and Visual starts at the press.
 #[test]
-fn a_sweep_from_insert_strips_the_autoindent_where_the_caret_was() {
-    use edtui::actions::{Execute, SwitchMode};
+fn a_drag_from_insert_strips_the_autoindent_where_the_caret_was() {
     let mut b = Body::new("  a\nbcd", 0, 0);
     b.keys("o");
-    b.ed.cursor = edtui::Index2::new(2, 0);
-    SwitchMode(EditorMode::Visual).execute(&mut b.ed);
-    b.ed.selection.as_mut().expect("a selection").end = edtui::Index2::new(2, 2);
-    b.ed.cursor = edtui::Index2::new(2, 2);
-    b.engine.settle(
-        Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state },
-        Settled::Release,
-    );
+    b.mouse(2, 0, Mouse::Press(1));
+    b.mouse(2, 2, Mouse::Drag);
     assert_eq!(b.text(), "  a\n\nbcd");
     assert_eq!(
         (b.engine.mode(), b.engine.visual_anchor(), b.caret()),
@@ -1202,23 +1363,49 @@ fn a_sweep_from_insert_strips_the_autoindent_where_the_caret_was() {
     );
 }
 
-/// A sweep that starts in Insert in a one-line field keeps the mouse's
-/// selection while it runs (ending Insert does not reset the caret).
+/// Vim's right press (`'mousemodel'` `extend`, probed): in Visual the
+/// nearer end goes to the pointer (on one line by columns, else by lines,
+/// the middle line by the columns' midpoint); outside it, Visual starts at
+/// the caret. Linewise stays linewise, and a double click's word is not
+/// extended by words.
 #[test]
-fn a_sweep_from_insert_keeps_the_mouse_selection() {
-    let mut f = Field::start("abcdef", 1, Start::Insert);
-    f.input.begin_mouse_selection();
-    f.input.extend_mouse_selection_to(4);
-    f.engine.settle(
-        Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state },
-        Settled::Sweep,
+fn a_right_press_extends_visual() {
+    for (col, want) in [(14, (4, 14)), (1, (12, 1)), (6, (12, 6)), (10, (4, 10)), (8, (12, 8))] {
+        let mut f = Field::new("foo bar.baz qux->x  end", 0);
+        f.keys("04lv8l");
+        f.mouse(col, Mouse::Extend);
+        assert_eq!((f.engine.mode(), f.visual()), (Mode::Visual(Shape::Char), Some(want)), "{col}");
+    }
+    let mut f = Field::new("foo bar.baz qux->x  end", 0);
+    f.mouse(5, Mouse::Press(2));
+    f.mouse(13, Mouse::Extend);
+    assert_eq!(f.visual(), Some((4, 13)));
+
+    let mut b = Body::new("foo bar\nhello world", 0, 2);
+    b.mouse(1, 3, Mouse::Extend);
+    assert_eq!(
+        (b.engine.mode(), b.engine.visual_anchor(), b.caret()),
+        (Mode::Visual(Shape::Char), Some(Pos::new(0, 2)), Pos::new(1, 3))
     );
-    assert_eq!((f.engine.mode(), f.input.selection()), (Mode::Visual(Shape::Char), Some((1, 4))));
-    f.engine.settle(
-        Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state },
-        Settled::Release,
-    );
-    assert_eq!((f.engine.visual_anchor(), f.col()), (Some(Pos::new(0, 1)), 3));
+    let mut b = Body::new("foo bar\nhello world", 0, 0);
+    b.keys("V");
+    b.mouse(1, 3, Mouse::Extend);
+    assert_eq!((b.engine.mode(), b.caret()), (Mode::Visual(Shape::Line), Pos::new(1, 3)));
+
+    let mut f = Field::start("foo bar.baz qux", 2, Start::Insert);
+    f.mouse(8, Mouse::Extend);
+    assert_eq!(f.visual(), Some((2, 8)));
+    f.key(esc());
+    assert_eq!((f.engine.mode(), f.col()), (Mode::Insert, 8), "inside `ctrl+o`");
+}
+
+/// A query box has no Visual: the mouse leaves its GUI selection alone.
+#[test]
+fn the_mouse_in_a_query_box_keeps_its_gui_selection() {
+    let mut f = Field::start("one two", 7, Start::InsertOnly);
+    f.input.select_word_at(5);
+    f.mouse(5, Mouse::Press(2));
+    assert_eq!((f.engine.mode(), f.input.selection()), (Mode::Insert, Some((4, 7))));
 }
 
 /// Fix round 1 minor: a click drops a half-typed command.
@@ -1258,11 +1445,11 @@ fn a_gui_selection_left_in_visual_is_not_adopted_later() {
     assert_eq!(b.engine.mode(), Mode::Normal);
 }
 
-/// A field in Visual settles a GUI selection as the body does: a click's
-/// selection (a double-click word) is adopted, a GUI key's is dropped so
-/// no later settle adopts it stale.
+/// A field in Visual settles a GUI selection as the body does: a double
+/// click's word replaces the Visual, a GUI key's is dropped so no later
+/// settle adopts it stale.
 #[test]
-fn a_field_in_visual_adopts_a_clicked_selection_and_drops_a_gui_keys() {
+fn a_field_in_visual_takes_a_double_click_and_drops_a_gui_keys() {
     let settle = |f: &mut Field, how| {
         f.engine
             .settle(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, how);
@@ -1270,12 +1457,9 @@ fn a_field_in_visual_adopts_a_clicked_selection_and_drops_a_gui_keys() {
     let mut f = Field::new("one two three", 0);
     f.keys("v");
     f.input.select_word_at(5);
-    settle(&mut f, Settled::Click);
-    assert_eq!(
-        (f.engine.mode(), f.engine.visual_anchor(), f.col()),
-        (Mode::Visual(Shape::Char), Some(Pos::new(0, 4)), 6)
-    );
-    assert_eq!(f.input.selection(), None, "adopted, so the GUI selection goes");
+    f.mouse(5, Mouse::Press(2));
+    assert_eq!((f.engine.mode(), f.visual()), (Mode::Visual(Shape::Char), Some((4, 6))));
+    assert_eq!(f.input.selection(), None, "the GUI selection goes");
     assert_eq!(f.input.paint_span(), Some((4, 7)));
 
     let mut f = Field::new("one two three", 0);

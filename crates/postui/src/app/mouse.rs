@@ -378,6 +378,18 @@ impl App {
                         None => return changed,
                     }
                 }
+                // In vim a right press on the field being edited extends
+                // its selection: the left press's arm puts the pointer on
+                // its char for the engine. The right button sweeps nothing.
+                if self.vim_right_press_extends(&hit) {
+                    let press = ratatui::crossterm::event::MouseEvent {
+                        kind: MouseEventKind::Down(MouseButton::Left),
+                        ..m
+                    };
+                    changed |= self.on_hit(hit, 1, press);
+                    self.text_drag = None;
+                    return changed;
+                }
                 // A text surface — the URL bar, the body, the response
                 // text, or the one cell/field currently under edit — gets
                 // the Copy/Paste menu instead of a row menu, and skips the

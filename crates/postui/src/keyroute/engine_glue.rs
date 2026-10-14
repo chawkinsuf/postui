@@ -8,7 +8,8 @@ use super::ctx::{EngineKind, EngineView, FieldId};
 use crate::components::line_input::LineInput;
 use crate::config::KeyProfile;
 pub use crate::vim::engine::{
-    AppRequest, Dir, Mode, Note, Outcome, Pos, SearchLine, Seat, Settled, Shape, Start, ViewCtx,
+    AppRequest, Dir, Mode, Mouse, Note, Outcome, Pos, SearchLine, Seat, Settled, Shape, Start,
+    ViewCtx,
 };
 use crate::vim::engine::{
     BodyBuf, BodyVisual, BufState, Engine, OneLineBuf, SearchMemory, Splicer, Target, TextBuf,
@@ -265,8 +266,6 @@ pub struct Glue {
     seen: Option<Seen>,
     /// The profile at the last sync, to tell a switch (spec §4.3).
     profile: Option<KeyProfile>,
-    /// A mouse sweep is in flight in the session's buffer.
-    sweeping: bool,
     /// The session is a query box's (piece 3 §4.2 `Start::InsertOnly`): a
     /// rebase re-enters it so (plan M3b Review Focus 5).
     insert_only: bool,
@@ -364,10 +363,6 @@ impl Glue {
         self.profile = Some(profile);
     }
 
-    pub fn sweeping(&self) -> bool {
-        self.sweeping
-    }
-
     /// Trades registers with `other` (plan M3b Deviation 1): the dialog
     /// engine takes the screen's when a dialog session opens and gives them
     /// back when it closes, so the unnamed register is shared (key list §5).
@@ -416,7 +411,6 @@ impl Glue {
         };
         self.insert_only = start == Start::InsertOnly;
         target!(self, buf, |t| self.engine.enter(start, seat, t));
-        self.sweeping = false;
         self.saw(buf);
     }
 
@@ -465,7 +459,6 @@ impl Glue {
             // The body is one field: a carry never goes from it to itself.
             (FieldBuf::Body(..), FieldBuf::Body(..)) => {}
         }
-        self.sweeping = false;
         self.saw(to);
     }
 
@@ -483,7 +476,6 @@ impl Glue {
             self.line = BufState::new();
         }
         self.seen = None;
-        self.sweeping = false;
         self.insert_only = false;
     }
 
@@ -494,10 +486,9 @@ impl Glue {
         self.leave(&mut ghost.buf());
     }
 
-    /// After a click, a sweep or a key piece 4 handled (piece 3 §4.2).
+    /// After the mouse or a key piece 4 handled (piece 3 §4.2).
     pub fn settle(&mut self, buf: &mut FieldBuf<'_>, how: Settled) {
         target!(self, buf, |t| self.engine.settle(t, how));
-        self.sweeping = how == Settled::Sweep;
         self.saw(buf);
     }
 

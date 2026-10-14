@@ -187,6 +187,10 @@ pub struct Editor {
     /// set, `body_drag_to` extends by whole words from this span instead
     /// of by cells. Cleared by any single click.
     body_word_anchor: Option<(edtui::Index2, edtui::Index2)>,
+    /// Where the mouse last pointed in the body: a click's, a double
+    /// click's or a sweep's caret position, before any word snapping. The
+    /// vim engine makes its own selection from it.
+    body_mouse_at: edtui::Index2,
     pub active_tab: EditorTab,
     /// The last tab the user explicitly chose (click, alt+number, or
     /// arrow-cycling) — where `active_tab` returns whenever it can.
@@ -312,6 +316,7 @@ impl Default for Editor {
             body_handler: EditorEventHandler::emacs_mode(),
             body_sel_anchor: None,
             body_word_anchor: None,
+            body_mouse_at: edtui::Index2::default(),
             active_tab: EditorTab::Headers,
             preferred_tab: EditorTab::Headers,
             sub_focus: SubFocus::Url,
@@ -955,6 +960,7 @@ impl Editor {
             self.body.selection = None;
             self.body_sel_anchor = Some(self.body.cursor);
             self.body_word_anchor = None;
+            self.body_mouse_at = self.body.cursor;
         }
         // Modeless invariant: whatever edtui's own handling did (its mouse
         // paths switch to Normal/Visual), the body editor never leaves
@@ -976,6 +982,7 @@ impl Editor {
         let Some(cursor) = self.body_cursor_for_click(x, y) else {
             return false;
         };
+        self.body_mouse_at = cursor;
         let Some(span) = self.body_word_cells(cursor) else {
             return false;
         };
@@ -983,6 +990,11 @@ impl Editor {
         self.body.cursor = edtui::Index2::new(span.1.row, span.1.col + 1);
         self.body_word_anchor = Some(span);
         true
+    }
+
+    /// Where the mouse last pointed in the body (see the field's doc).
+    pub(crate) fn body_mouse_at(&self) -> edtui::Index2 {
+        self.body_mouse_at
     }
 
     /// The inclusive cell span a double click at caret `i` selects: the
@@ -1015,6 +1027,7 @@ impl Editor {
         let Some(cursor) = self.body_cursor_for_drag(x, y) else {
             return false;
         };
+        self.body_mouse_at = cursor;
         if let Some((ws, we)) = self.body_word_anchor {
             let head = self.clamp_to_cell(cursor);
             let (hs, he) = self.body_word_cells(head).unwrap_or((head, head));
