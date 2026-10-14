@@ -1,7 +1,7 @@
 //! The floating panel shell: a backdrop dim (for modal-style overlays) plus
 //! a filled panel with a soft drop shadow along its right and bottom edges.
 
-use ratatui::{buffer::Buffer, layout::Rect};
+use ratatui::{buffer::Buffer, layout::Rect, style::Color};
 
 use crate::paint::fill;
 use crate::paint::ring::ring;
@@ -46,12 +46,23 @@ pub fn fade_to(buf: &mut Buffer, area: Rect, to: ratatui::style::Color, t: f32) 
 }
 
 /// Fills `area` with `theme.panel`, darkens its drop-shadow bands (see
-/// [`shadow_bands`]), then strokes a quiet accent ring hugging the panel's
-/// inside border.
+/// [`shadow_bands`]), then strokes a quiet hairline ring hugging the
+/// panel's inside border.
 pub fn floating_panel(buf: &mut Buffer, area: Rect, screen: Rect, theme: &Theme) {
+    shell(buf, area, screen, theme, theme.hairline);
+}
+
+/// [`floating_panel`] ringed in accent: the shell for a panel floating
+/// over an undimmed screen (a dropdown, the theme picker), which needs the
+/// stronger edge to stand off the live content behind it.
+pub fn floating_panel_accented(buf: &mut Buffer, area: Rect, screen: Rect, theme: &Theme) {
+    shell(buf, area, screen, theme, theme.accent);
+}
+
+fn shell(buf: &mut Buffer, area: Rect, screen: Rect, theme: &Theme, ring_fg: Color) {
     fill(buf, area, theme.panel);
     shadow_bands(buf, area, screen);
-    ring(buf, area, theme.hairline, theme.panel);
+    ring(buf, area, ring_fg, theme.panel);
 }
 
 /// Darkens a 1-cell drop-shadow band along `area`'s right edge (offset 1

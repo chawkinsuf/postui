@@ -8923,6 +8923,18 @@ fn dropdown_push_never_touches_modal_open() {
     );
 }
 
+/// Task #16: the theme picker previews onto the screen behind it, so it
+/// leaves that screen undimmed and, like the dropdown, opens whole —
+/// its push never starts the dim-and-settle `ModalOpen` drives.
+#[test]
+fn theme_picker_previews_undimmed_and_never_touches_modal_open() {
+    let mut app = App::new_for_test();
+    let now = std::time::Instant::now();
+    app.update(Action::OpenThemeChooser);
+    assert!(!app.modals.top().unwrap().dims_backdrop(), "the picker's backdrop is the preview");
+    assert_eq!(app.anims.value(AnimKey::ModalOpen, now), None);
+}
+
 #[test]
 fn click_palette_row_runs_immediately() {
     let mut app = App::new_for_test();

@@ -91,7 +91,7 @@ Infrastructure in §7.1. One easing family (ease-out cubic), durations ≤150ms 
 3. Pane collapse/expand (⌄ hide, sidebar toggle) height animation, ~120ms.
 
 **Overlays**
-4. Modal/palette open: backdrop dim fades in ~100ms (color lerp) while the panel settles ~80%→100% height around its center. **Close is instant.**
+4. Modal/palette open: backdrop dim fades in ~100ms (color lerp) while the panel settles ~80%→100% height around its center. **Close is instant.** *(2026-10-14, task #16: the theme picker doesn't dim, because its backdrop is the preview (`you`), so it opens whole like the dropdown (Claude's call). See the selectable-themes spec.)*
 5. Dropdown open: expands downward from the anchor, ~90ms. Close instant.
 6. Toasts: slide in from the edge; fade out by color lerp toward ground (replaces the stepped fade).
 

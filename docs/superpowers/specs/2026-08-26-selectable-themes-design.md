@@ -137,6 +137,15 @@ way existing config writes do.
   `you`): the theme picker has no filter box; the highlight moves only by
   ↑/↓, ctrl+n/ctrl+p, Home/End (vim `j`/`k`/`gg`/`G`), the mouse and the
   dark/light flip.*
+- *Added 2026-10-14 (task #16):* the screen behind the theme picker is the
+  live preview, so the picker does not dim it the way other modals dim
+  their backdrop (`you`). The panel instead stands off the undimmed screen
+  with the accent ring, as the undimmed dropdown does (`you` chose this
+  over keeping the hairline ring or docking the panel right). Like the
+  dropdown, it has no open settle and paints whole on its first frame,
+  because the settle is the dim fading in (Claude's call).
+  `ChooserState::previewing` marks the chooser, and `Modal::dims_backdrop`
+  is the one rule both the draw and `App::push_modal` read.
 - The existing 256-color downgrade path applies to every applied theme,
   as today.
 
