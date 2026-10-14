@@ -404,10 +404,10 @@ const TOOLTIP_MAX_TEXT_W: usize = 56;
 /// wrap to [`TOOLTIP_MAX_TEXT_W`] or the screen's room, whichever is
 /// narrower.
 ///
-/// It sits under the token it belongs to, flipping above when there is no
-/// room below, and is clamped to stay inside `screen`; nothing is drawn
-/// when even the header would not fit. Registers the panel and its pills
-/// in `hits`.
+/// It sits under the token it belongs to, or above when there is more
+/// room there, cut to fit that side so it never covers the token, and is
+/// clamped to stay inside `screen`; nothing is drawn when not even one
+/// row of each section fits. Registers the panel and its pills in `hits`.
 #[allow(clippy::too_many_arguments)]
 fn draw_var_tooltip(
     frame: &mut Frame,
@@ -454,13 +454,19 @@ fn draw_var_tooltip(
     let pills_w = 3 * pills.len();
     // The header: name, two cells, source, a gap, then the pills.
     let header_w = (tip.name.width() + 2 + source.width()).min(wrap_w) + 1 + pills_w;
+    // The tip goes below its token, or above when there is more room
+    // there; either way it is cut to that side, so it never covers the
+    // token it describes.
+    let below_room = screen.bottom().saturating_sub(tip.anchor.bottom());
+    let above_room = tip.anchor.y.saturating_sub(screen.y);
+    let side_room = below_room.max(above_room);
     // Padding rows top and bottom, the header, then each section present
-    // behind a blank row of its own. On a terminal too short for it all,
+    // behind a blank row of its own. With too little room for it all,
     // the value gives up rows first, then the description, the last
     // surviving row of a cut section ellipsized to say so. Each keeps at
     // least one row: with no room for that, there is no tip at all.
     let gaps = usize::from(!value_lines.is_empty()) + usize::from(!desc_lines.is_empty());
-    let room = (screen.height as usize).saturating_sub(3 + gaps);
+    let room = (side_room as usize).saturating_sub(3 + gaps);
     cut_rows(&mut value_lines, room.saturating_sub(desc_lines.len()).max(1), wrap_w);
     cut_rows(&mut desc_lines, room.saturating_sub(value_lines.len()).max(1), wrap_w);
     let sections = [(&value_lines, theme.text), (&desc_lines, theme.text_muted)];
@@ -478,12 +484,10 @@ fn draw_var_tooltip(
     // Too narrow for the padding, the pills, and at least one cell of
     // header before them: no tip at all, rather than pills painted over
     // the border (or placed off a u16 underflow).
-    if (width as usize) < 6 + pills_w || screen.height < height {
+    if (width as usize) < 6 + pills_w || side_room < height {
         return;
     }
-    let below = tip.anchor.bottom();
-    let y =
-        if below + height <= screen.bottom() { below } else { tip.anchor.y.saturating_sub(height) };
+    let y = if height <= below_room { tip.anchor.bottom() } else { tip.anchor.y - height };
     let x = tip.anchor.x.min(screen.right().saturating_sub(width + 1)).max(screen.x);
     let area = Rect::new(x, y, width, height);
     let buf = frame.buffer_mut();
@@ -881,14 +885,16 @@ mod tests {
     /// top-left, and returns its text rows between the panel's borders
     /// (padding columns dropped, trailing spaces trimmed), header first.
     fn tip_rows(w: u16, h: u16, info: &TokenInfo) -> Vec<String> {
-        drawn_tip_rows(w, h, info).expect("a tip is drawn")
+        draw_tip(w, h, 0, info).expect("a tip is drawn").1
     }
 
-    /// [`tip_rows`], or `None` when no tip fits.
-    fn drawn_tip_rows(w: u16, h: u16, info: &TokenInfo) -> Option<Vec<String>> {
+    /// Draws the `x` tooltip alone on a `w`×`h` screen for a token on row
+    /// `anchor_y`: its panel and [`tip_rows`]'s rows, or `None` when no
+    /// tip fits.
+    fn draw_tip(w: u16, h: u16, anchor_y: u16, info: &TokenInfo) -> Option<(Rect, Vec<String>)> {
         let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        let tip = crate::app::TokenTip { name: "x".into(), anchor: Rect::new(0, 0, 5, 1) };
+        let tip = crate::app::TokenTip { name: "x".into(), anchor: Rect::new(0, anchor_y, 5, 1) };
         terminal
             .draw(|f| {
                 draw_var_tooltip(
@@ -905,17 +911,16 @@ mod tests {
             .unwrap();
         let panel = hits.rect_of(&crate::hit::Hit::TipPanel("x".into()))?;
         let buf = terminal.backend().buffer();
-        Some(
-            (panel.y + 1..panel.bottom() - 1)
-                .map(|y| {
-                    (panel.x + 2..panel.right() - 2)
-                        .map(|x| buf[(x, y)].symbol().to_string())
-                        .collect::<String>()
-                        .trim_end()
-                        .to_string()
-                })
-                .collect(),
-        )
+        let rows = (panel.y + 1..panel.bottom() - 1)
+            .map(|y| {
+                (panel.x + 2..panel.right() - 2)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect();
+        Some((panel, rows))
     }
 
     /// #11: a long description word-wraps at the tooltip's max width
@@ -969,28 +974,50 @@ mod tests {
         }
     }
 
-    /// On a terminal too short for the whole tip, the value gives up rows
+    /// With too little room for the whole tip, the value gives up rows
     /// first (down to one), then the description; each cut row says so.
+    /// The room is what lies below the token (row 0 here), not the screen.
     #[test]
     fn a_short_screen_cuts_the_value_before_the_description() {
         let value = "a".repeat(3 * TOOLTIP_MAX_TEXT_W);
         let desc = "one two three four five six seven eight nine ten eleven twelve \
                     thirteen fourteen fifteen sixteen";
         let info = tip_info(Some(&value), Some(desc));
-        // Borders, header and two gaps take 5; 3 rows left: the
-        // description's two, and one for the value.
-        let rows = tip_rows(120, 8, &info);
+        // 8 rows below the token; borders, header and two gaps take 5,
+        // leaving 3: the description's two, and one for the value.
+        let rows = tip_rows(120, 9, &info);
         assert_eq!(rows.len(), 6, "{rows:?}");
         assert!(rows[2].ends_with('\u{2026}'), "the value is cut: {rows:?}");
         assert_eq!(rows[4..].join(" "), desc, "the description is whole: {rows:?}");
         // Two rows left: the value keeps one, the description the other.
-        let rows = tip_rows(120, 7, &info);
+        let rows = tip_rows(120, 8, &info);
         assert_eq!(rows.len(), 5, "{rows:?}");
         assert!(rows[2].ends_with('\u{2026}'), "{rows:?}");
         assert!(rows[4].ends_with('\u{2026}'), "the description is cut too: {rows:?}");
         // One row left: each section keeps at least one row, so no tip
         // fits — never a tip that silently drops its description.
-        assert_eq!(drawn_tip_rows(120, 6, &info), None);
+        assert_eq!(draw_tip(120, 7, 0, &info), None);
+    }
+
+    /// A tip too tall for either side of its token is cut to the roomier
+    /// side and placed there — never clamped over the token it describes.
+    #[test]
+    fn a_tall_tip_is_cut_to_one_side_of_its_token_and_never_covers_it() {
+        let info = tip_info(Some(&"a".repeat(30 * TOOLTIP_MAX_TEXT_W)), Some("about x"));
+        // Token on row 10 of 20: 10 rows above it, 9 below.
+        let (panel, rows) = draw_tip(120, 20, 10, &info).expect("a tip is drawn");
+        assert_eq!((panel.y, panel.bottom()), (0, 10), "above, ending at the token: {panel:?}");
+        // 10 rows above: borders, header and two gaps take 5, the
+        // description 1, the value keeps the other 4 — cut.
+        assert_eq!(rows[2..], {
+            let mut v = vec!["a".repeat(TOOLTIP_MAX_TEXT_W); 3];
+            v.push("a".repeat(TOOLTIP_MAX_TEXT_W - 1) + "\u{2026}");
+            v.extend([String::new(), "about x".into()]);
+            v
+        });
+        // Token on row 9: 9 above, 10 below — the tip goes below.
+        let (panel, _) = draw_tip(120, 20, 9, &info).expect("a tip is drawn");
+        assert_eq!((panel.y, panel.bottom()), (10, 20), "below the token: {panel:?}");
     }
 
     /// A description of nothing but whitespace is no description: no
