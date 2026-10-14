@@ -22764,25 +22764,29 @@ fn panel_row(app: &mut App, panel: ratatui::layout::Rect, row: u16) -> String {
 
 /// The tip's layout: a header row naming the variable and its source
 /// with the pills on the right, the value on its own full-width row
-/// beneath, then the description.
+/// beneath, then the description — a blank row before each section (#11,
+/// the user's ruling).
 #[test]
 fn tooltip_lays_out_a_header_row_then_the_value_then_the_description() {
     let (mut app, _dir, _out) = tooltip_app("base_url");
     hover_token(&mut app, "base_url");
     let panel = app.hits.rect_of(&Hit::TipPanel("base_url".into())).unwrap();
-    assert_eq!(panel.height, 5, "padding, header, value, description, padding");
+    assert_eq!(panel.height, 7, "padding, header, gap, value, gap, description, padding");
     assert_eq!(
         panel_row(&mut app, panel, panel.y + 1),
         "\u{2502} base_url  env = qa  \u{F018F}  \u{F03EB}  \u{2502}",
         "header: name, source, then copy and edit pills at the right edge"
     );
-    assert_eq!(
-        panel_row(&mut app, panel, panel.y + 2),
-        "\u{2502} https://qa.example.com    \u{2502}",
-        "the value takes the next row, with no pills crowding it"
-    );
+    let blank = format!("\u{2502}{}\u{2502}", " ".repeat(panel.width as usize - 2));
+    assert_eq!(panel_row(&mut app, panel, panel.y + 2), blank);
     assert_eq!(
         panel_row(&mut app, panel, panel.y + 3),
+        "\u{2502} https://qa.example.com    \u{2502}",
+        "the value takes its own row, with no pills crowding it"
+    );
+    assert_eq!(panel_row(&mut app, panel, panel.y + 4), blank);
+    assert_eq!(
+        panel_row(&mut app, panel, panel.y + 5),
         "\u{2502} API root                  \u{2502}"
     );
     // Right-anchored pills: edit holds the anchor edge, copy before it.
@@ -22822,6 +22826,33 @@ fn tooltip_for_an_undefined_token_has_no_value_row() {
         panel_row(&mut app, panel, panel.y + 1),
         "\u{2502} nowhere  not defined  \u{F03EB}  \u{2502}"
     );
+}
+
+/// A selector field's tip describes the option that filled it, in place
+/// of the selector's description (#11, the user's ruling) — and the
+/// selector's comes back for an option that has none.
+#[test]
+fn tooltip_shows_the_selected_options_description_over_its_selectors() {
+    let (mut app, dir, _out) = tooltip_app("user");
+    std::fs::write(
+        dir.path().join("environments/qa.toml"),
+        "[options.user.alice]\ndescription = \"the premium one\"\nuser = \"1001\"\n\n[options.user.bob]\nuser = \"2002\"\n",
+    )
+    .unwrap();
+    app.proj_mut().set_selection_for("qa", "user", "alice");
+    app.update(Action::ReloadProjectFiles);
+    hover_token(&mut app, "user");
+    let text = tooltip_text(&mut app);
+    assert!(text.contains("option = alice"), "{text}");
+    assert!(text.contains("the premium one"), "{text}");
+    assert!(!text.contains("acting user"), "the option's replaces the selector's: {text}");
+
+    app.proj_mut().set_selection_for("qa", "user", "bob");
+    app.update(Action::ReloadProjectFiles);
+    hover_token(&mut app, "user");
+    let text = tooltip_text(&mut app);
+    assert!(text.contains("option = bob"), "{text}");
+    assert!(text.contains("acting user"), "no option description: the selector's: {text}");
 }
 
 /// The hint context reads the edit pill's verb off the same declaration

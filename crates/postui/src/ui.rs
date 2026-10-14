@@ -377,7 +377,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 }
 
-/// Widest a tooltip line may run before the value wraps onto another row.
+/// Widest a tooltip line may run before the value or description wraps
+/// onto another row.
 const TOOLTIP_MAX_TEXT_W: usize = 56;
 
 /// Draws the hover/caret tooltip for one `{{token}}` (spec §7). Three
@@ -395,7 +396,13 @@ const TOOLTIP_MAX_TEXT_W: usize = 56;
 /// - the **value**, when there is one — one mask dot per cell for a
 ///   secret unless `revealed` — wrapped onto further rows rather than
 ///   truncated so the whole value is readable;
-/// - the declaration's **description**, when written.
+/// - the **description**, when written, word-wrapped in muted text (a
+///   selector field's is its selected option's, see
+///   [`crate::components::var_tokens::TokenInfo::description`]).
+///
+/// The value and the description each sit behind a blank row, and both
+/// wrap to [`TOOLTIP_MAX_TEXT_W`] or the screen's room, whichever is
+/// narrower.
 ///
 /// It sits under the token it belongs to, flipping above when there is no
 /// room below, and is clamped to stay inside `screen`; nothing is drawn
@@ -415,20 +422,24 @@ fn draw_var_tooltip(
     use crate::hit::Hit;
     use ratatui::layout::Rect;
     use unicode_width::UnicodeWidthStr;
+    // Value and description wrap to one width: the max, or what the
+    // screen has room for inside the padding and the drop shadow.
+    let wrap_w = TOOLTIP_MAX_TEXT_W.min(screen.width.saturating_sub(5) as usize).max(1);
     // Wrap the real value, then mask row by row (one dot per cell of
     // that row): the masked and revealed tips then have the same row
     // structure and widths whatever mix of narrow, wide, or control
     // characters the secret holds, so reveal / hide moves nothing.
     let masked = info.secret && !revealed;
     let mut value_lines: Vec<String> = match &info.value {
-        Some(value) => wrap_cells(value, TOOLTIP_MAX_TEXT_W)
+        Some(value) => wrap_cells(value, wrap_w)
             .into_iter()
             .map(|row| if masked { "\u{25cf}".repeat(row.width().max(1)) } else { row })
             .collect(),
         None => Vec::new(),
     };
     let source = info.source.label();
-    let description = info.description.as_ref().map(|d| ellipsize(d, TOOLTIP_MAX_TEXT_W));
+    let mut desc_lines =
+        info.description.as_deref().map_or_else(Vec::new, |d| wrap_words(d, wrap_w));
     // The icon pills: three cells each (` 󰆏 `) so the hover fill
     // surrounds the glyph.
     let mut pills: Vec<(&str, Hit)> = Vec::new();
@@ -443,25 +454,24 @@ fn draw_var_tooltip(
     let pills_w = 3 * pills.len();
     // The header: name, two cells, source, a gap, then the pills.
     let header_w = (tip.name.width() + 2 + source.width()).min(TOOLTIP_MAX_TEXT_W) + 1 + pills_w;
-    // Padding rows top and bottom, the header, the value rows, and an
-    // optional description line. A value taller than the terminal is cut
-    // to fit, the last surviving row ellipsized to say so.
-    let fixed = 3 + u16::from(description.is_some());
-    let max_value_rows = screen.height.saturating_sub(fixed).max(1) as usize;
-    if value_lines.len() > max_value_rows {
-        value_lines.truncate(max_value_rows);
-        let last = value_lines.last_mut().unwrap();
-        *last = take_cells(last, TOOLTIP_MAX_TEXT_W - 1) + "\u{2026}";
-    }
-    let height = fixed + value_lines.len() as u16;
-    // Display cells throughout (a wide glyph is one char but two cells).
-    let text_w = value_lines
+    // Padding rows top and bottom, the header, then each section present
+    // behind a blank row of its own. On a terminal too short for it all,
+    // the value gives up rows first (down to one), then the description,
+    // the last surviving row of a cut section ellipsized to say so.
+    let gaps = usize::from(!value_lines.is_empty()) + usize::from(!desc_lines.is_empty());
+    let room = (screen.height as usize).saturating_sub(3 + gaps);
+    cut_rows(&mut value_lines, room.saturating_sub(desc_lines.len()).max(1), wrap_w);
+    cut_rows(&mut desc_lines, room.saturating_sub(value_lines.len()), wrap_w);
+    let sections = [(&value_lines, theme.text), (&desc_lines, theme.text_muted)];
+    let height = (3 + sections
         .iter()
-        .map(|l| l.width())
-        .max()
-        .unwrap_or(0)
-        .max(header_w)
-        .max(description.as_ref().map_or(0, |l| l.width())) as u16;
+        .filter(|(lines, _)| !lines.is_empty())
+        .map(|(lines, _)| 1 + lines.len())
+        .sum::<usize>()) as u16;
+    // Display cells throughout (a wide glyph is one char but two cells).
+    let text_w =
+        value_lines.iter().chain(&desc_lines).map(|l| l.width()).max().unwrap_or(0).max(header_w)
+            as u16;
     // 2 columns of padding each side, plus a column for the drop shadow.
     let width = (text_w + 4).min(screen.width.saturating_sub(1));
     // Too narrow for the padding, the pills, and at least one cell of
@@ -505,29 +515,12 @@ fn draw_var_tooltip(
             false,
         );
     }
-    for line in &value_lines {
-        row += 1;
-        crate::paint::text(
-            buf,
-            x + 2,
-            row,
-            &ellipsize(line, inner),
-            theme.text,
-            theme.panel,
-            false,
-        );
-    }
-    if let Some(desc) = &description {
-        row += 1;
-        crate::paint::text(
-            buf,
-            x + 2,
-            row,
-            &ellipsize(desc, inner),
-            theme.text_muted,
-            theme.panel,
-            false,
-        );
+    for (lines, fg) in sections.into_iter().filter(|(lines, _)| !lines.is_empty()) {
+        row += 1; // the section's blank row
+        for line in lines {
+            row += 1;
+            crate::paint::text(buf, x + 2, row, line, fg, theme.panel, false);
+        }
     }
     // The panel first: later registrations win a hit lookup, so the
     // pills painted next sit on top of it.
@@ -562,6 +555,40 @@ fn wrap_cells(s: &str, max: usize) -> Vec<String> {
         w += cw;
     }
     lines
+}
+
+/// Prose `s` wrapped into lines of at most `max` display cells, breaking
+/// between words (runs of whitespace fold to one space); a word wider
+/// than a line is hard-broken as [`wrap_cells`] does. A newline in `s`
+/// always starts a new line. Empty for an empty `s`.
+fn wrap_words(s: &str, max: usize) -> Vec<String> {
+    use unicode_width::UnicodeWidthStr;
+    let mut lines = Vec::new();
+    for para in s.lines() {
+        let mut line = String::new();
+        for piece in para.split_whitespace().flat_map(|word| wrap_cells(word, max)) {
+            if !line.is_empty() && line.width() + 1 + piece.width() > max {
+                lines.push(std::mem::take(&mut line));
+            }
+            if !line.is_empty() {
+                line.push(' ');
+            }
+            line.push_str(&piece);
+        }
+        lines.push(line);
+    }
+    lines
+}
+
+/// Cuts `lines` to at most `rows`, the last survivor ellipsized (within
+/// `max` cells) to say the rest is missing.
+fn cut_rows(lines: &mut Vec<String>, rows: usize, max: usize) {
+    if lines.len() > rows {
+        lines.truncate(rows);
+        if let Some(last) = lines.last_mut() {
+            *last = take_cells(last, max.saturating_sub(1)) + "\u{2026}";
+        }
+    }
 }
 
 /// `s` cut to at most `max` display cells, the last of which becomes `…`.
@@ -826,14 +853,133 @@ pub(crate) fn manage_tab_chips(app: &App) -> Vec<FooterChip> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::components::var_tokens::{TokenInfo, TokenSource};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use ratatui::layout::Rect;
+    use unicode_width::UnicodeWidthStr;
 
     fn render(app: &mut App) -> String {
         let backend = TestBackend::new(120, 40);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|f| draw(f, app)).unwrap();
         format!("{:?}", terminal.backend().buffer())
+    }
+
+    /// A plain `env = qa` token's info.
+    fn tip_info(value: Option<&str>, description: Option<&str>) -> TokenInfo {
+        TokenInfo {
+            value: value.map(str::to_string),
+            secret: false,
+            source: TokenSource::Env("qa".into()),
+            description: description.map(str::to_string),
+        }
+    }
+
+    /// Draws the `x` tooltip alone on a `w`×`h` screen, anchored at the
+    /// top-left, and returns its text rows between the panel's borders
+    /// (padding columns dropped, trailing spaces trimmed), header first.
+    fn tip_rows(w: u16, h: u16, info: &TokenInfo) -> Vec<String> {
+        let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        let tip = crate::app::TokenTip { name: "x".into(), anchor: Rect::new(0, 0, 5, 1) };
+        terminal
+            .draw(|f| {
+                draw_var_tooltip(
+                    f,
+                    f.area(),
+                    &crate::theme::Theme::dark(),
+                    &tip,
+                    info,
+                    false,
+                    None,
+                    &mut hits,
+                )
+            })
+            .unwrap();
+        let panel = hits.rect_of(&crate::hit::Hit::TipPanel("x".into())).expect("a tip is drawn");
+        let buf = terminal.backend().buffer();
+        (panel.y + 1..panel.bottom() - 1)
+            .map(|y| {
+                (panel.x + 2..panel.right() - 2)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    /// #11: a long description word-wraps at the tooltip's max width
+    /// instead of being cut short — every word is there, in order.
+    #[test]
+    fn a_long_tooltip_description_word_wraps_at_the_max_width() {
+        let desc = "Bearer token for the QA tenant, issued by the admin console and \
+                    rotated every Monday morning by the platform team";
+        let rows = tip_rows(120, 40, &tip_info(Some("v"), Some(desc)));
+        let wrapped = &rows[4..];
+        assert!(wrapped.len() > 1, "{rows:?}");
+        for row in wrapped {
+            assert!(row.width() <= TOOLTIP_MAX_TEXT_W, "{row:?}");
+            assert!(!row.contains('\u{2026}'), "nothing is cut: {row:?}");
+        }
+        assert_eq!(wrapped.join(" "), desc, "breaks fall between words");
+    }
+
+    /// Value only: header, a blank row, the value. No description, no
+    /// second blank row.
+    #[test]
+    fn a_tooltip_without_a_description_ends_at_its_value() {
+        let rows = tip_rows(120, 40, &tip_info(Some("v"), None));
+        assert_eq!(rows.len(), 3, "{rows:?}");
+        assert_eq!(rows[1], "");
+        assert_eq!(rows[2], "v");
+    }
+
+    /// Description only (no value): header, a blank row, the description.
+    #[test]
+    fn a_tooltip_without_a_value_goes_straight_to_its_description() {
+        let rows = tip_rows(120, 40, &tip_info(None, Some("about x")));
+        assert_eq!(rows.len(), 3, "{rows:?}");
+        assert_eq!(rows[1], "");
+        assert_eq!(rows[2], "about x");
+    }
+
+    /// On a terminal narrower than the max width, value and description
+    /// wrap to the room there is rather than being ellipsized at the edge.
+    #[test]
+    fn a_tooltip_wraps_to_a_narrow_screen() {
+        let value = "https://qa.example.com/a/rather/long/path";
+        let desc = "the root every request in the qa space starts from";
+        let rows = tip_rows(30, 40, &tip_info(Some(value), Some(desc)));
+        let blank = rows.iter().skip(2).position(String::is_empty).unwrap() + 2;
+        assert_eq!(rows[2..blank].concat(), value, "{rows:?}");
+        assert_eq!(rows[blank + 1..].join(" "), desc, "{rows:?}");
+        for row in &rows[2..] {
+            assert!(row.width() <= 25, "inside the 30-wide screen: {row:?}");
+            assert!(!row.contains('\u{2026}'), "{row:?}");
+        }
+    }
+
+    /// On a terminal too short for the whole tip, the value gives up rows
+    /// first (down to one), then the description; each cut row says so.
+    #[test]
+    fn a_short_screen_cuts_the_value_before_the_description() {
+        let value = "a".repeat(3 * TOOLTIP_MAX_TEXT_W);
+        let desc = "one two three four five six seven eight nine ten eleven twelve \
+                    thirteen fourteen fifteen sixteen";
+        let info = tip_info(Some(&value), Some(desc));
+        // Borders, header and two gaps take 5; 3 rows left: the
+        // description's two, and one for the value.
+        let rows = tip_rows(120, 8, &info);
+        assert_eq!(rows.len(), 6, "{rows:?}");
+        assert!(rows[2].ends_with('\u{2026}'), "the value is cut: {rows:?}");
+        assert_eq!(rows[4..].join(" "), desc, "the description is whole: {rows:?}");
+        // Two rows left: the value keeps one, the description the other.
+        let rows = tip_rows(120, 7, &info);
+        assert_eq!(rows.len(), 5, "{rows:?}");
+        assert!(rows[2].ends_with('\u{2026}'), "{rows:?}");
+        assert!(rows[4].ends_with('\u{2026}'), "the description is cut too: {rows:?}");
     }
 
     /// The final review's D-1 (plan M4b Deviation 20): the header's
