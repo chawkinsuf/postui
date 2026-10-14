@@ -485,7 +485,7 @@ const CASES: &[Case] = &[
     // Review Focus 1: counted deletes, clamped, one undo step.
     vim_u("L.Ndd", SidebarThree, "2dd", &[Requests(&["main/alpha"]), Toast("Deleted 2 requests")]),
     vim_u("L.Ndd", SidebarThree, "9dd", &[Requests(&["main/alpha"])]),
-    // The batch holds the open request: it becomes a scratch, and one undo
+    // The batch holds the open request: the neighbour opens, and one undo
     // brings back the files, the open request and its field exactly.
     vim_u("L.Ndd", SidebarThreeBetaOpen, "2dd", &[Requests(&["main/alpha"]), SidebarSel("main/alpha"), EditorSlug("main/alpha")]),
     arrows_u("L.dd", SidebarThreeBetaOpen, "d", &[Requests(&["main/alpha", "main/gamma"]), SidebarSel("main/gamma"), EditorSlug("main/gamma")]),

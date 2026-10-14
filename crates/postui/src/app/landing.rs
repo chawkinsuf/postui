@@ -490,6 +490,10 @@ impl App {
     /// then opens the request the cursor landed on, so the cursor never
     /// sits on a request the panel does not show. A scratch only when the
     /// cursor is on no request, or that one fails to open.
+    ///
+    /// Two landings: the cursor's request is known only once the first has
+    /// rebuilt the sidebar, and the first's scratch is what a failed open
+    /// leaves behind.
     pub(super) fn land_after_removal(
         &mut self,
         from_row: Option<usize>,
